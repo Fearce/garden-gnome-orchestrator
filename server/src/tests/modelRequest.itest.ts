@@ -22,7 +22,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { DIRECTOR_CLI_SCHEMA, executeDirectorCliAction } = await import("../orchestrator/directorCliBridge.js");
-const { detectModelRequest, resolveModelRequest } = await import("../orchestrator/modelRequest.js");
+const { detectModelRequest, exactModelRequest, resolveModelRequest } = await import("../orchestrator/modelRequest.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { clientCommandSchema } = await import("../ws/protocol.js");
 
@@ -113,6 +113,27 @@ async function main(): Promise<void> {
   check("a concrete contrast pins its positive side", detectModelRequest("Use Spark, not Sol.", CANDIDATES)?.model === SPARK);
   const unresolved = resolveModelRequest("GPT Future", CANDIDATES);
   check("an unknown explicit request remains strict and unresolved", unresolved.model === null && unresolved.strict, JSON.stringify(unresolved));
+
+  // A pin picked from a roster (the scheduled-task picker) arrives as an id plus its backend, so it is
+  // matched exactly rather than scored as wording — scoring would re-guess an answer we already have.
+  const exact = exactModelRequest("codex", SOL, CANDIDATES);
+  check("a picked pair resolves to that exact pair", exact.provider === "codex" && exact.model === SOL && exact.strict, JSON.stringify(exact));
+  const crossed = exactModelRequest("claude", SOL, CANDIDATES);
+  check(
+    "the same id under the wrong backend does not resolve",
+    crossed.model === null && crossed.provider === "claude" && crossed.strict,
+    JSON.stringify(crossed),
+  );
+  const retired = exactModelRequest("codex", "gpt-5.6-retired", CANDIDATES);
+  check(
+    "a model that left the roster stops visibly instead of substituting",
+    retired.model === null && retired.requested === "gpt-5.6-retired" && retired.strict,
+    JSON.stringify(retired),
+  );
+  check(
+    "wording is never scored on the exact path",
+    exactModelRequest("codex", "GPT Spark", CANDIDATES).model === null,
+  );
 
   console.log("\n2 — the provider-neutral Director command bridge carries the exact owner field");
   let dispatched: Record<string, unknown> | undefined;

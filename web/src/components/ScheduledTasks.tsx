@@ -1,8 +1,11 @@
-import { useState, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
-import type { Effort, ScheduledTask } from "../types.js";
+import type { Effort, ImplementorProvider, ModelRequest, ScheduledTask } from "../types.js";
+import { AS_REQUESTED, storedPin, type PinProvider, type StoredPin } from "../lib/schedulePin.js";
 import { WorkspacePath } from "./WorkspacePath.js";
 import { PathInput } from "./PathInput.js";
+import { taskModelTargets } from "./TaskModelPicker.js";
+import { modelLabel } from "../lib/format.js";
 import { useCoarseNow } from "../lib/timing.js";
 import {
   DEFAULT_RECURRENCE,
@@ -16,6 +19,15 @@ import {
 } from "../lib/cron.js";
 
 const EFFORTS: (Effort | "")[] = ["", "low", "medium", "high", "max"];
+
+const PROVIDER_LABEL: Record<ImplementorProvider, string> = { claude: "Claude", codex: "Codex", grok: "Grok", zai: "z.ai" };
+
+/** The pin as `taskModelTargets` wants it, so a schedule whose provider was since disabled — or whose
+ *  model left the roster — still shows its own pin in the editor instead of a blank form the owner
+ *  cannot tell apart from Auto. Same reasoning as the per-task picker. */
+function pinOf(pin: StoredPin | null): ModelRequest | null {
+  return pin?.provider ? { requested: pin.model, provider: pin.provider, model: pin.model, strict: true } : null;
+}
 
 /** A future-relative label ("in 4m", "in 2h", "in 3d") — the counterpart to format.ts's `since`. */
 function until(nowMs: number, ts: number): string {
@@ -117,6 +129,12 @@ function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => v
             {sched.effort}
           </span>
         ) : null}
+        {sched.model ? (
+          <span className="sched-model" title={`Every run pins the implementor to this exact model${sched.provider ? ` on ${PROVIDER_LABEL[sched.provider]}` : ""}`}>
+            {sched.provider ? `${PROVIDER_LABEL[sched.provider]} · ` : ""}
+            {modelLabel(sched.model)}
+          </span>
+        ) : null}
       </div>
 
       <div className="sched-times">
@@ -178,13 +196,45 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [rec, setRec] = useState<Recurrence>(initial ? cronToRecurrence(initial.cron) : DEFAULT_RECURRENCE);
 
+  const settings = useStore((s) => s.settings);
+  // Resolved against the rosters as they stand with nothing pinned, so an id a backend still publishes
+  // is upgraded to an exact pair before the picker below is built from it.
+  const stored = useMemo(() => storedPin(taskModelTargets(settings, null), initial), [settings, initial]);
+  const targets = useMemo(() => taskModelTargets(settings, pinOf(stored)), [settings, stored]);
+  // "" is Auto routing — the default, and what every schedule created before this control had.
+  const [provider, setProvider] = useState<PinProvider>(stored ? (stored.provider ?? AS_REQUESTED) : "");
+  const [model, setModel] = useState(stored?.model ?? "");
+  const target = targets.find((t) => t.provider === provider);
+  // A pin is only sent as a pair. Choosing a provider whose roster this console cannot see leaves no
+  // model to send, and half a pin is worse than none: it would read as pinned and route automatically.
+  const pinned = !!provider && !!model;
+
   const cron = recurrenceToCron(rec);
   const cronValid = isValidCron(cron);
-  const canSave = title.trim() && workspace.trim() && prompt.trim() && cronValid;
+  const canSave = title.trim() && workspace.trim() && prompt.trim() && cronValid && (!provider || !!model);
+
+  const chooseProvider = (next: PinProvider): void => {
+    setProvider(next);
+    if (!next) return setModel("");
+    if (next === AS_REQUESTED) return setModel(stored?.model ?? "");
+    const roster = targets.find((t) => t.provider === next);
+    // Keep the current model when switching back to the provider that owns it; otherwise take that
+    // provider's first, so the pair is never momentarily a model from the wrong backend.
+    setModel(roster?.models.includes(model) ? model : (roster?.models[0] ?? ""));
+  };
 
   const save = () => {
     if (!canSave) return;
-    const payload = { title: title.trim(), workspace: workspace.trim(), prompt: prompt.trim(), cron, effort: effort || null, enabled };
+    const payload = {
+      title: title.trim(),
+      workspace: workspace.trim(),
+      prompt: prompt.trim(),
+      cron,
+      effort: effort || null,
+      enabled,
+      model: pinned ? model : null,
+      provider: pinned && provider !== AS_REQUESTED ? provider : null,
+    };
     const saved = initial ? updateSchedule(initial.id, payload) : createSchedule(payload);
     if (saved) onClose();
   };
@@ -233,6 +283,56 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
               <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
               <span>Enabled</span>
             </label>
+          </div>
+
+          <div className="sched-row">
+            <label className="sched-field sched-field-inline">
+              <span className="sched-label">Provider</span>
+              <select
+                value={provider}
+                onChange={(e) => chooseProvider(e.target.value as PinProvider)}
+                title="Pin every run of this schedule to one backend, or leave it to usage-aware routing"
+              >
+                <option value="">Auto routing</option>
+                {stored && !stored.provider ? <option value={AS_REQUESTED}>As requested</option> : null}
+                {targets.map((t) => (
+                  <option key={t.provider} value={t.provider}>
+                    {PROVIDER_LABEL[t.provider]}
+                    {t.enabled ? "" : " (disabled)"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="sched-field sched-field-inline">
+              <span className="sched-label">Model</span>
+              <select
+                value={model}
+                disabled={!provider || provider === AS_REQUESTED}
+                onChange={(e) => setModel(e.target.value)}
+                title={
+                  provider === AS_REQUESTED
+                    ? "Kept exactly as saved: this pin names no backend, so each run resolves it against the roster that is live then"
+                    : provider
+                      ? "The exact model each run pins its implementor to"
+                      : "Choose a provider first"
+                }
+              >
+                {provider ? null : <option value="">—</option>}
+                {provider === AS_REQUESTED ? <option value={model}>{model}</option> : null}
+                {target?.models.map((m) => (
+                  <option key={m} value={m}>
+                    {modelLabel(m)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="sched-hint">
+            {provider === AS_REQUESTED
+              ? "Saved before this schedule named a backend, so every run still resolves the wording above against whatever roster is live then. Pick a provider to make it exact."
+              : pinned
+                ? "Every run pins its implementor to this exact model. It will not fall back to another one; if that model has no capacity the task waits."
+                : "Auto routing picks the implementor per run from whatever has quota."}
           </div>
         </div>
         <div className="m-foot sched-foot">

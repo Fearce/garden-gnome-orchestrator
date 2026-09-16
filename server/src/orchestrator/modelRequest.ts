@@ -200,3 +200,28 @@ export function detectModelRequest(
   }
   return null;
 }
+
+/**
+ * A pin the owner chose from a PICKER — a provider and an exact model id, not a phrase to interpret.
+ *
+ * Deliberately not `resolveModelRequest`: that exists to read human wording, so it scores aliases and
+ * can tie. Scoring a value the owner selected from the live roster would be re-guessing an answer we
+ * already have, and a tie would silently widen an exact pin into a provider-only one.
+ *
+ * An unknown pair still returns a strict request naming what was asked, with `model: null` — the same
+ * contract `resolveModelRequest` keeps, and the reason a schedule pinned months ago to a model since
+ * retired stops visibly instead of quietly running on whatever replaced it.
+ */
+export function exactModelRequest(
+  provider: ImplementorProvider,
+  model: string,
+  candidates: readonly ModelRequestCandidate[],
+): ModelRequest {
+  const requested = model.trim().slice(0, 160);
+  const match = cleanedCandidates(candidates).find(
+    (candidate) => candidate.provider === provider && normalize(candidate.model) === normalize(requested),
+  );
+  return match
+    ? { requested, provider: match.provider, model: match.model, strict: true }
+    : { requested, provider, model: null, strict: true };
+}

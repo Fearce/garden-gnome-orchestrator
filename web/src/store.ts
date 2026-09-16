@@ -443,8 +443,29 @@ interface State {
   // Scheduled tasks: switch the center pane, and CRUD the recurring dispatches. Mutations return whether
   // they reached the socket so forms never close on a command that was silently dropped while reconnecting.
   setBoardView: (v: BoardView) => void;
-  createSchedule: (input: { title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null }) => boolean;
-  updateSchedule: (id: string, patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null }) => boolean;
+  createSchedule: (input: {
+    title: string;
+    workspace: string;
+    prompt: string;
+    cron: string;
+    enabled?: boolean;
+    effort?: Effort | null;
+    model?: string | null;
+    provider?: ImplementorProvider | null;
+  }) => boolean;
+  updateSchedule: (
+    id: string,
+    patch: {
+      title?: string;
+      workspace?: string;
+      prompt?: string;
+      cron?: string;
+      enabled?: boolean;
+      effort?: Effort | null;
+      model?: string | null;
+      provider?: ImplementorProvider | null;
+    },
+  ) => boolean;
   deleteSchedule: (id: string) => boolean;
   runSchedule: (id: string) => void;
   // The owner's note list — still optimism-free (unlike the schedule writes above): send, let the
@@ -982,6 +1003,10 @@ function projectScheduleMutation(cmd: ScheduleMutation): void {
               cron: cmd.cron,
               enabled: cmd.enabled ?? true,
               effort: cmd.effort ?? null,
+              model: cmd.model ?? null,
+              // Mirror the scheduler's own rule (a lone provider pins nothing and is dropped), so the
+              // projected row is what the authoritative list will replace it with, not a brief flicker.
+              provider: cmd.model ? (cmd.provider ?? null) : null,
               lastRunAt: null,
               nextRunAt: null,
               lastThreadId: null,

@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { DispatchInput } from "./api.js";
-import type { Effort, ScheduledTask } from "../types.js";
+import type { Effort, ImplementorProvider, ScheduledTask } from "../types.js";
 import { isValidCron, nextRun } from "./cron.js";
 
 /** The fields a create/update accepts; everything else (timestamps, lastThreadId) is scheduler-managed. */
@@ -15,6 +15,8 @@ export interface ScheduleInput {
   effort?: Effort | null;
   /** Exact model request retained as a strict pin for each dispatched run. */
   model?: string | null;
+  /** The backend that model belongs to. Only meaningful beside `model`; see `sanitize`. */
+  provider?: ImplementorProvider | null;
 }
 export type SchedulePatch = Partial<ScheduleInput>;
 
@@ -72,6 +74,7 @@ export class Scheduler {
       enabled,
       effort: input.effort ?? null,
       model: clean.model,
+      provider: clean.provider,
       nextRunAt: enabled ? nextRun(clean.cron, Date.now()) : null,
     });
     this.broadcast();
@@ -88,6 +91,9 @@ export class Scheduler {
       prompt: patch.prompt ?? current.prompt,
       cron: patch.cron ?? current.cron,
       model: patch.model !== undefined ? patch.model : current.model,
+      // Follow the model: clearing the pin must clear its provider, and an edit that only names the
+      // model (an older client, or the Director bridge) must not inherit the previous backend.
+      provider: patch.provider !== undefined ? patch.provider : patch.model !== undefined ? null : current.provider,
     });
     if (typeof merged === "string") return { ok: false, error: merged };
     const enabled = patch.enabled ?? current.enabled;
@@ -97,6 +103,7 @@ export class Scheduler {
       enabled,
       effort,
       model: merged.model,
+      provider: merged.provider,
       // Re-anchor the next fire on any change to the cadence or the enabled flag; a pure metadata edit
       // (prompt/title) keeps the existing slot so it doesn't drift.
       nextRunAt: enabled ? (patch.cron || patch.enabled !== undefined ? nextRun(merged.cron, Date.now()) : current.nextRunAt) : null,
@@ -150,6 +157,7 @@ export class Scheduler {
         brief: s.prompt,
         effort: s.effort ?? undefined,
         requestedModel: s.model ?? undefined,
+        requestedProvider: s.provider ?? undefined,
       });
       this.db.updateScheduledTask(s.id, { lastRunAt: Date.now(), lastThreadId: threadId });
       this.hub.log("info", `Scheduled task "${s.title}" fired → task ${threadId.slice(0, 8)}`);
@@ -164,16 +172,21 @@ export class Scheduler {
   }
 
   /** Trim + validate the human-supplied fields; returns the cleaned values or an error string. */
-  private sanitize(input: ScheduleInput): { title: string; workspace: string; prompt: string; cron: string; model: string | null } | string {
+  private sanitize(
+    input: ScheduleInput,
+  ): { title: string; workspace: string; prompt: string; cron: string; model: string | null; provider: ImplementorProvider | null } | string {
     const title = input.title.trim().slice(0, 200);
     const workspace = input.workspace.trim();
     const prompt = input.prompt.trim();
     const cron = input.cron.trim();
     const model = input.model?.trim().slice(0, 100) || null;
+    // A provider without a model pins nothing this schedule could act on, and would read on the card as
+    // a pin that is silently doing nothing. Drop it rather than store a half-pin.
+    const provider = model ? (input.provider ?? null) : null;
     if (!title) return "Title is required.";
     if (!workspace) return "Workspace path is required.";
     if (!prompt) return "Prompt is required.";
     if (!isValidCron(cron)) return `Invalid cron expression: "${cron}".`;
-    return { title, workspace, prompt, cron, model };
+    return { title, workspace, prompt, cron, model, provider };
   }
 }

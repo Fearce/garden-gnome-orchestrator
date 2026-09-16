@@ -45,12 +45,21 @@ async function main(): Promise<void> {
   console.log("scheduler: create");
   // Use the current workspace (the repo) as an existing path so runNow's existsSync guard passes.
   const ws = process.cwd();
-  const created = scheduler.create({ title: "Nightly audit", workspace: ws, prompt: "audit deps", cron: "0 3 * * *", effort: "high", model: "gpt-5.6-luna" });
+  const created = scheduler.create({ title: "Nightly audit", workspace: ws, prompt: "audit deps", cron: "0 3 * * *", effort: "high", model: "gpt-5.6-luna", provider: "codex" });
   check("create ok", created.ok && !!created.schedule);
   check("create computes a future nextRunAt", (created.schedule?.nextRunAt ?? 0) > Date.now());
   check("create broadcasts the list", !!lastBroadcast && (lastBroadcast as { schedules: unknown[] }).schedules.length === 1);
   check("create retains the strict model pin", created.schedule?.model === "gpt-5.6-luna");
+  check("create retains the pinned backend", created.schedule?.provider === "codex");
   const id = created.schedule!.id;
+
+  console.log("scheduler: the pin is a pair");
+  // A provider alone pins nothing a fire could act on, so it must never reach the row: stored, it would
+  // read on the card as a pin that is silently doing nothing.
+  const lone = scheduler.create({ title: "Lone provider", workspace: ws, prompt: "p", cron: "0 4 * * *", provider: "grok" });
+  check("a provider with no model is dropped, not stored", lone.ok && lone.schedule?.provider == null && lone.schedule?.model == null);
+  scheduler.remove(lone.schedule!.id);
+  check("a reload reads the pin back as the same pair", db.getScheduledTask(id)?.provider === "codex" && db.getScheduledTask(id)?.model === "gpt-5.6-luna");
 
   console.log("scheduler: validation");
   check("rejects bad cron", !scheduler.create({ title: "x", workspace: ws, prompt: "p", cron: "not cron" }).ok);
@@ -90,6 +99,7 @@ async function main(): Promise<void> {
   check("dispatch got the title", last.title === "Nightly audit");
   check("dispatch got the effort override", last.effort === "high");
   check("dispatch got the strict model pin", last.requestedModel === "gpt-5.6-luna");
+  check("dispatch got the pinned backend, so the pair stays exact", last.requestedProvider === "codex");
   check("runNow records lastRunAt + lastThreadId", db.getScheduledTask(id)!.lastRunAt != null && db.getScheduledTask(id)!.lastThreadId != null);
 
   console.log("scheduler: effort clear");
@@ -97,8 +107,15 @@ async function main(): Promise<void> {
   check("effort cleared to null", db.getScheduledTask(id)!.effort == null);
 
   console.log("scheduler: model clear");
+  // Re-pointing the model must not leave the previous backend attached: an older client (or the Director
+  // bridge) can send `model` alone, and inheriting the old provider would pin a pair nobody chose.
+  scheduler.update(id, { model: "claude-opus-5" });
+  check("changing the model alone drops the stale backend", db.getScheduledTask(id)!.provider == null && db.getScheduledTask(id)!.model === "claude-opus-5");
+  scheduler.update(id, { model: "claude-opus-5", provider: "claude" });
+  check("re-sending the pair restores an exact pin", db.getScheduledTask(id)!.provider === "claude");
   scheduler.update(id, { model: null });
   check("model pin cleared to null", db.getScheduledTask(id)!.model == null);
+  check("clearing the model clears its backend too", db.getScheduledTask(id)!.provider == null);
 
   console.log("scheduler: start() re-anchors from now (no backlog)");
   // Simulate a schedule left with a stale past nextRunAt (as if the server was down): start() should move

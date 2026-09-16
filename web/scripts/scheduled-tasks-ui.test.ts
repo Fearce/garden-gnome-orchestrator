@@ -8,6 +8,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { storedPin } from "../src/lib/schedulePin.js";
+import type { ScheduledTask } from "../src/types.js";
 
 Object.defineProperty(globalThis, "document", {
   value: { baseURI: "http://localhost/", addEventListener: () => {} },
@@ -103,6 +105,74 @@ assert.deepEqual(socket.sent, []);
 assert.deepEqual(useStore.getState().schedules, [], "a disconnected write does not project a change that was never sent");
 assert.equal(useStore.getState().notice?.title, "Schedule not changed");
 assert.match(useStore.getState().notice?.message ?? "", /reconnecting/i);
+
+// --- the implementor pin: a schedule may name an exact provider + model ---------------------------
+//
+// The pin is a PAIR. A model id on its own is re-read as owner wording on every fire, against whatever
+// roster is live then — which is the whole reason the provider exists: a schedule may not fire for
+// weeks, and rosters move underneath it. So the two halves must travel together everywhere, and a half
+// pin must never be storable: it would read on the card as pinned while routing automatically.
+const ROSTERS = [
+  { provider: "claude" as const, models: ["claude-opus-5", "claude-sonnet-5"] },
+  { provider: "codex" as const, models: ["gpt-5.6-sol", "gpt-5.6-luna"] },
+];
+const row = (pin: Partial<ScheduledTask>): ScheduledTask => ({ ...saved, ...pin } as ScheduledTask);
+
+assert.equal(storedPin(ROSTERS, null), null, "no schedule is no pin");
+assert.equal(storedPin(ROSTERS, row({ model: null })), null, "no model is no pin — Auto routing");
+assert.deepEqual(
+  storedPin(ROSTERS, row({ model: "gpt-5.6-sol", provider: "codex" })),
+  { provider: "codex", model: "gpt-5.6-sol" },
+  "a saved pair is read back as that exact pair",
+);
+assert.deepEqual(
+  storedPin(ROSTERS, row({ model: "claude-opus-5" })),
+  { provider: "claude", model: "claude-opus-5" },
+  "a pin saved before the provider column, whose id a live roster still publishes, resolves to the pair",
+);
+assert.deepEqual(
+  storedPin(ROSTERS, row({ model: "GPT Spark" })),
+  { provider: null, model: "GPT Spark" },
+  "wording no roster publishes is kept verbatim — guessing at it here would repoint the owner's schedule",
+);
+assert.deepEqual(
+  storedPin(ROSTERS, row({ model: "  gpt-5.6-luna  " })),
+  { provider: "codex", model: "gpt-5.6-luna" },
+  "a stored id is trimmed to the roster's own spelling, so the editor's select can match an option",
+);
+
+// The disconnect case above left the socket closed; a write has to reach it again from here.
+socket.readyState = FakeWebSocket.OPEN;
+socket.sent.length = 0;
+assert.equal(
+  useStore.getState().createSchedule({ ...input, model: "gpt-5.6-sol", provider: "codex" }),
+  true,
+);
+const pinCmd = socket.sent[0]!;
+assert.equal(pinCmd.model, "gpt-5.6-sol", "the create carries the pinned model");
+assert.equal(pinCmd.provider, "codex", "…and the backend it belongs to, so the pair stays exact");
+const pinned = useStore.getState().schedules.at(-1);
+assert.equal(pinned?.model, "gpt-5.6-sol", "the projected card shows the pin in the same click");
+assert.equal(pinned?.provider, "codex");
+
+// Mirrors Scheduler.sanitize: a provider with no model pins nothing, so the server drops it. The
+// projection has to drop it too, or the card claims a pin until the authoritative list corrects it.
+socket.sent.length = 0;
+assert.equal(useStore.getState().createSchedule({ ...input, provider: "codex" }), true);
+assert.equal(
+  useStore.getState().schedules.at(-1)?.provider,
+  null,
+  "a provider with no model is not a pin, and must not be projected as one",
+);
+
+socket.sent.length = 0;
+assert.equal(useStore.getState().updateSchedule("schedule-1", { model: null, provider: null }), true);
+assert.deepEqual(
+  socket.sent,
+  [{ type: "schedule.update", id: "schedule-1", patch: { model: null, provider: null } }],
+  "clearing the pin clears both halves — a stale backend must never outlive the model it named",
+);
+useStore.setState({ schedules: [] });
 
 const component = readFileSync(resolve(import.meta.dirname, "..", "src", "components", "ScheduledTasks.tsx"), "utf8");
 assert.match(component, /const saved = initial \? updateSchedule\([\s\S]*?if \(saved\) onClose\(\)/, "the editor stays open when its command was not sent");

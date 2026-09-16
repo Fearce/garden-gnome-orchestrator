@@ -512,7 +512,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     // Matches the effort options offered by the UI + director tools (xhigh is a gated tier not surfaced
     // for schedules) so a schedule's effort is always re-selectable in the editor.
     effort: z.enum(["low", "medium", "high", "max"]).nullish(),
+    // The implementor pin. `provider` is only honoured beside a `model` (the scheduler drops a lone
+    // provider) and is what makes the pair an exact id rather than wording to re-interpret each fire.
     model: z.string().trim().min(1).max(100).nullable().optional(),
+    provider: z.enum(["claude", "codex", "grok", "zai"]).nullable().optional(),
   }),
   z.object({
     type: z.literal("schedule.update"),
@@ -526,6 +529,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       enabled: z.boolean().optional(),
       effort: z.enum(["low", "medium", "high", "max"]).nullish(),
       model: z.string().trim().min(1).max(100).nullable().optional(),
+      provider: z.enum(["claude", "codex", "grok", "zai"]).nullable().optional(),
     }),
   }),
   z.object({ type: z.literal("schedule.delete"), id: z.string() }),

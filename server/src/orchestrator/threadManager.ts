@@ -81,7 +81,7 @@ import { codexReviewTarget, type CodexReviewTarget } from "./reviewModelFloor.js
 import { conservationResolvedCodexModel, conservationResolvedModel } from "./tokenConservation.js";
 import { usageSavingActive } from "./usageSaving.js";
 import { providerIntent } from "./providerIntent.js";
-import { detectModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
+import { detectModelRequest, exactModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
 import { LiveBenchScores } from "./liveBenchScores.js";
 import {
   assessCapacity,
@@ -2404,7 +2404,11 @@ export class ThreadManager implements OrchestratorApi {
     const modelRequest = input.lane === "read"
       ? null
       : input.requestedModel?.trim()
-        ? resolveModelRequest(input.requestedModel, this.modelRequestCandidates())
+        // A caller that supplies the provider chose both halves from the live roster, so the model is
+        // an id, not wording — resolving it as text would re-guess a known answer and could tie.
+        ? input.requestedProvider
+          ? exactModelRequest(input.requestedProvider, input.requestedModel, this.modelRequestCandidates())
+          : resolveModelRequest(input.requestedModel, this.modelRequestCandidates())
         : detectModelRequest(input.brief, this.modelRequestCandidates());
     const thread = this.db.createThread({
       title: input.title,

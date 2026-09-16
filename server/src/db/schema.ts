@@ -236,7 +236,11 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   cron           TEXT NOT NULL,
   enabled        INTEGER NOT NULL DEFAULT 1,
   effort         TEXT,
+  -- The implementor pin each fire carries, as an exact pair. provider is what keeps it exact: a model
+  -- id alone would be re-matched against a roster that changes underneath a schedule that may not fire
+  -- for weeks. Both NULL = ordinary automatic routing.
   model          TEXT,
+  provider       TEXT,
   last_run_at    INTEGER,
   next_run_at    INTEGER,
   last_thread_id TEXT,

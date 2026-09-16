@@ -13,6 +13,10 @@ export interface DispatchInput {
   /** Exact owner wording for an explicit model/capacity request (for example "GPT Spark"). The server
    * resolves it against the real provider catalog and persists a strict task-local pin. */
   requestedModel?: string | null;
+  /** Set only alongside `requestedModel`, and only by a caller that chose both from the live roster
+   * (the scheduled-task pin). It makes the pair EXACT: the model id is taken as an id rather than as
+   * wording to interpret, and the provider disambiguates an id two backends both publish. */
+  requestedProvider?: ImplementorProvider | null;
   lane?: ThreadLane | null; // 'read' routes to the single read-only reader lane (dispatch_read); null/undefined = the normal pipeline
   // TIMED task: a wall-clock work window in ms. Its absolute deadline is stamped when the pipeline
   // actually acquires its first slot, so time spent queued never eats the window. Omitted/0 = an

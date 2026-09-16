@@ -221,6 +221,10 @@ export interface ScheduledTask {
   effort?: Effort | null; // optional implementor effort override for each run; null = the planner decides
   /** Exact model request forwarded as a strict task-local pin for every dispatch. */
   model?: string | null;
+  /** The backend `model` belongs to, when the pin was chosen from the picker rather than typed. Set
+   *  together with `model` and never alone: the pair is resolved as an exact id, so a schedule cannot
+   *  drift onto another provider's similarly named model as rosters change. */
+  provider?: ImplementorProvider | null;
   lastRunAt?: number | null; // epoch ms of the last fire, or null if it hasn't run yet
   nextRunAt?: number | null; // epoch ms of the next fire while enabled, else null
   lastThreadId?: string | null; // the task id created by the most recent fire (jump target in the UI)

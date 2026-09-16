@@ -2808,6 +2808,16 @@ body.dl-resizing { user-select: none; }
 .sched-enable span { font-size: 13px; color: var(--text-dim); text-transform: none; letter-spacing: 0; }
 .sched-enable input { width: 15px; height: 15px; accent-color: var(--accent); }
 
+/* The implementor pin on a schedule row. A model id is a measurement, so it stays on the mono stack
+   beside the effort badge; quieter than the effort hues because it states a fact, not a severity. */
+.sched-model {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.02em; white-space: nowrap;
+  padding: 2px 7px; border-radius: 100px; color: var(--text-dim);
+  background: color-mix(in oklch, var(--text-dim) 10%, transparent);
+  border: 1px solid color-mix(in oklch, var(--text-dim) 30%, transparent);
+}
+.sched-hint { font-size: 12px; line-height: 1.5; color: var(--text-faint); margin-top: -4px; }
+
 .sched-recur { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .sched-freq { width: auto !important; }
 .sched-inline { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); }

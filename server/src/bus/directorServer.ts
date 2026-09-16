@@ -328,12 +328,25 @@ export function createDirectorServer(
       enabled: z.boolean().default(true).describe("Whether it starts active (default true)."),
       effort: z.enum(["low", "medium", "high", "max"]).optional().describe("Optional implementor effort for each run; omit to let the planner decide."),
       model: z.string().optional().describe("Exact model requested by the owner. This is a strict pin for every run; omit unless explicitly requested."),
+      provider: z
+        .enum(["claude", "codex", "grok", "zai"])
+        .optional()
+        .describe("The backend that model belongs to. Set it whenever you know it: with a provider the pair is pinned as an exact id, so the schedule cannot drift onto another backend's similarly named model as rosters change. Ignored without `model`."),
     },
     async (args) => {
       if (!existsSync(args.workspace)) {
         return { content: [{ type: "text", text: `Workspace "${args.workspace}" does not exist on disk. Confirm the exact absolute path with ${config.ownerName} and retry.` }], isError: true };
       }
-      const r = scheduler.create({ title: args.title, workspace: args.workspace, prompt: args.prompt, cron: args.cron, enabled: args.enabled, effort: args.effort, model: args.model });
+      const r = scheduler.create({
+        title: args.title,
+        workspace: args.workspace,
+        prompt: args.prompt,
+        cron: args.cron,
+        enabled: args.enabled,
+        effort: args.effort,
+        model: args.model,
+        provider: args.provider,
+      });
       if (!r.ok || !r.schedule) return { content: [{ type: "text", text: `Could not create the scheduled task: ${r.error}` }], isError: true };
       const next = r.schedule.nextRunAt ? new Date(r.schedule.nextRunAt).toLocaleString() : "—";
       return { content: [{ type: "text", text: `Created scheduled task "${r.schedule.title}" (${r.schedule.cron}) in ${r.schedule.workspace}. Next run: ${next}.` }] };
@@ -366,6 +379,11 @@ export function createDirectorServer(
       enabled: z.boolean().optional(),
       effort: z.enum(["low", "medium", "high", "max"]).optional(),
       model: z.string().nullable().optional().describe("Exact strict model pin for each run; pass null to clear it."),
+      provider: z
+        .enum(["claude", "codex", "grok", "zai"])
+        .nullable()
+        .optional()
+        .describe("The backend the pinned model belongs to. Send it with `model`; changing `model` alone clears it, so the pin can never keep a stale backend."),
     },
     async (args) => {
       const { id, ...patch } = args;
