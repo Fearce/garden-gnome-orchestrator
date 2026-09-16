@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { config } from "../config.js";
 import { GENERAL_LIMIT_ID, type CodexPool } from "./codexPools.js";
@@ -95,6 +95,17 @@ export function classifyRateWindows(primary: MeterWindow | null, secondary: Mete
 // How many recent rollout files readCodexUsage scans (newest-first) looking for the last real usage
 // snapshot. Sized to ride out a burst of instant-death capped dispatches without losing the last reading.
 const USAGE_SCAN_FILES = 40;
+/**
+ * How much of a rollout's TAIL to read, escalating once.
+ *
+ * This used to be `readFileSync(whole file)`, and on 2026-09-16 that was the reason the server kept being
+ * restarted: a real implementor session writes a 15-96MB rollout, the newest 40 came to 415MB, and this
+ * runs on the main event loop behind a 2s cache while `readCodexUsage()` drives capacity and routing
+ * decisions. Measured on the live process, one such scan froze the loop for 9.3s while using 0.4s of CPU
+ * and reading 31MB — which timed out script-hub's health probe and got the whole server bounced, killing
+ * the agents that were running.
+ */
+const ROLLOUT_TAIL_BYTES = [2 * 1024 * 1024, 16 * 1024 * 1024];
 // used_percent at/above which a window counts as capped. Codex reports 100 when the plan limit is hit.
 const CODEX_CAP_PCT = 100;
 
@@ -145,6 +156,7 @@ const LIVE_PING_MAX_AGE_MS = 30 * 60_000;
 const READ_CACHE_TTL_MS = 2_000;
 let readCache: { at: number; value: CodexUsageDTO | null } | null = null;
 let rolloutScanCount = 0;
+let rolloutBytesRead = 0;
 
 /** The still-fresh app-server reading, if one is available. Unlike readCodexUsage this never falls
  * back to a rollout file: consumers use it when a just-completed live probe must be allowed to
@@ -494,6 +506,7 @@ export const __codexUsageTestHooks = {
   reset(): void {
     readCache = null;
     rolloutScanCount = 0;
+    rolloutBytesRead = 0;
     livePing = null;
     plannedWakeAt = null;
     lastError = null;
@@ -501,6 +514,12 @@ export const __codexUsageTestHooks = {
   },
   rolloutScanCount(): number {
     return rolloutScanCount;
+  },
+  /** Bytes actually pulled off disk by rollout reads. The gate asserts on this rather than on elapsed
+   *  time, because "did it read the whole 96MB file" is the real question and a timing assertion on this
+   *  box is a coin flip. */
+  rolloutBytesRead(): number {
+    return rolloutBytesRead;
   },
 };
 
@@ -518,12 +537,52 @@ function safeMtime(f: string): number {
  *  the last real reading (leaving the chip's meters + reset countdown blank exactly when the cap made
  *  them useful). Returns the newest snapshot in this file that actually has a 5h or weekly percentage. */
 function parseRollout(file: string): CodexUsageDTO | null {
-  let text: string;
+  let size: number;
   try {
-    text = readFileSync(file, "utf8");
+    size = statSync(file).size;
   } catch {
     return null;
   }
+  if (size <= 0) return null;
+  // Read the END of the rollout, not the whole thing. A token_count is APPENDED per turn, so the newest
+  // snapshot — the only one this function returns — is always near the tail, while the head is turn
+  // transcript nobody here reads. Escalate once rather than twice: the small window covers a normal
+  // rollout, the large one survives a tail made of a few multi-MB tool-output lines, and missing in both
+  // just moves the scan to the next file (which is what an empty rollout already does).
+  for (const window of ROLLOUT_TAIL_BYTES) {
+    const text = readRolloutTail(file, size, window);
+    if (text == null) return null;
+    const found = scanRolloutText(text, file);
+    if (found) return found;
+    if (size <= window) return null; // that window already covered the whole file
+  }
+  return null;
+}
+
+/** The last `size`-bounded bytes of `file` as text, with the leading partial line dropped. */
+function readRolloutTail(file: string, size: number, window: number): string | null {
+  try {
+    if (size <= window) {
+      rolloutBytesRead += size;
+      return readFileSync(file, "utf8");
+    }
+    const fd = openSync(file, "r");
+    try {
+      const buf = Buffer.alloc(window);
+      readSync(fd, buf, 0, window, size - window);
+      rolloutBytesRead += window;
+      const text = buf.toString("utf8");
+      const cut = text.indexOf("\n");
+      return cut >= 0 ? text.slice(cut + 1) : "";
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+function scanRolloutText(text: string, file: string): CodexUsageDTO | null {
   let found: CodexUsageDTO | null = null;
   for (const line of text.split("\n")) {
     if (!line.includes("rate_limits")) continue;

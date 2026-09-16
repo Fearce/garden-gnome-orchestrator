@@ -91,11 +91,15 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   Repeated `boot` lines in `crash.log` with no `uncaughtException`/`process exit` between them means
   nothing faulted. keepAlive probes `/api/health` (10s, 2 strikes) then POSTs `/api/deploy/restart` as
   `script-hub health recovery: …`, tree-killing live agents. It times out because the event **loop**
-  stalls, not the route (a cached literal): on Windows every in-process `spawn()` runs CreateProcessW on
-  the calling thread and freezes the loop — `childRunner.ts` moved the git reads off it, the agent CLIs
-  and provider usage pings still spawn in-process by design. `eventLoopMonitor.ts` measures it: a 5-min
-  window in `/api/health`'s `eventLoop`, a per-minute `crash.log` line naming the `trackBlocking`
-  operation in flight, and the authority below. A restart cures none of it, so the coordinator **refuses**
+  stalls, not the route (a cached literal). **Measure before blaming `spawn()`:** `childRunner.ts`'s
+  848ms CreateProcessW is real but was not this — a spawn measured 17ms here while the loop still froze
+  25s. The 2026-09-16 cause was `codexUsage.parseRollout` reading whole rollout JSONLs (newest 40 =
+  415MB, largest 96MB) synchronously, behind a 2s cache, on the path `readCodexUsage()` uses for routing;
+  it now tail-reads. The signature that identified it: unresponsive at ~4% CPU with tens of MB of process
+  reads and **no** DB writes. `eventLoopMonitor.ts` measures all of it: a 5-min window in `/api/health`'s
+  `eventLoop`, a per-minute `crash.log` line naming the `trackBlocking` operation in flight, and a
+  self-arming V8 profile that names a blocker nobody wrapped (idle excluded; "every sample was idle" means
+  the stall was not CPU). A restart cures none of it, so the coordinator **refuses**
   a health recovery while the loop is responsive (outcome `refused`; keepAlive already reads that as
   not-accepted, no hub change) and never *stages* one — it is a claim about this instant, so a stale one
   is dropped, not fired at whatever is running hours later. A truly wedged loop (blocked over half the

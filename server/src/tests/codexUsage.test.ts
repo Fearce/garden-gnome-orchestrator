@@ -9,7 +9,7 @@
  * Run: npm run test:codex-usage (from server/)
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -178,6 +178,49 @@ try {
   // null that means "nothing is reached", so it fails closed to UNKNOWN like any other value we
   // cannot interpret.
   check("a blank reached-type is UNKNOWN, neither reached nor clear", limitStateOf({ rateLimitReachedType: "   ", spendControlReached: false }) === undefined);
+
+  // ---- a big rollout must not be read whole ----
+  //
+  // This is the 2026-09-16 server-restart bug in miniature. A real implementor session writes a
+  // 15-96MB rollout; the newest 40 came to 415MB. Read whole, on the main event loop, behind a 2s cache,
+  // on a path that capacity and routing decisions call — one scan froze the live server for 9.3s at
+  // 0.4s of CPU, which timed out script-hub's health probe and got the process restarted under its own
+  // running agents. The snapshot it wants is APPENDED per turn, so it is always in the tail.
+  console.log("\n=== big rollout: tail, not the whole file ===\n");
+  {
+    // Same home as the rest of the gate, on a NEWER date partition, so the scan reaches it first —
+    // config.ts reads env at import, so a second CODEX_HOME_DIR cannot be introduced mid-file.
+    const dir = join(home, "sessions", "2026", "09", "16");
+    mkdirSync(dir, { recursive: true });
+    const at = Date.now();
+    const snapshotLine = JSON.stringify({
+      timestamp: new Date(at).toISOString(),
+      payload: {
+        type: "token_count",
+        rate_limits: {
+          primary: { used_percent: 55, window_minutes: 300, resets_at: Math.floor((at + 3_600_000) / 1000) },
+          secondary: { used_percent: 66, window_minutes: 7 * 24 * 60, resets_at: Math.floor((at + 86_400_000) / 1000) },
+          plan_type: "pro",
+        },
+      },
+    });
+    // ~12MB of turn transcript ahead of the snapshot, the way a long session actually looks.
+    const filler = `${JSON.stringify({ payload: { type: "agent_message", text: "x".repeat(4000) } })}\n`;
+    const file = join(dir, `rollout-${at}.jsonl`);
+    writeFileSync(file, filler.repeat(3000) + snapshotLine + "\n", "utf8");
+    const size = statSync(file).size;
+    check("the fixture is genuinely large", size > 10 * 1024 * 1024, `${(size / 1048576).toFixed(1)}MB`);
+
+    __codexUsageTestHooks.reset();
+    const big = readCodexUsage();
+    check("the newest snapshot is still found in the tail", big?.fiveHour === 55 && big.sevenDay === 66, JSON.stringify(big));
+    const bytes = __codexUsageTestHooks.rolloutBytesRead();
+    check(
+      "and the whole file was NOT pulled off disk",
+      bytes > 0 && bytes < size / 2,
+      `read ${(bytes / 1048576).toFixed(1)}MB of a ${(size / 1048576).toFixed(1)}MB rollout`,
+    );
+  }
 
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS" : "FAIL"} - ${passed} passed, ${failed} failed ===`);
   if (failures.length) {
