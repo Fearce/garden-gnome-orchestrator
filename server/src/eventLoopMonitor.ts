@@ -210,7 +210,7 @@ function attributeFrame(node: ProfileNode, byId: Map<number, ProfileNode>, paren
       const js = `${f.functionName || "(anonymous)"} (${where})`;
       return cur === node ? js : `${js} -> ${leaf}`;
     }
-    const parentId = cur.id == null ? undefined : parentOf.get(cur.id);
+    const parentId: number | undefined = cur.id == null ? undefined : parentOf.get(cur.id);
     cur = parentId == null ? undefined : byId.get(parentId);
   }
   return `${leaf} (native)`;
