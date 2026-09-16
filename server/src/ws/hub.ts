@@ -80,6 +80,8 @@ const SNAPSHOT_FINDINGS = 250;
 const SNAPSHOT_DIRECTOR_MSGS = 150;
 const SNAPSHOT_CHAT = 150;
 const THREAD_HISTORY_PAGE = THREAD_HISTORY_PAGE_SIZE;
+/** Backstop only; an event invalidates the snapshot immediately, so this bounds nothing normal. */
+const HELLO_CACHE_MS = 2_000;
 
 function buildHello(ctx: WsContext): ServerEvent {
   return {
@@ -111,7 +113,49 @@ function buildHello(ctx: WsContext): ServerEvent {
   };
 }
 
+/**
+ * The connect snapshot, reused while NOTHING has changed.
+ *
+ * `buildHello` reads all ~900 threads, and each row's `substr(brief, …)` and
+ * `json_extract(stage_outputs, …)` pull large TEXT values off their overflow pages — random reads, the
+ * expensive kind on a contended disk. Measured 2026-09-16: a stall read 31MB at ~4% CPU, and the stall
+ * profile charged 72% of busy time to `listThreadSummaries -> all`.
+ *
+ * That would be affordable once per client. It is not once per client: the console's watchdog
+ * force-closes a socket after 35s of server silence, so a stall long enough to trip it makes every open
+ * console reconnect AT ONCE, and each reconnect rebuilds this snapshot — which lengthens the stall,
+ * which trips the watchdog again. Measured at the same time: 7 distinct client sockets in 30s against 3
+ * concurrent connections. That feedback loop is what took stalls from 17s to 119s.
+ *
+ * Invalidating on ANY published event rather than on a timer is what makes reuse free of staleness: the
+ * snapshot is only reused while no event has been published, so a client that receives it and then
+ * subscribes has missed nothing. The TTL is only a backstop for state that can change without
+ * publishing — a live-update bug in its own right, but one this must not amplify into a wrong board.
+ */
+export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs: number = HELLO_CACHE_MS): () => ServerEvent {
+  let cached: { at: number; event: ServerEvent } | null = null;
+  // Armed on first use, not at registration: `registerWs` never touched the hub until a socket
+  // connected, and tightening that would make a partial context (an auth-rejection test, any other
+  // entry point) fail at wiring time for a subscription that has nothing to invalidate yet.
+  let armed = false;
+  return () => {
+    if (!armed) {
+      armed = true;
+      hub.subscribe(() => {
+        cached = null;
+      });
+    }
+    const at = Date.now();
+    if (cached && at - cached.at <= ttlMs) return cached.event;
+    const event = build();
+    cached = { at, event };
+    return event;
+  };
+}
+
 export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
+  const helloSnapshot = createHelloCache(() => buildHello(ctx), ctx.hub);
+
   fastify.get("/ws", { websocket: true }, (socket, request) => {
     if (!isAuthed(request.headers.cookie)) {
       try {
@@ -121,7 +165,7 @@ export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
       }
       return;
     }
-    send(socket, buildHello(ctx));
+    send(socket, helloSnapshot());
     const unsubscribe = ctx.hub.subscribe((event) => send(socket, event));
 
     socket.on("message", (raw: Buffer) => {
@@ -141,7 +185,7 @@ export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
       // director_messages.id` and took the whole orchestrator's crash guards with it, mid-QA-run. One
       // bad command must never be able to do that. The command is still recorded where a failure is
       // read from — the hub log the console shows, and crash.log, which the nightly sweep scans.
-      void handleCommand(ctx, socket, result.data).catch((error) => {
+      void handleCommand(ctx, socket, result.data, helloSnapshot).catch((error) => {
         ctx.hub.log("error", `Command ${result.data.type} failed: ${error instanceof Error ? error.message : String(error)}`);
         logCrash(`ws.command.${result.data.type}`, error);
       });
@@ -152,7 +196,14 @@ export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
   });
 }
 
-export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: ClientCommand): Promise<void> {
+export async function handleCommand(
+  ctx: WsContext,
+  socket: WebSocket,
+  cmd: ClientCommand,
+  /** The connection's shared snapshot. Defaults to an uncached build so existing callers (tests,
+   *  other entry points) keep working unchanged. */
+  snapshot: () => ServerEvent = () => buildHello(ctx),
+): Promise<void> {
   switch (cmd.type) {
     case "prompt.new":
       ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images, cmd.source, cmd.clientId);
@@ -439,7 +490,7 @@ export async function handleCommand(ctx: WsContext, socket: WebSocket, cmd: Clie
       await ctx.manager.supervisorRunNow();
       break;
     case "snapshot.request":
-      send(socket, buildHello(ctx));
+      send(socket, snapshot());
       break;
     case "ping":
       send(socket, { type: "pong", at: Date.now() });

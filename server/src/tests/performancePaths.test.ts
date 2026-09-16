@@ -9,6 +9,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../db/db.js";
+import { EventHub } from "../events.js";
+import { createHelloCache } from "../ws/hub.js";
+import type { ServerEvent } from "../ws/protocol.js";
 
 const dir = mkdtempSync(join(tmpdir(), "gg-performance-paths-"));
 const db = new Db(join(dir, "orchestrator.sqlite"));
@@ -135,7 +138,44 @@ try {
     .all() as Array<{ name: string }>;
   assert.deepEqual(retired, [], `superseded indexes were not retired: ${JSON.stringify(retired)}`);
 
-  console.log("Performance paths OK — board summary is slim and task history keyset-pages through its composite index.");
+  // ---- the connect snapshot is not rebuilt per reconnect ----
+  //
+  // 2026-09-16: the console's watchdog force-closes a socket after 35s of server silence, so a stall
+  // long enough to trip it reconnects every open console at once, and each reconnect rebuilt the full
+  // ~900-thread hello — which lengthened the stall, which tripped the watchdog again. Measured: 7
+  // distinct client sockets in 30s against 3 concurrent connections, with 72% of stall-profile busy
+  // time in `listThreadSummaries -> all`. Reuse has to be invalidated by EVENTS, not by a timer, or a
+  // reconnecting client silently receives a board that is already wrong.
+  const hub = new EventHub();
+  let builds = 0;
+  const snapshot = createHelloCache(() => {
+    builds++;
+    return { type: "hello", builds } as unknown as ServerEvent;
+  }, hub, 10_000);
+
+  snapshot();
+  snapshot();
+  snapshot();
+  assert.equal(builds, 1, "a reconnect storm with no state change must rebuild the snapshot once, not once per socket");
+
+  hub.publish({ type: "log", level: "info", message: "something changed" });
+  snapshot();
+  assert.equal(builds, 2, "any published event must invalidate the snapshot — a reused one would be stale");
+  snapshot();
+  assert.equal(builds, 2, "and it is reusable again once the board is quiet");
+
+  // The TTL is the backstop for state that changes without publishing; without it a missed publish
+  // would serve a wrong board indefinitely rather than for a bounded moment.
+  const expiring = createHelloCache(() => {
+    builds++;
+    return { type: "hello" } as unknown as ServerEvent;
+  }, hub, -1);
+  const before = builds;
+  expiring();
+  expiring();
+  assert.equal(builds, before + 2, "an expired snapshot is rebuilt rather than served stale");
+
+  console.log("Performance paths OK — board summary is slim, task history keyset-pages through its composite index, and the connect snapshot survives a reconnect storm.");
 } finally {
   db.raw.close();
   rmSync(dir, { recursive: true, force: true });
