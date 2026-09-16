@@ -53,7 +53,15 @@ assert.equal(verify.prepare("SELECT COUNT(*) AS n FROM findings").get().n, 3, "n
 verify.close();
 
 // dedupeTask direct call, and an unknown task id fails loudly instead of silently doing nothing.
-assert.throws(() => dedupeTask(new Database(dbPath, { readonly: true }), "does-not-exist"), /no task found/);
+// Named, so it can be closed: an inline handle here stays open for the rest of the process, and on
+// Windows that makes the final rmSync throw EBUSY on the sqlite file — which killed this gate before it
+// could print its own success line, taking every assertion below it with it.
+const unknownTaskDb = new Database(dbPath, { readonly: true });
+try {
+  assert.throws(() => dedupeTask(unknownTaskDb, "does-not-exist"), /no task found/);
+} finally {
+  unknownTaskDb.close();
+}
 
 // A duplicate that escapes the workspace is never grouped with the safe rows (each is resolved with
 // the same containment check the serving route uses; an escape resolves to null and is left alone).
