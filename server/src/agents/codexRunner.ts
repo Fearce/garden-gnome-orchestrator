@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { config } from "../config.js";
+import { trackBlockingSync } from "../eventLoopMonitor.js";
 import { logCrash } from "../crashLog.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
@@ -559,7 +560,8 @@ export class CodexAgentRun implements AgentRunLike {
     else delete env.OPENAI_API_KEY;
     let child: ChildProcess;
     try {
-      child = spawn(launcher.command, [...launcher.args, ...args], { cwd: this.cfg.cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+      child = trackBlockingSync("codex agent CLI (spawn)", () =>
+        spawn(launcher.command, [...launcher.args, ...args], { cwd: this.cfg.cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true }));
     } catch (err) {
       this.turnStarting = false;
       this.turnActive = false;

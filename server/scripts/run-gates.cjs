@@ -46,6 +46,7 @@ const GATES = [
   "test:capacity-stall",
   "test:usage-windows",
   "test:child-runner",
+  "test:event-loop",
   "test:ext-wake",
   "test:account-usage",
   "test:grok-runner",

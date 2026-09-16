@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
+import { trackBlockingSync } from "../eventLoopMonitor.js";
 import type { EventHub } from "../events.js";
 import type { ResetStagger } from "../accounts/resetStagger.js";
 import { withAgentToolPath } from "./env.js";
@@ -100,7 +101,8 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
 
   let child: ChildProcess;
   try {
-    child = spawn(launcher.command, [...launcher.args, "app-server"], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    child = trackBlockingSync("codex usage ping (spawn app-server)", () =>
+      spawn(launcher.command, [...launcher.args, "app-server"], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true }));
   } catch {
     noteCodexUsageError("failed to start the Codex CLI process");
     return null;
@@ -288,7 +290,8 @@ export async function codexWakeTurn(apiKey: string | undefined, model: string, t
   return new Promise((resolve) => {
     let child: ChildProcess;
     try {
-      child = spawn(launcher.command, args, { cwd: config.codex.home, env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+      child = trackBlockingSync("codex wake turn (spawn)", () =>
+        spawn(launcher.command, args, { cwd: config.codex.home, env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true }));
     } catch {
       resolve(false);
       return;

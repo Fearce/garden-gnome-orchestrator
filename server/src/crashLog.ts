@@ -98,8 +98,9 @@ function writeRaw(text: string): void {
 }
 
 /** A lifecycle note (not a fault): timestamped one-liner with the memory snapshot, so the log records
- *  WHY the process is going down (a forwarded signal, a clean exit) as well as how. */
-function logLifecycle(label: string): void {
+ *  WHY the process is going down (a forwarded signal, a clean exit) as well as how. Exported for the
+ *  event-loop monitor, which reports the same kind of process-health fact from its own module. */
+export function logLifecycle(label: string): void {
   writeRaw(`\n[${new Date().toISOString()}] ${label}\n${memorySnapshot()}${contextBlock()}\n`);
 }
 

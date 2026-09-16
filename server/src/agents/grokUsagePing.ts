@@ -3,6 +3,7 @@ import { existsSync, openSync, readSync, statSync, closeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
+import { trackBlockingSync } from "../eventLoopMonitor.js";
 import type { EventHub } from "../events.js";
 import { readingIsStale } from "./usageFreshness.js";
 import {
@@ -134,7 +135,8 @@ export function scrapeGrokUsage(timeoutMs = config.grok.usageScrapeTimeoutMs): P
     env.PATH = `${dirname(config.grok.winpty)};${env.PATH ?? ""}`;
     env.GROK_HOME = config.grok.home;
     try {
-      child = spawn(config.grok.winpty, ["-Xallow-non-tty", config.grok.bin], { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+      child = trackBlockingSync("grok usage scrape (spawn winpty + grok)", () =>
+        spawn(config.grok.winpty, ["-Xallow-non-tty", config.grok.bin], { env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true }));
     } catch {
       resolve(null);
       return;

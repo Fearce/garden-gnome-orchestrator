@@ -1,6 +1,7 @@
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import { restartSelf, type RestartAttempt } from "../selfRestart.js";
+import { eventLoopHealth, eventLoopIsResponsive } from "../eventLoopMonitor.js";
 
 /**
  * Coordinates planned server restarts with the agents that server owns.
@@ -26,6 +27,20 @@ export interface RestartDecisionInput {
 export type RestartDecision =
   | { allow: true; reason: string }
   | { allow: false; retryAt: number | null; reason: string };
+
+/**
+ * Does this request claim the process is broken, rather than staging a build?
+ *
+ * script-hub's keepAlive sends `script-hub health recovery: <id>` when its /api/health probe times out
+ * twice. That premise is measured from OUTSIDE and cannot separate "briefly slow" from "wedged" — and on
+ * this box the loop stalls for seconds at a time whenever an in-process spawn hits a loaded Windows
+ * (childRunner.ts has the mechanism). The recovery then tree-kills live agent runs to cure a stall that a
+ * restart does not cure, which is precisely the "why is it restarting all the time" the owner reported on
+ * 2026-09-16. Matched on the prefix only, so the `: <id>` suffix is free to change.
+ */
+export function isHealthRecoveryRequest(label: string | null | undefined): boolean {
+  return typeof label === "string" && label.trim().toLowerCase().startsWith("script-hub health recovery");
+}
 
 /** Pure policy: active work always wins; time only controls retries after a failed restart attempt. */
 export function decideRestart(input: RestartDecisionInput): RestartDecision {
@@ -81,8 +96,11 @@ export interface RestartCoordinatorStatus {
 }
 
 export interface RestartRequestResult {
-  /** `restarting` means the bounce is committed; `deferred` means current agents finish first. */
-  outcome: "restarting" | "deferred";
+  /** `restarting` means the bounce is committed; `deferred` means current agents finish first; `refused`
+   *  means the request was declined outright and nothing is staged. script-hub's keepAlive already reads
+   *  exactly this field and counts only `restarting`/`deferred` as accepted, so a refusal needs no change
+   *  on its side: it logs that recovery was not accepted and leaves the process alone. */
+  outcome: "restarting" | "deferred" | "refused";
   reason: string;
   activeWork: number;
   /** Non-null only for a retry backoff. A normal drain has no guessed completion time. */
@@ -109,6 +127,9 @@ export interface RestartCoordinatorDeps {
   /** Called whenever the admission lock opens — a moot drain, or a restart mechanism that keeps
    *  refusing — so queued work may start on this process. */
   onDrainReleased?: () => void;
+  /** Whether this process is serving well enough that a supervisor's health recovery would cost more
+   *  than it buys. Defaults to the live event-loop measurement; injected by tests. */
+  loopResponsive?: () => boolean;
 }
 
 const PENDING_KEY = "restart_coordinator_pending";
@@ -119,6 +140,8 @@ const RETRY_BASE_MS = 5 * 60_000;
 const RETRY_MAX_MS = 30 * 60_000;
 /** Repeated refusals alert the owner; even the first refusal releases admission during backoff. */
 const FAILURES_BEFORE_ALERT = 3;
+/** How often a declined health recovery may say so in the console feed. */
+const REFUSAL_LOG_MS = 10 * 60_000;
 
 export class RestartCoordinator {
   private readonly db: Db;
@@ -129,11 +152,14 @@ export class RestartCoordinator {
   private readonly restart: () => Promise<RestartAttempt>;
   private readonly liveBuild: () => { at: number | null } | null;
   private readonly onDrainReleased: () => void;
+  private readonly loopResponsive: () => boolean;
   private timer: NodeJS.Timeout | null = null;
   /** True from the synchronous decision through the supervisor call, closing the zero-work launch race. */
   private firing = false;
   /** Kept in memory after the durable row is claimed so a refused fire can restore every requester. */
   private inFlight: PendingRestart | null = null;
+  private lastRefusalLogAt = 0;
+  private refusedSinceLog = 0;
 
   constructor(deps: RestartCoordinatorDeps) {
     this.db = deps.db;
@@ -144,6 +170,7 @@ export class RestartCoordinator {
     this.restart = deps.restart ?? restartSelf;
     this.liveBuild = deps.liveBuild ?? (() => null);
     this.onDrainReleased = deps.onDrainReleased ?? (() => {});
+    this.loopResponsive = deps.loopResponsive ?? eventLoopIsResponsive;
   }
 
   /** Re-arm a drain/retry the previous process recorded. */
@@ -231,6 +258,31 @@ export class RestartCoordinator {
       stampedAt: Number.isFinite(input.stampedAt) ? Number(input.stampedAt) : null,
     };
 
+    // A health recovery is answered now or not at all — never staged. Its premise is "this process is
+    // wedged at this moment"; deferring it means killing live agents minutes later over a stall that had
+    // already passed, which is the exact harm it was meant to prevent.
+    if (isHealthRecoveryRequest(requester.label) && this.loopResponsive()) {
+      const health = eventLoopHealth();
+      const reason =
+        `this process is serving (it answered this request); its event loop was blocked ` +
+        `${health.blocks}x / ${(health.blockedMs / 1000).toFixed(1)}s in the last ` +
+        `${Math.round(health.windowMs / 60_000)}min, worst ${(health.worstLagMs / 1000).toFixed(1)}s` +
+        `${health.worstBlame ? ` (${health.worstBlame})` : ""}. A restart would kill live agent runs ` +
+        `without curing the stall.`;
+      // keepAlive neither backs off nor arms its cooldown on a refusal, so it re-asks every sweep for as
+      // long as its probe keeps timing out. The refusal itself must stay per-request; only the log is
+      // throttled, or a stally hour fills the owner's console with the same line.
+      const now2 = Date.now();
+      this.refusedSinceLog++;
+      if (now2 - this.lastRefusalLogAt >= REFUSAL_LOG_MS) {
+        const repeats = this.refusedSinceLog > 1 ? ` (${this.refusedSinceLog} refused since the last note)` : "";
+        this.lastRefusalLogAt = now2;
+        this.refusedSinceLog = 0;
+        this.hub.log("warn", `restart coordinator: refused a health recovery${repeats} — ${reason}`);
+      }
+      return this.result("refused", reason, null, this.countActive(), 0);
+    }
+
     if (this.firing) {
       const carried = this.inFlight ?? emptyPending(now);
       this.inFlight = appendRequester(carried, requester);
@@ -282,10 +334,18 @@ export class RestartCoordinator {
     if (!raw) return null;
     try {
       const parsed = JSON.parse(raw) as Partial<PendingRestart> & { readyAt?: number };
-      const requesters = Array.isArray(parsed.requesters)
-        ? parsed.requesters.filter(validRequester).slice(-MAX_REQUESTERS)
-        : [];
-      if (!requesters.length) return null;
+      // The pending record holds staged BUILDS. A health recovery is not a build — it is a claim about
+      // this instant — so one written by an older build is dropped rather than fired: reading it at all
+      // proves the process it wanted to recover is running. Left in, it waits for the next idle moment and
+      // kills whatever agents have started by then, which is how one stale 09:12 record kept bouncing a
+      // healthy server for hours on 2026-09-16.
+      const valid = Array.isArray(parsed.requesters) ? parsed.requesters.filter(validRequester) : [];
+      const requesters = valid.filter((r) => !isHealthRecoveryRequest(r.label)).slice(-MAX_REQUESTERS);
+      const droppedRecovery = requesters.length !== Math.min(valid.length, MAX_REQUESTERS);
+      if (!requesters.length) {
+        if (raw) this.clearPending();
+        return null;
+      }
       const failures = Number.isFinite(parsed.failures) ? Math.max(0, Math.floor(Number(parsed.failures))) : 0;
       // Upgrade compatibility: old normal holds carried a rate-limit `readyAt`; discard it. Only an old
       // refused-fire record (`failures > 0`) represented a genuine retry backoff worth preserving.
@@ -303,6 +363,11 @@ export class RestartCoordinator {
       if (legacy) {
         this.db.kvSet(PENDING_KEY, JSON.stringify(pending));
         this.db.kvSet(LEGACY_PENDING_KEY, "");
+      } else if (droppedRecovery) {
+        // Rewrite once, so the durable row stops advertising a requester every reader already ignores —
+        // `deploy --verify` and probe:* read this to say what is staged, and a phantom entry there reads
+        // as a build waiting to ship.
+        this.db.kvSet(PENDING_KEY, JSON.stringify(pending));
       }
       return pending;
     } catch {
@@ -429,7 +494,7 @@ export class RestartCoordinator {
   }
 
   private result(
-    outcome: "restarting" | "deferred",
+    outcome: "restarting" | "deferred" | "refused",
     reason: string,
     readyAt: number | null,
     activeWork: number,

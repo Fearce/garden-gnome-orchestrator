@@ -87,6 +87,19 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   By hand it is `POST http://127.0.0.1:3939/api/restart {"id":"claude-orchestrator"}` (atomic: runs in the
   hub, outside this server's tree, survives the caller, re-arms keepAlive) — it **bypasses the drain and
   can kill active agents**, so keep it for emergency recovery when :4317 itself is down.
+- **"GGO keeps restarting and no task of mine is on it" is a health-probe false positive, not a crash.**
+  Repeated `boot` lines in `crash.log` with no `uncaughtException`/`process exit` between them means
+  nothing faulted. keepAlive probes `/api/health` (10s, 2 strikes) then POSTs `/api/deploy/restart` as
+  `script-hub health recovery: …`, tree-killing live agents. It times out because the event **loop**
+  stalls, not the route (a cached literal): on Windows every in-process `spawn()` runs CreateProcessW on
+  the calling thread and freezes the loop — `childRunner.ts` moved the git reads off it, the agent CLIs
+  and provider usage pings still spawn in-process by design. `eventLoopMonitor.ts` measures it: a 5-min
+  window in `/api/health`'s `eventLoop`, a per-minute `crash.log` line naming the `trackBlocking`
+  operation in flight, and the authority below. A restart cures none of it, so the coordinator **refuses**
+  a health recovery while the loop is responsive (outcome `refused`; keepAlive already reads that as
+  not-accepted, no hub change) and never *stages* one — it is a claim about this instant, so a stale one
+  is dropped, not fired at whatever is running hours later. A truly wedged loop (blocked over half the
+  window) still restarts. Gate: `test:event-loop`.
 - **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
   runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.

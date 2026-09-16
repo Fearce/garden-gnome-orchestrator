@@ -8,6 +8,7 @@ import { config } from "./config.js";
 import { buildInfo } from "./buildInfo.js";
 import { providerRuntimeVersions } from "./providerRuntime.js";
 import { installCrashGuards, logBoot, logCrash, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
+import { eventLoopHealth, startEventLoopMonitor } from "./eventLoopMonitor.js";
 import { Db } from "./db/db.js";
 import { startSearchIndexBackfill } from "./db/searchIndex.js";
 import { EventHub } from "./events.js";
@@ -137,6 +138,9 @@ async function main(): Promise<void> {
   // beside the boot line so "did that bounce eat something?" is one grep, not a cross-table reconstruction.
   if (manager.bootReconcile) logRestartReconcile(manager.bootReconcile);
   startMemoryMonitor();
+  // What this process does to its own event loop. A stalling loop is what makes an external health probe
+  // time out, and a probe timeout is what gets this server restarted out from under its live agents.
+  startEventLoopMonitor();
   // Recurring dispatches: fires a schedule's prompt through the normal pipeline on its cron cadence.
   // Standalone (depends only on manager.dispatch), so scheduled runs use whatever provider/model is
   // active, exactly like a hand-dispatched task. The director can also create/edit schedules via its tools.
@@ -264,12 +268,16 @@ async function main(): Promise<void> {
 
     // `build` is which dist THIS process loaded, read once at boot — the fact that turns "is the live
     // server running current code?" into a comparison instead of an inference from mtimes.
+    // `eventLoop` is here because this route IS the thing an external supervisor times. When it answers
+    // slowly the cause is never the route (it is this object literal) — it is the loop, and a probe that
+    // only learns "slow" restarts the server. Reporting the measurement lets a reader see the stall itself.
     app.get("/api/health", async () => ({
       ok: true,
       auth: config.oauthToken ? "oauth-token" : "inherited-cli-login",
       models: config.models,
       build: buildInfo(),
       providerRuntime: providerRuntimeVersions(),
+      eventLoop: eventLoopHealth(),
     }));
 
     // The current built-bundle hash, so an open client can detect a deploy and reload itself.

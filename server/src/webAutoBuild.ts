@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import { config } from "./config.js";
+import { trackBlockingSync } from "./eventLoopMonitor.js";
 
 const WEB_ROOT = join(config.serverRoot, "..", "web");
 const POLL_MS = 5_000;
@@ -71,12 +72,13 @@ function buildWeb(): Promise<boolean> {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
-    const child = spawn(npmBin(), ["run", "build"], {
-      cwd: WEB_ROOT,
-      shell: process.platform === "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    const child = trackBlockingSync("web auto-build (spawn npm run build)", () =>
+      spawn(npmBin(), ["run", "build"], {
+        cwd: WEB_ROOT,
+        shell: process.platform === "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      }));
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {

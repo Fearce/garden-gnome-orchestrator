@@ -6,6 +6,7 @@ import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { config } from "../config.js";
+import { trackBlockingSync } from "../eventLoopMonitor.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, extractCliBridgeMessages } from "./officeBridge.js";
@@ -390,7 +391,8 @@ export class GrokAgentRun implements AgentRunLike {
     const env: NodeJS.ProcessEnv = withAgentToolPath({ ...process.env, GROK_HOME: config.grok.home, GROK_DISABLE_AUTOUPDATER: "1" });
     let child: ChildProcess;
     try {
-      child = spawn(config.grok.bin, args, { cwd: this.cfg.cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      child = trackBlockingSync("grok agent CLI (spawn)", () =>
+        spawn(config.grok.bin, args, { cwd: this.cfg.cwd, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true }));
     } catch (err) {
       this.turnStarting = false;
       this.turnActive = false;
