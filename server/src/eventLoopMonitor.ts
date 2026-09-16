@@ -1,3 +1,4 @@
+import { Session } from "node:inspector";
 import { performance } from "node:perf_hooks";
 import { logLifecycle } from "./crashLog.js";
 
@@ -96,9 +97,126 @@ function blameFor(blockedFrom: number, blockedTo: number): string {
     .join("; ");
 }
 
-function record(lagMs: number, at: number): void {
+function record(lagMs: number, at: number, armProfile: boolean): void {
   blocks.push({ at, lagMs, blame: blameFor(at - lagMs, at) });
   prune(at);
+  if (armProfile) armStallProfile(at);
+}
+
+// ---- self-profiling ----
+//
+// `trackBlocking` can only blame what declared itself, and the first thing this instrument proved is that
+// the obvious suspect was innocent: with the loop still freezing for 25s at a time, an in-process spawn
+// measured 17ms on this box, not the 848ms childRunner.ts recorded. So the monitor has to be able to name
+// a culprit nobody wrapped.
+//
+// V8's sampling profiler does that, and `node:inspector` starts one at runtime with no CLI flag — which
+// matters because this process is launched by script-hub and cannot be given `--cpu-prof` without editing
+// the registry entry. It arms ITSELF: a healthy server never profiles, one that just stalled profiles once
+// for a bounded window and then goes quiet for half an hour. A stall of this size dominates its own
+// window (25s of a 45s profile), so the hottest self-time frame IS the blocker — no correlation needed.
+const PROFILE_WINDOW_MS = 45_000;
+const PROFILE_COOLDOWN_MS = 30 * 60_000;
+const PROFILE_TOP_FRAMES = 6;
+
+let profiling = false;
+let profileDisabled = false;
+let lastProfileAt = 0;
+let stalledDuringProfile = false;
+
+interface ProfileNode {
+  hitCount?: number;
+  callFrame?: { functionName?: string; url?: string; lineNumber?: number };
+}
+
+function armStallProfile(at: number): void {
+  if (profiling) {
+    stalledDuringProfile = true;
+    return;
+  }
+  if (profileDisabled) return;
+  if (lastProfileAt && at - lastProfileAt < PROFILE_COOLDOWN_MS) return;
+  lastProfileAt = at;
+  let session: Session;
+  try {
+    session = new Session();
+    session.connect();
+  } catch {
+    profileDisabled = true; // no inspector in this runtime — never try again
+    return;
+  }
+  profiling = true;
+  stalledDuringProfile = false;
+  session.post("Profiler.enable", () => {
+    session.post("Profiler.start", (startErr) => {
+      if (startErr) {
+        profiling = false;
+        profileDisabled = true;
+        try {
+          session.disconnect();
+        } catch {
+          /* already gone */
+        }
+        return;
+      }
+      setTimeout(() => finishStallProfile(session), PROFILE_WINDOW_MS).unref?.();
+    });
+  });
+}
+
+function finishStallProfile(session: Session): void {
+  session.post("Profiler.stop", (err, result: { profile?: { nodes?: ProfileNode[] } }) => {
+    profiling = false;
+    try {
+      session.disconnect();
+    } catch {
+      /* already gone */
+    }
+    if (err || !result?.profile?.nodes) return;
+    // A window with no stall in it says nothing about the stall — logging it would be noise, and worse,
+    // it would name whatever this server does most of the time as if it were the culprit.
+    if (!stalledDuringProfile) return;
+    logLifecycle(`event loop stall profile — ${summariseProfile(result.profile.nodes)}`);
+  });
+}
+
+/**
+ * V8 pseudo-frames that are not code anyone can fix. `(idle)` is the killer: the profiling window is
+ * mostly idle even on a badly stalling server, so leaving it in ranks it first every time and buries the
+ * actual blocker — the smoke run reported `(idle) 87%` ahead of the function doing the blocking.
+ * `(garbage collector)` is deliberately NOT here: a GC pause is a real stall worth naming.
+ */
+const PSEUDO_FRAMES = new Set(["(idle)", "(root)", "(program)"]);
+
+/**
+ * Hottest self-time frames among the samples where this process was actually doing something, as
+ * `busy 27% — name (url:line) 90%`. Percentages are of BUSY samples, because "90% of the work" is the
+ * actionable number and "24% of the wall clock" is not. Exported for the gate.
+ */
+export function summariseProfile(nodes: ProfileNode[]): string {
+  let total = 0;
+  let busy = 0;
+  const byFrame = new Map<string, number>();
+  for (const n of nodes) {
+    const hits = n.hitCount ?? 0;
+    if (!hits) continue;
+    total += hits;
+    const f = n.callFrame ?? {};
+    const name = f.functionName || "(anonymous)";
+    if (PSEUDO_FRAMES.has(name)) continue;
+    busy += hits;
+    const where = f.url ? `${f.url.split(/[\\/]/).pop()}:${(f.lineNumber ?? -1) + 1}` : "native";
+    const key = `${name} (${where})`;
+    byFrame.set(key, (byFrame.get(key) ?? 0) + hits);
+  }
+  if (!total) return "the profiler collected no samples";
+  if (!busy) return "every sample was idle — the stall was not this process burning CPU";
+  const frames = [...byFrame.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, PROFILE_TOP_FRAMES)
+    .map(([frame, hits]) => `${frame} ${Math.round((hits / busy) * 100)}%`)
+    .join(", ");
+  return `busy ${Math.round((busy / total) * 100)}% of the window — ${frames}`;
 }
 
 /**
@@ -173,22 +291,27 @@ export function resetEventLoopMonitor(): void {
   live.clear();
 }
 
-/** Test seam: record a stall without waiting for one in real time. */
+/** Test seam: record a stall without waiting for one in real time. Never arms the profiler — a gate must
+ *  not start a real V8 profiling session, and the summariser is exported so it can be tested directly. */
 export function recordBlockForTest(lagMs: number, at: number = performance.now()): void {
-  record(lagMs, at);
+  record(lagMs, at, false);
 }
 
 /**
  * Sample the loop's own lateness and summarise it to crash.log. Unref'd, so it never holds the process
  * open. Returns a stop handle, matching startMemoryMonitor next door.
  */
-export function startEventLoopMonitor(sampleMs: number = SAMPLE_MS, reportMs: number = REPORT_MS): () => void {
+export function startEventLoopMonitor(
+  sampleMs: number = SAMPLE_MS,
+  reportMs: number = REPORT_MS,
+  profileStalls = true,
+): () => void {
   let last = performance.now();
   const sampler = setInterval(() => {
     const now = performance.now();
     const lagMs = now - last - sampleMs;
     last = now;
-    if (lagMs >= BLOCK_MS) record(lagMs, now);
+    if (lagMs >= BLOCK_MS) record(lagMs, now, profileStalls);
   }, sampleMs);
   sampler.unref?.();
 

@@ -28,6 +28,7 @@ const {
   recordBlockForTest,
   resetEventLoopMonitor,
   startEventLoopMonitor,
+  summariseProfile,
   trackBlocking,
   trackBlockingSync,
 } = await import("../eventLoopMonitor.js");
@@ -125,7 +126,7 @@ async function main(): Promise<void> {
 
   console.log("\nmonitor: the sampler runs and stops");
   resetEventLoopMonitor();
-  const stop = startEventLoopMonitor(10, 60_000);
+  const stop = startEventLoopMonitor(10, 60_000, false); // no real V8 profiling session inside a gate
   const blockingStart = Date.now();
   while (Date.now() - blockingStart < 1_200) {
     // Deliberately hog the thread: this is the condition the whole feature exists to detect, so the gate
@@ -136,6 +137,40 @@ async function main(): Promise<void> {
   stop();
   check("a real blocked thread is detected by the sampler", sampled.blocks >= 1, JSON.stringify(sampled));
   check("and its measured lag is on the order of the block", sampled.worstLagMs >= 900, String(sampled.worstLagMs));
+
+  console.log("\nprofile: the hottest self-time frame is the blocker");
+  {
+    // A 25s freeze inside a 45s profile dominates its own window, so ranking by self time names it
+    // outright. Shaped like a real Profiler.stop payload, including the native/no-url frame.
+    const summary = summariseProfile([
+      { hitCount: 0, callFrame: { functionName: "(root)", url: "", lineNumber: -1 } },
+      // A stalling server is still mostly idle across a 45s window; the smoke run reported `(idle) 87%`
+      // ahead of the real blocker, which is exactly the report being useless.
+      { hitCount: 3000, callFrame: { functionName: "(idle)" } },
+      { hitCount: 900, callFrame: { functionName: "checkpointWal", url: "file:///c/app/src/db/db.ts", lineNumber: 41 } },
+      { hitCount: 60, callFrame: { functionName: "buildHello", url: "file:///c/app/src/ws/hub.ts", lineNumber: 9 } },
+      { hitCount: 40, callFrame: { functionName: "memcpy" } },
+    ]);
+    check("idle never outranks the blocker", !summary.includes("(idle)"), summary);
+    check("the dominant real frame is reported first", /— checkpointWal/.test(summary), summary);
+    check("its share is of BUSY samples, not the wall clock", /checkpointWal \(db\.ts:42\) 90%/.test(summary), summary);
+    check("and the busy share of the window is stated", /^busy 25% of the window/.test(summary), summary);
+    check("a frame with no url is labelled native rather than dropped", /memcpy \(native\) 4%/.test(summary), summary);
+    check("zero-hit frames are not listed", !summary.includes("(root)"), summary);
+    check("an empty profile says so instead of dividing by zero", summariseProfile([]) === "the profiler collected no samples");
+    check(
+      "and so does one with only zero-hit nodes",
+      summariseProfile([{ hitCount: 0, callFrame: { functionName: "x" } }]) === "the profiler collected no samples",
+    );
+    check(
+      "a wholly idle window says the stall was not this process burning CPU",
+      summariseProfile([{ hitCount: 500, callFrame: { functionName: "(idle)" } }]).startsWith("every sample was idle"),
+    );
+    check(
+      "a GC pause is a real stall and stays nameable",
+      summariseProfile([{ hitCount: 10, callFrame: { functionName: "(garbage collector)" } }]).includes("garbage collector"),
+    );
+  }
 
   console.log("\nlabel: which requests claim this process is broken");
   check("the exact label script-hub sends is recognised", isHealthRecoveryRequest(HUB_LABEL));
