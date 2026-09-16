@@ -125,8 +125,10 @@ let lastProfileAt = 0;
 let stalledDuringProfile = false;
 
 interface ProfileNode {
+  id?: number;
   hitCount?: number;
   callFrame?: { functionName?: string; url?: string; lineNumber?: number };
+  children?: number[];
 }
 
 function armStallProfile(at: number): void {
@@ -189,11 +191,43 @@ function finishStallProfile(session: Session): void {
 const PSEUDO_FRAMES = new Set(["(idle)", "(root)", "(program)"]);
 
 /**
+ * Name the frame a reader can act on.
+ *
+ * Self time alone stops at the native leaf, and the first production profile proved why that is not
+ * enough: it reported `all (native) 42%, get (native) 40%` — better-sqlite3's synchronous
+ * `Statement.all()`/`.get()`. True, and useless: it says "a SQLite read" without saying WHICH. So a
+ * native leaf is charged to its nearest JavaScript ancestor, which is our own calling code, while the
+ * leaf's own name is kept as the mechanism. Bounded walk: a profile tree from a broken run must not
+ * become a loop in the thing diagnosing it.
+ */
+function attributeFrame(node: ProfileNode, byId: Map<number, ProfileNode>, parentOf: Map<number, number>): string {
+  const leaf = node.callFrame?.functionName || "(anonymous)";
+  let cur: ProfileNode | undefined = node;
+  for (let hops = 0; cur && hops < 32; hops++) {
+    const f = cur.callFrame ?? {};
+    if (f.url) {
+      const where = `${f.url.split(/[\\/]/).pop()}:${(f.lineNumber ?? -1) + 1}`;
+      const js = `${f.functionName || "(anonymous)"} (${where})`;
+      return cur === node ? js : `${js} -> ${leaf}`;
+    }
+    const parentId = cur.id == null ? undefined : parentOf.get(cur.id);
+    cur = parentId == null ? undefined : byId.get(parentId);
+  }
+  return `${leaf} (native)`;
+}
+
+/**
  * Hottest self-time frames among the samples where this process was actually doing something, as
  * `busy 27% — name (url:line) 90%`. Percentages are of BUSY samples, because "90% of the work" is the
  * actionable number and "24% of the wall clock" is not. Exported for the gate.
  */
 export function summariseProfile(nodes: ProfileNode[]): string {
+  const parentOf = new Map<number, number>();
+  const byId = new Map<number, ProfileNode>();
+  for (const n of nodes) {
+    if (n.id != null) byId.set(n.id, n);
+    for (const child of n.children ?? []) if (n.id != null) parentOf.set(child, n.id);
+  }
   let total = 0;
   let busy = 0;
   const byFrame = new Map<string, number>();
@@ -205,8 +239,7 @@ export function summariseProfile(nodes: ProfileNode[]): string {
     const name = f.functionName || "(anonymous)";
     if (PSEUDO_FRAMES.has(name)) continue;
     busy += hits;
-    const where = f.url ? `${f.url.split(/[\\/]/).pop()}:${(f.lineNumber ?? -1) + 1}` : "native";
-    const key = `${name} (${where})`;
+    const key = attributeFrame(n, byId, parentOf);
     byFrame.set(key, (byFrame.get(key) ?? 0) + hits);
   }
   if (!total) return "the profiler collected no samples";

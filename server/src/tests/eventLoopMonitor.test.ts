@@ -143,13 +143,13 @@ async function main(): Promise<void> {
     // A 25s freeze inside a 45s profile dominates its own window, so ranking by self time names it
     // outright. Shaped like a real Profiler.stop payload, including the native/no-url frame.
     const summary = summariseProfile([
-      { hitCount: 0, callFrame: { functionName: "(root)", url: "", lineNumber: -1 } },
+      { id: 1, hitCount: 0, callFrame: { functionName: "(root)", url: "", lineNumber: -1 }, children: [2, 3, 4, 5] },
       // A stalling server is still mostly idle across a 45s window; the smoke run reported `(idle) 87%`
       // ahead of the real blocker, which is exactly the report being useless.
-      { hitCount: 3000, callFrame: { functionName: "(idle)" } },
-      { hitCount: 900, callFrame: { functionName: "checkpointWal", url: "file:///c/app/src/db/db.ts", lineNumber: 41 } },
-      { hitCount: 60, callFrame: { functionName: "buildHello", url: "file:///c/app/src/ws/hub.ts", lineNumber: 9 } },
-      { hitCount: 40, callFrame: { functionName: "memcpy" } },
+      { id: 2, hitCount: 3000, callFrame: { functionName: "(idle)" } },
+      { id: 3, hitCount: 900, callFrame: { functionName: "checkpointWal", url: "file:///c/app/src/db/db.ts", lineNumber: 41 } },
+      { id: 4, hitCount: 60, callFrame: { functionName: "buildHello", url: "file:///c/app/src/ws/hub.ts", lineNumber: 9 } },
+      { id: 5, hitCount: 40, callFrame: { functionName: "memcpy" } },
     ]);
     check("idle never outranks the blocker", !summary.includes("(idle)"), summary);
     check("the dominant real frame is reported first", /— checkpointWal/.test(summary), summary);
@@ -169,6 +169,32 @@ async function main(): Promise<void> {
     check(
       "a GC pause is a real stall and stays nameable",
       summariseProfile([{ hitCount: 10, callFrame: { functionName: "(garbage collector)" } }]).includes("garbage collector"),
+    );
+
+    // The first production profile read `all (native) 42%, get (native) 40%` — better-sqlite3's
+    // synchronous Statement.all()/.get(). Correct and unactionable: it names the mechanism, not the
+    // query. A native leaf is charged to the nearest JS ancestor, keeping the leaf as the mechanism.
+    const viaNative = summariseProfile([
+      { id: 1, hitCount: 0, callFrame: { functionName: "(root)" }, children: [2] },
+      { id: 2, hitCount: 0, callFrame: { functionName: "listThreadSummaries", url: "file:///c/app/src/db/db.ts", lineNumber: 99 }, children: [3] },
+      { id: 3, hitCount: 0, callFrame: { functionName: "wrapper" }, children: [4] },
+      { id: 4, hitCount: 500, callFrame: { functionName: "all" } },
+    ]);
+    check(
+      "a native leaf is charged to the JS that called it",
+      /listThreadSummaries \(db\.ts:100\) -> all/.test(viaNative),
+      viaNative,
+    );
+    check(
+      "a native leaf with no JS ancestor at all is still reported, not dropped",
+      summariseProfile([{ id: 1, hitCount: 5, callFrame: { functionName: "memcpy" } }]).includes("memcpy (native)"),
+    );
+    check(
+      "a cycle in the tree cannot hang the summariser",
+      summariseProfile([
+        { id: 1, hitCount: 7, callFrame: { functionName: "a" }, children: [2] },
+        { id: 2, hitCount: 0, callFrame: { functionName: "b" }, children: [1] },
+      ]).length > 0,
     );
   }
 
