@@ -336,6 +336,53 @@ console.log("\n=== F. the comparison reads the model of THIS session, not merely
   h.dispose();
 }
 
+console.log("\n=== G. the one-shot roles get the same rule, where their account is finally known ===");
+{
+  // QA/reviewer/planner resume through `runRole`, which never passed through the guard above: their
+  // model is re-derived per attempt from the account the loop selects, so a usage-saving downgrade
+  // landing mid-review outlived the window that caused it exactly as it did on the implementor path.
+  // The check sits INSIDE the loop, after the account is known — guessing it earlier is the defect
+  // fixture F pins. Driven on `planner` because it is the cheapest role with no review-lane machinery;
+  // the guard itself is role-agnostic.
+  const fakeAgent = () => ({
+    onEvent: (_cb: unknown) => () => {},
+    onEnd: (_cb: unknown) => {},
+    start: () => {},
+    stop: async () => {},
+    rateLimited: false,
+    result: async () => ({ type: "result", subtype: "success", isError: false, structuredOutput: {} }),
+  });
+
+  for (const [label, priorModel, expectResume] of [
+    ["a session bound to another model is not resumed", "claude-sonnet-5", false],
+    ["a session bound to the model this run resolves IS resumed", null, true],
+  ] as Array<[string, string | null, boolean]>) {
+    const h = makeHarness();
+    h.accounts.fiveHour = 10;
+    h.accounts.sevenDay = 10;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const internals = h.mgr as any;
+    h.mgr.setSettings({ modelOverrides: { "account-a": { planner: "claude-opus-5" } } });
+    const session = "planner-session";
+    const seeded = priorModel ?? internals.modelFor("account-a", "planner");
+    h.db.updateRun(
+      h.db.createRun({ threadId: h.thread.id, role: "planner", model: seeded, account: "Claude A" }).id,
+      { sessionId: session },
+    );
+    const seen: Array<string | undefined> = [];
+    internals.createRoleAgent = (_provider: string, _create: unknown) => fakeAgent();
+    await internals.runRole(
+      h.thread,
+      "planner",
+      "kickoff",
+      (ctx: { resume?: string }) => { seen.push(ctx.resume); return {}; },
+      session,
+    );
+    check(label, seen.length === 1 && (seen[0] === session) === expectResume, JSON.stringify(seen));
+    h.dispose();
+  }
+}
+
 console.log(`\n=== ${passed}/${passed + failed} checks passed ===`);
 if (failed) {
   for (const f of failures) console.log(`  ✗ ${f}`);

@@ -6625,6 +6625,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return { sessionId: run.sessionId, provider: providerOfRunAccount(run.account) };
   }
 
+  /** Whether `session` is bound to a model this role would no longer run on, in which case resuming it
+   *  would review/plan on the stale model while the run row claims the new one. Answers `false` when the
+   *  owning run can't be found: an unknown binding is not evidence of drift, and discarding a usable
+   *  session costs a rediscovery from scratch. */
+  private roleSessionModelDrifted(threadId: string, role: StructuredRole, session: string, model: string): boolean {
+    const prior = this.db.listRuns(threadId).find((run) => run.role === role && run.sessionId === session)?.model;
+    if (!prior || sameModelId(prior, model)) return false;
+    this.hub.log("warn", `${role} on ${threadId.slice(0, 8)}: session ${session.slice(0, 8)} is bound to ${prior}, but this run resolves ${model} — starting fresh.`);
+    return true;
+  }
+
   /** The most recent QA run that has a session id (any backend), so fix-rounds 2..N can resume it. */
   private latestQaRun(threadId: string): RoleSession | undefined {
     return this.latestRoleRun(threadId, "qa");
@@ -6894,6 +6905,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const codexEffort = codexTarget ? (codexTarget.effort ?? this.codexEffort(model)) : undefined;
       const effort = saving?.effort ?? codexEffort ?? (provider === "grok" ? this.grokEffort(model) : provider === "zai" ? this.zaiEffort(model) : undefined);
       if (codexTarget?.replaced) this.noteReviewModelFloor(thread.id, role, codexTarget);
+      // Same rule the implementor's resume already keeps, applied where this role's account is finally
+      // known rather than guessed: a session is bound to the model that created it, so resuming one on a
+      // different model silently reviews on the OLD model. Without this a usage-saving downgrade landing
+      // mid-review outlived the window that caused it, exactly as it did on the implementor path. Checked
+      // per attempt, because a mid-run failover re-selects the account (and so can re-resolve the model).
+      if (resume && this.roleSessionModelDrifted(thread.id, role, resume, model)) resume = undefined;
       const run = this.db.createRun({ threadId: thread.id, role, model, account: accountLabel, effort });
       this.emitRun(run.id);
       const cfg = makeCfg({ token: provider === "claude" ? acct!.token : undefined, resume: provider === "claude" ? resume : undefined, runId: run.id });
