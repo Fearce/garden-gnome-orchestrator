@@ -133,7 +133,11 @@ in it, or twelve lines of PASSING output). Gate: `test:gates-driver`.
 - A `StubAccounts` fake must carry every method the constructor's boot-apply calls
   (`setSpreadUsage`, `applyWeeklySafetyPct`, …) or construction crashes — plus `auxToken()`
   if your path can reach `setState(id,"done")`: `announceDone` calls it inside a `void`ed
-  promise, so a missing method is an unhandled rejection that kills the whole run.
+  promise, so a missing method is an unhandled rejection that kills the whole run. **Plus
+  `select()` if it drives a RESUME**: `startResumedImplementor` selects the subscription itself
+  (so its model-drift guard and `startImplementor` can never name different accounts), and a
+  stub carrying only `dispatchPreview` dies part way through with a TypeError — `[crashed]`, with
+  every later assertion silently unrun.
 - "What does the SDK actually do?" — never reason from the types (several fields have no doc comment).
   CLI semantics live in the minified binary, so anchor on a string literal: `claude-cli-grep '("now")'`
   (Bash tool; PowerShell eats inner quotes — `--pattern-file`), free and ~0.3s. What a RUN does needs
