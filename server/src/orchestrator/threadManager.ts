@@ -7812,10 +7812,29 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)}: implementor backend changed to ${resolvedProvider} since the prior session — its session id is incompatible, starting fresh.`);
       resumeSession = undefined;
     }
+    // Two reasons can make the prior session unusable IN PLACE while still leaving it worth summarizing:
+    // it came back empty (opts.forceFresh), or the model it is bound to is no longer the one this task
+    // should run on (below). Both take the same fresh-session path, and each states its own reason.
+    let forceFresh = opts.forceFresh === true;
+    let freshReason = "the prior session returned empty";
     const request = this.db.getThread(thread.id)?.modelRequest;
     const saving = this.usageSavingTarget(this.usageSavingSubId(resolvedProvider, opts.account?.id));
-    const requestedModel = saving ? undefined : request?.model;
-    const selectedModel = saving?.model ?? requestedModel ?? this.db.getThreadStageOutputs(thread.id).modelPick?.model;
+    const requestedModel = saving ? undefined : request?.provider === resolvedProvider ? request.model : undefined;
+    // Pool-resolved the way `startImplementor` dispatches it: while a Fable-pool cap is latched the pick
+    // runs as its fallback, so comparing the RAW pick against the fallback the prior run actually used
+    // reads as drift on every resume and restarts a session onto the model it was already running.
+    const rawPick = saving ? undefined : this.db.getThreadStageOutputs(thread.id).modelPick?.model;
+    const pickedModel = rawPick && resolvedProvider === "claude"
+      ? this.poolResolved(opts.account?.id ?? this.accounts.dispatchPreview().account.id, rawPick)
+      : rawPick;
+    // Falls through to the same default a fresh dispatch resolves (override matrix + conservation) once
+    // saving/pin/pick all have nothing to say. Without this last fallback, `selectedModel` stayed
+    // `undefined` for the ordinary case, so the drift check below could only ever catch a NEWLY active
+    // saving/pin/pick — never one that just turned OFF. A session downgraded once by usage saving kept
+    // resuming on that model for the rest of the episode even after the account's usage dropped back
+    // under the threshold, because nothing ever re-compared it against normal routing again.
+    const selectedModel = saving?.model ?? requestedModel ?? pickedModel
+      ?? this.providerRoleModel(resolvedProvider, "implementor", opts.account?.id);
     const priorModel = this.db
       .listRuns(thread.id)
       .filter((candidate) => candidate.role === "implementor")
@@ -7825,9 +7844,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         ? `usage saving selected ${selectedModel}`
         : requestedModel
           ? `the task is strictly pinned to ${selectedModel}`
-          : `the current route policy selected ${selectedModel}`;
+          : pickedModel
+            ? `auto model selection picked ${selectedModel}`
+            : `normal routing now selects ${selectedModel}`;
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)}: prior session used ${priorModel}, but ${why} — starting a fresh selected-model session.`);
-      resumeSession = undefined;
+      // The session id is bound to the model that created it, so this one can't carry the new model —
+      // but it is still the best context its replacement can have. Force the FRESH path while KEEPING
+      // the id, so the new session is seeded from a compressed handoff (or, on a CLI backend, the
+      // recovery history) instead of restarting from the bare kickoff. Clearing the id here instead is
+      // what made a mid-task model change re-inspect the whole task from zero.
+      forceFresh = true;
+      freshReason = `the resolved model changed to ${selectedModel}`;
     }
     if (!resumeSession) {
       const extras = [restartNote, directives, opts.directorNote].filter(Boolean);
@@ -7863,8 +7890,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // CLI resume already wedged for this thread → don't pay the 60s watchdog + self-heal spam again;
       // start fresh directly. (startImplementor with no `resume` re-prepends doctrine + office note, so
       // pass just task + continuation here to avoid duplicating them.)
-      if (opts.forceFresh || this.codexResumeWedged.has(thread.id)) {
-        const why = opts.forceFresh ? "the prior session returned empty" : `${label} resume previously wedged`;
+      if (forceFresh || this.codexResumeWedged.has(thread.id)) {
+        const why = forceFresh ? freshReason : `${label} resume previously wedged`;
         this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: ${why} — starting a fresh session directly.`);
         const freshText = [baseKickoff, history, continuation].filter(Boolean).join("\n\n");
         return this.startImplementor(thread, freshText, { effort: opts.effort, account: opts.account, images: opts.images });
@@ -7882,8 +7909,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const warm = ageMs != null && ageMs < config.resumeWarmMinutes * 60_000;
     // forceFresh overrides the warm/forced gate: continuing this session in place is what just failed, so
     // fall through to the compressed seed — a NEW session that still carries the prior one's reasoning.
-    if (opts.forceFresh) {
-      this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: prior session returned empty — reseeding a fresh session from a compressed handoff.`);
+    if (forceFresh) {
+      this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: ${freshReason} — reseeding a fresh session from a compressed handoff.`);
     } else if (config.resumeFullSession || warm) {
       const why = config.resumeFullSession ? "forced" : `cache likely warm (${Math.round((ageMs ?? 0) / 60000)}m < ${config.resumeWarmMinutes}m)`;
       this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: full session resume — ${why}.`);
@@ -7908,7 +7935,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const seed = await this.composeResumeKickoff(thread, baseKickoff, resumeSession, {
       // A forced reseed never sends the nudge as a live turn (there's no session to send it to), so it has
       // to travel in the seed — otherwise the fresh session is told nothing about why it's starting over.
-      directorNote: opts.directorNote ?? (opts.forceFresh ? opts.resumeNudge : undefined),
+      directorNote: opts.directorNote ?? (forceFresh ? opts.resumeNudge : undefined),
       qaFollows: opts.qaFollows,
       restartNote,
     });

@@ -159,6 +159,7 @@ const GATES = [
   "test:model-request-ui",
   "test:token-conservation",
   "test:usage-saving",
+  "test:usage-saving-resume-drift",
   "test:themes",
   "test:fonts",
   "test:screensaver",
