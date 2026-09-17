@@ -776,6 +776,22 @@ const PRE_IMPLEMENTOR: ReadonlySet<Thread["state"]> = new Set([
   "researching",
   "awaiting_approval",
 ]);
+// The concurrency slot follows the TASK's own state, not the lifetime of whatever promise happens to be
+// awaiting it. These are the states in which a task is not being worked on: parked for the owner
+// (review/paused), settled (done/cancelled/closed), or handed back to a resume path (failed). Entering
+// any of them frees the slot the task held. Before this, release was reachable only from the owning
+// pipeline promise's `finally`, so a pipeline that never unwound — a park whose provider await outlived
+// it, an exception escaping a reservation prologue — kept its slot for the rest of the process's life and
+// silently shrank the operator's cap by one (the "set 4, only 3 leave the queue" report). 'queued' is
+// deliberately absent: runPipeline reserves its slot while the row still reads 'queued'.
+const SLOT_FREE_STATES: ReadonlySet<Thread["state"]> = new Set([
+  "review",
+  "paused",
+  "failed",
+  "done",
+  "cancelled",
+  "closed",
+]);
 // Soft-close: a closed task stays in the DB (restorable) but off the main board, and is permanently
 // purged 30 days after it was closed. The CLOSEABLE set is the only states a task may be closed FROM —
 // it excludes the genuinely-running states (implementing/qa/planning/…) AND awaiting_user/
@@ -925,6 +941,10 @@ export class ThreadManager implements OrchestratorApi {
   // currently executing; a fresh dispatch beyond maxConcurrent waits in dispatchQueue (FIFO) in the
   // 'queued' state and starts when a slot frees. Resumes of in-flight work aren't gated — they
   // continue existing work — but they still count toward the active total.
+  // Reserve through `reservePipelineSlot` and release through `releasePipelineSlot`; never mutate this
+  // set directly. The task's own state is the authority on whether it still occupies a slot, so
+  // publishState frees one on every transition into SLOT_FREE_STATES. That is what stops a run promise
+  // which never unwinds from holding a slot for the life of the process and quietly shrinking the cap.
   private readonly activePipelines = new Set<string>();
   // Planned restarts drain the cohort already in `activePipelines` instead of killing it. Fresh task,
   // resume, capacity-recovery, and auto-review entry points consult this shared admission latch; work
@@ -941,6 +961,11 @@ export class ThreadManager implements OrchestratorApi {
   // the new run now holds (which would under-count activePipelines and let dispatch exceed maxConcurrent).
   private readonly activePipelineToken = new Map<string, symbol>();
   private readonly dispatchQueue: string[] = [];
+  // pumpQueue re-entrancy latch: a pipeline start flips state synchronously, and a state flip can free
+  // another task's slot and request another pump. The inner request sets pumpAgain and returns; the
+  // outer loop rescans, so one FIFO order is preserved instead of two interleaved scans.
+  private pumping = false;
+  private pumpAgain = false;
   // "No invisible workers": each (thread, role) auto-announces itself in the general office room the
   // first time it goes live. Keyed so a failover relaunch / warm resume of the same role doesn't spam,
   // and reset on restart (a resumed agent re-announcing once after a bounce is fine — even welcome).
@@ -5676,7 +5701,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       return;
     }
     const restartFull = this.restartDrainActive();
-    const globalFull = this.activePipelines.size >= this.settings().maxConcurrent;
+    const cap = this.settings().maxConcurrent;
+    const globalFull = this.activePipelines.size >= cap;
     const coworkFull = !!thread && this.coworkWorkspaceBusy?.(thread.workspace) === true;
     const repoFull = !!thread && this.repoAtCapacity(thread.workspace);
     if (restartFull || globalFull || repoFull) {
@@ -5689,7 +5715,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           ? "a Co-worker turn is active in this repo"
           : repoFull && !globalFull
           ? `${this.activeCountForRepo(thread!.workspace)} task(s) already running in this repo (per-repo cap ${this.repoConcurrencyLimit()})`
-          : `${this.activePipelines.size} pipeline(s) at the concurrency cap`;
+          : `${this.activePipelines.size}/${cap} pipeline(s) at the concurrency cap`;
       this.hub.log("info", `Task ${threadId.slice(0, 8)} queued — ${reason}.`);
       return;
     }
@@ -5734,15 +5760,61 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.activeCountForRepo(workspace) + (pending.get(key) ?? 0) >= limit;
   }
 
+  /** Claim the thread's concurrency slot for one run and hand back its release.
+   *
+   *  Every reservation site goes through here so all three share ONE supersede rule: the returned
+   *  release frees the slot only while this run still owns it, so a cancel→retry (or a manual resume
+   *  taking over from a pipeline that is still unwinding) can't have the older run's late finalizer
+   *  delete the slot its successor now holds. Releasing is idempotent. */
+  private reservePipelineSlot(threadId: string): () => void {
+    const token = Symbol("pipeline-slot");
+    this.activePipelines.add(threadId);
+    this.activePipelineToken.set(threadId, token);
+    return () => {
+      if (this.activePipelineToken.get(threadId) !== token) return;
+      this.releasePipelineSlot(threadId);
+    };
+  }
+
+  /** Free the slot this thread holds, whoever reserved it, and let queued work claim it. Unconditional
+   *  by design: the state machine calls it (publishState, close, dismiss) for tasks whose run promise
+   *  may never unwind, which is the whole reason the cap used to leak. A no-op when no slot is held. */
+  private releasePipelineSlot(threadId: string): void {
+    this.activePipelineToken.delete(threadId);
+    if (!this.activePipelines.delete(threadId)) return;
+    this.recoverReleasedCapacity();
+  }
+
   /** Named seam for the two queue call sites. runPipeline itself reserves the concurrency slot (at its
    *  top) and releases it + pumps the queue (in its finally), so this is just `void runPipeline`. */
   private startPipeline(threadId: string): void {
     void this.runPipeline(threadId);
   }
 
-  /** Start queued tasks while slots are free (a pipeline settled, or maxConcurrent was raised). Skips
-   *  entries no longer in 'queued' — cancelled/dismissed while waiting. */
+  /** Start queued tasks while slots are free (a pipeline settled, or maxConcurrent was raised).
+   *
+   *  Re-entrancy-guarded: starting a pipeline flips state synchronously, and a state flip can itself
+   *  release another task's slot and ask for another pump. Nested pumps would interleave with the FIFO
+   *  scan already in progress; instead the inner call marks the queue dirty and the outer loop rescans. */
   private pumpQueue(): void {
+    if (this.pumping) {
+      this.pumpAgain = true;
+      return;
+    }
+    this.pumping = true;
+    try {
+      do {
+        this.pumpAgain = false;
+        this.pumpQueueOnce();
+      } while (this.pumpAgain);
+    } finally {
+      this.pumping = false;
+    }
+  }
+
+  /** One FIFO pass over the dispatch queue. Skips entries no longer in 'queued' — cancelled/dismissed
+   *  while waiting. Call `pumpQueue`, never this. */
+  private pumpQueueOnce(): void {
     if (this.restartDrainActive()) return;
     const cap = this.settings().maxConcurrent;
     // Scan the FIFO queue rather than only peeling the head: a task blocked by its repo's per-repo cap
@@ -5933,6 +6005,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * owner notices, terminal cleanup, or model grading. */
   private publishState(t: Thread): void {
     this.hub.publish({ type: "thread.upsert", thread: t });
+    // The concurrency slot is released HERE, from the task's own state, rather than only from the
+    // owning run's `finally`. A parked or settled task is not being worked on, so it must not occupy a
+    // slot even when whatever was awaiting it never unwinds. The run's own release is still correct and
+    // still fires; both are idempotent, and the first one to land pumps the queue.
+    if (SLOT_FREE_STATES.has(t.state)) this.releasePipelineSlot(t.id);
     if (t.state === "done") {
       const deployment = t.manualDeployment?.status === "verified" ? t.manualDeployment : null;
       this.notifyOwner(
@@ -6216,28 +6293,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     let thread = this.db.getThread(threadId);
     if (!thread || this.cancelled(threadId)) return;
     thread = this.ensureThreadModelRequest(thread);
-    const slotToken = Symbol("pipeline");
-    this.activePipelines.add(threadId);
-    this.activePipelineToken.set(threadId, slotToken);
-    const releaseSlot = () => {
-      // Superseded by a newer pipeline for this thread (cancel→retry within our unwind window)? It owns
-      // the slot now — a stale finalizer deleting its entry would under-count the concurrency gate.
-      if (this.activePipelineToken.get(threadId) !== slotToken) return;
-      this.activePipelineToken.delete(threadId);
-      this.activePipelines.delete(threadId);
-      this.recoverReleasedCapacity();
-    };
-    // The slot above is the task's first real opportunity to work. Stamp the durable deadline here,
-    // not at dispatch, so time spent queued behind other pipelines never eats an owner's work window.
-    thread = this.activateTimedWindow(thread);
-    if (!existsSync(thread.workspace)) {
-      this.setState(threadId, "failed", `Workspace "${thread.workspace}" does not exist on disk — agents can't run there. Re-dispatch with a valid path.`);
-      releaseSlot();
-      return;
-    }
+    const releaseSlot = this.reservePipelineSlot(threadId);
+    // Everything after the reservation runs inside the try, prologue included: an exception thrown
+    // before the old try boundary (a DB write stamping the window, a stat of a vanished workspace)
+    // escaped this `void`ed call with the slot still held, and nothing ever gave it back.
     const settings = this.settings();
-    const saved = this.db.getThreadStageOutputs(threadId);
     try {
+      // The slot above is the task's first real opportunity to work. Stamp the durable deadline here,
+      // not at dispatch, so time spent queued behind other pipelines never eats an owner's work window.
+      thread = this.activateTimedWindow(thread);
+      if (!existsSync(thread.workspace)) {
+        this.setState(threadId, "failed", `Workspace "${thread.workspace}" does not exist on disk — agents can't run there. Re-dispatch with a valid path.`);
+        return;
+      }
+      const saved = this.db.getThreadStageOutputs(threadId);
       // Read lane (dispatch_read): short-circuit the normal task-aware implementation route to a single
       // read-only reader stage. readerDone (mirroring planDone) makes the answer sticky across resume, so
       // a server restart mid-read can't re-run the reader and double-post the answer. releaseSlot still
@@ -10356,6 +10425,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (!thread) return { ok: false, error: "No such task." };
       if (this.live.has(threadId) || thread.state === "qa" || this.liveQa.has(threadId)) {
         this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
+      } else if (PRE_IMPLEMENTOR.has(thread.state)) {
+        // The task has never reached an implementor (waiting for a slot, still planning, at the approval
+        // gate). A QA fix-handoff would claim QA had returned work nobody has done yet, and that durable
+        // marker also steers boot recovery. Buffer it as a director note instead — the same place an
+        // append/interrupt inject puts a pre-implementor instruction — so it folds into the first kickoff.
+        this.bufferDirectorNote(threadId, message);
       } else {
         const refs = injectRefs();
         this.appendQaFixHandoffInstruction(threadId, message, refs);
@@ -10913,6 +10988,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       };
     }
     const live = this.live.get(threadId);
+    // Nothing is running yet: the task is waiting for a concurrency slot, or sitting at the approval
+    // gate with no agent of any kind. There is no turn to cut into, and 'paused' would take it out of
+    // the dispatch queue for a run that never happened — so leave the state alone and say so. Anything
+    // already injected is held and reaches the implementor in its first kickoff.
+    if (!live && thread && PRE_IMPLEMENTOR.has(thread.state) && !this.liveRole.has(threadId)) {
+      return {
+        ok: true,
+        state: thread.state,
+        message:
+          thread.state === "queued"
+            ? "This task hasn't started yet — it's waiting for a concurrency slot, so there's no implementor to interrupt. Anything you've injected is held and reaches it the moment it starts."
+            : `This task is still in its ${thread.state} stage, so there's no implementor to interrupt. Anything you've injected is held for the implementor's first turn.`,
+      };
+    }
     if (!live) return { ok: false, error: "No running implementor on that task." };
     await live.run.interrupt();
     this.setState(threadId, "paused");
@@ -11105,9 +11194,32 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     reviewInjectionIds: string[] = [],
     recheckWithQa = false,
   ): Promise<void> {
+    // Every caller `void`s this. An exception thrown after the slot is reserved but before the run's own
+    // finalizer exists (route resolution, model auto-selection, a DB read) would otherwise disappear into
+    // an unhandled rejection WITH the slot still held — one of the ways the cap permanently lost a slot.
+    // Park the task for the owner instead, and hand the slot back either way.
+    try {
+      await this.runImplementorOnlyResume(thread, message, reviewInjectionIds, recheckWithQa);
+    } catch (e) {
+      this.hub.log("error", `Resume of ${thread.id.slice(0, 8)} threw before it could hand back its slot: ${String(e)}`);
+      this.resuming.delete(thread.id);
+      this.pendingResumeMsgs.delete(thread.id);
+      if (!this.cancelled(thread.id)) this.setState(thread.id, "review", `Resume failed to start: ${String(e)}`.slice(0, MAX_REVIEW_ERROR_LEN));
+      this.releasePipelineSlot(thread.id);
+    }
+  }
+
+  private async runImplementorOnlyResume(
+    thread: Thread,
+    message?: string,
+    reviewInjectionIds: string[] = [],
+    recheckWithQa = false,
+  ): Promise<void> {
     // A manual resume occupies a concurrency slot for the run's lifetime (like a pipeline), so it
-    // counts toward maxConcurrent and frees a queued task when it settles.
-    this.activePipelines.add(thread.id);
+    // counts toward maxConcurrent and frees a queued task when it settles. Reserving through the shared
+    // helper also stamps the supersede token, so a pipeline still unwinding for this same thread can no
+    // longer delete the slot this resume now holds.
+    const releaseThreadSlot = this.reservePipelineSlot(thread.id);
     this.capParked.delete(thread.id); // fresh resume — drop any stale cap flag before this run sets its own
     this.autoResumes.set(thread.id, 0); // fresh budget for the stall/turn-limit auto-continues
     // A manual resume is never an auto-review fix round nor a post-task self-improvement round. Clearing
@@ -11115,11 +11227,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // left set, the next bounce would settle this genuinely-unfinished work as done.
     this.db.updateThreadStageOutputs(thread.id, { reviewFixing: false, selfImproving: false });
     const releaseSlot = () => {
-      this.activePipelines.delete(thread.id);
+      releaseThreadSlot();
       this.implementorProvider.delete(thread.id);
       this.autoResumes.delete(thread.id);
       this.codexResumeWedged.delete(thread.id); // a fresh dispatch's first session may resume fine
-      this.recoverReleasedCapacity();
     };
     // A paused task takes this implementor-only path instead of runPipeline. Resolve/upgrade its route
     // and validate the sticky model pick here too, otherwise a pre-policy Sonnet session would bypass
@@ -11419,6 +11530,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.stopping.delete(threadId);
     this.disarmActiveDeadline(threadId);
     this.dropTerminalBookkeeping(threadId); // closed is terminal — closeThread settles via db, not setState
+    this.releasePipelineSlot(threadId); // ...so the state-driven release in publishState never runs for it
     this.db.abandonAutoReview(threadId, "Auto-review stopped because the task was closed.");
     const closedInjections = this.reviewInjections.listOpen(threadId);
     if (closedInjections.length) {
@@ -11537,7 +11649,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     this.reviewing.add(threadId);
     // A review occupies a concurrency slot for its lifetime, exactly like a manual resume.
-    this.activePipelines.add(threadId);
+    this.reservePipelineSlot(threadId);
     // A settled task can still hold a stale live/activeRuns entry from the loop that parked it (the same
     // teardown markDone does before accepting), so the reviewer is the only agent on this thread. Claim
     // before publishing or awaiting teardown so a concurrent tick cannot enter either gap. Publishing is
@@ -11549,8 +11661,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const reason = `Auto-review couldn't start safely: ${String(e)}`.slice(0, MAX_REVIEW_ERROR_LEN);
       this.parkAutoReview(threadId, claim.claimToken, reason);
       this.reviewing.delete(threadId);
-      this.activePipelines.delete(threadId);
-      this.recoverReleasedCapacity();
+      this.releasePipelineSlot(threadId);
       return { ok: false, state: this.db.getThread(threadId)?.state, error: reason };
     }
     // An instruction that survived a restart/reviewer race stays open in the durable store. A deliberate
@@ -11609,8 +11720,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // implementor-queued state. Clear only the legacy generic note buffer so unrelated office/director
       // notes cannot leak into a later manual resume.
       this.directorNotes.delete(thread.id);
-      this.activePipelines.delete(thread.id);
-      this.recoverReleasedCapacity();
+      this.releasePipelineSlot(thread.id);
     }
   }
 
@@ -12281,6 +12391,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.liveRole.delete(threadId);
     this.directorNotes.delete(threadId);
     this.dropTerminalBookkeeping(threadId); // the row is about to be deleted — drop its bookkeeping too
+    this.releasePipelineSlot(threadId); // the row never publishes a slot-free state — release it here
     const pendingApproval = this.pendingApprovals.get(threadId);
     if (pendingApproval) {
       this.pendingApprovals.delete(threadId);

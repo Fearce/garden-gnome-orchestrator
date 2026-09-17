@@ -340,7 +340,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 />
                 <NumberRow
                   label="Max concurrent tasks"
-                  hint="Pipelines allowed to run at once. Dispatches beyond this wait in a queued lane and start as slots free."
+                  hint="Tasks allowed to run at once. Dispatches beyond this wait in a queued lane and start as slots free. A task holds its slot for its whole pipeline — planning, implementation, QA and auto-review are one slot, not several — and gives it back the moment it's parked (review/paused) or finished, so exactly this many tasks can be in active work."
                   value={settings.maxConcurrent}
                   min={1}
                   max={20}

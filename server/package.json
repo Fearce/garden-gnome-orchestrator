@@ -167,6 +167,7 @@
     "test:implementor-handover": "tsx src/tests/implementorHandover.itest.ts",
     "test:cli-role-kickoff": "tsx src/tests/cliRoleKickoff.test.ts",
     "test:per-repo": "tsx src/tests/perRepoConcurrency.itest.ts",
+    "test:slots": "tsx src/tests/concurrencySlots.itest.ts",
     "test:provider-serves-role": "tsx src/tests/providerServesRole.test.ts",
     "test:provider-fallback": "tsx src/tests/providerFallback.itest.ts",
     "test:crashlog": "tsx src/tests/crashLog.itest.ts",
