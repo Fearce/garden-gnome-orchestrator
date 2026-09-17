@@ -173,6 +173,7 @@ const GATES = [
   "test:implementor-handover",
   "test:cli-role-kickoff",
   "test:per-repo",
+  "test:slots",
   "test:crashlog",
   "test:leak-bookkeeping",
   "test:attachment-dedupe",
