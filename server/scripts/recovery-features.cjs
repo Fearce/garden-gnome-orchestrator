@@ -81,6 +81,16 @@ const RECOVERY_FEATURES = [
     applies: (e, run) => run?.role === "qa" && /restarted on a fresh session/i.test(e),
   },
   {
+    id: "qaUnfixedReturnToImplementor",
+    label: "the editing-QA return to implementation",
+    commit: "2a1c6fe", // fix: return unresolved QA issues to implementation
+    // Exact legacy terminal text only. A deadline/error wrapper can quote the old wording while still
+    // being owner-owned, and the boot recovery deliberately leaves those rows alone too.
+    applies: (e, run) =>
+      run?.role === "qa" &&
+      e === "QA found unresolved issues it could not safely fix - needs your review.",
+  },
+  {
     id: "autoReviewRecovery",
     label: "the auto-review recovery (MAX_REVIEW_RECOVERIES)",
     commit: "bc7e87b", // fix(review): recover an auto-review that came back empty instead of re-parking

@@ -104,6 +104,34 @@ const genericSilent = recoveryAnnotationFor("QA could not complete — needs you
 assert.ok(genericSilent, "a generic QA park over a 0-turn run should still map to the silent-retry fix");
 assert.match(genericSilent, /qaSilentRetries/);
 
+// --- the obsolete editing-QA hand-back now resumes implementation automatically --------------------
+const unfixed = RECOVERY_FEATURES.find((f) => f.id === "qaUnfixedReturnToImplementor");
+assert.ok(unfixed, "the editing-QA implementor-return recovery should be registered");
+const unfixedShip = resolveShipDate(unfixed.commit);
+const unfixedPark = "QA found unresolved issues it could not safely fix - needs your review.";
+const unfixedNote = recoveryAnnotationFor(unfixedPark, {
+  role: "qa",
+  started_at: unfixedShip.getTime() - DAY,
+  ended_at: null,
+});
+assert.ok(unfixedNote, "an obsolete editing-QA hand-back should read as recoverable");
+assert.match(unfixedNote, /return to implementation/i);
+assert.match(unfixedNote, /2a1c6fe/);
+assert.equal(
+  recoveryAnnotationFor(unfixedPark, { role: "qa", started_at: unfixedShip.getTime() + DAY, ended_at: null }),
+  null,
+  "a hand-back after the recovery shipped is not stale",
+);
+assert.equal(
+  recoveryAnnotationFor(`Hard deadline reached. The task previously said: ${unfixedPark}`, {
+    role: "qa",
+    started_at: unfixedShip.getTime() - DAY,
+    ended_at: null,
+  }),
+  null,
+  "a deadline park quoting the old text stays owner-owned",
+);
+
 // --- a CAPPED auto-review maps to the failover fix, not the older empty-run recovery ----------------
 // The e870c68e shape (2026-08-13): the reviewer died on "You've hit your session limit" in 4s while z.ai
 // was up, and `providerServesRole` (49960f7) is what lets that click fail over instead of parking. Both
