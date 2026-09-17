@@ -71,6 +71,11 @@ class UsageAccounts {
   // The model-drift reseed compresses the prior session, which reads a token without running the
   // dispatch selector. The fake session id has no transcript, so compression degrades to git+plan.
   auxToken(): string { return "test-token"; }
+  // The resume path now SELECTS the subscription itself and hands it to the dispatch, so the guard and
+  // the dispatch can never name different accounts (see startResumedImplementor).
+  select(): { account: { id: string; label: string; token: string }; reason: string } {
+    return { account: { id: "account-a", label: "Claude A", token: "test-token" }, reason: "fixture" };
+  }
   dispatchPreview(): Record<string, unknown> {
     return {
       account: { id: "account-a", label: "Claude A", token: "test-token" },
@@ -92,6 +97,7 @@ class UsageAccounts {
 interface StartAsk {
   resume: string | undefined;
   model: string | undefined;
+  account: string | undefined;
   kickoff: string;
   images: number;
 }
@@ -123,11 +129,13 @@ function makeHarness(): {
 
   const asks: StartAsk[] = [];
   const realStartImplementor = internals.startImplementor.bind(internals);
-  internals.startImplementor = (t: Thread, kickoff: string, opts?: { resume?: string; images?: unknown[] }) => {
-    // Read the model the real (unstubbed) resolution logic would pick, without actually spawning an
-    // agent: mirror the claude branch's own fallback chain (no pin/pick configured in this fixture).
-    const model = internals.usageSavingTarget("account-a")?.model ?? internals.modelFor("account-a", "implementor");
-    asks.push({ resume: opts?.resume, model, kickoff, images: opts?.images?.length ?? 0 });
+  internals.startImplementor = (t: Thread, kickoff: string, opts?: { resume?: string; images?: unknown[]; account?: { id: string } }) => {
+    // Resolve the model through the SAME function the real startImplementor dispatches with, given the
+    // account it was actually handed. Re-implementing that precedence here would make the one defect
+    // this file exists to catch — the drift guard disagreeing with the dispatch — structurally invisible.
+    const provider = internals.implementorProvider.get(t.id) ?? "claude";
+    const model = internals.implementorDispatchTarget(t.id, provider, opts?.account?.id).model;
+    asks.push({ resume: opts?.resume, model, account: opts?.account?.id, kickoff, images: opts?.images?.length ?? 0 });
     void realStartImplementor; // never actually spawn a real agent in this test
     return { run: { onEnd: () => {}, onEvent: () => () => {} }, runId: "run-x", accountId: "account-a" };
   };
@@ -194,10 +202,13 @@ console.log("\n=== B. usage saving deactivated: the stale sonnet session is drop
     JSON.stringify(h.asks),
   );
   check("the fresh session resolves back to the configured Opus default", h.asks[0]?.model === "claude-opus-5", h.asks[0]?.model);
-  // The replacement session must carry the prior one's compressed handoff. Restarting a long task from
-  // the bare kickoff is the "starting again and again" failure the owner has already complained about.
+  // The replacement must take the RESEED path (which carries the prior session's compressed handoff),
+  // not the `!resumeSession` early return that restarts from the bare kickoff — the "starting again and
+  // again" failure the owner has already complained about. What the seed then contains is
+  // `composeResumeKickoff`'s business; with a fake session id there is no transcript to compress, so this
+  // asserts the branch taken, not the handoff's contents.
   check(
-    "the replacement session is seeded from the prior session, not restarted from the bare kickoff",
+    "the replacement takes the compressed-reseed path, not the bare-kickoff restart",
     /Resuming — you already worked on this task in an earlier session/.test(h.asks[0]?.kickoff ?? ""),
     (h.asks[0]?.kickoff ?? "").slice(0, 200),
   );
@@ -228,6 +239,100 @@ console.log("\n=== C. a CLI backend drifts too: fresh session, and the owner's i
   check("the resume was driven", result != null);
   check("the stale-model CLI session is not resumed in place", h.asks.length === 1 && h.asks[0]?.resume === undefined, JSON.stringify(h.asks.map((a) => a.resume)));
   check("the owner's image still reaches the fresh CLI session", h.asks[0]?.images === 1, String(h.asks[0]?.images));
+  h.dispose();
+}
+
+console.log("\n=== D. a Fable-pool cap is not drift: the pick's fallback IS what the dispatch runs ===");
+{
+  // While a Fable pool is latched, `startImplementor` dispatches the pick's fallback — so the prior run
+  // is on the FALLBACK while the raw pick still says Fable. Comparing the raw pick would read drift on
+  // every single resume and restart the session onto the model it was already running.
+  const h = makeHarness();
+  h.accounts.fiveHour = 10;
+  h.accounts.sevenDay = 10; // no usage saving
+  h.accounts.isModelLimited = (_id: string, model: string) => /fable/i.test(model);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = h.mgr as any;
+  h.db.updateThreadStageOutputs(h.thread.id, {
+    modelPick: { provider: "claude", model: "claude-fable-5-1", effort: "high", reason: "fixture" },
+  });
+  const fallback = internals.poolResolved("account-a", "claude-fable-5-1");
+  check("the fixture really latches the Fable pool", fallback !== "claude-fable-5-1", fallback);
+  const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: fallback, account: "Claude A" });
+  h.db.updateRun(priorRun.id, { sessionId: "sess-1" });
+  const result = await internals.startResumedImplementor(h.thread, "kickoff", "sess-1", {
+    resumeNudge: "continue",
+    qaFollows: true,
+  });
+  check("the resume was driven", result != null);
+  check(
+    "the session on the pool fallback is resumed in place, not restarted as drift",
+    h.asks.length === 1 && h.asks[0]?.resume === "sess-1",
+    JSON.stringify(h.asks.map((a) => a.resume)),
+  );
+  h.dispose();
+}
+
+console.log("\n=== E. a pin for ANOTHER backend is not drift on this one ===");
+{
+  // A cap failover flips the backend and deliberately leaves the pick/pin behind — a Claude model id
+  // means nothing to the Codex CLI. Reading it anyway compares two backends' models and restarts the
+  // Codex thread on every continuation.
+  const h = makeHarness();
+  h.accounts.fiveHour = 10;
+  h.accounts.sevenDay = 10;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = h.mgr as any;
+  internals.implementorProvider.set(h.thread.id, "codex");
+  h.db.setModelRequest(h.thread.id, { requested: "opus 5", provider: "claude", model: "claude-opus-5", strict: true });
+  h.db.updateThreadStageOutputs(h.thread.id, {
+    modelPick: { provider: "claude", model: "claude-opus-5", effort: "high", reason: "fixture" },
+  });
+  const current = internals.providerRoleModel("codex", "implementor");
+  const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: current, account: `codex:${current}` });
+  h.db.updateRun(priorRun.id, { sessionId: "codex-session" });
+  const result = await internals.startResumedImplementor(h.thread, "kickoff", "codex-session", {
+    resumeNudge: "continue",
+    qaFollows: true,
+  });
+  check("the resume was driven", result != null);
+  check(
+    "the Codex session is resumed in place despite the Claude-side pin and pick",
+    h.asks.length === 1 && h.asks[0]?.resume === "codex-session",
+    JSON.stringify(h.asks.map((a) => a.resume)),
+  );
+  h.dispose();
+}
+
+console.log("\n=== F. the comparison reads the model of THIS session, not merely the newest run ===");
+{
+  // A run that never reached `init` (a cap rejection, a wedged spawn) records no session id, so it can
+  // never be the run being resumed — but it is the newest one. Reading its model compares a model this
+  // session was never bound to and throws away a healthy session.
+  const h = makeHarness();
+  h.accounts.fiveHour = 10;
+  h.accounts.sevenDay = 10;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = h.mgr as any;
+  h.mgr.setSettings({ modelOverrides: { "account-a": { implementor: "claude-opus-5" } } });
+  const owning = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5", account: "Claude A" });
+  h.db.updateRun(owning.id, { sessionId: "sess-1" });
+  // Newer, sessionless, on a different model — a rejected relaunch. Its `started_at` is pushed forward
+  // explicitly: both rows are written inside one millisecond, so a plain newest-first sort ties and would
+  // return the owning run anyway — the fixture would then pass with the fix reverted.
+  const rejected = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-sonnet-5", account: "Claude A" });
+  h.db.raw.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(Date.now() + 60_000, rejected.id);
+  const result = await internals.startResumedImplementor(h.thread, "kickoff", "sess-1", {
+    resumeNudge: "continue",
+    qaFollows: true,
+  });
+  check("the resume was driven", result != null);
+  check(
+    "a newer sessionless run does not read as drift on the session being resumed",
+    h.asks.length === 1 && h.asks[0]?.resume === "sess-1",
+    JSON.stringify(h.asks.map((a) => a.resume)),
+  );
+  check("the dispatch was handed the account the guard resolved", h.asks[0]?.account === "account-a", String(h.asks[0]?.account));
   h.dispose();
 }
 

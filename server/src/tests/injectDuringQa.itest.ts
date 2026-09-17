@@ -65,6 +65,11 @@ class StubAccounts {
   dispatchPreview(): Record<string, unknown> {
     return { account: { id: "acct-a", label: "acct-a" }, hasHeadroom: true };
   }
+  // A resume selects the subscription itself and hands it to the dispatch, so the drift guard and
+  // startImplementor can never name different accounts (see startResumedImplementor).
+  select(): { account: { id: string; label: string }; reason: string } {
+    return { account: { id: "acct-a", label: "acct-a" }, reason: "fixture" };
+  }
   setPingInterval(_ms: number): void {}
   applyEnabled(_id: string, _enabled: boolean): void {}
   applyWeeklySafetyPct(_id: string, _pct: number): void {}
@@ -849,7 +854,10 @@ async function main(): Promise<void> {
       h.db.updateThread(warmId, { title: "warm-claude" });
       const warmSession = "warm-claude-session";
       writeFileSync(join(projectDir, `${warmSession}.jsonl`), "");
-      h.db.updateRun(h.db.createRun({ threadId: warmId, role: "implementor", model: "claude-opus-5", account: "acct-a" }).id, { sessionId: warmSession });
+      // Same reason as the Codex row below: seed the model this backend resolves right now, so a
+      // configured-default change can never turn these resume cases into silent drift-restarts.
+      const claudeModel = h.internals.implementorDispatchTarget(warmId, "claude", "acct-a").model;
+      h.db.updateRun(h.db.createRun({ threadId: warmId, role: "implementor", model: claudeModel, account: "acct-a" }).id, { sessionId: warmSession });
       await realStartResumed(h.db.getThread(warmId)!, "BASE", warmSession, { resumeNudge: "NUDGE", directorNote: "NUDGE", qaFollows: true, images: [imageBlock] });
 
       const codexId = seedTask(h);
@@ -871,7 +879,7 @@ async function main(): Promise<void> {
       writeFileSync(coldPath, "");
       const old = new Date(Date.now() - 120 * 60_000);
       utimesSync(coldPath, old, old);
-      h.db.updateRun(h.db.createRun({ threadId: coldId, role: "implementor", model: "claude-opus-5", account: "acct-a" }).id, { sessionId: coldSession });
+      h.db.updateRun(h.db.createRun({ threadId: coldId, role: "implementor", model: claudeModel, account: "acct-a" }).id, { sessionId: coldSession });
       await realStartResumed(h.db.getThread(coldId)!, "BASE", coldSession, { resumeNudge: "NUDGE", directorNote: "NUDGE", qaFollows: true, images: [imageBlock] });
 
       check("warm Claude resume passes the image to startImplementor", starts.some((s) => s.label === "warm-claude" && s.resume === warmSession && s.images === 1), JSON.stringify(starts));

@@ -3760,6 +3760,31 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return pick && pick.provider === provider ? pick.model : undefined;
   }
 
+  /** The model `startImplementor` will dispatch for this task on `provider`, plus the saving policy that
+   *  chose it (each backend caps effort its own way, so the policy travels rather than just its effort).
+   *  Both the dispatch and `startResumedImplementor`'s drift guard resolve through here: the guard's whole
+   *  job is "is the session bound to the model we would run now?", and a second copy of this precedence
+   *  answers a slightly different question — which reads as drift and restarts a session onto the model it
+   *  was already running. `accountId` is required for Claude (saving, the Fable pool and the override
+   *  matrix are all per-subscription) and ignored by the CLI backends. */
+  private implementorDispatchTarget(
+    threadId: string,
+    provider: ImplementorProvider,
+    accountId?: string,
+  ): { model: string; saving: UsageSavingPolicy | undefined } {
+    const saving = this.usageSavingTarget(this.usageSavingSubId(provider, accountId));
+    if (saving) return { model: saving.model, saving };
+    const picked = this.pickedModel(threadId, provider);
+    if (provider === "codex") return { model: picked ?? this.providerRoleModel("codex", "implementor"), saving };
+    if (provider === "grok") return { model: picked ?? this.grokModel(), saving };
+    if (provider === "zai") return { model: picked ?? this.zaiModel(), saving };
+    const subId = accountId ?? this.accounts.dispatchPreview().account.id;
+    // A strict request runs EXACTLY, so it never takes the Fable-pool fallback an auto-pick does.
+    const requested = this.db.getThread(threadId)?.modelRequest;
+    if (requested?.provider === "claude" && requested.model) return { model: requested.model, saving };
+    return { model: picked ? this.poolResolved(subId, picked) : this.modelFor(subId, "implementor"), saving };
+  }
+
   /** The implementor's effort for this task: an operator pin beats everything, then the auto-selected
    *  effort, then the planner's per-task judgement. */
   private implementorEffort(threadId: string, planEffort?: Effort): Effort | undefined {
@@ -7647,7 +7672,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // operator-selected reasoning effort because the CLI takes a persistent model_reasoning_effort.
     // Preserve Codex-only Ultra until the provider branch is known. Claude/z.ai paths clamp it to Max
     // before implementorConfig reaches the Anthropic SDK.
-    const plannerEffort: Effort = opts?.effort === "ultra" ? "ultra" : resolveEffort(opts?.effort);
+    const plannerEffort: Effort = implementorPlannerEffort(opts?.effort);
     const demand = this.capacityDemand(thread, "implementor", plannerEffort);
     // Provider factory: the routing gate (gateImplementorProvider) stored the backend for this thread.
     // Codex runs the CLI (no Claude account/oauth); Claude runs the SDK on a selected subscription.
@@ -7665,8 +7690,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // patches the working tree and stops, never committing — breaking the implementor→commit contract.
     let startKickoff = kickoff;
     if (provider === "codex") {
-      const saving = this.usageSavingTarget(CODEX_SUB_ID);
-      const model = saving?.model ?? this.pickedModel(thread.id, "codex") ?? this.providerRoleModel("codex", "implementor");
+      const { model, saving } = this.implementorDispatchTarget(thread.id, "codex");
       // The director/planner picks the per-task effort; the Codex subscription's setting is its MAX cap, so
       // a tiny task still runs cheap while nothing exceeds what the operator allowed for this backend.
       const effort = (saving?.effort ?? clampEffort(plannerEffort, this.codexEffort(model))) as CodexEffort;
@@ -7707,8 +7731,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       codexAgent.onEnd(() => { if (codexAgent.resumeHealed) this.codexResumeWedged.add(thread.id); });
       agent = codexAgent;
     } else if (provider === "grok") {
-      const saving = this.usageSavingTarget(GROK_SUB_ID);
-      const model = saving?.model ?? this.pickedModel(thread.id, "grok") ?? this.grokModel();
+      const { model, saving } = this.implementorDispatchTarget(thread.id, "grok");
       // Same as Codex: the per-task effort is capped at the Grok subscription's configured maximum.
       const effort = (saving?.effort ?? clampEffort(plannerEffort, this.grokEffort(model))) as GrokEffort;
       accountId = "xai-grok";
@@ -7747,8 +7770,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // Codex/Grok — it gets the in-process bus + office MCP servers (post_finding/ask_user/deliverables,
       // real chat_post) and the standard implementor system prompt. The per-task effort is capped at the
       // z.ai subscription's configured maximum, like the other backends.
-      const saving = this.usageSavingTarget(ZAI_SUB_ID);
-      const model = saving?.model ?? this.pickedModel(thread.id, "zai") ?? this.zaiModel();
+      const { model, saving } = this.implementorDispatchTarget(thread.id, "zai");
       const effort = saving
         ? saving.effort as ZaiEffort
         : resolveZaiEffort(model, clampEffort(plannerEffort, this.zaiEffort(model)));
@@ -7772,20 +7794,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const acct = opts?.account ?? this.dispatchAccount(demand);
       accountId = acct.id;
       // The per-task effort is capped at this Claude account's configured maximum (default: uncapped).
-      // The auto-selected model when this task has one, else the subscription's configured model (per-sub
-      // override → default → built-in). Either way the Fable-pool fallback applies on this account.
-      const requested = this.db.getThread(thread.id)?.modelRequest;
-      const picked = this.pickedModel(thread.id, "claude");
-      const saving = this.usageSavingTarget(acct.id);
-      // Usage saving is provider-wide: while active it wins even over a task-local strict request.
-      // Otherwise a requested model either runs exactly or its gate parks the task.
-      const model = saving
-        ? saving.model
-        : requested?.provider === "claude" && requested.model
-          ? requested.model
-          : picked
-            ? this.poolResolved(acct.id, picked)
-            : this.modelFor(acct.id, "implementor");
+      // Usage saving is provider-wide (it wins even over a task-local strict request), then the pin, then
+      // the auto-pick with this account's Fable-pool fallback, then the subscription's configured model.
+      const { model, saving } = this.implementorDispatchTarget(thread.id, "claude", acct.id);
       // Apply both the account ceiling and the chosen model's exact effort support.
       const effort = saving?.effort ?? resolveClaudeEffort(model, clampEffort(plannerEffort, this.accountMaxEffort(acct.id)));
       const run = this.db.createRun({ threadId: thread.id, role: "implementor", model, account: acct.label, effort });
@@ -7886,34 +7897,30 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // should run on (below). Both take the same fresh-session path, and each states its own reason.
     let forceFresh = opts.forceFresh === true;
     let freshReason = "the prior session returned empty";
-    const request = this.db.getThread(thread.id)?.modelRequest;
-    const saving = this.usageSavingTarget(this.usageSavingSubId(resolvedProvider, opts.account?.id));
-    const requestedModel = saving ? undefined : request?.provider === resolvedProvider ? request.model : undefined;
-    // Pool-resolved the way `startImplementor` dispatches it: while a Fable-pool cap is latched the pick
-    // runs as its fallback, so comparing the RAW pick against the fallback the prior run actually used
-    // reads as drift on every resume and restarts a session onto the model it was already running.
-    const rawPick = saving ? undefined : this.db.getThreadStageOutputs(thread.id).modelPick?.model;
-    const pickedModel = rawPick && resolvedProvider === "claude"
-      ? this.poolResolved(opts.account?.id ?? this.accounts.dispatchPreview().account.id, rawPick)
-      : rawPick;
-    // Falls through to the same default a fresh dispatch resolves (override matrix + conservation) once
-    // saving/pin/pick all have nothing to say. Without this last fallback, `selectedModel` stayed
-    // `undefined` for the ordinary case, so the drift check below could only ever catch a NEWLY active
-    // saving/pin/pick — never one that just turned OFF. A session downgraded once by usage saving kept
-    // resuming on that model for the rest of the episode even after the account's usage dropped back
-    // under the threshold, because nothing ever re-compared it against normal routing again.
-    const selectedModel = saving?.model ?? requestedModel ?? pickedModel
-      ?? this.providerRoleModel(resolvedProvider, "implementor", opts.account?.id);
-    const priorModel = this.db
-      .listRuns(thread.id)
-      .filter((candidate) => candidate.role === "implementor")
-      .sort((a, b) => b.startedAt - a.startedAt)[0]?.model;
-    if (resumeSession && selectedModel && priorModel && normalizeModelId(priorModel) !== normalizeModelId(selectedModel)) {
+    // Select the Claude subscription ONCE, here, and hand it to every startImplementor call below. The
+    // guard's answer is only worth anything if it names the account the dispatch will actually use:
+    // `select()` filters the pool by the run's capacity demand while a bare `dispatchPreview()` does not,
+    // so guessing separately let a resume read drift off a sub the dispatch was never going to pick — and
+    // then dispatch the model the session was already running. `select()` also bumps round-robin state, so
+    // resolving it here instead of twice keeps a resume to exactly one selection, as before.
+    const account = resolvedProvider === "claude"
+      ? (opts.account ?? this.dispatchAccount(this.capacityDemand(thread, "implementor", implementorPlannerEffort(opts.effort))))
+      : opts.account;
+    const { model: selectedModel, saving } = this.implementorDispatchTarget(thread.id, resolvedProvider, account?.id);
+    // The model of the run that owns THIS session, not merely the newest one: a run that never reached
+    // `init` (a cap rejection, a wedged spawn) records no session id, and resumeSession itself is only
+    // ever taken from a run that has one — so the newest run can report a model this session was never
+    // bound to, and the guard would throw away a healthy session over it.
+    const priorModel = resumeSession
+      ? this.db.listRuns(thread.id).find((candidate) => candidate.role === "implementor" && candidate.sessionId === resumeSession)?.model
+      : undefined;
+    if (resumeSession && priorModel && !sameModelId(priorModel, selectedModel)) {
+      const pick = this.pickedModel(thread.id, resolvedProvider);
       const why = saving
         ? `usage saving selected ${selectedModel}`
-        : requestedModel
+        : this.db.getThread(thread.id)?.modelRequest?.provider === resolvedProvider
           ? `the task is strictly pinned to ${selectedModel}`
-          : pickedModel
+          : pick
             ? `auto model selection picked ${selectedModel}`
             : `normal routing now selects ${selectedModel}`;
       this.hub.log("warn", `Resume on ${thread.id.slice(0, 8)}: prior session used ${priorModel}, but ${why} — starting a fresh selected-model session.`);
@@ -7928,7 +7935,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!resumeSession) {
       const extras = [restartNote, directives, opts.directorNote].filter(Boolean);
       const text = extras.length ? `${baseKickoff}\n\n${extras.join("\n\n")}` : baseKickoff;
-      return this.startImplementor(thread, text, { effort: opts.effort, account: opts.account, images: opts.images });
+      return this.startImplementor(thread, text, { effort: opts.effort, account, images: opts.images });
     }
     // A CLI backend (Codex or Grok) resumes by its own session id via the CLI — there is no local Claude
     // transcript to age-check or Haiku-compress, so the warm/cold gate below (keyed on transcript mtime)
@@ -7963,13 +7970,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         const why = forceFresh ? freshReason : `${label} resume previously wedged`;
         this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: ${why} — starting a fresh session directly.`);
         const freshText = [baseKickoff, history, continuation].filter(Boolean).join("\n\n");
-        return this.startImplementor(thread, freshText, { effort: opts.effort, account: opts.account, images: opts.images });
+        return this.startImplementor(thread, freshText, { effort: opts.effort, account, images: opts.images });
       }
       this.hub.log("info", `Resume on ${thread.id.slice(0, 8)}: resuming the ${label} session ${resumeSession.slice(0, 8)} via the CLI.`);
       return this.startImplementor(thread, continuation, {
         effort: opts.effort,
         resume: resumeSession,
-        account: opts.account,
+        account,
         freshFallback: contentWithImages(freshKickoff, opts.images ?? []),
         images: opts.images,
       });
@@ -7997,7 +8004,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         opts.resumeNudge,
         opts.directorNote && opts.directorNote !== opts.resumeNudge && opts.directorNote,
       ].filter(Boolean);
-      return this.startImplementor(thread, parts.join("\n\n"), { effort: opts.effort, resume: resumeSession, account: opts.account, images: opts.images });
+      return this.startImplementor(thread, parts.join("\n\n"), { effort: opts.effort, resume: resumeSession, account, images: opts.images });
     }
     // Cold cache: composeResumeKickoff compresses the prior session (Haiku + git) and logs how. This
     // is the only awaited step, so re-check cancellation after it before spending an Opus start.
@@ -8009,7 +8016,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       restartNote,
     });
     if (this.cancelled(thread.id)) return null; // user cancelled while we were compressing
-    return this.startImplementor(thread, seed, { effort: opts.effort, account: opts.account, images: opts.images });
+    return this.startImplementor(thread, seed, { effort: opts.effort, account, images: opts.images });
   }
 
   /** The implementor's next real turn outcome — skipping any turn the owner's steering ABORTED.
@@ -14408,6 +14415,22 @@ function modelCapacityNote(
   const ordinary = describeProviderCapacity(candidate, demand);
   if (provider !== "claude" || !fallbackModelFor(model)) return ordinary;
   return `${model} uses a separately gated model allowance whose remaining percentage is not exposed; a live cap falls back in-session. Normal-account fallback: ${ordinary}`;
+}
+
+/** The per-task effort an implementor dispatch sizes its capacity demand from. Codex-only Ultra survives
+ *  until the provider branch is known; every other value goes through the xhigh gate. */
+function implementorPlannerEffort(effort: Effort | undefined): Effort {
+  return effort === "ultra" ? "ultra" : resolveEffort(effort);
+}
+
+/** Whether two model ids name the same model, tolerating a catalog date suffix — the live roster
+ *  publishes `claude-sonnet-5-20260114` while the override matrix stores the bare alias. Deliberately
+ *  lenient: in the resume drift guard a false "different" throws away a healthy session, while a false
+ *  "same" only continues one on a model a single dated revision off. */
+function sameModelId(a: string, b: string): boolean {
+  const strip = (model: string) => normalizeModelId(model)?.replace(/-\d{8}$/, "") ?? null;
+  const left = strip(a);
+  return left != null && left === strip(b);
 }
 
 function providerPriority(x: ProviderCandidate, y: ProviderCandidate): number {
