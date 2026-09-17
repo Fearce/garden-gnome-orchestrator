@@ -855,7 +855,12 @@ async function main(): Promise<void> {
       const codexId = seedTask(h);
       h.db.updateThread(codexId, { title: "codex-resume" });
       const codexSession = "codex-session";
-      h.db.updateRun(h.db.createRun({ threadId: codexId, role: "implementor", model: "gpt-5.5", account: "codex:gpt-5.5" }).id, { sessionId: codexSession });
+      // The prior run's model must be the one this backend resolves RIGHT NOW, or the resume never
+      // happens and this case silently stops testing what it is named for: a CLI session is bound to
+      // its model, so `startResumedImplementor` treats a differing model as drift and starts fresh
+      // (`test:usage-saving-resume-drift` owns that branch, images included).
+      const codexModel = h.internals.providerRoleModel("codex", "implementor");
+      h.db.updateRun(h.db.createRun({ threadId: codexId, role: "implementor", model: codexModel, account: `codex:${codexModel}` }).id, { sessionId: codexSession });
       h.internals.implementorProvider.set(codexId, "codex");
       await realStartResumed(h.db.getThread(codexId)!, "BASE", codexSession, { resumeNudge: "NUDGE", directorNote: "NUDGE", qaFollows: true, images: [imageBlock] });
 

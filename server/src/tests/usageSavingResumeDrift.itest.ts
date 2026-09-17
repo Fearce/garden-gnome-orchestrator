@@ -93,6 +93,7 @@ interface StartAsk {
   resume: string | undefined;
   model: string | undefined;
   kickoff: string;
+  images: number;
 }
 
 function makeHarness(): {
@@ -122,11 +123,11 @@ function makeHarness(): {
 
   const asks: StartAsk[] = [];
   const realStartImplementor = internals.startImplementor.bind(internals);
-  internals.startImplementor = (t: Thread, kickoff: string, opts?: { resume?: string }) => {
+  internals.startImplementor = (t: Thread, kickoff: string, opts?: { resume?: string; images?: unknown[] }) => {
     // Read the model the real (unstubbed) resolution logic would pick, without actually spawning an
     // agent: mirror the claude branch's own fallback chain (no pin/pick configured in this fixture).
     const model = internals.usageSavingTarget("account-a")?.model ?? internals.modelFor("account-a", "implementor");
-    asks.push({ resume: opts?.resume, model, kickoff });
+    asks.push({ resume: opts?.resume, model, kickoff, images: opts?.images?.length ?? 0 });
     void realStartImplementor; // never actually spawn a real agent in this test
     return { run: { onEnd: () => {}, onEvent: () => () => {} }, runId: "run-x", accountId: "account-a" };
   };
@@ -200,6 +201,33 @@ console.log("\n=== B. usage saving deactivated: the stale sonnet session is drop
     /Resuming — you already worked on this task in an earlier session/.test(h.asks[0]?.kickoff ?? ""),
     (h.asks[0]?.kickoff ?? "").slice(0, 200),
   );
+  h.dispose();
+}
+
+console.log("\n=== C. a CLI backend drifts too: fresh session, and the owner's images still travel ===");
+{
+  // A Codex/Grok session is bound to its model just as a Claude one is, so the same drift starts a fresh
+  // CLI session. That branch is a DIFFERENT code path from the Claude reseed (it has no local transcript
+  // to compress, so it rebuilds from the recovery history) and it must still carry any resume images.
+  const h = makeHarness();
+  h.accounts.fiveHour = 10;
+  h.accounts.sevenDay = 10; // no usage saving anywhere — this drift is a plain configured-model change
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = h.mgr as any;
+  internals.implementorProvider.set(h.thread.id, "codex");
+  const current = internals.providerRoleModel("codex", "implementor");
+  const stale = current === "gpt-5.5" ? "gpt-5.4" : "gpt-5.5"; // whatever the config is, seed a different one
+  const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: stale, account: `codex:${stale}` });
+  h.db.updateRun(priorRun.id, { sessionId: "codex-session" });
+  const image = { type: "image" as const, source: { type: "base64" as const, media_type: "image/png" as const, data: "iVBORw0KGgo=" } };
+  const result = await internals.startResumedImplementor(h.thread, "kickoff", "codex-session", {
+    resumeNudge: "continue",
+    qaFollows: true,
+    images: [image],
+  });
+  check("the resume was driven", result != null);
+  check("the stale-model CLI session is not resumed in place", h.asks.length === 1 && h.asks[0]?.resume === undefined, JSON.stringify(h.asks.map((a) => a.resume)));
+  check("the owner's image still reaches the fresh CLI session", h.asks[0]?.images === 1, String(h.asks[0]?.images));
   h.dispose();
 }
 
