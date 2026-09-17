@@ -69,6 +69,11 @@ class StubAccounts {
   dispatchPreview(): Record<string, unknown> {
     return { account: { id: "acct-a", label: "acct-a" }, hasHeadroom: true };
   }
+  // A resume selects the subscription itself and hands it to the dispatch, so the drift guard and
+  // startImplementor can never name different accounts (see startResumedImplementor).
+  select(): { account: { id: string; label: string }; reason: string } {
+    return { account: { id: "acct-a", label: "acct-a" }, reason: "fixture" };
+  }
   setPingInterval(_ms: number): void {}
   applyEnabled(_id: string, _enabled: boolean): void {}
   applyWeeklySafetyPct(_id: string, _pct: number): void {}
