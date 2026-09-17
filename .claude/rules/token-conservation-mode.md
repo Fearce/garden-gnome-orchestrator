@@ -36,13 +36,8 @@ The lesson generalizes past Spark: **an economy-tier ALLOWLIST answers "is this 
 A caller with no live pool snapshot passes an always-false predicate and conserves, matching `conservationActive`'s "missing data biases toward conserving" contract.
 
 ## Also worth knowing
-- **No-op under `autoModelSelection`** when the selector actually produces a pick — both resolve before
-  this layer runs. This is a per-TASK exemption, not per-setting: if the selector declines (an adaptive
-  task with no usable answer), the implementor falls back to `modelFor` and DOES conserve, same as
-  planner/QA/reviewer always do via `runRole`'s own `modelFor` call. Judged proportionate, not fixed —
-  revisit only if conservation and auto-select are found to matter together in practice.
-- Only Claude and Codex have a reviewed flagship/economy split today; Grok ships one model and z.ai has
-  none, so `TOKEN_CONSERVATION_MODEL` has no entry for either and both pass through untouched.
+- **No-op under `autoModelSelection`** when the selector actually produces a pick — both resolve before this layer runs. A per-TASK exemption, not per-setting: a selector that declines (an adaptive task with no usable answer) leaves the implementor on `modelFor`, which DOES conserve, same as planner/QA/reviewer always do via `runRole`. Judged proportionate, not fixed — revisit only if the two are found to matter together in practice.
+- Only Claude and Codex have a reviewed flagship/economy split today; Grok ships one model and z.ai has none, so `TOKEN_CONSERVATION_MODEL` has no entry for either and both pass through untouched.
 
 ## The OTHER downgrade feature: Usage saving — and why a resume has to re-derive its model
 `settings.usageSaving` (per-subscription card, `orchestrator/usageSaving.ts`) is a separate control from the toggle above and is the one that is ON in production. It fires on EITHER meter (5h **or** weekly), and while active it outranks the role override matrix, a strict owner pin and an auto-selection pick. Same 90% default and same `claude-sonnet-5` target as conservation, which is exactly why a report naming one usually means the other — check `setting_usage_saving` before `setting_token_conservation_mode`.
@@ -55,10 +50,7 @@ is the only thing that decides whether a task ever climbs back up a tier. Two ru
   `undefined` in the ordinary case, so the guard can only see a downgrade turning ON, never one turning
   OFF. One transient dip past the threshold then pins the task to the economy model for the rest of its
   episode: task 6bf166a5 stayed on Sonnet for 5h after its sub's weekly window had rolled over to 69%.
-- **Drift sets `forceFresh`; it does NOT clear the session id.** The id is unusable in place but is still
-  the best context its replacement can have, so keeping it routes the restart through the compressed
-  handoff (or the CLI recovery history) instead of the bare kickoff. Clearing it restarts a long task
-  from zero — the "starting again and again" the owner has already asked to stop.
+- **Drift sets `forceFresh`; it does NOT clear the session id.** The id is unusable in place but is still the best context its replacement can have, so keeping it routes the restart through the compressed handoff (or the CLI recovery history) instead of the bare kickoff. Clearing it restarts a long task from zero — the "starting again and again" the owner has already asked to stop.
 
 Gate: `test:usage-saving-resume-drift` (both halves revert-checked — the fallback, and the seeding).
 
