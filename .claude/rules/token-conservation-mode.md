@@ -43,16 +43,15 @@ A caller with no live pool snapshot passes an always-false predicate and conserv
 `settings.usageSaving` (per-subscription card, `orchestrator/usageSaving.ts`) is a separate control from the toggle above and is the one that is ON in production. It fires on EITHER meter (5h **or** weekly), and while active it outranks the role override matrix, a strict owner pin and an auto-selection pick. Same 90% default and same `claude-sonnet-5` target as conservation, which is exactly why a report naming one usually means the other — check `setting_usage_saving` before `setting_token_conservation_mode`.
 
 Its trap is not activation but **de**activation, because a session id is bound to the model that created
-it: a model change can only land by starting a FRESH session, so `startResumedImplementor`'s drift guard
-is the only thing that decides whether a task ever climbs back up a tier. Two rules there:
-- **Compare against what a fresh dispatch would pick, falling through to the ordinary default**
-  (`providerRoleModel`) — not just saving/pin/pick. Stopping at those three means `selectedModel` is
-  `undefined` in the ordinary case, so the guard can only see a downgrade turning ON, never one turning
-  OFF. One transient dip past the threshold then pins the task to the economy model for the rest of its
-  episode: task 6bf166a5 stayed on Sonnet for 5h after its sub's weekly window had rolled over to 69%.
+it: a model change can only land by starting a FRESH session, so a drift guard is the only thing that
+decides whether a task ever climbs back up a tier. There are two, and both are required — `startResumedImplementor` for the implementor, and one inside `runRole`'s attempt loop for the one-shot roles (QA, reviewer, planner, reader), which resume through a different path entirely. Four rules across them:
+- **Compare against what a fresh dispatch would pick, falling through to the ordinary default** — not just saving/pin/pick. Stopping at those three leaves the compared model `undefined` in the ordinary case, so the guard sees a downgrade turning ON but never one turning OFF. One transient dip past the threshold then pins the task to the economy model for the rest of its episode: task 6bf166a5 stayed on Sonnet for 5h after its sub's weekly window had rolled over to 69%.
 - **Drift sets `forceFresh`; it does NOT clear the session id.** The id is unusable in place but is still the best context its replacement can have, so keeping it routes the restart through the compressed handoff (or the CLI recovery history) instead of the bare kickoff. Clearing it restarts a long task from zero — the "starting again and again" the owner has already asked to stop.
 
-Gate: `test:usage-saving-resume-drift` (both halves revert-checked — the fallback, and the seeding).
+- **The guard must resolve the model exactly as the DISPATCH will, or it restarts healthy sessions.** The implementor's goes through the shared `implementorDispatchTarget`, and the resume selects the subscription itself and hands it down, because the model depends on the account. Reading the auto-pick without its provider, or guessing the account with a demand-less `dispatchPreview()`, each made a false drift fire on ordinary resumes.
+- **A one-shot role's check belongs INSIDE `runRole`'s loop**, after the account is selected — a mid-run failover re-selects it, so nothing earlier can answer without guessing. An unknown session binding means "no drift": discarding a usable session costs a full rediscovery.
+
+Gate: `test:usage-saving-resume-drift`, every fixture revert-checked.
 
 ## Verify
 `npx tsx src/tests/tokenConservation.test.ts` (pure-logic unit gate, registered as `test:token-conservation` in both `server/package.json` and `GATES` in `scripts/run-gates.cjs`), then `npm run token-conservation-lab --prefix server` for the Settings-toggle + restart-persistence round trip against a throwaway instance (never prod). `npm run typecheck && npm run build` for the wiring.
