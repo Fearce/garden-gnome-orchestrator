@@ -228,6 +228,7 @@
     "probe:hot-paths": "node scripts/probe-hot-paths.cjs",
     "probe:doc-paths": "node scripts/doc-paths.cjs",
     "probe:gates": "node scripts/gates-status.cjs",
+    "gates:touching": "node scripts/gates-touching.cjs",
     "probe:text": "node scripts/probe-text.cjs",
     "probe:schedule-detect": "tsx src/tools/probeScheduleDetect.ts",
     "probe:scheduler-latency": "node scripts/probe-scheduler-latency.cjs",

@@ -343,7 +343,8 @@ console.log("\n=== G. the one-shot roles get the same rule, where their account 
   // landing mid-review outlived the window that caused it exactly as it did on the implementor path.
   // The check sits INSIDE the loop, after the account is known — guessing it earlier is the defect
   // fixture F pins. Driven on `planner` because it is the cheapest role with no review-lane machinery;
-  // the guard itself is role-agnostic.
+  // the guard itself (`roleSessionModelDrifted`) is role-agnostic — named here so
+  // `npm run gates:touching --prefix server -- roleSessionModelDrifted` finds this gate.
   const fakeAgent = () => ({
     onEvent: (_cb: unknown) => () => {},
     onEnd: (_cb: unknown) => {},
