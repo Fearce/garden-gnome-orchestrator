@@ -171,6 +171,18 @@ specifically stalls this Node process's socket handling (see "Local processes" a
 message storage or the feed-mapping logic; a slow baseline too means look at the box first. This is the
 diagnosis that took four hand-written throwaway WS probe scripts to reach on 2026-09-11 (a 94-96%-loaded
 box made every task's WS take ~15s just to open) — use this instead of rebuilding one.
+
+**"Why is this taking so long?" is not the same question as "what failed?", and the answer is usually not the
+agents.** `npm run probe:elapsed --prefix server [-- <hours>] [--task <id|title>] [--json]` subtracts: how
+much of a task's ELAPSED time had an agent running at all (the UNION of its runs — concurrent roles spend
+one hour of the owner's time, not two), then attributes every remaining gap to what the rows prove — a cap,
+an open `ask_user`, an owner click, a restart, a warm resume, or a park where nothing was queued. Its
+verdict names which of the three cures applies: capacity → `probe:accounts`, park → `probe:parks`,
+agent-bound → turns/cost. Hand-deriving this on 2026-09-17 refuted "my agents are over-working": 3.9h of a
+10.4h task was a session limit with no rung to fail over to, and fleet-wide most non-working time is tasks
+waiting on a person. Turn-ceiling rate/trend is NOT re-derived here — it lives in `probe:run-errors`.
+Gate: `test:elapsed-probe`.
+
 To triage ALL non-done runs in a window instead of one task — which errors are real vs. an expected
 cutoff/cap/retry/restart, and did the handling mechanism actually run — use
 `npm run probe:run-errors --prefix server [-- <hours>]` (its classifier also backs health's `non-done

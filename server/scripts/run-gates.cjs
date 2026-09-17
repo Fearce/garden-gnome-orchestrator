@@ -148,6 +148,7 @@ const GATES = [
   "test:implementation-memos",
   "test:deliverables",
   "test:deliverables-probe",
+  "test:elapsed-probe",
   "test:reveal-workspace",
   "test:model-select",
   "test:model-catalog",
