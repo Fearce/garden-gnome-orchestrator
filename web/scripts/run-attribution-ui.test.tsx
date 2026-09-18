@@ -58,7 +58,7 @@ const thread: Thread = {
   title: "Investigate agents running long",
   brief: "",
   rawPrompt: "",
-  workspace: "C:/repo",
+  workspace: "fixture-workspace/mixed-models",
   state: "implementing",
   createdAt: at - 1_000,
   updatedAt: at + 602_000,
