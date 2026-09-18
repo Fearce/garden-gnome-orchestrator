@@ -175,6 +175,16 @@ check(
 capSnapshots.set(sessionAccount.id, { ...capSnapshots.get(sessionAccount.id), rateLimited: true, rateLimitWindow: null, rateLimitResetAt: Date.now() + 60 * 60_000 });
 const afterCredible = new AccountManager([sessionAccount], new EventHub(), 600_000, { persist: capPersist });
 check("a session cap inside its own window is still re-held across a restart", afterCredible.isRateLimited(sessionAccount.id));
+// A run launched at the reset instant is rejected a second AFTER the reset it names. That stated reset is
+// already past, so the window just rolled over: hold briefly, never for the 5h fallback (2026-09-18).
+const justRolledAccount = { id: "just-rolled-acct", label: "just rolled", token: "" };
+const justRolledManager = new AccountManager([justRolledAccount], new EventHub(), 600_000, { persist: capPersist });
+justRolledManager.updateFromRateLimit(justRolledAccount.id, { status: "rejected", resetsAt: Date.now() - 2_000 });
+check(
+  "a rejection naming a reset that just passed is held for minutes, not 5 hours",
+  (capSnapshots.get(justRolledAccount.id)?.rateLimitResetAt ?? Infinity) <= Date.now() + 5 * 60_000,
+  String(capSnapshots.get(justRolledAccount.id)?.rateLimitResetAt),
+);
 const weeklyAccount = { id: "weekly-acct", label: "weekly", token: "" };
 const weeklyReset = Date.now() + 3 * 24 * 60 * 60_000;
 const weeklyManager = new AccountManager([weeklyAccount], new EventHub(), 600_000, { persist: capPersist });

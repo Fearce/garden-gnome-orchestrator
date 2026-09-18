@@ -97,6 +97,8 @@ const MIN_RESET_DELAY_MS = 1_000;
 // Structured providers occasionally omit a reset timestamp. Keep those account caps bounded too: a
 // missing timestamp must delay routing, not turn into a permanent manual-review wait after a restart.
 const ACCOUNT_CAP_FALLBACK_MS = 5 * 60 * 60 * 1000;
+/** Hold after a rejection whose own stated reset had already passed (the window just rolled over). */
+const ACCOUNT_CAP_ROLLOVER_RECHECK_MS = 2 * 60 * 1000;
 /**
  * A cap with no window type came from the CLI's plain "You've hit your session limit · resets 12:50pm"
  * text, so it is scoped to the 5h session window and cannot legitimately outlast one. That matters
@@ -778,7 +780,12 @@ export class AccountManager {
     if (info.status === "rejected") {
       st.rateLimited = true;
       st.rateLimitWindow = info.rateLimitType ?? null;
-      const stated = info.resetsAt != null && info.resetsAt > now ? info.resetsAt : now + ACCOUNT_CAP_FALLBACK_MS;
+      // A stated reset that is already PAST means the window rolled over between the run's request and
+      // this event (2026-09-18: three auto-resumes launched at exactly 20:10:00 were rejected with
+      // "resets 8:10pm" 1.8s after it). That is not "no reset given": falling back to +5h froze a
+      // healthy account for hours, and capHold then kept it through every ping. Re-check shortly instead.
+      const rolledOver = info.resetsAt != null && info.resetsAt <= now;
+      const stated = info.resetsAt != null && info.resetsAt > now ? info.resetsAt : now + (rolledOver ? ACCOUNT_CAP_ROLLOVER_RECHECK_MS : ACCOUNT_CAP_FALLBACK_MS);
       st.rateLimitResetAt = sessionScopedCapReset(st.rateLimitWindow, stated, now);
     } else if (st.rateLimited && (st.rateLimitWindow == null || st.rateLimitWindow === info.rateLimitType)) {
       st.rateLimited = false;

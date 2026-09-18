@@ -806,6 +806,8 @@ const SESSION_LIMIT_FALLBACK_MS = 5 * 60 * 60 * 1000;
  * a real rate_limit_event's header reset is used in preference when one is available). Rolls to the next
  * day when the time has already passed today. Returns undefined when no clock is present.
  */
+const RESET_CLOCK_ROLLOVER_GRACE_MS = 10 * 60 * 1000;
+
 function parseResetClock(text: string, now: number): number | undefined {
   const m = /resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i.exec(text);
   if (!m) return undefined;
@@ -818,7 +820,10 @@ function parseResetClock(text: string, now: number): number | undefined {
   const d = new Date(now);
   d.setHours(hour, min, 0, 0);
   let t = d.getTime();
-  if (t <= now) t += 24 * 60 * 60 * 1000; // already passed today → next occurrence
+  // A clock that passed only moments ago is the window that JUST rolled over (a run launched at the reset
+  // instant is told "resets 8:10pm" a second after 8:10pm), not one 24h away. Report it as elapsed so the
+  // account is re-checked shortly, rather than latched for a day (then clamped to a 5h freeze).
+  if (t <= now && now - t > RESET_CLOCK_ROLLOVER_GRACE_MS) t += 24 * 60 * 60 * 1000; // passed earlier today: next occurrence
   return t;
 }
 
