@@ -95,6 +95,11 @@ try {
   });
   await test("real staging, unstaging, literal filenames and separate index/worktree diffs", async () => {
     await git("init", "--quiet"); await git("config", "user.name", "IDE Test"); await git("config", "user.email", "ide-test@example.com"); await git("config", "commit.gpgsign", "false"); await git("config", "core.autocrlf", "false");
+    // This repo's OWN hooks, not a globally configured `core.hooksPath` — the operator's is a real
+    // validation suite and cost ~20s per commit here, which is what timed the 60s git calls out and
+    // crashed this gate on 2026-09-17. `.git/hooks` rather than an empty directory because the
+    // "hooks remain enforced" scenario below installs a pre-commit hook there and expects it to run.
+    await git("config", "core.hooksPath", join(root, ".git", "hooks"));
     await writeFile(join(root, ".gitignore"), "binary\ninvalid\nlarge\nescape\nnode_modules\n");
     await git("add", "sample.ts", ".gitignore"); await git("commit", "--quiet", "-m", "initial");
     await writeFile(join(root, "sample.ts"), "staged value\n");

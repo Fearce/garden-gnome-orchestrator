@@ -30,6 +30,16 @@ export interface ChildResult {
   timedOut: boolean;
 }
 
+/** A child killed by a signal reports `code: null` and, usually, an EMPTY `stderr` — it never got to say
+ *  anything. Every call site here compares the code against 0, so that arrives as a claim about the
+ *  command's exit status when the truth is that the process was terminated, and with no stderr there is
+ *  nothing left to name the cause. Two gates crashed exactly that way on 2026-09-17 (`expected: 0,
+ *  actual: null`, blank message) and both passed on re-run; naming the signal is the whole diagnosis.
+ *  Interpolated into the worker source below, so both spawn paths answer identically. */
+export function closeNote(code: number | null, signal: string | null): string {
+  return code === null && signal ? ` (killed by ${signal})` : "";
+}
+
 export interface RunChildOptions {
   cwd?: string;
   /** Merged over the worker's own `process.env` (it inherits ours), so a caller ships two keys, not 200. */
@@ -63,6 +73,8 @@ const KILL_GRACE_MS = 2_000;
 const WORKER_SOURCE = `
 const { parentPort } = require("node:worker_threads");
 const { spawn } = require("node:child_process");
+
+const closeNote = ${closeNote.toString()};
 
 parentPort.on("message", (job) => {
   let stdout = "";
@@ -108,7 +120,7 @@ parentPort.on("message", (job) => {
     if (stderr.length < ${MAX_STDERR}) stderr += c.slice(0, ${MAX_STDERR} - stderr.length);
   });
   child.on("error", (e) => finish(-1, String((e && e.message) || e)));
-  child.on("close", (code) => finish(code, ""));
+  child.on("close", (code, signal) => finish(code, closeNote(code, signal)));
 });
 
 parentPort.postMessage({ booted: true });
@@ -325,7 +337,7 @@ export function runChildInProcess(cmd: string, args: string[], options: RunChild
       if (stderr.length < MAX_STDERR) stderr += c.slice(0, MAX_STDERR - stderr.length);
     });
     child.on("error", (e) => finish(-1, String((e as Error)?.message ?? e)));
-    child.on("close", (code) => finish(code, ""));
+    child.on("close", (code, signal) => finish(code, closeNote(code, signal)));
   });
 }
 

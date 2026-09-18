@@ -10,7 +10,7 @@
 // printed as evidence alongside it.
 
 import assert from "node:assert/strict";
-import { childRunnerState, runChild, runChildInProcess, simulateLostWorkerForTest, stopChildRunner } from "../childRunner.js";
+import { childRunnerState, closeNote, runChild, runChildInProcess, simulateLostWorkerForTest, stopChildRunner } from "../childRunner.js";
 
 const NODE = process.execPath;
 
@@ -92,6 +92,27 @@ async function worstLoopLag(fn: () => Promise<unknown>): Promise<number> {
   assert.equal(r.timedOut, true, "a killed child must report timedOut");
   const inProcess = await runChildInProcess(NODE, sleepForever, { timeoutMs: 800 });
   assert.equal(inProcess.timedOut, true, "the fallback path must report a timeout the same way");
+
+  // A child that died to a signal must never come back mute. Its `code` is null, and callers compare
+  // that against 0, so with an empty stderr the failure reads as a claim about the command's exit
+  // status — which is how two gates crashed as "expected: 0, actual: null" with a blank message on
+  // 2026-09-17 and both passed on re-run. Asserted as "some explanation is present" rather than one
+  // exact wording, because either explanation is legitimate here: the child closes on our kill (the
+  // signal note) or it ignores it and the grace fires. `closeNote`'s own wording is pinned below.
+  for (const [label, killed] of [["worker", r], ["in-process", inProcess]] as const) {
+    assert.equal(killed.code, null, `${label}: a killed child reports a null code`);
+    assert.match(killed.stderr, /killed/i, `${label}: a killed child must say what happened to it, got ${JSON.stringify(killed.stderr)}`);
+  }
+}
+
+// The note's own wording. The worker gets it by interpolating this same function's `toString()` into its
+// source, so the two spawn paths cannot drift apart on what a killed child is told to say.
+{
+  assert.equal(closeNote(null, "SIGTERM"), " (killed by SIGTERM)");
+  assert.equal(closeNote(null, "SIGKILL"), " (killed by SIGKILL)");
+  assert.equal(closeNote(0, null), "", "a clean exit adds nothing");
+  assert.equal(closeNote(3, "SIGTERM"), "", "a real exit code is the verdict; nothing was signalled away");
+  assert.equal(closeNote(null, null), "", "no signal reported means nothing to name");
 }
 
 // A command that does not exist resolves as code -1 with the OS message — it never rejects, because

@@ -25,10 +25,14 @@ const { spawn } = require("node:child_process");
 const { PassThrough } = require("node:stream");
 const {
   BUSY_EXIT_CODE,
+  USAGE_EXIT_CODE,
   GATES,
   PREVIOUS_TRANSCRIPT,
   TRANSCRIPT,
+  SUBSET_TRANSCRIPT,
   busyText,
+  failedGatesFrom,
+  parseSelection,
   classifyFailure,
   clearCompletedStamp,
   gitStatusPaths,
@@ -304,6 +308,56 @@ async function assertCrashSafeLease() {
     fs.rmSync(crashDir, { recursive: true, force: true });
   }
 }
+
+// --- 7. re-running a subset is possible, and cannot be mistaken for a suite pass ---------------
+// Reading a red summary and re-running just those gates is the normal next move (the quality sweep
+// already offers it as `npm run quality -- <steps>`), and doing it by hand is how two gates were
+// re-checked on 2026-09-17. The danger is not the convenience but its evidence: a partial run must
+// leave the full run's transcript and completion stamp alone, or `probe:gates` reads two gates as
+// the whole suite.
+assert.notEqual(SUBSET_TRANSCRIPT, TRANSCRIPT, "a subset that overwrites the suite transcript destroys the evidence it was launched to read");
+assert.equal(path.dirname(SUBSET_TRANSCRIPT), path.dirname(TRANSCRIPT), "both are working artifacts under server/data");
+
+// The failures come from the transcript's own per-gate verdict lines, not the stamp: the run most
+// worth re-running is one that never reached a stamp at all.
+const RULE = "────────";
+const transcriptOf = (verdicts) =>
+  verdicts.map(([gate, ok]) => `${RULE} ${gate}: ${ok ? "passed" : "FAILED"} in 1.0s ${RULE}`).join("\n");
+assert.deepEqual(
+  failedGatesFrom(transcriptOf([["test:git", true], ["test:code-context", false], ["test:ide", false]])),
+  ["test:ide", "test:code-context"],
+  "the re-run is ordered like the suite, not like the summary",
+);
+assert.deepEqual(failedGatesFrom(transcriptOf([["test:git", true]])), [], "a green run has nothing to re-run");
+assert.deepEqual(
+  failedGatesFrom(`interrupted half way\n${RULE} test:ide: FAILED in 9.0s`),
+  ["test:ide"],
+  "an interrupted run still names what it saw fail",
+);
+assert.deepEqual(failedGatesFrom(transcriptOf([["test:not-a-gate", false]])), [], "a name that is no longer a registered gate is not re-run");
+
+assert.equal(parseSelection([]).mode, "full", "no arguments is the whole suite, unchanged");
+assert.deepEqual(parseSelection([]).gates, GATES);
+assert.deepEqual(parseSelection(["test:git", "test:ide"]).gates, ["test:ide", "test:git"], "explicit names run in suite order");
+assert.equal(parseSelection(["test:git", "test:ide"]).mode, "only");
+assert.match(
+  parseSelection(["test:gti"]).error ?? "",
+  /not a registered gate: test:gti/,
+  "a typo must be a usage error — running nothing and exiting 0 reads as a pass",
+);
+assert.notEqual(USAGE_EXIT_CODE, 0, "a usage error is not proof that the gates passed");
+assert.deepEqual(
+  parseSelection(["--failed"], GATES, () => transcriptOf([["test:ide", false]])).gates,
+  ["test:ide"],
+  "--failed reads the last transcript",
+);
+assert.match(
+  parseSelection(["--failed"], GATES, () => {
+    throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+  }).error ?? "",
+  /no transcript/,
+  "with no transcript there is nothing to re-run, and saying so beats running the whole suite unasked",
+);
 
 assertCrashSafeLease()
   .then(() => console.log(`runGates: all assertions passed (${GATES.length} gates, transcript ${path.relative(ROOT, TRANSCRIPT)})`))

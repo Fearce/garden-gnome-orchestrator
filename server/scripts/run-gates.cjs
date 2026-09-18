@@ -34,7 +34,13 @@ const TRANSCRIPT = path.join(SERVER_DIR, "data", "gates-last.log");
 // (2026-09-11). One rotation costs nothing and makes the compare-two-runs question answerable.
 const PREVIOUS_TRANSCRIPT = path.join(SERVER_DIR, "data", "gates-prev.log");
 const STAMP = path.join(SERVER_DIR, "data", "gates-last.json");
+// A SUBSET run (`-- --failed`, or explicit gate names) writes here instead, and stamps nothing. Reading
+// a red summary and re-running just those gates is the normal next move — it is what the quality sweep
+// already offers as `npm run quality -- <steps>` — but a partial run is not a suite verdict, so it must
+// not be able to overwrite the full run's evidence or leave a stamp `probe:gates` would read as a green.
+const SUBSET_TRANSCRIPT = path.join(SERVER_DIR, "data", "gates-subset.log");
 const BUSY_EXIT_CODE = 75;
+const USAGE_EXIT_CODE = 2;
 
 const GATES = [
   "test:ide",
@@ -332,7 +338,40 @@ function classifyFailure(output, code) {
   return { shape: "silent", note: `${exited} having printed no failure and no error; its last lines below are PASSING output, not the cause` };
 }
 
-function summaryText(results) {
+/** Which gates a finished-or-interrupted run reported FAILED, read from the transcript's own per-gate
+ *  verdict lines rather than from the completion stamp. The stamp is written only after the last gate,
+ *  so the run most worth re-running — one that crashed, was killed, or died with the session that
+ *  backgrounded it — has no stamp at all, while its transcript has every verdict up to the moment it
+ *  stopped. Returned in suite order, so a re-run is ordered like the run it came from. */
+function failedGatesFrom(transcriptText, gates = GATES) {
+  const failed = new Set();
+  for (const m of String(transcriptText ?? "").matchAll(/^─+ (\S+): FAILED\b/gm)) failed.add(m[1]);
+  return gates.filter((g) => failed.has(g));
+}
+
+/** Turn argv into the gate list to run. No arguments is the whole suite; `--failed` re-runs what the
+ *  last transcript reported red; anything else is taken as explicit gate names. An unknown name is a
+ *  usage error rather than a silent no-op, because "it ran nothing and exited 0" reads as a pass. */
+function parseSelection(argv, gates = GATES, readTranscript = () => fs.readFileSync(TRANSCRIPT, "utf8")) {
+  const args = (argv ?? []).filter((a) => a !== "");
+  if (args.length === 0) return { mode: "full", gates, error: null };
+  if (args.length === 1 && (args[0] === "--failed" || args[0] === "-f")) {
+    let text = "";
+    try {
+      text = readTranscript();
+    } catch {
+      return { mode: "failed", gates: [], error: `no transcript to read failures from (${TRANSCRIPT})` };
+    }
+    return { mode: "failed", gates: failedGatesFrom(text, gates), error: null };
+  }
+  const unknown = args.filter((a) => !gates.includes(a));
+  if (unknown.length) {
+    return { mode: "only", gates: [], error: `not a registered gate: ${unknown.join(", ")}` };
+  }
+  return { mode: "only", gates: gates.filter((g) => args.includes(g)), error: null };
+}
+
+function summaryText(results, transcript = TRANSCRIPT) {
   const failed = results.filter((r) => !r.ok);
   const lines = ["", "=== summary ===", `  ${results.length - failed.length}/${results.length} gates passed`];
   for (const r of failed) {
@@ -346,7 +385,7 @@ function summaryText(results) {
         .join("\n"),
     );
   }
-  lines.push("", `  full transcript: ${TRANSCRIPT}`, "");
+  lines.push("", `  full transcript: ${transcript}`, "");
   return lines.join("\n");
 }
 
@@ -376,10 +415,10 @@ function rotateTranscript(from = TRANSCRIPT, to = PREVIOUS_TRANSCRIPT) {
   }
 }
 
-function openTranscript() {
-  rotateTranscript();
-  fs.mkdirSync(path.dirname(TRANSCRIPT), { recursive: true });
-  return fs.createWriteStream(TRANSCRIPT, { flags: "w" });
+function openTranscript(target = TRANSCRIPT) {
+  if (target === TRANSCRIPT) rotateTranscript();
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  return fs.createWriteStream(target, { flags: "w" });
 }
 
 /** `process.exit` truncates a stream with writes still queued — flush before returning an exit code. */
@@ -387,26 +426,43 @@ function closeTranscript(log) {
   return new Promise((resolve) => log.end(resolve));
 }
 
-async function main() {
+async function main(argv = process.argv.slice(2)) {
+  const selection = parseSelection(argv);
+  if (selection.error) {
+    say(`\n=== cannot run ===\n    ${selection.error}\n    usage: npm run test:gates [-- --failed | <gate> ...]\n\n`);
+    return USAGE_EXIT_CODE;
+  }
+  const subset = selection.mode !== "full";
+  if (subset && selection.gates.length === 0) {
+    say(`\n=== nothing to run ===\n    the last transcript reports no failing gate (${TRANSCRIPT})\n    this is not a suite pass — run the full suite for that\n\n`);
+    return 0;
+  }
+
   const lease = acquireGateRunLease();
   if (!lease.acquired) {
     say(busyText(lease.owner));
     return BUSY_EXIT_CODE;
   }
 
+  const transcript = subset ? SUBSET_TRANSCRIPT : TRANSCRIPT;
   const startedAt = Date.now();
   let log;
   try {
-    clearCompletedStamp();
-    log = guardBrokenPipe(openTranscript());
+    // Only a full run may touch the stamp: it is the record of a whole suite at a commit, and a subset
+    // neither proves nor disproves it.
+    if (!subset) clearCompletedStamp();
+    log = guardBrokenPipe(openTranscript(transcript));
     // The path goes out FIRST, not just in the summary: a backgrounded run is watched from the
     // transcript, and by the time the summary prints there is nothing left to watch.
-    const header = `\n=== running ${GATES.length} free test gates ===\n    transcript: ${TRANSCRIPT}\n\n`;
+    const scope = subset
+      ? `${selection.gates.length} of ${GATES.length} gates (${selection.mode === "failed" ? "last run's failures" : "selected"}) — a subset, NOT a suite pass`
+      : `${GATES.length} free test gates`;
+    const header = `\n=== running ${scope} ===\n    transcript: ${transcript}\n\n`;
     say(header);
     log.write(header);
 
     const results = [];
-    for (const gate of GATES) {
+    for (const gate of selection.gates) {
       say(`  … ${gate} `);
       log.write(`\n──────── ${gate} ────────\n`);
       const r = await runGate(gate, log);
@@ -416,12 +472,12 @@ async function main() {
       log.write(`──────── ${gate}: ${r.ok ? "passed" : "FAILED"} in ${(r.ms / 1000).toFixed(1)}s ────────\n`);
     }
 
-    const summary = summaryText(results);
+    const summary = summaryText(results, transcript);
     say(summary);
     log.write(summary);
     await closeTranscript(log);
     log = null;
-    writeStamp(results, startedAt);
+    if (!subset) writeStamp(results, startedAt);
     return results.some((r) => !r.ok) ? 1 : 0;
   } finally {
     if (log) await closeTranscript(log);
@@ -431,11 +487,15 @@ async function main() {
 
 module.exports = {
   BUSY_EXIT_CODE,
+  USAGE_EXIT_CODE,
   GATES,
   STAMP,
   PREVIOUS_TRANSCRIPT,
   TRANSCRIPT,
+  SUBSET_TRANSCRIPT,
   busyText,
+  failedGatesFrom,
+  parseSelection,
   classifyFailure,
   clearCompletedStamp,
   gitStatusPaths,

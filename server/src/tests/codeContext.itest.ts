@@ -39,6 +39,13 @@ const git = async (cwd: string, ...args: string[]) => {
 async function makeRepo(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
   await git(dir, "init", "-b", "work");
+  // Point at an empty hook directory, as gitService/gitProgress/repoOps already do. A global
+  // `core.hooksPath` is inherited by every throwaway repo, and the owner's is a real validation suite:
+  // it cost ~20s per commit here, which was most of this gate's runtime and what pushed `git commit`
+  // past the 60s child timeout and crashed the gate twice on 2026-09-17.
+  const emptyHooks = join(dir, ".git", "itest-empty-hooks");
+  await mkdir(emptyHooks);
+  await git(dir, "config", "core.hooksPath", emptyHooks);
   await git(dir, "config", "user.email", "gate@example.invalid");
   await git(dir, "config", "user.name", "Gate");
   await writeFile(join(dir, "file.txt"), "one\n");
