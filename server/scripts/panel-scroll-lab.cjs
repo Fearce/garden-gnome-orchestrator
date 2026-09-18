@@ -20,7 +20,13 @@
 // not geometry:
 //   1. The panel's scrollport is a usable size at every width, and scrolling it to the end actually
 //      brings the last transcript entry into view while the inject bar stays pinned and on screen.
-//   2. Nothing in the transcript scrolls SIDEWAYS. Agent output is full of 200-char command lines and
+//   2. The DELIVERABLES strip is on screen, with its chips, the moment the panel opens and still after
+//      scrolling to the newest message. Added after the owner reported missing deliverables a third
+//      time: the strip had been moved inside the scrollport, and a panel that sticks to the newest
+//      message opened with it 13,000px above the window. Nothing was broken in the data, which is why
+//      three rounds of data-layer tests stayed green through it. A file surface is only surfaced if it
+//      is reachable, so this lab is the layer that owes the check.
+//   3. Nothing in the transcript scrolls SIDEWAYS. Agent output is full of 200-char command lines and
 //      fenced code, and a flex item's automatic minimum size is its content's min-content width, so
 //      one long line silently widens the column and hands the feed a horizontal scrollbar. When that
 //      fails, the check names the widest offending element instead of just reporting a number.
@@ -46,6 +52,23 @@ const SLACK = 1;
 /** The smallest transcript viewport that is still a transcript. Below this the panel is the reported
  *  bug ("a sliver"), whether or not anything technically overflowed. Two `.fi` rows plus their gap. */
 const MIN_SCROLLPORT = 150;
+
+/** How many deliverable cards the fixture seeds, and therefore how many chips the strip must show.
+ *  Counting them is what separates "the bar is on screen" from "the bar is on screen with its files
+ *  in it": an empty strip in the right place would otherwise pass every geometric check here.
+ *
+ *  It is 24 rather than a token 3 because the strip WRAPS, and three chips are one row at every width
+ *  this lab drives, which exercises neither the height cap nor the internal scroll that pays for
+ *  pinning the bar outside the scrollport. Twenty-four wraps at all five widths, so "stays a strip"
+ *  and "the cap hides nothing" are asserted against a bar that genuinely wants to be taller. A real
+ *  task reaches this easily: the live store holds one with 60. */
+const SEEDED_DELIVERABLES = 24;
+
+/** The most of the panel the pinned deliverables strip may occupy. It is capped in the stylesheet at
+ *  `22vh`, which is a share of the WINDOW; this is the same bound restated against the panel, which is
+ *  what the owner actually reads, and it holds in the bands where the panel is not full height. A
+ *  third is generous for a strip and still leaves the transcript the majority of the panel. */
+const MAX_DELIVERABLE_SHARE = 0.34;
 
 /** Each band is a different rule, so each gets a width. 580 is the reported one (compact single-pane,
  *  `.detail` is a fixed full-screen overlay); 900 is the first desktop width; 1440x620 is the case
@@ -92,7 +115,8 @@ function bodyFor(i) {
 }
 
 /** A task shaped like the one in the bug report: parked in `review` (so nothing can spawn an agent),
- *  three roles' worth of filter chips, a pinned work memo, three deliverables, and a transcript long
+ *  three roles' worth of filter chips, a pinned work memo, enough deliverables to wrap the strip at
+ *  every width this lab drives (`SEEDED_DELIVERABLES`), and a transcript long
  *  enough that the scroll is real rather than incidental. */
 function seed(dataDir) {
   const db = new Database(path.join(dataDir, "orchestrator.sqlite"));
@@ -139,7 +163,7 @@ function seed(dataDir) {
   const finding = db.prepare(
     "INSERT INTO findings (id, thread_id, from_run_id, from_role, kind, summary, detail, path, label, severity, routed, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)",
   );
-  for (let i = 1; i <= 3; i++) {
+  for (let i = 1; i <= SEEDED_DELIVERABLES; i++) {
     finding.run(
       `psl-d-${i}`,
       TASK_ID,
@@ -268,6 +292,28 @@ function readPanel(page) {
       })(),
       memo: rect(document.querySelector(".implementation-memo-pin")),
       deliverables: rect(document.querySelector(".deliverables")),
+      deliverableChips: document.querySelectorAll(".deliverables .dl-chip").length,
+      // The strip opens expanded on desktop and collapsed on a phone (`Deliverables.tsx`), so the chips
+      // are only owed in one of those states. The COUNT on the label is owed in both: collapsed, that
+      // number is the owner's only signal that the task has files at all.
+      deliverablesExpanded: !!document.querySelector(".deliverables.expanded"),
+      deliverablesLabelCount: Number(document.querySelector(".deliverables-label .n")?.textContent ?? -1),
+      // Whether the cap is doing anything at this width, and whether what it cuts off is still
+      // reachable. Read as computed overflow + real geometry, never from the rule we wrote.
+      deliverablesOverflows: (() => {
+        const b = document.querySelector(".deliverables");
+        return !!b && b.scrollHeight > b.clientHeight + 1;
+      })(),
+      deliverablesScrollable: (() => {
+        const b = document.querySelector(".deliverables");
+        if (!b) return null;
+        const oy = getComputedStyle(b).overflowY;
+        return oy === "auto" || oy === "scroll";
+      })(),
+      // Read from the DOM rather than from a class name: "is the strip inside the thing that scrolls"
+      // is the actual invariant, and a later refactor that renames the scrollport must not quietly
+      // turn this check green. `scroller` is whichever element was measured as scrolling above.
+      deliverablesInsideScroller: !!scroller && !!document.querySelector(".deliverables") && scroller.contains(document.querySelector(".deliverables")),
       offenders: offenders.slice(0, 4),
       // Fenced code is the one thing in a transcript that used to travel sideways legitimately (its
       // own `overflow-x: auto`). On a 290px panel that is a line you can only read by dragging a
@@ -343,6 +389,8 @@ function assertPanel(check, tag, P) {
     "the seeded 500-entry feed fits without scrolling: the fixture, not the panel, is wrong",
   );
 
+  assertDeliverablesOnScreen(check, tag, P, "when the panel opens");
+
   // The other axis: agent output is full of long command lines, and a flex item's automatic minimum
   // size is content-based, so one of them silently widens the column instead of wrapping.
   check(
@@ -400,6 +448,74 @@ function assertPanel(check, tag, P) {
   );
 }
 
+/**
+ * The deliverables strip is ON SCREEN, at this viewport, in this state.
+ *
+ * This is the check that was missing when the owner reported "I still cannot see deliverables" for a
+ * third time. Every test that existed asserted the DATA: the finding row persists, the route serves
+ * it, the store's per-thread index survives the feed cap and a reconnect. All of that was green and
+ * stayed green, because none of it can see WHERE the strip lands. Between 73d2bd5 and this fix the
+ * strip was rendered inside the panel's scrollport, and the panel opens stuck to the newest message,
+ * so on task 6cf6f87c in the live console it opened at y=-13347px: present, correct, and 13,000
+ * pixels above the window. A card the owner cannot reach is not surfaced.
+ *
+ * So the invariant is about REACHABILITY, like the rest of this lab: the strip's top edge is inside
+ * the panel and above the composer, it is not a descendant of the thing that scrolls (which is what
+ * made it carryable in the first place), it holds every seeded chip, and it has not taken the panel
+ * over in the process. That last one is 73d2bd5's bug in the other direction, and it is the reason
+ * the strip is capped and self-scrolling rather than simply pinned back where it used to be.
+ */
+function assertDeliverablesOnScreen(check, tag, P, when) {
+  const px = (n) => `${Math.round(n)}px`;
+  const { deliverables: bar, detail, composer } = P;
+  const floor = composer ? composer.top : detail.bottom;
+  check(
+    `${tag} · the deliverables strip is on screen ${when} (top ${px(bar ? bar.top : 0)} vs panel top ${px(detail.top)})`,
+    !!bar && bar.height > 0 && bar.top >= detail.top - SLACK && bar.bottom <= floor + SLACK,
+    bar
+      ? `the strip is ${px(bar.height)} tall at ${px(bar.top)}, against a panel of ${px(detail.top)}..${px(floor)}`
+      : "no .deliverables in the panel at all",
+  );
+  check(
+    `${tag} · the deliverables strip is outside the scrollport, so the transcript cannot carry it off screen`,
+    !!bar && P.deliverablesInsideScroller === false,
+    "the strip is a descendant of the panel's scrollport, which is the 2026-09-18 regression exactly",
+  );
+  // Owed in BOTH states: the count is what tells the owner the task has files, and it is all a
+  // collapsed strip shows. An empty bar in the right place would otherwise satisfy the geometry above.
+  check(
+    `${tag} · the strip reports all ${SEEDED_DELIVERABLES} files on its label (reads ${P.deliverablesLabelCount})`,
+    P.deliverablesLabelCount === SEEDED_DELIVERABLES,
+    `the label reads ${P.deliverablesLabelCount}, not ${SEEDED_DELIVERABLES}`,
+  );
+  // The chips themselves are owed only where the strip opens expanded. A phone opens to the one
+  // disclosure row on purpose, so demanding chips there would gate a deliberate design as a defect.
+  if (P.deliverablesExpanded) {
+    check(
+      `${tag} · the expanded strip holds all ${SEEDED_DELIVERABLES} file chips (${P.deliverableChips} rendered)`,
+      P.deliverableChips === SEEDED_DELIVERABLES,
+      `${P.deliverableChips} of ${SEEDED_DELIVERABLES} chips rendered`,
+    );
+  }
+  // The other half of the trade. A pinned strip that grows without bound is what sheared the inject
+  // bar off the panel, so the cap has to be real, not just declared in the stylesheet.
+  check(
+    `${tag} · the strip stays a strip (${px(bar ? bar.height : 0)} <= ${Math.round(MAX_DELIVERABLE_SHARE * 100)}% of the ${px(detail.height)} panel)`,
+    !!bar && bar.height <= detail.height * MAX_DELIVERABLE_SHARE + SLACK,
+    bar ? `the strip takes ${px(bar.height)} of a ${px(detail.height)} panel` : "no .deliverables in the panel at all",
+  );
+  // A cap that CLIPS would trade one invisible-file bug for another, so whatever the cap cuts off has
+  // to be reachable inside the bar. Only meaningful once the chips actually overflow it, which is why
+  // the fixture seeds enough of them to wrap at every width.
+  if (P.deliverablesExpanded && bar && P.deliverablesOverflows) {
+    check(
+      `${tag} · the capped strip scrolls its own overflow rather than clipping it`,
+      P.deliverablesScrollable === true,
+      "the strip is taller than its box with no way to reach the rest",
+    );
+  }
+}
+
 /** After scrolling to the end: the last transcript row must be visible, and the memo/deliverable block
  *  must be REACHABLE, i.e. it scrolled away rather than permanently occupying the panel. */
 function assertScrolledToEnd(check, tag, P) {
@@ -417,6 +533,9 @@ function assertScrolledToEnd(check, tag, P) {
     !!composer && composer.bottom <= detail.bottom + SLACK,
     composer ? `the composer ends at ${px(composer.bottom)} against a panel floor of ${px(detail.bottom)}` : "no visible composer",
   );
+  // The state the owner actually reported from: a long task, scrolled to the newest message. This is
+  // where the strip used to be thousands of pixels away.
+  assertDeliverablesOnScreen(check, tag, P, "after scrolling to the newest message");
 }
 
 async function openPanel(browser, viewport, head) {
@@ -462,7 +581,7 @@ async function main() {
   if (args.shot) fs.mkdirSync(args.shot, { recursive: true });
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "panel-scroll-lab-"));
-  console.log(`panel-scroll-lab: 500-entry transcript + work memo + 3 deliverables on ${BASE}`);
+  console.log(`panel-scroll-lab: 500-entry transcript + work memo + ${SEEDED_DELIVERABLES} deliverables on ${BASE}`);
   const check = createChecks();
   try {
     await boot({ dataDir, port: PORT });

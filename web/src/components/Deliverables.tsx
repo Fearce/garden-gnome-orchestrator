@@ -11,6 +11,31 @@ function copy(text: string): void {
   void navigator.clipboard?.writeText(text);
 }
 
+/** `.dl-pop`'s width, and the gap it leaves under the chip. Mirrors the two values in styles.css;
+ *  they are needed here to keep a popover anchored near the right edge inside the window. */
+const POP_W = 244;
+const POP_GAP = 6;
+
+/**
+ * Where a chip's popover should sit, in VIEWPORT coordinates, or null to leave it to the stylesheet.
+ *
+ * The popover is `position: fixed` rather than absolute inside the chip, because every box it would
+ * otherwise sit in clips it: `.deliverables` is a capped, self-scrolling bar (a 244px card cannot
+ * live inside a 47px strip), `.detail` is `overflow: hidden`, and on a narrow pane the panel is
+ * narrower than the popover. The touch layer already escaped this the same way, as a bottom sheet
+ * anchored to the window corner, and that rule still owns the no-hover case: returning null there
+ * leaves its `inset` untouched instead of fighting it with an inline style.
+ */
+function popoverPosition(chip: HTMLElement | null): { top: number; left: number } | null {
+  if (!chip || typeof window === "undefined") return null;
+  if (window.matchMedia("(hover: none)").matches) return null; // the bottom-sheet rule places it
+  const box = chip.getBoundingClientRect();
+  return {
+    top: box.bottom + POP_GAP,
+    left: Math.min(Math.max(8, box.left), Math.max(8, window.innerWidth - POP_W - 8)),
+  };
+}
+
 /**
  * The right-panel Deliverables strip: each agent-produced file (a finding of kind 'deliverable') is a
  * small clickable file icon. Clicking opens the inline preview; hovering (or focusing) reveals a
@@ -60,7 +85,11 @@ function DeliverableChip({ d, onView }: { d: Finding; onView: () => void }) {
   const previewable = isPreviewable(kind);
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
+  // Viewport coordinates for this chip's popover, re-measured every time it is about to be shown.
+  // The strip scrolls and the panel resizes, so a position measured once would drift off its chip.
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
   const ref = useRef<HTMLSpanElement>(null);
+  const place = () => setPos(popoverPosition(ref.current));
   const onCopy = () => {
     copy(path);
     setCopied(true);
@@ -77,12 +106,15 @@ function DeliverableChip({ d, onView }: { d: Finding; onView: () => void }) {
   }, [open]);
   const download = apiUrl(`/api/deliverable/${d.id}?download=1`);
   return (
-    <span className="dl-chip" ref={ref}>
+    // Placement hangs off the same events the stylesheet shows the popover on, so the coordinates are
+    // already written by the time `:hover`/`:focus-within` reveals it. Until a chip has been measured
+    // once, styles.css parks the popover off-screen rather than at the window's top-left corner.
+    <span className="dl-chip" ref={ref} onMouseEnter={place} onFocus={place}>
       <button
         className="dl-chip-btn"
         // A previewable file opens its preview on the first click, on any device. One that can't be
         // previewed used to be an inert icon — it now opens the popover, where its actions live.
-        onClick={previewable ? onView : () => setOpen((o) => !o)}
+        onClick={previewable ? onView : () => { place(); setOpen((o) => !o); }}
         aria-label={d.label ?? name}
         title={d.label ?? name}
         type="button"
@@ -92,14 +124,14 @@ function DeliverableChip({ d, onView }: { d: Finding; onView: () => void }) {
       {/* Touch-only: the actions below are otherwise reachable by hover alone. */}
       <button
         className="dl-more"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => { place(); setOpen((o) => !o); }}
         aria-label={`Actions for ${d.label ?? name}`}
         aria-expanded={open}
         type="button"
       >
         ⋯
       </button>
-      <span className={"dl-pop" + (open ? " open" : "")} role="tooltip">
+      <span className={"dl-pop" + (open ? " open" : "")} role="tooltip" style={pos ? { top: pos.top, left: pos.left } : undefined}>
         <span className="dl-pop-head">
           <span className="dl-pop-icon">
             <FileIcon kind={kind} size={16} />

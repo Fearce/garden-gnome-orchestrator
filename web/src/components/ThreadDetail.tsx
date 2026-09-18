@@ -925,12 +925,22 @@ export function ThreadDetail() {
           </>
         )}
       </div>
-      {/* One scrollport for everything between the header and the inject bar. The memo, the deployment
-          handoff, the filter chips and the deliverables used to be non-scrolling siblings of a panel
-          that is `overflow: hidden`, so they took their height off the transcript and, once it ran
-          out, off the inject bar (see `.detail-body` in styles.css). The scroll ref moves here with
-          them: the follow-the-live-agent stick, the load-older anchor and the filter jump all measure
-          whatever actually scrolls. */}
+      {/* The deliverables strip is the ONE row that stays out of the scrollport. It is not transcript:
+          it is the owner's durable file index, the thing they reopen the task for days later. Inside
+          `.detail-body` it scrolls with the feed, and because the panel sticks to the newest message it
+          opens parked far above the viewport (measured at y=-13347px on a real task), which is what
+          "the deliverables are gone" meant. The reason it was moved in (73d2bd5) still stands, so it
+          does not go back to taking whatever height it wants: pinned chrome starved the transcript and
+          sheared the inject bar off the panel. `.deliverables` yields the way `.detail-head` does
+          (`flex: 0 1 auto` over a capped, self-scrolling strip), which keeps it on screen without a
+          height claim the panel cannot afford. */}
+      <Deliverables items={deliverables} />
+      {/* One scrollport for everything else between the header and the inject bar. The memo, the
+          deployment handoff and the filter chips used to be non-scrolling siblings of a panel that is
+          `overflow: hidden`, so they took their height off the transcript and, once it ran out, off the
+          inject bar (see `.detail-body` in styles.css). The scroll ref moves here with them: the
+          follow-the-live-agent stick, the load-older anchor and the filter jump all measure whatever
+          actually scrolls. */}
       <div className="detail-body" ref={scrollRef} onScroll={onFeedScroll}>
         <ImplementationMemos memos={taskMemos} />
         <ManualDeploymentHandoff deployment={thread.state === "done" ? thread.manualDeployment : null} />
@@ -974,11 +984,9 @@ export function ThreadDetail() {
           </div>
         )}
 
-        <Deliverables items={deliverables} />
         {/* Task-level chrome first, then the agent filter, then the transcript it filters. The order is
             load-bearing now that the filter row is sticky inside .detail-body: anything rendered after
-            it scrolls UNDER it and is then covered rather than reachable. The deliverables strip used
-            to sit below the chips, which put its file actions under exactly that overlap. */}
+            it scrolls UNDER it and is then covered rather than reachable. */}
         {feedItems.length > 0 && (
           <div className="feed-filter">
             <button className={"fchip" + (roleFilter === "all" ? " on" : "")} onClick={() => setRoleFilter("all")}>

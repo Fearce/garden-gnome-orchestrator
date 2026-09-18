@@ -2195,10 +2195,32 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 
 /* ---- deliverables (right-panel compact strip + hover popover + preview modal) ---- */
 /* A thin single-row bar: a label and a wrapping row of small file-icon chips. The per-chip info
-   popover is an out-of-flow overlay (see .dl-pop) so this bar never grows tall or reflows the feed. */
+   popover is an out-of-flow overlay (see .dl-pop) so this bar never grows tall or reflows the feed.
+
+   This bar is PINNED between `.detail-head` and `.detail-body`, and that placement is the whole
+   feature. It is the one piece of the panel that is not transcript: the owner comes back days later
+   for these files, so it has to be on screen when the task opens, not somewhere in the scrollback.
+   It lived inside `.detail-body` from 73d2bd5 until the "I still cannot see deliverables" report,
+   and because the panel sticks to the newest message, a task with any real transcript opened with
+   the strip thousands of pixels above the viewport (y=-13347px, task 6cf6f87c, live console). It
+   rendered, it had its chips, and it was never once visible.
+
+   What 73d2bd5 was right about still holds, so this bar does NOT get to claim height it wants:
+   `.detail` is `overflow: hidden`, and pinned chrome that takes its natural size is what sheared the
+   inject bar off the bottom of the panel. Three rules keep that from coming back.
+     - `flex: 0 1 auto; min-height: 0` makes it the second row that YIELDS, alongside `.detail-head`,
+       instead of pushing `.detail-body` below its floor.
+     - `max-height` caps it at a strip even on a task with sixty cards, since the chips wrap.
+     - `overflow-y: auto` means the cap hides nothing: what does not fit scrolls INSIDE the bar.
+   `align-content: flex-start` is the companion to the cap: chips WRAP, so once there are more lines
+   than the cap shows, the default stretch would spread them down a box they no longer fit in. Items
+   stay centred within their own line, which is what keeps the label level with the chips.
+   Gate: `npm run panel-scroll-lab --prefix server`, which asserts the strip is inside the panel at
+   every viewport, both on open and after scrolling to the end of the transcript. */
 .deliverables {
   padding: 8px 16px; border-bottom: 1px solid var(--line);
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  display: flex; align-items: center; align-content: flex-start; gap: 10px; flex-wrap: wrap;
+  flex: 0 1 auto; min-height: 0; max-height: 22vh; overflow-y: auto; overflow-x: hidden;
 }
 .deliverables-label {
   font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
@@ -2222,9 +2244,16 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .dl-chip-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* Info popover: floats below the chip as an overlay, so it never adds height to the bar or collides
-   with the feed's layout. Shown on hover or keyboard focus. */
+   with the feed's layout. Shown on hover or keyboard focus.
+
+   `fixed`, not `absolute`, and the coordinates come from the component (`popoverPosition`). Every
+   box this card could be laid out inside clips it: `.deliverables` is a capped, self-scrolling strip
+   a 244px card does not fit in, `.detail` is `overflow: hidden`, and `.detail-body` scrolls. The
+   touch layer already had to escape the same way. The off-screen `top` is the pre-measurement state:
+   a chip that has never been hovered has no coordinates yet, and parking it out of view is what
+   stops a first hover flashing the card in the window's top-left corner. */
 .dl-pop {
-  position: absolute; top: calc(100% + 6px); left: 0; z-index: 50;
+  position: fixed; top: -9999px; left: 0; z-index: 50;
   width: 244px; max-width: 78vw;
   display: none; flex-direction: column; gap: 5px;
   padding: 10px 12px;

@@ -13,6 +13,28 @@ scrollback; a deliverable carries an owner-addressable View/Download/Copy-path a
 comes back for it days later. That single difference is the source of both classes of bug below.
 
 ## Console side
+- **Keep the strip OUT of the panel's scrollport, and check WHERE it lands, not just that it rendered.**
+  The 2026-09-18 "I still cannot see deliverables" report, third of its kind. `73d2bd5` moved the strip
+  from a pinned row into `.detail-body` to stop pinned chrome starving the transcript; `.detail-body`
+  sticks to the newest message, so from that commit on the panel OPENED with the strip parked above the
+  viewport. Measured on task 6cf6f87c in the live console: `.deliverables` present, `display: flex`,
+  expanded, one chip, `y = -13347px`. Every data-layer test stayed green through all of it, because
+  none of them can see geometry. That is the generalization worth more than the fix: **a durable
+  owner-facing surface is only surfaced if it is REACHABLE, and reachability is a browser assertion.**
+  The strip is now a pinned sibling between `.detail-head` and `.detail-body`, and it pays for that
+  placement rather than repeating 73d2bd5's bug: `flex: 0 1 auto; min-height: 0` makes it yield like
+  the header, `max-height: 22vh` caps it however many cards a task has, and `overflow-y: auto` means
+  the cap hides nothing. Gate: `npm run panel-scroll-lab --prefix server`, which now asserts the strip
+  is inside the panel and outside the scroller, with its chips, at five viewports x both header states,
+  both on open and after scrolling to the end.
+- **The popover is `position: fixed` and positioned from JS (`popoverPosition`), not `absolute`.** Once
+  the strip clips its own overflow, a 244px card cannot be laid out inside a 47px bar, and `.detail`
+  (`overflow: hidden`) plus `.detail-body` were already clipping it in the narrow bands, which is why
+  the touch layer had a bottom-sheet override. Coordinates are re-measured on the same `mouseenter` /
+  `focus` the stylesheet reveals it on; a never-hovered chip's popover parks at `top: -9999px` so the
+  first hover cannot flash it in the window's corner. The no-hover case still returns null and leaves
+  the bottom-sheet rule alone. Verify with `npm run deliverables-lab --prefix server`, which drives
+  View / Download / Copy-path for real.
 - **Never derive the cards from the feed.** That was the 2026-09-14 "deliverables are missing" report
   (`44a479e`): `ThreadDetail` read them out of the activity feed, which `capFeed`/`PER_RUN_CAP` trims
   per run, so a long task silently evicted its OWN older deliverable cards while the DB row, the WS
@@ -47,10 +69,22 @@ legitimate file is refused, move the file, never the fence.
 
 ## Verify
 ```
+npm run smoke:deliverables --prefix server        # "can I see my deliverables?" BOTH halves, one verdict
+npm run smoke:deliverables --prefix server -- --task 6cf6f87c   # one task, by id prefix or title
 npm run test:deliverables --prefix server         # the store index: merge, cap-independence, cleanup
 npm run test:deliverables-probe --prefix server   # the probe's classifier and its red/amber policy
 npm run probe:deliverables --prefix server        # read-only census of the LIVE store: which cards are dead
+npm run panel-scroll-lab --prefix server          # the PLACEMENT gate: is the strip actually on screen
 ```
+**Reach for `smoke:deliverables` first on any "I cannot see deliverables" report.** It exists because
+that sentence has two independent halves and each round of this bug was a different one: the DATA half
+(are there rows, would the route serve them) and the PLACEMENT half (does the console put the strip
+where a human can see it). A probe for either is blind to the other, which is exactly how 2026-09-14's
+fix could be correct and complete and leave the owner reporting the same sentence a month later. It
+composes the two rather than restating them: the classifier and the whole red/amber policy come from
+`probe-deliverables.cjs`, the geometry comes from `panel-scroll-lab.cjs`. Keep it that way. Deciding
+"is this card broken" a second time locally is how a check goes permanently red over years of history
+and stops being read.
 `probe:deliverables` mirrors the route check for check, so its class IS the HTTP status the owner would
 get; keep the two in step when either moves. It is red only for a card that was born broken (no path,
 no task row, or a workspace escape inside the last 7 days) and amber for a file that has since gone
