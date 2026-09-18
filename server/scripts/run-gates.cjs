@@ -147,6 +147,7 @@ const GATES = [
   "test:manual-deployment-probe",
   "test:implementation-memos",
   "test:deliverables",
+  "test:run-attribution",
   "test:deliverables-probe",
   "test:elapsed-probe",
   "test:reveal-workspace",

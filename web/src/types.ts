@@ -1179,6 +1179,10 @@ export type ServerEvent =
       type: "thread.history";
       threadId: string;
       messages: Message[];
+      // This task's own runs — the connect snapshot is a bounded fleet-wide slice, so an older
+      // message's `runId` only resolves to a model once this arrives. Optional for the same rolling-
+      // compatibility reason as the fields below it.
+      runs?: AgentRun[];
       findings: Finding[];
       implementationMemos?: ImplementationMemo[];
       brief: string;

@@ -166,6 +166,10 @@ export type ServerEvent =
       type: "thread.history";
       threadId: string;
       messages: Message[];
+      // Every run this task has ever had. The connect snapshot only carries the newest SNAPSHOT_RUNS
+      // runs fleet-wide, so an older message's `runId` resolves to nothing there — and a feed that
+      // cannot resolve a run cannot say which model wrote a line without guessing.
+      runs: AgentRun[];
       findings: Finding[];
       implementationMemos: ImplementationMemo[];
       brief: string;

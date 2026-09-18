@@ -594,7 +594,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 />
                 <ToggleRow
                   label="Show agent model"
-                  hint={'On: agent labels in the task feed name the model they ran on — "QA (Tor, Opus 4.8 High)". Off: just the agent name.'}
+                  hint={
+                    'On: every message in the task feed names the model that wrote THAT message — "QA (Tor, Opus 4.8 High)" — so a task that changed model mid-work still shows what each line really ran on. Off: just the agent name.'
+                  }
                   on={settings.showAgentModel}
                   onChange={(v) => setSettings({ showAgentModel: v })}
                 />

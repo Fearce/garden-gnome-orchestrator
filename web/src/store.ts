@@ -69,6 +69,7 @@ import {
 } from "./lib/font.js";
 import { mergeImplementationMemos } from "./implementationMemos.js";
 import { deliverablesByThread, mergeDeliverableIndexes, mergeThreadDeliverables } from "./threadDeliverables.js";
+import { mergeRunIndex, pruneRunIndex } from "./lib/runAttribution.js";
 
 interface ThreadDraft {
   runId: string;
@@ -1775,8 +1776,6 @@ function applyEvent(ev: ServerEvent): void {
     case "hello": {
       const threads: Record<string, Thread> = {};
       for (const t of ev.threads) threads[t.id] = t;
-      const runs: Record<string, AgentRun> = {};
-      for (const r of ev.runs) runs[r.id] = r;
       const coworkSessions: Record<string, CoworkSession> = {};
       for (const session of ev.coworkSessions ?? []) coworkSessions[session.id] = session;
       const director: DirectorItem[] = ev.director.map((m: DirectorMessage) => ({
@@ -1796,7 +1795,10 @@ function applyEvent(ev: ServerEvent): void {
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
       useStore.setState((s) => ({
         threads,
-        runs,
+        // Hello carries a bounded fleet-wide slice of runs, so it must not replace the ones an open
+        // task loaded from its own history — the feed needs a message's own run to name the model that
+        // wrote it. Pruning against the task list this frame just delivered keeps the index bounded.
+        runs: pruneRunIndex(mergeRunIndex(s.runs, ev.runs), new Set(Object.keys(threads))),
         coworkSessions,
         coworkCreating: false,
         findings: ev.findings,
@@ -2259,6 +2261,10 @@ function applyEvent(ev: ServerEvent): void {
           (cursor.createdAt < first.createdAt || (cursor.createdAt === first.createdAt && cursor.id < first.id));
         return {
           threadFeeds: { ...s.threadFeeds, [ev.threadId]: merged },
+          // This task's own runs, so each row can name the model of the run that produced it. Older
+          // runs fall outside the connect snapshot entirely, so without this the feed would have to
+          // guess — which is what used to restamp a whole task with its newest model.
+          ...(ev.runs ? { runs: mergeRunIndex(s.runs, ev.runs) } : {}),
           threadDeliverables: {
             ...s.threadDeliverables,
             [ev.threadId]: mergeThreadDeliverables(s.threadDeliverables[ev.threadId] ?? [], ev.findings),

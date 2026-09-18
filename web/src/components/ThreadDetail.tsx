@@ -1,10 +1,11 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore, type OutboundMessage } from "../store.js";
 import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
-import { agentName, isCollaborationRoom, MODEL_ROLES, repoRoom } from "../types.js";
+import { agentName, isCollaborationRoom, repoRoom } from "../types.js";
 import { canAutoReview, clock, formatDuration, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed } from "../lib/timing.js";
 import { canOpenIde, ideWorkspaceTarget, threadOrigin } from "../lib/codeNav.js";
+import { roleModelSummary } from "../lib/runAttribution.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
@@ -90,7 +91,7 @@ function GavelIcon() {
   );
 }
 
-function RoleLabel({ role, name, model }: { role: Role; name?: string; model?: string }) {
+function RoleLabel({ role, name, model, modelTitle }: { role: Role; name?: string; model?: string; modelTitle?: string }) {
   return (
     <>
       <span className="role-word">{role}</span>
@@ -99,7 +100,11 @@ function RoleLabel({ role, name, model }: { role: Role; name?: string; model?: s
           (
           {name}
           {name && model ? ", " : ""}
-          {model ? <span className="role-model">{model}</span> : null})
+          {model ? (
+            <span className="role-model" {...(modelTitle ? { title: modelTitle } : {})}>
+              {model}
+            </span>
+          ) : null})
         </span>
       ) : null}
     </>
@@ -692,29 +697,34 @@ export function ThreadDetail() {
     [nameOverrides, id, directorName],
   );
 
-  // The model + effort each role ran on, taken from its latest run — appended to the label when the
-  // "Show agent model" setting is on. Keyed by a signature over the roles' current model/effort so the
-  // returned lookup keeps a stable identity across renders (FeedRow is memoised on it), rebuilding only
-  // when a run's model actually changes or the setting flips.
-  const modelSig = showAgentModel
-    ? MODEL_ROLES.map((role) => {
-        const r = latestRunOf(threadRuns, role);
-        return r ? `${role}:${r.model}:${r.effort ?? ""}` : "";
-      }).join("|")
-    : "";
+  // The model + effort that wrote each row, appended to its label when the "Show agent model" setting
+  // is on. Resolved from the row's OWN run: a task that changes model mid-work (usage saving, a cap
+  // failover, an auto-resume onto another subscription) has one run per launch, so keying this by role
+  // restamped every earlier message with whatever the role ran last. A run the client doesn't hold
+  // yields no label rather than a borrowed one. Keyed by a signature over this task's runs so the
+  // returned lookup keeps a stable identity across renders (FeedRow is memoised on it).
+  const modelSig = showAgentModel ? threadRuns.map((r) => `${r.id}:${r.model}:${r.effort ?? ""}`).join("|") : "";
   const modelFor = useMemo(() => {
-    const byRole = new Map<Role, string>();
+    const byRun = new Map<string, string>();
     if (showAgentModel) {
-      for (const role of MODEL_ROLES) {
-        const r = latestRunOf(threadRuns, role);
-        const label = r ? modelEffortLabel(r.model, r.effort) : "";
-        if (label) byRole.set(role, label);
+      for (const run of threadRuns) {
+        const label = modelEffortLabel(run.model, run.effort);
+        if (label) byRun.set(run.id, label);
       }
     }
-    return (role: Role): string | undefined => byRole.get(role);
+    return (runId: string | undefined | null): string | undefined => (runId ? byRun.get(runId) : undefined);
     // threadRuns is captured for the map build; modelSig is the real dependency (its data fingerprint).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showAgentModel, modelSig]);
+
+  // The agent-filter chip stands for a role's whole history rather than one message, so it names the
+  // current model and counts the others when the role ran on several.
+  const roleModelFor = useMemo(
+    () => (role: Role) => (showAgentModel ? roleModelSummary(threadRuns, role) : undefined),
+    // Same fingerprint dependency as modelFor above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [showAgentModel, modelSig],
+  );
 
   const doInject = async (mode: "append" | "interrupt" | "queue") => {
     // Frozen tasks accept no manual inject/interrupt — the server auto-resumes them. Guard the handler
@@ -977,6 +987,7 @@ export function ThreadDetail() {
             {activeRoles.map((role) => {
               const roleRuns = threadRuns.filter((r) => r.role === role);
               const r = latestRunOf(threadRuns, role);
+              const roleSummary = roleModelFor(role);
               return (
                 <button
                   key={role}
@@ -986,7 +997,7 @@ export function ThreadDetail() {
                 >
                   <Gnome role={role} size={15} />
                   <span className="fchip-label">
-                    <RoleLabel role={role} name={nameFor(role)} model={modelFor(role)} />
+                    <RoleLabel role={role} name={nameFor(role)} model={roleSummary?.label} modelTitle={roleSummary?.title} />
                   </span>
                   <span className="n">{counts[role] ?? 0}</span>
                   {r ? <RoleElapsed className="fchip-time" runs={roleRuns} /> : null}
@@ -1072,7 +1083,7 @@ export function ThreadDetail() {
             <div className="fi thinking draft" style={roleVar(thinkingDraft.role)}>
               <div className="head">
                 <span className="role-tag dim">
-                  <RoleLabel role={thinkingDraft.role} name={nameFor(thinkingDraft.role)} model={modelFor(thinkingDraft.role)} />
+                  <RoleLabel role={thinkingDraft.role} name={nameFor(thinkingDraft.role)} model={modelFor(thinkingDraft.runId)} />
                 </span>
               </div>
               <Markdown className="body" text={"💭 " + thinkingDraft.text} />
@@ -1083,7 +1094,7 @@ export function ThreadDetail() {
               <div className="head">
                 <Gnome role={draft.role} size={30} />
                 <span className="role-tag" style={{ color: roleColor(draft.role) }}>
-                  <RoleLabel role={draft.role} name={nameFor(draft.role)} model={modelFor(draft.role)} />
+                  <RoleLabel role={draft.role} name={nameFor(draft.role)} model={modelFor(draft.runId)} />
                 </span>
               </div>
               <Markdown className="body" text={draft.text} />
@@ -1227,7 +1238,7 @@ const FeedRow = memo(function FeedRow({
 }: {
   item: FeedItem;
   nameFor: (role: Role) => string;
-  modelFor: (role: Role) => string | undefined;
+  modelFor: (runId: string | undefined | null) => string | undefined;
 }) {
   switch (item.kind) {
     case "text":
@@ -1236,7 +1247,7 @@ const FeedRow = memo(function FeedRow({
           <div className="head">
             <Gnome role={item.role} size={30} />
             <span className="role-tag" style={{ color: roleColor(item.role) }}>
-              <RoleLabel role={item.role} name={nameFor(item.role)} model={modelFor(item.role)} />
+              <RoleLabel role={item.role} name={nameFor(item.role)} model={modelFor(item.runId)} />
             </span>
             <span className="ts">{clock(item.at)}</span>
           </div>
@@ -1248,7 +1259,7 @@ const FeedRow = memo(function FeedRow({
         <div className="fi thinking" style={roleVar(item.role)}>
           <div className="head">
             <span className="role-tag dim">
-              <RoleLabel role={item.role} name={nameFor(item.role)} model={modelFor(item.role)} />
+              <RoleLabel role={item.role} name={nameFor(item.role)} model={modelFor(item.runId)} />
             </span>
             <span className="ts">{clock(item.at)}</span>
           </div>
@@ -1260,7 +1271,7 @@ const FeedRow = memo(function FeedRow({
         <div className="fi tool">
           <div className="head">
             <span className="role-tag dim">
-              <RoleLabel role={item.role} name={nameFor(item.role)} model={modelFor(item.role)} />
+              <RoleLabel role={item.role} name={nameFor(item.role)} model={modelFor(item.runId)} />
             </span>
             <span className="ts">{clock(item.at)}</span>
           </div>
@@ -1282,7 +1293,7 @@ const FeedRow = memo(function FeedRow({
             <span className="sev-tag">⚑ {item.finding.severity}</span>
             {item.finding.fromRole ? (
               <span className="role-tag dim">
-                <RoleLabel role={item.finding.fromRole} name={nameFor(item.finding.fromRole)} model={modelFor(item.finding.fromRole)} />
+                <RoleLabel role={item.finding.fromRole} name={nameFor(item.finding.fromRole)} model={modelFor(item.finding.fromRunId)} />
               </span>
             ) : null}
             <span className="ts">{clock(item.at)}</span>

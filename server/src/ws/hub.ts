@@ -331,6 +331,7 @@ export async function handleCommand(
         // Humanize raw Grok/Codex structured JSON walls at the display boundary so tasks that
         // finished before write-time formatting still open clean in the feed.
         messages: humanizeFeedMessages(page.messages),
+        runs: ctx.db.listRuns(cmd.threadId),
         findings: ctx.db.listFindings(cmd.threadId),
         implementationMemos: ctx.db.listImplementationMemos(cmd.threadId),
         brief: thread?.brief ?? "",
