@@ -63,15 +63,16 @@ Steps 3/4 read runs and parks, so neither sees the failure the owner switched th
 - Shared-checkout commits and rebases. **This entry has been wrong FIVE times, always about WHERE
   the helper lives.** Every earlier version sent you to `~/Claude/tools/` — a directory that exists
   on no machine this repo is worked from — and told you to trust the empty listing, so the agent
-  read "absent" and hand-rolled it (2026-09-11, 2026-09-18). It is a PYTHON tool in the global
-  script home: **`python ~/.claude/scripts/stage_my_hunks.py --list <file>`**, then `--contains
-  "<marker>"` or `--keep 1,4`, stages only YOUR hunks of a file a peer is also editing. It diffs at
-  zero context and reconstructs against the exact HEAD blob, so unlike a hand-rolled split it cannot
-  double this repo's CRLF line endings into a whole-file diff; `--selftest` proves it first.
-  **Before rebuilding ANY helper run `python ~/.claude/scripts/findtool.py <words>`** — searching
-  every tool home at once is the step all five wrong versions skipped. Record:
-  `~/.claude/memory/feedback_the_script_you_are_about_to_write_probably_exists.md`.
-  Still true without the tool: **`git commit --only <paths> -F <msgfile>`** commits exactly those
+  read "absent" and hand-rolled it (2026-09-11, 2026-09-18). It is a PYTHON tool, and it lives in the
+  maintainer's own agent config rather than in this repo — so it is there for some contributors and
+  genuinely absent for others, and `probe:doc-paths` now says which you are:
+  **`python ~/.claude/scripts/stage_my_hunks.py --list <file>`**, then `--contains "<marker>"` or
+  `--keep 1,4`, stages only YOUR hunks of a file a peer is also editing. It diffs at zero context and
+  reconstructs against the exact HEAD blob, so unlike a hand-rolled split it cannot double this
+  repo's CRLF line endings into a whole-file diff; `--selftest` proves it first. **Before rebuilding
+  ANY helper run `python ~/.claude/scripts/findtool.py <words>`** — searching every tool home at once
+  is the step all five wrong versions skipped.
+  Portable, and what to use when you do not have those: **`git commit --only <paths> -F <msgfile>`** commits exactly those
   paths whatever a peer left staged, and never finish with a bare `git commit`, which takes the whole
   shared index. **`git reset` first if the index is already populated** by an earlier session —
   `git status --porcelain` shows that as a staged `M` in the FIRST column, and a later `git add` of a
