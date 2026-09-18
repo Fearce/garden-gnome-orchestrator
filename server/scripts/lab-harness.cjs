@@ -63,6 +63,22 @@
 //     below (or return `getBoundingClientRect()` fields from `page.evaluate`) before comparing edges.
 //   • Don't wrap a lab in `timeout` — it SIGTERMs the whole npm child tree, so `--keep`'s instance dies
 //     with it. Give the Bash call a long timeout, or background it and poll the port.
+//   • **Seed AFTER `boot()`, never before.** The schema is created by the server's own `Db`
+//     constructor, so a seed that opens the temp sqlite first dies on `no such table: threads`. Every
+//     existing lab does it in this order; it is not obvious from reading one, because the seeding block
+//     sits visually above the assertions it feeds.
+//   • **Filler rows paginate your fixture off the board.** The task list is paged (`PER_PAGE`), so
+//     seeding a few hundred threads to push something past a bound leaves `.card:has-text(...)` timing
+//     out on a task that exists and is simply on page 4. Seed filler as `state:"closed"` — closed tasks
+//     get their own collapsed section, while `agent_runs` are carried by the connect snapshot
+//     regardless of task state, which is usually the thing the filler was for.
+//   • **A reload does not re-select the open task.** `selectedThreadId` is not persisted, so a
+//     lab checking that something survives `page.reload()` must click the card again before asserting;
+//     otherwise the feed is genuinely empty and the failure looks like the regression you were hunting.
+//   • Wrap a long `waitForFunction` in try/catch and report the miss through `check(...)`. An
+//     uncaught Playwright timeout kills the run with a stack naming a selector, not a claim, and
+//     every later assertion goes unrun — the `[crashed]`-vs-`[reported]` distinction from
+//     `threadmanager-itest.md`, in browser form.
 //   • Screenshots go through `shotDir(dataDir)`, so `-- --shots <dir>` lands them somewhere that still
 //     exists after the run. A lab deletes its temp DATA_DIR on the way out, which takes the evidence
 //     with it — and an implementor now has to SURFACE that evidence as a deliverable, so without the
