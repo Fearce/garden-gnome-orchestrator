@@ -1456,7 +1456,7 @@ function UsageSavingField({
       <div className="usage-saving-head">
         <div>
           <span className="sub-label">Usage saving</span>
-          <span className="sub-msg dim">Use one exact low-cost model once either available 5h or weekly meter reaches the threshold.</span>
+          <span className="sub-msg dim">Use one exact low-cost model once either available 5h or weekly meter reaches the threshold. A task pinned to an exact model is exempt.</span>
         </div>
         <button
           className={"switch" + (policy.enabled ? " on" : "")}

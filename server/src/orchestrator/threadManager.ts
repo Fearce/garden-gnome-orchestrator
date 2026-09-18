@@ -2676,12 +2676,6 @@ export class ThreadManager implements OrchestratorApi {
     return provider === "claude" ? (accountId ?? this.accounts.dispatchPreview().account.id) : provider;
   }
 
-  /** A task-local pin normally wins routing, except while its requested provider is in its own saving
-   * mode. The saving control promises that provider will use only its selected economy model. */
-  private usageSavingOverridesRequest(request: Thread["modelRequest"]): boolean {
-    return !!request?.provider && this.usageSavingTarget(this.usageSavingSubId(request.provider)) != null;
-  }
-
   /** AccountManager's DTO surface is present in production; a handful of focused legacy harnesses expose
    * only dispatchPreview, so keep settings construction source-compatible with those narrow fakes. */
   private usageSavingAccounts(): Array<{ id: string; enabled: boolean; fiveHour: number | null; sevenDay: number | null }> {
@@ -3267,6 +3261,17 @@ export class ThreadManager implements OrchestratorApi {
       provider = route.provider;
     }
 
+    // An explicit target was just validated STRICTLY above ("No substitute was started"), so usage
+    // saving may not then substitute it — the same precedence the task implementor keeps, and here the
+    // consequence is worse: `cowork.ts` persists the dispatched model as `session.model`, which every
+    // later turn treats as the pin, so one transient window spike would re-pin the conversation to the
+    // economy model permanently. Resolving the policy to `undefined` also drops its effort half, which
+    // was chosen for ITS model and describes nothing about this one. (`conserve: false` below guards a
+    // different feature — token conservation resolves inside `modelFor`, saving resolves above it.)
+    const pinnedTarget = model;
+    const savingFor = (subId: string): UsageSavingPolicy | undefined =>
+      pinnedTarget ? undefined : this.usageSavingTarget(subId);
+
     try {
       const resume = session.agentSessionId ?? undefined;
       let target: CoworkTarget;
@@ -3276,7 +3281,7 @@ export class ThreadManager implements OrchestratorApi {
       if (provider === "claude") {
         const account = session.account ? this.acctById(session.account) : this.dispatchAccount(demand);
         if (!account) return { error: "The Claude subscription linked to this Co-work context is unavailable. Restore it or create a new session; no account was substituted." };
-        const saving = this.usageSavingTarget(account.id);
+        const saving = savingFor(account.id);
         // conserve:false — this pick FREEZES as the session's strict pin for every later turn (see this
         // method's doc comment), so a transient token-conservation downgrade must never land here.
         model = saving?.model ?? model ?? this.modelFor(account.id, "implementor", { conserve: false });
@@ -3293,7 +3298,7 @@ export class ThreadManager implements OrchestratorApi {
         agent = new AgentRun(cfg);
         startContent = this.communicationContent(contentWithImages(prompt, images));
       } else if (provider === "codex") {
-        const saving = this.usageSavingTarget(CODEX_SUB_ID);
+        const saving = savingFor(CODEX_SUB_ID);
         // conserve:false — see the Claude branch above; this freezes as the session's strict pin too.
         model = saving?.model ?? model ?? this.providerRoleModel("codex", "implementor", undefined, { conserve: false });
         const effort = (saving?.effort ?? session.effort ?? this.codexEffort(model)) as CodexEffort;
@@ -3309,7 +3314,7 @@ export class ThreadManager implements OrchestratorApi {
         });
         startContent = this.communicationContent(contentWithImages(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"), images));
       } else if (provider === "grok") {
-        const saving = this.usageSavingTarget(GROK_SUB_ID);
+        const saving = savingFor(GROK_SUB_ID);
         model = saving?.model ?? model ?? this.grokModel();
         const effort = (saving?.effort ?? session.effort ?? this.grokEffort(model)) as GrokEffort;
         target = { provider, model, effort, accountId: "xai-grok", accountLabel: `grok:${model}` };
@@ -3323,7 +3328,7 @@ export class ThreadManager implements OrchestratorApi {
         });
         startContent = this.communicationContent(contentWithImages(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"), images));
       } else {
-        const saving = this.usageSavingTarget(ZAI_SUB_ID);
+        const saving = savingFor(ZAI_SUB_ID);
         model = saving?.model ?? model ?? this.zaiModel();
         const effort = resolveZaiEffort(model, saving?.effort ?? session.effort ?? this.zaiEffort(model));
         const cfg = coworkerRunOptions(session.workspace, {
@@ -3599,7 +3604,7 @@ export class ThreadManager implements OrchestratorApi {
       return undefined;
     }
     // A task-local owner pin is not a candidate for automatic judgement. It remains exact across every
-    // resume/cap cycle while no usage-saving policy is active.
+    // resume/cap cycle, including while a usage-saving policy is active.
     if (this.db.getThread(thread.id)?.modelRequest) return undefined;
     const stage = this.db.getThreadStageOutputs(thread.id);
     const policy = stage.routeDecision?.modelPolicy;
@@ -3752,12 +3757,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   /** The auto-selected model for this thread when the run is going to `provider`. A cap-failover onto
    *  another backend leaves the pick behind and uses that backend's own configured model — a Claude model
-   *  id means nothing to the Codex CLI. */
+   *  id means nothing to the Codex CLI. An owner pin is deliberately NOT answered here: `pinnedModel`
+   *  owns that, and stating one precedence in two places is what makes a resume read drift against a
+   *  model the dispatch was never going to use. */
   private pickedModel(threadId: string, provider: ImplementorProvider): string | undefined {
-    const requested = this.db.getThread(threadId)?.modelRequest;
-    if (requested?.model && requested.provider === provider) return requested.model;
     const pick = this.db.getThreadStageOutputs(threadId).modelPick;
     return pick && pick.provider === provider ? pick.model : undefined;
+  }
+
+  /** The owner's exact task-local model when this dispatch is going to the backend they pinned. A strict
+   *  request runs EXACTLY, so it takes neither the Fable-pool fallback an auto-pick does nor any automatic
+   *  substitution below. */
+  private pinnedModel(threadId: string, provider: ImplementorProvider): string | undefined {
+    const request = this.db.getThread(threadId)?.modelRequest;
+    return request?.provider === provider && request.model ? request.model : undefined;
   }
 
   /** The model `startImplementor` will dispatch for this task on `provider`, plus the saving policy that
@@ -3766,12 +3779,24 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  job is "is the session bound to the model we would run now?", and a second copy of this precedence
    *  answers a slightly different question — which reads as drift and restarts a session onto the model it
    *  was already running. `accountId` is required for Claude (saving, the Fable pool and the override
-   *  matrix are all per-subscription) and ignored by the CLI backends. */
+   *  matrix are all per-subscription) and ignored by the CLI backends.
+   *
+   *  A strict owner pin outranks usage saving. Saving is an automatic thrift policy over a whole
+   *  subscription; the pin is the owner's explicit instruction for ONE task, and the message it posts
+   *  promises that no fallback model is allowed. Substituting anyway broke that promise silently —
+   *  reported against a repository where the cheaper model is not permitted to do the work at all.
+   *  Thrift is not lost, only made visible: the pinned model's own runway is still gated
+   *  (`gateRequestedModel`), so an exhausted pool parks the task instead of quietly running something
+   *  else. Returning no policy alongside it is equally load-bearing — a saving policy is a model+effort
+   *  PAIR resolved against ITS model, so carrying the effort half onto a model the pair never described
+   *  is meaningless. */
   private implementorDispatchTarget(
     threadId: string,
     provider: ImplementorProvider,
     accountId?: string,
   ): { model: string; saving: UsageSavingPolicy | undefined } {
+    const pinned = this.pinnedModel(threadId, provider);
+    if (pinned) return { model: pinned, saving: undefined };
     const saving = this.usageSavingTarget(this.usageSavingSubId(provider, accountId));
     if (saving) return { model: saving.model, saving };
     const picked = this.pickedModel(threadId, provider);
@@ -3779,9 +3804,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (provider === "grok") return { model: picked ?? this.grokModel(), saving };
     if (provider === "zai") return { model: picked ?? this.zaiModel(), saving };
     const subId = accountId ?? this.accounts.dispatchPreview().account.id;
-    // A strict request runs EXACTLY, so it never takes the Fable-pool fallback an auto-pick does.
-    const requested = this.db.getThread(threadId)?.modelRequest;
-    if (requested?.provider === "claude" && requested.model) return { model: requested.model, saving };
     return { model: picked ? this.poolResolved(subId, picked) : this.modelFor(subId, "implementor"), saving };
   }
 
@@ -5027,7 +5049,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (live.length && !exact(live)) {
         return { options: [], error: `Requested Claude model ${model} is not available to the authenticated subscriptions. Choose an available Claude model or restore access; no substitute was started.` };
       }
-      return { options: this.claudeCapacityOptions(demand, now).map((option) => ({ ...option, label: `${option.label} · ${model}` })) };
+      // A model with its own gated allowance (Fable) is metered separately from the subscription's
+      // windows, and a strict request may not take that pool's fallback — so an account whose windows
+      // are healthy still cannot carry this exact model while its pool is latched. Without this the
+      // task parks, the supervisor sees a healthy account, resumes, and is capped again on every cycle.
+      return {
+        options: this.claudeCapacityOptions(demand, now).map((option) => ({
+          ...option,
+          label: `${option.label} · ${model}`,
+          hasHeadroom: option.hasHeadroom && !this.accounts.isModelLimited(option.accountId, model),
+        })),
+      };
     }
 
     if (request.provider === "codex") {
@@ -5090,7 +5122,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   private capacitySnapshotForThread(thread: Thread, role: CapParkStage, demand: CapacityDemand, now = Date.now()): RoleCapacitySnapshot & { error?: string } {
-    return role === "implementor" && thread.modelRequest && !this.usageSavingOverridesRequest(thread.modelRequest)
+    return role === "implementor" && thread.modelRequest
       ? this.requestedModelCapacitySnapshot(thread, demand, now)
       : this.roleCapacitySnapshot(role, demand, now);
   }
@@ -5507,7 +5539,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   ): ImplementorProvider | null {
     thread = this.ensureThreadModelRequest(this.db.getThread(thread.id) ?? thread);
     const demand = this.capacityDemand(thread, "implementor", opts?.effort);
-    if (thread.modelRequest && !this.usageSavingOverridesRequest(thread.modelRequest)) return this.gateRequestedModel(thread, demand);
+    if (thread.modelRequest) return this.gateRequestedModel(thread, demand);
     const { provider, error, allCandidatesCapped, candidates = [] } = this.resolveImplementorProvider(demand);
     if (!provider) {
       this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
@@ -7811,8 +7843,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const acct = opts?.account ?? this.dispatchAccount(demand);
       accountId = acct.id;
       // The per-task effort is capped at this Claude account's configured maximum (default: uncapped).
-      // Usage saving is provider-wide (it wins even over a task-local strict request), then the pin, then
-      // the auto-pick with this account's Fable-pool fallback, then the subscription's configured model.
+      // A task-local strict pin runs exactly, then provider-wide usage saving, then the auto-pick with
+      // this account's Fable-pool fallback, then the subscription's configured model.
       const { model, saving } = this.implementorDispatchTarget(thread.id, "claude", acct.id);
       // Apply both the account ceiling and the chosen model's exact effort support.
       const effort = saving?.effort ?? resolveClaudeEffort(model, clampEffort(plannerEffort, this.accountMaxEffort(acct.id)));
@@ -7933,10 +7965,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       : undefined;
     if (resumeSession && priorModel && !sameModelId(priorModel, selectedModel)) {
       const pick = this.pickedModel(thread.id, resolvedProvider);
-      const why = saving
-        ? `usage saving selected ${selectedModel}`
-        : this.db.getThread(thread.id)?.modelRequest?.provider === resolvedProvider
-          ? `the task is strictly pinned to ${selectedModel}`
+      const why = this.pinnedModel(thread.id, resolvedProvider)
+        ? `the task is strictly pinned to ${selectedModel}`
+        : saving
+          ? `usage saving selected ${selectedModel}`
           : pick
             ? `auto model selection picked ${selectedModel}`
             : `normal routing now selects ${selectedModel}`;
@@ -8133,7 +8165,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const fbSession = this.lastImplementorSession.get(thread.id);
       const runModel = this.latestImplementorRunModel(thread.id);
       if (
-        (!this.db.getThread(thread.id)?.modelRequest || this.usageSavingOverridesRequest(this.db.getThread(thread.id)?.modelRequest)) &&
+        !this.db.getThread(thread.id)?.modelRequest &&
         sameAcct &&
         fbSession &&
         runModel &&
@@ -8273,7 +8305,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (providerStartupWedged) this.quarantineStartupWedge(from, failedRun.transientApiErrorMessage);
       unavailableProviders.add(from);
       const strictRequest = this.db.getThread(thread.id)?.modelRequest;
-      if (strictRequest && !this.usageSavingOverridesRequest(strictRequest)) {
+      if (strictRequest) {
         await failedRun.stop();
         this.postFinding({
           threadId: thread.id,
@@ -8344,7 +8376,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       else if (from === "zai") this.noteZaiCap(current.rateLimitInfo);
       unavailableProviders.add(from);
       const strictRequest = this.db.getThread(thread.id)?.modelRequest;
-      if (strictRequest && !this.usageSavingOverridesRequest(strictRequest)) {
+      if (strictRequest) {
         await current.stop();
         this.capParked.set(thread.id, "implementor");
         this.postFinding({
@@ -9830,7 +9862,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * cleared provider map from defaulting to a known-capped Claude turn while Codex is already viable. */
   private routeQaSupersedeImplementor(thread: Thread, effort: Effort | undefined): boolean {
     const demand = this.capacityDemand(thread, "implementor", effort);
-    if (this.db.getThread(thread.id)?.modelRequest && !this.usageSavingOverridesRequest(this.db.getThread(thread.id)?.modelRequest)) {
+    if (this.db.getThread(thread.id)?.modelRequest) {
       return this.gateImplementorProvider(thread, { capParkOnExhaustion: true, effort }) != null;
     }
     const current = this.implementorProvider.get(thread.id);

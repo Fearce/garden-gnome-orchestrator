@@ -101,15 +101,37 @@ try {
   });
   check("5-hour usage selects the exact configured model for every role", manager.modelFor("account-a", "planner") === "claude-haiku-4-5-20251001" && manager.modelFor("account-a", "implementor") === "claude-haiku-4-5-20251001");
   check("the runtime target carries the exact configured effort", internals.usageSavingTarget("account-a")?.effort === "low");
+
+  // A strict owner pin outranks usage saving. The pin's own feed message promises no fallback model, and
+  // the reported failure was a repository where the economy model is not permitted to do the work at all.
+  const unpinned = db.createThread({ title: "unpinned", workspace: dir, rawPrompt: "x" });
+  const pinned = db.createThread({
+    title: "pinned",
+    workspace: dir,
+    rawPrompt: "x",
+    modelRequest: { requested: "claude-opus-5", provider: "claude", model: "claude-opus-5", strict: true },
+  });
+  const savingTarget = internals.implementorDispatchTarget(unpinned.id, "claude", "account-a");
+  const pinnedTarget = internals.implementorDispatchTarget(pinned.id, "claude", "account-a");
+  check("an unpinned task still dispatches the saving model", savingTarget.model === "claude-haiku-4-5-20251001");
+  check("a strict pin dispatches the pinned model while saving is active", pinnedTarget.model === "claude-opus-5");
+  // The policy is a model+effort PAIR resolved against ITS model, so half of it must not travel onto a
+  // model the pair never described — every effort site reads `saving?.effort`.
+  check("a strict pin carries no saving policy, so its effort is not downgraded either", pinnedTarget.saving === undefined);
+  // Thrift is not lost, only made visible: the pinned model's own pool is what gets gated, so an
+  // exhausted pool parks the task instead of quietly running something else.
+  const demand = internals.capacityDemand(db.getThread(pinned.id), "implementor", undefined);
+  const snapshot = internals.capacitySnapshotForThread(db.getThread(pinned.id), "implementor", demand);
   check(
-    "active saving supersedes a strict request on the same provider",
-    internals.usageSavingOverridesRequest({ provider: "claude", model: "claude-opus-4-6", requested: "claude-opus-4-6", strict: true }) === true,
+    "capacity is gated on the pinned model's own pool while saving is active",
+    snapshot.options.length > 0 && snapshot.options.every((option: { label: string }) => option.label.endsWith("· claude-opus-5")),
   );
+
   accounts.fiveHour = 89;
   check("dropping below both meters restores normal model routing", manager.modelFor("account-a", "implementor") !== "claude-haiku-4-5-20251001");
   check(
-    "an inactive saving policy leaves a strict request authoritative",
-    internals.usageSavingOverridesRequest({ provider: "claude", model: "claude-opus-4-6", requested: "claude-opus-4-6", strict: true }) === false,
+    "an unpinned task returns to normal routing too",
+    internals.implementorDispatchTarget(unpinned.id, "claude", "account-a").model !== "claude-haiku-4-5-20251001",
   );
 } finally {
   if (internals.capSupervisor) clearInterval(internals.capSupervisor);

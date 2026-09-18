@@ -215,6 +215,38 @@ console.log("\n=== B. usage saving deactivated: the stale sonnet session is drop
   h.dispose();
 }
 
+console.log("\n=== B2. a strict owner pin outranks active saving: the sonnet session is dropped for the pinned model ===");
+{
+  // The reported defect (2026-09-18): the owner pinned claude-opus-5 on a vota task, resumed, and the
+  // resume ran claude-sonnet-5 — usage saving deliberately outranked the pin, and the pin's own feed
+  // message promises "No fallback model is allowed". Saving stays ACTIVE throughout this case: that is
+  // what separates it from B, where the pin is absent and the window merely rolled back under.
+  const h = makeHarness();
+  h.accounts.fiveHour = 10;
+  h.accounts.sevenDay = 95; // still above the threshold configured below
+  h.mgr.setSettings({
+    usageSaving: { "account-a": { enabled: true, thresholdPct: 90, model: "claude-sonnet-5", effort: "medium" } },
+    modelOverrides: { "account-a": { implementor: "claude-sonnet-5" } },
+  });
+  h.db.setModelRequest(h.thread.id, { requested: "claude-opus-5", provider: "claude", model: "claude-opus-5", strict: true });
+  const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-sonnet-5", account: "Claude A" });
+  h.db.updateRun(priorRun.id, { sessionId: "sess-1" });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = h.mgr as any;
+  const result = await internals.startResumedImplementor(h.thread, "kickoff", "sess-1", {
+    resumeNudge: "continue",
+    qaFollows: true,
+  });
+  check("the resume was driven", result != null);
+  check(
+    "the saving-model session is not resumed in place while a pin names another model",
+    h.asks.length === 1 && h.asks[0]?.resume === undefined,
+    JSON.stringify(h.asks.map((a) => a.resume)),
+  );
+  check("the resume dispatches the pinned model, not the saving model", h.asks[0]?.model === "claude-opus-5", h.asks[0]?.model);
+  h.dispose();
+}
+
 console.log("\n=== C. a CLI backend drifts too: fresh session, and the owner's images still travel ===");
 {
   // A Codex/Grok session is bound to its model just as a Claude one is, so the same drift starts a fresh

@@ -276,6 +276,35 @@ async function main(): Promise<void> {
   check("the park names the exact-model-only recovery policy", parked?.error?.includes(SPARK) === true && parked.error.includes("no fallback model is allowed"), parked?.error ?? undefined);
 
   internals.requestedModelCapacitySnapshot = realRequestedModelCapacitySnapshot;
+
+  // A model with its own gated allowance (Fable) is metered apart from the subscription's 5h/weekly
+  // windows, and a strict pin never takes that pool's fallback model. So a latched pool has to remove
+  // the pinned model's headroom even while the account's own windows read healthy — otherwise the task
+  // parks, the cap supervisor sees a free account, resumes, and is capped again on every cycle.
+  const pooled = db.createThread({
+    title: "Pinned to a pool-gated model",
+    workspace,
+    rawPrompt: "",
+    brief: "Run it.",
+    modelRequest: { requested: "Fable 5.1", provider: "claude", model: "claude-fable-5-1", strict: true },
+  });
+  const pooledDemand = internals.capacityDemand(pooled, "implementor", undefined);
+  const openPool = internals.requestedModelCapacity(pooled, pooledDemand);
+  check(
+    "a strict Claude pin has headroom while its model's pool is open",
+    openPool.options.length > 0 && openPool.options.every((option: { hasHeadroom: boolean }) => option.hasHeadroom),
+    JSON.stringify(openPool),
+  );
+  const realIsModelLimited = internals.accounts.isModelLimited.bind(internals.accounts);
+  internals.accounts.isModelLimited = (_id: string, model: string): boolean => model === "claude-fable-5-1";
+  const latchedPool = internals.requestedModelCapacity(pooled, pooledDemand);
+  internals.accounts.isModelLimited = realIsModelLimited;
+  check(
+    "a latched model pool removes the pinned model's headroom on an otherwise healthy account",
+    latchedPool.options.length > 0 && latchedPool.options.every((option: { hasHeadroom: boolean }) => !option.hasHeadroom),
+    JSON.stringify(latchedPool),
+  );
+
   const impossible = db.createThread({ title: "Unknown exact model", workspace, rawPrompt: "", brief: "Run it.", modelRequest: unresolved });
   // Calling the concrete capacity method through the instance verifies unresolved requests fail before
   // ordinary provider routing. No auth or meter read is needed for this branch.

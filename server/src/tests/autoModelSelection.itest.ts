@@ -571,7 +571,10 @@ async function main(): Promise<void> {
       h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(OPUS_5), policyCandidate(SONNET_5)];
       const pick = await h.internals.autoSelectModel(thread(h, id));
       check("automatic policy does not overwrite a strict owner pin", pick === undefined && h.db.getThreadStageOutputs(id).modelPick === undefined, JSON.stringify(pick));
-      check("the pinned model is what runtime resolution returns", h.internals.pickedModel(id, "claude") === SONNET_5, String(h.internals.pickedModel(id, "claude")));
+      // Assert the DISPATCH target, not `pickedModel`: the pin is answered by `pinnedModel` inside
+      // `implementorDispatchTarget`, which is what actually spawns the run.
+      const pinnedDispatch = h.internals.implementorDispatchTarget(id, "claude", "acct-a").model;
+      check("the pinned model is what runtime resolution returns", pinnedDispatch === SONNET_5, String(pinnedDispatch));
       check("strict pins spend no automatic-selector turn", h.calls() === 0, String(h.calls()));
     } finally {
       h.dispose();
