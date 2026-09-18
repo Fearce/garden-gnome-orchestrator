@@ -96,14 +96,43 @@ try {
   check("an env assignment is not a citation", isPlaceholder("GGO_LAB_ENTRY=.cowork-lab-dist/index.js"));
   check("a placeholder path is not a citation", isPlaceholder("docs/<name>.md"));
   check("runtime state under data/ is not a citation", isPlaceholder("server/data/gates-last.log"));
+  // A home citation may never FAIL the gate — another contributor's box legitimately differs — but
+  // "not failed" used to mean "not named", and a nameless counter is what let `~/Claude/tools/`
+  // mislead five agents into rebuilding a tool that already existed. So: never a failure, always named.
+  const homeFixture = fs.mkdtempSync(path.join(os.tmpdir(), "doc-paths-home-"));
+  fs.writeFileSync(path.join(homeFixture, "real-tool.py"), "# real\n");
   check(
-    "a home path is counted as unchecked rather than failed",
+    "a home path is never a failure, however absent",
     (() => {
       writeDoc(root, "home.md", "It lives at `~/Claude/tools/safe-commit.sh` on the owner's machine.");
-      const result = scan({ root, docs: ["home.md"] });
+      const result = scan({ root, docs: ["home.md"], home: homeFixture });
       return result.unchecked === 1 && result.missingPaths.length === 0;
     })(),
   );
+  check(
+    "a home path that does NOT exist here is named with its doc:line",
+    (() => {
+      const result = scan({ root, docs: ["home.md"], home: homeFixture });
+      const hit = result.unresolvedHome.find((m) => m.cited === "~/Claude/tools/safe-commit.sh");
+      return !!hit && hit.doc === "home.md" && hit.line > 0;
+    })(),
+  );
+  check(
+    "a home path that DOES exist here is silent, so the note stays worth reading",
+    (() => {
+      writeDoc(root, "home-ok.md", "Run `~/real-tool.py` to check it.");
+      const result = scan({ root, docs: ["home-ok.md"], home: homeFixture });
+      return result.unchecked === 1 && result.unresolvedHome.length === 0;
+    })(),
+  );
+  check(
+    "one dead home path cited twice is named once",
+    (() => {
+      writeDoc(root, "home-twice.md", "`~/Claude/tools/safe-commit.sh` and again `~/Claude/tools/safe-commit.sh`.");
+      return scan({ root, docs: ["home-twice.md"], home: homeFixture }).unresolvedHome.length === 1;
+    })(),
+  );
+  fs.rmSync(homeFixture, { recursive: true, force: true });
   check(
     "a doc-relative parent path resolves against the doc's own directory",
     (() => {

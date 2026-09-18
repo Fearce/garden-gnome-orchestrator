@@ -17,13 +17,24 @@
  * test script is really in the suite. This enforces that a path or `npm run` script a doc cites is
  * real.
  *
- * WHAT IT DOES NOT CHECK, AND WHY
- * -------------------------------
- * Only REPO-RELATIVE paths and this repo's own npm scripts, because only those are the same on every
- * machine. A `~/Claude/tools/x.sh` is real on the owner's box and absent on another contributor's, so
- * a gate that asserted either way would be wrong half the time, which is exactly how the entry above
- * got wrong twice in opposite directions. Home-absolute paths are counted and reported as UNCHECKED,
- * never failed; a doc citing one should say which machine it means.
+ * WHAT IT DOES NOT FAIL ON, AND WHY
+ * ---------------------------------
+ * Only REPO-RELATIVE paths and this repo's own npm scripts can be FAILED on, because only those are
+ * the same on every machine. A `~/Claude/tools/x.sh` is real on one box and absent on another, so a
+ * gate that asserted either way would be wrong half the time, which is exactly how the entry above
+ * got wrong twice in opposite directions.
+ *
+ * But "not failed" was implemented as "counted and never named", and that is how the class recurred a
+ * FIFTH time on 2026-09-18: the `~/Claude/tools/` paragraph still named three scripts that exist
+ * nowhere on this machine, an agent obeyed its own "believe the listing" instruction, read the empty
+ * listing as "no such tool", and hand-rolled the hunk split that `~/.claude/scripts/stage_my_hunks.py`
+ * already does. The probe had printed `3 home/absolute path(s) not checked` on every sweep — a number
+ * nobody can act on, because it names neither the path nor the doc.
+ *
+ * So a home/absolute citation is now RESOLVED on this machine and, when it does not exist, NAMED with
+ * its doc:line as a note. Still never a failure: the next contributor's box legitimately differs, and
+ * a check that reds on someone else's machine stops being read. Naming is what makes it actionable
+ * without making it wrong.
  *
  * It proves a path RESOLVES. It cannot prove the file still says what the doc claims: that is a
  * `file:line` citation checker's job, and a human's for the rest.
@@ -100,6 +111,17 @@ function isHomeOrAbsolute(text) {
   return false;
 }
 
+/** Does a home/absolute citation name a real file ON THIS MACHINE? Never a verdict about the doc —
+ *  only about this box, which is the only thing that can honestly be observed here. */
+function homePathExists(cited, home = require("node:os").homedir()) {
+  const expanded = cited.startsWith("~") ? path.join(home, cited.slice(1)) : cited;
+  try {
+    return fs.existsSync(expanded.split(BACKSLASH).join(path.sep));
+  } catch {
+    return false;
+  }
+}
+
 /** Backticked spans are where this repo puts every path it means literally. */
 function* backticked(text) {
   for (const match of text.matchAll(/`([^`\n]+)`/g)) yield match[1].trim();
@@ -144,9 +166,10 @@ function resolves(root, rel, doc) {
   return roots.some((base) => fs.existsSync(path.resolve(base, rel)));
 }
 
-function scan({ root = REPO_ROOT, docs = null } = {}) {
+function scan({ root = REPO_ROOT, docs = null, home = undefined } = {}) {
   const missingPaths = [];
   const missingScripts = [];
+  const unresolvedHome = [];
   let checkedPaths = 0;
   let checkedScripts = 0;
   let unchecked = 0;
@@ -163,6 +186,11 @@ function scan({ root = REPO_ROOT, docs = null } = {}) {
       if (!/[\\/]/.test(raw) || !FILE_EXT.test(raw)) continue;
       if (isHomeOrAbsolute(raw)) {
         unchecked += 1;
+        const exists = home === undefined ? homePathExists(raw) : homePathExists(raw, home);
+        if (!exists && !reported.has(`${doc}|home|${raw}`)) {
+          reported.add(`${doc}|home|${raw}`);
+          unresolvedHome.push({ doc, cited: raw, line: lineOf(text, text.indexOf("`" + raw + "`")) });
+        }
         continue;
       }
       const rel = raw.split(BACKSLASH).join("/");
@@ -182,7 +210,7 @@ function scan({ root = REPO_ROOT, docs = null } = {}) {
     }
   }
 
-  return { missingPaths, missingScripts, checkedPaths, checkedScripts, unchecked, docs: files.length };
+  return { missingPaths, missingScripts, unresolvedHome, checkedPaths, checkedScripts, unchecked, docs: files.length };
 }
 
 function main() {
@@ -199,6 +227,18 @@ function main() {
   }
   for (const miss of missingScripts) {
     console.log(`  MISSING SCRIPT  ${miss.doc}:${miss.line}  ->  npm run ${miss.script}${miss.pkg ? ` --prefix ${miss.pkg}` : ""}`);
+  }
+  // A note, never a failure — see the header. It is the ONLY output that can send an agent to the
+  // real tool instead of rebuilding it, so it names the doc line rather than adding to a counter.
+  for (const miss of result.unresolvedHome) {
+    console.log(`  NOT ON THIS BOX ${miss.doc}:${miss.line}  ->  ${miss.cited}`);
+  }
+  if (result.unresolvedHome.length) {
+    console.log(
+      `  note  ${result.unresolvedHome.length} cited home/absolute path(s) do not exist here. Not a failure — another\n` +
+      "        machine may differ — but if one names a TOOL, find the real one before rebuilding it:\n" +
+      "        python ~/.claude/scripts/findtool.py <words>",
+    );
   }
 
   if (!missingPaths.length && !missingScripts.length) {
