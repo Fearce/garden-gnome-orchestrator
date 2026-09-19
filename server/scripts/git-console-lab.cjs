@@ -23,7 +23,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { SERVER_ROOT, loadChromium, authPassword, requireBuild, requireFreshWebBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
 
 const PORT = 4337;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -39,7 +39,11 @@ const SELF_REPO_NAME = path.basename(path.resolve(SERVER_ROOT, ".."));
 function buildFixture(base) {
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, windowsHide: true }).trim();
   const configure = (dir) => {
-    for (const [k, v] of [["user.name", "Git Lab"], ["user.email", "git-lab@example.com"], ["commit.gpgsign", "false"], ["core.autocrlf", "false"], ["push.default", "simple"]]) git(dir, "config", k, v);
+    // Fixtures must not inherit the operator's global hooks: they can inspect or mutate a real
+    // checkout and turn this isolated browser test into a slow, machine-dependent operation.
+    const hooks = path.join(dir, ".git", "lab-hooks");
+    fs.mkdirSync(hooks, { recursive: true });
+    for (const [k, v] of [["user.name", "Git Lab"], ["user.email", "git-lab@example.com"], ["commit.gpgsign", "false"], ["core.autocrlf", "false"], ["core.hooksPath", hooks], ["push.default", "simple"]]) git(dir, "config", k, v);
   };
 
   const originBare = path.join(base, "origin.git");
@@ -140,8 +144,21 @@ async function drive(page, work, keep) {
 
   console.log("\nBROWSE — the folder picker modal is searchable");
   await page.click('[aria-label="Choose a repository"]');
+  // A route that never settles used to leave the modal on "Loading…" indefinitely. Hold exactly
+  // the first request past the component deadline; `times: 1` leaves Retry's fresh request real.
+  await page.route("**/api/fs/ls?*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 12_000));
+    await route.continue().catch(() => {});
+  }, { times: 1 });
   await page.click('.gc-menu-action:has-text("Browse")');
+  await page.waitForSelector(".modal.folder-picker .fp-err[role=alert]", { timeout: 15_000 });
+  const pickerError = await page.textContent(".modal.folder-picker .fp-err");
+  check("a stalled folder listing stops with a useful error", /took too long to load/i.test(pickerError ?? ""), pickerError ?? "");
+  check("a stalled listing cannot be selected", await page.isDisabled('.modal.folder-picker .btn.primary'));
+  await page.click('.modal.folder-picker .fp-retry');
   await page.waitForSelector(".modal.folder-picker .fp-row", { timeout: 10_000 });
+  check("Retry reloads the folder list", (await page.$$(".modal.folder-picker .fp-row")).length > 0);
+  check("a recovered listing can be selected", !(await page.isDisabled('.modal.folder-picker .btn.primary')));
   check(
     "the folder picker opens with the filter focused",
     await page.evaluate(() => document.activeElement?.classList.contains("fp-filter")),
@@ -295,6 +312,7 @@ async function drive(page, work, keep) {
 (async () => {
   const keep = process.argv.includes("--keep");
   requireBuild();
+  requireFreshWebBuild();
   killInstance(PORT); // a previous --keep run may still hold the port
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "git-lab-"));
