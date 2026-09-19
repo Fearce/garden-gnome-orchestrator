@@ -2432,7 +2432,8 @@ body.dl-resizing { user-select: none; }
 .fp-row.up { color: var(--text-dim); }
 .fp-row .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fp-empty { padding: 14px 10px; font-size: 12.5px; }
-.fp-err { color: var(--danger); }
+.fp-err { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--danger); }
+.fp-retry { flex: none; }
 .fp-filter {
   width: 100%; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: var(--r-sm);
   background: var(--bg); color: var(--text); font-size: 13px; font-family: inherit;

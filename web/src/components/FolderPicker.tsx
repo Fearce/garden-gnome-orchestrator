@@ -1,5 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useReducer, useState } from "react";
 import { apiUrl } from "../lib/base.js";
+
+// Directory reads can hang on an unavailable network drive or a server that is restarting. A picker
+// is a convenience control, so it must give control back to the owner instead of spinning forever.
+const DIRECTORY_LOAD_TIMEOUT_MS = 10_000;
 
 interface LsResponse {
   path: string;
@@ -26,12 +30,16 @@ export function FolderPicker({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
+  const [requestVersion, retry] = useReducer((version: number) => version + 1, 0);
 
   useEffect(() => {
     let alive = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DIRECTORY_LOAD_TIMEOUT_MS);
     setLoading(true);
     setError(null);
-    fetch(apiUrl(`/api/fs/ls?path=${encodeURIComponent(path)}`))
+    setData(null);
+    fetch(apiUrl(`/api/fs/ls?path=${encodeURIComponent(path)}`), { signal: controller.signal })
       .then(async (r) => {
         if (!r.ok) throw new Error((await r.json().catch(() => null))?.error || `error ${r.status}`);
         return (await r.json()) as LsResponse;
@@ -42,12 +50,20 @@ export function FolderPicker({
         // Normalize to the server's canonical spelling (handles trailing slashes etc.).
         if (d.path !== path) setPath(d.path);
       })
-      .catch((e: Error) => alive && setError(e.message))
-      .finally(() => alive && setLoading(false));
+      .catch((e: Error) => {
+        if (!alive) return;
+        setError(e.name === "AbortError" ? "Folder list took too long to load. Check the drive, then retry." : e.message);
+      })
+      .finally(() => {
+        clearTimeout(timeout);
+        if (alive) setLoading(false);
+      });
     return () => {
       alive = false;
+      clearTimeout(timeout);
+      controller.abort();
     };
-  }, [path]);
+  }, [path, requestVersion]);
 
   const current = data?.path ?? path;
   const q = filter.trim().toLowerCase();
@@ -89,7 +105,12 @@ export function FolderPicker({
               <div className="fp-empty faint">No subfolders here.</div>
             )}
             {loading && <div className="fp-empty faint">Loading…</div>}
-            {error && <div className="fp-empty fp-err">{error}</div>}
+            {error && (
+              <div className="fp-empty fp-err" role="alert">
+                <span>{error}</span>
+                <button className="btn ghost sm fp-retry" type="button" onClick={retry}>Retry</button>
+              </div>
+            )}
           </div>
         </div>
         <div className="m-foot">
@@ -98,6 +119,7 @@ export function FolderPicker({
           </button>
           <button
             className="btn primary"
+            disabled={loading || !!error}
             onClick={() => {
               onSelect(current);
               onClose();
