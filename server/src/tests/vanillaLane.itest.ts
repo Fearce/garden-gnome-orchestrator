@@ -56,14 +56,14 @@ async function testVanillaConfig(): Promise<void> {
   console.log("\nA. implementorConfig({ vanilla: true }) — bare system prompt, no MCP servers");
   const fakeServer = { type: "sdk", name: "fake" } as unknown as McpServerConfig;
 
-  const normal = implementorConfig("C:\\ws", { bus: fakeServer, office: fakeServer }, { effort: "high" });
+  const normal = implementorConfig(process.cwd(), { bus: fakeServer, office: fakeServer }, { effort: "high" });
   check(
     "the normal (non-vanilla) config carries the orchestrator append + MCP tools",
     typeof normal.systemPrompt === "object" && "append" in normal.systemPrompt! && Object.keys(normal.mcpServers ?? {}).length === 2,
     JSON.stringify(normal.systemPrompt) + " / " + JSON.stringify(Object.keys(normal.mcpServers ?? {})),
   );
 
-  const vanilla = implementorConfig("C:\\ws", { bus: fakeServer, office: fakeServer }, { effort: "high", vanilla: true });
+  const vanilla = implementorConfig(process.cwd(), { bus: fakeServer, office: fakeServer }, { effort: "high", vanilla: true });
   check(
     "vanilla systemPrompt is the bare claude_code preset (no append)",
     typeof vanilla.systemPrompt === "object" &&
