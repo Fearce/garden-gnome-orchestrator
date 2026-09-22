@@ -93,6 +93,7 @@ console.log("Flagship capability floor");
   const roster: ModelCandidate[] = [
     { provider: "claude", model: "claude-sonnet-5", efforts: ["high"], note: "workhorse" },
     { provider: "claude", model: "claude-opus-5-5", efforts: ["high", "xhigh"], note: "preferred" },
+    { provider: "claude", model: "claude-opus-5", efforts: ["high", "xhigh"], note: "retired predecessor" },
     { provider: "codex", model: "gpt-6-astra", efforts: ["high", "xhigh", "max", "ultra"], note: "approved frontier fallback" },
     { provider: "codex", model: "gpt-5.6-sol", efforts: ["high", "xhigh"], note: "approved fallback" },
   ];
@@ -101,11 +102,11 @@ console.log("Flagship capability floor");
   check("Sonnet cannot compete with Opus on local outcome history", preferred.excluded.some((candidate) => candidate.model === "claude-sonnet-5"), JSON.stringify(preferred));
 
   const fallback = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model !== "claude-opus-5-5"), FLAGSHIP_POLICY);
-  check("an unavailable Opus leaves only reviewed flagship fallbacks", fallback.mode === "fallback" && fallback.eligible.map((candidate) => candidate.model).join(",") === "gpt-6-astra,gpt-5.6-sol", JSON.stringify(fallback));
+  check("an unavailable Opus 5.5 leaves only reviewed non-Opus-5 flagship fallbacks", fallback.mode === "fallback" && fallback.eligible.map((candidate) => candidate.model).join(",") === "gpt-6-astra,gpt-5.6-sol" && fallback.excluded.some((candidate) => candidate.model === "claude-opus-5"), JSON.stringify(fallback));
 
   const blocked = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model === "claude-sonnet-5"), FLAGSHIP_POLICY);
   check("a workhorse-only roster blocks instead of silently downgrading", blocked.mode === "blocked" && blocked.eligible.length === 0, JSON.stringify(blocked));
-  check("the approved families include Astra/Sol and exclude cheaper or legacy tiers", isPolicyApprovedFlagship({ provider: "claude", model: "claude-fable-5" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-astra" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-sol" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-terra" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.5" }) && !isPolicyApprovedFlagship({ provider: "zai", model: "glm-5.3" }));
+  check("the approved families exclude retired Opus 5 plus cheaper or legacy tiers", isPolicyApprovedFlagship({ provider: "claude", model: "claude-fable-5" }) && !isPolicyApprovedFlagship({ provider: "claude", model: "claude-opus-5" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-astra" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-sol" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-terra" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.5" }) && !isPolicyApprovedFlagship({ provider: "zai", model: "glm-5.3" }));
 }
 
 {

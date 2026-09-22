@@ -35,7 +35,9 @@ function gpt5Minor(model: string): number | null {
  * Mini, Spark, Grok and GLM are intentionally absent. They remain valid adaptive or owner-pinned picks. */
 export function isPolicyApprovedFlagship(candidate: RoutableModel): boolean {
   const model = normalized(candidate.model);
-  if (candidate.provider === "claude") return /^claude-(?:opus|fable)-/.test(model);
+  // Opus 5 has been superseded. A live provider catalog can continue to advertise it, but that must
+  // not turn it into a "reviewed" fallback for a flagship route when 5.5 is unavailable.
+  if (candidate.provider === "claude") return model === DEFAULT_FLAGSHIP_MODEL || /^claude-fable-/.test(model);
   if (candidate.provider === "codex") return model === "gpt-6-astra" || (gpt5Minor(model) ?? 0) >= 6;
   return false;
 }
