@@ -111,6 +111,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     onlineOffice: ctx.onlineOffice.status(),
     supervisor: ctx.manager.supervisorSnapshot(),
     coworkSessions: ctx.cowork.sessions(),
+    tokenSafety: ctx.manager.tokenSafetyState(),
   };
 }
 
@@ -517,6 +518,14 @@ export async function handleCommand(
     case "supervisor.runNow":
       await ctx.manager.supervisorRunNow();
       break;
+    case "tokenSafety.bypass": {
+      // Success is visible to every console through the `token.safety` broadcast. A refusal (nothing
+      // is frozen any more, e.g. a second click after another console already bypassed) only concerns
+      // the socket that asked.
+      const result = await ctx.manager.bypassTokenSafety();
+      if (!result.ok) send(socket, { type: "notice", level: "warn", title: "Token safety not bypassed", message: result.error });
+      break;
+    }
     case "snapshot.request":
       send(socket, snapshot());
       break;

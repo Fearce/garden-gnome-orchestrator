@@ -171,6 +171,7 @@ import type {
   StageOutputs,
   SupervisorSnapshot,
   Thread,
+  TokenSafetyState,
   UsageSavingPolicies,
   UsageSavingPolicy,
   ZaiEffort,
@@ -688,6 +689,8 @@ const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
 // stale pipeline callbacks recognize the durable stop while the ordinary CAP_PARK prefix keeps the
 // existing supervisor/reset recovery machinery responsible for waking it.
 const TOKEN_SAFETY_PARK_PREFIX = `${CAP_PARK_PREFIX} — token safety limit`;
+// The owner's one-shot bypass of the current Token Safety crossing (see `bypassTokenSafety`).
+const TOKEN_SAFETY_BYPASS_KV = "token_safety_bypass";
 // Earlier editing-QA builds treated a verifier's actionable-but-unfixed defect as an owner hand-back.
 // Keep a distinct durable marker while recovering those rows, so a restart in the short boot-resume
 // window repeats the automatic repair rather than leaving the old task on the owner's board.
@@ -1002,6 +1005,14 @@ export class ThreadManager implements OrchestratorApi {
   // Global token-safety freeze: set when a crossing parks active work, cleared only once utilization
   // drops below the threshold. While set, fresh dispatches stay queued and every autonomous resume waits.
   private tokenLimitTripped = false;
+  private tokenLimitTrippedAt: number | null = null;
+  // The stop that parks active work when the freeze engages. A bypass awaits it, so the owner's override
+  // can never release a park whose provider run is still unwinding behind the stale-write fence.
+  private tokenSafetyStopping: Promise<void> | null = null;
+  // The owner's one-shot Token Safety bypass for the CURRENT crossing (persisted in kv, so a restart
+  // cannot re-freeze work the owner just released). While set, the same crossing never re-trips; a fresh
+  // below-limit reading, or a change to the safety settings, clears it and re-arms the freeze.
+  private tokenSafetyBypass: NonNullable<TokenSafetyState["bypass"]> | null = null;
   // Always-on token-reset recovery: the reset epoch we've currently armed a wakeup timer for, and the
   // timer itself. armedFor doubles as the idempotency latch — re-crossing the threshold for the SAME
   // window is a no-op, so we schedule exactly one resume per window. Persisted to kv
@@ -1115,9 +1126,14 @@ export class ThreadManager implements OrchestratorApi {
     this.recoverLegacyQaFixParks();
     // Preserve a safety freeze across a process restart until a fresh usage reading proves the blocking
     // window reset. This closes the boot gap before AccountManager's first refresh reaches us.
-    this.tokenLimitTripped =
-      this.settings().tokenLimitEnabled &&
-      this.db.listThreadsByStates(["review", "failed"]).some((thread) => this.tokenSafetyParked(thread));
+    // An owner bypass of the current crossing is restored first: it outranks the park-row inference.
+    this.tokenSafetyBypass = this.loadTokenSafetyBypass();
+    const safetyParks =
+      this.settings().tokenLimitEnabled && !this.tokenSafetyBypass
+        ? this.db.listThreadsByStates(["review", "failed"]).filter((thread) => this.tokenSafetyParked(thread))
+        : [];
+    this.tokenLimitTripped = safetyParks.length > 0;
+    this.tokenLimitTrippedAt = safetyParks.length ? Math.min(...safetyParks.map((thread) => thread.updatedAt)) : null;
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
@@ -1560,17 +1576,115 @@ export class ThreadManager implements OrchestratorApi {
     const { tokenLimitEnabled, tokenLimitPercent } = this.settings();
     const util = this.accounts.effectiveUtilization();
     if (!tokenLimitEnabled || util == null || util < tokenLimitPercent) {
+      // A real below-limit reading (or the safety being switched off) ends the crossing an owner bypass
+      // covered, so the NEXT crossing trips normally. Missing telemetry proves nothing and keeps the bypass.
+      const bypassEnded = !!this.tokenSafetyBypass && (!tokenLimitEnabled || util != null);
+      if (bypassEnded) this.clearTokenSafetyBypass();
       const released = this.tokenLimitTripped;
       this.tokenLimitTripped = false;
+      this.tokenLimitTrippedAt = null;
       if (released) {
         this.hub.log("info", "Token safety freeze cleared — provider usage is below the configured limit.");
         this.pumpQueue();
       }
+      if (released || bypassEnded) this.publishTokenSafety();
       return;
     }
     if (this.tokenLimitTripped) return; // already fired for this crossing
+    if (this.tokenSafetyBypass) return; // the owner bypassed this crossing; it re-arms below the limit
     this.tokenLimitTripped = true;
-    void this.stopAllForTokenLimit(util, tokenLimitPercent);
+    this.tokenLimitTrippedAt = Date.now();
+    this.tokenSafetyStopping = this.stopAllForTokenLimit(util, tokenLimitPercent).finally(() => {
+      this.tokenSafetyStopping = null;
+    });
+  }
+
+  /** What the console's Token Safety box renders. Cheap: one indexed state read plus the in-memory queue. */
+  tokenSafetyState(): TokenSafetyState {
+    const { tokenLimitPercent } = this.settings();
+    const held = this.tokenLimitTripped ? this.tokenSafetyHeldThreads().length : 0;
+    const queued = this.tokenLimitTripped
+      ? this.dispatchQueue.filter((id) => this.db.getThread(id)?.state === "queued").length
+      : 0;
+    return {
+      tripped: this.tokenLimitTripped,
+      trippedAt: this.tokenLimitTripped ? this.tokenLimitTrippedAt : null,
+      utilization: this.accounts.effectiveUtilization(),
+      threshold: tokenLimitPercent,
+      heldTasks: held,
+      queuedTasks: queued,
+      resetAt: this.tokenLimitTripped ? this.tokenSafetyResetAt(tokenLimitPercent) : null,
+      bypass: this.tokenSafetyBypass,
+    };
+  }
+
+  private publishTokenSafety(): void {
+    this.hub.publish({ type: "token.safety", state: this.tokenSafetyState() });
+  }
+
+  private tokenSafetyHeldThreads(): Thread[] {
+    return this.db.listThreadsByStates(["review", "failed"]).filter((thread) => this.tokenSafetyParked(thread));
+  }
+
+  /**
+   * The owner's "Resume anyway" on the Token Safety box: a one-shot override of the CURRENT freeze. It
+   * does exactly what a fresh below-limit reading does (release the freeze, pump the queue) and then runs
+   * the same capacity supervisor pass the automatic clear relies on, so held work resumes through the
+   * ordinary failed-to-runPipeline path with its saved session. Only the safety margin is skipped: real
+   * provider headroom still gates each resume, and a task that then hits a hard cap re-parks as usual.
+   * The latch covers this crossing only; see `tokenSafetyBypass`.
+   */
+  async bypassTokenSafety(): Promise<{ ok: true; state: TokenSafetyState } | { ok: false; error: string }> {
+    if (this.tokenSafetyStopping) await this.tokenSafetyStopping;
+    if (!this.tokenLimitTripped) return { ok: false, error: "Token safety is not holding any work right now." };
+    const { tokenLimitPercent } = this.settings();
+    const util = this.accounts.effectiveUtilization();
+    // Downgrade every safety park to the ordinary durable cap marker. The special prefix is the freeze's
+    // stale-write fence and its restart signal; once the owner has released the freeze, neither applies,
+    // and a task this pass cannot start yet must wait as an ordinary capacity park, not as a frozen one.
+    const held = this.tokenSafetyHeldThreads();
+    for (const thread of held) {
+      const released = this.db.updateThread(thread.id, {
+        error: (thread.error ?? "").replace(TOKEN_SAFETY_PARK_PREFIX, CAP_PARK_PREFIX),
+      });
+      if (released) this.hub.publish({ type: "thread.upsert", thread: released });
+      this.capResumeAttemptedAt.delete(thread.id);
+    }
+    this.tokenLimitTripped = false;
+    this.tokenLimitTrippedAt = null;
+    this.tokenSafetyBypass = { at: Date.now(), threshold: tokenLimitPercent, resumed: 0, waiting: 0 };
+    const pct = util == null ? "unknown" : `${Math.round(util)}%`;
+    this.hub.log("warn", `Token safety bypassed by the owner at ${pct} usage (limit ${tokenLimitPercent}%). Resuming ${held.length} held task(s).`);
+    this.pumpQueue();
+    this.resumeCapParked();
+    // resumeCapParked stamps every task it hands to resumeThread (the stamps were cleared above), so an
+    // unstamped one is still parked: waiting on a free slot, its repo's cap, or a provider with no real
+    // headroom left. The cap supervisor keeps retrying those as an ordinary capacity wait.
+    const waiting = held.filter((thread) => !this.capResumeAttemptedAt.has(thread.id)).length;
+    this.tokenSafetyBypass = { ...this.tokenSafetyBypass, resumed: held.length - waiting, waiting };
+    this.db.kvSet(TOKEN_SAFETY_BYPASS_KV, JSON.stringify(this.tokenSafetyBypass));
+    this.publishTokenSafety();
+    return { ok: true, state: this.tokenSafetyState() };
+  }
+
+  private loadTokenSafetyBypass(): TokenSafetyState["bypass"] {
+    const raw = this.db.kvGet(TOKEN_SAFETY_BYPASS_KV);
+    if (!raw) return null;
+    try {
+      const value = JSON.parse(raw) as NonNullable<TokenSafetyState["bypass"]>;
+      return Number.isFinite(value?.at) && Number.isFinite(value?.threshold)
+        ? { at: value.at, threshold: value.threshold, resumed: value.resumed ?? 0, waiting: value.waiting ?? 0 }
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private clearTokenSafetyBypass(): void {
+    if (!this.tokenSafetyBypass) return;
+    this.tokenSafetyBypass = null;
+    this.db.kvDelete(TOKEN_SAFETY_BYPASS_KV);
+    this.hub.log("info", "Token safety bypass ended; the next crossing of the limit will freeze work again.");
   }
 
   /** Park running work in the durable capacity-wait state, preserving every run/session. Queued work is
@@ -1582,6 +1696,7 @@ export class ThreadManager implements OrchestratorApi {
     // Write every durable park before awaiting a provider stop. Each setState releases a slot and pumps
     // the queue, whose safety gate must already see tokenLimitTripped=true.
     for (const id of targets) this.parkForTokenSafety(id, pct, threshold);
+    this.publishTokenSafety();
     await Promise.allSettled(
       targets.map((id) =>
         this.forceStopThreadRuns(id).catch((e) => this.hub.log("error", `Token-limit stop of ${id.slice(0, 8)} failed: ${String(e)}`)),
@@ -1592,7 +1707,7 @@ export class ThreadManager implements OrchestratorApi {
       targets.length > 0
         ? `Token usage reached ${pct}% (your safety limit is ${threshold}%). ${targets.length} active task${targets.length === 1 ? " was" : "s were"} paused with its session preserved. New work is held until the blocking window resets; paused work then resumes automatically.`
         : `Token usage reached ${pct}% (your safety limit is ${threshold}%). No task was running; new work is held until the blocking window resets.`;
-    this.hub.publish({ type: "notice", level: "warn", title, message });
+    this.hub.publish({ type: "notice", level: "warn", title, message, kind: "tokenSafety" });
     this.notifyExternal(`🛑 ${title} — ${message}`);
   }
 
@@ -4309,8 +4424,19 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.maxConcurrentPerRepo !== undefined) this.db.kvSet("setting_max_concurrent_per_repo", String(patch.maxConcurrentPerRepo));
     if (patch.selfImproveEnabled !== undefined) this.db.kvSet("setting_self_improve_enabled", patch.selfImproveEnabled ? "1" : "0");
     if (patch.autoModelSelection !== undefined) this.db.kvSet("setting_auto_model_selection", patch.autoModelSelection ? "1" : "0");
+    const safetyBefore = this.settings();
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
+    const safetyAfter = this.settings();
+    // A bypass was a decision about ONE crossing of ONE limit. A new safety policy is re-evaluated from
+    // scratch below, so an owner who lowers the limit gets the freeze back instead of a stale override.
+    const safetyPolicyChanged =
+      safetyBefore.tokenLimitEnabled !== safetyAfter.tokenLimitEnabled ||
+      safetyBefore.tokenLimitPercent !== safetyAfter.tokenLimitPercent;
+    if (safetyPolicyChanged) {
+      this.clearTokenSafetyBypass();
+      this.publishTokenSafety(); // the box also shows the limit itself
+    }
     if (patch.fastUsagePolling !== undefined) this.db.kvSet("setting_fast_usage_polling", patch.fastUsagePolling ? "1" : "0");
     if (patch.spreadUsage !== undefined) {
       this.db.kvSet("setting_spread_usage", patch.spreadUsage ? "1" : "0");
@@ -6213,6 +6339,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Score how an auto-selected model handled this task, so the next selection knows. Reads the FRESH
     // thread row (it carries the error text a cap-park is recognised by) and no-ops for every other task.
     this.gradeAutoSelectedModel(t);
+    // While the freeze holds work, every transition can change what the Token Safety box counts (a park,
+    // a newly queued dispatch, a held task the owner cancels), so keep that count true.
+    if (this.tokenLimitTripped) this.publishTokenSafety();
   }
 
   /** Voice mode: speak a task-tailored completion line through the gateway. completionAnnouncement

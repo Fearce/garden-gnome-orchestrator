@@ -2448,10 +2448,17 @@ body.dl-resizing { user-select: none; }
 /* App-level notice banner — a fixed, dismissible alert for server-pushed `notice` events (the
    token-safety auto-stop). Sits just under the topbar, centered; warn-toned (reuses the .sub-badge.warn
    palette) so it reads as an alert. Below modal scrims (z 50+) so a dialog still covers it. */
-.notice-banner {
+/* The stack holds the Token Safety box above the latest transient notice, so the two never overlap.
+   pointer-events pass through its gaps; only the banners themselves take clicks. */
+.notice-stack {
   position: fixed; top: 60px; left: 50%; transform: translateX(-50%); z-index: 45;
-  display: flex; align-items: flex-start; gap: 10px;
+  display: flex; flex-direction: column; gap: 8px;
   width: min(560px, calc(100vw - 24px));
+  pointer-events: none;
+}
+.notice-banner {
+  pointer-events: auto;
+  display: flex; align-items: flex-start; gap: 10px;
   padding: 12px 14px;
   border: 1px solid color-mix(in oklch, var(--warn) 45%, var(--line));
   border-radius: var(--r-md);
@@ -2459,7 +2466,7 @@ body.dl-resizing { user-select: none; }
   box-shadow: var(--shadow-2);
   animation: notice-in 0.18s ease-out;
 }
-@keyframes notice-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+@keyframes notice-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
 /* info tone — a recovery/resume notice (token-window reset): neutral green instead of the warn amber. */
 .notice-banner.info {
   border-color: color-mix(in oklch, var(--ok) 45%, var(--line));
@@ -2472,6 +2479,20 @@ body.dl-resizing { user-select: none; }
 .notice-message { font-size: 12px; color: var(--text-dim); line-height: 1.45; }
 .notice-x { flex: none; background: none; border: none; color: var(--text-faint); font-size: 13px; padding: 2px 4px; border-radius: var(--r-sm); line-height: 1; }
 .notice-x:hover { color: var(--text); background: var(--bg-3); }
+/* Token Safety box: the freeze's bypass control and its risk note. Theme tokens only, so Nocturne and
+   Classic each retint it (no light-background literal). */
+.token-safety-actions { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px; }
+.token-safety-actions .btn { flex: none; }
+/* The stock danger red sits just under 4.5:1 on the box's warn-tinted surface; nudge it toward the text
+   colour so the one control that matters here stays legible under every theme. */
+.token-safety-actions .btn.danger { color: color-mix(in oklch, var(--danger) 78%, var(--text)); }
+.token-safety-risk {
+  margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--text-dim);
+  padding-left: 10px; border-left: 2px solid color-mix(in oklch, var(--danger) 55%, var(--line));
+}
+@media (max-width: 899.98px) {
+  .token-safety-actions { flex-direction: column; }
+}
 
 /* The bottom tab bar exists only on mobile; the breakpoint below reveals it. */
 .mobile-nav { display: none; }

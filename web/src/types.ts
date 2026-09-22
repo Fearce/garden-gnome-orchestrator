@@ -544,6 +544,22 @@ export interface ZaiUsageDTO {
   updatedAt: number;
 }
 
+/** The live Token Safety freeze, broadcast on every transition and carried on `hello` so the console's
+ *  "Token safety limit reached" box survives a reload. `tripped` = the freeze is holding work now.
+ *  `bypass` = the owner overrode the CURRENT crossing: it lasts until a fresh below-limit reading (or a
+ *  change to the safety settings), after which the next crossing trips the freeze normally. It is never a
+ *  setting. Mirrored byte-for-byte from server/src/types.ts. */
+export interface TokenSafetyState {
+  tripped: boolean;
+  trippedAt: number | null; // epoch ms the current freeze engaged
+  utilization: number | null; // the live reading the policy compares, 0-100
+  threshold: number; // the configured Token Safety limit, %
+  heldTasks: number; // tasks parked by the freeze, waiting to resume
+  queuedTasks: number; // fresh dispatches held in the queue by the freeze
+  resetAt: number | null; // earliest reset that can clear the freeze on its own, if known
+  bypass: { at: number; threshold: number; resumed: number; waiting: number } | null;
+}
+
 /** Operator-tunable pipeline settings — server-authoritative (persisted in the DB kv table, broadcast
  *  to every client). Mirrors the server's OrchestratorSettings. */
 export interface OrchestratorSettings {
@@ -1126,7 +1142,10 @@ export type ServerEvent =
       onlineOffice: OnlineOfficeDTO;
       supervisor: SupervisorSnapshot;
       coworkSessions: CoworkSession[];
+      tokenSafety?: TokenSafetyState;
     }
+  // The Token Safety freeze, rebroadcast on every trip/release/bypass (drives the limit box + bypass).
+  | { type: "token.safety"; state: TokenSafetyState }
   | { type: "office.online"; office: OnlineOfficeDTO }
   | { type: "office.join.result"; ok: boolean; error: string | null }
   | { type: "accounts"; accounts: AccountDTO[] }
@@ -1215,7 +1234,8 @@ export type ServerEvent =
   | { type: "director.results"; query: string; messages: DirectorMessage[]; tasks: TaskSearchHit[] }
   // A user-facing notification (token-safety auto-stop = warn; token-reset auto-resume = info). Shown as a
   // dismissible banner + desktop notify.
-  | { type: "notice"; level: "info" | "warn"; title: string; message: string }
+  // `kind: "tokenSafety"` marks the freeze's own notice, which the durable Token Safety box replaces.
+  | { type: "notice"; level: "info" | "warn"; title: string; message: string; kind?: "tokenSafety" }
   // Voice mode: spoken completion line for a finished task — consumed by the voice-gateway, ignored here.
   | { type: "voice.announce"; threadId: string; text: string }
   // The heartbeat's answer. Re-requesting the whole `hello` every 20s to keep the tunnel warm cost
@@ -1284,6 +1304,7 @@ export type ClientCommand =
   | { type: "note.clear" }
   | { type: "supervisor.message"; content: string; targetIds: string[]; clientId?: string }
   | { type: "supervisor.runNow" }
+  | { type: "tokenSafety.bypass" }
   | { type: "snapshot.request" }
   // The cheap keep-alive; `snapshot.request` stays for reconnect, tab re-show and the slow resync.
   | { type: "ping" };

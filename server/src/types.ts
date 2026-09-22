@@ -940,6 +940,22 @@ export interface StageOutputs {
   standingDirectives?: string[];
 }
 
+/** The live Token Safety freeze, broadcast on every transition and carried on `hello` so the console's
+ *  "Token safety limit reached" box survives a reload. `tripped` = the freeze is holding work now.
+ *  `bypass` = the owner overrode the CURRENT crossing: it lasts until a fresh below-limit reading (or a
+ *  change to the safety settings), after which the next crossing trips the freeze normally. It is never a
+ *  setting. Mirrored byte-for-byte in web/src/types.ts. */
+export interface TokenSafetyState {
+  tripped: boolean;
+  trippedAt: number | null; // epoch ms the current freeze engaged
+  utilization: number | null; // the live reading the policy compares, 0-100
+  threshold: number; // the configured Token Safety limit, %
+  heldTasks: number; // tasks parked by the freeze, waiting to resume
+  queuedTasks: number; // fresh dispatches held in the queue by the freeze
+  resetAt: number | null; // earliest reset that can clear the freeze on its own, if known
+  bypass: { at: number; threshold: number; resumed: number; waiting: number } | null;
+}
+
 /**
  * Operator-tunable pipeline settings, persisted server-side in the `kv` table and broadcast to every
  * client (mirrors `approvalMode`). Read live at dispatch/pipeline time, so a change applies to the

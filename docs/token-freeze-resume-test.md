@@ -49,6 +49,9 @@ Every assertion observes real code output (kv values, log strings, the recovered
 | B | steps 1–2 | Freeze (util 90% ≥ built-in arm point) ⇒ a durable wakeup is armed. |
 | C | "freeze, not die" | The frozen task stays `paused` (not deleted/failed) and its prior implementor session is still recoverable from the DB. |
 | C1–C2 | Token Safety | Active work becomes a durable capacity park (not Cancelled), resumes with its saved session after reset, and fresh dispatches remain queued until then. |
+| C3 | owner bypass | "Resume anyway" releases the freeze, resumes the held task with its saved session and starts the held dispatch; the same crossing never re-trips, a restart keeps the bypass, a below-limit reading ends it, and the next crossing freezes again. |
+| C4 | owner bypass | With no real provider headroom the bypass resumes nothing, reports the task as waiting, and leaves an ordinary cap park that the supervisor resumes once headroom returns. |
+| C5 | owner bypass | Changing the Token Safety limit ends a bypass and re-evaluates at once. |
 | D | guard | An early reset with **no headroom** ⇒ **re-arms** for the next reset and does **not** wake the task (no instant re-cap). |
 | E | steps 3–4 | Usage resets (headroom returns) ⇒ resume **fires**, re-enters the same task **carrying its prior session** (warm, not cold), task reaches `done`, wakeup kv cleared, owner notified ("Token window reset. Resuming 1 paused/parked task."). |
 | F | steps 3–4 | Same for the **cap-parked `review`** freeze outcome — resumes with its prior session and completes. |

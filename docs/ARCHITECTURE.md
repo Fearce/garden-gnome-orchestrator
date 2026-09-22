@@ -701,6 +701,16 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   are held; a fresh below-threshold reading clears the freeze and the ordinary capacity supervisor resumes
   work. Claude safety scheduling couples its 5h and weekly windows, while the shared capacity inventory
   applies the same coupled-window rule to Codex and the other backends. Gate: `test:token-freeze`.
+- **The owner can bypass one freeze, never the policy.** The console's "Token safety limit reached" box is
+  rendered from server state (`token.safety` event + `hello.tokenSafety`), so it survives a reload. Its
+  "Resume anyway" button (`tokenSafety.bypass` → `ThreadManager.bypassTokenSafety`) does what a
+  below-limit reading does: it downgrades every safety park to the ordinary cap marker, releases the
+  freeze, pumps the queue and runs the same `resumeCapParked` pass. Only the safety margin is skipped;
+  real provider headroom, slots and repo caps still gate each resume, and a task that cannot start yet
+  waits as an ordinary capacity park. The bypass is a kv latch (`token_safety_bypass`) for the CURRENT
+  crossing: the same crossing never re-trips, a restart keeps it, and a fresh below-limit reading or any
+  change to the Token Safety settings ends it, so the next crossing freezes work again. It is not a
+  setting. Gates: `test:token-freeze` (C3-C5); browser: `npm run token-safety-lab --prefix server`.
 - Degrades to single-account (inherited login) when fewer than two tokens are
   configured. A bar reads `—` only before the first successful ping for that
   account.

@@ -51,6 +51,7 @@ import type {
   SupervisorSnapshot,
   TaskSearchHit,
   Thread,
+  TokenSafetyState,
 } from "./types.js";
 import { agentKey, GENERAL_ROOM, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
 import { notify } from "./lib/notify.js";
@@ -70,6 +71,7 @@ import {
 import { mergeImplementationMemos } from "./implementationMemos.js";
 import { deliverablesByThread, mergeDeliverableIndexes, mergeThreadDeliverables } from "./threadDeliverables.js";
 import { mergeRunIndex, pruneRunIndex } from "./lib/runAttribution.js";
+import { tokenSafetyBoxKey } from "./lib/tokenSafety.js";
 
 interface ThreadDraft {
   runId: string;
@@ -318,7 +320,16 @@ interface State {
   // The latest server-pushed user notice (token-safety auto-stop / token-reset auto-resume), shown as a
   // dismissible banner. Null when none/dismissed; only the most recent is held (a new one replaces an open
   // banner). `level` drives the banner's tone (warn = amber alert, info = neutral).
-  notice: { level: "info" | "warn"; title: string; message: string } | null;
+  notice: { level: "info" | "warn"; title: string; message: string; kind?: "tokenSafety" } | null;
+  // The Token Safety freeze (server-authoritative, from `hello` + `token.safety`). Null until the first
+  // snapshot, and on a server that predates the broadcast. Drives the limit box and its bypass button.
+  tokenSafety: TokenSafetyState | null;
+  // A bypass click is in flight: the button stays disabled until the server's broadcast (or refusal)
+  // answers, so an impatient second click never races the first.
+  tokenSafetyBypassing: boolean;
+  // The Token Safety box the owner dismissed (`tokenSafetyBoxKey`), so it stays hidden for THAT freeze or
+  // bypass only: a new freeze or a new bypass has a new key and shows again.
+  tokenSafetyDismissed: string | null;
   // Recurring/scheduled tasks (server-authoritative, broadcast over WS). Managed from the Scheduled Tasks
   // view; `boardView` toggles the center pane between the live task board and that view.
   schedules: ScheduledTask[];
@@ -444,6 +455,9 @@ interface State {
   postChat: (room: string, body: string) => boolean;
   // Dismiss the current notice banner.
   clearNotice: () => void;
+  // One-shot override of the current Token Safety freeze (returns whether the command reached the socket).
+  bypassTokenSafety: () => boolean;
+  dismissTokenSafety: () => void;
   // Scheduled tasks: switch the center pane, and CRUD the recurring dispatches. Mutations return whether
   // they reached the socket so forms never close on a command that was silently dropped while reconnecting.
   setBoardView: (v: BoardView) => void;
@@ -1204,6 +1218,9 @@ export const useStore = create<State>((set) => ({
   nameOverrides: {},
   officeRoom: null,
   notice: null,
+  tokenSafety: null,
+  tokenSafetyBypassing: false,
+  tokenSafetyDismissed: null,
   schedules: [],
   notes: [],
   supervisor: IDLE_SUPERVISOR,
@@ -1595,6 +1612,15 @@ export const useStore = create<State>((set) => ({
     );
   },
   clearNotice: () => set({ notice: null }),
+  bypassTokenSafety: () => {
+    if (!sendCommand({ type: "tokenSafety.bypass" })) {
+      set({ notice: { level: "warn", title: "Token safety not bypassed", message: "The console is reconnecting. Try again when it is connected." } });
+      return false;
+    }
+    set({ tokenSafetyBypassing: true });
+    return true;
+  },
+  dismissTokenSafety: () => set((s) => ({ tokenSafetyDismissed: s.tokenSafety ? tokenSafetyBoxKey(s.tokenSafety) : null })),
   setBoardView: (v) => set({ boardView: v }),
   createSchedule: (input) => sendScheduleMutation({ type: "schedule.create", ...input }),
   updateSchedule: (id, patch) => sendScheduleMutation({ type: "schedule.update", id, patch }),
@@ -1844,6 +1870,8 @@ function applyEvent(ev: ServerEvent): void {
         ...(ev.notes ? { notes: ev.notes } : {}),
         ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}),
         ...(ev.supervisor ? { supervisor: ev.supervisor } : {}),
+        // A reconnect never delivers the reply to a bypass sent on the dead socket, so release the button.
+        ...(ev.tokenSafety ? { tokenSafety: ev.tokenSafety, tokenSafetyBypassing: false } : {}),
       }));
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
@@ -2450,8 +2478,22 @@ function applyEvent(ev: ServerEvent): void {
       // A user-facing notification (token-safety auto-stop / token-reset auto-resume). Show the
       // always-visible banner AND fire the opt-in desktop notify, so it's seen whether or not
       // notifications are enabled.
-      useStore.setState({ notice: { level: ev.level, title: ev.title, message: ev.message } });
+      // A bypass the server refused answers with a notice, so any notice releases the bypass button. The
+      // freeze's own alert is skipped while the durable Token Safety box already shows that freeze.
+      useStore.setState((s) =>
+        ev.kind === "tokenSafety" && s.tokenSafety?.tripped
+          ? { tokenSafetyBypassing: false }
+          : { notice: { level: ev.level, title: ev.title, message: ev.message, kind: ev.kind }, tokenSafetyBypassing: false },
+      );
       notify(ev.title, ev.message);
+      break;
+    case "token.safety":
+      useStore.setState((s) => ({
+        tokenSafety: ev.state,
+        tokenSafetyBypassing: false,
+        // The freeze's transient alert says the same thing the box now says (or said, before a release).
+        notice: s.notice?.kind === "tokenSafety" ? null : s.notice,
+      }));
       break;
     case "pong":
       // The heartbeat's receipt. Nothing to store — arriving at all is the signal, and `lastRecvAt`

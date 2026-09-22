@@ -37,6 +37,7 @@ import type {
   ScheduledTask,
   SupervisorSnapshot,
   TaskSearchHit,
+  TokenSafetyState,
   Thread,
   ThreadSummary,
 } from "../types.js";
@@ -92,8 +93,12 @@ export type ServerEvent =
       onlineOffice: OnlineOfficeDTO;
       supervisor: SupervisorSnapshot;
       coworkSessions: CoworkSession[];
+      tokenSafety: TokenSafetyState;
     }
   | { type: "accounts"; accounts: AccountDTO[] }
+  // The Token Safety freeze, rebroadcast on every trip/release/bypass so the console's limit box (and its
+  // bypass button) reflects the server's real state rather than a transient notice.
+  | { type: "token.safety"; state: TokenSafetyState }
   // Auto model selection's scoreboard — per-model averages over every graded auto-picked task.
   // Rebroadcast whenever a task is graded (it's small: one row per model ever picked).
   | { type: "model.stats"; stats: ModelStat[] }
@@ -201,7 +206,9 @@ export type ServerEvent =
   // A dedicated user-facing notification channel (unlike `log`, which the client drops). Used by the
   // token-safety auto-stop (warn) and the token-reset auto-resume (info); the client shows it as a
   // dismissible banner and fires a desktop notify.
-  | { type: "notice"; level: "info" | "warn"; title: string; message: string }
+  // `kind: "tokenSafety"` marks the freeze's own notice, which the console's durable Token Safety box
+  // (driven by `token.safety`) replaces, so the owner never sees the same alert twice.
+  | { type: "notice"; level: "info" | "warn"; title: string; message: string; kind?: "tokenSafety" }
   // Voice mode: a task-tailored spoken line for a just-completed task. Only published while voice
   // mode is on (gateway up AND wake/mic enabled); the gateway speaks it, the web console ignores it.
   | { type: "voice.announce"; threadId: string; text: string }
@@ -585,6 +592,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // bypasses unattended cooldown/daily-budget guards; action, single-flight and notification safety
   // gates remain in DirectorSupervisor.
   z.object({ type: z.literal("supervisor.runNow") }),
+  // One-shot owner override of the CURRENT Token Safety freeze: releases it and resumes the work it held
+  // through the ordinary capacity-resume path. Not a setting; the next genuine crossing trips normally.
+  z.object({ type: z.literal("tokenSafety.bypass") }),
   z.object({ type: z.literal("snapshot.request") }),
   // The cheap heartbeat. `snapshot.request` still exists and is still what a reconnect, a re-shown tab
   // and the slow periodic resync use — this is only for keeping the tunnel warm.

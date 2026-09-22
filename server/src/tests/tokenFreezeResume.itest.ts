@@ -357,6 +357,160 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test C3: the owner's one-shot bypass of the CURRENT freeze ----------------------------------------
+  console.log("\nTest C3: Resume anyway releases the freeze now, and the next genuine crossing trips again");
+  {
+    const h = makeHarness();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const internals = h.mgr as any;
+    const states: { tripped: boolean; heldTasks: number; queuedTasks: number }[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    internals.hub.subscribe((e: any) => {
+      if (e.type === "token.safety") states.push(e.state);
+    });
+    try {
+      const refused = await h.mgr.bypassTokenSafety();
+      check("a bypass with nothing frozen is refused, not a silent no-op", !refused.ok);
+
+      const { threadId, session } = seedFrozenTask(h, "implementing");
+      internals.activePipelines.add(threadId);
+      h.mgr.setSettings({ tokenLimitEnabled: true, tokenLimitPercent: 80 });
+      h.stub.util = 90;
+      h.stub.reset = Date.now() + 3_600_000;
+      // At 90% the provider still has real headroom (its hard limit is 98%): only the safety margin is gone.
+      h.stub.headroom = true;
+      h.stub.fireUsageRefresh();
+      await delay(80);
+      let starts = 0;
+      internals.startPipeline = () => starts++;
+      const queued = h.db.createThread({ title: "held fresh dispatch", workspace: h.workspace, rawPrompt: "p" });
+      internals.enqueueOrRun(queued.id);
+
+      const frozen = h.mgr.tokenSafetyState();
+      check("the freeze is broadcast for the console box", states.some((s) => s.tripped), JSON.stringify(states));
+      check("the box counts the parked task and the held dispatch", frozen.tripped && frozen.heldTasks === 1 && frozen.queuedTasks === 1, JSON.stringify(frozen));
+      check("the parked task is held (not resumed) while frozen", h.resumeCalls.length === 0);
+
+      const result = await h.mgr.bypassTokenSafety();
+      await delay(180);
+      check("the bypass succeeds while frozen", result.ok, JSON.stringify(result));
+      const call = h.resumeCalls.find((entry) => entry.threadId === threadId);
+      check("bypass resumed the held task through the normal resume path", !!call, JSON.stringify(h.resumeCalls));
+      check("the bypassed resume kept the saved session", call?.resumeSession === session, `resumeSession=${call?.resumeSession}`);
+      check("bypass started the held fresh dispatch", starts === 1, `starts=${starts}`);
+      const after = h.mgr.tokenSafetyState();
+      check(
+        "state reports the release and what it resumed",
+        !after.tripped && after.bypass?.resumed === 1 && after.bypass?.waiting === 0,
+        JSON.stringify(after),
+      );
+      check("the bypass is persisted for a restart", !!h.db.kvGet("token_safety_bypass"));
+      check("bypass state was broadcast", states.at(-1)?.tripped === false);
+      check("a second click is refused rather than re-run", !(await h.mgr.bypassTokenSafety()).ok);
+
+      // A later reading still over the line belongs to the SAME crossing: the bypass must hold.
+      const second = seedFrozenTask(h, "implementing");
+      internals.activePipelines.add(second.threadId);
+      h.stub.util = 93;
+      h.stub.fireUsageRefresh();
+      await delay(80);
+      check("the same crossing does not re-freeze work the owner released", h.db.getThread(second.threadId)?.state === "implementing");
+      check("and the state stays released", !h.mgr.tokenSafetyState().tripped);
+
+      // A restart restores the bypass instead of re-inferring a freeze.
+      const restarted = new ThreadManager(
+        h.db,
+        new EventHub(),
+        new FileMemoryService(join(h.dir, "memory2")),
+        new StubAccounts() as unknown as AccountManager,
+      );
+      check("a restart keeps the owner's bypass", !!restarted.tokenSafetyState().bypass && !restarted.tokenSafetyState().tripped);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = restarted as any;
+      if (r.capSupervisor) clearInterval(r.capSupervisor);
+      if (r.tokenResumeTimer) clearTimeout(r.tokenResumeTimer);
+      if (r.capResumeWake) clearTimeout(r.capResumeWake);
+
+      // A genuine below-limit reading ends the crossing; the NEXT crossing freezes work again.
+      h.stub.util = 50;
+      h.stub.fireUsageRefresh();
+      check("a below-limit reading ends the bypass", h.mgr.tokenSafetyState().bypass === null && !h.db.kvGet("token_safety_bypass"));
+      h.stub.util = 91;
+      h.stub.fireUsageRefresh();
+      await delay(80);
+      const refrozen = h.db.getThread(second.threadId);
+      check("a genuine new crossing trips the freeze again", h.mgr.tokenSafetyState().tripped, JSON.stringify(h.mgr.tokenSafetyState()));
+      check(
+        "and parks the active work again",
+        refrozen?.state === "review" && (refrozen.error ?? "").startsWith(CAP_PARK_PREFIX),
+        `${refrozen?.state} ${refrozen?.error}`,
+      );
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest C4: a bypass never fakes a resume; work with no real headroom waits as an ordinary cap park");
+  {
+    const h = makeHarness();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const internals = h.mgr as any;
+    try {
+      const { threadId, session } = seedFrozenTask(h, "implementing");
+      internals.activePipelines.add(threadId);
+      h.mgr.setSettings({ tokenLimitEnabled: true, tokenLimitPercent: 80 });
+      h.stub.util = 99;
+      h.stub.reset = Date.now() + 3_600_000;
+      h.stub.headroom = false; // the provider itself is spent
+      h.stub.fireUsageRefresh();
+      await delay(80);
+
+      const result = await h.mgr.bypassTokenSafety();
+      await delay(120);
+      const state = h.mgr.tokenSafetyState();
+      check("the bypass reports the task as still waiting", result.ok && state.bypass?.resumed === 0 && state.bypass?.waiting === 1, JSON.stringify(state));
+      const row = h.db.getThread(threadId);
+      check("no resume was started into a spent provider", h.resumeCalls.length === 0);
+      check(
+        "the held task became an ordinary cap park (no token-safety fence left)",
+        row?.state === "review" && (row.error ?? "").startsWith(CAP_PARK_PREFIX) && !(row.error ?? "").includes("token safety limit"),
+        row?.error ?? "",
+      );
+      h.stub.headroom = true;
+      internals.capResumeAttemptedAt.clear();
+      h.stub.fireUsageRefresh();
+      await delay(180);
+      const call = h.resumeCalls.find((entry) => entry.threadId === threadId);
+      check("once headroom returns the cap supervisor resumes it with its session", call?.resumeSession === session, JSON.stringify(h.resumeCalls));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest C5: changing the safety limit ends a bypass instead of leaving a stale override");
+  {
+    const h = makeHarness();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const internals = h.mgr as any;
+    try {
+      h.mgr.setSettings({ tokenLimitEnabled: true, tokenLimitPercent: 80 });
+      h.stub.util = 90;
+      h.stub.reset = Date.now() + 3_600_000;
+      h.stub.headroom = true;
+      h.stub.fireUsageRefresh();
+      check("frozen with nothing running", h.mgr.tokenSafetyState().tripped);
+      check("bypass ok", (await h.mgr.bypassTokenSafety()).ok);
+      const { threadId } = seedFrozenTask(h, "implementing");
+      internals.activePipelines.add(threadId);
+      h.mgr.setSettings({ tokenLimitPercent: 85 });
+      await delay(80);
+      check("the new limit re-freezes at once", h.mgr.tokenSafetyState().tripped && h.mgr.tokenSafetyState().bypass === null);
+      check("and parks the running task", h.db.getThread(threadId)?.state === "review");
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Test D: reset fires but NO headroom yet → re-arm, do NOT resume (guards a premature wake) -------
   console.log("\nTest D — an early reset with no headroom re-arms instead of waking into an instant re-cap");
   {
