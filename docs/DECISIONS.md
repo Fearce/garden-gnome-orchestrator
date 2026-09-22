@@ -54,6 +54,8 @@ When you close a question: add the row **in the same commit** as the brief, and 
 that still reads like the lane is live. A brief still saying "recommended" for something since
 rejected costs the next agent an iteration.
 
+Reported bugs and planned work that aren't adopt/replace questions go in [`BACKLOG.md`](BACKLOG.md).
+
 Related always-loaded pointers: `.claude/rules/model-backend-economics.md` (the economics that
 decide most of these), `.claude/rules/add-an-implementor-backend.md` (the touch-point checklist once
 you've decided to build).
