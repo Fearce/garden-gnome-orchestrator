@@ -150,7 +150,7 @@ const PARK_CLASSES = [
     human: true,
     title: "waiting for a flagship implementor — no approved model is dispatchable",
     match: (err) => err.includes("requires a flagship implementor"),
-    action: "restore Opus 5 (or another approved flagship) capacity/access, then click Resume — probe:accounts shows the ladder",
+    action: "restore Opus 5.5 (or another approved flagship) capacity/access, then click Resume — probe:accounts shows the ladder",
   },
   {
     key: "unknown",

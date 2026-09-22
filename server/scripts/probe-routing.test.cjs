@@ -22,7 +22,7 @@ try {
     "f1e2d3c4-0000-0000-0000-000000000000",
     "Routing fixture",
     "done",
-    JSON.stringify({ routeDecision: { scope: "broad", usePlanner: true, useQa: true, modelPolicy: { tier: "flagship", preferredModel: "claude-opus-5" }, signals: ["production/infra"] } }),
+    JSON.stringify({ routeDecision: { scope: "broad", usePlanner: true, useQa: true, modelPolicy: { tier: "flagship", preferredModel: "claude-opus-5-5" }, signals: ["production/infra"] } }),
     1,
   );
   db.prepare("INSERT INTO findings VALUES (?, ?, ?, ?, ?)").run(

@@ -129,7 +129,7 @@ function seedAcceptedTask(
   const t = db.createThread({ title: "mock accepted task", workspace, rawPrompt: "do the thing" });
   db.updateThreadStageOutputs(t.id, { kickoff: "KICKOFF: mock", planDone: true, approved: true, qaRoundsUsed: 1, selfImproving });
   db.updateThread(t.id, { state });
-  db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5" });
+  db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5-5" });
   return t.id;
 }
 

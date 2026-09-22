@@ -72,7 +72,7 @@ const thread = (over: Partial<Thread> & { id: string; state: ThreadState }): Thr
   ...over,
 });
 const run = (over: Partial<AgentRun> & { id: string; threadId: string; role: AgentRun["role"] }): AgentRun => ({
-  model: "claude-opus-5",
+  model: "claude-opus-5-5",
   state: "running",
   startedAt: NOW - 60_000,
   ...over,

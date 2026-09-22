@@ -157,7 +157,7 @@ check(
   "current tiers are allowed",
   reviewModelAllowed("gpt-5.6-luna") && reviewModelAllowed("gpt-5.6-terra") && reviewModelAllowed("gpt-6-astra"),
 );
-check("a non-Codex model is never touched by a Codex-family rule", reviewModelAllowed("claude-opus-5") && reviewModelAllowed("glm-5.3"));
+check("a non-Codex model is never touched by a Codex-family rule", reviewModelAllowed("claude-opus-5-5") && reviewModelAllowed("glm-5.3"));
 
 {
   const target = codexReviewTarget("qa", "gpt-5.5", LIVE_ROSTER);

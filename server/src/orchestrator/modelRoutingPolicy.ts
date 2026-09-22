@@ -2,12 +2,12 @@
 //
 // Auto-selection still judges cost, effort and local outcomes for ordinary work. A route classified as
 // flagship is different: historical success or cheaper quota may choose only inside this reviewed set,
-// with Claude Opus 5 preferred whenever it is dispatchable. Unknown/new model ids fail closed until the
+// with Claude Opus 5.5 preferred whenever it is dispatchable. Unknown/new model ids fail closed until the
 // policy is deliberately extended; a live catalog entry alone is not evidence that it is a safe fallback.
 
 import type { ImplementorModelPolicy, ImplementorProvider } from "../types.js";
 
-export const DEFAULT_FLAGSHIP_MODEL = "claude-opus-5";
+export const DEFAULT_FLAGSHIP_MODEL = "claude-opus-5-5";
 
 export interface RoutableModel {
   provider: ImplementorProvider;

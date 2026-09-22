@@ -162,7 +162,7 @@ function implementorModelPolicy(
     return {
       tier: "flagship",
       preferredModel: DEFAULT_FLAGSHIP_MODEL,
-      reason: "risk and scale require a flagship implementor; Opus 5 is the first automatic choice",
+      reason: "risk and scale require a flagship implementor; Opus 5.5 is the first automatic choice",
       signals,
     };
   }

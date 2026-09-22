@@ -105,8 +105,8 @@ finding.run("d1", thread.id, "implementor", "capture", null, "info", at - 20_000
 finding.run("d2", thread.id, "implementor", "capture", null, "info", at - 10_000, "deliverable", path.join(dir, "gone.png"), "Overview capture");
 
 const run = db.prepare("INSERT INTO agent_runs (id,thread_id,role,model,state,error,started_at,ended_at) VALUES (?,?,?,?,?,?,?,?)");
-run.run("r1", thread.id, "implementor", "claude-opus-5", "error", "You've hit your session limit", at - 80_000, at - 70_000);
-run.run("r2", thread.id, "implementor", "claude-opus-5", "interrupted", null, at - 60_000, at);
+run.run("r1", thread.id, "implementor", "claude-opus-5-5", "error", "You've hit your session limit", at - 80_000, at - 70_000);
+run.run("r2", thread.id, "implementor", "claude-opus-5-5", "interrupted", null, at - 60_000, at);
 
 const msg = db.prepare("INSERT INTO messages (id,thread_id,role,kind,content,created_at) VALUES (?,?,?,?,?,?)");
 msg.run("m1", thread.id, "implementor", "text", "first", at - 50_000);
@@ -141,7 +141,7 @@ assert.match(markdown, /standing owner directives\*\*: 2 \(preserved by Retry/);
 assert.match(markdown, /Ice branch capture\*\* : `[^`]+archive-thread\.test\.cjs`[^\n]*$/m);
 assert.doesNotMatch(markdown.split("Ice branch capture")[1].split("\n")[0], /MISSING/, "a file still on disk is not flagged");
 assert.match(markdown, /Overview capture[^\n]*MISSING on disk/, "a deliverable whose file is gone is flagged");
-assert.match(markdown, /\*\*implementor\*\* \| error \| claude-opus-5 \| 10s : You've hit your session limit/);
+assert.match(markdown, /\*\*implementor\*\* \| error \| claude-opus-5-5 \| 10s : You've hit your session limit/);
 assert.match(markdown, /Feed \(3 entries, last one below\)/);
 assert.ok(markdown.includes("fenced brief"), "the brief survives even though it contains its own fence");
 

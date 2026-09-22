@@ -289,9 +289,9 @@ Handle existing data and future updates with a safe migration or backfill, then 
       });
       const decision = h.manager.resolveRoute(h.db.getThread(legacy.id), h.manager.settings());
       check("legacy planner/QA execution stays sticky", decision.usePlanner === true && decision.useQa === true && decision.scope === "broad", JSON.stringify(decision));
-      check("legacy task gains the flagship Opus 5 floor", decision.policyVersion === 2 && decision.modelPolicy?.tier === "flagship" && decision.modelPolicy.preferredModel === "claude-opus-5", JSON.stringify(decision));
+      check("legacy task gains the flagship Opus 5.5 floor", decision.policyVersion === 2 && decision.modelPolicy?.tier === "flagship" && decision.modelPolicy.preferredModel === "claude-opus-5-5", JSON.stringify(decision));
       check("the stale authoritative/auth false-positive is removed", !decision.signals.includes("security/auth"), JSON.stringify(decision.signals));
-      check("the owner receives one actionable route update", h.db.listMessages(legacy.id).some((message: { content: string }) => /Route updated/i.test(message.content) && /flagship implementor required/i.test(message.content) && /claude-opus-5/i.test(message.content)), JSON.stringify(h.db.listMessages(legacy.id)));
+      check("the owner receives one actionable route update", h.db.listMessages(legacy.id).some((message: { content: string }) => /Route updated/i.test(message.content) && /flagship implementor required/i.test(message.content) && /claude-opus-5-5/i.test(message.content)), JSON.stringify(h.db.listMessages(legacy.id)));
     } finally {
       h.dispose();
     }

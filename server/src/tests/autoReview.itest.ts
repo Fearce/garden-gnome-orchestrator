@@ -173,7 +173,7 @@ function makeHarness(): Harness {
     // moves `autoReviewRevision` exactly like the implementor it stands in for. Without it the harness
     // freezes the revision the whole episode through, and every assertion about the Supervisor's
     // one-attempt-per-revision budget converging on a fix round passes vacuously.
-    const run = db.createRun({ threadId: thread.id, role: "implementor", model: "claude-opus-5", account: "acct-a" });
+    const run = db.createRun({ threadId: thread.id, role: "implementor", model: "claude-opus-5-5", account: "acct-a" });
     db.updateRun(run.id, { sessionId: resume ?? null, state: "running" });
     fixRuns.set(thread.id, run.id);
     fixRunIds.push(run.id);
@@ -279,7 +279,7 @@ const IMPLEMENTOR_SESSION = "implementor-session-from-the-pipeline";
 function seedParkedTask(h: Harness, error = "QA still not satisfied after 3 rounds — needs your review."): string {
   const t = h.db.createThread({ title: "mock parked task", workspace: h.workspace, rawPrompt: "do the thing", brief: "Do the thing properly." });
   h.db.updateThreadStageOutputs(t.id, { kickoff: "KICKOFF: mock", planDone: true, approved: true });
-  const run = h.db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5", account: "acct-a" });
+  const run = h.db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5-5", account: "acct-a" });
   h.db.updateRun(run.id, { sessionId: IMPLEMENTOR_SESSION, state: "done", endedAt: Date.now() });
   h.db.updateThread(t.id, { state: "review", error });
   return t.id;
@@ -331,7 +331,7 @@ function stubReviewerRuns(h: Harness, results: RunOutcome[], account?: string): 
     log.resumes.push(resume);
     log.providers.push(opts?.preferredProvider);
     const res = results[Math.min(log.resumes.length - 1, results.length - 1)];
-    const run = h.db.createRun({ threadId: thread.id, role: "reviewer", model: "claude-opus-5", account });
+    const run = h.db.createRun({ threadId: thread.id, role: "reviewer", model: "claude-opus-5-5", account });
     h.db.updateRun(run.id, { sessionId: REVIEWER_SESSION, state: res?.isError ? "error" : "done", endedAt: Date.now() });
     if (res?.structuredOutput?.summary) {
       const pending = internals.reviewInjections.pendingReviewer(thread.id, "reviewer", internals.activeReviewEpisodeToken(thread.id, "reviewer"));
@@ -890,7 +890,7 @@ async function main(): Promise<void> {
       // Stand in for whatever writes a non-reviewer run once an episode has already settled. This is the
       // shape the per-revision guard cannot see, because the run starts OUTSIDE the episode window.
       const mintNewWork = (): void => {
-        const run = h.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5", account: "acct-a" });
+        const run = h.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5-5", account: "acct-a" });
         h.db.updateRun(run.id, { state: "done", endedAt: Date.now() });
       };
 

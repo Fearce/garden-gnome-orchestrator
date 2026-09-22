@@ -3626,7 +3626,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     // Switching automatic selection off is authoritative for new decisions, but it must not preserve a
     // legacy pick that the freshly-upgraded route just proved unsafe. Clearing that pick restores the
-    // configured implementor model (Opus 5 by default) without paying for a selector call.
+    // configured implementor model (Opus 5.5 by default) without paying for a selector call.
     if (!this.settings().autoModelSelection) return undefined;
     let selectionDemand: CapacityDemand | undefined;
     let selectionRoster: ModelCandidate[] | undefined;
@@ -3681,9 +3681,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (eligible.length === 1) {
       const only = eligible[0]!;
       const reason = policySet.mode === "preferred"
-        ? "Flagship route policy: Opus 5 is available and is the required first choice."
+        ? "Flagship route policy: Opus 5.5 is available and is the required first choice."
         : policySet.mode === "fallback"
-          ? `Opus 5 unavailable; ${only.model} is a policy-approved flagship fallback.`
+          ? `Opus 5.5 unavailable; ${only.model} is a policy-approved flagship fallback.`
           : "only dispatchable model";
       pick = { provider: only.provider, model: only.model, effort: defaultCandidateEffort(only), reason };
     } else if (eligible.length > 1) {
@@ -3708,12 +3708,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         provider: fallback.provider,
         model: fallback.model,
         effort: defaultCandidateEffort(fallback),
-        reason: `Opus 5 unavailable; ${fallback.model} is the first policy-approved flagship fallback.`,
+        reason: `Opus 5.5 unavailable; ${fallback.model} is the first policy-approved flagship fallback.`,
       };
     } else if (pick && policySet.mode === "fallback") {
       pick = {
         ...pick,
-        reason: `Opus 5 unavailable; approved flagship fallback. ${pick.reason || "Selected from the safe flagship roster."}`.slice(0, 200),
+        reason: `Opus 5.5 unavailable; approved flagship fallback. ${pick.reason || "Selected from the safe flagship roster."}`.slice(0, 200),
       };
     }
     this.db.updateThreadStageOutputs(thread.id, { modelPick: pick ?? null });
@@ -3837,7 +3837,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             model: replacement.model,
             effort: defaultCandidateEffort(replacement),
             reason: policySet.mode === "preferred"
-              ? `Previous ${pick.model} route no longer had safe runway; Opus 5 is available.`
+              ? `Previous ${pick.model} route no longer had safe runway; Opus 5.5 is available.`
               : `Previous ${pick.model} route no longer had safe runway; using approved flagship fallback ${replacement.model}.`,
           };
           this.db.updateThreadStageOutputs(threadId, { modelPick: nextPick });

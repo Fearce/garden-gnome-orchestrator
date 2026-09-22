@@ -109,9 +109,9 @@ async function main(): Promise<void> {
   console.log("scheduler: model clear");
   // Re-pointing the model must not leave the previous backend attached: an older client (or the Director
   // bridge) can send `model` alone, and inheriting the old provider would pin a pair nobody chose.
-  scheduler.update(id, { model: "claude-opus-5" });
-  check("changing the model alone drops the stale backend", db.getScheduledTask(id)!.provider == null && db.getScheduledTask(id)!.model === "claude-opus-5");
-  scheduler.update(id, { model: "claude-opus-5", provider: "claude" });
+  scheduler.update(id, { model: "claude-opus-5-5" });
+  check("changing the model alone drops the stale backend", db.getScheduledTask(id)!.provider == null && db.getScheduledTask(id)!.model === "claude-opus-5-5");
+  scheduler.update(id, { model: "claude-opus-5-5", provider: "claude" });
   check("re-sending the pair restores an exact pin", db.getScheduledTask(id)!.provider === "claude");
   scheduler.update(id, { model: null });
   check("model pin cleared to null", db.getScheduledTask(id)!.model == null);

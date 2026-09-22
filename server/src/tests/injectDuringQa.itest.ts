@@ -236,7 +236,7 @@ function stubQaRunRole(
     const agent = new FakeRun();
     agents.push(agent);
     h.internals.liveQa.set(t.id, agent);
-    const run = h.db.createRun({ threadId: t.id, role: role as "qa", model: "claude-opus-5", account: "acct-a" });
+    const run = h.db.createRun({ threadId: t.id, role: role as "qa", model: "claude-opus-5-5", account: "acct-a" });
     h.internals.liveQaRunId.set(t.id, run.id);
     await whileLive(agent);
     h.internals.liveQa.delete(t.id);
@@ -444,7 +444,7 @@ async function main(): Promise<void> {
       h.db.updateThread(id, { state: "reviewing" });
       const reviewer = new FakeRun();
       h.internals.liveReviewer.set(id, reviewer);
-      const run = h.db.createRun({ threadId: id, role: "reviewer", model: "claude-opus-5", account: "acct-a" });
+      const run = h.db.createRun({ threadId: id, role: "reviewer", model: "claude-opus-5-5", account: "acct-a" });
       h.internals.liveReviewerRunId.set(id, run.id);
       h.internals.reviewing.add(id);
       const r = await h.mgr.injectThread(id, "the deliverable link is broken", "append", [IMG]);
@@ -584,7 +584,7 @@ async function main(): Promise<void> {
       const reviewId = seedTask(h);
       h.db.updateThread(reviewId, { state: "awaiting_user" });
       const reviewer = new FakeRun();
-      const reviewerRun = h.db.createRun({ threadId: reviewId, role: "reviewer", model: "claude-opus-5", account: "acct-a" });
+      const reviewerRun = h.db.createRun({ threadId: reviewId, role: "reviewer", model: "claude-opus-5-5", account: "acct-a" });
       h.internals.liveReviewer.set(reviewId, reviewer);
       h.internals.liveReviewerRunId.set(reviewId, reviewerRun.id);
       h.internals.reviewing.add(reviewId);
@@ -596,7 +596,7 @@ async function main(): Promise<void> {
       const qaId = seedTask(h);
       h.db.updateThread(qaId, { state: "awaiting_user" });
       const qa = new FakeRun();
-      const qaRun = h.db.createRun({ threadId: qaId, role: "qa", model: "claude-opus-5", account: "acct-a" });
+      const qaRun = h.db.createRun({ threadId: qaId, role: "qa", model: "claude-opus-5-5", account: "acct-a" });
       h.internals.liveQa.set(qaId, qa);
       h.internals.liveQaRunId.set(qaId, qaRun.id);
       const qaAction = await h.mgr.injectThread(qaId, "QA should include this owner answer", "append", undefined, { recipient: "qa" });
@@ -770,7 +770,7 @@ async function main(): Promise<void> {
           attachmentIds: [ref.id],
         },
       });
-      const orphan = h.db.createRun({ threadId: id, role: "qa", model: "claude-opus-5", account: "acct-a" });
+      const orphan = h.db.createRun({ threadId: id, role: "qa", model: "claude-opus-5-5", account: "acct-a" });
       h.db.updateRun(orphan.id, { state: "running" });
 
       let scheduled = 0;

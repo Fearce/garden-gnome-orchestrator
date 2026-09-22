@@ -104,7 +104,7 @@ function bodyFor(i) {
     case 1:
       return `Checked the reference at ${LONG_URL} and the resume path still keys on the durable marker.`;
     case 2:
-      return `| role | model | turns | cost |\n| --- | --- | --- | --- |\n| implementor | claude-opus-5 (high effort) | 416 | $36.29 |\n| qa | claude-sonnet-5 (medium effort) | 100 | $4.11 |`;
+      return `| role | model | turns | cost |\n| --- | --- | --- | --- |\n| implementor | claude-opus-5-5 (high effort) | 416 | $36.29 |\n| qa | claude-sonnet-5 (medium effort) | 100 | $4.11 |`;
     case 3:
       return `Now the fix. First the JSX wrapper:\n\n\`\`\`tsx\n<div className="detail-body" ref={scrollRef} onScroll={onFeedScroll}>\n  {/* memo, filter, deliverables and the feed all scroll together, ${"x".repeat(90)} */}\n</div>\n\`\`\``;
     case 4:
@@ -136,8 +136,8 @@ function seed(dataDir) {
   const run = db.prepare(
     "INSERT INTO agent_runs (id, thread_id, role, model, account, effort, session_id, state, cost_usd, num_turns, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'done', ?, ?, ?, ?)",
   );
-  run.run("psl-run-director", TASK_ID, "director", "claude-opus-5", "logged-in", null, "psl-s0", 0.4, 3, now - 3_600_000, now - 3_590_000);
-  run.run("psl-run-impl", TASK_ID, "implementor", "claude-opus-5", "logged-in", "high", "psl-s1", 36.29, 416, now - 3_500_000, now - 700_000);
+  run.run("psl-run-director", TASK_ID, "director", "claude-opus-5-5", "logged-in", null, "psl-s0", 0.4, 3, now - 3_600_000, now - 3_590_000);
+  run.run("psl-run-impl", TASK_ID, "implementor", "claude-opus-5-5", "logged-in", "high", "psl-s1", 36.29, 416, now - 3_500_000, now - 700_000);
   run.run("psl-run-qa", TASK_ID, "qa", "claude-sonnet-5", "logged-in", "medium", "psl-s2", 4.11, 100, now - 690_000, now - 60_000);
 
   const msg = db.prepare(
@@ -195,7 +195,7 @@ function seed(dataDir) {
   db.prepare(
     `INSERT INTO implementation_memos
        (id, thread_id, run_id, work_revision, revision, outcome, handoff, report, diagnostic, model, account, deliverables, source, started_at, completed_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'completed', 'done', ?, NULL, 'claude-opus-5', 'logged-in', '[]', 'backfill', ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, 'completed', 'done', ?, NULL, 'claude-opus-5-5', 'logged-in', '[]', 'backfill', ?, ?, ?, ?)`,
   ).run(
     "psl-memo-1",
     TASK_ID,

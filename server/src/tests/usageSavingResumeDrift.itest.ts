@@ -8,7 +8,7 @@
  * compared the prior session's model against an explicit saving/pin/auto-selection pick, and fell back
  * to `undefined` (no opinion) once none of those three applied, so the ordinary "saving turned back off,
  * route back to the configured default" case was silently invisible to it. The owner reported the task
- * "randomly stopped using Opus 5" and never came back, despite Token Conservation Mode being off the
+ * "randomly stopped using Opus 5.5" and never came back, despite Token Conservation Mode being off the
  * whole time (a different, unrelated toggle) — Usage Saving, a separate per-subscription setting, was on.
  *
  * WHAT IS REAL vs. SIMULATED
@@ -162,7 +162,7 @@ console.log("\n=== A. usage saving still active: the warm session is preserved (
   h.accounts.sevenDay = 95; // above the 90% threshold configured below
   h.mgr.setSettings({
     usageSaving: { "account-a": { enabled: true, thresholdPct: 90, model: "claude-sonnet-5", effort: "medium" } },
-    modelOverrides: { "account-a": { implementor: "claude-opus-5" } },
+    modelOverrides: { "account-a": { implementor: "claude-opus-5-5" } },
   });
   const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-sonnet-5", account: "Claude A" });
   h.db.updateRun(priorRun.id, { sessionId: "sess-1" });
@@ -184,7 +184,7 @@ console.log("\n=== B. usage saving deactivated: the stale sonnet session is drop
   h.accounts.sevenDay = 95; // saving was active when the prior run picked its model...
   h.mgr.setSettings({
     usageSaving: { "account-a": { enabled: true, thresholdPct: 90, model: "claude-sonnet-5", effort: "medium" } },
-    modelOverrides: { "account-a": { implementor: "claude-opus-5" } },
+    modelOverrides: { "account-a": { implementor: "claude-opus-5-5" } },
   });
   const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-sonnet-5", account: "Claude A" });
   h.db.updateRun(priorRun.id, { sessionId: "sess-1" });
@@ -201,7 +201,7 @@ console.log("\n=== B. usage saving deactivated: the stale sonnet session is drop
     h.asks.length === 1 && h.asks[0]?.resume === undefined,
     JSON.stringify(h.asks),
   );
-  check("the fresh session resolves back to the configured Opus default", h.asks[0]?.model === "claude-opus-5", h.asks[0]?.model);
+  check("the fresh session resolves back to the configured Opus default", h.asks[0]?.model === "claude-opus-5-5", h.asks[0]?.model);
   // The replacement must take the RESEED path (which carries the prior session's compressed handoff),
   // not the `!resumeSession` early return that restarts from the bare kickoff — the "starting again and
   // again" failure the owner has already complained about. What the seed then contains is
@@ -217,7 +217,7 @@ console.log("\n=== B. usage saving deactivated: the stale sonnet session is drop
 
 console.log("\n=== B2. a strict owner pin outranks active saving: the sonnet session is dropped for the pinned model ===");
 {
-  // The reported defect (2026-09-18): the owner pinned claude-opus-5 on a vota task, resumed, and the
+  // The reported defect (2026-09-18): the owner pinned claude-opus-5-5 on a vota task, resumed, and the
   // resume ran claude-sonnet-5 — usage saving deliberately outranked the pin, and the pin's own feed
   // message promises "No fallback model is allowed". Saving stays ACTIVE throughout this case: that is
   // what separates it from B, where the pin is absent and the window merely rolled back under.
@@ -228,7 +228,7 @@ console.log("\n=== B2. a strict owner pin outranks active saving: the sonnet ses
     usageSaving: { "account-a": { enabled: true, thresholdPct: 90, model: "claude-sonnet-5", effort: "medium" } },
     modelOverrides: { "account-a": { implementor: "claude-sonnet-5" } },
   });
-  h.db.setModelRequest(h.thread.id, { requested: "claude-opus-5", provider: "claude", model: "claude-opus-5", strict: true });
+  h.db.setModelRequest(h.thread.id, { requested: "claude-opus-5-5", provider: "claude", model: "claude-opus-5-5", strict: true });
   const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-sonnet-5", account: "Claude A" });
   h.db.updateRun(priorRun.id, { sessionId: "sess-1" });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -243,7 +243,7 @@ console.log("\n=== B2. a strict owner pin outranks active saving: the sonnet ses
     h.asks.length === 1 && h.asks[0]?.resume === undefined,
     JSON.stringify(h.asks.map((a) => a.resume)),
   );
-  check("the resume dispatches the pinned model, not the saving model", h.asks[0]?.model === "claude-opus-5", h.asks[0]?.model);
+  check("the resume dispatches the pinned model, not the saving model", h.asks[0]?.model === "claude-opus-5-5", h.asks[0]?.model);
   h.dispose();
 }
 
@@ -316,9 +316,9 @@ console.log("\n=== E. a pin for ANOTHER backend is not drift on this one ===");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = h.mgr as any;
   internals.implementorProvider.set(h.thread.id, "codex");
-  h.db.setModelRequest(h.thread.id, { requested: "opus 5", provider: "claude", model: "claude-opus-5", strict: true });
+  h.db.setModelRequest(h.thread.id, { requested: "opus 5.5", provider: "claude", model: "claude-opus-5-5", strict: true });
   h.db.updateThreadStageOutputs(h.thread.id, {
-    modelPick: { provider: "claude", model: "claude-opus-5", effort: "high", reason: "fixture" },
+    modelPick: { provider: "claude", model: "claude-opus-5-5", effort: "high", reason: "fixture" },
   });
   const current = internals.providerRoleModel("codex", "implementor");
   const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: current, account: `codex:${current}` });
@@ -346,8 +346,8 @@ console.log("\n=== F. the comparison reads the model of THIS session, not merely
   h.accounts.sevenDay = 10;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = h.mgr as any;
-  h.mgr.setSettings({ modelOverrides: { "account-a": { implementor: "claude-opus-5" } } });
-  const owning = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5", account: "Claude A" });
+  h.mgr.setSettings({ modelOverrides: { "account-a": { implementor: "claude-opus-5-5" } } });
+  const owning = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5-5", account: "Claude A" });
   h.db.updateRun(owning.id, { sessionId: "sess-1" });
   // Newer, sessionless, on a different model — a rejected relaunch. Its `started_at` is pushed forward
   // explicitly: both rows are written inside one millisecond, so a plain newest-first sort ties and would
@@ -395,7 +395,7 @@ console.log("\n=== G. the one-shot roles get the same rule, where their account 
     h.accounts.sevenDay = 10;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const internals = h.mgr as any;
-    h.mgr.setSettings({ modelOverrides: { "account-a": { planner: "claude-opus-5" } } });
+    h.mgr.setSettings({ modelOverrides: { "account-a": { planner: "claude-opus-5-5" } } });
     const session = "planner-session";
     const seeded = priorModel ?? internals.modelFor("account-a", "planner");
     h.db.updateRun(

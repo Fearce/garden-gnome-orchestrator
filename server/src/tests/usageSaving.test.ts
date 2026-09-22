@@ -109,12 +109,12 @@ try {
     title: "pinned",
     workspace: dir,
     rawPrompt: "x",
-    modelRequest: { requested: "claude-opus-5", provider: "claude", model: "claude-opus-5", strict: true },
+    modelRequest: { requested: "claude-opus-5-5", provider: "claude", model: "claude-opus-5-5", strict: true },
   });
   const savingTarget = internals.implementorDispatchTarget(unpinned.id, "claude", "account-a");
   const pinnedTarget = internals.implementorDispatchTarget(pinned.id, "claude", "account-a");
   check("an unpinned task still dispatches the saving model", savingTarget.model === "claude-haiku-4-5-20251001");
-  check("a strict pin dispatches the pinned model while saving is active", pinnedTarget.model === "claude-opus-5");
+  check("a strict pin dispatches the pinned model while saving is active", pinnedTarget.model === "claude-opus-5-5");
   // The policy is a model+effort PAIR resolved against ITS model, so half of it must not travel onto a
   // model the pair never described — every effort site reads `saving?.effort`.
   check("a strict pin carries no saving policy, so its effort is not downgraded either", pinnedTarget.saving === undefined);
@@ -124,7 +124,7 @@ try {
   const snapshot = internals.capacitySnapshotForThread(db.getThread(pinned.id), "implementor", demand);
   check(
     "capacity is gated on the pinned model's own pool while saving is active",
-    snapshot.options.length > 0 && snapshot.options.every((option: { label: string }) => option.label.endsWith("· claude-opus-5")),
+    snapshot.options.length > 0 && snapshot.options.every((option: { label: string }) => option.label.endsWith("· claude-opus-5-5")),
   );
 
   accounts.fiveHour = 89;

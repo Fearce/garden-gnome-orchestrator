@@ -118,7 +118,7 @@ function seed(dataDir) {
   );
   for (const t of SEED) {
     thread.run(t.id, t.title, t.state, "C:\\Users\\Mikkel\\projects\\garden-gnome-orchestrator", `${t.title} brief line.`, t.title, t.createdAt, NOW - 30_000);
-    t.runs.forEach((r, i) => agentRun.run(`${t.id}-run-${i}`, t.id, r.role, "claude-opus-5", r.state, r.startedAt, r.endedAt));
+    t.runs.forEach((r, i) => agentRun.run(`${t.id}-run-${i}`, t.id, r.role, "claude-opus-5-5", r.state, r.startedAt, r.endedAt));
   }
   db.close();
 }

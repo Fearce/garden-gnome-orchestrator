@@ -44,7 +44,7 @@ const CLAUDE_MAX_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
 /** Exact documented effort set for a Claude model. Unknown/older ids get the universally safe base set. */
 export function claudeEffortsForModel(model: string): readonly Effort[] {
   const id = model.trim().toLowerCase();
-  if (/^claude-(?:fable-5|mythos-5|opus-5|opus-4-(?:7|8)|sonnet-5)(?:[-.]|$)/.test(id)) return CLAUDE_EFFORTS;
+  if (/^claude-(?:fable-5|mythos-5|opus-5-5|opus-4-(?:7|8)|sonnet-5)(?:[-.]|$)/.test(id)) return CLAUDE_EFFORTS;
   if (/^claude-(?:opus-4-6|sonnet-4-6|mythos-preview)(?:[-.]|$)/.test(id)) return CLAUDE_MAX_EFFORTS;
   return CLAUDE_BASE_EFFORTS;
 }

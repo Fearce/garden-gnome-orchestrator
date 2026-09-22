@@ -6,7 +6,7 @@
  * master in EIGHT ways, every one of which had been TRUE once and then rotted in place, silently, for
  * months:
  *
- *   1. it named "Claude Opus 4.8" as the implementor. The real default is `claude-opus-5`, and every
+ *   1. it named "Claude Opus 4.8" as the implementor. The real default is `claude-opus-5-5`, and every
  *      other role's model was stale too (the single most misleading line in the file);
  *   2. `npm run install:all` was described as server/ + web/. It installs relay/ as well;
  *   3. it advertised 8 free AI providers; the registry ships 9;
@@ -119,7 +119,7 @@ console.log("\nA. links: every relative link/image in README.md resolves on disk
 
 // ---- B. the role/model table matches config.models exactly -----------------------------------------
 // The defect this whole file exists for: the table said "Claude Opus 4.8" long after the default became
-// `claude-opus-5`. Both directions are asserted, so a stale id fails AND so does a role added to
+// `claude-opus-5-5`. Both directions are asserted, so a stale id fails AND so does a role added to
 // config.models that nobody documented.
 console.log("\nB. models: the role table matches config.models");
 {

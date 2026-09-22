@@ -73,7 +73,7 @@ globalThis.fetch = (async (url: string | URL | Request) => {
     if (zaiFails) throw new Error("socket hang up");
     return new Response(JSON.stringify({ data: [{ id: "glm-5.3", created_at: "2026-08-14T00:00:00Z" }] }), { status: 200 });
   }
-  if (href.includes("anthropic.com")) return new Response(JSON.stringify({ data: [{ id: "claude-opus-5" }] }), { status: 200 });
+  if (href.includes("anthropic.com")) return new Response(JSON.stringify({ data: [{ id: "claude-opus-5-5" }] }), { status: 200 });
   return new Response(JSON.stringify({ data: [{ id: "gpt-5.5" }] }), { status: 200 });
 }) as typeof fetch;
 
@@ -97,7 +97,7 @@ try {
   check("…and the reason survives into the message", logs.some((m) => /socket hang up/.test(m)), JSON.stringify(logs));
   check("a provider that failed keeps no half-written cache", !kv.has("cache_zai_models"), String(kv.get("cache_zai_models")));
 
-  check("a provider listed BEFORE the failure still stored", kv.get("cache_claude_models") === JSON.stringify(["claude-opus-5"]), String(kv.get("cache_claude_models")));
+  check("a provider listed BEFORE the failure still stored", kv.get("cache_claude_models") === JSON.stringify(["claude-opus-5-5"]), String(kv.get("cache_claude_models")));
   check("a provider listed AFTER the failure still stored", kv.get("cache_grok_models") === JSON.stringify(["grok-4.6"]), String(kv.get("cache_grok_models")));
   check("the ChatGPT Codex CLI roster is cached independently of the API key", catalog.codexCliModels().map((m) => m.id).join(",") === "gpt-5.6-sol,gpt-5.4-mini", JSON.stringify(catalog.codexCliModels()));
   check("the CLI's exact Ultra capability reaches the catalog", catalog.codexCliEfforts("gpt-5.6-sol")?.at(-1) === "ultra", JSON.stringify(catalog.codexCliEfforts("gpt-5.6-sol")));

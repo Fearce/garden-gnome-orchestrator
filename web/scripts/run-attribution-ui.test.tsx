@@ -5,7 +5,7 @@
  * subscription — and each launch is its own `agent_runs` row whose `model` is written once and never
  * rewritten. The feed used to label every row from the role's LATEST run, so the moment a task moved to
  * a cheaper model its whole history re-labelled to that model: reported as "that's falsifying data",
- * against a real task (6bf166a5) where the circled message's run was claude-opus-5 and the console said
+ * against a real task (6bf166a5) where the circled message's run was claude-opus-5-5 and the console said
  * Sonnet 5 Medium.
  *
  * This gate renders the real detail panel over a seeded store, so it covers the join as well as the
@@ -43,7 +43,7 @@ const run = (over: Partial<AgentRun> & Pick<AgentRun, "id" | "model" | "startedA
 });
 
 // The shape that produced the report: an Opus stretch, then a Sonnet one, on one role.
-const opusRun = run({ id: "run-opus", model: "claude-opus-5", effort: "high", startedAt: at });
+const opusRun = run({ id: "run-opus", model: "claude-opus-5-5", effort: "high", startedAt: at });
 const sonnetRun = run({ id: "run-sonnet", model: "claude-sonnet-5", effort: "medium", startedAt: at + 600_000, endedAt: null, state: "running" });
 
 const feed: FeedItem[] = [
@@ -87,7 +87,7 @@ const rowFor = (text: string): string => {
   return html.slice(start, end);
 };
 
-assert.match(rowFor("I over-ran"), /Opus 5 High/, "the Opus run's message must say Opus — the reported falsification");
+assert.match(rowFor("I over-ran"), /Opus 5.5 High/, "the Opus run's message must say Opus — the reported falsification");
 assert.doesNotMatch(rowFor("I over-ran"), /Sonnet/, "a later Sonnet run must not restamp an earlier Opus message");
 assert.match(rowFor("answering the real question now"), /Sonnet 5 Medium/, "the Sonnet run's own message keeps its real model");
 assert.doesNotMatch(
@@ -98,7 +98,7 @@ assert.doesNotMatch(
 
 console.log("B. the agent-filter chip covers a whole role, so it may not name one model");
 assert.match(html, /Sonnet 5 Medium \+1/, "the chip names the current model and counts the others");
-assert.match(html, /title="Ran on Sonnet 5 Medium, Opus 5 High"/, "the chip enumerates every model, newest first");
+assert.match(html, /title="Ran on Sonnet 5 Medium, Opus 5.5 High"/, "the chip enumerates every model, newest first");
 
 console.log("C. the setting still gates the label");
 const off = ((): string => {
@@ -111,8 +111,8 @@ assert.doesNotMatch(off, /role-model/, "Show agent model off means no model anyw
 console.log("D. the run index survives a bounded reconnect snapshot");
 const held = { [opusRun.id]: opusRun, [sonnetRun.id]: sonnetRun };
 // hello carries the newest runs fleet-wide; an older task's runs are simply not in it.
-const afterHello = pruneRunIndex(mergeRunIndex(held, [run({ id: "run-other", model: "claude-opus-5", startedAt: at + 900_000, threadId: "other" })]), new Set([THREAD, "other"]));
-assert.equal(runModelLabel(afterHello, opusRun.id), "Opus 5 High", "a reconnect must not drop the runs an open task already resolved");
+const afterHello = pruneRunIndex(mergeRunIndex(held, [run({ id: "run-other", model: "claude-opus-5-5", startedAt: at + 900_000, threadId: "other" })]), new Set([THREAD, "other"]));
+assert.equal(runModelLabel(afterHello, opusRun.id), "Opus 5.5 High", "a reconnect must not drop the runs an open task already resolved");
 const afterPurge = pruneRunIndex(afterHello, new Set([THREAD]));
 assert.equal(afterPurge["run-other"], undefined, "runs for a task the board no longer lists are dropped, so a long-lived tab stays bounded");
 assert.equal(runModelLabel(afterPurge, sonnetRun.id), "Sonnet 5 Medium", "the open task's own runs survive that prune");
@@ -123,7 +123,7 @@ const raced = mergeRunIndex({ [sonnetRun.id]: endedLive }, [sonnetRun]);
 assert.equal(raced[sonnetRun.id]?.endedAt, at + 700_000, "keep the copy that is further along, not the one that arrived last");
 
 console.log("F. the chip degrades to a plain label on a single-model role");
-assert.deepEqual(roleModelSummary([opusRun], "implementor"), { label: "Opus 5 High" }, "one model means one plain label, no counter");
+assert.deepEqual(roleModelSummary([opusRun], "implementor"), { label: "Opus 5.5 High" }, "one model means one plain label, no counter");
 assert.equal(roleModelSummary([], "implementor"), undefined, "a role with no runs claims no model");
 
 console.log("\nRun attribution checks passed.");

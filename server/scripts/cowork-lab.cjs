@@ -44,7 +44,7 @@ function seed(dataDir, workspace) {
   const session = db.prepare(
     `INSERT INTO cowork_sessions (id, name, auto_named, workspace, state, requested_provider, requested_model,
        provider, model, effort, account, agent_session_id, active_turn_id, error, created_at, updated_at)
-     VALUES (?,?,0,?,?,NULL,NULL,'claude','claude-opus-5','high','primary','provider-session',?,NULL,?,?)`,
+     VALUES (?,?,0,?,?,NULL,NULL,'claude','claude-opus-5-5','high','primary','provider-session',?,NULL,?,?)`,
   );
   session.run(SESSION, "Pair on the responsive shell", workspace, "running", TURN, now - 1_800_000, now - 2_000);
   session.run(IDLE_SESSION, "Earlier exploration", workspace, "idle", null, now - 3_600_000, now - 600_000);
@@ -52,7 +52,7 @@ function seed(dataDir, workspace) {
   db.prepare(
     `INSERT INTO cowork_turns (id, session_id, state, provider, model, effort, account, agent_session_id,
        error, cost_usd, num_turns, started_at, ended_at)
-     VALUES (?,?,?,'claude','claude-opus-5','high','primary','provider-session',NULL,0.42,14,?,NULL)`,
+     VALUES (?,?,?,'claude','claude-opus-5-5','high','primary','provider-session',NULL,0.42,14,?,NULL)`,
   ).run(TURN, SESSION, "running", now - 135_000);
 
   const message = db.prepare(

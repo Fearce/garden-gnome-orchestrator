@@ -236,7 +236,7 @@ async function main(): Promise<void> {
       writeFileSync(coldPath, ""); // empty transcript: compressSession finds it but strips to nothing — no Haiku call
       const old = new Date(Date.now() - 120 * 60_000);
       utimesSync(coldPath, old, old);
-      h.db.updateRun(h.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5", account: "acct-a" }).id, { sessionId: coldSession });
+      h.db.updateRun(h.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5-5", account: "acct-a" }).id, { sessionId: coldSession });
 
       const starts: { text: string }[] = [];
       h.internals.startImplementor = (_t: Thread, text: string): { run: FakeRun; runId: string; accountId: string } => {
@@ -289,7 +289,7 @@ async function main(): Promise<void> {
 
       const warmSession = "warm-claude-session";
       writeFileSync(join(projectDir, `${warmSession}.jsonl`), ""); // fresh mtime = now, under the warm cutoff
-      h.db.updateRun(h.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5", account: "acct-a" }).id, { sessionId: warmSession });
+      h.db.updateRun(h.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5-5", account: "acct-a" }).id, { sessionId: warmSession });
 
       const starts: { text: string; resume?: string }[] = [];
       h.internals.startImplementor = (_t: Thread, text: string, opts?: { resume?: string }): { run: FakeRun; runId: string; accountId: string } => {
@@ -455,7 +455,7 @@ async function main(): Promise<void> {
       const id = seedTask(h);
       const priorQaSession = "prior-qa-session";
       writeFileSync(join(projectDir, `${priorQaSession}.jsonl`), "");
-      h.db.updateRun(h.db.createRun({ threadId: id, role: "qa", model: "claude-opus-5", account: "acct-a" }).id, {
+      h.db.updateRun(h.db.createRun({ threadId: id, role: "qa", model: "claude-opus-5-5", account: "acct-a" }).id, {
         sessionId: priorQaSession,
       });
 

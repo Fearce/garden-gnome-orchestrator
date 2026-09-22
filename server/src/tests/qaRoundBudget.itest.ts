@@ -175,7 +175,7 @@ function stubQaRunRole(h: Harness, results: unknown[], replayOnlyCalls: number[]
   internals.runRole = async (t: Thread, role: string, kickoff: string | unknown[], _cfg: unknown, resume?: string): Promise<unknown> => {
     calls.push({ kickoff: typeof kickoff === "string" ? kickoff : JSON.stringify(kickoff), resume });
     const res = results[Math.min(calls.length - 1, results.length - 1)] as { isError?: boolean };
-    const run = h.db.createRun({ threadId: t.id, role: role as "qa", model: "claude-opus-5" });
+    const run = h.db.createRun({ threadId: t.id, role: role as "qa", model: "claude-opus-5-5" });
     const replayOnly = replayOnlyCalls.includes(calls.length);
     h.db.updateRun(run.id, {
       sessionId: QA_SESSION,

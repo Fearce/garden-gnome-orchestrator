@@ -141,7 +141,7 @@ function seedLiveTask(bed: Bed, state: Thread["state"] = "implementing"): string
   const t = bed.db.createThread({ title: "mock live task", workspace: bed.workspace, rawPrompt: "do the thing" });
   bed.db.updateThreadStageOutputs(t.id, { kickoff: "KICKOFF: mock", planDone: true, approved: true });
   bed.db.updateThread(t.id, { state });
-  bed.db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5" });
+  bed.db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5-5" });
   return t.id;
 }
 
@@ -165,7 +165,7 @@ function seedStrandedTask(bed: Bed, opts: { error?: string; revivals?: number; a
 function seedFastInterrupts(bed: Bed, threadId: string, n: number): void {
   const at = Date.now();
   for (let i = 0; i < n; i++) {
-    const r = bed.db.createRun({ threadId, role: "implementor", model: "claude-opus-5" });
+    const r = bed.db.createRun({ threadId, role: "implementor", model: "claude-opus-5-5" });
     bed.db.updateRun(r.id, { state: "interrupted", endedAt: at - 1_000 });
   }
 }
@@ -268,7 +268,7 @@ async function testRevivalIsBoundedThenReleased(): Promise<void> {
   // A LATER genuine interruption is a new episode — it must get the full budget again, or a long-lived
   // task that survived three strandings over its lifetime could never be auto-resumed again.
   bed.db.updateThread(id, { state: "implementing", error: null });
-  bed.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5" });
+  bed.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5-5" });
   const fresh = boot(bed);
   check("a fresh interruption resets the budget", bed.db.getThreadStageOutputs(id).autoResumeRevivals === 0, String(bed.db.getThreadStageOutputs(id).autoResumeRevivals));
   await sleep(AUTO_RESUME_DELAY_MS + 400);

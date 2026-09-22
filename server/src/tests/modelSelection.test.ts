@@ -55,7 +55,7 @@ const EFFORTS: Effort[] = ["low", "medium", "high", "max", "ultra"];
 const CTX = { candidates: CANDIDATES, efforts: EFFORTS };
 const FLAGSHIP_POLICY: ImplementorModelPolicy = {
   tier: "flagship",
-  preferredModel: "claude-opus-5",
+  preferredModel: "claude-opus-5-5",
   reason: "risk and scale require a flagship implementor",
   signals: ["production data lifecycle"],
 };
@@ -92,15 +92,15 @@ console.log("Flagship capability floor");
 {
   const roster: ModelCandidate[] = [
     { provider: "claude", model: "claude-sonnet-5", efforts: ["high"], note: "workhorse" },
-    { provider: "claude", model: "claude-opus-5", efforts: ["high", "xhigh"], note: "preferred" },
+    { provider: "claude", model: "claude-opus-5-5", efforts: ["high", "xhigh"], note: "preferred" },
     { provider: "codex", model: "gpt-6-astra", efforts: ["high", "xhigh", "max", "ultra"], note: "approved frontier fallback" },
     { provider: "codex", model: "gpt-5.6-sol", efforts: ["high", "xhigh"], note: "approved fallback" },
   ];
   const preferred = applyImplementorModelPolicy(roster, FLAGSHIP_POLICY);
-  check("available Opus 5 is the sole eligible first choice", preferred.mode === "preferred" && preferred.eligible.length === 1 && preferred.eligible[0]?.model === "claude-opus-5", JSON.stringify(preferred));
+  check("available Opus 5.5 is the sole eligible first choice", preferred.mode === "preferred" && preferred.eligible.length === 1 && preferred.eligible[0]?.model === "claude-opus-5-5", JSON.stringify(preferred));
   check("Sonnet cannot compete with Opus on local outcome history", preferred.excluded.some((candidate) => candidate.model === "claude-sonnet-5"), JSON.stringify(preferred));
 
-  const fallback = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model !== "claude-opus-5"), FLAGSHIP_POLICY);
+  const fallback = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model !== "claude-opus-5-5"), FLAGSHIP_POLICY);
   check("an unavailable Opus leaves only reviewed flagship fallbacks", fallback.mode === "fallback" && fallback.eligible.map((candidate) => candidate.model).join(",") === "gpt-6-astra,gpt-5.6-sol", JSON.stringify(fallback));
 
   const blocked = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model === "claude-sonnet-5"), FLAGSHIP_POLICY);

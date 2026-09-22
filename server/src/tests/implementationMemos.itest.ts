@@ -295,7 +295,7 @@ migrated.raw.close();
 const reopened = new Db(legacyPath);
 check("reopening does not re-import (the kv flag holds)", reopened.listImplementationMemos(doneTask.id).length === 2, String(reopened.listImplementationMemos(doneTask.id).length));
 check("a post-backfill run appends after the imported revisions", (() => {
-  const fresh = reopened.createRun({ threadId: doneTask.id, role: "implementor", model: "claude-opus-5", account: "subscription-a" });
+  const fresh = reopened.createRun({ threadId: doneTask.id, role: "implementor", model: "claude-opus-5-5", account: "subscription-a" });
   reopened.updateRun(fresh.id, { state: "done", endedAt: Date.now() });
   return reopened.upsertImplementationMemo({
     threadId: doneTask.id,
@@ -303,7 +303,7 @@ check("a post-backfill run appends after the imported revisions", (() => {
     outcome: "completed",
     handoff: "qa",
     report: "New work after the deploy.",
-    model: "claude-opus-5",
+    model: "claude-opus-5-5",
     startedAt: Date.now(),
     completedAt: Date.now(),
   }).revision === 3;

@@ -156,7 +156,7 @@ function makeHarness(script: ("silent" | "works")[]): Harness {
   ) => {
     asks.push({ session, forceFresh: !!opts.forceFresh, nudge: opts.resumeNudge });
     const behaviour = script[asks.length - 1] ?? "silent";
-    const run = db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5", account: "a" });
+    const run = db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5-5", account: "a" });
     internals.live.set(t.id, { run: fakeRun(), runId: run.id, accountId: "a" });
     // A working resume writes output the way wireRun does; a silent one writes nothing at all.
     if (behaviour === "works") db.addMessage({ threadId: t.id, runId: run.id, role: "implementor", kind: "text", content: "Patched the file." });
@@ -184,7 +184,7 @@ function makeHarness(script: ("silent" | "works")[]): Harness {
 async function drive(h: Harness, firstProduces: boolean, endsFirst = false): Promise<ResultEvent | undefined> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = h.mgr as any;
-  const run = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5", account: "a" });
+  const run = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5-5", account: "a" });
   const onEnd = endsFirst
     ? () => {
         if (internals.live.get(h.thread.id)?.runId !== run.id) return; // already replaced by a relaunch

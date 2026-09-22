@@ -167,7 +167,7 @@ function makeHarness(onFailover: () => FakeRun, onResume: () => FakeRun): Harnes
     runs.push(run);
     // A stubbed spawn still owes the row the real one writes: the run trail is what several guards read
     // back, and a harness that writes none makes their assertions pass vacuously.
-    const row = db.createRun({ threadId: thread.id, role: "implementor", model: "claude-opus-5", account: accountId });
+    const row = db.createRun({ threadId: thread.id, role: "implementor", model: "claude-opus-5-5", account: accountId });
     internals.live.set(thread.id, { run, runId: row.id, accountId });
     run.beforeResult = () => {
       db.addMessage({ threadId: thread.id, runId: row.id, role: "implementor", kind: "text", content: "Patched the file." });
@@ -203,7 +203,7 @@ async function drive(h: Harness, first: FakeRun): Promise<ResultEvent | undefine
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = h.mgr as any;
   h.runs.push(first);
-  const row = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5", account: "acct-a" });
+  const row = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5-5", account: "acct-a" });
   internals.live.set(h.thread.id, { run: first, runId: row.id, accountId: "acct-a" });
   return internals.awaitImplementorCompletion(h.thread, undefined, "kickoff", first, "acct-a", false, "continue", true);
 }
@@ -276,7 +276,7 @@ console.log("\n=== D. the backstop: a new implementor ends the unfinished one it
   const internals = h.mgr as any;
 
   const orphan = fakeRun("orphan", SUCCESS);
-  const row = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5", account: "acct-a" });
+  const row = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5-5", account: "acct-a" });
   internals.live.set(h.thread.id, { run: orphan, runId: row.id, accountId: "acct-a" });
   internals.stopDisplacedImplementor(h.thread.id);
   check("an unfinished implementor is stopped when a new one takes the handle", orphan.stops === 1, `${orphan.stops} stop(s)`);

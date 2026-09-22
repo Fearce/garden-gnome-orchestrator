@@ -102,9 +102,9 @@ assert.equal(
   cls(
     [
       "This task's persisted route requires a flagship implementor (data migration/backfill).",
-      "claude-opus-5 is not dispatchable with the required runway, and no policy-approved flagship fallback is currently safe.",
+      "claude-opus-5-5 is not dispatchable with the required runway, and no policy-approved flagship fallback is currently safe.",
       "Safe but ineligible workhorse/economy candidates: claude-sonnet-5. No weaker model was started.",
-      "Capacity target: substantial implementor work. Restore claude-opus-5 capacity/access or another approved flagship, then click Resume; routing will re-check from the saved task state.",
+      "Capacity target: substantial implementor work. Restore claude-opus-5-5 capacity/access or another approved flagship, then click Resume; routing will re-check from the saved task state.",
     ].join(String.fromCharCode(10, 10)),
   ),
   "flagshipWait",

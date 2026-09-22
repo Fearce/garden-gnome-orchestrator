@@ -77,7 +77,7 @@ const INACTIVE_RESET_SOON = { usedPct: 95, resetAt: NOW + DAY / 2 };
 
 check(
   "a flagship Claude pick is pulled down to Sonnet",
-  conservationResolvedModel("claude", "claude-opus-5", ACTIVE, NOW) === "claude-sonnet-5",
+  conservationResolvedModel("claude", "claude-opus-5-5", ACTIVE, NOW) === "claude-sonnet-5",
 );
 check(
   "a flagship Fable pick is pulled down to Sonnet too",
@@ -113,7 +113,7 @@ check(
 );
 check(
   "an inactive window (usage below the last 10%) leaves a flagship pick alone",
-  conservationResolvedModel("claude", "claude-opus-5", INACTIVE_LOW_USAGE, NOW) === "claude-opus-5",
+  conservationResolvedModel("claude", "claude-opus-5-5", INACTIVE_LOW_USAGE, NOW) === "claude-opus-5-5",
 );
 check(
   "an inactive window (reset within 24h) leaves a flagship pick alone",

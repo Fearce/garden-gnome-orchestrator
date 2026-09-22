@@ -218,7 +218,7 @@ function makeHarness(): Harness {
 function stubImplementorStart(h: Harness): FakeRun {
   const run = new FakeRun();
   h.internals.startResumedImplementor = async (t: Thread): Promise<{ run: FakeRun; runId: string; accountId: string }> => {
-    const row = h.db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5", account: "acct-a" });
+    const row = h.db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5-5", account: "acct-a" });
     h.internals.setState(t.id, "implementing");
     h.internals.wireRun(run, t.id, row.id, "implementor", "acct-a");
     h.internals.live.set(t.id, { run, runId: row.id, accountId: "acct-a" });
@@ -260,7 +260,7 @@ async function main(): Promise<void> {
   console.log("Test A — AgentRun reads `terminal_reason`, the only field that distinguishes the two");
   {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const agent = new AgentRun({ model: "claude-opus-5", cwd: process.cwd() }) as any;
+    const agent = new AgentRun({ model: "claude-opus-5-5", cwd: process.cwd() }) as any;
     const seen: ResultEvent[] = [];
     agent.onEvent((e: AgentEvent) => {
       if (e.type === "result") seen.push(e);
@@ -291,7 +291,7 @@ async function main(): Promise<void> {
     // `awaitTurnResult` discards an aborted event and waits for the continuation turn. If the owner
     // instead stops the run in that tiny interval, `nextResult` must notice the already-fired end rather
     // than wait forever for another result event.
-    const stoppedAfterAbort = new AgentRun({ model: "claude-opus-5", cwd: process.cwd() }) as any;
+    const stoppedAfterAbort = new AgentRun({ model: "claude-opus-5-5", cwd: process.cwd() }) as any;
     stoppedAfterAbort.handle({ type: "result", subtype: "success", is_error: false, result: "", terminal_reason: "aborted_tools" });
     stoppedAfterAbort.finished = true;
     const stoppedResult = await Promise.race([

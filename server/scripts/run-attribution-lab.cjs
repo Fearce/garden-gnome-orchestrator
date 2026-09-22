@@ -34,7 +34,7 @@ function seed(dataDir) {
   );
 
   insThread.run(TASK, "MIXED MODEL TASK", "p", "b", process.cwd(), "implementing", now - 900_000, now);
-  insRun.run(OPUS_RUN, TASK, "implementor", "claude-opus-5", "personal", "high", "done", now - 900_000, now - 800_000);
+  insRun.run(OPUS_RUN, TASK, "implementor", "claude-opus-5-5", "personal", "high", "done", now - 900_000, now - 800_000);
   insRun.run(SONNET_RUN, TASK, "implementor", "claude-sonnet-5", "personal", "medium", "running", now - 700_000, null);
   insMsg.run("msg-opus", TASK, OPUS_RUN, "implementor", "text", "OPUS LINE: written before the model changed.", now - 850_000);
   insMsg.run("msg-sonnet", TASK, SONNET_RUN, "implementor", "text", "SONNET LINE: written after the model changed.", now - 650_000);
@@ -47,7 +47,7 @@ function seed(dataDir) {
       // Closed, so 320 filler cards do not paginate the task under test off the board — their RUNS are
       // what this lab needs, and the connect snapshot carries runs regardless of task state.
       insThread.run(tid, `FILLER ${i}`, "p", "b", process.cwd(), "closed", now - 10_000 + i, now - 10_000 + i);
-      insRun.run(`cccccccc-0000-4000-8000-${String(i).padStart(12, "0")}`, tid, "implementor", "claude-opus-5", "personal", "high", "done", now - 10_000 + i, now - 9_000 + i);
+      insRun.run(`cccccccc-0000-4000-8000-${String(i).padStart(12, "0")}`, tid, "implementor", "claude-opus-5-5", "personal", "high", "done", now - 10_000 + i, now - 9_000 + i);
     }
   });
   filler();
@@ -130,7 +130,7 @@ async function labelsInFeed(page) {
     await awaitOpusLabel(page, "on open");
 
     const labels = await labelsInFeed(page);
-    check("the Opus run's message says Opus", labels.opus === "Opus 5 High", JSON.stringify(labels));
+    check("the Opus run's message says Opus", labels.opus === "Opus 5.5 High", JSON.stringify(labels));
     check("the Sonnet run's message says Sonnet", labels.sonnet === "Sonnet 5 Medium", JSON.stringify(labels));
 
     const chip = await page.evaluate(() => {
@@ -139,7 +139,7 @@ async function labelsInFeed(page) {
       return { label: model?.textContent ?? null, title: model?.getAttribute("title") ?? null };
     });
     check("the role chip counts the models rather than naming one", chip.label === "Sonnet 5 Medium +1", JSON.stringify(chip));
-    check("the role chip enumerates them in its tooltip", chip.title === "Ran on Sonnet 5 Medium, Opus 5 High", JSON.stringify(chip));
+    check("the role chip enumerates them in its tooltip", chip.title === "Ran on Sonnet 5 Medium, Opus 5.5 High", JSON.stringify(chip));
 
     // A reload re-delivers the bounded snapshot and re-fetches history from nothing; the labels must
     // come back, which they can only do from the history payload.
@@ -148,7 +148,7 @@ async function labelsInFeed(page) {
     await openTask(page);
     await awaitOpusLabel(page, "after a reload");
     const afterReload = await labelsInFeed(page);
-    check("a reload keeps the Opus message on Opus", afterReload.opus === "Opus 5 High", JSON.stringify(afterReload));
+    check("a reload keeps the Opus message on Opus", afterReload.opus === "Opus 5.5 High", JSON.stringify(afterReload));
     check("a reload keeps the Sonnet message on Sonnet", afterReload.sonnet === "Sonnet 5 Medium", JSON.stringify(afterReload));
 
     await page.screenshot({ path: path.join(shotDir(dataDir), "run-attribution.png"), fullPage: false });

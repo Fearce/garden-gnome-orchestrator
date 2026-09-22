@@ -204,7 +204,7 @@ internals.codexCapActive = originalCodexCapActive;
   db.createRun({ threadId: poolThread.id, role: "implementor", model: "gpt-5.6-sol", account: "codex:gpt-5.6-sol" });
   await new Promise((r) => setTimeout(r, 2)); // distinct startedAt, so "newest" is not a tie
   db.createRun({ threadId: poolThread.id, role: "implementor", model: "gpt-dedicated", account: "codex:gpt-dedicated" });
-  db.createRun({ threadId: poolThread.id, role: "qa", model: "claude-opus-5", account: "personal" });
+  db.createRun({ threadId: poolThread.id, role: "qa", model: "claude-opus-5-5", account: "personal" });
   check(
     "the dispatched model comes from the newest IMPLEMENTOR run row, not a later QA run",
     internals.latestImplementorRunModel(poolThread.id) === "gpt-dedicated",

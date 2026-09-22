@@ -74,9 +74,9 @@ function seed(dataDir) {
     state: "implementing",
     workspace: path.resolve(SERVER_ROOT, ".."),
     request: JSON.stringify({
-      requested: "claude-opus-5",
+      requested: "claude-opus-5-5",
       provider: "claude",
-      model: "claude-opus-5",
+      model: "claude-opus-5-5",
       strict: true,
       selectedAt: at - 1_000,
     }),

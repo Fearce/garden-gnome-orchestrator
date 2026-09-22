@@ -88,10 +88,10 @@ Model + tool policy per role:
 | Director    | runtime-selected Claude / Codex / Grok / z.ai | provider-specific | Native memory + orchestration MCP on Claude/z.ai; constrained server-command bridge on Codex/Grok — **no repo writes/shell** |
 | Planner     | small-task-eligible free pool → configured reliable backend | provider-specific | Read/Grep/Glob — **owns codebase reading**; routes to researcher or implementor. Free admission requires an explicit low-effort, narrow first attempt; otherwise the planner starts on the reliable ladder. |
 | Researcher  | claude-sonnet-5  | plan           | WebSearch/WebFetch, memory, bus — **no Read/Grep/Glob** (external info only; the planner reads the repo) |
-| Implementor | claude-opus-5    | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
-| QA          | claude-opus-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); runs only when the selected route needs independent review |
+| Implementor | claude-opus-5-5    | bypassPermissions | all (Read/Write/Edit/Bash/…), bus |
+| QA          | claude-opus-5-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests), bus — **no Write/Edit** (reviews, doesn't implement); runs only when the selected route needs independent review |
 | Reader      | small-task-eligible free pool → configured reliable backend | provider-specific | Read/Grep/Glob + `git_read` (allowlisted log/show/status/diff, **no Bash**) + `post_finding` — **no Write/Edit/Bash/web** (§5, the read-only `dispatch_read` lane); broad/uncertain or repeated lookups skip free quota. |
-| Reviewer    | claude-opus-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests, browser-drives UI), bus incl. **`ask_user`** — **no Write/Edit** (§5, the on-demand auto-review); accepts a parked task as done in the owner's place, or hands it back |
+| Reviewer    | claude-opus-5-5    | bypassPermissions | Read/Grep/Glob + Bash (runs build/tests, browser-drives UI), bus incl. **`ask_user`** — **no Write/Edit** (§5, the on-demand auto-review); accepts a parked task as done in the owner's place, or hands it back |
 
 The **reader** is the same harness-level enforcement as QA — under `bypassPermissions` the
 `disallowedTools` denylist is a HARD block, so listing `Write`/`Edit`/`Bash`/`WebFetch`/… there
@@ -145,7 +145,7 @@ the live capacity of the exact account/general/dedicated pool it would spend;
 known-at-risk models are omitted when a viable pool exists, and a persisted pick is revalidated against
 the same workload reserve immediately before launch. The deterministic task route is a capability floor:
 substantial ambiguous or risk-bearing production/data/migration/cross-cutting work requires a flagship
-implementor, prefers `claude-opus-5`, and lets outcome history judge only policy-approved flagship fallbacks.
+implementor, prefers `claude-opus-5-5`, and lets outcome history judge only policy-approved flagship fallbacks.
 If none has task-sized runway, the card waits in `review` with the exact reason; it never silently runs a
 workhorse. A strict owner model pin remains an exact task-local exception.
 Every auto-selected task is graded when it settles so the next pick reads real outcomes rather than
@@ -271,7 +271,7 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   biases conservative on anything not confidently narrow, mirroring the read lane's own
   "misrouting to the cheap path is the unsafe direction" rule. That decision also persists an
   implementor capability floor: `adaptive` keeps cheapest-capable selection, while substantial/risky
-  work is `flagship`, prefers Opus 5, and permits only reviewed flagship fallbacks. If capacity cannot
+  work is `flagship`, prefers Opus 5.5, and permits only reviewed flagship fallbacks. If capacity cannot
   satisfy that floor, the task waits visibly; an exact owner model pin remains authoritative. The pick is
   persisted (`stage_outputs.routeDecision`, sticky across resume except for a one-time upgrade of legacy
   decisions) and announced as a system message in the task's own feed ("🧭 Route selected/updated — …"), so it's visible

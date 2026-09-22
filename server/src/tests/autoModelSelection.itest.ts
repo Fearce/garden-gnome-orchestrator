@@ -178,7 +178,7 @@ function makeHarness(beforeManager?: (db: InstanceType<typeof Db>) => void): Har
 
 const HAIKU = "claude-haiku-4-5-20251001";
 const SONNET_5 = "claude-sonnet-5";
-const OPUS_5 = "claude-opus-5";
+const OPUS_5 = "claude-opus-5-5";
 const SOL_56 = "gpt-5.6-sol";
 const COMPLEX_DATA_BRIEF = `Investigate why stale business records remain visible to users and implement a durable end-to-end fix.
 
@@ -246,7 +246,7 @@ async function main(): Promise<void> {
       const live = [
         "claude-opus-4-8",
         "claude-sonnet-4-6",
-        "claude-opus-5",
+        "claude-opus-5-5",
         "claude-sonnet-5",
         HAIKU,
       ];
@@ -431,7 +431,7 @@ async function main(): Promise<void> {
   }
 
   // -- C3-C7: deterministic capability floor and migration behavior ----------------------------------
-  console.log("\nTest C3 — complex production-data work deterministically gets Opus 5");
+  console.log("\nTest C3 — complex production-data work deterministically gets Opus 5.5");
   {
     const h = makeHarness();
     try {
@@ -439,10 +439,10 @@ async function main(): Promise<void> {
       const id = seedComplex(h);
       h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(SONNET_5), policyCandidate(OPUS_5)];
       // Even a judge that would have repeated the historical Sonnet choice is not consulted: the
-      // deterministic capability floor reduces the eligible roster to available Opus 5 first.
+      // deterministic capability floor reduces the eligible roster to available Opus 5.5 first.
       h.reply(pickReply(SONNET_5, "high"));
       const pick = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick;
-      check("the persisted pick is Opus 5", pick?.model === OPUS_5 && h.db.getThreadStageOutputs(id).modelPick?.model === OPUS_5, JSON.stringify(pick));
+      check("the persisted pick is Opus 5.5", pick?.model === OPUS_5 && h.db.getThreadStageOutputs(id).modelPick?.model === OPUS_5, JSON.stringify(pick));
       check("local outcome history cannot downgrade the flagship floor", h.calls() === 0, String(h.calls()));
       check("the owner sees the flagship decision", h.db.listFindings(id).some((finding) => /flagship route selected/i.test(finding.summary) && finding.summary.includes(OPUS_5)), JSON.stringify(h.db.listFindings(id)));
     } finally {
@@ -461,7 +461,7 @@ async function main(): Promise<void> {
       h.db.updateRun(oldRun.id, { state: "error", error: "interrupted for safe routing repair", sessionId: "legacy-sonnet-session", endedAt: Date.now() });
       h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(OPUS_5), policyCandidate(SONNET_5)];
       const pick = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick;
-      check("the incompatible saved pick is replaced with Opus 5", pick?.model === OPUS_5, JSON.stringify(pick));
+      check("the incompatible saved pick is replaced with Opus 5.5", pick?.model === OPUS_5, JSON.stringify(pick));
       check("the historical Sonnet run remains auditable", h.db.listRuns(id).some((run) => run.id === oldRun.id && run.model === SONNET_5), JSON.stringify(h.db.listRuns(id)));
       check("the supersession is explained in task history", h.db.listFindings(id).some((finding) => /superseded automatic/i.test(finding.summary) && finding.summary.includes(SONNET_5)), JSON.stringify(h.db.listFindings(id)));
       h.internals.implementorProvider.set(id, "claude");
@@ -494,7 +494,7 @@ async function main(): Promise<void> {
       const parked = thread(h, id);
       check("no weaker model is returned or persisted", pick === null && h.db.getThreadStageOutputs(id).modelPick == null, JSON.stringify(h.db.getThreadStageOutputs(id).modelPick));
       check("the task visibly waits in review", parked.state === "review" && /no policy-approved flagship fallback/i.test(parked.error ?? ""), JSON.stringify({ state: parked.state, error: parked.error }));
-      check("the wait names Opus and says Sonnet was not started", h.db.listFindings(id).some((finding) => /opus-5 unavailable/i.test(finding.summary) && /No weaker model was started/.test(finding.detail ?? "")), JSON.stringify(h.db.listFindings(id)));
+      check("the wait names Opus 5.5 and says Sonnet was not started", h.db.listFindings(id).some((finding) => /opus-5-5 unavailable/i.test(finding.summary) && /No weaker model was started/.test(finding.detail ?? "")), JSON.stringify(h.db.listFindings(id)));
       check("capacity blocking spends no selector turn", h.calls() === 0, String(h.calls()));
     } finally {
       h.dispose();
@@ -510,7 +510,7 @@ async function main(): Promise<void> {
       h.db.updateThreadStageOutputs(id, { modelPick: { provider: "codex", model: SOL_56, effort: "max", reason: "previously had enough runway" } });
       h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(OPUS_5), policyCandidate(SONNET_5)];
       const pick = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick;
-      check("auto-selection replaces the stale Codex flagship pick with Opus 5", pick?.model === OPUS_5 && h.db.getThreadStageOutputs(id).modelPick?.model === OPUS_5, JSON.stringify(pick));
+      check("auto-selection replaces the stale Codex flagship pick with Opus 5.5", pick?.model === OPUS_5 && h.db.getThreadStageOutputs(id).modelPick?.model === OPUS_5, JSON.stringify(pick));
 
       h.db.updateThreadStageOutputs(id, { modelPick: { provider: "codex", model: SOL_56, effort: "max", reason: "previously had enough runway" } });
       const demand = h.internals.capacityDemand(thread(h, id), "implementor", "max");

@@ -142,7 +142,7 @@ const session: CoworkSession = {
   requestedProvider: null,
   requestedModel: null,
   provider: "claude",
-  model: "claude-opus-5",
+  model: "claude-opus-5-5",
   effort: "high",
   account: "primary",
   agentSessionId: "provider-session",

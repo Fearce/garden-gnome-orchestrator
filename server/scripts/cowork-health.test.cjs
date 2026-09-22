@@ -120,7 +120,7 @@ function addSession(db, id, overrides = {}) {
     requested_provider: null,
     requested_model: null,
     provider: "claude",
-    model: "claude-opus-5",
+    model: "claude-opus-5-5",
     effort: "high",
     account: "personal",
     agent_session_id: null,
@@ -146,7 +146,7 @@ function addTurn(db, sessionId, id, overrides = {}) {
     session_id: sessionId,
     state: "done",
     provider: "claude",
-    model: "claude-opus-5",
+    model: "claude-opus-5-5",
     effort: "high",
     account: "personal",
     agent_session_id: "agent-1",
@@ -530,19 +530,19 @@ check("a pinned session that ran on another provider/model is flagged as a subst
   const { db } = freshDb("substituted");
   addSession(db, "s-pin", {
     requested_provider: "claude",
-    requested_model: "claude-opus-5",
+    requested_model: "claude-opus-5-5",
     provider: "zai",
     model: "glm-5.3",
   });
   addTurn(db, "s-pin", "t-1", { provider: "zai", model: "glm-5.3", account: "zai" });
   const reading = only(db);
-  assert.match(issueText(reading), /ran on zai\/glm-5\.3 despite the pin claude\/claude-opus-5/);
+  assert.match(issueText(reading), /ran on zai\/glm-5\.3 despite the pin claude\/claude-opus-5-5/);
   db.close();
 });
 
 check("a pinned session that honored its pin is clean and says so in a note", () => {
   const { db } = freshDb("pin-ok");
-  addSession(db, "s-ok", { requested_provider: "claude", requested_model: "claude-opus-5" });
+  addSession(db, "s-ok", { requested_provider: "claude", requested_model: "claude-opus-5-5" });
   addTurn(db, "s-ok", "t-1");
   const reading = only(db);
   assert.equal(reading.attention, false, issueText(reading));

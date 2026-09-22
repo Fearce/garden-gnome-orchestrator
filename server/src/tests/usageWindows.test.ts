@@ -171,12 +171,12 @@ check(
 );
 
 const poolCapped = tokenShiftReport(
-  snapshot({ accounts: [account({ modelLimits: [{ model: "claude-fable-5", fallback: "claude-opus-5", resetsAt: NOW + 30 * MINUTE }] })] }),
+  snapshot({ accounts: [account({ modelLimits: [{ model: "claude-fable-5", fallback: "claude-opus-5-5", resetsAt: NOW + 30 * MINUTE }] })] }),
   NOW,
 );
 check(
   "a per-model pool cap reports its own reset and the model standing in meanwhile",
-  poolCapped.next?.window === "claude-fable-5 pool cap" && poolCapped.next?.note?.includes("claude-opus-5") === true,
+  poolCapped.next?.window === "claude-fable-5 pool cap" && poolCapped.next?.note?.includes("claude-opus-5-5") === true,
   JSON.stringify(poolCapped.next),
 );
 

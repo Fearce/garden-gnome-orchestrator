@@ -31,7 +31,7 @@ const SOL = "gpt-5.6-sol";
 const CANDIDATES = [
   { provider: "codex" as const, model: SPARK, labels: ["GPT-5.3-Codex-Spark"] },
   { provider: "codex" as const, model: SOL, labels: ["GPT-5.6-Sol"] },
-  { provider: "claude" as const, model: "claude-opus-5" },
+  { provider: "claude" as const, model: "claude-opus-5-5" },
 ];
 
 let passed = 0;
@@ -203,8 +203,8 @@ async function main(): Promise<void> {
   internals.live.set(selectable.id, {
     run: { interrupt: async () => undefined },
   });
-  const liveChange = await mgr.setThreadModel(selectable.id, "claude", "claude-opus-5");
-  check("a running implementor is interrupted before acquiring the new pin", liveChange.ok && db.getThread(selectable.id)?.modelRequest?.model === "claude-opus-5", liveChange.error);
+  const liveChange = await mgr.setThreadModel(selectable.id, "claude", "claude-opus-5-5");
+  check("a running implementor is interrupted before acquiring the new pin", liveChange.ok && db.getThread(selectable.id)?.modelRequest?.model === "claude-opus-5-5", liveChange.error);
   db.updateThread(selectable.id, { state: "paused" });
   const auto = await mgr.setThreadModel(selectable.id, null, null);
   check("a parked task can return to automatic routing", auto.ok && db.getThread(selectable.id)?.modelRequest == null);

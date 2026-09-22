@@ -69,7 +69,7 @@ try {
   const insertRun = db.prepare(
     `INSERT INTO agent_runs
       (id, thread_id, role, model, account, state, cost_usd, num_turns, started_at, ended_at, error, cap_flagged)
-     VALUES (?, ?, 'qa', 'claude-opus-5', 'personal', ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, 'qa', 'claude-opus-5-5', 'personal', ?, ?, ?, ?, ?, ?, ?)`,
   );
   insertRun.run("cutoff-run", threadId, "error", 11.25, 101, now - 9_000, now - 6_000, "error_max_turns", 0);
   insertRun.run("replay-run", threadId, "done", 0, 0, now - 5_000, now - 3_000, null, 0);

@@ -120,7 +120,7 @@ ranking, caches, and user-facing results. Handle existing data and future update
 backfill, preserve auditability, and add realistic regressions for open, closed, temporary, and unknown states.`);
   check("cross-cutting production-data work routes broad", d.scope === "broad", JSON.stringify(d));
   check("cross-cutting production-data work requires a flagship", d.modelPolicy?.tier === "flagship", JSON.stringify(d.modelPolicy));
-  check("Opus 5 is the persisted first choice", d.modelPolicy?.preferredModel === "claude-opus-5", JSON.stringify(d.modelPolicy));
+  check("Opus 5.5 is the persisted first choice", d.modelPolicy?.preferredModel === "claude-opus-5-5", JSON.stringify(d.modelPolicy));
   check("data-lifecycle evidence is explicit", d.modelPolicy?.signals.includes("production data lifecycle") === true, JSON.stringify(d.modelPolicy));
   check("migration/backfill evidence is explicit", d.modelPolicy?.signals.includes("data migration/backfill") === true, JSON.stringify(d.modelPolicy));
   check("authoritative/auditability prose is not misreported as auth risk", !d.signals.includes("security/auth"), JSON.stringify(d.signals));

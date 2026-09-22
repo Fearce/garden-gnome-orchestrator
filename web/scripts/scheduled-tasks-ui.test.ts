@@ -113,7 +113,7 @@ assert.match(useStore.getState().notice?.message ?? "", /reconnecting/i);
 // weeks, and rosters move underneath it. So the two halves must travel together everywhere, and a half
 // pin must never be storable: it would read on the card as pinned while routing automatically.
 const ROSTERS = [
-  { provider: "claude" as const, models: ["claude-opus-5", "claude-sonnet-5"] },
+  { provider: "claude" as const, models: ["claude-opus-5-5", "claude-sonnet-5"] },
   { provider: "codex" as const, models: ["gpt-5.6-sol", "gpt-5.6-luna"] },
 ];
 const row = (pin: Partial<ScheduledTask>): ScheduledTask => ({ ...saved, ...pin } as ScheduledTask);
@@ -126,8 +126,8 @@ assert.deepEqual(
   "a saved pair is read back as that exact pair",
 );
 assert.deepEqual(
-  storedPin(ROSTERS, row({ model: "claude-opus-5" })),
-  { provider: "claude", model: "claude-opus-5" },
+  storedPin(ROSTERS, row({ model: "claude-opus-5-5" })),
+  { provider: "claude", model: "claude-opus-5-5" },
   "a pin saved before the provider column, whose id a live roster still publishes, resolves to the pair",
 );
 assert.deepEqual(
