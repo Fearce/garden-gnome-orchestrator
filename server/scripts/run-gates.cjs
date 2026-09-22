@@ -160,6 +160,7 @@ const GATES = [
   "test:model-select",
   "test:model-catalog",
   "test:model-catalog-health",
+  "test:retired-model-id",
   "test:auto-model",
   "test:review-model-floor",
   "test:director-provider",

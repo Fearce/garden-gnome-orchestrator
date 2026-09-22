@@ -151,6 +151,7 @@
     "test:review-model-floor": "tsx src/tests/reviewModelFloor.itest.ts",
     "test:model-catalog": "tsx src/tests/modelCatalog.test.ts",
     "test:model-catalog-health": "node scripts/model-catalog-health.test.cjs",
+    "test:retired-model-id": "node scripts/retired-model-id.test.cjs",
     "test:auto-model": "tsx src/tests/autoModelSelection.itest.ts",
     "test:director-provider": "tsx src/tests/directorProvider.test.ts",
     "test:model-request": "tsx src/tests/modelRequest.itest.ts",
