@@ -151,6 +151,7 @@
     "test:elapsed-probe": "node scripts/probe-elapsed.test.cjs",
     "test:reveal-workspace": "tsx src/tests/revealWorkspace.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/workspace-path-ui.test.tsx",
     "test:model-select": "tsx src/tests/modelSelection.test.ts",
+    "test:claude-opus-floor": "tsx src/tests/claudeOpusFloor.itest.ts",
     "test:review-model-floor": "tsx src/tests/reviewModelFloor.itest.ts",
     "test:model-catalog": "tsx src/tests/modelCatalog.test.ts",
     "test:model-catalog-health": "node scripts/model-catalog-health.test.cjs",

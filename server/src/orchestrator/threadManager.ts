@@ -78,6 +78,7 @@ import {
   modelMatchesPolicy,
 } from "./modelRoutingPolicy.js";
 import { codexReviewTarget, type CodexReviewTarget } from "./reviewModelFloor.js";
+import { claudeOpusTarget, CLAUDE_OPUS_FLOOR_MODEL, type ClaudeOpusTarget } from "./claudeOpusFloor.js";
 import { conservationResolvedCodexModel, conservationResolvedModel } from "./tokenConservation.js";
 import { usageSavingActive } from "./usageSaving.js";
 import { providerIntent } from "./providerIntent.js";
@@ -2875,11 +2876,15 @@ export class ThreadManager implements OrchestratorApi {
     return ids.some((subId) => this.usageSavingTarget(subId) != null);
   }
 
-  /** The model matrix as Settings should display it. An old QA/reviewer Codex pin is projected to the
-   *  dispatchable floor target without overwriting its raw value, so the visible choice and the actual
-   *  run agree while `codexRoleTarget` can still apply the low-effort substitution. */
+  /** The model matrix as Settings should display it. An old QA/reviewer Codex pin, and a retired Opus
+   *  pin on any Claude subscription, are projected to their dispatchable floor target without
+   *  overwriting the raw value, so the visible choice and the actual run agree while `codexRoleTarget`
+   *  can still apply the low-effort substitution. */
   private reviewSafeModelOverrides(): ModelOverrides {
-    const overrides = this.modelOverrides();
+    return this.opusSafeModelOverrides(this.codexSafeModelOverrides(this.modelOverrides()));
+  }
+
+  private codexSafeModelOverrides(overrides: ModelOverrides): ModelOverrides {
     const codex = overrides[CODEX_SUB_ID];
     if (!codex) return overrides;
     const safe = { ...codex };
@@ -2892,6 +2897,27 @@ export class ThreadManager implements OrchestratorApi {
     return { ...overrides, [CODEX_SUB_ID]: safe };
   }
 
+  /** Every role on every CLAUDE subscription, since the Opus floor is not role-scoped. The non-Claude
+   *  sub ids are skipped by id rather than by inspecting their models: a Codex/Grok/GLM id can never
+   *  parse as an Opus version anyway, and naming them keeps that an invariant rather than a coincidence. */
+  private opusSafeModelOverrides(overrides: ModelOverrides): ModelOverrides {
+    const out: ModelOverrides = { ...overrides };
+    for (const [subId, roles] of Object.entries(overrides)) {
+      if (subId === CODEX_SUB_ID || subId === GROK_SUB_ID || subId === ZAI_SUB_ID) continue;
+      let changed = false;
+      const safe = { ...roles };
+      for (const [role, configured] of Object.entries(roles)) {
+        if (!configured) continue;
+        const target = this.claudeOpusFloored(configured);
+        if (!target.replaced) continue;
+        safe[role as Role] = target.model;
+        changed = true;
+      }
+      if (changed) out[subId] = safe;
+    }
+    return out;
+  }
+
   /** The Claude model a given subscription runs a role on: the sub's own per-role override, else the
    *  global "default" override, else the built-in config.models default. The Settings "Agent models"
    *  section that used to edit the default layer is gone (model selection now lives in the per-subscription
@@ -2902,6 +2928,13 @@ export class ThreadManager implements OrchestratorApi {
    *  resolved fresh per dispatch (a Co-work session's first-turn pin; see `prepareCoworkerRun`), since a
    *  transient conservation downgrade must never become that session's permanent, strictly-pinned model. */
   modelFor(subId: string, role: Role, opts: { conserve?: boolean } = {}): string {
+    return this.claudeOpusFloored(this.configuredClaudeModel(subId, role, opts)).model;
+  }
+
+  /** Everything `modelFor` resolves BEFORE the Opus version floor: usage saving, then the override
+   *  matrix, the Fable-pool fallback and token conservation. Split out so the floor can sit under all
+   *  of them — a retired Opus reaches a run the same way whichever of these chose it. */
+  private configuredClaudeModel(subId: string, role: Role, opts: { conserve?: boolean }): string {
     const saving = this.usageSavingTarget(subId);
     if (saving) return saving.model;
     const ov = this.modelOverrides();
@@ -2909,6 +2942,12 @@ export class ThreadManager implements OrchestratorApi {
     if (opts.conserve === false || !this.settingBool("setting_token_conservation_mode", false)) return base;
     const acct = this.accounts.dto().find((a) => a.id === subId);
     return conservationResolvedModel("claude", base, { usedPct: acct?.sevenDay ?? null, resetAt: acct?.sevenDayReset }, Date.now());
+  }
+
+  /** The Claude Opus version floor, applied against the Claude ids this installation can name right
+   *  now. A non-Opus model and an already-current Opus both pass through untouched. */
+  private claudeOpusFloored(configured: string): ClaudeOpusTarget {
+    return claudeOpusTarget(configured, this.claudeRosterModels());
   }
 
   /** A model whose OWN metered pool is exhausted on this sub (Fable's gated allowance) dispatches on its
@@ -3182,7 +3221,7 @@ export class ThreadManager implements OrchestratorApi {
       const models = saving
         ? [saving.model]
         : allModels
-        ? this.claudeRosterModels().map((m) => this.poolResolved(claude.account.id, m))
+        ? this.claudeRosterModels().map((m) => this.poolResolved(claude.account.id, this.claudeOpusFloored(m).model))
         : [this.providerRoleModel("claude", "director", claude.account.id)];
       const candidate = providerCandidateFromClaude(claude);
       for (const model of uniq(models)) {
@@ -5903,6 +5942,21 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.postFinding({ threadId, fromRole, summary: note.summary, detail: note.detail, severity: note.severity });
   }
 
+  /** Say once per task that a retired Opus was lifted to the current one. Same de-duplication as the
+   *  Codex review floor: the summary is the key, so a task whose every role is pinned to the retired id
+   *  gets one line per role rather than one per run. */
+  private noteClaudeOpusFloor(threadId: string, role: Role, target: ClaudeOpusTarget): void {
+    const summary = `${role} moved off ${target.replaced} to ${target.model}`;
+    if (this.db.listFindings(threadId).some((finding) => finding.summary === summary)) return;
+    this.postFinding({
+      threadId,
+      fromRole: role,
+      summary,
+      detail: `${target.replaced} is an older Opus generation than ${CLAUDE_OPUS_FLOOR_MODEL}, so this run uses ${target.model} instead. Change the pin in Settings → Subscriptions to pick a different current model; a per-task model request still names its model exactly.`,
+      severity: "info",
+    });
+  }
+
   /** Say ONCE per task that a review stage was moved off a retired Codex model. Every later round of the
    *  same task repeats the substitution, and a note per QA round would bury the feed the owner reads. */
   private noteReviewModelFloor(threadId: string, role: Role, target: CodexReviewTarget): void {
@@ -7187,13 +7241,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       }
       const saving = this.usageSavingTarget(this.usageSavingSubId(provider, acct?.id));
       const codexTarget = provider === "codex" ? this.codexRoleTarget(role, demand) : undefined;
-      const model = codexTarget ? codexTarget.model : provider === "grok" ? this.providerRoleModel("grok", role) : provider === "zai" ? this.providerRoleModel("zai", role) : this.modelFor(acct!.id, role);
+      const claudeTarget = provider === "claude" ? this.claudeOpusFloored(this.configuredClaudeModel(acct!.id, role, {})) : undefined;
+      const model = codexTarget ? codexTarget.model : provider === "grok" ? this.providerRoleModel("grok", role) : provider === "zai" ? this.providerRoleModel("zai", role) : claudeTarget!.model;
       const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : provider === "zai" ? `zai:${model}` : acct!.label;
       // A review-stage substitution carries its own cheap effort; the configured Codex effort applies to
       // everything else, including a review role already pinned to a current model.
       const codexEffort = codexTarget ? (codexTarget.effort ?? this.codexEffort(model)) : undefined;
       const effort = saving?.effort ?? codexEffort ?? (provider === "grok" ? this.grokEffort(model) : provider === "zai" ? this.zaiEffort(model) : undefined);
       if (codexTarget?.replaced) this.noteReviewModelFloor(thread.id, role, codexTarget);
+      if (claudeTarget?.replaced) this.noteClaudeOpusFloor(thread.id, role, claudeTarget);
       // Same rule the implementor's resume already keeps, applied where this role's account is finally
       // known rather than guessed: a session is bound to the model that created it, so resuming one on a
       // different model silently reviews on the OLD model. Without this a usage-saving downgrade landing

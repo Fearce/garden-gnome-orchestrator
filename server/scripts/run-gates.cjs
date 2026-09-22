@@ -163,6 +163,7 @@ const GATES = [
   "test:model-catalog-health",
   "test:retired-model-id",
   "test:auto-model",
+  "test:claude-opus-floor",
   "test:review-model-floor",
   "test:director-provider",
   "test:model-request",

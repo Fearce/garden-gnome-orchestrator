@@ -13,6 +13,7 @@
 
 import { EFFORTS, type Effort, type ImplementorProvider, type ModelEffortStat, type ModelPick, type ModelStat } from "../types.js";
 import { isPolicyApprovedFlagship } from "./modelRoutingPolicy.js";
+import { claudeOpusVersion, isRetiredClaudeOpus } from "./claudeOpusFloor.js";
 
 const SELECTOR_TIMEOUT_MS = 45_000;
 const MAX_OUTPUT_TOKENS = 300;
@@ -134,9 +135,28 @@ export function isLegacyCodexAutoModel(candidate: Pick<ModelCandidate, "provider
   return isLegacyCodexId(candidate.model);
 }
 
+/** A Claude Opus older than the version floor — the same shape as a legacy Codex id, on the other
+ *  backend. Non-Opus Claude models (Sonnet, Fable, Haiku) are cheaper tiers, not outdated flagships,
+ *  and stay selectable. */
+export function isRetiredClaudeAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {
+  return candidate.provider === "claude" && isRetiredClaudeOpus(candidate.model);
+}
+
+function isCurrentClaudeOpusAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {
+  if (candidate.provider !== "claude") return false;
+  const version = claudeOpusVersion(candidate.model);
+  return version !== null && !isRetiredClaudeOpus(candidate.model);
+}
+
 export function filterAutoSelectionCandidates<T extends Pick<ModelCandidate, "provider" | "model">>(candidates: readonly T[]): T[] {
   const preferredCodexAvailable = candidates.some(isPreferredCodexAutoModel);
-  return candidates.filter((candidate) => !preferredCodexAvailable || !isLegacyCodexAutoModel(candidate));
+  // Each backend's floor is gated on ITS own current option being dispatchable: a roster that offers
+  // only the retired tier must stay selectable rather than removing the backend from the choice.
+  const currentOpusAvailable = candidates.some(isCurrentClaudeOpusAutoModel);
+  return candidates.filter((candidate) => {
+    if (preferredCodexAvailable && isLegacyCodexAutoModel(candidate)) return false;
+    return !currentOpusAvailable || !isRetiredClaudeAutoModel(candidate);
+  });
 }
 
 export function autoSelectableEffortsForCandidate(
