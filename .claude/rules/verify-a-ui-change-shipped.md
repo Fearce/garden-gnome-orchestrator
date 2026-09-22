@@ -66,8 +66,10 @@ control.** Everything server-authoritative (settings, accounts, any broadcast co
 DEFAULTS until that frame lands, so a check opening on `.topbar` reads "off" and an empty list on a busy
 box — indistinguishable from the feature being broken. `.accounts .acct` is hello-only, so it is the
 signal. And a settings toggle flips its own `aria-checked` BEFORE the round-trip (`store.setSettings` is
-optimistic), so re-reading it proves nothing and reloading straight after races the write: poll the
-instance's own kv row (`waitForPersisted` in `model-select-lab.cjs`) — the claim you actually mean.
+optimistic), so re-reading it proves nothing. For an immediate reload, use the harness's
+`waitForSettingsReloadSafe(dataDir, key, expected)`: it proves the instance's own KV row is durable and
+then clears the two-second `hello` snapshot cache. `waitForPersisted` alone is enough only when the test
+does not reconnect.
 
 ## READING prod is fine, INTERACTING with it is not
 "Never browser-test prod" is about *interaction*; stopping there sends agents off to hand-roll a script

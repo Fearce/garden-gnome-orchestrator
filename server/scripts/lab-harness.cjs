@@ -114,6 +114,7 @@
 const { spawn, execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const Database = require("better-sqlite3");
 
 const SERVER_ROOT = path.resolve(__dirname, "..");
 
@@ -185,6 +186,37 @@ async function boot({ dataDir, port, env = {}, entry }) {
     }
   }
   throw new Error(`instance never came up — see ${path.join(dataDir, "lab.log")}`);
+}
+
+/**
+ * Wait until a setting mutation has crossed the WebSocket round-trip and is durable in this
+ * throwaway instance. Settings controls update optimistically, so their rendered state alone
+ * cannot prove persistence; querying the lab's own SQLite KV row is read-only and WAL-safe.
+ */
+async function waitForPersisted(dataDir, key, expected, timeoutMs = 15_000) {
+  const file = path.join(dataDir, "orchestrator.sqlite");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const db = new Database(file, { readonly: true });
+    const row = db.prepare("SELECT value FROM kv WHERE key = ?").get(key);
+    db.close();
+    if (row && (expected === undefined || row.value === expected)) return row.value;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return null;
+}
+
+/**
+ * A reconnect reads the server's `hello` snapshot cache, whose two-second TTL intentionally keeps
+ * a burst of browser tabs from rebuilding the full snapshot. Persisting a setting proves the write,
+ * but not that a page reloaded immediately afterward receives the new snapshot. Use this before
+ * reload/reconnect assertions; keep it aligned with HELLO_CACHE_MS in src/ws/hub.ts.
+ */
+async function waitForSettingsReloadSafe(dataDir, key, expected, timeoutMs = 15_000) {
+  const stored = await waitForPersisted(dataDir, key, expected, timeoutMs);
+  if (stored === null) return null;
+  await new Promise((resolve) => setTimeout(resolve, 2_100));
+  return stored;
 }
 
 /** Refuse to run when `web/dist` is older than `web/src`: the lab would measure the PREVIOUS bundle
@@ -271,4 +303,4 @@ function shotDir(dataDir) {
   return chosen;
 }
 
-module.exports = { SERVER_ROOT, loadChromium, allowConcurrentContexts, authPassword, requireBuild, requireFreshWebBuild, boot, killInstance, createChecks, boxBounds, shotDir };
+module.exports = { SERVER_ROOT, loadChromium, allowConcurrentContexts, authPassword, requireBuild, requireFreshWebBuild, boot, waitForPersisted, waitForSettingsReloadSafe, killInstance, createChecks, boxBounds, shotDir };

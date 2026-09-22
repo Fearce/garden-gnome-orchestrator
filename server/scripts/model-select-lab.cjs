@@ -15,7 +15,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
+const { loadChromium, authPassword, requireBuild, boot, waitForSettingsReloadSafe, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
 
 const PORT = 4337;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -76,19 +76,6 @@ const TOGGLE = 'button.switch[aria-label="Auto-select the implementor model"]';
  *  reloading straight after it is a race — on a loaded box the new page can win against the round-trip
  *  and read back the old value, which looks exactly like a broken setting. The instance's own kv row is
  *  the thing being claimed, so poll that (read-only, cross-process: WAL frames are visible). */
-async function waitForPersisted(dataDir, key, timeoutMs = 15_000) {
-  const file = path.join(dataDir, "orchestrator.sqlite");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const db = new Database(file, { readonly: true });
-    const row = db.prepare("SELECT value FROM kv WHERE key = ?").get(key);
-    db.close();
-    if (row) return row.value;
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  return null;
-}
-
 /** The scoreboard as the operator reads it: one row per model, in render order. */
 function readBoard(page) {
   return page.evaluate(() => {
@@ -131,7 +118,7 @@ async function main() {
       // The round-trip: click, then wait for the SERVER to own it before believing anything.
       await page.click(TOGGLE);
       check("clicking it turns it on", (await page.getAttribute(TOGGLE, "aria-checked")) === "true", await page.getAttribute(TOGGLE, "aria-checked"));
-      const stored = await waitForPersisted(dataDir, "setting_auto_model_selection");
+      const stored = await waitForSettingsReloadSafe(dataDir, "setting_auto_model_selection", "1");
       check("the click reaches the server and is persisted", stored === "1", String(stored));
 
       const shot = path.join(shotDir(dataDir), "auto-model-selection.png");

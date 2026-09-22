@@ -14,7 +14,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, waitForSettingsReloadSafe, killInstance, createChecks } = require("./lab-harness.cjs");
 
 const PORT = 4347;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -101,10 +101,8 @@ async function main() {
 
     // ---- the effort picker actually writes the setting (round-trips like the task-mode select) ------
     await page.selectOption('select[aria-label="Default-mode effort"]', "high");
-    // `hello` snapshots are deliberately cached for two seconds.  Let that cache expire before
-    // reloading, otherwise this check races *any* settings write (including the pre-existing
-    // Skip-director setting) and can receive the snapshot from just before the change.
-    await page.waitForTimeout(2_100);
+    const storedEffort = await waitForSettingsReloadSafe(DATA_DIR, "setting_default_mode_effort", "high");
+    check("the effort selection reaches the server before reload", storedEffort === "high", String(storedEffort));
     await page.reload({ timeout: 45_000 });
     await page.waitForSelector(".topbar", { timeout: 45_000 });
     await waitForServerHello(page);
