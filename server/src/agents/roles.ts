@@ -274,21 +274,27 @@ export function researcherConfig(
 export function implementorConfig(
   cwd: string,
   servers: { bus: McpServerConfig; office: McpServerConfig },
-  opts?: { resume?: string; effort?: Effort; conciseCommunication?: boolean },
+  opts?: { resume?: string; effort?: Effort; conciseCommunication?: boolean; vanilla?: boolean },
 ): AgentRunConfig {
   const cfg: AgentRunConfig = {
     model: config.models.implementor,
     cwd,
-    systemPrompt: withCommunicationSystemPolicy(
-      { type: "preset", preset: "claude_code", append: IMPLEMENTOR_APPEND },
-      conciseCommunicationEnabled(opts),
-    ),
+    // Default mode (opts.vanilla): the bare "claude_code" preset with NO append and NO bus/office MCP
+    // tools — stock Claude Code, exactly as the CLI itself would run it, no orchestrator role prompt,
+    // no communication-style policy layered on top.
+    systemPrompt: opts?.vanilla
+      ? { type: "preset", preset: "claude_code" }
+      : withCommunicationSystemPolicy(
+          { type: "preset", preset: "claude_code", append: IMPLEMENTOR_APPEND },
+          conciseCommunicationEnabled(opts),
+        ),
     // Fully autonomous: bypassPermissions auto-approves every tool (Read/Write/
     // Edit/Bash/…) so dispatched implementors run unsupervised — but the broken
-    // built-in question tool is disallowed so it uses the bus ask_user instead.
+    // built-in question tool is disallowed so it uses the bus ask_user instead
+    // (vanilla has no bus tool to fall back on either — headless still can't answer a prompt).
     permissionMode: "bypassPermissions",
     disallowedTools: ["AskUserQuestion"],
-    mcpServers: { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },
+    mcpServers: opts?.vanilla ? {} : { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },
     settingSources: ["user", "project", "local"],
     effort: resolveEffort(opts?.effort),
     includePartialMessages: true,

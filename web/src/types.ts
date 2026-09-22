@@ -6,8 +6,9 @@ export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" 
  *  process (the Online Office carries another machine's role names). Mirrored in server/src/types.ts. */
 export const ROLES = ["director", "planner", "researcher", "implementor", "qa", "reader", "reviewer"] as const;
 
-/** Dispatch lane: undefined/null = the normal pipeline, 'read' = the read-only reader lane (dispatch_read). */
-export type ThreadLane = "read";
+/** Dispatch lane: undefined/null = the normal pipeline, 'read' = the read-only reader lane (dispatch_read),
+ *  'vanilla' = Default mode's single stock session (server/src/types.ts has the full doc comment). */
+export type ThreadLane = "read" | "vanilla";
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 /** Cross-provider ordering. Ultra is Codex-only; Claude controls must use CLAUDE_EFFORTS. */
@@ -618,6 +619,12 @@ export interface OrchestratorSettings {
   taskAgentCount: number; // SHOTGUN: agents working the objective at once; 1 = an ordinary task
   xhighEnabled: boolean; // read-only: the server's ENABLE_XHIGH opt-in is on, so the xhigh tier is offerable
   skipDirectorRetitle: boolean; // when skip-director is on, mint a real title via a cheap Haiku call instead of the raw first line
+  // Default mode: ONE stock implementor session — no orchestrator wrapper prompt, no planner/QA/
+  // self-improvement/review. Stays warm (paused, resumable) until Mark done. Mirrors skipDirector's
+  // persistence (composer button + Settings toggle, both write this).
+  defaultMode: boolean;
+  defaultModeModel: string; // Claude or Codex model for the next default-mode dispatch; "" = Auto (GGO decides)
+  defaultModeEffort: Effort | "auto"; // effort for the next default-mode dispatch; "auto" = GGO decides
   maxRecentRepos: number;
   recentRepos: string[];
   // Per-(subscription × role) model picks. See ModelOverrides. modelDefaults/claudeModels/codexModels
@@ -1219,6 +1226,7 @@ export type ServerEvent =
 export type ClientCommand =
   | { type: "prompt.new"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
   | { type: "prompt.direct"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
+  | { type: "prompt.vanilla"; text: string; workspace?: string; images?: ImageAttachment[]; model?: string; effort?: Effort; clientId?: string }
   | { type: "cowork.create"; name?: string; workspace: string; provider?: ImplementorProvider; model?: string; clientId?: string }
   | { type: "cowork.send"; sessionId: string; text: string; attachments?: FileAttachment[]; clientId?: string }
   | { type: "cowork.steer"; sessionId: string; text: string; mode: CoworkSteeringMode; attachments?: FileAttachment[]; clientId?: string }

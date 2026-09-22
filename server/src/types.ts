@@ -12,8 +12,10 @@ export function isRole(v: string): v is Role {
 
 /** Dispatch lane. Absent/null = the normal task-aware implementation route (planner/QA optional); 'read' = the cheap
  *  single-agent read-only reader lane (dispatch_read) — one Sonnet reader answers a lookup and escalates
- *  rather than half-answering, no QA. Persisted on the thread so it survives resume and drives the badge. */
-export type ThreadLane = "read";
+ *  rather than half-answering, no QA. 'vanilla' = Default mode — one stock implementor session (no
+ *  orchestrator system-prompt wrapper, no planner/QA/self-improvement/review) that stays warm ('paused',
+ *  resumable) until the owner clicks Mark done. Persisted on the thread so it survives resume and drives the badge. */
+export type ThreadLane = "read" | "vanilla";
 
 export type ThreadState =
   | "intake" // just created, brief not yet built
@@ -1026,6 +1028,14 @@ export interface OrchestratorSettings {
   taskAgentCount: number; // SHOTGUN: agents to work the objective at once; 1 (default) = an ordinary task
   xhighEnabled: boolean; // read-only — the ENABLE_XHIGH opt-in is on, so the xhigh tier is offerable
   skipDirectorRetitle: boolean; // when skip-director is on, mint a real title via a cheap Haiku call instead of the raw first line (default on)
+  // Default mode: dispatches ONE stock implementor session — no orchestrator system-prompt wrapper, no
+  // bus/office MCP tools, no planner/researcher/QA/self-improvement/auto-review. It stays warm ('paused',
+  // resumable via Inject/Resume on the SAME session) until the owner clicks Mark done. Implies skip-director
+  // (there's no director in a vanilla dispatch either). Restricted to stock Claude and Codex sessions.
+  // Mirrors skipDirector: composer button + Settings toggle, both write this.
+  defaultMode: boolean;
+  defaultModeModel: string; // Claude or Codex model for the next default-mode dispatch; "" (default) = Auto (GGO decides)
+  defaultModeEffort: Effort | "auto"; // effort for the next default-mode dispatch; "auto" (default) = GGO decides
   maxRecentRepos: number; // how many recent-repo chips the composer shows (clamped 1–20, default 5)
   recentRepos: string[]; // recently-dispatched repo paths, most-recent first (capped at maxRecentRepos)
   // ---- Per-(subscription × role) model selection ----

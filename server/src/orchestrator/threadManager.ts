@@ -481,6 +481,9 @@ interface PipeOpts {
   autoPush?: boolean;
   /** Opt-in: QA fixes its own findings, then another QA run verifies every changed tree. */
   qaAppliesFixes?: boolean;
+  /** Default-mode (the vanilla lane): a clean finish parks 'paused' — warm and resumable — instead of
+   *  'done', and skips self-improvement and the manual-deployment check. Always implies qaEnabled:false. */
+  vanilla?: boolean;
 }
 
 /** One QA attempt: which round it belongs to, the QA-fixes options, and whether it is continuing a
@@ -2480,7 +2483,11 @@ export class ThreadManager implements OrchestratorApi {
         ? input.requestedProvider
           ? exactModelRequest(input.requestedProvider, input.requestedModel, this.modelRequestCandidates())
           : resolveModelRequest(input.requestedModel, this.modelRequestCandidates())
-        : detectModelRequest(input.brief, this.modelRequestCandidates());
+        // Default mode never scans the brief text for a mentioned model/provider (the read lane's same
+        // reasoning) — it only pins what the composer's own picker explicitly chose above.
+        : input.lane === "vanilla"
+          ? null
+          : detectModelRequest(input.brief, this.modelRequestCandidates());
     const thread = this.db.createThread({
       title: input.title,
       workspace: input.workspace,
@@ -2602,6 +2609,9 @@ export class ThreadManager implements OrchestratorApi {
       skipDirectorEffort: this.skipDirectorEffort(),
       xhighEnabled: config.enableXhigh,
       skipDirectorRetitle: this.settingBool("setting_skip_director_retitle", true),
+      defaultMode: this.settingBool("setting_default_mode", false),
+      defaultModeModel: this.db.kvGet("setting_default_mode_model")?.trim() ?? "",
+      defaultModeEffort: this.defaultModeEffort(),
       maxRecentRepos: this.settingNum("setting_max_recent_repos", 5, 1, 20),
       recentRepos: this.recentRepos(),
       // Show the safe review target, not an old stored id that dispatch will refuse. Keep the raw
@@ -2860,7 +2870,7 @@ export class ThreadManager implements OrchestratorApi {
     if (request && !request.model) {
       const resolved = resolveModelRequest(request.requested, candidates);
       if (resolved.model) request = resolved;
-    } else if (!request && thread.lane !== "read") {
+    } else if (!request && thread.lane !== "read" && thread.lane !== "vanilla") {
       request = detectModelRequest([thread.rawPrompt, thread.brief].filter(Boolean).join("\n"), candidates);
     }
     if (!request) return thread;
@@ -4265,6 +4275,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return v === "xhigh" && !config.enableXhigh ? "high" : (v as Effort);
   }
 
+  /** Same shape as skipDirectorEffort, for default-mode dispatches. */
+  private defaultModeEffort(): Effort | "auto" {
+    const v = this.db.kvGet("setting_default_mode_effort")?.trim();
+    if (!v || !CLAUDE_EFFORTS.includes(v as Effort)) return "auto";
+    return v === "xhigh" && !config.enableXhigh ? "high" : (v as Effort);
+  }
+
   /** The raw OpenAI key: the kv-stored UI value if present, else the server/.env fallback. NEVER
    *  broadcast — only its presence + last 4 chars leave the server (settings()). Public for the one
    *  out-of-band server-side consumer (the Codex usage ping seeds auth with it); it must never
@@ -4366,6 +4383,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.skipDirectorEffort !== undefined && (patch.skipDirectorEffort === "auto" || CLAUDE_EFFORTS.includes(patch.skipDirectorEffort)))
       this.db.kvSet("setting_skip_director_effort", patch.skipDirectorEffort);
     if (patch.skipDirectorRetitle !== undefined) this.db.kvSet("setting_skip_director_retitle", patch.skipDirectorRetitle ? "1" : "0");
+    if (patch.defaultMode !== undefined) this.db.kvSet("setting_default_mode", patch.defaultMode ? "1" : "0");
+    if (patch.defaultModeModel !== undefined) this.db.kvSet("setting_default_mode_model", patch.defaultModeModel.trim());
+    if (patch.defaultModeEffort !== undefined && (patch.defaultModeEffort === "auto" || CLAUDE_EFFORTS.includes(patch.defaultModeEffort)))
+      this.db.kvSet("setting_default_mode_effort", patch.defaultModeEffort);
     if (patch.maxRecentRepos !== undefined) this.db.kvSet("setting_max_recent_repos", String(patch.maxRecentRepos));
     // Recent repos: de-dupe (most-recent first), drop blanks, and cap at the current max before persisting
     // so the stored list can never outgrow the display cap regardless of what a client sends.
@@ -5581,7 +5602,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   ): ImplementorProvider | null {
     thread = this.ensureThreadModelRequest(this.db.getThread(thread.id) ?? thread);
     const demand = this.capacityDemand(thread, "implementor", opts?.effort);
-    if (thread.modelRequest) return this.gateRequestedModel(thread, demand);
+    if (thread.modelRequest) {
+      if (thread.modelRequest.provider === "claude" || thread.modelRequest.provider === "codex") return this.gateRequestedModel(thread, demand);
+      const requestedProvider = thread.modelRequest.provider;
+      const requestedLabel = requestedProvider ? providerLabel(requestedProvider) : "an unresolved model";
+      const detail = `Default mode supports stock Claude or Codex sessions, not ${requestedLabel}.`;
+      this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Default mode has an unsupported model request", detail, severity: "warning" });
+      this.setState(thread.id, "failed", detail);
+      return null;
+    }
     const { provider, error, allCandidatesCapped, candidates = [] } = this.resolveImplementorProvider(demand);
     if (!provider) {
       this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
@@ -5627,6 +5656,42 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       });
     }
     this.noteCapacityRoute(thread, demand, chosen, candidates);
+    this.implementorProvider.set(thread.id, chosen);
+    return chosen;
+  }
+
+  /** Default mode's own routing gate — same shape as gateImplementorProvider, but the vanilla lane is
+   *  intentionally limited to the two stock CLIs the owner asked for: Claude and Codex. The Codex branch
+   *  below explicitly skips its normal doctrine prepend when `vanilla` is true. A strict model pin from
+   *  the composer's picker still goes through the normal gateRequestedModel. */
+  private gateVanillaProvider(
+    thread: Thread,
+    opts?: { capParkOnExhaustion?: boolean; effort?: Effort },
+  ): ImplementorProvider | null {
+    thread = this.ensureThreadModelRequest(this.db.getThread(thread.id) ?? thread);
+    const demand = this.capacityDemand(thread, "implementor", opts?.effort);
+    if (thread.modelRequest) return this.gateRequestedModel(thread, demand);
+    const { provider, error, candidates = [] } = this.resolveImplementorProvider(demand);
+    if (!provider) {
+      this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
+      this.setState(thread.id, "failed", error);
+      return null;
+    }
+    const vanillaCandidates = candidates.filter((c) => c.provider === "claude" || c.provider === "codex");
+    if (!vanillaCandidates.length) {
+      const detail = "Default mode runs on Claude or Codex only, and neither is enabled/authenticated right now.";
+      this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Default mode has no usable backend", detail, severity: "warning" });
+      this.setState(thread.id, "failed", detail);
+      return null;
+    }
+    const allCandidatesCapped = vanillaCandidates.every((candidate) => !candidate.hasHeadroom);
+    if (allCandidatesCapped && opts?.capParkOnExhaustion) {
+      this.parkForExhaustedProviders(thread.id, "implementor");
+      this.settleReview(thread.id, "needs your review.");
+      return null;
+    }
+    const chosen = this.preferredImplementorProvider(vanillaCandidates, demand);
+    this.noteCapacityRoute(thread, demand, chosen, vanillaCandidates);
     this.implementorProvider.set(thread.id, chosen);
     return chosen;
   }
@@ -6428,6 +6493,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         const promoted = await this.handleReadLane(thread, directorNote, saved);
         if (!promoted) return; // answered / errored / unrecoverable restart — already settled by finalizeReader
         thread = promoted;
+      }
+
+      // Default mode (the vanilla lane): one stock implementor session, no planner/QA/self-improvement/
+      // review — short-circuits the whole task-aware route below, mirroring the read lane above. Stays
+      // in this SAME runPipeline call (not a separate resume path) so a restart mid-first-turn re-enters
+      // here exactly like every other pipeline stage.
+      if (thread.lane === "vanilla") {
+        await this.runVanillaLane(thread, directorNote, saved);
+        return;
       }
 
       // A persisted kickoff means this task already cleared the whole pre-implementor phase (planner +
@@ -7333,6 +7407,44 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return res?.structuredOutput as ResearchOutput | undefined;
   }
 
+  /** Default mode's entry point inside runPipeline: one stock implementor turn, then park 'paused' —
+   *  warm and resumable via Inject/Resume on the SAME session — regardless of outcome, until the owner
+   *  clicks Mark done. Reuses runImplementorQa/runImplementorQaLoop (queue-drain, timed-window and
+   *  shotgun no-ops for an ordinary task come along for free) with `pipe.vanilla: true`, which is what
+   *  changes the QA-disabled settle from 'done'/'review' to 'paused' and skips self-improvement + the
+   *  manual-deployment check. `saved.kickoff` is never read/written here — a vanilla kickoff is always
+   *  the raw brief, so a resume rebuilds the identical text from `thread.brief` without needing to
+   *  persist a copy. */
+  private async runVanillaLane(thread: Thread, directorNote: string | undefined, saved: StageOutputs): Promise<void> {
+    const buffered = this.directorNotes.get(thread.id);
+    this.directorNotes.delete(thread.id);
+    const rawNote = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n");
+    const note = rawNote ? acknowledgedInjection(rawNote) : undefined;
+    void saved; // no persisted stage to resume from — the raw brief IS the kickoff, every time
+    await this.runImplementorQa(thread, thread.brief, this.implementorEffort(thread.id), this.latestImplementorSession(thread.id), note, {
+      qaEnabled: false,
+      maxQaRounds: 0,
+      vanilla: true,
+    });
+  }
+
+  /** Vanilla-lane settle (default mode): park 'paused' regardless of outcome — a clean finish and an
+   *  incomplete one both leave a resumable session, since there is no QA/reviewer to tell them apart and
+   *  the owner is the only one who decides whether to keep going or click Mark done. */
+  private settleVanillaPaused(threadId: string, res: ResultEvent | undefined): void {
+    if (this.cancelled(threadId)) return;
+    const reason = res && !res.isError
+      ? "Default mode — the agent finished this turn. Reply on the task to keep going (it resumes the same session), or click Mark done when you're finished."
+      : this.implementorParkReason(res, "the agent stopped. Reply on the task to keep going, or click Mark done when you're finished.");
+    this.postFinding({
+      threadId,
+      fromRole: "implementor",
+      summary: "Default-mode turn finished — the session stays warm for your next message.",
+      severity: "info",
+    });
+    this.setState(threadId, "paused", reason);
+  }
+
   /** The read lane's entry point inside runPipeline. Returns null once the task is fully settled by the
    *  reader itself (answered → done+closed; errored, or a restart with no recoverable disposition →
    *  review). Returns the PROMOTED (lane-cleared) thread when the reader ESCALATED, so the caller falls
@@ -7792,6 +7904,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Codex kickoff (resume turns retain it through the resumed Codex thread). Without this a Codex run
     // patches the working tree and stops, never committing — breaking the implementor→commit contract.
     let startKickoff = kickoff;
+    // Default mode (thread.lane === "vanilla") strips every orchestration layer for its two supported
+    // backends: implementorConfig handles Claude, and the Codex branch below skips its normal doctrine.
+    const vanilla = thread.lane === "vanilla";
     if (provider === "codex") {
       const { model, saving } = this.implementorDispatchTarget(thread.id, "codex");
       // The director/planner picks the per-task effort; the Codex subscription's setting is its MAX cap, so
@@ -7806,7 +7921,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // degradation. Text bridges preserve office chat, owner notes, and deliverable cards; the QA loop
       // still reviews its output, and the doctrine makes it commit. A fresh start gets the doctrine plus
       // the (toolless) peer heads-up so it knows to avoid collisions.
-      if (!opts?.resume) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, this.withOfficeNote(thread, "implementor", kickoff, false)].filter(Boolean).join("\n\n");
+      if (!opts?.resume && !vanilla) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, this.withOfficeNote(thread, "implementor", kickoff, false)].filter(Boolean).join("\n\n");
       // freshFallback lets the runner self-heal a wedged `exec resume` (hangs at 0% CPU on an interrupted
       // gpt-5 session) by restarting fresh — so it must carry the SAME doctrine + task a fresh start gets.
       const codexAgent = new CodexAgentRun({
@@ -7815,7 +7930,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         cwd: thread.workspace,
         apiKey: this.openaiApiKey() ?? "",
         resume: opts?.resume,
-        freshFallback: opts?.freshFallback ? this.communicationContent(opts.freshFallback) : undefined,
+        freshFallback: opts?.freshFallback ? (vanilla ? opts.freshFallback : this.communicationContent(opts.freshFallback)) : undefined,
         onOfficeChat: (scope, body) => {
           this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
         },
@@ -7886,12 +8001,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const cfg = implementorConfig(thread.workspace, { bus, office }, {
         resume: opts?.resume,
         effort,
+        vanilla,
         ...this.communicationPolicyOptions(),
       });
       cfg.model = model;
       cfg.baseUrl = config.zai.baseUrl;
       cfg.authToken = this.zaiApiKey();
-      if (!opts?.resume) startKickoff = this.withOfficeNote(thread, "implementor", kickoff, true);
+      if (!opts?.resume && !vanilla) startKickoff = this.withOfficeNote(thread, "implementor", kickoff, true);
       agent = new ZaiAgentRun(cfg);
     } else {
       const acct = opts?.account ?? this.dispatchAccount(demand);
@@ -7910,6 +8026,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const cfg = implementorConfig(thread.workspace, { bus, office }, {
         resume: opts?.resume,
         effort,
+        vanilla,
         ...this.communicationPolicyOptions(),
       });
       cfg.model = model;
@@ -7917,15 +8034,19 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // On a fresh start, fold in a heads-up naming any teammates already live in this repo so the
       // implementor coordinates from turn one (a resumed session already saw the office context). When
       // it's alone in the repo, withOfficeNote returns the kickoff untouched — no office overhead.
-      if (!opts?.resume) startKickoff = this.withOfficeNote(thread, "implementor", kickoff, true);
+      // Default mode skips this outright: it has no office MCP tools to coordinate with anyway.
+      if (!opts?.resume && !vanilla) startKickoff = this.withOfficeNote(thread, "implementor", kickoff, true);
       agent = new AgentRun(cfg);
     }
     this.wireRun(agent, thread.id, runId, "implementor", accountId);
     this.stopDisplacedImplementor(thread.id);
     this.live.set(thread.id, { run: agent, runId, accountId });
     this.track(thread.id, agent);
-    this.officeCheckIn(thread.id, "implementor");
-    this.ensureGroup(thread.id);
+    // Default mode never joins the office — it has no bus/office MCP tools to coordinate through.
+    if (!vanilla) {
+      this.officeCheckIn(thread.id, "implementor");
+      this.ensureGroup(thread.id);
+    }
     agent.onEvent((e) => {
       if (e.type === "init" && e.sessionId) this.lastImplementorSession.set(thread.id, e.sessionId);
     });
@@ -7939,9 +8060,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     });
     // Base dispatch images stay on fresh kickoffs; explicit resume images are owner-provided handoff
     // context such as QA-interrupt attachments and must travel with the resumed turn.
-    agent.start(this.communicationContent(
-      this.implementorStartContent(thread.id, kickoff, startKickoff, !!opts?.resume, opts?.images),
-    ));
+    // Default mode skips the communication-style wrap too (the <ggo_communication_policy> preamble this
+    // very harness uses) — vanilla means the model sees exactly the owner's text, nothing prepended.
+    const startContent = this.implementorStartContent(thread.id, kickoff, startKickoff, !!opts?.resume, opts?.images);
+    agent.start(vanilla ? startContent : this.communicationContent(startContent));
     return { run: agent, runId, accountId };
   }
 
@@ -9109,7 +9231,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // chain; gating it as an implementor would unnecessarily block/restart work on a saturated backend.
     const stage = this.db.getThreadStageOutputs(thread.id);
     const qaOnlyRetry = pipe.qaEnabled && !stage.qaSuperseded && !stage.qaFixHandoff && (stage.qaCapRetryRound != null || stage.qaInterruptedRetryRound != null);
-    if (!qaOnlyRetry && !this.gateImplementorProvider(thread, { capParkOnExhaustion: true, effort })) return;
+    const gated = pipe.vanilla
+      ? this.gateVanillaProvider(thread, { capParkOnExhaustion: true, effort })
+      : qaOnlyRetry
+        ? true
+        : this.gateImplementorProvider(thread, { capParkOnExhaustion: true, effort });
+    if (!gated) return;
     try {
       await this.runImplementorQaLoop(thread, kickoff, effort, resumeSession, directorNote, pipe);
     } finally {
@@ -9402,6 +9529,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
     if (!pipe.qaEnabled) {
       if (this.cancelled(thread.id)) return;
+      if (pipe.vanilla) {
+        // Default mode: no manual-deployment check, no self-improvement round — both are orchestrator
+        // machinery this lane deliberately doesn't run. Every outcome parks 'paused' (see
+        // settleVanillaPaused's doc comment for why success and failure are treated alike here).
+        this.recordLatestImplementationMemo(thread.id, res, "review");
+        this.settleVanillaPaused(thread.id, res);
+        return;
+      }
       if (res && !res.isError) {
         const deployment = this.verifyManualDeploymentAtBoundary(
           thread,
@@ -11361,7 +11496,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     // Same hard routing gate as the pipeline: a manual resume / cold inject must also respect the
     // subscription toggles. A blocked routing parks the task (failed, set by the gate) and stops here.
-    if (!this.gateImplementorProvider(thread)) {
+    // Default mode keeps its own Claude/Codex-only gate on every resume too (Inject/Resume on a paused
+    // vanilla task takes this exact path).
+    const vanilla = thread.lane === "vanilla";
+    if (!(vanilla ? this.gateVanillaProvider(thread) : this.gateImplementorProvider(thread))) {
       this.resuming.delete(thread.id);
       this.pendingResumeMsgs.delete(thread.id);
       releaseSlot();
@@ -11377,7 +11515,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       ? `[Reviewer-lane instruction(s) returning this task to implementation]\n${reviewRows.map((row) => `${reviewInjectionLabel(row.id)}: ${row.instruction}`).join("\n\n")}`
       : undefined;
     const effectiveMessage = [message?.trim(), reviewInstruction].filter(Boolean).join("\n\n");
-    const resumeNudge = effectiveMessage ? acknowledgedInjection(effectiveMessage) : "Continue where you left off.";
+    // A vanilla session must receive the owner's actual next message, not the normal GGO
+    // acknowledgement/injection wrapper. Other lanes retain that acknowledgement for traceability.
+    const resumeNudge = effectiveMessage
+      ? vanilla ? effectiveMessage : acknowledgedInjection(effectiveMessage)
+      : "Continue where you left off.";
     let start: LiveImplementor | null;
     try {
       start = await this.startResumedImplementor(thread, baseKickoff, resume, {
@@ -11412,12 +11554,19 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const buffered = this.pendingResumeMsgs.get(thread.id);
     if (buffered?.length) {
       this.pendingResumeMsgs.delete(thread.id);
-      for (const m of buffered) this.sendCommunication(start.run, acknowledgedInjection(m), { priority: "next" });
+      for (const m of buffered) {
+        if (vanilla) start.run.send(m, { priority: "next" });
+        else this.sendCommunication(start.run, acknowledgedInjection(m), { priority: "next" });
+      }
     }
     let implementationFinished = false;
     await this.awaitImplementorCompletion(thread, this.implementorEffort(thread.id), baseKickoff, start.run, start.accountId, false, resumeNudge, recheckWithQa)
       .then(async (result) => {
         implementationFinished = !!result && !result.isError;
+        if (vanilla) {
+          if (this.db.getThread(thread.id)?.state === "implementing") this.settleVanillaPaused(thread.id, result);
+          return;
+        }
         const deployment = implementationFinished && !recheckWithQa
           ? this.verifyManualDeploymentAtBoundary(thread, "implementor_no_qa", undefined, start!.runId)
           : { attempted: false, done: false };

@@ -240,6 +240,18 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // (its first active stage — planner if enabled, else the implementor). workspace is required since
   // there's no director to resolve one.
   z.object({ type: z.literal("prompt.direct"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, clientId: z.string().uuid().optional() }),
+  // Default mode: dispatch straight to the vanilla lane (no director, no wrapper prompt, no
+  // planner/QA/self-improvement/review — one stock implementor session that stays warm). model/effort
+  // ride along from the composer's own pick; omitted/"auto" = GGO decides at dispatch time.
+  z.object({
+    type: z.literal("prompt.vanilla"),
+    text: z.string().min(1),
+    workspace: z.string().optional(),
+    images: imagesField,
+    model: z.string().max(100).optional(),
+    effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+    clientId: z.string().uuid().optional(),
+  }),
   // Co-work sessions select either Auto (both fields absent) or one exact provider/model pair. The
   // service enforces the pair invariant and validates live catalog/capacity before the first process.
   z.object({
@@ -398,6 +410,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         showAgentModel: z.boolean(),
         skipDirectorEffort: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]),
         skipDirectorRetitle: z.boolean(),
+        // Default mode — see OrchestratorSettings' doc comment.
+        defaultMode: z.boolean(),
+        defaultModeModel: z.string().max(100),
+        defaultModeEffort: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]),
         maxRecentRepos: z.number().int().min(1).max(20),
         recentRepos: z.array(z.string().max(600)).max(50),
         // Per-(subscription × role) model picks: {subId → {role → modelId}}. Role keys are the five valid

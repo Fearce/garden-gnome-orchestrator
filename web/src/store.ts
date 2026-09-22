@@ -363,6 +363,9 @@ interface State {
   clearDirectorSearch: () => void;
   sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => boolean;
   sendDirect: (text: string, workspace?: string, images?: ImageAttachment[]) => boolean;
+  // Default mode: dispatch straight to the vanilla lane. model/effort are the composer's own pick for
+  // this send ("auto"/omitted = GGO decides).
+  sendVanilla: (text: string, workspace?: string, images?: ImageAttachment[], model?: string, effort?: Effort) => boolean;
   // Stop the director when it's busy but spinning (looping without replying or dispatching).
   cancelDirector: () => void;
   answer: (questionId: string, answer: string) => void;
@@ -706,6 +709,9 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   taskAgentCount: 1,
   xhighEnabled: false,
   skipDirectorRetitle: true,
+  defaultMode: false,
+  defaultModeModel: "",
+  defaultModeEffort: "auto",
   maxRecentRepos: 5,
   recentRepos: [],
   modelOverrides: {},
@@ -1330,6 +1336,23 @@ export const useStore = create<State>((set) => ({
     return sendOutbound(
       { id: clientId, surface: "director", content, createdAt: Date.now(), status: "sending" },
       { type: "prompt.direct", text: content, workspace: workspace || undefined, images: images?.length ? images : undefined, clientId },
+    );
+  },
+  sendVanilla: (text, workspace, images, model, effort) => {
+    const content = text.trim();
+    if (!content) return false;
+    const clientId = newOutboundId();
+    return sendOutbound(
+      { id: clientId, surface: "director", content, createdAt: Date.now(), status: "sending" },
+      {
+        type: "prompt.vanilla",
+        text: content,
+        workspace: workspace || undefined,
+        images: images?.length ? images : undefined,
+        model: model || undefined,
+        effort: effort || undefined,
+        clientId,
+      },
     );
   },
   cancelDirector: () => sendCommand({ type: "director.cancel" }),

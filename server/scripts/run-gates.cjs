@@ -134,6 +134,7 @@ const GATES = [
   "test:structured",
   "test:effort",
   "test:reader",
+  "test:vanilla-lane",
   "test:route-selection",
   "test:route-pipeline",
   "test:routing-notes",

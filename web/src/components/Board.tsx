@@ -513,6 +513,9 @@ function pipRoles(runs: AgentRun[], lane: Thread["lane"]): Role[] {
   // agent — so it trails whichever lane ran, and only once it has actually reviewed the task.
   const reviewed: Role[] = runs.some((r) => r.role === "reviewer") ? ["reviewer"] : [];
   if (lane === "read") return ["reader", ...reviewed];
+  // Default mode: no planner→QA pipeline either, just the one implementor — show its pip from the
+  // start rather than falling back to the generic "Plan" pip below, which a vanilla card never earns.
+  if (lane === "vanilla") return ["implementor"];
   const ran = PIPELINE_ORDER.filter((role) => runs.some((r) => r.role === role));
   return ran.length ? [...ran, ...reviewed] : ["planner"];
 }
@@ -664,6 +667,10 @@ const Card = memo(function Card({
           {thread.lane === "read" ? (
             <span className="read-badge" title="Read lane — answered by a single read-only reader, no QA">
               Read
+            </span>
+          ) : thread.lane === "vanilla" ? (
+            <span className="read-badge" title="Default mode — one stock implementor session, no orchestrator wrapper prompt, no planner/QA/self-improvement/review. Stays warm until Mark done.">
+              Default
             </span>
           ) : null}
           <ManualDeploymentBadge deployment={thread.state === "done" ? thread.manualDeployment : null} />

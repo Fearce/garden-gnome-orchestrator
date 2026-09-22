@@ -166,7 +166,7 @@ function roleFor(thread: Thread, runs: AgentRun[]): Role {
   if (live) return live;
   const latest = runs.reduce<AgentRun | null>((best, r) => (!best || r.startedAt > best.startedAt ? r : best), null);
   if (latest) return latest.role;
-  return thread.lane === "read" ? "reader" : "planner";
+  return thread.lane === "read" ? "reader" : thread.lane === "vanilla" ? "implementor" : "planner";
 }
 
 /** The five numbers the build height is a function of. See the file header. */

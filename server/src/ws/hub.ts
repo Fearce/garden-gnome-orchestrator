@@ -226,6 +226,9 @@ export async function handleCommand(
     case "prompt.direct":
       await ctx.director.dispatchDirect(cmd.text, cmd.workspace, cmd.images, cmd.clientId);
       break;
+    case "prompt.vanilla":
+      await ctx.director.dispatchVanilla(cmd.text, cmd.workspace, cmd.images, cmd.model, cmd.effort, cmd.clientId);
+      break;
     case "cowork.create":
       sendCoworkAction(socket, "create", ctx.cowork.create(cmd), cmd.clientId);
       break;

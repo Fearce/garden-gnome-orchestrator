@@ -66,6 +66,12 @@ export function Director() {
   // reload on ANY surface (see the repoLabel note above). setSettings is optimistic, so toggling/adding
   // reflects instantly and the server broadcast reconciles every connected client.
   const skip = useStore((s) => s.settings.skipDirector);
+  // Default mode: a stock single-agent session with no director/planner/QA/self-improvement/review.
+  // Takes precedence over skip-director (there's no director in a vanilla dispatch either) — see submit().
+  const vanillaMode = useStore((s) => s.settings.defaultMode);
+  const sendVanilla = useStore((s) => s.sendVanilla);
+  const vanillaModel = useStore((s) => s.settings.defaultModeModel);
+  const vanillaEffort = useStore((s) => s.settings.defaultModeEffort);
   const showPickers = useStore((s) => s.settings.showComposerPickers);
   const recentRepos = useStore((s) => s.settings.recentRepos);
   const maxRecentRepos = useStore((s) => s.settings.maxRecentRepos);
@@ -170,7 +176,7 @@ export function Director() {
     return () => ro.disconnect();
   }, []);
 
-  const directNeedsWs = skip && !ws.trim();
+  const directNeedsWs = (skip || vanillaMode) && !ws.trim();
 
   // Promote a just-dispatched repo to the front (deduped, capped) and persist server-side; remove drops
   // one chip. Both send the whole new list — setSettings is optimistic and the server re-caps/dedupes.
@@ -186,7 +192,11 @@ export function Director() {
     if (!t || directNeedsWs) return;
     lastSentRef.current = t;
     const w = ws.trim();
-    const sent = skip ? sendDirect(t, w || undefined, att.images) : sendPrompt(t, w || undefined, att.images);
+    const sent = vanillaMode
+      ? sendVanilla(t, w || undefined, att.images, vanillaModel || undefined, vanillaEffort === "auto" ? undefined : vanillaEffort)
+      : skip
+        ? sendDirect(t, w || undefined, att.images)
+        : sendPrompt(t, w || undefined, att.images);
     if (!sent) return;
     if (w) pushRepo(w);
     setText("");
@@ -356,21 +366,48 @@ export function Director() {
             <span className="mode-dot" aria-hidden="true" />
             Skip director
           </button>
-          {skip && (
+          <button
+            type="button"
+            className={"mode-toggle" + (vanillaMode ? " on" : "")}
+            role="switch"
+            aria-checked={vanillaMode}
+            title={
+              vanillaMode
+                ? "Default mode ON — one stock implementor session, no orchestrator wrapper prompt and no planner/QA/self-improvement/review. It stays warm (paused, resumable) until you click Mark done. Takes over from Skip director. Click to turn off."
+                : "Default mode — dispatch a single vanilla session (like a bare Claude/Codex CLI): no wrapper prompt, no planner, no QA, no self-improvement, no review. Stays warm until you click Mark done. You'll be asked what model/effort to run (or leave Auto for GGO to decide)."
+            }
+            onClick={() => setSettings({ defaultMode: !vanillaMode })}
+          >
+            <span className="mode-dot" aria-hidden="true" />
+            Default mode
+          </button>
+          {vanillaMode ? (
+            <span className="mode-hint mono" title="No planner/QA/self-improvement/review — one session that stays warm until you click Mark done.">
+              vanilla → stays warm
+            </span>
+          ) : skip ? (
             <span className="mode-hint mono" title="The server selects the smallest capable route after dispatch.">
               direct → routed
             </span>
-          )}
+          ) : null}
         </div>
         <ComposerTaskMode />
-        {showPickers && <ComposerImplementorModelPickers />}
-        {showPickers && skip && <ComposerEffortPickers />}
+        {vanillaMode ? (
+          <DefaultModePickers />
+        ) : (
+          <>
+            {showPickers && <ComposerImplementorModelPickers />}
+            {showPickers && skip && <ComposerEffortPickers />}
+          </>
+        )}
         <textarea
           value={text}
           placeholder={
-            skip
-              ? "Direct to task-aware route — set the repo path below.  (⌘/Ctrl+Enter to send)"
-              : "Describe a task…  (paste or drop images · ⌘/Ctrl+Enter to send)"
+            vanillaMode
+              ? "Default mode — one stock session, no wrapper prompt. Set the repo path below.  (⌘/Ctrl+Enter to send)"
+              : skip
+                ? "Direct to task-aware route — set the repo path below.  (⌘/Ctrl+Enter to send)"
+                : "Describe a task…  (paste or drop images · ⌘/Ctrl+Enter to send)"
           }
           onChange={(e) => setText(e.target.value)}
           onPaste={att.onPaste}
@@ -671,6 +708,60 @@ function ComposerEffortPickers() {
           </select>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Default mode's own picker row — always shown while the mode is on (not gated behind
+ *  showComposerPickers, unlike the others). It exposes the two stock sessions the lane supports:
+ *  Claude and Codex. "Auto" leaves GGO's normal routing/model selection in charge. */
+function DefaultModePickers() {
+  const model = useStore((s) => s.settings.defaultModeModel);
+  const effort = useStore((s) => s.settings.defaultModeEffort);
+  const claudeModels = useStore((s) => s.settings.claudeModels);
+  const codexModels = useStore((s) => s.settings.codexModels);
+  const codexEnabled = useStore((s) => s.settings.codexEnabled);
+  const xhighEnabled = useStore((s) => s.settings.xhighEnabled);
+  const setSettings = useStore((s) => s.setSettings);
+  const claudeTiers = CLAUDE_EFFORTS.filter((t) => t !== "xhigh" || xhighEnabled);
+  const models = codexEnabled ? [...claudeModels, ...codexModelOptions(codexModels)] : claudeModels;
+  const selectedProvider = codexModels.includes(model) ? "Codex" : "Claude";
+  const modelTitle = "Which stock Claude or Codex model runs this default-mode session. Auto = GGO picks (normal account/model routing).";
+  const effortTitle = "How hard it works. Auto = GGO picks.";
+
+  return (
+    <div className="composer-model-row" aria-label="Default-mode model and effort">
+      <ComposerModelField
+        label="Model"
+        provider="Claude / Codex"
+        value={model}
+        options={models}
+        allowInherit
+        defaultLabel="Auto (GGO decides)"
+        ariaLabel="Default-mode model"
+        title={modelTitle}
+        onChange={(m) => setSettings({ defaultModeModel: m })}
+      />
+      <div className="composer-model" title={effortTitle}>
+        <div className="composer-model-meta">
+          <span className="composer-model-label mono">Effort</span>
+          <span className="composer-model-provider">{model ? selectedProvider : "Auto"}</span>
+        </div>
+        <select
+          className={"model-select" + (effort === "auto" ? " inherited" : "")}
+          value={effort}
+          aria-label="Default-mode effort"
+          title={effortTitle}
+          onChange={(e) => setSettings({ defaultModeEffort: e.target.value as Effort | "auto" })}
+        >
+          <option value="auto">Auto (GGO decides)</option>
+          {claudeTiers.map((t) => (
+            <option key={t} value={t}>
+              {t}
+            </option>
+          ))}
+        </select>
+      </div>
     </div>
   );
 }

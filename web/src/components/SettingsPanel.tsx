@@ -536,8 +536,20 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             <SettingsCategoryPanel id="interface" active={!isSearching && activeCategoryId === "interface"}>
               <Group label="Composer">
                 <ToggleRow
+                  label="Skip director"
+                  hint="On: the composer sends straight to the task-aware pipeline (no director enrichment) — same as clicking the composer's Skip director button. Off (default): messages go through the director."
+                  on={settings.skipDirector}
+                  onChange={(v) => setSettings({ skipDirector: v })}
+                />
+                <ToggleRow
+                  label="Default mode"
+                  hint="On: the composer's next send dispatches ONE stock implementor session — no orchestrator wrapper prompt, no planner/QA/self-improvement/review. It stays warm (paused, resumable) until you click Mark done. Takes over from Skip director. Same as the composer's Default mode button."
+                  on={settings.defaultMode}
+                  onChange={(v) => setSettings({ defaultMode: v })}
+                />
+                <ToggleRow
                   label="Show model & effort pickers"
-                  hint="Off (default): the director composer stays compact. On: show the quick implementor model dropdowns (Claude/Codex) and, in skip-director mode, the effort dropdowns."
+                  hint="Off (default): the director composer stays compact. On: show the quick implementor model dropdowns (Claude/Codex) and, in skip-director mode, the effort dropdowns. Default mode always shows its own model/effort pickers regardless of this toggle."
                   on={settings.showComposerPickers}
                   onChange={(v) => setSettings({ showComposerPickers: v })}
                 />

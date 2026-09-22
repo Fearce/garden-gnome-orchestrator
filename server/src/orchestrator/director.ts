@@ -5,7 +5,7 @@ import { createMemoryServer } from "../bus/memoryServer.js";
 import { contentWithImages, toImageBlock } from "../attachments.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
-import type { AgentEvent, DirectorMessage, DirectorStatus, ImageAttachment } from "../types.js";
+import type { AgentEvent, DirectorMessage, DirectorStatus, Effort, ImageAttachment } from "../types.js";
 import type { DirectorTarget, ThreadManager } from "./threadManager.js";
 import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
@@ -246,6 +246,55 @@ export class Director {
     // line. Mint a proper title with a cheap Haiku call after dispatch (best-effort, never blocks the
     // pipeline) — unless the owner turned it off to save those tokens.
     if (this.api.settings().skipDirectorRetitle) void this.api.retitleFromBrief(id, text);
+  }
+
+  /**
+   * Default mode: dispatch straight to the vanilla lane — one stock implementor session, no director,
+   * no planner/QA/self-improvement/review, no orchestrator system-prompt wrapper. Like skip-director it
+   * needs a workspace up front (there's no director to resolve one). `model`/`effort` are the composer's
+   * own pick for this send; omitted (or "auto") leaves GGO's normal model/account selection in charge.
+   */
+  async dispatchVanilla(
+    text: string,
+    workspace?: string,
+    images?: ImageAttachment[],
+    model?: string,
+    effort?: Effort,
+    messageId?: string,
+  ): Promise<void> {
+    if (this.replayedOwnerMessage(messageId)) return;
+    const refs = (images ?? []).map((img) =>
+      this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
+    );
+    const userMsg = this.db.addDirectorMessage({ id: messageId, role: "user", kind: "text", content: text, attachments: refs });
+    this.hub.publish({ type: "director.message", message: userMsg });
+
+    const ws = workspace?.trim();
+    if (!ws) {
+      this.postDirectorNote(
+        `Default mode is on, so I send your message straight to a stock session — but I need the repo path for that (there's no director to find it). Set the workspace path in the composer, then send again.`,
+      );
+      return;
+    }
+    if (!existsSync(ws)) {
+      this.postDirectorNote(`Can't dispatch directly: "${ws}" doesn't exist on disk. Fix the workspace path and send again.`);
+      return;
+    }
+
+    const title = directTitle(text);
+    const id = await this.api.dispatch({
+      title,
+      workspace: ws,
+      brief: text,
+      images,
+      lane: "vanilla",
+      requestedModel: model?.trim() || undefined,
+      effort,
+    });
+    const note = this.postDirectorNote(
+      `Default mode — dispatched "${title}" as a single vanilla session (task ${id.slice(0, 8)}). It stays warm; reply on the task or click Mark done when you're finished.`,
+    );
+    this.db.linkDirectorMessagesToThread([userMsg.id, note.id], id);
   }
 
   /** The composer's task-mode picks, normalized for dispatch: a wall-clock work window and/or a
