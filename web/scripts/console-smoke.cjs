@@ -19,6 +19,7 @@
  *   npm run probe:console -- --shot out.png     save a screenshot (sweep-report evidence)
  *   npm run probe:providers                     verify free-provider readiness, small-only policy, and bundle freshness
  *   npm run probe:providers -- --expect-provider-ids gemini,groq,openrouter,kilo
+ *   npm run probe:console -- --expect-ui-text "Expected label" --forbid-ui-text "Retired label"
  *   ORCH_URL=http://127.0.0.1:4317 ORCH_PASSWORD=<pw> node web/scripts/console-smoke.cjs
  *
  * Password defaults to AUTH_PASSWORD from server/.env. Exit 0 = pass, 1 = a real failure.
@@ -70,6 +71,8 @@ function parseOptions(argv, env = process.env) {
     expectedProviderCount: null,
     expectLocalBundle: false,
     expectSmallTaskPolicy: false,
+    expectedUiText: [],
+    forbiddenUiText: [],
     help: false,
   };
   const valueAfter = (flag, index) => {
@@ -88,6 +91,8 @@ function parseOptions(argv, env = process.env) {
     else if (arg === "--shot") options.shot = valueAfter(arg, i++);
     else if (arg === "--expect-provider-ids") options.expectedProviderIds = csv(valueAfter(arg, i++), arg);
     else if (arg === "--forbid-provider-ids") options.forbiddenProviderIds = csv(valueAfter(arg, i++), arg);
+    else if (arg === "--expect-ui-text") options.expectedUiText.push(valueAfter(arg, i++));
+    else if (arg === "--forbid-ui-text") options.forbiddenUiText.push(valueAfter(arg, i++));
     else if (arg === "--expect-provider-count") {
       const raw = valueAfter(arg, i++);
       const count = Number(raw);
@@ -99,6 +104,7 @@ function parseOptions(argv, env = process.env) {
   if (options.expectedProviderIds || options.forbiddenProviderIds.length || options.expectedProviderCount != null || options.expectSmallTaskPolicy) {
     options.providers = true;
   }
+  if (options.expectedUiText.length || options.forbiddenUiText.length) options.expectLocalBundle = true;
   return options;
 }
 
@@ -114,6 +120,8 @@ function usage() {
     "  --expect-provider-count <n>    require exactly n providers",
     "  --expect-local-bundle          require the served entry bundle to match local web/dist",
     "  --expect-small-task-policy     require the small-only routing API contract and served UI label",
+    "  --expect-ui-text <text>        require text in built UI assets (repeatable; also checks local bundle)",
+    "  --forbid-ui-text <text>        reject text in built UI assets (repeatable; also checks local bundle)",
   ].join("\n");
 }
 
@@ -213,6 +221,14 @@ function validateSmallTaskBundle(bundleText) {
     : [`built UI assets do not contain "${SMALL_TASK_POLICY_LABEL}"`];
 }
 
+function validateUiBundleText(bundleText, expected, forbidden) {
+  const text = String(bundleText);
+  return [
+    ...expected.filter((value) => !text.includes(value)).map((value) => `built UI assets do not contain "${value}"`),
+    ...forbidden.filter((value) => text.includes(value)).map((value) => `built UI assets still contain forbidden text "${value}"`),
+  ];
+}
+
 function validateProviders(providers, options) {
   const failures = [];
   const ids = providers.map((provider) => provider.id);
@@ -270,8 +286,8 @@ async function main() {
   const failedRequests = [];
   let providers = null;
   let routing = null;
-  let smallTaskBundleText = null;
-  let smallTaskBundleError = null;
+  let uiBundleText = null;
+  let uiBundleError = null;
 
   console.log(`[INFO] starting browser smoke: ${base}`);
   const browser = await within(
@@ -315,11 +331,11 @@ async function main() {
       { timeout: WEBSOCKET_READY_TIMEOUT_MS },
     ).catch(() => {});
     view = await within(page.evaluate(inspect), REQUEST_TIMEOUT_MS, "console inspection");
-    if (options.expectSmallTaskPolicy) {
+    if (options.expectSmallTaskPolicy || options.expectedUiText.length || options.forbiddenUiText.length) {
       try {
-        smallTaskBundleText = localUiBundleText();
+        uiBundleText = localUiBundleText();
       } catch (error) {
-        smallTaskBundleError = error.message || String(error);
+        uiBundleError = error.message || String(error);
       }
     }
     if (options.shot) await page.screenshot({ path: options.shot, timeout: REQUEST_TIMEOUT_MS });
@@ -337,8 +353,12 @@ async function main() {
   if (providers) failures.push(...validateProviders(providers, options));
   if (options.expectSmallTaskPolicy) {
     failures.push(...validateSmallTaskPolicy(routing));
-    if (smallTaskBundleError) failures.push(smallTaskBundleError);
-    else failures.push(...validateSmallTaskBundle(smallTaskBundleText));
+    if (uiBundleError) failures.push(uiBundleError);
+    else failures.push(...validateSmallTaskBundle(uiBundleText));
+  }
+  if (options.expectedUiText.length || options.forbiddenUiText.length) {
+    if (uiBundleError && !options.expectSmallTaskPolicy) failures.push(uiBundleError);
+    else if (!uiBundleError) failures.push(...validateUiBundleText(uiBundleText, options.expectedUiText, options.forbiddenUiText));
   }
 
   let bundleCheck = null;
@@ -354,7 +374,6 @@ async function main() {
       failures.push(`could not read local web/dist/index.html: ${error.code || error.message}`);
     }
   }
-
   console.log(`[${failures.length ? "FAIL" : "PASS"}] ${base} — "${view.title}"`);
   console.log(`         ws=${view.wsLive ? "live" : view.conn || "?"} cards=${view.cards} chips=${view.chips} root=${view.rootChars} chars`);
   console.log(`         console errors=${consoleErrors.length} failed requests=${failedRequests.length}`);
@@ -371,6 +390,9 @@ async function main() {
   if (options.expectLocalBundle) {
     const matches = bundleCheck?.local && bundleCheck.served === bundleCheck.local;
     console.log(`         bundle=${bundleCheck?.served || "unresolved"} (${matches ? "matches local build" : "mismatch"})`);
+  }
+  if (options.expectedUiText.length || options.forbiddenUiText.length) {
+    console.log(`         UI text assertions=${options.expectedUiText.length} required, ${options.forbiddenUiText.length} forbidden`);
   }
   if (view.pendingModal) {
     console.log("         · a modal is open (likely a pending owner question) — NOT touched, and nothing was clicked");
@@ -391,6 +413,7 @@ module.exports = {
   validateProviders,
   validateSmallTaskBundle,
   validateSmallTaskPolicy,
+  validateUiBundleText,
   within,
 };
 

@@ -11,6 +11,7 @@ const {
   validateProviders,
   validateSmallTaskBundle,
   validateSmallTaskPolicy,
+  validateUiBundleText,
   within,
 } = require("./console-smoke.cjs");
 
@@ -27,6 +28,8 @@ const options = parseOptions([
   "--expect-provider-count", "2",
   "--expect-local-bundle",
   "--expect-small-task-policy",
+  "--expect-ui-text", "Capacity-paused work always resumes",
+  "--forbid-ui-text", "Auto-resume on token reset",
 ], {});
 assert.equal(options.base, "http://127.0.0.1:4999/");
 assert.deepEqual(options.expectedProviderIds, ["gemini", "groq"], "CSV ids are trimmed and deduplicated");
@@ -35,10 +38,14 @@ assert.equal(options.expectedProviderCount, 2);
 assert.equal(options.providers, true);
 assert.equal(options.expectLocalBundle, true);
 assert.equal(options.expectSmallTaskPolicy, true);
+assert.deepEqual(options.expectedUiText, ["Capacity-paused work always resumes"]);
+assert.deepEqual(options.forbiddenUiText, ["Auto-resume on token reset"]);
+assert.equal(options.expectLocalBundle, true, "UI text assertions also prove the served entry matches the local build");
 assert.equal(parseOptions(["--forbid-provider-ids", "retired"], {}).providers, true, "an assertion implies provider inspection");
 assert.equal(parseOptions(["--expect-small-task-policy"], {}).providers, true, "the policy assertion implies provider inspection");
 assert.throws(() => parseOptions(["--expect-provider-count", "2.5"], {}), /non-negative integer/);
 assert.throws(() => parseOptions(["--expect-provider-ids", "--providers"], {}), /requires a value/);
+assert.throws(() => parseOptions(["--expect-ui-text", "--providers"], {}), /requires a value/);
 assert.throws(() => parseOptions(["--typo"], {}), /unknown argument/);
 
 assert.equal(
@@ -106,6 +113,17 @@ assert.match(validateSmallTaskPolicy({ ...routing, maxModelCalls: null })[0], /m
 assert.match(validateSmallTaskPolicy({ ...routing, summary: "" })[0], /owner-facing summary/);
 assert.deepEqual(validateSmallTaskBundle(`before ${SMALL_TASK_POLICY_LABEL} after`), []);
 assert.match(validateSmallTaskBundle("Use free pool")[0], /built UI assets/);
+assert.deepEqual(
+  validateUiBundleText("Capacity-paused work always resumes", ["Capacity-paused work always resumes"], ["Auto-resume on token reset"]),
+  [],
+);
+assert.deepEqual(
+  validateUiBundleText("Auto-resume on token reset", ["Capacity-paused work always resumes"], ["Auto-resume on token reset"]),
+  [
+    'built UI assets do not contain "Capacity-paused work always resumes"',
+    'built UI assets still contain forbidden text "Auto-resume on token reset"',
+  ],
+);
 
 void (async () => {
   assert.equal(await within(Promise.resolve("ready"), 20, "immediate operation"), "ready");
