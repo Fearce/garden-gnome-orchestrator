@@ -331,7 +331,11 @@
    Only on arrival: a panel, a dialog, a menu. The feed and the board never move
    on their own — cards re-sort on live data and would flicker. */
 [data-theme="nocturne"] .detail {
-  animation: nocturne-slide-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+  /* Do not retain the transform-bearing keyframe after arrival. A forwards-filled transform keeps
+     this panel as the containing block for every fixed child forever, which traps task-owned overlays
+     (Changes, deliverable previews, implementation memos and chip popovers) inside the right column.
+     `backwards` still applies the entrance pose before the animation starts, then releases it. */
+  animation: nocturne-slide-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1) backwards;
 }
 [data-theme="nocturne"] .scrim,
 [data-theme="nocturne"] .settings-scrim {

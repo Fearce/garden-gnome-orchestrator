@@ -11,8 +11,11 @@
 // whether **Download** resolves the real `GET /api/deliverable/:id` route byte-for-byte, and whether
 // **Copy path** writes the exact absolute path production would have written.
 //
-// Seeds two real deliverables (a markdown report and a 1x1 PNG) as actual files on disk inside the
-// seeded task's workspace, plus their `findings` rows (kind='deliverable'), then drives the console.
+// Seeds two real deliverables (a markdown report and a 1x1 PNG) as actual files on disk inside a real
+// Git workspace, plus their `findings` rows (kind='deliverable'), then drives the console. The report
+// is changed after its fixture commit so the same run opens Changes on a real unified diff. Both
+// surfaces run first under Nocturne and then Classic, with full-viewport bounds checks: a retained
+// transform on `.detail` otherwise traps their fixed overlays inside the task column.
 //
 //   npm run deliverables-lab --prefix server
 //   npm run deliverables-lab --prefix server -- --shots data/deliverables-lab-shots
@@ -24,10 +27,11 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const Database = require("better-sqlite3");
 const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
 
-const PORT = 4409;
+const PORT = 5317;
 const BASE = `http://127.0.0.1:${PORT}`;
 const TASK_ID = "deliverables-lab-task-000000000001";
 
@@ -53,6 +57,12 @@ function seed(dataDir) {
   const pngPath = path.join(workspace, PNG_NAME);
   fs.writeFileSync(mdPath, MD_TEXT, "utf8");
   fs.writeFileSync(pngPath, Buffer.from(PNG_B64, "base64"));
+  execFileSync("git", ["init", "-q"], { cwd: workspace });
+  execFileSync("git", ["config", "user.email", "deliverables-lab@example.invalid"], { cwd: workspace });
+  execFileSync("git", ["config", "user.name", "Deliverables Lab"], { cwd: workspace });
+  execFileSync("git", ["add", MD_NAME, PNG_NAME], { cwd: workspace });
+  execFileSync("git", ["commit", "-qm", "seed deliverables"], { cwd: workspace });
+  fs.appendFileSync(mdPath, "\nWorking-tree line for the Changes viewer.\n", "utf8");
 
   const db = new Database(path.join(dataDir, "orchestrator.sqlite"));
   const now = Date.now();
@@ -99,6 +109,8 @@ async function main() {
     // cookbook): permissions alone don't help without a writeText stub in headless chromium.
     await ctx.grantPermissions(["clipboard-read", "clipboard-write"]);
     await ctx.addInitScript(() => {
+      const current = JSON.parse(localStorage.getItem("director_settings") || "{}");
+      if (!("theme" in current)) localStorage.setItem("director_settings", JSON.stringify({ ...current, theme: "nocturne" }));
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
         value: { writeText: async (text) => { window.__copied = text; } },
@@ -109,6 +121,7 @@ async function main() {
     page.on("console", (m) => {
       if (m.type() === "error") errors.push(m.text());
     });
+    page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
 
     await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
     await page.goto(`${BASE}/`, { timeout: 45_000 });
@@ -157,6 +170,13 @@ async function main() {
         check(`${item.name}: ...and its list content`, mdBody.includes("alpha") && mdBody.includes("beta"), mdBody);
         const boldCount = await page.locator(".md-preview strong").count();
         check(`${item.name}: ...rendered as markdown, not raw text (bold survived)`, boldCount > 0);
+        const scrim = await page.locator(".modal.deliverable").locator("xpath=..").boundingBox();
+        check(
+          `${item.name}: Nocturne preview covers the viewport instead of the detail column`,
+          !!scrim && scrim.x === 0 && scrim.y === 0 && scrim.width === 1500 && scrim.height === 950,
+          JSON.stringify(scrim),
+        );
+        await page.screenshot({ path: path.join(shotDir(dataDir), "nocturne-deliverable.png") });
       } else {
         await page.waitForSelector("img.dl-image", { timeout: 10_000 });
         // `attached` proves the element exists, not that the browser finished decoding it: wait for
@@ -173,7 +193,21 @@ async function main() {
         check(`${item.name}: ...at the real fixture's dimensions (1x1)`, !!img && img.w === 1 && img.h === 1, JSON.stringify(img));
       }
       await page.click(".dl-modal-actions button[aria-label='Close']");
-      await page.waitForSelector(".modal.deliverable", { state: "detached", timeout: 10_000 });
+      let closed = true;
+      try {
+        await page.waitForSelector(".modal.deliverable", { state: "detached", timeout: 2_000 });
+      } catch {
+        closed = false;
+      }
+      check(`${item.name}: Close dismisses the preview`, closed);
+      if (!closed) {
+        // A broken modal blocks every later control. Reload lets the same run capture the companion
+        // Changes failure and the Classic control case instead of aborting on the first symptom.
+        await page.reload();
+        await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+        await page.click(".card", { timeout: 45_000 });
+        await page.waitForSelector(".detail", { timeout: 20_000 });
+      }
 
       // ---- Download: the real route, byte-for-byte ----
       await c.hover();
@@ -200,19 +234,82 @@ async function main() {
       // (previewable-independent) title rather than a bare `button` selector matching the wrong one.
       await c.hover();
       await c.locator('button:text-is("Copy path")').click();
-      await page.waitForFunction(
-        (label) => {
-          const btn = [...document.querySelectorAll(".dl-chip")]
-            .find((el) => el.querySelector(`.dl-chip-btn[aria-label="${label}"]`))
-            ?.querySelector('.dl-pop-actions button[title="Copy the full file path to the clipboard"]');
-          return btn && btn.textContent === "Copied";
-        },
-        item.label,
-        { timeout: 5000 },
-      );
+      let copyConfirmed = true;
+      try {
+        await page.waitForFunction(
+          (label) => {
+            const btn = [...document.querySelectorAll(".dl-chip")]
+              .find((el) => el.querySelector(`.dl-chip-btn[aria-label="${label}"]`))
+              ?.querySelector('.dl-pop-actions button[title="Copy the full file path to the clipboard"]');
+            return btn && btn.textContent === "Copied";
+          },
+          item.label,
+          { timeout: 2000 },
+        );
+      } catch {
+        copyConfirmed = false;
+      }
       const copied = await page.evaluate(() => window.__copied);
-      check(`${item.name}: Copy path wrote the exact absolute path`, copied === item.realPath, `${copied} !== ${item.realPath}`);
+      check(`${item.name}: Copy path wrote the exact absolute path`, copyConfirmed && copied === item.realPath, `${copied} !== ${item.realPath}`);
     }
+
+    // The owner described the companion failure as "checking changes": exercise the task's real
+    // Diff action against this checkout's real working-tree changes under the same Nocturne session.
+    await page.getByRole("button", { name: "Diff", exact: true }).click();
+    await page.waitForSelector(".modal.changes", { timeout: 10_000 });
+    await page.waitForFunction(() => {
+      const body = document.querySelector(".changes-body");
+      return body && !body.textContent?.includes("loading…");
+    }, { timeout: 10_000 });
+    check("Nocturne Changes opens with real diff content", ((await page.textContent(".changes-body")) ?? "").includes("diff --git"));
+    const nocturneScrim = await page.locator(".modal.changes").locator("xpath=..").boundingBox();
+    check(
+      "Nocturne Changes covers the viewport instead of the detail column",
+      !!nocturneScrim && nocturneScrim.x === 0 && nocturneScrim.y === 0 && nocturneScrim.width === 1500 && nocturneScrim.height === 950,
+      JSON.stringify(nocturneScrim),
+    );
+    await page.screenshot({ path: path.join(shotDir(dataDir), "nocturne-changes.png") });
+    await page.locator(".modal.changes .m-head button").click();
+    await page.waitForSelector(".modal.changes", { state: "detached", timeout: 5_000 });
+
+    // Isolate theme-specific failures from the underlying viewers by repeating both surfaces in the
+    // default Classic theme in the same authenticated browser.
+    await page.evaluate(() => {
+      const current = JSON.parse(localStorage.getItem("director_settings") || "{}");
+      localStorage.setItem("director_settings", JSON.stringify({ ...current, theme: "classic" }));
+    });
+    await page.reload();
+    await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+    await page.click(".card", { timeout: 45_000 });
+    await page.waitForSelector(".detail", { timeout: 20_000 });
+    await page.click(`.dl-chip-btn[aria-label="${MD_LABEL}"]`);
+    await page.waitForSelector(".md-preview", { timeout: 10_000 });
+    check("Classic deliverable preview still renders", ((await page.textContent(".md-preview")) ?? "").includes("Deliverables Lab Report"));
+    const classicDeliverableScrim = await page.locator(".modal.deliverable").locator("xpath=..").boundingBox();
+    check(
+      "Classic deliverable preview covers the viewport",
+      !!classicDeliverableScrim && classicDeliverableScrim.x === 0 && classicDeliverableScrim.y === 0 && classicDeliverableScrim.width === 1500 && classicDeliverableScrim.height === 950,
+      JSON.stringify(classicDeliverableScrim),
+    );
+    await page.screenshot({ path: path.join(shotDir(dataDir), "classic-deliverable.png") });
+    await page.click(".dl-modal-actions button[aria-label='Close']");
+    await page.waitForSelector(".modal.deliverable", { state: "detached", timeout: 5_000 });
+    await page.getByRole("button", { name: "Diff", exact: true }).click();
+    await page.waitForSelector(".modal.changes", { timeout: 10_000 });
+    await page.waitForFunction(() => {
+      const body = document.querySelector(".changes-body");
+      return body && !body.textContent?.includes("loading…");
+    }, { timeout: 10_000 });
+    check("Classic Changes still renders", ((await page.textContent(".changes-body")) ?? "").includes("diff --git"));
+    const classicScrim = await page.locator(".modal.changes").locator("xpath=..").boundingBox();
+    check(
+      "Classic Changes covers the viewport",
+      !!classicScrim && classicScrim.x === 0 && classicScrim.y === 0 && classicScrim.width === 1500 && classicScrim.height === 950,
+      JSON.stringify(classicScrim),
+    );
+    await page.screenshot({ path: path.join(shotDir(dataDir), "classic-changes.png") });
+    await page.locator(".modal.changes .m-head button").click();
+    await page.waitForSelector(".modal.changes", { state: "detached", timeout: 5_000 });
 
     check("no console errors", errors.length === 0, errors.join(" | "));
 
@@ -220,7 +317,7 @@ async function main() {
     await page.screenshot({ path: path.join(shots, "deliverables.png") });
     await chip(page, PNG_LABEL).hover();
     await page.screenshot({ path: path.join(shots, "deliverables-popover.png") });
-    console.log(`\nscreenshots: ${path.join(shots, "deliverables.png")} + deliverables-popover.png`);
+    console.log(`\nscreenshots: ${shots} (Nocturne + Classic, deliverable + Changes, strip + popover)`);
 
     await ctx.close();
     await browser.close();

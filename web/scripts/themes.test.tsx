@@ -194,7 +194,7 @@ assert.match(panel, /id: "appearance".*label: "Appearance"/, "no Appearance cate
 assert.match(panel, /category === "appearance"/, "the Appearance category has no icon arm, so the rail cannot draw it");
 assert.match(panel, /<SettingsCategoryPanel id="appearance"/, "a Group outside a category panel renders on EVERY settings page");
 
-/* ---- 6. nothing paints Classic's accent behind the theme's back --------------------------------- */
+/* ---- 6. stylesheet invariants that protect the rest of the console ------------------------------ */
 
 // Retinting `--accent` is how a theme changes the console's signal colour — except styles.css writes
 // the amber literal directly in every focus ring rather than deriving it, so those rings stay amber on
@@ -228,6 +228,22 @@ function blocks(css: string): Block[] {
   }
   assert.equal(open.length, 0, "unbalanced braces while parsing a stylesheet");
   return out;
+}
+
+// ThreadDetail owns several viewport overlays (Changes, deliverable previews and implementation
+// memos), plus fixed deliverable popovers. A transform-bearing animation with forwards/both fill
+// leaves `.detail` as their containing block after it finishes: the dialogs are then squeezed into
+// the right column and layered under sticky panel chrome. This static invariant backs the real-browser
+// deliverables lab, which measures both themes' scrims against the full viewport.
+for (const theme of nonDefault) {
+  const retainedDetailAnimation = blocks(read(`src/themes/${theme.id}.css`))
+    .filter((b) => b.head.split(",").some((selector) => selector.trim().includes(`[data-theme="${theme.id}"] .detail`)))
+    .flatMap((b) => Array.from(b.body.matchAll(/animation(?:-fill-mode)?\s*:[^;}]*\b(?:both|forwards)\b/g), (m) => m[0]));
+  assert.deepEqual(
+    retainedDetailAnimation,
+    [],
+    `${theme.name} permanently retains the task panel animation, so its fixed overlays are trapped inside the detail column`,
+  );
 }
 
 for (const theme of nonDefault) {
