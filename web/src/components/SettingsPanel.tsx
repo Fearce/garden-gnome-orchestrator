@@ -397,29 +397,16 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 {settings.tokenLimitEnabled && (
                   <NumberRow
                     label="Stop at usage %"
-                    hint="The token-usage threshold that trips the safety stop. Tracks the same live burn as the account meters; refreshes on the ~10-min usage ping, so it can lag a fast burn by minutes."
+                    hint="The token-usage threshold that pauses active work and holds new dispatches. Tracks the same live burn as the account meters; refreshes on the ~10-min usage ping, so it can lag a fast burn by minutes. Work resumes automatically when the blocking window resets."
                     value={settings.tokenLimitPercent}
                     min={50}
                     max={99}
                     onChange={(v) => setSettings({ tokenLimitPercent: v })}
                   />
                 )}
-                <ToggleRow
-                  label="Auto-resume on token reset"
-                  hint="On: when usage crosses the threshold below, schedule a wakeup at the window's reset that resumes any paused or cap-parked tasks — so work picks back up on its own after the window frees, even if you're away. Off by default."
-                  on={settings.autoResumeOnTokenReset}
-                  onChange={(v) => setSettings({ autoResumeOnTokenReset: v })}
-                />
-                {settings.autoResumeOnTokenReset && (
-                  <NumberRow
-                    label="Resume threshold %"
-                    hint="Usage level at which the reset-timed resume is armed. When live burn crosses this, a wakeup is scheduled for the soonest window reset to continue frozen work."
-                    value={settings.autoResumeThresholdPercent}
-                    min={50}
-                    max={95}
-                    onChange={(v) => setSettings({ autoResumeThresholdPercent: v })}
-                  />
-                )}
+                <p className="settings-note tight">
+                  Capacity-paused work always resumes when its compatible provider window has enough headroom again. This recovery cannot be disabled.
+                </p>
               </Group>
               <Group label="Usage routing">
                 <ToggleRow

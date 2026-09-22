@@ -565,10 +565,7 @@ export interface OrchestratorSettings {
   // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.
   tokenLimitEnabled: boolean;
   tokenLimitPercent: number;
-  // Auto-resume on token-window reset: when usage crosses the threshold, arm a wakeup at the reset that
-  // resumes work frozen on the cap. Opt-in (off by default); the percent is clamped 50–95 (default 80).
-  autoResumeOnTokenReset: boolean;
-  autoResumeThresholdPercent: number;
+  // Token-window recovery is always on; there is no client setting that can strand a capacity park.
   // Fast usage polling: opt-in tighter cadence for the account usage ping. Off (default) = 10-min
   // ping; on = ~30s so the top-bar usage strip tracks the live burn within ~1-2% of Claude's own UI.
   fastUsagePolling: boolean;

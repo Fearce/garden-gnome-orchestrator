@@ -110,12 +110,17 @@ check("all-known-insufficient is explicit so substantial work can wait", noSafe.
 
 console.log("\n=== capacity routing — reset-time edge cases ===\n");
 
-const coupled = standardCapacityWindows(100, NOW + HOUR, 100, NOW + 10 * HOUR);
-check(
-  "a 5h reset does not falsely free a pool whose weekly window is still exhausted",
-  nextViableAt(coupled, high, NOW) === NOW + 10 * HOUR,
-  String(nextViableAt(coupled, high, NOW)),
-);
+for (const provider of ["Claude subscription", "Codex general pool"]) {
+  const coupled = [
+    { label: `${provider} 5h`, usedPct: 100, resetAt: NOW + HOUR },
+    { label: `${provider} weekly`, usedPct: 100, resetAt: NOW + 10 * HOUR, burnWeight: 0.35 },
+  ];
+  check(
+    `${provider}: a 5h reset does not falsely release weekly exhaustion`,
+    nextViableAt(coupled, high, NOW) === NOW + 10 * HOUR,
+    String(nextViableAt(coupled, high, NOW)),
+  );
+}
 const weeklyThenMonthly: CapacityWindow[] = [
   { label: "weekly", usedPct: 100, resetAt: NOW + 2 * HOUR },
   { label: "monthly credits", usedPct: 100, resetAt: NOW + 9 * HOUR },

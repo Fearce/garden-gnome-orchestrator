@@ -113,6 +113,23 @@ rolloverState.sevenDay = 70;
 rolloverState.usageStale = true;
 check("stale apparent headroom is reported as unknown instead of fresh capacity", rolloverManager.dispatchPreview().capacity.status === "unknown");
 
+console.log("account-usage: token-safety reset follows the blocking window");
+const safetyNow = Date.now();
+rolloverState.usageStale = false;
+rolloverState.fiveHour = 90;
+rolloverState.fiveHourReset = safetyNow + 60 * 60_000;
+rolloverState.sevenDay = 95;
+rolloverState.sevenDayReset = safetyNow + 3 * 24 * 60 * 60_000;
+check(
+  "a weekly safety exhaustion is not released by the earlier 5h reset",
+  rolloverManager.tokenSafetyResetAt(80, safetyNow) === rolloverState.sevenDayReset,
+);
+rolloverState.sevenDay = 20;
+check(
+  "a 5h-only safety exhaustion releases at the 5h reset",
+  rolloverManager.tokenSafetyResetAt(80, safetyNow) === rolloverState.fiveHourReset,
+);
+
 publishAccountUsage(snapshot);
 const written = JSON.parse(readFileSync(snapshotPath(), "utf8"));
 check("published to CLAUDE_ACCOUNT_SNAPSHOT_PATH", snapshotPath() === process.env.CLAUDE_ACCOUNT_SNAPSHOT_PATH);

@@ -91,6 +91,9 @@ class StubAccounts {
   hasHeadroom(): boolean {
     return this.headroom;
   }
+  tokenSafetyResetAt(_threshold: number): number | null {
+    return this.reset;
+  }
   /** Set ONLY by the capacity pre-check test. Left undefined everywhere else so the other tests keep
    *  claudeCapacityOptions' plain headroom-only fallback, which is the signal they were written against. */
   capacityOptions?: (
@@ -122,13 +125,17 @@ interface Harness {
   dispose(): void;
 }
 
-function makeHarness(): Harness {
+function makeHarness(options: { legacyResumeSettings?: boolean } = {}): Harness {
   const dir = mkdtempSync(join(tmpdir(), "tf-resume-"));
   const dbPath = join(dir, "orchestrator.sqlite");
   const workspace = join(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
 
   const db = new Db(dbPath);
+  if (options.legacyResumeSettings) {
+    db.kvSet("setting_auto_resume_on_token_reset", "0");
+    db.kvSet("setting_auto_resume_threshold_percent", "95");
+  }
   const hub = new EventHub();
   const logs: string[] = [];
   hub.subscribe((e) => {
@@ -218,17 +225,21 @@ function stallResumesUsed(h: Harness, threadId: string): number {
 async function main(): Promise<void> {
   console.log("\n=== Token-freeze → reset → auto-resume — integration test (real machinery) ===\n");
 
-  // -- Test A: feature OFF → a freeze ping must NOT arm anything (guards against a false green) --------
-  console.log("Test A — feature OFF: a usage-limit ping does not arm a resume");
+  // -- Test A: old persisted OFF values cannot disable the now-unconditional recovery -----------------
+  console.log("Test A — legacy toggle rows are removed and cannot disable reset recovery");
   {
-    const h = makeHarness();
+    const h = makeHarness({ legacyResumeSettings: true });
     try {
-      // feature is off by default; even a screaming-hot usage ping must arm nothing.
+      check("the obsolete on/off key was deleted on load", h.db.kvGet("setting_auto_resume_on_token_reset") == null);
+      check("the obsolete threshold key was deleted on load", h.db.kvGet("setting_auto_resume_threshold_percent") == null);
+      const settings = h.mgr.settings() as unknown as Record<string, unknown>;
+      check("settings snapshots no longer expose the old toggle", !("autoResumeOnTokenReset" in settings));
+      check("settings snapshots no longer expose the old threshold", !("autoResumeThresholdPercent" in settings));
       h.stub.util = 99;
       h.stub.reset = Date.now() + 3_600_000;
       h.stub.headroom = false;
       h.stub.fireUsageRefresh();
-      check("no wakeup armed while the feature is off", !h.db.kvGet(WAKEUP_KEY));
+      check("recovery still arms despite the legacy OFF row", !!h.db.kvGet(WAKEUP_KEY));
     } finally {
       h.dispose();
     }
@@ -241,7 +252,6 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       seedFrozenTask(h, "paused");
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
       check("still nothing armed before any usage data crosses the line", !h.db.kvGet(WAKEUP_KEY));
 
       // Step 2: simulate hitting the usage/token limit — utilization crosses the threshold, a reset is known.
@@ -256,7 +266,7 @@ async function main(): Promise<void> {
       check("the wakeup points at the soonest reset epoch", armed === String(resetEpoch), `armed=${armed} expected=${resetEpoch}`);
       check(
         "the freeze was logged as a scheduled resume",
-        h.logs.some((l) => /Token threshold hit/i.test(l) && /Scheduling resume/i.test(l)),
+        h.logs.some((l) => /Token threshold hit/i.test(l) && /Scheduling always-on resume/i.test(l)),
         h.logs.filter((l) => /threshold|resume/i.test(l)).join(" | ") || "(no matching log)",
       );
     } finally {
@@ -270,7 +280,6 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const { threadId, session } = seedFrozenTask(h, "paused");
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
       h.stub.util = 90;
       h.stub.reset = Date.now() + 3_600_000;
       h.stub.fireUsageRefresh();
@@ -286,13 +295,74 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test C1: the production failure — Token Safety must park, not terminally cancel ----------------
+  console.log("\nTest C1 — Token Safety parks an active task and reset resumes its saved session");
+  {
+    const h = makeHarness();
+    try {
+      const { threadId, session } = seedFrozenTask(h, "implementing");
+      // Make the seeded task an owned pipeline, matching the real target set stopAllForTokenLimit scans.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).activePipelines.add(threadId);
+      h.mgr.setSettings({ tokenLimitEnabled: true, tokenLimitPercent: 80 });
+      const resetAt = Date.now() + 3_600_000;
+      h.stub.util = 90;
+      h.stub.reset = resetAt;
+      h.stub.headroom = false;
+      h.stub.fireUsageRefresh();
+      await delay(80);
+
+      const parked = h.db.getThread(threadId);
+      check("Token Safety no longer sends the task to Cancelled", parked?.state === "review", `state=${parked?.state}`);
+      check("the safety stop is a durable auto-resume park", (parked?.error ?? "").startsWith(CAP_PARK_PREFIX), parked?.error ?? "");
+      check("the exact reset was armed while safety stayed enabled", h.db.kvGet(WAKEUP_KEY) === String(resetAt));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      check("the saved implementor journal survived the stop", (h.mgr as any).latestImplementorSession(threadId) === session);
+
+      h.stub.util = 5;
+      h.stub.headroom = true;
+      h.stub.fireUsageRefresh();
+      await delay(180);
+      const call = h.resumeCalls.find((entry) => entry.threadId === threadId);
+      check("a fresh below-limit reading automatically resumed the task", !!call, JSON.stringify(h.resumeCalls));
+      check("the safety resume reused the same session", call?.resumeSession === session, `resumeSession=${call?.resumeSession}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // New dispatches must not sneak into the allowance released by parking the old work.
+  console.log("\nTest C2 — Token Safety holds fresh dispatches until the reset reading arrives");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ tokenLimitEnabled: true, tokenLimitPercent: 80 });
+      h.stub.util = 90;
+      h.stub.reset = Date.now() + 3_600_000;
+      h.stub.fireUsageRefresh();
+      let starts = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).startPipeline = () => starts++;
+      const queued = h.db.createThread({ title: "held fresh dispatch", workspace: h.workspace, rawPrompt: "p" });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (h.mgr as any).enqueueOrRun(queued.id);
+      check("fresh work stays queued during the safety freeze", h.db.getThread(queued.id)?.state === "queued" && starts === 0);
+
+      h.stub.util = 5;
+      h.stub.headroom = true;
+      h.stub.fireUsageRefresh();
+      check("the queued dispatch starts after the below-limit reset reading", starts === 1, `starts=${starts}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Test D: reset fires but NO headroom yet → re-arm, do NOT resume (guards a premature wake) -------
   console.log("\nTest D — an early reset with no headroom re-arms instead of waking into an instant re-cap");
   {
     const h = makeHarness();
     try {
       const { threadId } = seedFrozenTask(h, "paused");
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
       const nextReset = Date.now() + 1_800_000;
       h.stub.util = 90;
       h.stub.reset = nextReset;
@@ -317,7 +387,6 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const { threadId, session } = seedFrozenTask(h, "paused");
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
       const resetAt = Date.now() + 3_600_000;
       h.stub.util = 90;
       h.stub.reset = resetAt;
@@ -360,7 +429,6 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const { threadId } = seedFrozenTask(h, "review", /* capParked */ true);
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
       h.stub.util = 4;
       h.stub.headroom = true;
       let markerAtHandoff = "";
@@ -384,7 +452,6 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const { threadId, session } = seedFrozenTask(h, "review", /* capParked */ true);
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
       const resetAt = Date.now() + 3_600_000;
       h.stub.util = 92;
       h.stub.reset = resetAt;
@@ -423,7 +490,6 @@ async function main(): Promise<void> {
         const hub = new EventHub();
         const stub = new StubAccounts();
         const mgr = new ThreadManager(db, hub, new FileMemoryService(join(dir, "memory")), stub as unknown as AccountManager);
-        mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
         stub.util = 95;
         stub.reset = restartResetAt;
         stub.fireUsageRefresh();
@@ -472,7 +538,6 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const { threadId, session } = seedParkedTask(h, STALL_PARK);
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
       const before = h.db.listThreads().length;
       h.stub.util = 4;
       h.stub.headroom = true;
@@ -505,7 +570,6 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const { threadId } = seedParkedTask(h, STALL_PARK, MAX_CAPACITY_STALL_RESUMES);
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
       h.stub.util = 4;
       h.stub.headroom = true;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -525,7 +589,6 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const { threadId } = seedParkedTask(h, `QA still not satisfied after 3 rounds${SEP}needs your review.`);
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
       h.stub.util = 4;
       h.stub.headroom = true;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -547,20 +610,23 @@ async function main(): Promise<void> {
   // -- Test K: the pre-check --------------------------------------------------------------------------
   // A rollover is not a promise of runway. With the 5h window still spent, the wake must cost nothing and
   // re-arm for the COUPLED-GATE reset (the pool's own), not the account manager's plain soonest one.
-  console.log("\nTest K: a wake into a still-exhausted window resumes nothing and re-arms on the pool's own reset");
+  console.log("\nTest K: Claude weekly exhaustion is not released by an earlier 5h reset");
   {
     const h = makeHarness();
     try {
       const { threadId } = seedParkedTask(h, STALL_PARK);
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80 });
-      const poolReset = Date.now() + 90 * 60_000;
+      const fiveHourReset = Date.now() + 90 * 60_000;
+      const weeklyReset = Date.now() + 6 * 60 * 60_000;
       const plainReset = Date.now() + 8 * 60 * 60_000; // deliberately LATER, so a pass proves which one won
       h.stub.reset = plainReset;
       h.stub.headroom = false;
       h.stub.capacityOptions = () => [
         {
           account: { id: "sub-alpha", label: "alpha" },
-          windows: [{ label: "5h session window", usedPct: 100, resetAt: poolReset }],
+          windows: [
+            { label: "5h session window", usedPct: 100, resetAt: fiveHourReset },
+            { label: "weekly window", usedPct: 100, resetAt: weeklyReset, burnWeight: 0.35 },
+          ],
           hasHeadroom: false,
         },
       ];
@@ -571,9 +637,9 @@ async function main(): Promise<void> {
       check("nothing was resumed into the exhausted window", h.resumeCalls.length === 0, `calls=${JSON.stringify(h.resumeCalls)}`);
       check("the task is untouched", h.db.getThread(threadId)?.state === "review");
       check(
-        "the re-arm used the pool's own reset, not the coarser account-manager one",
-        h.db.kvGet(WAKEUP_KEY) === String(poolReset),
-        `kv=${h.db.kvGet(WAKEUP_KEY)} pool=${poolReset} plain=${plainReset}`,
+        "the re-arm waited for Claude's weekly reset, not the earlier 5h or coarser fallback",
+        h.db.kvGet(WAKEUP_KEY) === String(weeklyReset),
+        `kv=${h.db.kvGet(WAKEUP_KEY)} 5h=${fiveHourReset} weekly=${weeklyReset} fallback=${plainReset}`,
       );
       check(
         "the early wake was logged as a runway shortfall",
@@ -596,7 +662,7 @@ async function main(): Promise<void> {
       const middle = seedParkedTask(h, STALL_PARK);
       await delay(5);
       const newest = seedParkedTask(h, STALL_PARK);
-      h.mgr.setSettings({ autoResumeOnTokenReset: true, autoResumeThresholdPercent: 80, maxConcurrent: 2 });
+      h.mgr.setSettings({ maxConcurrent: 2 });
       h.stub.util = 4;
       h.stub.headroom = true;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

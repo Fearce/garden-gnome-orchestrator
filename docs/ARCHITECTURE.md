@@ -695,6 +695,12 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   next reset that would actually make one viable (or says no reliable reset is known), and the supervisor
   rechecks the same role-sized reserve before auto-resuming. Gate: `test:capacity-routing` and
   `test:codex-usage` plus the existing provider-fallback, QA-budget, auto-model, and Codex-pool gates.
+- **Token-window recovery is always on.** There is no auto-resume setting. Provider exhaustion and the
+  optional Token Safety early-stop both land in the durable `CAP_PARK_PREFIX` state with prior runs and
+  SDK sessions intact. While Token Safety is tripped, new dispatches remain queued and autonomous resumes
+  are held; a fresh below-threshold reading clears the freeze and the ordinary capacity supervisor resumes
+  work. Claude safety scheduling couples its 5h and weekly windows, while the shared capacity inventory
+  applies the same coupled-window rule to Codex and the other backends. Gate: `test:token-freeze`.
 - Degrades to single-account (inherited login) when fewer than two tokens are
   configured. A bar reads `—` only before the first successful ping for that
   account.

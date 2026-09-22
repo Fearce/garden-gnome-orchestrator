@@ -681,6 +681,10 @@ const MAX_STRANDED_AGE_MS = 24 * 3600_000;
 // auto-resumes those tasks once an account frees up — so a cap wave doesn't leave the owner to
 // hand-resume every task. A normal "needs your review" park carries no such prefix and is left alone.
 const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
+// A token-safety stop is a capacity park, not an operator cancellation. The more-specific prefix lets
+// stale pipeline callbacks recognize the durable stop while the ordinary CAP_PARK prefix keeps the
+// existing supervisor/reset recovery machinery responsible for waking it.
+const TOKEN_SAFETY_PARK_PREFIX = `${CAP_PARK_PREFIX} — token safety limit`;
 // Earlier editing-QA builds treated a verifier's actionable-but-unfixed defect as an owner hand-back.
 // Keep a distinct durable marker while recovering those rows, so a restart in the short boot-resume
 // window repeats the automatic repair rather than leaving the old task on the owner's board.
@@ -699,6 +703,9 @@ const CAP_RESUME_ATTEMPT_COOLDOWN_MS = 30_000;
 // Fire the token-reset auto-resume a touch AFTER the window's reset epoch — the reset time is an
 // estimate and can be slightly fuzzy, so a small grace avoids waking straight into an instant re-cap.
 const TOKEN_RESUME_BUFFER_MS = 60_000;
+// Token-reset recovery is always on. Arm early enough to have a durable reset promise before a live
+// provider rejects the run; the per-task capacity check still decides whether that reset really frees it.
+const TOKEN_RESUME_ARM_PERCENT = 80;
 /** Operator-appointed active-task hard stops. This marker is deliberately distinct from CAP_PARK_PREFIX:
  * every autonomous recovery path may revive a cap park, while a deadline park requires a fresh operator
  * decision. Exported only so focused regression tests can assert the durable contract without copying it. */
@@ -989,13 +996,12 @@ export class ThreadManager implements OrchestratorApi {
   // we actually know, so provider exhaustion does not wait for a human (or for the next coarse poll).
   private capResumeWake: NodeJS.Timeout | undefined;
   private capResumeWakeAt: number | undefined;
-  // One-shot latch for the token-safety auto-stop: set when a crossing fires the stop, cleared once
-  // utilization drops back below the threshold — so the stop fires once per crossing, not on every ping
-  // while the window stays hot (which would re-stop tasks the owner just re-dispatched).
+  // Global token-safety freeze: set when a crossing parks active work, cleared only once utilization
+  // drops below the threshold. While set, fresh dispatches stay queued and every autonomous resume waits.
   private tokenLimitTripped = false;
-  // Token-reset auto-resume: the reset epoch (soonestResetAt) we've currently armed a wakeup timer for,
-  // and the timer itself. armedFor doubles as the idempotency latch — re-crossing the threshold for the
-  // SAME window is a no-op, so we schedule exactly one resume per window. Persisted to kv
+  // Always-on token-reset recovery: the reset epoch we've currently armed a wakeup timer for, and the
+  // timer itself. armedFor doubles as the idempotency latch — re-crossing the threshold for the SAME
+  // window is a no-op, so we schedule exactly one resume per window. Persisted to kv
   // (token_resume_wakeup_at) so a restart re-arms (or fires, if the reset already passed while we were down).
   private tokenResumeArmedFor: number | undefined;
   private tokenResumeTimer: NodeJS.Timeout | undefined;
@@ -1057,6 +1063,10 @@ export class ThreadManager implements OrchestratorApi {
     readonly freeProviders?: FreeProviderService,
   ) {
     this.reviewInjections = new ReviewInjectionStore(db);
+    // Token-reset recovery is unconditional now. Remove obsolete persisted controls so an upgraded DB
+    // cannot silently retain an "off" value that strands work, and settings snapshots have no dead data.
+    this.db.kvDelete("setting_auto_resume_on_token_reset");
+    this.db.kvDelete("setting_auto_resume_threshold_percent");
     this.migrateProviderDefaults();
     this.modelCatalog = new ModelCatalog(
       db,
@@ -1100,6 +1110,11 @@ export class ThreadManager implements OrchestratorApi {
     // the implementor. Recover only that exact obsolete terminal shape; ordinary owner-review parks
     // remain untouched.
     this.recoverLegacyQaFixParks();
+    // Preserve a safety freeze across a process restart until a fresh usage reading proves the blocking
+    // window reset. This closes the boot gap before AccountManager's first refresh reaches us.
+    this.tokenLimitTripped =
+      this.settings().tokenLimitEnabled &&
+      this.db.listThreadsByStates(["review", "failed"]).some((thread) => this.tokenSafetyParked(thread));
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
@@ -1108,8 +1123,8 @@ export class ThreadManager implements OrchestratorApi {
     // mirroring its boot sweep. Reads the persisted wakeup epoch; the account pings needed by fireTokenResume
     // land shortly after via onUsageRefresh, so an "already elapsed" restore is deferred like the boot resume.
     this.restoreTokenResume();
-    // React to every live usage refresh — the token-safety limit stops running agents when burn crosses
-    // the operator threshold, and (independently) the token-reset auto-resume arms a wakeup at the window
+    // React to every live usage refresh — the token-safety limit parks running agents when burn crosses
+    // the operator threshold, and the always-on token-reset recovery arms a wakeup at the relevant window
     // reset. onUsageRefresh holds a single callback, so BOTH run from this one wrapper. Registered here
     // (before accounts.start() fires the first ping in index.ts).
     this.accounts.onUsageRefresh(() => {
@@ -1470,6 +1485,7 @@ export class ThreadManager implements OrchestratorApi {
     // which is a crashed process rather than a skipped sweep. A closed DB means there is nothing left to
     // resume anyway.
     if (!this.db.raw.open) return;
+    if (this.tokenLimitTripped) return; // safety freeze owns release until a fresh below-threshold reading
     // A capacity wake is fresh work. Let the staged build restart first; the new process re-arms the
     // durable cap marker and launches it with current code instead of extending the drain indefinitely.
     if (this.restartDrainActive()) return;
@@ -1517,7 +1533,12 @@ export class ThreadManager implements OrchestratorApi {
       }
       // Enter the resume-aware failed path without losing the durable cap marker. If this process dies
       // before resumeThread gets CPU, the next boot's supervisor still knows the task is auto-resumable.
-      if (t.state === "review") this.db.updateThread(t.id, { state: "failed", error: t.error });
+      if (t.state === "review") {
+        // Once a fresh usage reading releases the safety freeze, downgrade its special stale-write fence
+        // to the ordinary durable cap marker before runPipeline claims it.
+        const error = this.tokenSafetyParked(t) ? (t.error ?? "").replace(TOKEN_SAFETY_PARK_PREFIX, CAP_PARK_PREFIX) : t.error;
+        this.db.updateThread(t.id, { state: "failed", error });
+      }
       this.capResumeAttemptedAt.set(t.id, now);
       const id = t.id;
       void this.resumeThread(id).catch((e) => this.hub.log("error", `Cap auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
@@ -1526,18 +1547,22 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /**
-   * Token-usage safety limit (opt-in). When live utilization reaches the operator-set threshold, stop
-   * every running pipeline and surface a notice. Driven by the AccountManager usage-refresh hook (~10-min
-   * ping + window-reset pings) and by setSettings, so it lags a fast burn by minutes — a proactive net
-   * layered UNDER the immediate HARD_LIMIT=98 failover, not a hard realtime cutoff. Latched so it fires
-   * once per crossing and re-arms only after utilization falls back below the threshold (so the owner can
-   * re-dispatch the cancelled tasks without them being instantly stopped again on the next ping).
+   * Token-usage safety limit (opt-in). When live utilization reaches the operator-set threshold, park
+   * every running pipeline and freeze fresh dispatches. Driven by the AccountManager usage-refresh hook
+   * (~10-min ping + window-reset pings) and by setSettings, so it lags a fast burn by minutes — a proactive
+   * net layered under the immediate HARD_LIMIT=98 failover, not a hard realtime cutoff. The freeze clears
+   * only when a fresh reading falls below the threshold; the parked tasks then use normal capacity resume.
    */
   private enforceTokenSafetyLimit(): void {
     const { tokenLimitEnabled, tokenLimitPercent } = this.settings();
     const util = this.accounts.effectiveUtilization();
     if (!tokenLimitEnabled || util == null || util < tokenLimitPercent) {
-      this.tokenLimitTripped = false; // disabled / no data / back under the line — disarm for the next crossing
+      const released = this.tokenLimitTripped;
+      this.tokenLimitTripped = false;
+      if (released) {
+        this.hub.log("info", "Token safety freeze cleared — provider usage is below the configured limit.");
+        this.pumpQueue();
+      }
       return;
     }
     if (this.tokenLimitTripped) return; // already fired for this crossing
@@ -1545,51 +1570,78 @@ export class ThreadManager implements OrchestratorApi {
     void this.stopAllForTokenLimit(util, tokenLimitPercent);
   }
 
-  /** Stop everything that would keep burning the budget through the EXISTING cancel flow (each lands in
-   *  'cancelled', re-dispatchable): the running pipelines AND any tasks still queued for a slot — a queued
-   *  task left alone would auto-start the instant a stopped pipeline frees its slot (pumpQueue), defeating
-   *  the stop. Then warn the console and emit the user-facing notice explaining why. */
+  /** Park running work in the durable capacity-wait state, preserving every run/session. Queued work is
+   *  left queued: the global freeze in enqueueOrRun/pumpQueue prevents it from starting until reset. */
   private async stopAllForTokenLimit(util: number, threshold: number): Promise<void> {
-    // De-dupe across both sources; cancelThread mutates activePipelines/dispatchQueue as it stops each.
-    const targets = [...new Set([...this.activePipelines, ...this.dispatchQueue])];
+    const targets = [...this.activePipelines];
     const pct = Math.round(util);
-    this.hub.log("warn", `Token safety limit reached (${pct}% ≥ ${threshold}%) — stopping ${targets.length} task(s).`);
-    for (const id of targets) {
-      await this.cancelThread(id).catch((e) => this.hub.log("error", `Token-limit stop of ${id.slice(0, 8)} failed: ${String(e)}`));
-    }
+    this.hub.log("warn", `Token safety limit reached (${pct}% ≥ ${threshold}%) — parking ${targets.length} active task(s).`);
+    // Write every durable park before awaiting a provider stop. Each setState releases a slot and pumps
+    // the queue, whose safety gate must already see tokenLimitTripped=true.
+    for (const id of targets) this.parkForTokenSafety(id, pct, threshold);
+    await Promise.allSettled(
+      targets.map((id) =>
+        this.forceStopThreadRuns(id).catch((e) => this.hub.log("error", `Token-limit stop of ${id.slice(0, 8)} failed: ${String(e)}`)),
+      ),
+    );
     const title = "Token safety limit reached";
     const message =
       targets.length > 0
-        ? `Token usage reached ${pct}% (your safety limit is ${threshold}%). ${targets.length} task${targets.length === 1 ? " was" : "s were"} stopped to protect your remaining allowance — they're in Cancelled and can be re-dispatched once a window frees up.`
-        : `Token usage reached ${pct}% (your safety limit is ${threshold}%). No tasks were running, so none were stopped.`;
+        ? `Token usage reached ${pct}% (your safety limit is ${threshold}%). ${targets.length} active task${targets.length === 1 ? " was" : "s were"} paused with its session preserved. New work is held until the blocking window resets; paused work then resumes automatically.`
+        : `Token usage reached ${pct}% (your safety limit is ${threshold}%). No task was running; new work is held until the blocking window resets.`;
     this.hub.publish({ type: "notice", level: "warn", title, message });
     this.notifyExternal(`🛑 ${title} — ${message}`);
   }
 
+  private parkForTokenSafety(threadId: string, util: number, threshold: number): void {
+    const thread = this.db.getThread(threadId);
+    if (!thread || ["done", "cancelled", "closed"].includes(thread.state)) return;
+    const stage: CapParkStage =
+      thread.state === "qa" ? "qa" : thread.state === "researching" ? "researcher" : thread.state === "planning" ? "planner" : thread.lane === "read" ? "reader" : "implementor";
+    const error = `${TOKEN_SAFETY_PARK_PREFIX} (${stage} stage) — usage reached ${util}% (limit ${threshold}%). The saved work resumes automatically when the blocking window resets.`;
+    this.dropFromQueue(threadId);
+    this.setState(threadId, "review", error);
+    const pendingApproval = this.pendingApprovals.get(threadId);
+    if (pendingApproval) {
+      this.pendingApprovals.delete(threadId);
+      pendingApproval({ approved: false });
+    }
+    for (const question of this.db.listOpenQuestions()) {
+      if (question.threadId === threadId) this.resolveQuestion(question.id, "(paused by token safety limit)");
+    }
+  }
+
   /**
-   * Token-reset auto-resume (opt-in, off by default). When live utilization crosses the operator
-   * threshold, work is about to freeze on the cap — so arm a wakeup timed to the soonest window reset
+   * Token-reset auto-resume (always on). When live utilization crosses the built-in arm threshold,
+   * work is about to freeze on the cap — so arm a wakeup timed to the coupled blocking-window reset
    * that resumes whatever froze, letting the orchestrator recover while the owner is away. Driven by the
    * same usage-refresh hook as the safety limit (and re-evaluated on a settings change). Idempotent per
    * window: `tokenResumeArmedFor` holds the reset epoch we've armed for, so re-crossing the threshold for
-   * the same window doesn't re-schedule. Layered independently of (and compatible with) the safety limit.
+   * the same window doesn't re-schedule. The user-facing toggle and threshold no longer exist.
    */
   private maybeScheduleTokenResume(): void {
-    const { autoResumeOnTokenReset, autoResumeThresholdPercent } = this.settings();
-    if (!autoResumeOnTokenReset) {
-      this.disarmTokenResume(); // toggled off — cancel any pending wakeup so "off" truly does nothing
-      return;
-    }
+    const settings = this.settings();
     const util = this.accounts.effectiveUtilization();
-    if (util == null || util < autoResumeThresholdPercent) return; // no data / under the line — leave any arm intact
-    const resetAt = this.accounts.soonestResetAt();
+    const armAt = settings.tokenLimitEnabled ? Math.min(TOKEN_RESUME_ARM_PERCENT, settings.tokenLimitPercent) : TOKEN_RESUME_ARM_PERCENT;
+    if (util == null || util < armAt) return; // no data / under the line — leave any existing arm intact
+    const resetAt = this.tokenSafetyResetAt(armAt);
     if (resetAt == null) return; // usage is high but no reset epoch known yet — a later ping will carry one
     if (this.tokenResumeArmedFor === resetAt) return; // already scheduled for this window
     this.hub.log(
       "info",
-      `Token threshold hit (${Math.round(util)}%). Scheduling resume ${untilReset(resetAt, Date.now())}.`,
+      `Token threshold hit (${Math.round(util)}%). Scheduling always-on resume ${untilReset(resetAt, Date.now())}.`,
     );
     this.armTokenResume(resetAt);
+  }
+
+  /** AccountManager knows which of Claude's 5h/weekly windows actually crossed the safety line. Older
+   * focused harnesses expose only soonestResetAt, so keep that conservative compatibility fallback. */
+  private tokenSafetyResetAt(threshold: number, now = Date.now()): number | null {
+    const api = this.accounts as unknown as {
+      tokenSafetyResetAt?: (threshold: number, now?: number) => number | null;
+      soonestResetAt: () => number | null;
+    };
+    return typeof api.tokenSafetyResetAt === "function" ? api.tokenSafetyResetAt(threshold, now) : api.soonestResetAt();
   }
 
   /** Arm (or re-arm) the wakeup timer for a given reset epoch and persist it so a restart can restore it.
@@ -1603,17 +1655,6 @@ export class ThreadManager implements OrchestratorApi {
     this.tokenResumeTimer.unref?.();
   }
 
-  /** Cancel any pending token-reset wakeup and clear the persisted arm — used when the feature is
-   *  toggled off and after a wakeup fires. */
-  private disarmTokenResume(): void {
-    if (this.tokenResumeTimer) {
-      clearTimeout(this.tokenResumeTimer);
-      this.tokenResumeTimer = undefined;
-    }
-    this.tokenResumeArmedFor = undefined;
-    this.db.kvSet("token_resume_wakeup_at", "");
-  }
-
   /** The wakeup fired: the token window should have reset. Resume the work that froze on the cap —
    *  paused tasks (nothing else auto-resumes these) and cap-parked review tasks — up to the free
    *  concurrency slots, oldest first, and tell the owner. If the reset estimate was early and there's
@@ -1622,7 +1663,12 @@ export class ThreadManager implements OrchestratorApi {
     this.tokenResumeTimer = undefined;
     this.tokenResumeArmedFor = undefined;
     this.db.kvSet("token_resume_wakeup_at", "");
-    if (!this.settings().autoResumeOnTokenReset) return; // toggled off while the timer was pending
+    if (this.tokenLimitTripped) {
+      const next = this.tokenSafetyResetAt(this.settings().tokenLimitPercent);
+      if (next != null && next > Date.now()) this.armTokenResume(next);
+      else this.hub.log("info", "Token reset wake fired while the safety freeze is still active; waiting for fresh usage telemetry.");
+      return;
+    }
     const now = Date.now();
     const waiting = this.tokenResumeCandidates();
     if (waiting.length === 0) {
@@ -1676,7 +1722,8 @@ export class ThreadManager implements OrchestratorApi {
       // the tiny gap between this write and resumeThread used to leave an ordinary failed row that
       // neither the cap supervisor nor boot recovery could discover.
       if (t.state === "review" && (t.error ?? "").startsWith(CAP_PARK_PREFIX)) {
-        this.db.updateThread(t.id, { state: "failed", error: t.error });
+        const error = this.tokenSafetyParked(t) ? (t.error ?? "").replace(TOKEN_SAFETY_PARK_PREFIX, CAP_PARK_PREFIX) : t.error;
+        this.db.updateThread(t.id, { state: "failed", error });
       } else if (t.state === "review") {
         // An UNMARKED capacity stall. It stays in `review`, so resumeThread takes the same
         // implementor-only path the owner's own Resume button takes: the task continues its own session
@@ -1706,6 +1753,10 @@ export class ThreadManager implements OrchestratorApi {
     const error = thread.error ?? "";
     if (error.startsWith(CAP_PARK_PREFIX)) return true;
     return isCapacityStallPark(error) && this.capacityStallResumesUsed(thread.id) < MAX_CAPACITY_STALL_RESUMES;
+  }
+
+  private tokenSafetyParked(thread: Thread | null | undefined): boolean {
+    return !!thread && (thread.error ?? "").startsWith(TOKEN_SAFETY_PARK_PREFIX);
   }
 
   private capacityStallResumesUsed(threadId: string): number {
@@ -1743,17 +1794,12 @@ export class ThreadManager implements OrchestratorApi {
     this.hub.log("info", "Token window reset fired but nothing has viable runway yet, so this will re-arm on the next usage ping.");
   }
 
-  /** Restore a token-reset wakeup across a restart: re-arm the timer if the reset is still ahead, or fire
-   *  shortly (deferred like the boot auto-resume, so the account pings have landed) if it elapsed while
-   *  we were down. Cleared silently if the feature was turned off before the reboot. */
+  /** Restore an always-on token-reset wakeup across a restart: re-arm the timer if the reset is still
+   *  ahead, or fire shortly (deferred like boot auto-resume) if it elapsed while we were down. */
   private restoreTokenResume(): void {
     const raw = this.db.kvGet("token_resume_wakeup_at");
     const at = raw ? Number(raw) : NaN;
     if (!Number.isFinite(at) || at <= 0) return;
-    if (!this.settings().autoResumeOnTokenReset) {
-      this.db.kvSet("token_resume_wakeup_at", "");
-      return;
-    }
     if (at + TOKEN_RESUME_BUFFER_MS > Date.now()) {
       this.hub.log("info", `Re-arming token-reset auto-resume after a restart (fires ${untilReset(at, Date.now())}).`);
       this.armTokenResume(at);
@@ -2520,8 +2566,6 @@ export class ThreadManager implements OrchestratorApi {
       autoModelSelection: this.settingBool("setting_auto_model_selection", false),
       tokenLimitEnabled: this.settingBool("setting_token_limit_enabled", false),
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
-      autoResumeOnTokenReset: this.settingBool("setting_auto_resume_on_token_reset", false),
-      autoResumeThresholdPercent: this.settingNum("setting_auto_resume_threshold_percent", 80, 50, 95),
       fastUsagePolling: this.settingBool("setting_fast_usage_polling", false),
       spreadUsage: this.settingBool("setting_spread_usage", false),
       tokenConservationMode: this.settingBool("setting_token_conservation_mode", false),
@@ -4250,8 +4294,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.autoModelSelection !== undefined) this.db.kvSet("setting_auto_model_selection", patch.autoModelSelection ? "1" : "0");
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
-    if (patch.autoResumeOnTokenReset !== undefined) this.db.kvSet("setting_auto_resume_on_token_reset", patch.autoResumeOnTokenReset ? "1" : "0");
-    if (patch.autoResumeThresholdPercent !== undefined) this.db.kvSet("setting_auto_resume_threshold_percent", String(patch.autoResumeThresholdPercent));
     if (patch.fastUsagePolling !== undefined) this.db.kvSet("setting_fast_usage_polling", patch.fastUsagePolling ? "1" : "0");
     if (patch.spreadUsage !== undefined) {
       this.db.kvSet("setting_spread_usage", patch.spreadUsage ? "1" : "0");
@@ -4339,9 +4381,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Re-evaluate the token-safety limit now, so enabling it (or lowering the threshold) while already
     // over the line stops running tasks immediately instead of waiting for the next ~10-min usage ping.
     this.enforceTokenSafetyLimit();
-    // And re-evaluate the token-reset auto-resume, so toggling it off cancels a pending wakeup at once and
-    // turning it on (or lowering the threshold) while usage is already high arms the resume immediately.
+    // Re-evaluate always-on token-reset recovery in case the safety threshold changed while usage is high.
     this.maybeScheduleTokenResume();
+    this.resumeCapParked();
     // Retune the account usage-ping cadence in case the fast-polling toggle just flipped.
     this.applyUsagePollInterval();
     return settings;
@@ -5746,6 +5788,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  concurrency cap. Queued tasks start (FIFO) the moment a running pipeline settles. */
   private enqueueOrRun(threadId: string): void {
     const thread = this.db.getThread(threadId);
+    if (this.tokenLimitTripped) {
+      if (!this.dispatchQueue.includes(threadId)) this.dispatchQueue.push(threadId);
+      this.setState(threadId, "queued");
+      this.hub.log("info", `Task ${threadId.slice(0, 8)} queued — the token safety freeze is waiting for a window reset.`);
+      return;
+    }
     // A shotgun COLLABORATOR is exempt from both concurrency caps, and this is a correctness
     // requirement rather than a preference: its lead is already holding a slot and is about to block
     // waiting for it, so queueing the collaborator behind a cap the lead itself occupies deadlocks the
@@ -5872,7 +5920,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   /** One FIFO pass over the dispatch queue. Skips entries no longer in 'queued' — cancelled/dismissed
    *  while waiting. Call `pumpQueue`, never this. */
   private pumpQueueOnce(): void {
-    if (this.restartDrainActive()) return;
+    if (this.restartDrainActive() || this.tokenLimitTripped) return;
     const cap = this.settings().maxConcurrent;
     // Scan the FIFO queue rather than only peeling the head: a task blocked by its repo's per-repo cap
     // must NOT block a queued task for a DIFFERENT (free) repo behind it. startPipeline adds to
@@ -6044,6 +6092,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Cancel/close remain available to the operator; a deliberate Resume first removes the marker.
     if (this.deadlineParked(current) && state !== "cancelled" && state !== "closed") {
       this.hub.log("warn", `Ignored stale ${state} transition for deadline-parked task ${threadId.slice(0, 8)}.`);
+      return;
+    }
+    // A stopped provider/pipeline may finish unwinding after token safety wrote its durable park. Keep
+    // that park authoritative until the reset path deliberately converts it to the ordinary CAP marker.
+    if (this.tokenSafetyParked(current) && state !== "cancelled" && state !== "closed") {
+      this.hub.log("warn", `Ignored stale ${state} transition for token-safety-parked task ${threadId.slice(0, 8)}.`);
       return;
     }
     if (["review", "done", "cancelled", "paused", "closed"].includes(state)) {
@@ -11091,6 +11145,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // is terminal until an explicit Retry, so never let that stale timer resurrect gameplay or other
     // autonomous work behind the operator's back.
     if (thread.state === "cancelled") return { ok: false, error: "Task is cancelled. Retry it to start again." };
+    if (this.tokenLimitTripped && !this.activePipelines.has(threadId) && !this.hasActiveRun(threadId)) {
+      return { ok: false, state: thread.state, error: "Token safety is holding new work until the blocking usage window resets." };
+    }
     if (message?.trim()) {
       this.invalidateManualDeploymentForNewWork(threadId, "the task was resumed with new instructions");
     } else if (this.settleManualDeployment(threadId)) {
@@ -11631,6 +11688,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.reviewInjections.fail(overriddenInjections.map((row) => row.id), reason);
       for (const row of overriddenInjections) this.reviewInjectionFeed(threadId, `[failed] ${reviewInjectionLabel(row.id)}: ${reason}`);
     }
+    // The stale-write fence protects a safety park from its old pipeline, not from this explicit owner
+    // decision. Remove it only after every lingering run has been stopped above.
+    if (this.tokenSafetyParked(this.db.getThread(threadId))) this.db.updateThread(threadId, { error: null });
     this.setState(threadId, "done");
     this.hub.log("info", `Marked task ${threadId.slice(0, 8)} done (was ${thread.state}).`);
     return { ok: true, state: "done" };

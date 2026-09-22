@@ -670,8 +670,6 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   autoModelSelection: false,
   tokenLimitEnabled: false,
   tokenLimitPercent: 80,
-  autoResumeOnTokenReset: false,
-  autoResumeThresholdPercent: 80,
   fastUsagePolling: false,
   spreadUsage: false,
   tokenConservationMode: false,

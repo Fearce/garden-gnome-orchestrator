@@ -1053,6 +1053,26 @@ export class AccountManager {
     return Math.min(...withData.map(tightest));
   }
 
+  /** Earliest reset that can put at least one enabled Claude subscription back below a global token-
+   * safety threshold. Both windows are coupled per account: if its 5h AND weekly readings are over the
+   * line, the earlier reset cannot release the freeze while the other window remains hot. */
+  tokenSafetyResetAt(threshold: number, now = Date.now()): number | null {
+    const all = [...this.states.values()];
+    const enabledStates = all.filter((s) => s.enabled);
+    const base = (enabledStates.length ? enabledStates : all).filter(hasBurnData);
+    const accountResets: number[] = [];
+    for (const state of base) {
+      const blockers: Array<number | null> = [];
+      if (state.fiveHour != null && state.fiveHour >= threshold) blockers.push(state.fiveHourReset);
+      if (state.sevenDay != null && state.sevenDay >= threshold) blockers.push(state.sevenDayReset);
+      if (!blockers.length) return now;
+      if (blockers.some((at) => at == null)) continue; // this account cannot promise when it clears
+      const clearsAt = Math.max(...(blockers as number[]));
+      if (clearsAt > now) accountResets.push(clearsAt);
+    }
+    return accountResets.length ? Math.min(...accountResets) : null;
+  }
+
   /** Is this account currently cap-rejected and not yet past its reset? */
   isRateLimited(accountId: string): boolean {
     const st = this.states.get(accountId);

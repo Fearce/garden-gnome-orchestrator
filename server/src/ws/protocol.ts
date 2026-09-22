@@ -343,8 +343,6 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         autoModelSelection: z.boolean(),
         tokenLimitEnabled: z.boolean(),
         tokenLimitPercent: z.number().int().min(50).max(99),
-        autoResumeOnTokenReset: z.boolean(),
-        autoResumeThresholdPercent: z.number().int().min(50).max(95),
         fastUsagePolling: z.boolean(),
         spreadUsage: z.boolean(),
         tokenConservationMode: z.boolean(),

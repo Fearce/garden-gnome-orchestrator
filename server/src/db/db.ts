@@ -1137,6 +1137,9 @@ export class Db {
       .prepare("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run(key, value);
   }
+  kvDelete(key: string): void {
+    this.raw.prepare("DELETE FROM kv WHERE key = ?").run(key);
+  }
 
   // ---- Co-work sessions ----
 

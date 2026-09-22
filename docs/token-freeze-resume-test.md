@@ -1,10 +1,8 @@
 # Token-freeze → reset → auto-resume — proof it works
 
-**TL;DR:** The orchestrator's token-freeze auto-resume **works**. A new deterministic integration test drives
-the full freeze → usage-reset → resume cycle against the **real** `ThreadManager` machinery (mocking only the
-account usage signal and the leaf agent spawn) and passes **26/26** assertions. A negative control proves the
-test genuinely fails if resume regresses to a cold restart. No bug was found — the mechanism is correct; it had
-simply never been exercised end-to-end before.
+**TL;DR:** Token-window recovery is always on. Capacity failures and Token Safety stops use the same durable
+capacity-park state, retain the task's SDK session, and resume only when a compatible provider pool has real
+headroom again. Token Safety also holds new dispatches until a fresh below-limit usage reading arrives.
 
 - **Test:** `server/src/tests/tokenFreezeResume.itest.ts`
 - **Run:** `npm run test:token-freeze` (from `server/`) — exits non-zero on any failure.
@@ -13,17 +11,18 @@ simply never been exercised end-to-end before.
 
 ## What "freeze → resume" actually is (the real code path)
 
-The opt-in feature is **Token-reset auto-resume** (`setting_auto_resume_on_token_reset`, off by default;
-threshold `setting_auto_resume_threshold_percent`, default 80). All in `server/src/orchestrator/threadManager.ts`:
+There is no auto-resume setting or off path. The flow lives in `server/src/orchestrator/threadManager.ts`:
 
-1. **Detect the freeze.** On every account usage refresh, `maybeScheduleTokenResume()` checks live
-   `effectiveUtilization()`. When it crosses the threshold and a window reset epoch is known, `armTokenResume()`
-   persists that epoch to the `token_resume_wakeup_at` kv key and schedules `fireTokenResume()` for reset + 60s.
-2. **Freeze, don't die.** Work that hits the wall lands in one of two preserved states — `paused` (interrupted
-   implementor) or a cap-parked `review` (all accounts capped mid-task, error prefixed `⏳ Auto-resume pending`).
-   Files on disk and the implementor's SDK session survive.
-3. **Reset.** When the window resets an account regains headroom; the armed timer fires.
-4. **Resume with prior context.** `fireTokenResume()` gates on `hasHeadroom()`, then resumes each frozen task
+1. **Detect the freeze.** Provider rejections create a durable capacity park. Independently, the always-on
+   reset watcher arms before a hot window is exhausted. Its epoch is persisted in `token_resume_wakeup_at`.
+2. **Freeze, don't die.** Token Safety writes the same `⏳ Auto-resume pending` park before stopping the live
+   run. It never calls the terminal Cancel path. Files, stage outputs, findings, and SDK sessions survive.
+3. **Hold the boundary.** While Token Safety is tripped, fresh dispatches remain queued and automatic resume
+   is blocked. The freeze survives a server restart when a safety-parked row exists.
+4. **Reset the right window.** Claude safety scheduling couples 5-hour and weekly readings. General capacity
+   recovery uses the same per-task inventory for Claude, Codex, Grok, and z.ai, so an earlier 5-hour reset
+   cannot release work that is still weekly/monthly exhausted.
+5. **Resume with prior context.** `fireTokenResume()` gates on compatible capacity, then resumes each frozen task
    via `resumeThread()`. Recovery re-enters through `startResumedImplementor()`, which is handed the prior SDK
    session recovered from `agent_runs.session_id` (`latestImplementorSession()`) — a **warm resume of the prior
    journal, not a cold restart**. `restoreTokenResume()` re-arms the timer across a server restart from the kv epoch.
@@ -42,13 +41,14 @@ threshold `setting_auto_resume_threshold_percent`, default 80). All in `server/s
 
 Every assertion observes real code output (kv values, log strings, the recovered session id, state transitions).
 
-## Result — `npm run test:token-freeze`  →  PASS ✅ (26 passed, 0 failed)
+## Regression coverage
 
 | Test | Maps to | Proves |
 |------|---------|--------|
-| A | guard | Feature OFF ⇒ a 99% usage ping arms **nothing** (no false green). |
-| B | steps 1–2 | Freeze (util 90% ≥ 80%) ⇒ a wakeup is armed **at the soonest reset epoch**; logged "Token threshold hit (90%). Scheduling resume…". |
+| A | migration | Legacy off/threshold rows are deleted and cannot disable recovery. |
+| B | steps 1–2 | Freeze (util 90% ≥ built-in arm point) ⇒ a durable wakeup is armed. |
 | C | "freeze, not die" | The frozen task stays `paused` (not deleted/failed) and its prior implementor session is still recoverable from the DB. |
+| C1–C2 | Token Safety | Active work becomes a durable capacity park (not Cancelled), resumes with its saved session after reset, and fresh dispatches remain queued until then. |
 | D | guard | An early reset with **no headroom** ⇒ **re-arms** for the next reset and does **not** wake the task (no instant re-cap). |
 | E | steps 3–4 | Usage resets (headroom returns) ⇒ resume **fires**, re-enters the same task **carrying its prior session** (warm, not cold), task reaches `done`, wakeup kv cleared, owner notified ("Token window reset. Resuming 1 paused/parked task."). |
 | F | steps 3–4 | Same for the **cap-parked `review`** freeze outcome — resumes with its prior session and completes. |
@@ -62,6 +62,5 @@ forced to return `undefined`) — makes the resume still fire but with `resumeSe
 
 ## Conclusion
 
-The freeze→reset→resume cycle behaves correctly and is now covered by a repeatable, self-contained test. Enable
-it in Settings ("resume when the token window resets"); the machinery arms on the freeze, survives a restart, and
-warm-resumes the frozen task with its prior context the moment the window frees up.
+The freeze→reset→resume cycle has one operator-visible policy: it is always on. The only usage safeguard toggle
+is Token Safety, which controls whether work pauses early; it does not control whether preserved work recovers.

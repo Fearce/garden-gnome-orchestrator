@@ -963,10 +963,8 @@ export interface OrchestratorSettings {
   // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----
   tokenLimitEnabled: boolean; // off (default) → never auto-stop; on → stop running agents at the threshold
   tokenLimitPercent: number; // % of the token (rate-limit) window that trips the stop — clamped 50–99, default 80
-  // ---- Auto-resume on token-window reset: when usage is high, schedule a wakeup at the reset that
-  //      resumes work that froze on the cap — so the orchestrator recovers AFK, no manual Resume. ----
-  autoResumeOnTokenReset: boolean; // off (default) → opt-in; on → arm a reset-timed resume when usage crosses the threshold below
-  autoResumeThresholdPercent: number; // % of the token window at which the resume is armed — clamped 50–95, default 80
+  // Token-window recovery is always on: capacity parks and safety-limit stops resume automatically
+  // when the specific compatible provider window has enough headroom again.
   // ---- Fast usage polling: opt-in tighter cadence for the account usage ping ----
   fastUsagePolling: boolean; // off (default) → 10-min ping; on → poll every ~30s so the strip tracks the live burn within ~1-2%
   spreadUsage: boolean; // off (default) → burn the soonest-resetting provider/sub first; on → always dispatch to the provider (Claude sub, Codex, or Grok) with the lowest weekly usage, balancing burn across every enabled platform
