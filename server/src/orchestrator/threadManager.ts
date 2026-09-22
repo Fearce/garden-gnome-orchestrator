@@ -5602,15 +5602,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   ): ImplementorProvider | null {
     thread = this.ensureThreadModelRequest(this.db.getThread(thread.id) ?? thread);
     const demand = this.capacityDemand(thread, "implementor", opts?.effort);
-    if (thread.modelRequest) {
-      if (thread.modelRequest.provider === "claude" || thread.modelRequest.provider === "codex") return this.gateRequestedModel(thread, demand);
-      const requestedProvider = thread.modelRequest.provider;
-      const requestedLabel = requestedProvider ? providerLabel(requestedProvider) : "an unresolved model";
-      const detail = `Default mode supports stock Claude or Codex sessions, not ${requestedLabel}.`;
-      this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Default mode has an unsupported model request", detail, severity: "warning" });
-      this.setState(thread.id, "failed", detail);
-      return null;
-    }
+    if (thread.modelRequest) return this.gateRequestedModel(thread, demand);
     const { provider, error, allCandidatesCapped, candidates = [] } = this.resolveImplementorProvider(demand);
     if (!provider) {
       this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
@@ -5670,7 +5662,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   ): ImplementorProvider | null {
     thread = this.ensureThreadModelRequest(this.db.getThread(thread.id) ?? thread);
     const demand = this.capacityDemand(thread, "implementor", opts?.effort);
-    if (thread.modelRequest) return this.gateRequestedModel(thread, demand);
+    if (thread.modelRequest) {
+      if (thread.modelRequest.provider === "claude" || thread.modelRequest.provider === "codex") return this.gateRequestedModel(thread, demand);
+      const requestedProvider = thread.modelRequest.provider;
+      const requestedLabel = requestedProvider ? providerLabel(requestedProvider) : "an unresolved model";
+      const detail = `Default mode supports stock Claude or Codex sessions, not ${requestedLabel}.`;
+      this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Default mode has an unsupported model request", detail, severity: "warning" });
+      this.setState(thread.id, "failed", detail);
+      return null;
+    }
     const { provider, error, candidates = [] } = this.resolveImplementorProvider(demand);
     if (!provider) {
       this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Dispatch blocked by subscription settings", detail: error, severity: "warning" });
