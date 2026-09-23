@@ -11,7 +11,7 @@
 // cost several tool calls and one stale-server confusion before the lab existed.
 //
 // ---- The cookbook for whoever writes the next lab (kept HERE because this is the file every lab
-//      requires, and because .claude/rules/verify-a-ui-change-shipped.md has a 60-line budget) ----
+//      requires) ----
 //   • Wait for the socket's `hello`, not for the shell to mount. Everything server-authoritative
 //     (settings, accounts, any broadcast collection) renders NEUTRAL DEFAULTS until that frame lands, so
 //     a check that opens on `.topbar` reads a toggle as "off" and a list as empty on a busy box — which
