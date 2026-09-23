@@ -486,15 +486,21 @@ button { font-family: inherit; cursor: pointer; }
 .rail-head-actions { display: flex; align-items: center; gap: 8px; min-width: 0; }
 /* Stop button (director spinning): icon + label on one row, never squeezed by the flexing toggles. */
 .director-stop { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
-/* The header search icon is a mobile-only affordance (the full search bar collapses behind it there);
-   on desktop the bar under the header is always visible, so this toggle stays hidden. */
-.rail-search-toggle { display: none; }
+/* Search takes no transcript height until opened, at every viewport width. */
+.rail-search-toggle {
+  display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
+  width: 36px; height: 34px; border-radius: var(--r-sm);
+  border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint); cursor: pointer;
+}
+.rail-search-toggle:hover { color: var(--text); background: var(--bg-3); }
+.rail-search-toggle.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, var(--line)); }
+.rail-search-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .rail-head .who .role-tag { color: var(--role-director); }
 .transcript { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 
-/* Director-conversation search: a compact bar under the header, and a results list that stands in for
-   the transcript while a query is active. */
-.rail-search { display: flex; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+/* Search results stand in for the transcript while a query is active. */
+.rail-search { display: none; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+.rail-search.open { display: flex; }
 .rail-search-icon { color: var(--text-faint); flex: none; }
 .rail-search-input {
   flex: 1; min-width: 0; background: transparent; border: none; outline: none; color: var(--text);
@@ -2613,16 +2619,6 @@ body.dl-resizing { user-select: none; }
   .agent-toggles { flex-wrap: nowrap; gap: 4px; }
   .agent-toggle { height: 34px; padding: 0 8px; gap: 4px; }
 
-  /* Search collapses behind the header icon; its full-width row only appears once opened, giving the
-     transcript that row back by default. */
-  .rail-search-toggle {
-    display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto;
-    width: 36px; height: 34px; border-radius: var(--r-sm);
-    border: 1px solid var(--line); background: var(--bg-2); color: var(--text-faint); cursor: pointer;
-  }
-  .rail-search-toggle.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, var(--line)); }
-  .rail-search { display: none; }
-  .rail-search.open { display: flex; }
   /* Settings becomes one focused page with a native category picker; the desktop rail would consume
      too much of a phone/tablet's width. The dialog itself fills the available sheet. */
   .settings-scrim { align-items: stretch; justify-content: center; padding: 12px; }

@@ -82,9 +82,8 @@ export function Director() {
   const [ws, setWs] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [searchText, setSearchText] = useState("");
-  // Mobile only: the search bar is collapsed behind a header icon so the transcript gets that row back
-  // (the "so much up top" complaint). Desktop CSS keeps it always visible regardless of this flag.
   const [searchOpen, setSearchOpen] = useState(false);
+  const searchExpanded = searchOpen || !!searchText;
   const [openComposerSections, setOpenComposerSections] = useState<Array<"work" | "claude" | "codex">>([]);
   const codexEnabled = useStore((s) => s.settings.codexEnabled);
   const toggleComposerSection = (section: "work" | "claude" | "codex") => {
@@ -93,6 +92,8 @@ export function Director() {
       : [...current, section]);
   };
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchToggleRef = useRef<HTMLButtonElement>(null);
+  const searchRowRef = useRef<HTMLDivElement>(null);
   const directorSearch = useStore((s) => s.directorSearch);
   const searchDirector = useStore((s) => s.searchDirector);
   const clearDirectorSearch = useStore((s) => s.clearDirectorSearch);
@@ -122,6 +123,7 @@ export function Director() {
   const goToTask = (threadId: string) => {
     select(threadId);
     setSearchText("");
+    setSearchOpen(false);
     requestAnimationFrame(() => {
       document.querySelector(`[data-thread-id="${threadId}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     });
@@ -138,6 +140,23 @@ export function Director() {
     const t = setTimeout(() => searchDirector(q), 200);
     return () => clearTimeout(t);
   }, [searchText, searchDirector, clearDirectorSearch]);
+
+  // A blank search gives its row back when focus or a pointer moves elsewhere. Keep a query visible
+  // while the owner reviews results, even when a result or another control takes focus.
+  useEffect(() => {
+    if (!searchOpen || searchText) return;
+    const closeIfOutside = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Node) || searchToggleRef.current?.contains(target) || searchRowRef.current?.contains(target)) return;
+      setSearchOpen(false);
+    };
+    document.addEventListener("pointerdown", closeIfOutside);
+    document.addEventListener("focusin", closeIfOutside);
+    return () => {
+      document.removeEventListener("pointerdown", closeIfOutside);
+      document.removeEventListener("focusin", closeIfOutside);
+    };
+  }, [searchOpen, searchText]);
 
   // Selecting a task pre-fills the repo path from that task's workspace. Keyed on the id
   // alone so manual edits and same-task re-selects never re-fire — only a different task wins.
@@ -249,31 +268,32 @@ export function Director() {
             )}
             <AgentToggles />
             <DirectorDirectives />
-            {/* Mobile-only search affordance — collapses the full-width search row into one tap. */}
             <button
+              ref={searchToggleRef}
               type="button"
-              className={"rail-search-toggle" + (searchOpen || searchText ? " on" : "")}
-              aria-label={searchOpen ? "Hide search" : "Search tasks and the director conversation"}
-              aria-expanded={searchOpen || !!searchText}
-              title="Search tasks and the director conversation"
+              className={"rail-search-toggle" + (searchExpanded ? " on" : "")}
+              aria-label={searchExpanded ? "Close search" : "Search tasks and the director conversation"}
+              aria-expanded={searchExpanded}
+              title={searchExpanded ? "Close search" : "Search tasks and the director conversation"}
               onClick={() => {
-                setSearchOpen((o) => {
-                  const next = !o;
-                  if (next) requestAnimationFrame(() => searchInputRef.current?.focus());
-                  return next;
-                });
+                if (searchExpanded) {
+                  setSearchText("");
+                  setSearchOpen(false);
+                } else {
+                  setSearchOpen(true);
+                  requestAnimationFrame(() => searchInputRef.current?.focus());
+                }
               }}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <circle cx="11" cy="11" r="7" />
-                <path d="m20 20-3.2-3.2" />
+                {searchExpanded ? <path d="M18 6 6 18M6 6l12 12" /> : <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.2-3.2" /></>}
               </svg>
             </button>
           </div>
         </div>
       </div>
 
-      <div className={"rail-search" + (searchOpen || searchText ? " open" : "")}>
+      <div ref={searchRowRef} className={"rail-search" + (searchExpanded ? " open" : "")}>
         <svg className="rail-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <circle cx="11" cy="11" r="7" />
           <path d="m20 20-3.2-3.2" />
@@ -290,6 +310,7 @@ export function Director() {
             if (e.key === "Escape") {
               setSearchText("");
               setSearchOpen(false);
+              searchToggleRef.current?.focus();
             }
           }}
         />
