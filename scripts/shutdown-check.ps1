@@ -41,8 +41,6 @@ if ($Action -eq 'Run' -and $runStartedAt -ge $deadline) {
     return
 }
 
-if (-not (Test-Path -LiteralPath $boardScript)) { throw "Missing board audit: $boardScript" }
-
 if ($Action -eq 'Status') {
     $check = Get-Task $checkName
     Write-Output "check=$($check.State); deadline=$deadline"
@@ -95,7 +93,6 @@ try {
         return
     }
 
-$node = (Get-Command node -ErrorAction Stop).Source
 # A queued GGO check may start after another run has cancelled the deadline and
 # scheduled the early shutdown. Do not re-arm the 03:00 job in that window.
 $pendingEarly = Get-Task $earlyName
@@ -112,6 +109,8 @@ if ($pendingEarly) {
     return
 }
 & $deadlineScript -Action Arm | Out-Null
+if (-not (Test-Path -LiteralPath $boardScript)) { throw "Missing board audit: $boardScript" }
+$node = (Get-Command node -ErrorAction Stop).Source
 & $node $boardScript --check
 $auditCode = $LASTEXITCODE
 if ($auditCode -eq 1) { Write-Result 'Other GGO tasks remain unfinished.'; return }
