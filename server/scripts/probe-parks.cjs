@@ -85,6 +85,7 @@ const VERDICT_MARKERS = [
   /still not satisfied/i,
   /unresolved issues/i,
   /needs an independent re-check/i, // QA edited in its final round, so QA can't be its own reviewer
+  /^QA is blocked\b/, // QA found a stop only the owner or an outside change can clear (no fix loop)
   /Auto-review did\s?n(?:o|['’])t accept/i,
 ];
 

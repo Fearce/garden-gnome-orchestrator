@@ -250,6 +250,22 @@ async function main(): Promise<void> {
       h.dispose();
     }
   }
+  {
+    // An editing QA that reports a blocker AND changed files must not park on its own unreviewed edits:
+    // the changed tree still goes to a verifier QA pass first.
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.setVerdict({ pass: false, blocked: true, changed: true, summary: "Edited, then hit an owner-only stop." });
+      await runLoop(h, id, 3, true);
+      check("blocked-but-changed editing QA is verified before parking", h.qaRounds.length === 3,
+        `rounds=${JSON.stringify(h.qaRounds)}`);
+      check("blocked-but-changed editing QA parks on the final-round re-check, not the blocker",
+        (h.db.getThread(id)?.error ?? "").includes("independent re-check"), String(h.db.getThread(id)?.error));
+    } finally {
+      h.dispose();
+    }
+  }
 
   // -- Test A2: a usage-capped QA retries QA itself, even at the normal round limit ---------------------
   console.log("\nTest A2 — a QA provider cap resumes the charged review directly (no duplicate implementor)");

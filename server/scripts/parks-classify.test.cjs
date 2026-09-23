@@ -72,6 +72,8 @@ for (const err of [
   "QA still not satisfied after 7 rounds — needs your review.",
   "QA found unresolved issues it could not safely fix - needs your review.",
   "QA made changes in the final allowed round (10) and needs an independent re-check.",
+  // QA found a stop only the owner (or an outside change) can clear, so it parked instead of looping.
+  "QA is blocked — Only 2/6 Act I quests are done and the character has no gear; the owner must choose a recovery.",
   "Resume finished — needs your review.",
   "Auto-review didn't accept it: the CSV export is still missing a header row",
   "Auto-review didn’t accept it: the CSV export is still missing a header row",
@@ -321,6 +323,7 @@ const LITERALS = [
   "still not satisfied",
   "unresolved issues",
   "needs an independent re-check",
+  "QA is blocked",
   "Auto-review didn't accept it",
   "fix round didn't finish",
   "Auto-review was interrupted by a server restart",
