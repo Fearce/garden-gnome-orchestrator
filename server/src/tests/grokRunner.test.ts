@@ -2,8 +2,11 @@
 // Run: npx tsx src/tests/grokRunner.test.ts
 
 import assert from "node:assert/strict";
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { readFile, unlink } from "node:fs/promises";
-import { CodexAgentRun, codexResumeRolloutMissing } from "../agents/codexRunner.js";
+import { PassThrough } from "node:stream";
+import { CodexAgentRun, codexResumeRolloutMissing, settleCodexChild } from "../agents/codexRunner.js";
 import { GrokAgentRun, stageGrokPrompt } from "../agents/grokRunner.js";
 
 const prompts = Array.from({ length: 32 }, (_, i) => `task-specific-prompt-${i}`);
@@ -106,3 +109,26 @@ assert.deepEqual(restarted, {
 assert.match(missingEvents.join("\n"), /could not find the saved rollout/);
 
 console.log("Codex missing-rollout recovery checks passed.");
+
+// A finished launcher may leave inherited pipes open in a grandchild. `close` then never arrives even
+// though `exit` did; the runner must release the task after the drain grace, exactly once.
+const orphanedPipes = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough() });
+const settledCodes: (number | null)[] = [];
+settleCodexChild(orphanedPipes as unknown as ChildProcess, (code) => settledCodes.push(code), 15);
+orphanedPipes.emit("exit", 1);
+await new Promise((resolve) => setTimeout(resolve, 40));
+assert.deepEqual(settledCodes, [1], "an exited launcher releases its run without a close event");
+assert.equal(orphanedPipes.stdout.destroyed, true);
+assert.equal(orphanedPipes.stderr.destroyed, true);
+orphanedPipes.emit("close", 1);
+assert.deepEqual(settledCodes, [1], "a late close cannot settle the next turn a second time");
+
+const cleanClose = new EventEmitter();
+const cleanCodes: (number | null)[] = [];
+settleCodexChild(cleanClose as ChildProcess, (code) => cleanCodes.push(code), 15);
+cleanClose.emit("exit", 0);
+cleanClose.emit("close", 0);
+await new Promise((resolve) => setTimeout(resolve, 40));
+assert.deepEqual(cleanCodes, [0], "a normal close wins over the fallback timer");
+
+console.log("Codex child-exit recovery checks passed.");

@@ -174,6 +174,30 @@ export function codexResumeRolloutMissing(value: unknown): boolean {
 // rather than let it grow the heap unbounded (16 MB is far above any real single event).
 const MAX_STDOUT_BUF = 16 * 1024 * 1024;
 
+// A launcher can exit while a grandchild still owns an inherited stdout/stderr handle. Node then emits
+// `exit` but waits indefinitely to emit `close`; the run never publishes its result, and the normal
+// inactivity watchdog cannot release it because killing an already-exited launcher changes nothing.
+// Give the pipes a short drain window, then settle exactly once from the process exit.
+export function settleCodexChild(child: ChildProcess, onClose: (code: number | null) => void, drainMs = 5_000): void {
+  let settled = false;
+  let drainTimer: NodeJS.Timeout | undefined;
+  const settle = (code: number | null) => {
+    if (settled) return;
+    settled = true;
+    if (drainTimer) clearTimeout(drainTimer);
+    onClose(code);
+  };
+  child.once("exit", (code) => {
+    drainTimer = setTimeout(() => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      settle(code);
+    }, drainMs);
+    drainTimer.unref?.();
+  });
+  child.once("close", settle);
+}
+
 export interface CodexTestResult {
   ok: boolean;
   message: string;
@@ -597,7 +621,7 @@ export class CodexAgentRun implements AgentRunLike {
     child.on("error", (err) => {
       this.lastErrorMsg = err.message;
     });
-    child.on("close", (code) => this.onTurnClose(code));
+    settleCodexChild(child, (code) => this.onTurnClose(code));
     // A priority-now send can land during async startup. A resume already has its session id and can
     // stop here; a fresh run waits for thread.started below so its original task remains resumable.
     if (this.interrupting && this.sessionId) this.killChild();
