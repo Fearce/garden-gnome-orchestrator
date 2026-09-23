@@ -2116,19 +2116,19 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
    filter has to stay reachable while they do, or picking an agent means scrolling back to the top of
    a 500-entry task. Opaque background for the same reason, since rows now pass underneath it. */
 .feed-filter {
-  display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line);
-  flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+  border-bottom: 1px solid var(--line);
   position: sticky; top: 0; z-index: 2; background: var(--bg-1); flex: 0 0 auto;
 }
-/* The two chrome strips that travel SIDEWAYS by design: the narrow bands below make each a nowrap
-   scrolling row rather than let it stack onto a second and third line. A native horizontal scrollbar
-   is the wrong affordance for them twice over. It eats 10-15px of vertical room in the one place the
-   panel has none to give, and it is the pale bar that was reported sitting across the top of the
-   transcript, since a bar under the chips reads as belonging to the feed below it. The right-edge
-   fade each strip carries says "more this way" without costing a row. Opting a strip out of the
-   themed bar is what `scrollbar-width: none` is for here; never re-theme one locally. */
-.detail-controls, .feed-filter { scrollbar-width: none; }
-.detail-controls::-webkit-scrollbar, .feed-filter::-webkit-scrollbar { width: 0; height: 0; }
+.feed-filter-roles {
+  display: flex; align-items: center; gap: 6px; padding: 8px 16px 4px;
+  flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+.feed-filter-tools { display: flex; justify-content: flex-end; padding: 0 16px 8px; }
+/* The two chrome strips that travel SIDEWAYS by design stay on one line. A native horizontal
+   scrollbar would take scarce vertical room and look like it belonged to the transcript below.
+   Keep it hidden on the role row and the header controls. */
+.detail-controls, .feed-filter-roles { scrollbar-width: none; }
+.detail-controls::-webkit-scrollbar, .feed-filter-roles::-webkit-scrollbar { width: 0; height: 0; }
 .feed-filter .fchip {
   font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase;
   /* Fixed height + border-box so every chip lines up regardless of whether it carries a gnome

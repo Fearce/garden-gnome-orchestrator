@@ -990,37 +990,41 @@ export function ThreadDetail() {
             it scrolls UNDER it and is then covered rather than reachable. */}
         {feedItems.length > 0 && (
           <div className="feed-filter">
-            <button className={"fchip" + (roleFilter === "all" ? " on" : "")} onClick={() => setRoleFilter("all")}>
-              all <span className="n">{feedItems.length}</span>
-            </button>
-            <button
-              className={"fchip tools-toggle" + (showTools ? "" : " off")}
-              onClick={() => setShowTools(!showTools)}
-              title={showTools ? "Hide tools & reasoning — show just the prose/findings" : "Show tools & reasoning"}
-            >
-              ⛏ tools
-            </button>
-            {activeRoles.map((role) => {
-              const roleRuns = threadRuns.filter((r) => r.role === role);
-              const r = latestRunOf(threadRuns, role);
-              const roleSummary = roleModelFor(role);
-              return (
-                <button
-                  key={role}
-                  className={"fchip" + (roleFilter === role ? " on" : "")}
-                  style={{ "--role": roleColor(role) } as CSSProperties}
-                  onClick={() => setRoleFilter(role)}
-                  title={[role, nameFor(role), roleSummary?.title ?? roleSummary?.label].filter(Boolean).join(" · ")}
-                >
-                  <Gnome role={role} size={15} />
-                  <span className="fchip-label">
-                    <RoleLabel role={role} name={nameFor(role)} model={roleSummary?.label} modelTitle={roleSummary?.title} />
-                  </span>
-                  <span className="n">{counts[role] ?? 0}</span>
-                  {r ? <RoleElapsed className="fchip-time" runs={roleRuns} /> : null}
-                </button>
-              );
-            })}
+            <div className="feed-filter-roles">
+              <button className={"fchip" + (roleFilter === "all" ? " on" : "")} onClick={() => setRoleFilter("all")}>
+                all <span className="n">{feedItems.length}</span>
+              </button>
+              {activeRoles.map((role) => {
+                const roleRuns = threadRuns.filter((r) => r.role === role);
+                const r = latestRunOf(threadRuns, role);
+                const roleSummary = roleModelFor(role);
+                return (
+                  <button
+                    key={role}
+                    className={"fchip" + (roleFilter === role ? " on" : "")}
+                    style={{ "--role": roleColor(role) } as CSSProperties}
+                    onClick={() => setRoleFilter(role)}
+                    title={[role, nameFor(role), roleSummary?.title ?? roleSummary?.label].filter(Boolean).join(" · ")}
+                  >
+                    <Gnome role={role} size={15} />
+                    <span className="fchip-label">
+                      <RoleLabel role={role} name={nameFor(role)} model={roleSummary?.label} modelTitle={roleSummary?.title} />
+                    </span>
+                    <span className="n">{counts[role] ?? 0}</span>
+                    {r ? <RoleElapsed className="fchip-time" runs={roleRuns} /> : null}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="feed-filter-tools">
+              <button
+                className={"fchip tools-toggle" + (showTools ? "" : " off")}
+                onClick={() => setShowTools(!showTools)}
+                title={showTools ? "Hide tools & reasoning — show just the prose/findings" : "Show tools & reasoning"}
+              >
+                ⛏ tools
+              </button>
+            </div>
           </div>
         )}
 

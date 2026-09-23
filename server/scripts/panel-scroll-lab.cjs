@@ -258,7 +258,7 @@ function readPanel(page) {
       .map((el) => ({ el, b: el.getBoundingClientRect() }))
       .find((c) => c.b.height > 0);
 
-    const filter = document.querySelector(".feed-filter");
+    const filter = document.querySelector(".feed-filter-roles");
     const cs = scroller ? getComputedStyle(scroller) : null;
     return {
       detail: { ...rect(detail), scrollHeight: detail.scrollHeight, clientHeight: detail.clientHeight },
@@ -331,10 +331,14 @@ function readPanel(page) {
 /** The filter is one scrollable control row even when a model label is longer than the pane. */
 function readFilter(page) {
   return page.evaluate(() => {
-    const strip = document.querySelector(".feed-filter");
-    if (!strip) return null;
+    const strip = document.querySelector(".feed-filter-roles");
+    const tools = document.querySelector(".feed-filter-tools .tools-toggle");
+    const wrapper = document.querySelector(".feed-filter");
+    if (!strip || !tools || !wrapper) return null;
     const buttons = [...strip.querySelectorAll("button")];
     const bounds = strip.getBoundingClientRect();
+    const toolBounds = tools.getBoundingClientRect();
+    const wrapperBounds = wrapper.getBoundingClientRect();
     return {
       names: buttons.map((button) => button.textContent.trim().replace(/\s+/g, " ")),
       centers: buttons.map((button) => {
@@ -345,6 +349,10 @@ function readFilter(page) {
       stripWidth: strip.clientWidth,
       scrollWidth: strip.scrollWidth,
       buttonWidths: buttons.map((button) => button.getBoundingClientRect().width),
+      tools: { top: toolBounds.top, right: toolBounds.right, height: toolBounds.height },
+      toolsOutsideRoles: !strip.contains(tools),
+      rolesBottom: bounds.bottom,
+      wrapperRight: wrapperBounds.right,
       pageWidth: document.documentElement.scrollWidth,
       viewportWidth: innerWidth,
     };
@@ -355,8 +363,10 @@ async function assertFilter(check, tag, page, shot) {
   const filter = await readFilter(page);
   check(`${tag} · filter mounted`, !!filter);
   if (!filter) return;
-  check(`${tag} · TOOLS follows ALL in the same control row`,
-    filter.names[0]?.startsWith("all ") && filter.names[1] === "⛏ tools" && filter.centers.every((center) => Math.abs(center - filter.centers[0]) <= 1),
+  check(`${tag} · role filters share one row and TOOLS stays separate on the right`,
+    filter.names[0]?.startsWith("all ") && filter.toolsOutsideRoles
+      && filter.centers.every((center) => Math.abs(center - filter.centers[0]) <= 1)
+      && filter.tools.top >= filter.rolesBottom - 1 && Math.abs(filter.tools.right - (filter.wrapperRight - 16)) <= 1,
     filter.names.join(" | "));
   check(`${tag} · long model leaves a single legible row`,
     filter.stripHeight <= 60 && filter.buttonWidths.every((width) => width <= filter.stripWidth - 31),
@@ -366,21 +376,21 @@ async function assertFilter(check, tag, page, shot) {
   await page.locator(".feed-filter .tools-toggle").click();
   check(`${tag} · TOOLS still toggles`, await page.locator(".feed-filter .tools-toggle").evaluate((el) => el.classList.contains("off")));
   await page.locator(".feed-filter .tools-toggle").click();
-  const implementor = page.locator(".feed-filter button").filter({ hasText: "implementor" });
+  const implementor = page.locator(".feed-filter-roles button").filter({ hasText: "implementor" });
   await implementor.click();
   check(`${tag} · long implementor filter still selects`, await implementor.evaluate((el) => el.classList.contains("on")));
   if (shot) await page.locator(".feed-filter").screenshot({ path: path.join(shot, `${tag.replace(/[^a-z0-9]+/gi, "-")}-filter-implementor.png`) });
-  await page.locator(".feed-filter button").first().click();
+  await page.locator(".feed-filter-roles button").first().click();
   if (filter.scrollWidth > filter.stripWidth + 1) {
-    await page.locator(".feed-filter").evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-    const endVisible = await page.locator(".feed-filter").evaluate((el) => {
+    await page.locator(".feed-filter-roles").evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+    const endVisible = await page.locator(".feed-filter-roles").evaluate((el) => {
       const end = el.querySelector("button:last-child")?.getBoundingClientRect();
       const strip = el.getBoundingClientRect();
       return !!end && end.right <= strip.right - 15;
     });
     check(`${tag} · last role remains reachable by scrolling`, endVisible);
     if (shot) await page.locator(".feed-filter").screenshot({ path: path.join(shot, `${tag.replace(/[^a-z0-9]+/gi, "-")}-filter-end.png`) });
-    await page.locator(".feed-filter").evaluate((el) => { el.scrollLeft = 0; });
+    await page.locator(".feed-filter-roles").evaluate((el) => { el.scrollLeft = 0; });
   }
 }
 
