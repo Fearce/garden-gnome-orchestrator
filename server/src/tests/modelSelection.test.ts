@@ -187,7 +187,7 @@ console.log("Flagship capability floor");
   const filtered = filterAutoSelectionCandidates(roster);
   check("older Codex models are hidden while GPT-5.6+ Codex is dispatchable", !filtered.some((candidate) => ["gpt-5.5", "gpt-4.1", "o3"].includes(candidate.model)) && filtered.some((candidate) => candidate.model === "gpt-6-luna"), JSON.stringify(filtered));
   const fallback = filterAutoSelectionCandidates(roster.filter((candidate) => candidate.model !== "gpt-6-luna"));
-  check("legacy Codex remains available when it is the only Codex fallback", fallback.some((candidate) => candidate.model === "gpt-5.5"), JSON.stringify(fallback));
+  check("legacy-only Codex is refused", !fallback.some((candidate) => candidate.provider === "codex"), JSON.stringify(fallback));
   check("legacy Codex auto-selection offers no extra-high tier", autoSelectableEffortsForCandidate(roster[0]!, roster[0]!.efforts).join(",") === "low,medium,high");
   check("older non-GPT-5 Codex auto-selection is capped too", autoSelectableEffortsForCandidate(roster[1]!, roster[1]!.efforts).join(",") === "low,medium,high" && autoSelectableEffortsForCandidate(roster[2]!, roster[2]!.efforts).join(",") === "low,medium,high");
 }
@@ -571,7 +571,7 @@ try {
 
 
 check("superseded saved and dated pins upgrade", currentCodexModel("gpt-5.6-sol") === "gpt-6-sol" && currentCodexModel("GPT-5.6-LUNA-2026-07-01") === "gpt-6-luna");
-check("Terra has no named successor", currentCodexModel("gpt-5.6-terra") === "gpt-5.6-terra");
+check("Terra upgrades to GPT-6 Sol", currentCodexModel("gpt-5.6-terra") === "gpt-6-sol");
 check("catalog upgrades deduplicate", currentCodexModels(["gpt-5.6-sol", "gpt-6-sol"]).join() === "gpt-6-sol");
 check("retired models never return as automatic fallback", filterAutoSelectionCandidates([{provider: "codex", model: "gpt-5.6-sol"}, {provider: "codex", model: "gpt-5.6-luna"}]).length === 0);
 

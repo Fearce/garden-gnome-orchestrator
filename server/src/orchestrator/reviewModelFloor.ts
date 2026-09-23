@@ -1,3 +1,4 @@
+import { isGpt6Model } from "../agents/codexModelGeneration.js";
 // Deterministic model floor for the REVIEW stages — QA and the auto-reviewer — on the Codex backend.
 //
 // The implementor's auto-selection already refuses legacy Codex ids (`filterAutoSelectionCandidates`),
@@ -51,7 +52,7 @@ export function isReviewFloorRole(role: Role): boolean {
 
 /** Whether this exact model is one a review stage may run on. */
 export function reviewModelAllowed(model: string): boolean {
-  return !isLegacyCodexAutoModel({ provider: "codex", model });
+  return isGpt6Model(model);
 }
 
 function firstMatch(dispatchable: readonly string[], pattern: RegExp): string | undefined {
@@ -67,7 +68,9 @@ function firstMatch(dispatchable: readonly string[], pattern: RegExp): string | 
  * hand-written id, because a string this installation's catalog does not resolve fails the whole run.
  */
 export function codexReviewTarget(role: Role, configured: string, dispatchable: readonly string[]): CodexReviewTarget {
-  if (!isReviewFloorRole(role) || reviewModelAllowed(configured)) return { model: configured };
+  dispatchable = dispatchable.filter(isGpt6Model);
+  if (!isReviewFloorRole(role)) return { model: configured };
+  if (reviewModelAllowed(configured)) return { model: configured, ...(dispatchable.includes(configured) ? {} : { blocked: true }) };
   const preferred = REPLACEMENT_PREFERENCE.reduce<string | undefined>(
     (found, pattern) => found ?? firstMatch(dispatchable, pattern),
     undefined,

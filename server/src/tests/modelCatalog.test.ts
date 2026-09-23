@@ -112,6 +112,11 @@ try {
   const settled = logs.length;
   await catalog.refresh();
   check("a clean refresh reports nothing", logs.length === settled, JSON.stringify(logs.slice(settled)));
+  writeFileSync(join(codexHome, "models_cache.json"), JSON.stringify({models: [
+    {slug: "gpt-6-luna", visibility: "list", supported_reasoning_levels: [{effort: "max"}]}
+  ]}));
+  check("a CLI catalog update is visible before the six-hour refresh", catalog.codexCliModels().map(m => m.id).join() === "gpt-6-luna");
+  check("fresh disk catalog repairs the persisted strict-pin cache", JSON.parse(kv.get("cache_codex_cli_models")!)[0].id === "gpt-6-luna");
 } finally {
   globalThis.fetch = realFetch;
   catalog.stop();

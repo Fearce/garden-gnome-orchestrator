@@ -310,7 +310,7 @@ async function main(): Promise<void> {
       h.internals.zaiEffort = (): Effort => "max";
       const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
       const modelsFor = (provider: ImplementorProvider): string[] => roster.filter((candidate) => candidate.provider === provider).map((candidate) => candidate.model);
-      check("modern Codex models reach the selector", codex.slice(0, 5).every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
+      check("modern Codex models reach the selector", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
       check("legacy Codex models stay out while GPT-5.6+ options are dispatchable", codex.slice(5).every((model) => !modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
       check("Codex Ultra reaches the selector when the live model advertises it", roster.find((candidate) => candidate.model === "gpt-6-sol")?.efforts.includes("ultra") === true);
       check("all live Grok models reach the selector", grok.every((model) => modelsFor("grok").includes(model)), JSON.stringify(modelsFor("grok")));
@@ -337,7 +337,7 @@ async function main(): Promise<void> {
       h.internals.codexEffort = (): Effort => "ultra";
       const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
       const codexRoster = roster.filter((candidate) => candidate.provider === "codex");
-      check("legacy Codex can still be selected when it is the only Codex catalog", codex.every((model) => codexRoster.some((candidate) => candidate.model === model)), JSON.stringify(codexRoster));
+      check("legacy-only Codex catalog cannot launch", codexRoster.length === 0, JSON.stringify(codexRoster));
       check("legacy Codex fallback is capped to High for automatic selection", codexRoster.every((candidate) => candidate.efforts.join(",") === "low,medium,high"), JSON.stringify(codexRoster));
     } finally {
       h.dispose();

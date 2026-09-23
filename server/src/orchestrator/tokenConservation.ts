@@ -49,7 +49,7 @@ export const TOKEN_CONSERVATION_MODEL: Partial<Record<ImplementorProvider, strin
  */
 const TOKEN_CONSERVATION_ECONOMY_MODELS: Partial<Record<ImplementorProvider, ReadonlySet<string>>> = {
   claude: new Set(["claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]),
-  codex: new Set(["gpt-6-luna", "gpt-5.6-terra"]),
+  codex: new Set(["gpt-6-luna"]),
 };
 
 export interface ConservationWindow {

@@ -156,9 +156,9 @@ check(
 );
 check(
   "current tiers are allowed",
-  reviewModelAllowed("gpt-6-luna") && reviewModelAllowed("gpt-5.6-terra") && reviewModelAllowed("gpt-6-astra"),
+  reviewModelAllowed("gpt-6-luna") && reviewModelAllowed("gpt-6-sol") && reviewModelAllowed("gpt-6-astra"),
 );
-check("a non-Codex model is never touched by a Codex-family rule", reviewModelAllowed("claude-opus-5-5") && reviewModelAllowed("glm-5.3"));
+check("a non-Codex model is never touched by a Codex-family rule", !reviewModelAllowed("claude-opus-5-5") && !reviewModelAllowed("glm-5.3"));
 
 {
   const target = codexReviewTarget("qa", "gpt-5.5", LIVE_ROSTER);
@@ -183,12 +183,12 @@ check(
 );
 check(
   "a review stage already on a current model keeps its configured effort (no substitution)",
-  codexReviewTarget("qa", "gpt-5.6-terra", LIVE_ROSTER).model === "gpt-5.6-terra"
-    && codexReviewTarget("qa", "gpt-5.6-terra", LIVE_ROSTER).effort === undefined,
+  codexReviewTarget("qa", "gpt-6-sol", LIVE_ROSTER).model === "gpt-6-sol"
+    && codexReviewTarget("qa", "gpt-6-sol", LIVE_ROSTER).effort === undefined,
 );
 check(
   "the replacement falls to the next GPT-5.6 tier when the budget tier is absent",
-  codexReviewTarget("qa", "gpt-5.5", ["gpt-6-astra", "gpt-5.6-terra", "gpt-5.5"]).model === "gpt-5.6-terra",
+  codexReviewTarget("qa", "gpt-5.5", ["gpt-6-astra", "gpt-6-sol", "gpt-5.5"]).model === "gpt-6-sol",
 );
 check(
   "with no GPT-5.6 family at all it takes another CURRENT id rather than inventing one",
@@ -221,8 +221,8 @@ console.log("\n=== review model floor — the wiring (real ThreadManager, real D
       String(h.internals.codexRoleModel("qa")),
     );
     check(
-      "QA runs it at low effort, not the configured ultra",
-      h.internals.codexRoleTarget("qa").effort === "low",
+      "generation migration preserves the configured effort policy",
+      h.internals.codexRoleTarget("qa").effort === undefined,
       String(h.internals.codexRoleTarget("qa").effort),
     );
     check(
@@ -232,12 +232,12 @@ console.log("\n=== review model floor — the wiring (real ThreadManager, real D
     );
     check(
       "the implementor's stored model is untouched",
-      h.internals.codexRoleModel("implementor") === "gpt-5.6-terra",
+      h.internals.codexRoleModel("implementor") === "gpt-6-sol",
       String(h.internals.codexRoleModel("implementor")),
     );
     check(
       "planner/researcher/director keep their stored model — this fix is QA-scoped",
-      (["planner", "researcher", "director"] as Role[]).every((role) => h.internals.providerRoleModel("codex", role) === "gpt-5.5"),
+      (["planner", "researcher", "director"] as Role[]).every((role) => h.internals.providerRoleModel("codex", role) === "gpt-6-luna"),
     );
     check(
       "Settings projects the replacement, so it stops advertising the retired QA model",

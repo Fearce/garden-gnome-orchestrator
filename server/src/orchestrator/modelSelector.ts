@@ -1,4 +1,4 @@
-import { currentCodexModel } from "../agents/codexModelGeneration.js";
+import { isGpt6Model } from "../agents/codexModelGeneration.js";
 // Auto model selection: ONE cheap judgement call, made just before the implementor starts, that picks
 // which model implements this task and how hard it should think.
 //
@@ -157,7 +157,7 @@ export function filterAutoSelectionCandidates<T extends Pick<ModelCandidate, "pr
   // only the retired tier must stay selectable rather than removing the backend from the choice.
   const currentOpusAvailable = candidates.some(isCurrentClaudeOpusAutoModel);
   return candidates.filter((candidate) => {
-    if (candidate.provider === "codex" && currentCodexModel(candidate.model) !== candidate.model.trim()) return false;
+    if (candidate.provider === "codex" && !isGpt6Model(candidate.model)) return false;
     if (preferredCodexAvailable && isLegacyCodexAutoModel(candidate)) return false;
     return !currentOpusAvailable || !isRetiredClaudeAutoModel(candidate);
   });

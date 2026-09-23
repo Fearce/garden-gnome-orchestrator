@@ -100,8 +100,8 @@ check(
   conservationResolvedModel("codex", "gpt-6-sol", ACTIVE, NOW) === "gpt-6-luna",
 );
 check(
-  "an already-economy Codex pick (Terra) passes through unchanged",
-  conservationResolvedModel("codex", "gpt-5.6-terra", ACTIVE, NOW) === "gpt-5.6-terra",
+  "Terra is capped to GPT-6 Luna",
+  conservationResolvedModel("codex", "gpt-5.6-terra", ACTIVE, NOW) === "gpt-6-luna",
 );
 check(
   "Grok has no reviewed economy tier, so it is never touched",

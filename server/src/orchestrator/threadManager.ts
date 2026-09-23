@@ -1,4 +1,4 @@
-import { currentCodexModel, currentCodexModels } from "../agents/codexModelGeneration.js";
+import { currentCodexModel, currentCodexModels, isGpt6Model } from "../agents/codexModelGeneration.js";
 import type { AccountDispatchPreview, AccountManager } from "../accounts/accountManager.js";
 import { bySafetyHeadroom, untilReset, weeklySafetyPool } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
@@ -652,6 +652,8 @@ const ZAI_CAP_RECORDED_AT_KV_KEY = "zai_cap_recorded_at";
 const ZAI_CAP_LIFT_KV_KEY = "zai_cap_lift_at";
 const ZAI_LABEL = "z.ai";
 const PROVIDER_HARD_LIMIT = 98;
+// A nonzero Codex balance is usable; only the provider cap or 100% usage blocks dispatch.
+const CODEX_HARD_LIMIT = 100;
 const STARTUP_HEALTH_COOLDOWN_LABEL = "startup health cooldown";
 // Provider usage caches older than their normal polling horizon are availability hints, not current
 // runway. Hard-limit holds remain conservative; apparent headroom becomes unknown (see capacityRouting).
@@ -2995,7 +2997,7 @@ export class ThreadManager implements OrchestratorApi {
    *  models the ACTIVE auth mode exposes, plus the currently-selected model so a manual pin never vanishes. */
   private pickableCodexModels(): string[] {
     const selected = [this.codexModel(), this.storedUsageSaving()[CODEX_SUB_ID]?.model, ...Object.values(this.modelOverrides()[CODEX_SUB_ID] ?? {})].filter((x): x is string => !!x);
-    return currentCodexModels([...this.codexRosterModels(), ...selected]);
+    return currentCodexModels([...this.codexRosterModels(), ...selected.map(currentCodexModel)]);
   }
 
   /** Models this running installation can name without guessing. Live provider catalogs are preferred;
@@ -3004,7 +3006,7 @@ export class ThreadManager implements OrchestratorApi {
   private modelRequestCandidates(): ModelRequestCandidate[] {
     const out: ModelRequestCandidate[] = [];
     const add = (provider: ImplementorProvider, model: string | null | undefined, labels: Array<string | null | undefined> = []): void => {
-      if (!model?.trim()) return;
+      if (!model?.trim() || (provider === "codex" && !isGpt6Model(model))) return;
       out.push({ provider, model: model.trim(), labels: labels.filter((label): label is string => !!label?.trim()) });
     };
 
@@ -3113,8 +3115,11 @@ export class ThreadManager implements OrchestratorApi {
     // the new request so the next start uses it. Requiring a separate Pause click made the otherwise
     // safe operation fail precisely when it was most useful (while work was running).
     if (this.live.has(threadId)) {
+      const prior = this.live.get(threadId)!;
       const interrupted = await this.interruptThread(threadId);
       if (!interrupted.ok) return interrupted;
+      await prior.run.stop();
+      if (this.live.get(threadId) === prior) this.live.delete(threadId);
     } else if (thread.state === "implementing" || this.resuming.has(threadId)) {
       return {
         ok: false,
@@ -5142,7 +5147,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const pool = pools ? poolForModel(pools, model) : undefined;
     const dedicated = pool?.modelSlug ? pool : undefined;
     const nearLimit = (pct: number | null, reset: number | null): boolean =>
-      pct != null && pct >= PROVIDER_HARD_LIMIT && (reset == null || reset > now);
+      pct != null && pct >= CODEX_HARD_LIMIT && (reset == null || reset > now);
     const poolCapped = dedicated
       ? poolLatched(this.poolCapUntil, dedicated.limitId, now)
       : ignoreGeneralCapLatch ? false : this.codexCapActive();
@@ -5155,7 +5160,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       withCapLatch(
         capacityWindowsWithFreshness(
           standardCapacityWindows(fiveHour, fiveHourReset, sevenDay, sevenDayReset),
-          dedicated ? POOL_HARD_LIMIT_PCT : PROVIDER_HARD_LIMIT,
+          dedicated ? POOL_HARD_LIMIT_PCT : CODEX_HARD_LIMIT,
           stale,
           now,
         ),
@@ -5501,7 +5506,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           const sevenDayReset = pool ? pool.sevenDayReset : (usage?.sevenDayReset ?? null);
           const stale = !pool && usage != null && now - usage.updatedAt > ROUTING_USAGE_STALE_MS;
           const near = (pct: number | null, reset: number | null): boolean =>
-            pct != null && pct >= (dedicated ? POOL_HARD_LIMIT_PCT : PROVIDER_HARD_LIMIT) && (reset == null || reset > now);
+            pct != null && pct >= (dedicated ? POOL_HARD_LIMIT_PCT : CODEX_HARD_LIMIT) && (reset == null || reset > now);
           options.push({
             provider: "codex",
             label: dedicated ? `Codex ${dedicated.limitName ?? dedicated.limitId}` : "Codex general pool",
@@ -5509,7 +5514,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
               withCapLatch(
                 capacityWindowsWithFreshness(
                   standardCapacityWindows(fiveHour, fiveHourReset, sevenDay, sevenDayReset),
-                  dedicated ? POOL_HARD_LIMIT_PCT : PROVIDER_HARD_LIMIT,
+                  dedicated ? POOL_HARD_LIMIT_PCT : CODEX_HARD_LIMIT,
                   stale,
                   now,
                 ),

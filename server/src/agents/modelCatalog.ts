@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
@@ -174,6 +174,7 @@ export class ModelCatalog {
   private timer: NodeJS.Timeout | undefined;
   private retryTimer: NodeJS.Timeout | undefined;
   private quickRetries = 0;
+  private codexFileSignature = "";
 
   constructor(
     private readonly db: Db,
@@ -207,6 +208,20 @@ export class ModelCatalog {
 
   /** Models and exact effort sets advertised by the authenticated Codex CLI (ChatGPT-plan auth). */
   codexCliModels(): CodexCliModel[] {
+    // CLI upgrades refresh this authenticated file between the six-hour network refreshes.
+    // Read it only when its stamp changes so picker and strict-pin validation see the same roster.
+    try {
+      const file = join(config.codex.home, "models_cache.json");
+      const stat = statSync(file);
+      const signature = `${file}:${stat.mtimeMs}:${stat.size}`;
+      if (signature !== this.codexFileSignature) {
+        const fresh = readCodexModelsFile();
+        if (fresh.length) {
+          this.storeIfChanged(CODEX_CLI_MODELS_KEY, fresh);
+          this.codexFileSignature = signature;
+        }
+      }
+    } catch { /* retain the last-known authenticated catalog if the file is unavailable */ }
     const raw = this.db.kvGet(CODEX_CLI_MODELS_KEY);
     if (!raw) return [];
     try {

@@ -1,4 +1,4 @@
-import { currentCodexModel } from "./codexModelGeneration.js";
+import { currentCodexModel, isGpt6Model } from "./codexModelGeneration.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -358,6 +358,7 @@ export class CodexAgentRun implements AgentRunLike {
 
   constructor(private readonly cfg: CodexRunConfig) {
     this.cfg = { ...cfg, model: currentCodexModel(cfg.model) };
+    if (!isGpt6Model(this.cfg.model)) throw new Error(`GPT-6-only policy rejected Codex model: ${cfg.model}`);
     this.emitter.setMaxListeners(50);
   }
 

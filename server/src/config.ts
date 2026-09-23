@@ -190,13 +190,7 @@ export const config = {
     models: [
       "gpt-6-astra",
       "gpt-6-sol",
-      "gpt-5.6-terra",
       "gpt-6-luna",
-      "gpt-daybreak-blue-latest",
-      "gpt-5.5",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.3-codex-spark",
     ] as const,
     // An explicit CODEX_BIN_JS remains the compatibility override. Otherwise discover the global npm
     // CLI or the native CLI installed by Codex Desktop, so enabling a Codex subscription works for a

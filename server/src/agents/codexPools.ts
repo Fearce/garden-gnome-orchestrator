@@ -66,7 +66,7 @@ export const DEDICATED_POOL_ROLES: ReadonlySet<Role> = new Set<Role>(["reader", 
 
 /** Used-percent at or above which a window counts as spent. Codex reports 100 at the plan limit; the
  *  margin below that keeps us from claiming a pool that can't finish the run we'd route to it. */
-export const POOL_HARD_LIMIT_PCT = 95;
+export const POOL_HARD_LIMIT_PCT = 100;
 
 /** Collapse a human limit label to a comparable model slug: "GPT-5.3-Codex-Spark" → "gpt-5.3-codex-spark".
  *  Dots are preserved (they are part of a version, "5.3"), every other separator becomes a hyphen. */

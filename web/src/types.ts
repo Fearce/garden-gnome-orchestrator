@@ -861,13 +861,7 @@ export type SettingsPatch = Partial<
 export const CODEX_MODELS = [
   "gpt-6-astra",
   "gpt-6-sol",
-  "gpt-5.6-terra",
   "gpt-6-luna",
-  "gpt-daybreak-blue-latest",
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.3-codex-spark",
 ] as const;
 
 /** Grok models suggested when the live list hasn't loaded yet. */

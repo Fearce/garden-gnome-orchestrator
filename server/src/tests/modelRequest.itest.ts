@@ -26,10 +26,10 @@ const { detectModelRequest, exactModelRequest, resolveModelRequest } = await imp
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { clientCommandSchema } = await import("../ws/protocol.js");
 
-const SPARK = "gpt-5.3-codex-spark";
+const SPARK = "gpt-6-luna";
 const SOL = "gpt-6-sol";
 const CANDIDATES = [
-  { provider: "codex" as const, model: SPARK, labels: ["GPT-5.3-Codex-Spark"] },
+  { provider: "codex" as const, model: SPARK, labels: ["GPT-6-Luna"] },
   { provider: "codex" as const, model: SOL, labels: ["GPT-5.6-Sol"] },
   { provider: "claude" as const, model: "claude-opus-5-5" },
 ];
@@ -88,7 +88,7 @@ internals.enqueueOrRun = (): void => {};
 internals.liveBench.prepareForSelection = async (): Promise<void> => {};
 internals.liveBench.note = (): undefined => undefined;
 
-const strictSpark = (requested = "GPT Spark"): ModelRequest => ({
+const strictLuna = (requested = "GPT Luna"): ModelRequest => ({
   requested,
   provider: "codex",
   model: SPARK,
@@ -96,22 +96,30 @@ const strictSpark = (requested = "GPT Spark"): ModelRequest => ({
 });
 
 async function main(): Promise<void> {
+  const originalPools = internals.codexPoolSnapshot;
+  const futureReset = Date.now() + 86_400_000;
+  for (const used of [98, 99, 100]) {
+    internals.codexPoolSnapshot = () => [{limitId: "codex", limitName: null, modelSlug: null, fiveHour: 10, fiveHourReset: futureReset, sevenDay: used, sevenDayReset: futureReset, limitState: "none"}];
+    check(`Codex ${100-used}% remaining is ${used < 100 ? "usable" : "exhausted"}`, internals.codexProviderCandidate("implementor", undefined, SOL).hasHeadroom === (used < 100));
+  }
+  internals.codexPoolSnapshot = originalPools;
+
   console.log("\n=== strict Director model requests ===\n");
 
   console.log("1 — canonical resolution and conservative legacy parsing");
-  for (const label of ["GPT Spark", "Spark", "GPT-5.3-Codex-Spark"]) {
+  for (const label of ["GPT Luna", "Luna", "GPT-6-Luna"]) {
     const resolved = resolveModelRequest(label, CANDIDATES);
     check(`${label} resolves through the live candidate label`, resolved.provider === "codex" && resolved.model === SPARK, JSON.stringify(resolved));
   }
-  const direct = detectModelRequest("Use our GPT Spark usage as persistent capacity for this overnight task.", CANDIDATES);
-  check("direct owner wording in a legacy brief recovers the Spark pin", direct?.model === SPARK && direct.strict, JSON.stringify(direct));
+  const direct = detectModelRequest("Use our GPT Luna usage as persistent capacity for this overnight task.", CANDIDATES);
+  check("direct owner wording in a legacy brief recovers the Luna pin", direct?.model === SPARK && direct.strict, JSON.stringify(direct));
   check(
     "a brief discussing the quoted phrase does not pin its own implementor",
-    detectModelRequest('Add parsing for wording such as "use GPT Spark usage" in Director prompts.', CANDIDATES) === null,
+    detectModelRequest('Add parsing for wording such as "use GPT Luna usage" in Director prompts.', CANDIDATES) === null,
   );
   check("ordinary briefs remain unpinned", detectModelRequest("Improve the overnight trainer and verify it.", CANDIDATES) === null);
   check("a provider contrast cannot pin the explicitly rejected model", detectModelRequest("Run this on GPT, not Grok.", CANDIDATES) === null);
-  check("a concrete contrast pins its positive side", detectModelRequest("Use Spark, not Sol.", CANDIDATES)?.model === SPARK);
+  check("a concrete contrast pins its positive side", detectModelRequest("Use Luna, not Sol.", CANDIDATES)?.model === SPARK);
   const unresolved = resolveModelRequest("GPT Future", CANDIDATES);
   check("an unknown explicit request remains strict and unresolved", unresolved.model === null && unresolved.strict, JSON.stringify(unresolved));
 
@@ -135,7 +143,7 @@ async function main(): Promise<void> {
   );
   check(
     "wording is never scored on the exact path",
-    exactModelRequest("codex", "GPT Spark", CANDIDATES).model === null,
+    exactModelRequest("codex", "GPT Luna", CANDIDATES).model === null,
   );
 
   console.log("\n2 — the provider-neutral Director command bridge carries the exact owner field");
@@ -144,7 +152,7 @@ async function main(): Promise<void> {
     dispatch: async (input: Record<string, unknown>) => { dispatched = input; return "strict-task-123"; },
   } as unknown as InstanceType<typeof ThreadManager>;
   const bridge = await executeDirectorCliAction(
-    { kind: "dispatch", title: "Spark task", workspace, brief: "Run the overnight work.", model: "GPT Spark" },
+    { kind: "dispatch", title: "Luna task", workspace, brief: "Run the overnight work.", model: "GPT Luna" },
     fakeApi,
     {} as Scheduler,
     {} as OperatorNotes,
@@ -153,12 +161,12 @@ async function main(): Promise<void> {
   check("CLI schema exposes the model field", "model" in (DIRECTOR_CLI_SCHEMA.properties ?? {}));
   check(
     "CLI dispatch forwards requestedModel verbatim",
-    bridge.dispatchedId === "strict-task-123" && dispatched?.requestedModel === "GPT Spark",
+    bridge.dispatchedId === "strict-task-123" && dispatched?.requestedModel === "GPT Luna",
     JSON.stringify(dispatched),
   );
 
   console.log("\n3 — dispatch, persistence, retry, and legacy recovery retain the constraint");
-  const dispatchedId = await mgr.dispatch({ title: "Pinned from bridge", workspace, brief: "Run it.", requestedModel: "GPT Spark" });
+  const dispatchedId = await mgr.dispatch({ title: "Pinned from bridge", workspace, brief: "Run it.", requestedModel: "GPT Luna" });
   check("manager dispatch persists the canonical strict pin", db.getThread(dispatchedId)?.modelRequest?.model === SPARK, JSON.stringify(db.getThread(dispatchedId)?.modelRequest));
   check("dispatch posts an owner-visible strict-pin finding", db.listFindings(dispatchedId).some((finding) => finding.summary.includes(`pinned — ${SPARK}`)));
   db.updateThreadStageOutputs(dispatchedId, { modelPick: { provider: "codex", model: SOL, effort: "max", reason: "stale" } });
@@ -169,7 +177,7 @@ async function main(): Promise<void> {
     title: "Legacy Bobfish-style task",
     workspace,
     rawPrompt: "",
-    brief: "Use GPT Spark capacity as persistent overnight training capacity. Continue the work.",
+    brief: "Use GPT Luna capacity as persistent overnight training capacity. Continue the work.",
   });
   db.updateThreadStageOutputs(legacy.id, { modelPick: { provider: "codex", model: SOL, effort: "max", reason: "old automatic pick" } });
   const recovered = internals.ensureThreadModelRequest(legacy) as Thread;
@@ -203,11 +211,13 @@ async function main(): Promise<void> {
   check("a half-specified provider/model pair is rejected", !halfPair.ok && db.getThread(selectable.id)?.modelRequest?.model === SPARK, halfPair.error);
 
   db.updateThread(selectable.id, { state: "implementing" });
+  let oldHandleStopped = false;
   internals.live.set(selectable.id, {
-    run: { interrupt: async () => undefined },
+    run: { interrupt: async () => undefined, stop: async () => { oldHandleStopped = true; } },
   });
   const liveChange = await mgr.setThreadModel(selectable.id, "claude", "claude-opus-5-5");
   check("a running implementor is interrupted before acquiring the new pin", liveChange.ok && db.getThread(selectable.id)?.modelRequest?.model === "claude-opus-5-5", liveChange.error);
+  check("retargeting disposes the old frozen-model handle before Resume", oldHandleStopped && !internals.live.has(selectable.id));
   db.updateThread(selectable.id, { state: "paused" });
   const auto = await mgr.setThreadModel(selectable.id, null, null);
   check("a parked task can return to automatic routing", auto.ok && db.getThread(selectable.id)?.modelRequest == null);
@@ -228,7 +238,7 @@ async function main(): Promise<void> {
     ready: [{ provider: "codex", label: `Codex ${SPARK}`, windows: [], hasHeadroom: true }],
   };
   internals.requestedModelCapacitySnapshot = () => readySnapshot;
-  const runtimeThread = db.createThread({ title: "Exact Spark runtime", workspace, rawPrompt: "", brief: "Run it.", modelRequest: strictSpark() });
+  const runtimeThread = db.createThread({ title: "Exact Luna runtime", workspace, rawPrompt: "", brief: "Run it.", modelRequest: strictLuna() });
   const provider = internals.gateImplementorProvider(runtimeThread, { capParkOnExhaustion: true, effort: "max" });
   check("strict gate selects only the request's provider", provider === "codex", String(provider));
 
@@ -243,11 +253,11 @@ async function main(): Promise<void> {
     internals.wireRun = originalWireRun;
   }
   const runtimeRun = db.listRuns(runtimeThread.id).at(-1);
-  check("the actual agent_run model is Spark", runtimeRun?.model === SPARK, JSON.stringify(runtimeRun));
-  check("the runtime account identifies the Spark model", runtimeRun?.account === `codex:${SPARK}`, String(runtimeRun?.account));
+  check("the actual agent_run model is Luna", runtimeRun?.model === SPARK, JSON.stringify(runtimeRun));
+  check("the runtime account identifies the Luna model", runtimeRun?.account === `codex:${SPARK}`, String(runtimeRun?.account));
   check("no Sol implementor row was created", !db.listRuns(runtimeThread.id).some((run) => run.model === SOL));
 
-  const resumeThread = db.createThread({ title: "Retarget a wrong legacy session", workspace, rawPrompt: "", brief: "Continue.", modelRequest: strictSpark() });
+  const resumeThread = db.createThread({ title: "Retarget a wrong legacy session", workspace, rawPrompt: "", brief: "Continue.", modelRequest: strictLuna() });
   const oldRun = db.createRun({ threadId: resumeThread.id, role: "implementor", model: SOL, account: `codex:${SOL}`, effort: "max" });
   db.updateRun(oldRun.id, { state: "interrupted", sessionId: "old-sol-session", endedAt: Date.now() });
   internals.implementorProvider.set(resumeThread.id, "codex");
@@ -263,10 +273,10 @@ async function main(): Promise<void> {
     qaFollows: true,
   });
   internals.startImplementor = realStartImplementor;
-  check("a legacy Sol session is discarded before the Spark relaunch", resumedWith === null, String(resumedWith));
+  check("a legacy Sol session is discarded before the Luna relaunch", resumedWith === null, String(resumedWith));
 
   const resetAt = Date.now() + 3_600_000;
-  const cappedThread = db.createThread({ title: "Spark capacity wait", workspace, rawPrompt: "", brief: "Wait for Spark.", modelRequest: strictSpark() });
+  const cappedThread = db.createThread({ title: "Luna capacity wait", workspace, rawPrompt: "", brief: "Wait for Luna.", modelRequest: strictLuna() });
   internals.requestedModelCapacitySnapshot = () => ({
     options: [{ provider: "codex", label: `Codex ${SPARK}`, windows: [], hasHeadroom: false }],
     ready: [],
@@ -274,7 +284,7 @@ async function main(): Promise<void> {
   });
   const cappedProvider = internals.gateImplementorProvider(cappedThread, { capParkOnExhaustion: true, effort: "max" });
   const parked = db.getThread(cappedThread.id);
-  check("a capped Spark request does not route to Sol", cappedProvider === null && db.listRuns(cappedThread.id).length === 0);
+  check("a capped Luna request does not route to Sol", cappedProvider === null && db.listRuns(cappedThread.id).length === 0);
   check("capacity exhaustion becomes a durable auto-resume park", parked?.state === "review" && parked.error?.startsWith("⏳ Auto-resume pending") === true, parked?.error ?? undefined);
   check("the park names the exact-model-only recovery policy", parked?.error?.includes(SPARK) === true && parked.error.includes("no fallback model is allowed"), parked?.error ?? undefined);
 
