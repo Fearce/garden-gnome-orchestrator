@@ -14,7 +14,9 @@ try {
   db = new Database(dbPath, { readonly: action === '--check', fileMustExist: true });
   db.pragma('busy_timeout = 5000');
   const schedule = db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?').get(scheduleId);
-  if (!schedule || schedule.cron !== '*/5 * * * *') throw new Error('Expected five-minute GGO schedule is missing or changed');
+  if (!schedule || (action !== '--expire' && schedule.cron !== '*/5 * * * *')) {
+    throw new Error('Expected GGO schedule is missing or changed');
+  }
   const self = schedule.last_thread_id && db.prepare('SELECT id, title, workspace, created_at FROM threads WHERE id = ?').get(schedule.last_thread_id);
   if (action !== '--expire' && (!self || self.title !== schedule.title || self.workspace !== schedule.workspace || self.created_at < schedule.created_at)) {
     throw new Error('Cannot identify the current scheduled check thread');
