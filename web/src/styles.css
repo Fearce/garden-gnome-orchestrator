@@ -2161,6 +2161,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 }
 .feed-filter .fchip .n { font-size: 9px; opacity: 0.65; font-weight: 600; }
 .feed-filter .fchip-label { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; overflow: hidden; }
+.feed-filter .fchip-role-full { display: inline-flex; min-width: 0; }
 .feed-filter .fchip-label .role-word { flex: 0 0 auto; }
 .feed-filter .fchip-label .role-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .feed-filter .fchip .n, .feed-filter .fchip .fchip-time, .feed-filter .fchip .gnome { flex: 0 0 auto; }
