@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useStore } from "../store.js";
 import type { GitFile, GitFileStatus, GitStatus, GitSummary, Thread } from "../types.js";
 import { ago, threadRunning } from "../lib/format.js";
@@ -84,7 +85,7 @@ export function ChangesChip({ threadId }: { threadId: string }) {
         {marker === "working" ? <span className="cc-dot working" title="Agent is working — uncommitted changes" /> : null}
         <ChevronIcon />
       </button>
-      {open ? <GitPanel thread={thread} onClose={() => { setOpen(false); loadGitSummary(threadId); }} /> : null}
+      {open ? createPortal(<GitPanel thread={thread} onClose={() => { setOpen(false); loadGitSummary(threadId); }} />, document.body) : null}
     </>
   );
 }
@@ -145,7 +146,7 @@ function GitPanel({ thread, onClose }: { thread: Thread; onClose: () => void }) 
   const selectedFile = status?.files.find((f) => f.path === selectedPath) ?? null;
 
   return (
-    <div className="git-scrim" onClick={onClose}>
+    <div className="git-scrim" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => { e.stopPropagation(); onClose(); }}>
       <aside className="git-panel" role="dialog" aria-label={`Git changes — ${thread.title}`} onClick={(e) => e.stopPropagation()}>
         <div className="git-head">
           <div className="git-head-title">

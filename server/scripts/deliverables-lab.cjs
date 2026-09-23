@@ -86,6 +86,24 @@ function chip(page, label) {
   return page.locator(`.dl-chip:has(.dl-chip-btn[aria-label="${label}"])`);
 }
 
+async function checkChangesDrawer(page, check, theme) {
+  await page.locator(".changes-chip").first().click();
+  await page.waitForSelector(".git-panel", { timeout: 15_000 });
+  await page.waitForSelector(".git-loading", { state: "detached", timeout: 15_000 });
+  const positions = [[100, 100], [900, 150], [1050, 400], [1200, 600], [700, 800], [900, 150]];
+  for (const [x, y] of positions) {
+    await page.mouse.move(x, y);
+    await page.waitForTimeout(500);
+    const bounds = await page.locator(".git-scrim").boundingBox();
+    check(`${theme} Changes drawer covers viewport at ${x},${y}`,
+      !!bounds && bounds.x === 0 && bounds.y === 0 && bounds.width === 1500 && bounds.height === 950,
+      JSON.stringify(bounds));
+  }
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".git-panel", { state: "detached", timeout: 5_000 });
+  check(`${theme} Changes drawer closes with Escape`, (await page.locator(".git-panel").count()) === 0);
+}
+
 async function main() {
   requireBuild();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "deliverables-lab-"));
@@ -271,6 +289,7 @@ async function main() {
     await page.screenshot({ path: path.join(shotDir(dataDir), "nocturne-changes.png") });
     await page.locator(".modal.changes .m-head button").click();
     await page.waitForSelector(".modal.changes", { state: "detached", timeout: 5_000 });
+    await checkChangesDrawer(page, check, "Nocturne");
 
     // Isolate theme-specific failures from the underlying viewers by repeating both surfaces in the
     // default Classic theme in the same authenticated browser.
@@ -310,6 +329,7 @@ async function main() {
     await page.screenshot({ path: path.join(shotDir(dataDir), "classic-changes.png") });
     await page.locator(".modal.changes .m-head button").click();
     await page.waitForSelector(".modal.changes", { state: "detached", timeout: 5_000 });
+    await checkChangesDrawer(page, check, "Classic");
 
     check("no console errors", errors.length === 0, errors.join(" | "));
 
