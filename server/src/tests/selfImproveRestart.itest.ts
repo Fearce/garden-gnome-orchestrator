@@ -125,7 +125,7 @@ function seedAcceptedTask(
   db: InstanceType<typeof Db>,
   workspace: string,
   selfImproving: boolean,
-  state: "qa" | "implementing" = "implementing",
+  state: "qa" | "implementing" | "done" = "implementing",
 ): string {
   const t = db.createThread({ title: "mock accepted task", workspace, rawPrompt: "do the thing" });
   db.updateThreadStageOutputs(t.id, { kickoff: "KICKOFF: mock", planDone: true, approved: true, qaRoundsUsed: 1, selfImproving });
@@ -141,6 +141,7 @@ async function testRestartDuringTheRound(): Promise<void> {
   const markedId = seedAcceptedTask(a.db, a.workspace, true);
   // The round's other state: a bounce landing between the QA verdict and the round's implementor going live.
   const markedQaId = seedAcceptedTask(a.db, a.workspace, true, "qa");
+  const markedDoneId = seedAcceptedTask(a.db, a.workspace, true, "done");
   const controlId = seedAcceptedTask(b.db, b.workspace, false);
 
   const marked = boot(a.db, a.dir, a.workspace);
@@ -160,6 +161,8 @@ async function testRestartDuringTheRound(): Promise<void> {
   const m = marked.db.getThread(markedId)!;
   check("the marked task settled 'done' (bounce caught it in 'implementing')", m.state === "done", `state=${m.state}`);
   check("…and so did one caught in the round's earlier 'qa' window", marked.db.getThread(markedQaId)?.state === "done");
+  check("an already-done bonus round keeps done after restart", marked.db.getThread(markedDoneId)?.state === "done" && marked.db.getThreadStageOutputs(markedDoneId).selfImproving === false);
+  check("the already-done round records its interruption", marked.db.listFindings(markedDoneId).some((f) => f.summary.includes("self-improvement round was cut short")));
   check("it carries no park/restart error", m.error == null, `error=${m.error}`);
   check("the selfImproving marker was consumed", marked.db.getThreadStageOutputs(markedId).selfImproving === false);
   check(
@@ -189,24 +192,28 @@ const OK_RESULT = { type: "result", subtype: "success", isError: false };
 interface RoundStubs {
   markerDuringRound: boolean[]; // the DURABLE marker, sampled from inside the round
   episodeDuringRound: boolean[]; // the in-memory episode the inject/resume gates key on
+  slotDuringRound: boolean[];
   drained: number;
 }
 
 /** Stub the round's agent-spawning leaves; reports what the round looked like from the inside. */
 function stubRoundLeaves(h: Harness, opts: { throwInRound?: boolean } = {}): RoundStubs {
-  const out: RoundStubs = { markerDuringRound: [], episodeDuringRound: [], drained: 0 };
+  const out: RoundStubs = { markerDuringRound: [], episodeDuringRound: [], slotDuringRound: [], drained: 0 };
   const fakeStart = { run: { send(): void {} }, runId: "run-x", accountId: "acct-a" };
   h.mgr.stopLive = async (): Promise<void> => {};
   h.mgr.flushDirectorNotes = (): void => {};
-  h.mgr.startResumedImplementor = async (t: Thread): Promise<typeof fakeStart> => {
+  h.mgr.startImplementor = (t: Thread): typeof fakeStart => {
     out.markerDuringRound.push(h.db.getThreadStageOutputs(t.id).selfImproving === true);
     out.episodeDuringRound.push(h.mgr.selfImproving.has(t.id));
+    out.slotDuringRound.push(h.mgr.activePipelines.has(t.id));
     if (opts.throwInRound) throw new Error("boom");
     return fakeStart;
   };
-  h.mgr.awaitImplementorCompletion = async (): Promise<unknown> => OK_RESULT;
+  h.mgr.awaitTurnResult = async (): Promise<unknown> => OK_RESULT;
+  h.mgr.ranSilently = (): boolean => false;
   h.mgr.drainQueuedImplementor = async (_t: Thread, _e: unknown, _k: string, res: unknown): Promise<unknown> => {
     out.drained++;
+    h.mgr.setState(_t.id, "implementing"); // real drain starts a normal implementor
     return res;
   };
   return out;
@@ -219,18 +226,23 @@ async function testMarkerLifecycle(): Promise<void> {
   h.mgr.setSettings({ selfImproveEnabled: true });
 
   const id = seedAcceptedTask(db, workspace, false);
+  h.mgr.activePipelines.add(id);
   h.mgr.latestImplementorSession = (): string => "session-abc";
   const round = stubRoundLeaves(h);
+  h.mgr.queuedForImplementor.set(id, ["owner follow-up"]);
 
   await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF: mock");
   check("the round ran", round.markerDuringRound.length === 1);
   check("the durable marker was set while the round was live", round.markerDuringRound[0] === true);
   check("the in-memory episode was open too", round.episodeDuringRound[0] === true);
+  check("the accepted card kept its workspace slot during bonus work", round.slotDuringRound[0] === true);
+  check("the slot was released after the bonus", !h.mgr.activePipelines.has(id));
   check("the durable marker is cleared once the round returns", db.getThreadStageOutputs(id).selfImproving === false);
   check("…and so is the episode", !h.mgr.selfImproving.has(id));
   // The round is the task's LAST hand-off boundary, so it owes the Queue button its delivery — nothing
   // downstream drains `queuedForImplementor` before the caller settles the task done.
   check("a follow-up queued during the round is drained, not discarded", round.drained === 1);
+  check("the queued follow-up does not leave the accepted task implementing", db.getThread(id)?.state === "done");
 
   // A throw inside the round must not propagate (the task is already accepted) and must not leak either
   // marker — a leaked durable one would make a LATER restart settle unfinished pipeline work as done.
@@ -281,6 +293,54 @@ async function testConcurrentRoundIsOneShot(): Promise<void> {
     db.listMessages(id).filter((m) => m.content.includes("self-improvement round before settling to done")).length === 1,
   );
 
+  h.dispose();
+}
+
+async function testBonusFailureDoesNotResume(): Promise<void> {
+  console.log("\nTest C2 — a failed bonus attempt never launches a continuation\n");
+  for (const outcome of [
+    { type: "result", subtype: "error_max_turns", isError: true, result: "turn ceiling" },
+    { type: "result", subtype: "error_during_execution", isError: true, result: "process exited with code 3221225786" },
+    OK_RESULT,
+  ]) {
+    const { db, dir, workspace } = makeDb("self-improve-failure-");
+    const h = boot(db, dir, workspace);
+    h.mgr.setSettings({ selfImproveEnabled: true });
+    const id = seedAcceptedTask(db, workspace, false);
+    h.mgr.latestImplementorSession = (): string => "session-abc";
+    h.mgr.stopLive = async (): Promise<void> => {};
+    h.mgr.flushDirectorNotes = (): void => {};
+    let launches = 0;
+    let completions = 0;
+    h.mgr.startImplementor = (): unknown => {
+      launches++;
+      return { run: { stop: async (): Promise<void> => {} }, runId: "bonus", accountId: "acct" };
+    };
+    h.mgr.awaitTurnResult = async (): Promise<unknown> => {
+      completions++;
+      return outcome;
+    };
+    h.mgr.drainQueuedImplementor = async (_t: Thread, _e: unknown, _k: string, res: unknown): Promise<unknown> => res;
+    await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF");
+    check(`${outcome.subtype}: only one bonus launch`, launches === 1 && completions === 1, `launches=${launches}, completions=${completions}`);
+    check(`${outcome.subtype}: accepted task keeps done state`, db.getThread(id)?.state === "done", `state=${db.getThread(id)?.state}`);
+    check(`${outcome.subtype}: failure is visible`, db.listFindings(id).some((f) => f.summary.includes("didn't finish cleanly")));
+    h.dispose();
+  }
+}
+
+async function testCliBonusIsSkipped(): Promise<void> {
+  const { db, dir, workspace } = makeDb("self-improve-cli-");
+  const h = boot(db, dir, workspace);
+  h.mgr.setSettings({ selfImproveEnabled: true });
+  const id = seedAcceptedTask(db, workspace, false);
+  h.mgr.latestImplementorSession = (): string => "cli-session";
+  h.mgr.implementorProvider.set(id, "codex");
+  let launches = 0;
+  h.mgr.startImplementor = (): never => { launches++; throw new Error("CLI bonus launched"); };
+  await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF");
+  check("CLI bonus cannot self-heal into extra launches", launches === 0 && db.getThread(id)?.state === "done");
+  check("CLI skip is visible", db.listFindings(id).some((f) => f.summary.includes("CLI resume cannot meet")));
   h.dispose();
 }
 
@@ -358,6 +418,8 @@ async function main(): Promise<void> {
   await testRestartDuringTheRound();
   await testMarkerLifecycle();
   await testConcurrentRoundIsOneShot();
+  await testBonusFailureDoesNotResume();
+  await testCliBonusIsSkipped();
   await testStaleMarkerCleared();
   await testInjectReachesTheRound();
 

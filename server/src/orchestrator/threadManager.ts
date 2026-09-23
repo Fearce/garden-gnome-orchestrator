@@ -610,20 +610,13 @@ const SILENT_RUN_ERROR =
 // with this message so the lessons of the session turn into real tooling instead of evaporating with it.
 // The task is already complete when this runs, so the round is best-effort: it never blocks 'done'.
 const SELF_IMPROVE_MSG =
-  "[Post-task self-improvement round — the task itself is COMPLETE and accepted; this is an opt-in bonus " +
-  `round ${config.ownerName} enabled in settings]\n` +
-  `First, ground yourself in ${config.ownerName}'s memories so you know the setup you're improving: read the ` +
-  `global index at ${join(config.memoryDir, "MEMORY.md")} (grep ${config.memoryDir} for topics related to what ` +
-  "you just worked on) and this project's memory/rules if present — they tell you what already exists, so you " +
-  "extend instead of duplicating. Know your reach: you have FULL control of this computer and are NOT confined " +
-  "to this task's repo — you may create new folders, projects, and git repos, install tools, add " +
-  "scripts/skills/memories, and register services, whatever the improvement needs.\n" +
-  "Then: what tools/apps/skills/memories/scripts/docs/etc could have made this session easier, faster, or " +
-  "better? If any, BUILD or implement them now — don't just list them. If improvements to existing tooling, " +
-  "project docs (CLAUDE.md / .claude/rules), saved memories, or workflows would have made this task easier, " +
-  "make those improvements. Keep this work in its own commit(s), separate from the task's commits, and follow " +
-  "the same commit/push doctrine the task used. Scope it to what THIS session actually taught you — no " +
-  "speculative frameworks. If nothing genuinely worth building surfaced, say so in one line and finish.";
+  "[Optional post-task improvement: the primary task is complete.] In one brief pass, identify at most " +
+  "one concrete reusable improvement that this task clearly exposed. If there is none, say so in one " +
+  "sentence and finish. If there is one, make the smallest useful change, verify it proportionately, " +
+  "and commit it separately under the task's normal commit policy. Stay within this task's workspace. " +
+  "Do not start a new project or service. This bonus stops after eight turns or three minutes.";
+const SELF_IMPROVE_MAX_TURNS = 8;
+const SELF_IMPROVE_TIMEOUT_MS = 3 * 60_000;
 const MAX_TRANSIENT_API_FAILURES = config.maxTransientApiFailures;
 // On a model-pool cap (Fable's own gated allowance, separate from the 5h/weekly windows) the run
 // relaunches on the SAME account with the fallback model — this is that relaunch's continuation nudge,
@@ -910,6 +903,7 @@ export class ThreadManager implements OrchestratorApi {
   // awaited result is still in flight. A state-only check falls through in exactly that window and
   // cold-resumes a SECOND implementor onto the workspace, so those gates key on this episode instead.
   private readonly selfImproving = new Set<string>();
+  private readonly acceptingBeforeBonus = new Set<string>();
   // Images attached to the original dispatch prompt. Every isolated fresh role session must see these
   // in its first SDKUserMessage; keep them separate from later injected images so a resume/inject path
   // cannot replace the dispatch screenshots before the implementor starts.
@@ -2167,6 +2161,14 @@ export class ThreadManager implements OrchestratorApi {
     tally.revived = strays.revived;
     tally.gaveUp = strays.gaveUp;
     for (const t of this.db.listThreads()) {
+      // New bonus rounds leave the accepted task at done throughout. A restart still has to consume
+      // their marker and explain the interrupted run; done tasks are outside the in-flight scan below.
+      if (t.state === "done" && this.db.getThreadStageOutputs(t.id).selfImproving) {
+        this.db.updateThreadStageOutputs(t.id, { selfImproving: false });
+        this.postFinding({ threadId: t.id, fromRole: "implementor", summary: SELF_IMPROVE_INTERRUPTED_MSG, severity: "info" });
+        tally.settled++;
+        continue;
+      }
       if (!IN_FLIGHT.has(t.state)) continue;
       // The auto-review lane is in-process: re-park it for a fresh click rather than resuming. That covers
       // its fix round too, which runs under 'implementing' (an auto-resume state) and would otherwise be
@@ -6399,7 +6401,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // owning run's `finally`. A parked or settled task is not being worked on, so it must not occupy a
     // slot even when whatever was awaiting it never unwinds. The run's own release is still correct and
     // still fires; both are idempotent, and the first one to land pumps the queue.
-    if (SLOT_FREE_STATES.has(t.state)) this.releasePipelineSlot(t.id);
+    if (SLOT_FREE_STATES.has(t.state) && !this.acceptingBeforeBonus.has(t.id) && !this.db.getThreadStageOutputs(t.id).selfImproving) this.releasePipelineSlot(t.id);
     if (t.state === "done") {
       const deployment = t.manualDeployment?.status === "verified" ? t.manualDeployment : null;
       this.notifyOwner(
@@ -8131,8 +8133,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // failover, restart auto-resume). Mark only that pending row as resumed; completed handoffs retain
     // their historical meaning, and post-task self-improvement never creates a work revision.
     if (!this.db.getThreadStageOutputs(thread.id).selfImproving) this.markPendingImplementationMemoResumed(thread.id);
-    this.invalidateManualDeploymentForNewWork(thread.id, "an implementor turn started or resumed");
-    this.setState(thread.id, "implementing");
+    const bonusRound = this.db.getThreadStageOutputs(thread.id).selfImproving === true;
+    if (!bonusRound) {
+      this.invalidateManualDeploymentForNewWork(thread.id, "an implementor turn started or resumed");
+      this.setState(thread.id, "implementing");
+    }
     // Claude uses the planner's per-task effort (with the xhigh gate applied). Codex has its own
     // operator-selected reasoning effort because the CLI takes a persistent model_reasoning_effort.
     // Preserve Codex-only Ultra until the provider branch is known. Claude/z.ai paths clamp it to Max
@@ -8256,6 +8261,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       });
       cfg.model = model;
       cfg.baseUrl = config.zai.baseUrl;
+      if (bonusRound) cfg.maxTurns = SELF_IMPROVE_MAX_TURNS;
       cfg.authToken = this.zaiApiKey();
       if (!opts?.resume && !vanilla) startKickoff = this.withOfficeNote(thread, "implementor", kickoff, true);
       agent = new ZaiAgentRun(cfg);
@@ -8281,6 +8287,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       });
       cfg.model = model;
       cfg.oauthToken = acct.token;
+      if (bonusRound) cfg.maxTurns = SELF_IMPROVE_MAX_TURNS;
       // On a fresh start, fold in a heads-up naming any teammates already live in this repo so the
       // implementor coordinates from turn one (a resumed session already saw the office context). When
       // it's alone in the repo, withOfficeNote returns the kickoff untouched — no office overhead.
@@ -9804,9 +9811,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         }
         this.recordLatestImplementationMemo(thread.id, res, "done");
         this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Implementor finished — QA review is disabled, accepted as done.", severity: "info" });
-        await this.runSelfImprovement(thread, effort, kickoff);
-        if (this.cancelled(thread.id)) return;
-        this.setState(thread.id, "done");
+        await this.finishAcceptedTask(thread, effort, kickoff);
       } else {
         this.recordLatestImplementationMemo(thread.id, res, "review");
         this.settleReview(thread.id, this.implementorParkReason(res, "needs your review (QA is disabled for this task)."));
@@ -9983,9 +9988,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             return;
           }
           this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed without further changes: ${qa.summary}`, severity: "info" });
-          await this.runSelfImprovement(thread, effort, kickoff);
-          if (this.cancelled(thread.id)) return;
-          this.setState(thread.id, "done");
+          await this.finishAcceptedTask(thread, effort, kickoff);
           return;
         }
       }
@@ -10012,9 +10015,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           return;
         }
         this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed: ${qa.summary}`, severity: "info" });
-        await this.runSelfImprovement(thread, effort, kickoff);
-        if (this.cancelled(thread.id)) return;
-        this.setState(thread.id, "done");
+        await this.finishAcceptedTask(thread, effort, kickoff);
         return;
       }
       if (round >= pipe.maxQaRounds) {
@@ -10397,6 +10398,19 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return { handled: true, result: await this.drainQueuedImplementor(thread, effort, kickoff, result, qaFollows) };
   }
 
+  /** Publish acceptance before any optional work. Hold the pipeline slot through the synchronous
+   *  transition so another task cannot start in this workspace before the bonus claims its marker. */
+  private async finishAcceptedTask(thread: Thread, effort: Effort | undefined, kickoff: string): Promise<void> {
+    this.acceptingBeforeBonus.add(thread.id);
+    try {
+      if (!this.cancelled(thread.id)) this.setState(thread.id, "done");
+      await this.runSelfImprovement(thread, effort, kickoff);
+    } finally {
+      this.acceptingBeforeBonus.delete(thread.id);
+      if (!this.db.getThreadStageOutputs(thread.id).selfImproving) this.releasePipelineSlot(thread.id);
+    }
+  }
+
   /** Opt-in post-completion round (the "Self-improve after tasks" setting): once the task is accepted —
    *  QA passed, or a clean finish with QA disabled — re-launch the finished implementor ONCE with
    *  SELF_IMPROVE_MSG so it builds the tools/skills/memories this session showed were missing, before the
@@ -10404,11 +10418,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  best-effort: the task is already complete, so an errored or capped round is noted and the task goes
    *  'done' anyway — it never parks a finished task back into review. */
   private async runSelfImprovement(thread: Thread, effort: Effort | undefined, kickoff: string): Promise<void> {
-    if (!this.settings().selfImproveEnabled || this.cancelled(thread.id)) return;
+    if (this.cancelled(thread.id)) return;
+    const settleDone = (): void => {
+      if (this.db.getThread(thread.id)?.state !== "done") this.setState(thread.id, "done");
+    };
+    if (!this.settings().selfImproveEnabled) { settleDone(); return; }
     // A shotgun collaborator finished one SHARE, not a task. The reflection round is about what the whole
     // job needed, so it belongs to the lead — running it per share would spend N bonus Opus rounds on N
     // partial views, and each one would be reflecting on a tree the other shares are still changing.
-    if (thread.parentId) return;
+    if (thread.parentId) { settleDone(); return; }
     // Several completion paths can converge in the same tick (for example, an accepted QA result and a
     // queued hand-off). This round is intentionally a single best-effort bonus pass, not one pass per
     // completion notification. Claim it before the first await so only the winner posts its status and
@@ -10416,21 +10434,34 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // the same live task during a hand-over.
     if (this.selfImproving.has(thread.id) || this.db.getThreadStageOutputs(thread.id).selfImproving) return;
     const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
-    if (!session) return; // no implementor session to build on — nothing this round could reflect over
+    if (!session) { settleDone(); return; } // no session to build on
+    // CLI resume can self-heal by spawning a fresh process inside one logical turn. This optional
+    // round cannot promise a single launch on those backends, so skip it explicitly.
+    const provider = this.implementorProvider.get(thread.id) ?? this.priorImplementorProvider(thread.id);
+    if (provider === "codex" || provider === "grok") {
+      settleDone();
+      this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Self-improvement round skipped — CLI resume cannot meet the one-launch limit", severity: "info" });
+      return;
+    }
     // Two markers, two jobs. The DURABLE one survives the process: it is how markInterrupted knows a
     // restart landed on already-accepted work and must settle the task done instead of resuming it into
     // the pipeline. The IN-MEMORY one is the episode the inject/resume gates key on while we're alive.
     this.db.updateThreadStageOutputs(thread.id, { selfImproving: true });
     this.selfImproving.add(thread.id);
+    // QA acceptance is published now. The marker keeps the concurrency slot while this optional
+    // worker edits, so a queued task cannot start in the same repo just because the card says done.
+    settleDone();
     try {
       await this.selfImprovementRound(thread, effort, kickoff, session);
     } catch (e) {
       // Best-effort by contract: the task is already accepted, so a throw in the bonus round must not
       // propagate into the caller's settle and strand a finished task mid-pipeline.
       this.hub.log("warn", `Self-improvement round on ${thread.id.slice(0, 8)} failed: ${String(e)}`);
+      this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Self-improvement round didn't finish cleanly — the task itself is already complete and unaffected", detail: String(e), severity: "note" });
     } finally {
       this.db.updateThreadStageOutputs(thread.id, { selfImproving: false });
       this.selfImproving.delete(thread.id);
+      this.releasePipelineSlot(thread.id);
     }
   }
 
@@ -10448,31 +10479,56 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       content: "🛠 Task accepted — running the opt-in self-improvement round before settling to done.",
     });
     this.hub.publish({ type: "thread.message", threadId: thread.id, message: m });
-    // Same slot discipline as a QA fix-round: fully end the finished run, then re-launch through the
-    // resume gate (warm resume when the cache is fresh, else a compressed cold seed).
-    await this.stopLive(thread.id);
+    // Use one direct resume. The ordinary resume gate may spend an unbounded interval compressing
+    // a cold session before the worker starts, which would escape this round's wall-clock budget.
+    const deadline = Date.now() + SELF_IMPROVE_TIMEOUT_MS;
+    let stopTimer: ReturnType<typeof setTimeout> | undefined;
+    const stopped = await Promise.race([
+      this.stopLive(thread.id).then(() => true),
+      new Promise<false>((resolve) => { stopTimer = setTimeout(() => resolve(false), SELF_IMPROVE_TIMEOUT_MS); }),
+    ]);
+    if (stopTimer) clearTimeout(stopTimer);
+    if (!stopped) throw new Error(`The prior run did not stop within ${SELF_IMPROVE_TIMEOUT_MS / 60_000} minutes.`);
     if (this.cancelled(thread.id)) return;
-    const start = await this.startResumedImplementor(thread, kickoff, session, {
-      effort,
-      resumeNudge: SELF_IMPROVE_MSG,
-      directorNote: SELF_IMPROVE_MSG,
-      qaFollows: false,
-    });
-    if (!start) return; // cancelled while compressing the prior session
+    const start = this.startImplementor(thread, SELF_IMPROVE_MSG, { resume: session, effort });
     this.flushDirectorNotes(thread.id, start.run);
-    let res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, SELF_IMPROVE_MSG, false);
-    // Honor anything the owner queued during the round: the Queue button promises delivery at the
-    // implementor's next hand-off boundary, and this is the task's LAST one — the caller settles it done
-    // straight after, so nothing else would ever drain it.
-    res = await this.drainQueuedImplementor(thread, effort, kickoff, res, false);
+    // A bonus gets exactly one provider invocation. Ordinary implementation recovery can spend eight
+    // more launches on a cutoff or empty result and can also fail over on process errors; none is
+    // justified after QA has already accepted the task.
+    const attemptFrom = this.attemptStart(thread.id);
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => { timedOut = true; resolve(undefined); }, Math.max(0, deadline - Date.now()));
+    });
+    let res: ResultEvent | undefined;
+    try {
+      res = await Promise.race([this.awaitTurnResult(start.run, false), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (timedOut) await start.run.stop();
+    }
+    const silent = !timedOut && this.ranSilently(thread.id, "implementor", attemptFrom, res);
+    if (silent) this.markSilentRun(thread.id, "implementor");
+    // A queued owner instruction is separate task work. Close the bonus identity before launching it;
+    // that follow-up uses the normal implementor recovery policy and reopens the accepted card.
+    if (!timedOut && res && !res.isError && !silent && this.queuedForImplementor.get(thread.id)?.length) {
+      this.db.updateThreadStageOutputs(thread.id, { selfImproving: false });
+      this.selfImproving.delete(thread.id);
+      res = await this.drainQueuedImplementor(thread, effort, kickoff, res, false);
+      if (this.cancelled(thread.id)) return;
+      if (res && !res.isError) this.setState(thread.id, "done");
+      else this.settleReview(thread.id, this.implementorParkReason(res, "the queued owner follow-up needs review."));
+    }
     // A cap flagged during this bonus round must not tag the task's settle — the task is going 'done',
     // and a stale flag could otherwise leak into a later settle of this thread.
     this.capParked.delete(thread.id);
-    if (!res || res.isError) {
+    if (!res || res.isError || silent) {
       this.postFinding({
         threadId: thread.id,
         fromRole: "implementor",
         summary: "Self-improvement round didn't finish cleanly — the task itself is already complete and unaffected",
+        detail: timedOut ? `Stopped after ${SELF_IMPROVE_TIMEOUT_MS / 60_000} minutes.` : silent ? SILENT_RUN_ERROR : res?.isError ? runErrorText(res) : "The bonus run ended without a result.",
         severity: "note",
       });
     }
