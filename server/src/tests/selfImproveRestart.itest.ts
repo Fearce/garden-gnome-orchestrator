@@ -199,7 +199,7 @@ interface RoundStubs {
 /** Stub the round's agent-spawning leaves; reports what the round looked like from the inside. */
 function stubRoundLeaves(h: Harness, opts: { throwInRound?: boolean } = {}): RoundStubs {
   const out: RoundStubs = { markerDuringRound: [], episodeDuringRound: [], slotDuringRound: [], drained: 0 };
-  const fakeStart = { run: { send(): void {} }, runId: "run-x", accountId: "acct-a" };
+  const fakeStart = { run: { send(): void {}, async stop(): Promise<void> {} }, runId: "run-x", accountId: "acct-a" };
   h.mgr.stopLive = async (): Promise<void> => {};
   h.mgr.flushDirectorNotes = (): void => {};
   h.mgr.startImplementor = (t: Thread): typeof fakeStart => {
@@ -282,6 +282,7 @@ async function testConcurrentRoundIsOneShot(): Promise<void> {
     h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF: mock"),
     h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF: mock"),
   ]);
+  await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF: mock");
 
   check("only one resumed implementor was started", round.markerDuringRound.length === 1, String(round.markerDuringRound.length));
   check(
@@ -307,14 +308,17 @@ async function testBonusFailureDoesNotResume(): Promise<void> {
     const h = boot(db, dir, workspace);
     h.mgr.setSettings({ selfImproveEnabled: true });
     const id = seedAcceptedTask(db, workspace, false);
+    h.mgr.activePipelines.add(id);
     h.mgr.latestImplementorSession = (): string => "session-abc";
     h.mgr.stopLive = async (): Promise<void> => {};
     h.mgr.flushDirectorNotes = (): void => {};
     let launches = 0;
     let completions = 0;
+    let stops = 0;
+    let heldSlotAtStop = false;
     h.mgr.startImplementor = (): unknown => {
       launches++;
-      return { run: { stop: async (): Promise<void> => {} }, runId: "bonus", accountId: "acct" };
+      return { run: { stop: async (): Promise<void> => { stops++; heldSlotAtStop = h.mgr.activePipelines.has(id); } }, runId: "bonus", accountId: "acct" };
     };
     h.mgr.awaitTurnResult = async (): Promise<unknown> => {
       completions++;
@@ -323,6 +327,7 @@ async function testBonusFailureDoesNotResume(): Promise<void> {
     h.mgr.drainQueuedImplementor = async (_t: Thread, _e: unknown, _k: string, res: unknown): Promise<unknown> => res;
     await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF");
     check(`${outcome.subtype}: only one bonus launch`, launches === 1 && completions === 1, `launches=${launches}, completions=${completions}`);
+    check(`${outcome.subtype}: bonus process is stopped before releasing the slot`, stops === 1 && heldSlotAtStop && !h.mgr.activePipelines.has(id), `stops=${stops}, heldAtStop=${heldSlotAtStop}`);
     check(`${outcome.subtype}: accepted task keeps done state`, db.getThread(id)?.state === "done", `state=${db.getThread(id)?.state}`);
     check(`${outcome.subtype}: failure is visible`, db.listFindings(id).some((f) => f.summary.includes("didn't finish cleanly")));
     h.dispose();

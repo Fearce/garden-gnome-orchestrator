@@ -896,6 +896,7 @@ export interface StageOutputs {
   // implementor goes live, then 'implementing') — so it is the MARKER, never the state, that tells a restart
   // this work is already accepted. Without it a bounce auto-resumes the task back into the pipeline and
   // spends another implementor + QA round on it; with it the restart settles it where it was headed: done.
+  selfImproveAttempted?: boolean; // one bonus decision per task, even after the live marker is cleared.
   capacityStallResumes?: number; // continuations a usage-window rollover has already spent on THIS task after
   // it parked on a capacity-shaped implementor stop that carried no durable cap marker (a per-session turn or
   // cost ceiling, a provider session limit). Durable and never reset except by Retry, because the stall

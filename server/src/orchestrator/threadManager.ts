@@ -10437,9 +10437,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // completion notification. Claim it before the first await so only the winner posts its status and
     // starts the resumed implementor. The durable marker also protects against a second manager seeing
     // the same live task during a hand-over.
-    if (this.selfImproving.has(thread.id) || this.db.getThreadStageOutputs(thread.id).selfImproving) return;
+    const bonusStage = this.db.getThreadStageOutputs(thread.id);
+    if (this.selfImproving.has(thread.id) || bonusStage.selfImproving || bonusStage.selfImproveAttempted) return;
     const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
     if (!session) { settleDone(); return; } // no session to build on
+    this.db.updateThreadStageOutputs(thread.id, { selfImproveAttempted: true });
     // CLI resume can self-heal by spawning a fresh process inside one logical turn. This optional
     // round cannot promise a single launch on those backends, so skip it explicitly.
     const provider = this.implementorProvider.get(thread.id) ?? this.priorImplementorProvider(thread.id);
@@ -10511,7 +10513,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       res = await Promise.race([this.awaitTurnResult(start.run, false), timeout]);
     } finally {
       if (timer) clearTimeout(timer);
-      if (timedOut) await start.run.stop();
+      // A result ends a turn, not the streaming provider process. Keep the workspace slot and
+      // durable bonus marker until that process has stopped, on success and failure alike.
+      await start.run.stop();
     }
     const silent = !timedOut && this.ranSilently(thread.id, "implementor", attemptFrom, res);
     if (silent) this.markSilentRun(thread.id, "implementor");
