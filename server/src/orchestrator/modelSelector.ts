@@ -62,6 +62,8 @@ export interface SelectionContext {
   planText?: string;
   /** Deterministic task-route capability floor. When present, it outranks cheapest-capable/history. */
   policyText?: string;
+  /** Route or planner effort for this task; the selector may change it when the work warrants it. */
+  preferredEffort?: Effort;
   candidates: ModelCandidate[];
   efforts: Effort[];
   repoStats: ModelStat[]; // how auto-picked tasks scored in THIS repo
@@ -237,7 +239,13 @@ function sanitizeReason(reason: string, candidate: ModelCandidate): string {
   return safe.slice(0, MAX_REASON_CHARS);
 }
 
-export function defaultCandidateEffort(candidate: Pick<ModelCandidate, "efforts">): Effort {
+export function defaultCandidateEffort(candidate: Pick<ModelCandidate, "efforts">, preferred?: Effort): Effort {
+  if (preferred) {
+    const atOrBelow = [...EFFORTS].reverse().find((effort) => candidate.efforts.includes(effort) && EFFORTS.indexOf(effort) <= EFFORTS.indexOf(preferred));
+    if (atOrBelow) return atOrBelow;
+    const lowest = EFFORTS.find((effort) => candidate.efforts.includes(effort));
+    if (lowest) return lowest;
+  }
   if (candidate.efforts.includes("high")) return "high";
   for (let i = EFFORTS.length - 1; i >= 0; i--) {
     const effort = EFFORTS[i]!;
@@ -289,6 +297,7 @@ export function buildSelectionPrompt(ctx: SelectionContext): string {
     clip(ctx.brief, BRIEF_CHARS),
     ...(ctx.planText ? ["", "## What the planner found after reading this repository", "", clip(ctx.planText, PLAN_CHARS)] : []),
     ...(ctx.policyText ? ["", "## Mandatory task route policy", "", ctx.policyText] : []),
+    ...(ctx.preferredEffort ? ["", `Task route/planner effort: ${ctx.preferredEffort}. Use this as the starting point; choose another supported effort only when this task's actual difficulty justifies it.`] : []),
     "",
     "## Models that can be dispatched right now (nothing else is available)",
     roster,
@@ -343,10 +352,10 @@ function extractJsonObject(text: string): unknown {
  * Validate a raw reply into a pick, or null. The model id must match the roster EXACTLY (case- and
  * whitespace-insensitively) — the provider comes from the matched roster entry, never from the reply, so
  * a model that names the wrong backend can't route a task to a CLI that has no such model. An
- * unrecognized or model-incompatible effort degrades to that candidate's `high` tier rather than
- * voiding an otherwise good pick. Every implementor backend supports high, so the fallback is safe.
+ * unrecognized or model-incompatible effort degrades to the task's preferred supported tier (or high
+ * when no preference exists) rather than voiding an otherwise good pick.
  */
-export function parseSelection(text: string, ctx: Pick<SelectionContext, "candidates" | "efforts">): ModelPick | null {
+export function parseSelection(text: string, ctx: Pick<SelectionContext, "candidates" | "efforts" | "preferredEffort">): ModelPick | null {
   const obj = extractJsonObject(text);
   if (!obj || typeof obj !== "object") return null;
   const raw = obj as { model?: unknown; effort?: unknown; reason?: unknown };
@@ -356,7 +365,7 @@ export function parseSelection(text: string, ctx: Pick<SelectionContext, "candid
   if (!candidate) return null;
   const selectableEfforts = autoSelectableEffortsForCandidate(candidate, candidate.efforts);
   const requested = String(raw.effort ?? "").trim().toLowerCase();
-  const effort = selectableEfforts.find((e) => e === requested) ?? defaultCandidateEffort({ efforts: selectableEfforts });
+  const effort = selectableEfforts.find((e) => e === requested) ?? defaultCandidateEffort({ efforts: selectableEfforts }, ctx.preferredEffort);
   const reason = typeof raw.reason === "string" ? sanitizeReason(raw.reason, candidate) : "";
   return { provider: candidate.provider, model: candidate.model, effort, reason };
 }
@@ -417,7 +426,7 @@ export async function selectImplementorModel(
   // One dispatchable model = nothing to choose; skip the call rather than pay for a foregone conclusion.
   if (ctx.candidates.length === 1) {
     const only = ctx.candidates[0]!;
-    return { provider: only.provider, model: only.model, effort: defaultCandidateEffort(only), reason: "only dispatchable model" };
+    return { provider: only.provider, model: only.model, effort: defaultCandidateEffort(only, ctx.preferredEffort), reason: "only dispatchable model" };
   }
   const prompt = buildSelectionPrompt(ctx);
   const first = await ask(prompt, token, selectorModel).catch(() => null);

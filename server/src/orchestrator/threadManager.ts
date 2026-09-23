@@ -3881,6 +3881,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     const eligible = policySet.eligible;
     const workspace = normalizeWorkspace(thread.workspace);
+    const preferredEffort = thread.effortOverride ?? plan?.effort ?? stage.plan?.effort ?? stage.routeDecision?.implementorEffort;
     const selection = {
       title: thread.title,
       workspace: thread.workspace,
@@ -3889,6 +3890,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       policyText: policy?.tier === "flagship"
         ? `${policy.reason}. Evidence: ${policy.signals.join("; ")}. Workhorse/economy models are not eligible.`
         : undefined,
+      preferredEffort,
       candidates: eligible,
       efforts: this.selectableEfforts(eligible),
       repoStats: this.db.modelStats(workspace),
@@ -3904,7 +3906,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         : policySet.mode === "fallback"
           ? `Opus 5.5 unavailable; ${only.model} is a policy-approved flagship fallback.`
           : "only dispatchable model";
-      pick = { provider: only.provider, model: only.model, effort: defaultCandidateEffort(only), reason };
+      pick = { provider: only.provider, model: only.model, effort: defaultCandidateEffort(only, preferredEffort), reason };
     } else if (eligible.length > 1) {
       const schema = {
         type: "object", additionalProperties: false, required: ["model", "effort", "reason"],
@@ -3926,7 +3928,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       pick = {
         provider: fallback.provider,
         model: fallback.model,
-        effort: defaultCandidateEffort(fallback),
+        effort: defaultCandidateEffort(fallback, preferredEffort),
         reason: `Opus 5.5 unavailable; ${fallback.model} is the first policy-approved flagship fallback.`,
       };
     } else if (pick && policySet.mode === "fallback") {
@@ -4056,7 +4058,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           const nextPick: ModelPick = {
             provider: replacement.provider,
             model: replacement.model,
-            effort: defaultCandidateEffort(replacement),
+            effort: defaultCandidateEffort(replacement, pick.effort),
             reason: policySet.mode === "preferred"
               ? `Previous ${pick.model} route no longer had safe runway; Opus 5.5 is available.`
               : `Previous ${pick.model} route no longer had safe runway; using approved flagship fallback ${replacement.model}.`,

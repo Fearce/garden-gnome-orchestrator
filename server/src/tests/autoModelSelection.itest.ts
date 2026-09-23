@@ -388,6 +388,27 @@ async function main(): Promise<void> {
     }
   }
 
+  // An enabled selector with one available model has no model judgement to make. The route still
+  // determines effort; otherwise every small task silently falls back to High.
+  console.log("\nTest B2 — one available model keeps the task route's effort");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ autoModelSelection: true });
+      const brief = "fix typo in README.md";
+      const task = h.db.createThread({ title: "typo fix", workspace: h.workspace, rawPrompt: brief, brief });
+      h.db.updateThreadStageOutputs(task.id, { routeDecision: selectRoute({ title: task.title, brief }) });
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [
+        { ...policyCandidate(OPUS_5), efforts: ["low", "medium", "high", "max"] },
+      ];
+      const pick = (await h.internals.autoSelectModel(thread(h, task.id))) as ModelPick;
+      check("a narrow task runs the sole Opus model at Low", pick?.model === OPUS_5 && pick.effort === "low", JSON.stringify(pick));
+      check("no selector call is spent on a one-model roster", h.calls() === 0, String(h.calls()));
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- C: an unusable answer must never route a task --------------------------------------------------
   console.log("\nTest C — an unusable answer falls back to normal routing, once");
   {

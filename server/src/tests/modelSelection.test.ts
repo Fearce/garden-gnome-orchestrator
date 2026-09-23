@@ -15,7 +15,7 @@ import { currentCodexModel, currentCodexModels } from "../agents/codexModelGener
  * Run:  npm run test:model-select   (from server/)   — or:  npx tsx src/tests/modelSelection.test.ts
  */
 
-import { autoSelectableEffortsForCandidate, buildSelectionPrompt, filterAutoSelectionCandidates, modelNote, parseSelection, selectImplementorModel, type ModelCandidate } from "../orchestrator/modelSelector.js";
+import { autoSelectableEffortsForCandidate, buildSelectionPrompt, defaultCandidateEffort, filterAutoSelectionCandidates, modelNote, parseSelection, selectImplementorModel, type ModelCandidate } from "../orchestrator/modelSelector.js";
 import { gradeSettledTask, outcomeOfState, scoreOutcome } from "../orchestrator/modelGrading.js";
 import { CURATED_CODEX_MODELS, fetchZaiModels } from "../agents/modelCatalog.js";
 import { WAKE_MODEL } from "../agents/codexUsagePing.js";
@@ -332,6 +332,10 @@ for (const bad of [
   check("an unknown effort degrades to high rather than voiding the pick", pick?.effort === "high", JSON.stringify(pick));
   const gated = parseSelection('{"model":"glm-4.7","effort":"xhigh","reason":"x"}', CTX);
   check("an effort not supported by the selected model degrades too", gated?.effort === "high", JSON.stringify(gated));
+  const routePreferred = parseSelection('{"model":"glm-4.7","effort":"ludicrous","reason":"x"}', { ...CTX, preferredEffort: "low" });
+  check("invalid selector effort falls back to the route's Low", routePreferred?.effort === "low", JSON.stringify(routePreferred));
+  check("a model without Medium support chooses the closest lower tier", defaultCandidateEffort({ efforts: ["low", "high", "max"] }, "medium") === "low");
+  check("a model without Low support chooses its lowest tier", defaultCandidateEffort({ efforts: ["high", "max"] }, "low") === "high");
   const lowOnly = parseSelection('{"model":"glm-4.7","effort":"xhigh","reason":"x"}', {
     candidates: [{ ...CANDIDATES[4]!, efforts: ["low"] }],
     efforts: ["low"],
@@ -352,6 +356,7 @@ console.log("\n=== the prompt carries what the decision needs ===\n");
     title: "Add a dark-mode toggle",
     workspace: "C:\\repo",
     brief: "The settings panel needs a dark-mode toggle.",
+    preferredEffort: "medium",
     planText: "Summary: one component + one CSS block.\nSteps:\n- Toggle (web/src/x.tsx): add it",
     candidates: CANDIDATES,
     efforts: EFFORTS,
@@ -363,6 +368,7 @@ console.log("\n=== the prompt carries what the decision needs ===\n");
   check("every dispatchable model is offered by exact id", CANDIDATES.every((c) => prompt.includes(c.model)), "a candidate is missing from the roster block");
   check("each candidate's exact effort set is offered", CANDIDATES.every((c) => prompt.includes(`effort ${c.efforts.join(" | ")}`)), "candidate effort coverage missing");
   check("the planner's read of the repo is included", prompt.includes("web/src/x.tsx"), "plan text missing");
+  check("the task's effort starting point reaches the selector", prompt.includes("Task route/planner effort: medium"), "effort starting point missing");
   check("the repo's own history is included", prompt.includes("avg score 88"), "repo stats missing");
   check("the global history is included", prompt.includes("avg score 52"), "global stats missing");
   check("the brief is included", prompt.includes("dark-mode toggle"), "brief missing");
