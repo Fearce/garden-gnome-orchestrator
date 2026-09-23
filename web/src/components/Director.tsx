@@ -85,8 +85,6 @@ export function Director() {
   // (the "so much up top" complaint). Desktop CSS keeps it always visible regardless of this flag.
   const [searchOpen, setSearchOpen] = useState(false);
   const [openComposerSections, setOpenComposerSections] = useState<Array<"work" | "claude" | "codex">>([]);
-  const taskDurationMinutes = useStore((s) => s.settings.taskDurationMinutes);
-  const taskAgentCount = useStore((s) => s.settings.taskAgentCount);
   const codexEnabled = useStore((s) => s.settings.codexEnabled);
   const toggleComposerSection = (section: "work" | "claude" | "codex") => {
     setOpenComposerSections((current) => current.includes(section)
@@ -402,19 +400,17 @@ export function Director() {
             </span>
           ) : null}
         </div>
-        <ComposerSection label="Work" open={openComposerSections.includes("work")} active={taskDurationMinutes > 0 || taskAgentCount > 1} onToggle={() => toggleComposerSection("work")}>
-        <ComposerTaskMode />
-        </ComposerSection>
+        <ComposerTaskMode open={openComposerSections.includes("work")} onToggle={() => toggleComposerSection("work")} />
         {vanillaMode && <DefaultModePickers />}
         {!vanillaMode && showPickers && <div className="composer-model-sections">
-          <ComposerSection label="Claude" open={openComposerSections.includes("claude")} onToggle={() => toggleComposerSection("claude")}>
-            <ComposerImplementorModelPickers provider="claude" />
-            {skip && <ComposerEffortPickers provider="claude" />}
-          </ComposerSection>
-          {codexEnabled && <ComposerSection label="Codex" open={openComposerSections.includes("codex")} onToggle={() => toggleComposerSection("codex")}>
-            <ComposerImplementorModelPickers provider="codex" />
-            {skip && <ComposerEffortPickers provider="codex" />}
-          </ComposerSection>}
+          <div className="composer-model-section">
+            <ComposerImplementorModelPickers provider="claude" open={openComposerSections.includes("claude")} onToggle={() => toggleComposerSection("claude")} />
+            {skip && openComposerSections.includes("claude") && <ComposerEffortPickers provider="claude" />}
+          </div>
+          {codexEnabled && <div className="composer-model-section">
+            <ComposerImplementorModelPickers provider="codex" open={openComposerSections.includes("codex")} onToggle={() => toggleComposerSection("codex")} />
+            {skip && openComposerSections.includes("codex") && <ComposerEffortPickers provider="codex" />}
+          </div>}
         </div>}
         <textarea
           value={text}
@@ -477,28 +473,6 @@ export function Director() {
   );
 }
 
-/** Keep the composer control itself intact when open; only the small edge control is new. */
-function ComposerSection({ label, open, active = false, onToggle, children }: {
-  label: string;
-  open: boolean;
-  active?: boolean;
-  onToggle: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <div className={"composer-section" + (open ? " expanded" : "")}>
-      <button type="button" className={open ? "composer-section-close" : "composer-section-fold" + (active ? " set" : "")}
-        aria-label={`${open ? "Collapse" : "Expand"} ${label}`} aria-expanded={open}
-        title={`${open ? "Collapse" : "Expand"} ${label}`} onClick={onToggle}>
-        {!open && <span>{label}</span>}
-        <span className="composer-section-chevron" aria-hidden="true" />
-      </button>
-      {open && <div className="composer-section-content">{children}</div>}
-    </div>
-  );
-}
-
-
 /** The two task-MODE picks: a wall-clock work window, and how many agents work the objective at once.
  *
  *  Both are off by default and both are expensive when on — an 8h window keeps an implementor working
@@ -508,14 +482,18 @@ function ComposerSection({ label, open, active = false, onToggle, children }: {
  *  real failure mode rather than a hypothetical one.
  *
  *  They apply to the task the next send produces — through the director or straight past it. */
-function ComposerTaskMode() {
+function ComposerTaskMode({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const minutes = useStore((s) => s.settings.taskDurationMinutes);
   const agents = useStore((s) => s.settings.taskAgentCount);
   const setSettings = useStore((s) => s.setSettings);
   const active = minutes > 0 || agents > 1;
 
   return (
-    <div className={"composer-taskmode" + (active ? " on" : "")} aria-label="Task mode">
+    <div className={"composer-taskmode" + (active ? " on" : "") + (open ? "" : " collapsed")} aria-label="Task mode">
+      {!open && <span className="taskmode-summary mono">
+        For / with{active ? ` · ${DURATIONS.find((d) => d.min === minutes)?.label ?? minutes + "m"} · ${agents} ${agents === 1 ? "agent" : "agents"}` : ""}
+      </span>}
+      {open && <>
       <label className="taskmode-field">
         <span className="taskmode-label mono">for</span>
         <select
@@ -567,6 +545,8 @@ function ComposerTaskMode() {
           ×
         </button>
       ) : null}
+      </>}
+      <ComposerDisclosure label="Work" open={open} onToggle={onToggle} />
     </div>
   );
 }
@@ -641,7 +621,11 @@ function RecentReposSelect({
  *  subscriptions inherit unless overridden; Codex writes codex.implementor for OpenAI failover/routing.
  *  The Codex picker only exists while Codex is enabled — the server hard-gates routing on that toggle,
  *  so on a Claude-only deployment the control would configure a backend that can never run. */
-function ComposerImplementorModelPickers({ provider }: { provider: "claude" | "codex" }) {
+function ComposerImplementorModelPickers({ provider, open, onToggle }: {
+  provider: "claude" | "codex";
+  open: boolean;
+  onToggle: () => void;
+}) {
   const settings = useStore((s) => s.settings);
   const { overrides, setModel } = useModelOverrides();
   const claudeValue = overrides[DEFAULT_SUB_ID]?.implementor ?? "";
@@ -660,6 +644,8 @@ function ComposerImplementorModelPickers({ provider }: { provider: "claude" | "c
         ariaLabel="Claude implementor model"
         title="Pick the default Claude model used by future implementor runs."
         onChange={(model) => setModel(DEFAULT_SUB_ID, "implementor", model)}
+        open={open}
+        onToggle={onToggle}
       />}
       {provider === "codex" && settings.codexEnabled && (
         <ComposerModelField
@@ -671,6 +657,8 @@ function ComposerImplementorModelPickers({ provider }: { provider: "claude" | "c
           ariaLabel="Codex implementor model"
           title="Pick the Codex model used when Codex implements or Claude fails over to Codex."
           onChange={(model) => setModel(CODEX_SUB_ID, "implementor", model)}
+          open={open}
+          onToggle={onToggle}
         />
       )}
     </div>
@@ -813,6 +801,8 @@ function ComposerModelField({
   defaultLabel,
   ariaLabel,
   title,
+  open = true,
+  onToggle,
 }: {
   label: string;
   provider: string;
@@ -823,14 +813,19 @@ function ComposerModelField({
   defaultLabel?: string;
   ariaLabel: string;
   title: string;
+  open?: boolean;
+  onToggle?: () => void;
 }) {
   return (
     <div className="composer-model" title={title}>
       <div className="composer-model-meta">
         <span className="composer-model-label mono">{label}</span>
-        <span className="composer-model-provider">{provider}</span>
+        <span className="composer-model-trailing">
+          <span className="composer-model-provider">{provider}</span>
+          {onToggle && <ComposerDisclosure label={label} open={open} onToggle={onToggle} />}
+        </span>
       </div>
-      <ModelSelect
+      {open && <ModelSelect
         value={value}
         options={options}
         allowInherit={allowInherit}
@@ -838,8 +833,18 @@ function ComposerModelField({
         ariaLabel={ariaLabel}
         title={title}
         onChange={onChange}
-      />
+      />}
     </div>
+  );
+}
+
+function ComposerDisclosure({ label, open, onToggle }: { label: string; open: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" className={"composer-disclosure" + (open ? " open" : "")}
+      aria-label={`${open ? "Collapse" : "Expand"} ${label}`} aria-expanded={open}
+      title={`${open ? "Collapse" : "Expand"} ${label}`} onClick={onToggle}>
+      <span className="composer-disclosure-chevron" aria-hidden="true" />
+    </button>
   );
 }
 

@@ -606,25 +606,21 @@ button { font-family: inherit; cursor: pointer; }
 .composer .row .btn, .composer .row .attach-btn { flex: 0 0 auto; white-space: nowrap; }
 .composer input.ws:focus { outline: none; border-color: var(--line-strong); color: var(--text); }
 
-/* Fold each existing composer control in place. Expanded children retain their own layout and style. */
-.composer-section.expanded { display: flex; align-items: flex-start; gap: 5px; min-width: 0; }
-.composer-section-content { order: 1; flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+/* Disclosure arrows live inside the work row and model card headers. */
 .composer-model-sections { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 7px; }
-.composer-section-close, .composer-section-fold {
-  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
-  color: var(--text-faint); cursor: pointer;
+.composer-model-section { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.composer-model-trailing { min-width: 0; display: inline-flex; align-items: center; gap: 6px; }
+.composer-disclosure {
+  flex: none; width: 18px; height: 18px; padding: 0; display: grid; place-items: center;
+  border: none; border-radius: var(--r-sm); background: transparent; color: var(--text-faint);
 }
-.composer-section-close { order: 2; flex: 0 0 22px; height: 22px; padding: 0; display: grid; place-items: center; }
-.composer-section-fold {
-  align-self: flex-start; display: inline-flex; align-items: center; justify-content: space-between; gap: 12px;
-  min-width: 76px; height: 24px; padding: 0 8px; font: 10px var(--font-mono);
-  text-transform: uppercase; letter-spacing: 0.06em;
+.composer-disclosure:hover { color: var(--text); background: var(--bg-3); }
+.composer-disclosure:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.composer-disclosure-chevron {
+  width: 6px; height: 6px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor;
+  transform: rotate(45deg) translateY(-2px);
 }
-.composer-section-close:hover, .composer-section-fold:hover { color: var(--text); border-color: var(--line-strong); }
-.composer-section-close:focus-visible, .composer-section-fold:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.composer-section-fold.set { color: var(--role-implementor); border-color: color-mix(in oklch, var(--role-implementor) 45%, var(--line)); }
-.composer-section-chevron { width: 6px; height: 6px; border-right: 1px solid currentColor; border-bottom: 1px solid currentColor; transform: rotate(45deg) translateY(-2px); }
-.composer-section-close .composer-section-chevron { transform: rotate(225deg) translate(-1px, -1px); }
+.composer-disclosure.open .composer-disclosure-chevron { transform: rotate(225deg) translate(-1px, -1px); }
 
 /* ---- skip-director composer mode ---- */
 .composer-mode { display: flex; align-items: center; gap: 9px; min-height: 24px; }
@@ -3514,6 +3510,18 @@ button.note-from:hover { color: var(--text-dim); }
   background: color-mix(in oklch, var(--accent) 7%, transparent);
   border-color: color-mix(in oklch, var(--accent) 30%, transparent);
 }
+.composer-taskmode.collapsed {
+  align-self: flex-start; gap: 7px; margin-bottom: 0; padding: 3px 7px;
+  border-color: var(--line); border-radius: var(--r-sm); background: var(--bg-2);
+}
+.composer-taskmode.collapsed.on {
+  background: color-mix(in oklch, var(--accent) 7%, var(--bg-2));
+  border-color: color-mix(in oklch, var(--accent) 30%, var(--line));
+}
+.taskmode-summary { font-size: 10px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+.composer-taskmode.on .taskmode-summary { color: var(--accent); }
+.composer-taskmode > .composer-disclosure { margin-left: auto; }
+.composer-taskmode.collapsed > .composer-disclosure { margin-left: 0; }
 .taskmode-field { display: inline-flex; align-items: center; gap: 6px; }
 .taskmode-label { font-size: 10px; color: var(--text-faint); letter-spacing: 0.06em; text-transform: uppercase; }
 .taskmode-select {
