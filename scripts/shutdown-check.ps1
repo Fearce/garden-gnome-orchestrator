@@ -67,6 +67,16 @@ if ($Action -eq 'Arm') {
     return
 }
 
+# The clock is the first decision on every run. The native Windows job already owns shutdown
+# at 03:00; disable future GGO runs even if a pre-deadline check still holds the mutex.
+if ($runStartedAt -ge $deadline) {
+    $node = (Get-Command node -ErrorAction Stop).Source
+    & $node $boardScript --expire
+    if ($LASTEXITCODE -ne 0) { throw 'Could not disable the expired GGO schedule.' }
+    Write-Result '03:00 passed; GGO schedule disabled and verified.'
+    return
+}
+
 # Both the Windows checker and GGO schedule may fire in the same five-minute slot.
 # Only one run may cancel the deadline and create an early shutdown task.
 $runMutex = [System.Threading.Mutex]::new($false, 'Global\GGO-OneTime-Shutdown-Check-2026-09-24')
@@ -82,16 +92,7 @@ try {
         return
     }
 
-# The clock is the first decision on every run. The native Windows job already owns shutdown
-# at 03:00; this path only turns off future GGO runs and never schedules another shutdown.
 $node = (Get-Command node -ErrorAction Stop).Source
-if ($runStartedAt -ge $deadline) {
-    & $node $boardScript --expire
-    if ($LASTEXITCODE -ne 0) { throw 'Could not disable the expired GGO schedule.' }
-    Write-Result '03:00 passed; GGO schedule disabled and verified.'
-    return
-}
-
 & $deadlineScript -Action Arm | Out-Null
 & $node $boardScript --check
 $auditCode = $LASTEXITCODE
