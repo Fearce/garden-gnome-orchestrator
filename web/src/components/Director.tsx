@@ -84,6 +84,15 @@ export function Director() {
   // Mobile only: the search bar is collapsed behind a header icon so the transcript gets that row back
   // (the "so much up top" complaint). Desktop CSS keeps it always visible regardless of this flag.
   const [searchOpen, setSearchOpen] = useState(false);
+  const [openComposerSections, setOpenComposerSections] = useState<Array<"work" | "claude" | "codex">>([]);
+  const taskDurationMinutes = useStore((s) => s.settings.taskDurationMinutes);
+  const taskAgentCount = useStore((s) => s.settings.taskAgentCount);
+  const codexEnabled = useStore((s) => s.settings.codexEnabled);
+  const toggleComposerSection = (section: "work" | "claude" | "codex") => {
+    setOpenComposerSections((current) => current.includes(section)
+      ? current.filter((item) => item !== section)
+      : [...current, section]);
+  };
   const searchInputRef = useRef<HTMLInputElement>(null);
   const directorSearch = useStore((s) => s.directorSearch);
   const searchDirector = useStore((s) => s.searchDirector);
@@ -393,15 +402,20 @@ export function Director() {
             </span>
           ) : null}
         </div>
+        <ComposerSection label="Work" open={openComposerSections.includes("work")} active={taskDurationMinutes > 0 || taskAgentCount > 1} onToggle={() => toggleComposerSection("work")}>
         <ComposerTaskMode />
-        {vanillaMode ? (
-          <DefaultModePickers />
-        ) : (
-          <>
-            {showPickers && <ComposerImplementorModelPickers />}
-            {showPickers && skip && <ComposerEffortPickers />}
-          </>
-        )}
+        </ComposerSection>
+        {vanillaMode && <DefaultModePickers />}
+        {!vanillaMode && showPickers && <div className="composer-model-sections">
+          <ComposerSection label="Claude" open={openComposerSections.includes("claude")} onToggle={() => toggleComposerSection("claude")}>
+            <ComposerImplementorModelPickers provider="claude" />
+            {skip && <ComposerEffortPickers provider="claude" />}
+          </ComposerSection>
+          {codexEnabled && <ComposerSection label="Codex" open={openComposerSections.includes("codex")} onToggle={() => toggleComposerSection("codex")}>
+            <ComposerImplementorModelPickers provider="codex" />
+            {skip && <ComposerEffortPickers provider="codex" />}
+          </ComposerSection>}
+        </div>}
         <textarea
           value={text}
           placeholder={
@@ -460,6 +474,27 @@ export function Director() {
       <FolderPicker initialPath={ws} onSelect={setWs} onClose={() => setPickerOpen(false)} />
     )}
     </>
+  );
+}
+
+/** Keep the composer control itself intact when open; only the small edge control is new. */
+function ComposerSection({ label, open, active = false, onToggle, children }: {
+  label: string;
+  open: boolean;
+  active?: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className={"composer-section" + (open ? " expanded" : "")}>
+      <button type="button" className={open ? "composer-section-close" : "composer-section-fold" + (active ? " set" : "")}
+        aria-label={`${open ? "Collapse" : "Expand"} ${label}`} aria-expanded={open}
+        title={`${open ? "Collapse" : "Expand"} ${label}`} onClick={onToggle}>
+        {!open && <span>{label}</span>}
+        <span className="composer-section-chevron" aria-hidden="true" />
+      </button>
+      {open && <div className="composer-section-content">{children}</div>}
+    </div>
   );
 }
 
@@ -606,7 +641,7 @@ function RecentReposSelect({
  *  subscriptions inherit unless overridden; Codex writes codex.implementor for OpenAI failover/routing.
  *  The Codex picker only exists while Codex is enabled — the server hard-gates routing on that toggle,
  *  so on a Claude-only deployment the control would configure a backend that can never run. */
-function ComposerImplementorModelPickers() {
+function ComposerImplementorModelPickers({ provider }: { provider: "claude" | "codex" }) {
   const settings = useStore((s) => s.settings);
   const { overrides, setModel } = useModelOverrides();
   const claudeValue = overrides[DEFAULT_SUB_ID]?.implementor ?? "";
@@ -615,7 +650,7 @@ function ComposerImplementorModelPickers() {
 
   return (
     <div className="composer-model-row" aria-label="Implementor models">
-      <ComposerModelField
+      {provider === "claude" && <ComposerModelField
         label="Claude"
         provider="Anthropic"
         value={claudeValue}
@@ -625,8 +660,8 @@ function ComposerImplementorModelPickers() {
         ariaLabel="Claude implementor model"
         title="Pick the default Claude model used by future implementor runs."
         onChange={(model) => setModel(DEFAULT_SUB_ID, "implementor", model)}
-      />
-      {settings.codexEnabled && (
+      />}
+      {provider === "codex" && settings.codexEnabled && (
         <ComposerModelField
           label="Codex"
           provider="OpenAI"
@@ -647,7 +682,7 @@ function ComposerImplementorModelPickers() {
  *  planner's per-task choice ("Auto" leaves the planner — or the high default — in charge); the Codex pick
  *  binds the same global reasoning effort as Settings → Subscriptions, applied to every Codex run.
  *  Like the model picker, the Codex select is omitted while Codex is disabled. */
-function ComposerEffortPickers() {
+function ComposerEffortPickers({ provider }: { provider: "claude" | "codex" }) {
   const effort = useStore((s) => s.settings.skipDirectorEffort);
   const codexEffort = useStore((s) => s.settings.codexEffort);
   const codexEnabled = useStore((s) => s.settings.codexEnabled);
@@ -669,7 +704,7 @@ function ComposerEffortPickers() {
 
   return (
     <div className="composer-model-row" aria-label="Implementor effort">
-      <div className="composer-model" title={claudeTitle}>
+      {provider === "claude" && <div className="composer-model" title={claudeTitle}>
         <div className="composer-model-meta">
           <span className="composer-model-label mono">Effort</span>
           <span className="composer-model-provider">Claude</span>
@@ -688,8 +723,8 @@ function ComposerEffortPickers() {
             </option>
           ))}
         </select>
-      </div>
-      {codexEnabled && (
+      </div>}
+      {provider === "codex" && codexEnabled && (
         <div className="composer-model" title={codexTitle}>
           <div className="composer-model-meta">
             <span className="composer-model-label mono">Effort</span>
