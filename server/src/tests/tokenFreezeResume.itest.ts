@@ -383,7 +383,12 @@ async function main(): Promise<void> {
       h.stub.fireUsageRefresh();
       await delay(80);
       let starts = 0;
-      internals.startPipeline = () => starts++;
+      // Started → ran to completion (leaf stubbed). Left `queued`, the restart below would re-arm a 4s
+      // requeue timer that fires into this harness's closed DB.
+      internals.startPipeline = (id: string) => {
+        starts++;
+        h.db.updateThread(id, { state: "done" });
+      };
       const queued = h.db.createThread({ title: "held fresh dispatch", workspace: h.workspace, rawPrompt: "p" });
       internals.enqueueOrRun(queued.id);
 
@@ -431,6 +436,9 @@ async function main(): Promise<void> {
       if (r.capSupervisor) clearInterval(r.capSupervisor);
       if (r.tokenResumeTimer) clearTimeout(r.tokenResumeTimer);
       if (r.capResumeWake) clearTimeout(r.capResumeWake);
+      // Its boot reconcile found `second` in flight and armed a 4s restart auto-resume, which would fire
+      // into this harness's closed DB and crash the gate. The timer calls resumeThread at fire time.
+      r.resumeThread = async () => undefined;
 
       // A genuine below-limit reading ends the crossing; the NEXT crossing freezes work again.
       h.stub.util = 50;
