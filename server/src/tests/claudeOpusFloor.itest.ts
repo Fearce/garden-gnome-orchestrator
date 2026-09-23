@@ -222,20 +222,20 @@ console.log("\n=== claude opus floor — the auto-selection roster ===\n");
     { provider: "claude" as const, model: "claude-opus-5-5" },
     { provider: "claude" as const, model: "claude-opus-5" },
     { provider: "claude" as const, model: "claude-sonnet-5" },
-    { provider: "codex" as const, model: "gpt-5.6-terra" },
+    { provider: "codex" as const, model: "gpt-6-sol" },
     { provider: "codex" as const, model: "gpt-5.5" },
   ];
   const kept = filterAutoSelectionCandidates(candidates).map((c) => `${c.provider}:${c.model}`);
   check("a retired Opus is dropped while a current one is dispatchable", !kept.includes("claude:claude-opus-5"), kept.join(","));
   check("the current Opus and the cheaper Claude tiers stay", kept.includes("claude:claude-opus-5-5") && kept.includes("claude:claude-sonnet-5"), kept.join(","));
-  check("the existing Codex floor is unaffected by the new arm", kept.includes("codex:gpt-5.6-terra") && !kept.includes("codex:gpt-5.5"), kept.join(","));
+  check("the GPT-6-only Codex policy keeps current models and drops older ones", kept.includes("codex:gpt-6-sol") && !kept.includes("codex:gpt-5.5"), kept.join(","));
 }
 {
   // Each backend's floor is gated on ITS own current option: a Claude roster offering only the retired
   // tier must stay selectable, or the filter removes the backend from the choice entirely.
   const kept = filterAutoSelectionCandidates([
     { provider: "claude" as const, model: "claude-opus-5" },
-    { provider: "codex" as const, model: "gpt-5.6-terra" },
+    { provider: "codex" as const, model: "gpt-6-sol" },
   ]).map((c) => `${c.provider}:${c.model}`);
   check("a current Codex model does not drop a retired Claude one", kept.includes("claude:claude-opus-5"), kept.join(","));
 }
@@ -248,7 +248,7 @@ console.log("\n=== claude opus floor — the wiring (real ThreadManager, real Db
   const h = makeHarness({
     acct1: { director: "claude-opus-5", planner: "claude-opus-5", researcher: "claude-opus-5", implementor: "claude-opus-5", qa: "claude-opus-5" },
     acct2: { director: "claude-sonnet-4-6", planner: "claude-opus-5", researcher: "claude-opus-5", implementor: "claude-opus-5", qa: "claude-opus-5" },
-    codex: { implementor: "gpt-5.6-terra", qa: "gpt-5.5" },
+    codex: { implementor: "gpt-6-sol", qa: "gpt-5.5" },
   });
   try {
     check(
@@ -278,7 +278,7 @@ console.log("\n=== claude opus floor — the wiring (real ThreadManager, real Db
     );
     check(
       "the Codex review floor beside it still applies",
-      h.internals.codexRoleModel("qa") !== "gpt-5.5" && h.internals.codexRoleModel("implementor") === "gpt-5.6-terra",
+      h.internals.codexRoleModel("qa") !== "gpt-5.5" && h.internals.codexRoleModel("implementor") === "gpt-6-sol",
       `${h.internals.codexRoleModel("qa")}/${h.internals.codexRoleModel("implementor")}`,
     );
     check(

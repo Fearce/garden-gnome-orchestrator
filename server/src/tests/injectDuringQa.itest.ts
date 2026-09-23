@@ -476,7 +476,7 @@ async function main(): Promise<void> {
     try {
       const id = seedTask(h);
       h.db.updateThread(id, { state: "reviewing" });
-      const reviewer = new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: h.workspace, apiKey: "test-key" });
+      const reviewer = new CodexAgentRun({ model: "gpt-6-sol", effort: "low", cwd: h.workspace, apiKey: "test-key" });
       const cli = reviewer as unknown as {
         turnActive: boolean;
         sessionId: string;
@@ -488,7 +488,7 @@ async function main(): Promise<void> {
       cli.requestInterrupt = () => {
         interrupts++;
       };
-      const run = h.db.createRun({ threadId: id, role: "reviewer", model: "gpt-5.6", account: "codex:gpt-5.6" });
+      const run = h.db.createRun({ threadId: id, role: "reviewer", model: "gpt-6-sol", account: "codex:gpt-6-sol" });
       h.internals.liveReviewer.set(id, reviewer);
       h.internals.liveReviewerRunId.set(id, run.id);
       h.internals.reviewing.add(id);

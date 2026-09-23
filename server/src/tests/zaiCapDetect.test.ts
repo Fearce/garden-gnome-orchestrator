@@ -167,7 +167,7 @@ for (const prose of [
   assert.equal(thrownRun.rateLimited, true, "a thrown HTTP 429 synthesizes the cap signal consumed by stage fallback");
   assert.equal(thrownRun.lastResult?.isError, true, "a thrown cap also resolves the waiting stage result");
 
-  const codex = new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
+  const codex = new CodexAgentRun({ model: "gpt-6-sol", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
   (codex as unknown as { handleEvent(event: unknown): void }).handleEvent({ type: "turn.failed", error: { message: openAiQuota } });
   assert.equal(codex.capped, true, "a Codex CLI quota error uses the same provider fallback path");
 
@@ -177,12 +177,12 @@ for (const prose of [
     { message: "Insufficient quota" },
     { message: "insufficient-quota" },
   ]) {
-    const structuredCodex = new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
+    const structuredCodex = new CodexAgentRun({ model: "gpt-6-sol", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
     (structuredCodex as unknown as { handleEvent(event: unknown): void }).handleEvent({ type: "turn.failed", error });
     assert.equal(structuredCodex.capped, true, `Codex ${JSON.stringify(error)} is a provider-fallback cap`);
   }
 
-  const errorEventCodex = new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
+  const errorEventCodex = new CodexAgentRun({ model: "gpt-6-sol", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
   (errorEventCodex as unknown as { handleEvent(event: unknown): void }).handleEvent({
     type: "error",
     error: { message: "Request rejected by upstream provider", code: "insufficient_quota" },
@@ -196,7 +196,7 @@ for (const prose of [
 {
   const notice = "You've hit your usage limit. Try again at Sep 2nd, 2030 2:23 PM.";
   const reset = new Date("Sep 2, 2030 2:23 PM").getTime();
-  const codex = new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
+  const codex = new CodexAgentRun({ model: "gpt-6-sol", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
   const internal = codex as unknown as { handleEvent(event: unknown): void; onTurnClose(code: number | null): void };
   internal.handleEvent({ type: "item.completed", item: { type: "agent_message", text: notice } });
   internal.handleEvent({ type: "turn.completed" });

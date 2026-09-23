@@ -35,7 +35,7 @@ function assertAppendInterruptsBatch(run: CodexAgentRun | GrokAgentRun, label: s
   assert.equal(interrupts, 1, `${label} append injection must interrupt its active batch immediately`);
 }
 
-assertAppendInterruptsBatch(new CodexAgentRun({ model: "gpt-5.6", effort: "low", cwd: process.cwd(), apiKey: "test-key" }), "Codex");
+assertAppendInterruptsBatch(new CodexAgentRun({ model: "gpt-6-sol", effort: "low", cwd: process.cwd(), apiKey: "test-key" }), "Codex");
 assertAppendInterruptsBatch(new GrokAgentRun({ model: "grok-4.5", effort: "low", cwd: process.cwd() }), "Grok");
 
 console.log("injection: acknowledgement framing and immediate CLI append delivery verified");
