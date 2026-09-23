@@ -366,6 +366,11 @@ async function assertFilter(check, tag, page, shot) {
   await page.locator(".feed-filter .tools-toggle").click();
   check(`${tag} · TOOLS still toggles`, await page.locator(".feed-filter .tools-toggle").evaluate((el) => el.classList.contains("off")));
   await page.locator(".feed-filter .tools-toggle").click();
+  const implementor = page.locator(".feed-filter button").filter({ hasText: "implementor" });
+  await implementor.click();
+  check(`${tag} · long implementor filter still selects`, await implementor.evaluate((el) => el.classList.contains("on")));
+  if (shot) await page.locator(".feed-filter").screenshot({ path: path.join(shot, `${tag.replace(/[^a-z0-9]+/gi, "-")}-filter-implementor.png`) });
+  await page.locator(".feed-filter button").first().click();
   if (filter.scrollWidth > filter.stripWidth + 1) {
     await page.locator(".feed-filter").evaluate((el) => { el.scrollLeft = el.scrollWidth; });
     const endVisible = await page.locator(".feed-filter").evaluate((el) => {
