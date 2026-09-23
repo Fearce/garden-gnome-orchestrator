@@ -93,6 +93,21 @@ try {
     }
 
 $node = (Get-Command node -ErrorAction Stop).Source
+# A queued GGO check may start after another run has cancelled the deadline and
+# scheduled the early shutdown. Do not re-arm the 03:00 job in that window.
+$pendingEarly = Get-Task $earlyName
+if ($pendingEarly) {
+    if (@($pendingEarly.Actions).Count -ne 1 -or
+        $pendingEarly.Actions[0].Execute -ne $shutdownExe -or
+        $pendingEarly.Actions[0].Arguments -ne '/s /t 0' -or
+        $pendingEarly.Settings.StartWhenAvailable -or -not $pendingEarly.Settings.Enabled -or
+        $pendingEarly.Settings.DeleteExpiredTaskAfter -ne 'P2D') {
+        & $deadlineScript -Action Arm | Out-Null
+        throw "Unexpected early shutdown task $earlyName; preserving the 03:00 deadline."
+    }
+    Write-Result 'Early shutdown is already scheduled; leaving the 03:00 deadline cancelled.'
+    return
+}
 & $deadlineScript -Action Arm | Out-Null
 & $node $boardScript --check
 $auditCode = $LASTEXITCODE
@@ -120,8 +135,10 @@ try {
     $shutdownAt = (Get-Date).AddSeconds(60)
     $trigger = New-ScheduledTaskTrigger -Once -At $shutdownAt
     $trigger.EndBoundary = $shutdownAt.AddMinutes(1).ToString('s')
+    # Retain the completed task beyond 03:00 so a queued GGO check resumed after
+    # reboot still sees that the one-time early shutdown already happened.
     $settings = New-ScheduledTaskSettingsSet -WakeToRun -AllowStartIfOnBatteries `
-        -DontStopIfGoingOnBatteries -DeleteExpiredTaskAfter (New-TimeSpan -Hours 1)
+        -DontStopIfGoingOnBatteries -DeleteExpiredTaskAfter (New-TimeSpan -Days 2)
     $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
         -LogonType Interactive -RunLevel Limited
     $actionSpec = New-ScheduledTaskAction -Execute $shutdownExe -Argument '/s /t 0'
@@ -132,7 +149,8 @@ try {
     if (-not $early -or @($early.Triggers).Count -ne 1 -or @($early.Actions).Count -ne 1 -or
         [datetimeoffset]::Parse($early.Triggers[0].StartBoundary).LocalDateTime.ToString('s') -ne $shutdownAt.ToString('s') -or
         $early.Actions[0].Execute -ne $shutdownExe -or $early.Actions[0].Arguments -ne '/s /t 0' -or
-        $early.Settings.StartWhenAvailable -or -not $early.Settings.WakeToRun -or -not $early.Settings.Enabled) {
+        $early.Settings.StartWhenAvailable -or -not $early.Settings.WakeToRun -or -not $early.Settings.Enabled -or
+        $early.Settings.DeleteExpiredTaskAfter -ne 'P2D') {
         throw "Could not verify graceful shutdown task $earlyName."
     }
     Write-Result '03:00 deadline cancelled and verified; GGO schedule disabled and verified. Graceful shutdown scheduled in 60 seconds.'
