@@ -133,7 +133,7 @@ interface Harness {
   dispose(): void;
 }
 
-function makeHarness(script: ("silent" | "works")[]): Harness {
+function makeHarness(script: ("silent" | "works")[], tieRunStarts = false): Harness {
   const dir = mkdtempSync(join(tmpdir(), "silent-resume-"));
   const workspace = join(dir, "workspace");
   mkdirSync(workspace, { recursive: true });
@@ -158,6 +158,12 @@ function makeHarness(script: ("silent" | "works")[]): Harness {
     asks.push({ session, forceFresh: !!opts.forceFresh, nudge: opts.resumeNudge });
     const behaviour = script[asks.length - 1] ?? "silent";
     const run = db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5-5", account: "a" });
+    // Two fast launches can share one millisecond. Force that ordering in the race case so a previous
+    // zero-turn row cannot masquerade as the working retry when the latest attempt is selected.
+    if (tieRunStarts) {
+      const firstStart = db.listRuns(t.id)[0]?.startedAt;
+      if (firstStart != null) db.raw.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(firstStart, run.id);
+    }
     internals.live.set(t.id, { run: fakeRun(), runId: run.id, accountId: "a" });
     // A working resume writes output the way wireRun does; a silent one writes nothing at all.
     if (behaviour === "works") db.addMessage({ threadId: t.id, runId: run.id, role: "implementor", kind: "text", content: "Patched the file." });
@@ -203,7 +209,7 @@ async function drive(h: Harness, firstProduces: boolean, endsFirst = false): Pro
 function firstRunRow(h: Harness): Record<string, unknown> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return (h.db as any).raw
-    .prepare("SELECT * FROM agent_runs WHERE thread_id = ? ORDER BY started_at ASC LIMIT 1")
+    .prepare("SELECT * FROM agent_runs WHERE thread_id = ? ORDER BY started_at ASC, rowid ASC LIMIT 1")
     .get(h.thread.id) as Record<string, unknown>;
 }
 
@@ -258,9 +264,11 @@ console.log("\n=== E. the stamp survives the run finalizing FIRST (onEnd wins th
   // The real runner's `onEnd` clears `this.live` and finalizes the row as `done` — and for a silent run the
   // CLI exits immediately, so it frequently lands before the awaited result is observed. Keying the stamp
   // off `this.live`, or skipping an already-stamped `endedAt`, silently left the misleading `done` row.
-  const h = makeHarness(["works"]);
+  const h = makeHarness(["works"], true);
   const res = await drive(h, false, true);
   const row = firstRunRow(h);
+  const runs = h.db.listRuns(h.thread.id);
+  check("the retry shares the first run's start millisecond", runs.length === 2 && runs[0]?.startedAt === runs[1]?.startedAt);
   check("the silent run was still detected and retried", h.asks.length === 1, `${h.asks.length} resume(s)`);
   check("the already-finalized `done` row is corrected to error", row.state === "error", String(row.state));
   check("probe:run-errors still classifies it as `silent`", classifyRun(row) === "silent", classifyRun(row));

@@ -2228,7 +2228,7 @@ export class Db {
 
   listRuns(threadId: string): AgentRun[] {
     return (
-      this.raw.prepare("SELECT * FROM agent_runs WHERE thread_id = ? ORDER BY started_at ASC").all(threadId) as Row[]
+      this.raw.prepare("SELECT * FROM agent_runs WHERE thread_id = ? ORDER BY started_at ASC, rowid ASC").all(threadId) as Row[]
     ).map(rowToRun);
   }
 

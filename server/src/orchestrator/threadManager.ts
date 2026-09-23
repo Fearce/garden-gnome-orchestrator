@@ -8937,7 +8937,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const attempt = this.db
       .listRuns(threadId)
       .filter((run) => run.role === role && run.startedAt >= from)
-      .sort((a, b) => b.startedAt - a.startedAt)[0];
+      .at(-1); // listRuns breaks same-millisecond ties by insertion order
     return attempt?.numTurns === 0 && attempt.costUsd === 0;
   }
 
@@ -8962,13 +8962,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.emitRun(runId);
   }
 
-  /** The thread's most recent run row for a role, by start time — the run whose result just came back
-   *  once `onEnd` has already cleared the live handle. */
+  /** The thread's most recent run row for a role, by start time and insertion order — the run whose
+   *  result just came back once `onEnd` has already cleared the live handle. */
   private latestRunIdOf(threadId: string, role: Role): string | undefined {
     return this.db
       .listRuns(threadId)
       .filter((r) => r.role === role)
-      .sort((a, b) => b.startedAt - a.startedAt)[0]?.id;
+      .at(-1)?.id;
   }
 
   /** The owner-facing park reason for an implementor that ended on an error result instead of finishing.
