@@ -482,16 +482,6 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   sample="Dispatch the implementor and watch it work"
                 />
               </Group>
-              <Group label="Director chat">
-                <NumberRow
-                  label="Transcript text size (px)"
-                  hint="Changes the user and director messages in the chat transcript. Stored in this browser."
-                  value={directorChatFontSize}
-                  min={DIRECTOR_CHAT_FONT_MIN}
-                  max={DIRECTOR_CHAT_FONT_MAX}
-                  onChange={setDirectorChatFontSize}
-                />
-              </Group>
               <Group label="Heading typeface">
                 <div className="settings-note tight">
                   The face the console names things in: the wordmark in the top bar, a task card's header,
@@ -523,6 +513,16 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   Every face ships in the console's own bundle rather than from a font CDN, so they render
                   the same on the LAN with no internet at all.
                 </div>
+              </Group>
+              <Group label="Director chat">
+                <NumberRow
+                  label="Transcript text size (px)"
+                  hint="Changes the user and director messages in the chat transcript. Stored in this browser."
+                  value={directorChatFontSize}
+                  min={DIRECTOR_CHAT_FONT_MIN}
+                  max={DIRECTOR_CHAT_FONT_MAX}
+                  onChange={setDirectorChatFontSize}
+                />
               </Group>
               <Group label="Screensaver">
                 <ToggleRow
