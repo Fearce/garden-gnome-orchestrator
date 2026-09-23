@@ -17,6 +17,10 @@ if ((Get-TimeZone).Id -ne 'Romance Standard Time') {
 
 $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 
+if ($Action -eq 'Arm' -and (Get-Date) -ge $deadline) {
+    throw 'The one-time 03:00 deadline has passed; refusing to arm a later shutdown.'
+}
+
 if ($Action -eq 'Cancel') {
     if ($existing) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false }
     if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
@@ -27,7 +31,6 @@ if ($Action -eq 'Cancel') {
 }
 
 if ($Action -eq 'Arm' -and -not $existing) {
-    if ((Get-Date) -ge $deadline) { throw 'The one-time 03:00 deadline has passed; refusing to arm a later shutdown.' }
     $trigger = New-ScheduledTaskTrigger -Once -At $deadline
     $trigger.EndBoundary = $deadline.AddMinutes(1).ToString('s')
     $settings = New-ScheduledTaskSettingsSet -WakeToRun -AllowStartIfOnBatteries `

@@ -6,12 +6,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $checkName = 'GGO-Shutdown-Board-Check-2026-09-24'
-$earlyName = 'GGO-Early-Shutdown-2026-09-24'
 $deadline = [datetime]::ParseExact('2026-09-24 03:00:00', 'yyyy-MM-dd HH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
 $boardScript = Join-Path $PSScriptRoot 'shutdown-board.cjs'
 $deadlineScript = Join-Path $PSScriptRoot 'shutdown-deadline.ps1'
 $shutdownExe = Join-Path $env:SystemRoot 'System32\shutdown.exe'
 $logPath = Join-Path $PSScriptRoot '..\server\data\shutdown-check.log'
+$runStartedAt = if ($Action -eq 'Run') { Get-Date } else { $null }
 
 function Write-Result([string]$message) {
     $line = "$(Get-Date -Format o) $message"
@@ -29,8 +29,7 @@ if (-not (Test-Path -LiteralPath $deadlineScript)) { throw "Missing deadline scr
 
 if ($Action -eq 'Status') {
     $check = Get-Task $checkName
-    $early = Get-Task $earlyName
-    Write-Output "check=$($check.State); early=$($early.State); deadline=$deadline"
+    Write-Output "check=$($check.State); deadline=$deadline"
     return
 }
 
@@ -62,49 +61,41 @@ if ($Action -eq 'Arm') {
     return
 }
 
-if ((Get-Date) -ge $deadline) { Write-Result 'At or after 03:00; native deadline owns shutdown.'; return }
+# The clock is the first decision on every run. The native Windows job already owns shutdown
+# at 03:00; this path only turns off future GGO runs and never schedules another shutdown.
 $node = (Get-Command node -ErrorAction Stop).Source
+if ($runStartedAt -ge $deadline) {
+    & $node $boardScript --expire
+    if ($LASTEXITCODE -ne 0) { throw 'Could not disable the expired GGO schedule.' }
+    Write-Result '03:00 passed; GGO schedule disabled and verified.'
+    return
+}
+
+& $deadlineScript -Action Arm | Out-Null
 & $node $boardScript --check
 $auditCode = $LASTEXITCODE
 if ($auditCode -eq 1) { Write-Result 'Other GGO tasks remain unfinished.'; return }
 if ($auditCode -ne 0) { Write-Result "Board audit failed (exit $auditCode); preserving 03:00 deadline."; return }
 
-# A separate one-time task gives the completion report time to persist and keeps shutdown graceful.
-$fireAt = (Get-Date).AddSeconds(45)
-if ($fireAt -ge $deadline) { Write-Result 'Idle near 03:00; leaving the native deadline to shut down.'; return }
-$earlyTrigger = New-ScheduledTaskTrigger -Once -At $fireAt
-$earlyTrigger.EndBoundary = $fireAt.AddMinutes(2).ToString('s')
-$earlySettings = New-ScheduledTaskSettingsSet -WakeToRun -AllowStartIfOnBatteries `
-    -DontStopIfGoingOnBatteries -DeleteExpiredTaskAfter (New-TimeSpan -Hours 1)
-$earlyPrincipal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
-    -LogonType Interactive -RunLevel Limited
-$earlyAction = New-ScheduledTaskAction -Execute $shutdownExe -Argument '/s /t 0'
-Register-ScheduledTask -TaskName $earlyName -Action $earlyAction -Trigger $earlyTrigger `
-    -Settings $earlySettings -Principal $earlyPrincipal -Description 'One-time graceful shutdown after GGO board became idle.' | Out-Null
-$early = Get-Task $earlyName
-if (-not $early -or @($early.Triggers).Count -ne 1 -or $early.Actions[0].Arguments -ne '/s /t 0') {
-    if (Get-Task $earlyName) { Unregister-ScheduledTask -TaskName $earlyName -Confirm:$false }
-    throw 'Early shutdown task could not be verified; 03:00 deadline remains armed.'
-}
-
-& $node $boardScript --disable
-if ($LASTEXITCODE -ne 0) {
-    Unregister-ScheduledTask -TaskName $earlyName -Confirm:$false
-    if (Get-Task $earlyName) { throw 'GGO schedule stayed enabled and early shutdown could not be cancelled.' }
-    throw 'GGO schedule was not disabled; early shutdown was cancelled.'
+# Leave enough time to recover from a failed cancel before the fixed deadline.
+if ((Get-Date).AddMinutes(2) -ge $deadline) {
+    Write-Result 'Idle near 03:00; leaving the native deadline to shut down.'
+    return
 }
 try {
     & $deadlineScript -Action Cancel | Out-Null
-    if (Get-Task $checkName) { Unregister-ScheduledTask -TaskName $checkName -Confirm:$false }
-    if (Get-Task $checkName) { throw 'Five-minute check is still registered.' }
+    & $node $boardScript --disable
+    if ($LASTEXITCODE -ne 0) { throw 'GGO schedule was not disabled after cancelling the deadline.' }
+    & $node $boardScript --check
+    if ($LASTEXITCODE -ne 0) { throw 'The board changed or could not be verified after disabling the GGO schedule.' }
+    Write-Result '03:00 deadline cancelled and verified; GGO schedule disabled and verified. Requesting graceful shutdown in 60 seconds.'
+    & $shutdownExe /s /t 60
+    if ($LASTEXITCODE -ne 0) { throw "Windows rejected graceful shutdown (exit $LASTEXITCODE)." }
 } catch {
     $failure = $_
-    if (Get-Task $earlyName) { Unregister-ScheduledTask -TaskName $earlyName -Confirm:$false }
-    if (Get-Task $earlyName) { throw "Could not cancel early shutdown after cleanup failed: $failure" }
+    # Cancel can fail after removing the job, so verify or restore the fixed deadline.
     & $deadlineScript -Action Arm | Out-Null
     & $node $boardScript --restore
     if ($LASTEXITCODE -ne 0) { throw "Could not restore the GGO schedule after cleanup failed: $failure" }
-    if (-not (Get-Task $checkName)) { & $PSCommandPath -Action Arm | Out-Null }
-    throw "Cleanup failed; restored the 03:00 deadline and five-minute check: $failure"
+    throw "Early shutdown failed; restored the 03:00 deadline and GGO schedule: $failure"
 }
-Write-Result "GGO schedule disabled; early graceful shutdown set for $($fireAt.ToString('o')); 03:00 deadline cancelled."
