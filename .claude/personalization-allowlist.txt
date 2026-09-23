@@ -1,0 +1,2 @@
+# Claude Code's own credentials file: the same path on every machine, not a personal pointer
+~/\.claude/\.credentials\.json
