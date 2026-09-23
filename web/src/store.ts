@@ -214,6 +214,7 @@ interface State {
   // Client-only view settings, persisted in localStorage under `director_settings` — they only change
   // what this browser shows, so they never round-trip to the server.
   showCompleted: boolean;
+  showEmptyHardDeadline: boolean;
   verbosity: Verbosity;
   // The board's sort order while drag-and-drop is off (the dropdown in the board header drives this).
   taskSort: TaskSort;
@@ -416,6 +417,7 @@ interface State {
    *  whether the command actually went out, so the field can stay open when the socket was down. */
   setAccountProfileToken: (id: string, token: string) => boolean;
   setShowCompleted: (v: boolean) => void;
+  setShowEmptyHardDeadline: (v: boolean) => void;
   setVerbosity: (v: Verbosity) => void;
   setTaskSort: (v: TaskSort) => void;
   setTaskDragAndDrop: (v: boolean) => void;
@@ -575,6 +577,7 @@ const clampIdleMinutes = (v: unknown): number => {
 const VIEW_SETTINGS_KEY = "director_settings";
 interface ViewSettings {
   showCompleted: boolean;
+  showEmptyHardDeadline: boolean;
   verbosity: Verbosity;
   // Off by default: the board keeps its automatic most-recent-first ordering until the owner opts in.
   taskDragAndDrop: boolean;
@@ -594,7 +597,7 @@ interface ViewSettings {
   screensaver: boolean;
   screensaverIdleMinutes: number;
 }
-const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, displayFont: DEFAULT_DISPLAY_FONT, screensaver: true, screensaverIdleMinutes: 5 };
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, showEmptyHardDeadline: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, displayFont: DEFAULT_DISPLAY_FONT, screensaver: true, screensaverIdleMinutes: 5 };
 const loadViewSettings = (): ViewSettings => {
   try {
     const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
@@ -602,6 +605,7 @@ const loadViewSettings = (): ViewSettings => {
     const v = JSON.parse(raw) as Partial<ViewSettings>;
     return {
       showCompleted: typeof v.showCompleted === "boolean" ? v.showCompleted : VIEW_DEFAULTS.showCompleted,
+      showEmptyHardDeadline: typeof v.showEmptyHardDeadline === "boolean" ? v.showEmptyHardDeadline : VIEW_DEFAULTS.showEmptyHardDeadline,
       verbosity: v.verbosity === "compact" || v.verbosity === "full" ? v.verbosity : VIEW_DEFAULTS.verbosity,
       taskDragAndDrop: typeof v.taskDragAndDrop === "boolean" ? v.taskDragAndDrop : VIEW_DEFAULTS.taskDragAndDrop,
       taskSort: isTaskSort(v.taskSort) ? v.taskSort : VIEW_DEFAULTS.taskSort,
@@ -623,6 +627,7 @@ const saveViewSettings = (v: ViewSettings): void => lsSet(VIEW_SETTINGS_KEY, JSO
 const persistView = (s: ViewSettings, patch: Partial<ViewSettings>): void =>
   saveViewSettings({
     showCompleted: s.showCompleted,
+    showEmptyHardDeadline: s.showEmptyHardDeadline,
     verbosity: s.verbosity,
     taskSort: s.taskSort,
     taskDragAndDrop: s.taskDragAndDrop,
@@ -1183,6 +1188,7 @@ export const useStore = create<State>((set) => ({
   discordTest: null,
   discordTesting: false,
   showCompleted: loadViewSettings().showCompleted,
+  showEmptyHardDeadline: loadViewSettings().showEmptyHardDeadline,
   verbosity: loadViewSettings().verbosity,
   taskSort: loadViewSettings().taskSort,
   taskDragAndDrop: loadViewSettings().taskDragAndDrop,
@@ -1466,6 +1472,11 @@ export const useStore = create<State>((set) => ({
     set((s) => {
       persistView(s, { showCompleted: v });
       return { showCompleted: v };
+    }),
+  setShowEmptyHardDeadline: (v) =>
+    set((s) => {
+      persistView(s, { showEmptyHardDeadline: v });
+      return { showEmptyHardDeadline: v };
     }),
   setVerbosity: (v) =>
     set((s) => {

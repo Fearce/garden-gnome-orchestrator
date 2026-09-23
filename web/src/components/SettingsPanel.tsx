@@ -29,7 +29,7 @@ const SETTINGS_CATEGORIES = [
   { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
   { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles.", keywords: "relay collaboration coworkers team machine url password presence chatroom" },
   { id: "appearance", section: "Workspace", label: "Appearance", description: "Choose how the console looks on this browser.", keywords: "theme themes look dark colours colors palette classic nocturne skin style font fonts typeface typefaces typography interface monospace mono serif sans display heading headings headline title titles masthead wordmark card header ligatures inter geist plex fira grotesk bricolage instrument animation screensaver idle afk gnomes scene away timeout" },
-  { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed.", keywords: "composer board completed drag reorder output model picker recent repositories ui" },
+  { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed.", keywords: "composer board completed drag reorder output model picker recent repositories ui hard deadline banner" },
 ] as const satisfies readonly SettingsCategory[];
 
 const SETTINGS_SECTIONS: readonly SettingsCategory["section"][] = ["Orchestrator", "Providers", "Workspace"];
@@ -59,6 +59,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setSettings = useStore((s) => s.setSettings);
   const showCompleted = useStore((s) => s.showCompleted);
   const setShowCompleted = useStore((s) => s.setShowCompleted);
+  const showEmptyHardDeadline = useStore((s) => s.showEmptyHardDeadline);
+  const setShowEmptyHardDeadline = useStore((s) => s.setShowEmptyHardDeadline);
   const verbosity = useStore((s) => s.verbosity);
   const setVerbosity = useStore((s) => s.setVerbosity);
   const taskDragAndDrop = useStore((s) => s.taskDragAndDrop);
@@ -598,6 +600,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   }
                   on={settings.showAgentModel}
                   onChange={(v) => setSettings({ showAgentModel: v })}
+                />
+                <ToggleRow
+                  label="Show hard deadline banner"
+                  hint="Off: hide the empty hard-deadline prompt on task details. A deadline that is set stays visible and editable. Stored in this browser."
+                  on={showEmptyHardDeadline}
+                  onChange={setShowEmptyHardDeadline}
                 />
               </Group>
             </SettingsCategoryPanel>

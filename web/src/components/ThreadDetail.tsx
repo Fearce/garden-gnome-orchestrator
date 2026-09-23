@@ -364,13 +364,14 @@ function isCompactViewport(): boolean {
  *  stops even a busy role at the instant. Editing the clock never auto-resumes a deadline-parked task. */
 function ActiveDeadline({ thread }: { thread: Thread }) {
   const setDeadline = useStore((s) => s.setDeadline);
+  const showEmptyHardDeadline = useStore((s) => s.showEmptyHardDeadline);
   const [editing, setEditing] = useState(false);
   const [custom, setCustom] = useState(() => localDateTimeValue(thread.activeDeadlineAt ?? Date.now() + 3 * 3_600_000));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const at = thread.activeDeadlineAt ?? null;
   const canSet = thread.state !== "done" && thread.state !== "cancelled" && thread.state !== "closed";
-  if (!canSet && at == null) return null;
+  if (at == null && (!canSet || !showEmptyHardDeadline)) return null;
 
   const apply = async (deadlineAt: number | null) => {
     setError("");
