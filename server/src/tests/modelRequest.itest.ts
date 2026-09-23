@@ -27,7 +27,7 @@ const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { clientCommandSchema } = await import("../ws/protocol.js");
 
 const SPARK = "gpt-5.3-codex-spark";
-const SOL = "gpt-5.6-sol";
+const SOL = "gpt-6-sol";
 const CANDIDATES = [
   { provider: "codex" as const, model: SPARK, labels: ["GPT-5.3-Codex-Spark"] },
   { provider: "codex" as const, model: SOL, labels: ["GPT-5.6-Sol"] },
@@ -119,6 +119,8 @@ async function main(): Promise<void> {
   // matched exactly rather than scored as wording — scoring would re-guess an answer we already have.
   const exact = exactModelRequest("codex", SOL, CANDIDATES);
   check("a picked pair resolves to that exact pair", exact.provider === "codex" && exact.model === SOL && exact.strict, JSON.stringify(exact));
+  check("saved GPT-5.6 Sol pins migrate to their named successor", exactModelRequest("codex", "gpt-5.6-sol", CANDIDATES).model === SOL);
+  check("legacy exact labels migrate to GPT-6", resolveModelRequest("gpt-5.6-sol", CANDIDATES).model === SOL);
   const crossed = exactModelRequest("claude", SOL, CANDIDATES);
   check(
     "the same id under the wrong backend does not resolve",

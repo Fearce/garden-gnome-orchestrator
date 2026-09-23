@@ -180,7 +180,7 @@ function makeHarness(beforeManager?: (db: InstanceType<typeof Db>) => void): Har
 const HAIKU = "claude-haiku-4-5-20251001";
 const SONNET_5 = "claude-sonnet-5";
 const OPUS_5 = "claude-opus-5-5";
-const SOL_56 = "gpt-5.6-sol";
+const SOL_56 = "gpt-6-sol";
 const COMPLEX_DATA_BRIEF = `Investigate why stale business records remain visible to users and implement a durable end-to-end fix.
 
 Trace the full lifecycle across ingestion sources, stored status timestamps, refresh jobs, query filters,
@@ -280,7 +280,7 @@ async function main(): Promise<void> {
   {
     const h = makeHarness();
     try {
-      const codex = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-daybreak-blue-latest", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-4.1", "o3"];
+      const codex = ["gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra", "gpt-6-luna", "gpt-daybreak-blue-latest", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-4.1", "o3"];
       const grok = ["grok-4.6", "grok-4.7", "grok-4.8", "grok-4.9", "grok-4.10"];
       // Deliberately NOT the curated ids: z.ai's live roster is what the key can actually reach, and a
       // curated list is only the cold-start fallback. Stubbing the picker here would assert nothing —
@@ -290,7 +290,7 @@ async function main(): Promise<void> {
       h.internals.codexPoolSnapshot = (): null => null;
       h.internals.codexProviderCandidate = (): { provider: "codex"; hasHeadroom: boolean } => ({ provider: "codex", hasHeadroom: true });
       h.internals.codexRosterModels = (): string[] => codex;
-      h.internals.codexSupportedEfforts = (model: string): Effort[] => model === "gpt-5.6-sol"
+      h.internals.codexSupportedEfforts = (model: string): Effort[] => model === "gpt-6-sol"
         ? ["low", "medium", "high", "xhigh", "max", "ultra"]
         : ["low", "medium", "high", "xhigh"];
       h.internals.codexEffort = (): Effort => "ultra";
@@ -312,7 +312,7 @@ async function main(): Promise<void> {
       const modelsFor = (provider: ImplementorProvider): string[] => roster.filter((candidate) => candidate.provider === provider).map((candidate) => candidate.model);
       check("modern Codex models reach the selector", codex.slice(0, 5).every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
       check("legacy Codex models stay out while GPT-5.6+ options are dispatchable", codex.slice(5).every((model) => !modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
-      check("Codex Ultra reaches the selector when the live model advertises it", roster.find((candidate) => candidate.model === "gpt-5.6-sol")?.efforts.includes("ultra") === true);
+      check("Codex Ultra reaches the selector when the live model advertises it", roster.find((candidate) => candidate.model === "gpt-6-sol")?.efforts.includes("ultra") === true);
       check("all live Grok models reach the selector", grok.every((model) => modelsFor("grok").includes(model)), JSON.stringify(modelsFor("grok")));
       check("every live z.ai model reaches the selector", zai.every((model) => modelsFor("zai").includes(model)), JSON.stringify(modelsFor("zai")));
       check("the z.ai roster is not padded with ids the key cannot reach", modelsFor("zai").length === zai.length, JSON.stringify(modelsFor("zai")));
@@ -660,7 +660,7 @@ async function main(): Promise<void> {
       check("the gate remembers it for the run", h.internals.implementorProvider.get(id) === "claude", String(h.internals.implementorProvider.get(id)));
       // Codex is off in this instance, so a pick naming it cannot be honored — the task must run on what
       // routing resolved rather than be handed to a backend that isn't there.
-      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "codex", model: "gpt-5.6-sol", effort: "high", reason: "r" } });
+      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "codex", model: "gpt-6-sol", effort: "high", reason: "r" } });
       check("a pick for an unavailable backend falls back to normal routing", h.internals.gateImplementorProvider(thread(h, id)) === "claude", String(h.internals.implementorProvider.get(id)));
       check("…and supplies no model to the backend that actually runs", h.internals.pickedModel(id, "claude") === undefined, String(h.internals.pickedModel(id, "claude")));
       const plain = h.seed();

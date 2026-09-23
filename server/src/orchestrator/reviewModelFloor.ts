@@ -22,6 +22,8 @@ const REVIEW_ROLES: ReadonlySet<Role> = new Set(["qa", "reviewer"]);
  * substitution this floor is making. Matched as a prefix so a dated/suffixed variant still qualifies.
  */
 const REPLACEMENT_PREFERENCE: readonly RegExp[] = [
+  /^gpt-6-luna(?:[-.]|$)/i,
+  /^gpt-6-sol(?:[-.]|$)/i,
   /^gpt-5\.6-luna(?:[-.]|$)/i,
   /^gpt-5\.6-terra(?:[-.]|$)/i,
   /^gpt-5\.6-sol(?:[-.]|$)/i,

@@ -1,3 +1,4 @@
+import { currentCodexModel } from "../agents/codexModelGeneration.js";
 // Auto model selection: ONE cheap judgement call, made just before the implementor starts, that picks
 // which model implements this task and how hard it should think.
 //
@@ -95,6 +96,8 @@ export function modelNote(provider: ImplementorProvider, model: string): string 
 }
 
 function codexModelNote(id: string): string {
+  if (/^gpt-6-sol(?:[-.]|$)/i.test(id)) return `GPT-6 workhorse for complex coding and agentic workflows below Astra; ${CODEX_CLI_BRIDGE_NOTE}`;
+  if (/^gpt-6-luna(?:[-.]|$)/i.test(id)) return `budget GPT-6 tier for focused and high-volume work; prefer the smallest confident effort; ${CODEX_CLI_BRIDGE_NOTE}`;
   if (/^gpt-6-astra(?:[-.]|$)/i.test(id)) return `highest-cost Codex frontier-tier model; reserve for work that truly needs maximum autonomous reasoning and justify the spend; ${CODEX_CLI_BRIDGE_NOTE}`;
   if (/^gpt-5\.6-sol(?:[-.]|$)/i.test(id)) return `premium GPT-5.6 Codex tier; strong autonomous coding below Astra, suited to high-uncertainty implementation when Terra/Luna are too small; ${CODEX_CLI_BRIDGE_NOTE}`;
   if (/^gpt-5\.6-terra(?:[-.]|$)/i.test(id)) return `balanced GPT-5.6 Codex workhorse; cheaper than Sol/Astra and suitable for ordinary multi-file implementation at the smallest confident effort; ${CODEX_CLI_BRIDGE_NOTE}`;
@@ -154,6 +157,7 @@ export function filterAutoSelectionCandidates<T extends Pick<ModelCandidate, "pr
   // only the retired tier must stay selectable rather than removing the backend from the choice.
   const currentOpusAvailable = candidates.some(isCurrentClaudeOpusAutoModel);
   return candidates.filter((candidate) => {
+    if (candidate.provider === "codex" && currentCodexModel(candidate.model) !== candidate.model.trim()) return false;
     if (preferredCodexAvailable && isLegacyCodexAutoModel(candidate)) return false;
     return !currentOpusAvailable || !isRetiredClaudeAutoModel(candidate);
   });

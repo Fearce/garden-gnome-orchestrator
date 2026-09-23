@@ -1,3 +1,4 @@
+import { currentCodexModel, currentCodexModels } from "../agents/codexModelGeneration.js";
 /**
  * Unit test — auto model selection's two pure halves: the reply validator (modelSelector) and the
  * outcome score (modelGrading). No network, no DB, no quota.
@@ -44,9 +45,9 @@ const CANDIDATES: ModelCandidate[] = [
   { provider: "claude", model: "claude-opus-4-8", efforts: ["low", "medium", "high", "xhigh", "max"], note: modelNote("claude", "claude-opus-4-8") },
   {
     provider: "codex",
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
     efforts: ["low", "medium", "high", "xhigh", "max", "ultra"],
-    note: modelNote("codex", "gpt-5.6-sol"),
+    note: modelNote("codex", "gpt-6-sol"),
     capacity: "Codex general pool: 5h 42% free (resets in 2h) — enough runway for substantial implementation",
   },
   { provider: "zai", model: "glm-4.7", efforts: ["low", "medium", "high"], note: modelNote("zai", "glm-4.7") },
@@ -95,18 +96,18 @@ console.log("Flagship capability floor");
     { provider: "claude", model: "claude-opus-5-5", efforts: ["high", "xhigh"], note: "preferred" },
     { provider: "claude", model: "claude-opus-5", efforts: ["high", "xhigh"], note: "retired predecessor" },
     { provider: "codex", model: "gpt-6-astra", efforts: ["high", "xhigh", "max", "ultra"], note: "approved frontier fallback" },
-    { provider: "codex", model: "gpt-5.6-sol", efforts: ["high", "xhigh"], note: "approved fallback" },
+    { provider: "codex", model: "gpt-6-sol", efforts: ["high", "xhigh"], note: "approved fallback" },
   ];
   const preferred = applyImplementorModelPolicy(roster, FLAGSHIP_POLICY);
   check("available Opus 5.5 is the sole eligible first choice", preferred.mode === "preferred" && preferred.eligible.length === 1 && preferred.eligible[0]?.model === "claude-opus-5-5", JSON.stringify(preferred));
   check("Sonnet cannot compete with Opus on local outcome history", preferred.excluded.some((candidate) => candidate.model === "claude-sonnet-5"), JSON.stringify(preferred));
 
   const fallback = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model !== "claude-opus-5-5"), FLAGSHIP_POLICY);
-  check("an unavailable Opus 5.5 leaves only reviewed non-Opus-5 flagship fallbacks", fallback.mode === "fallback" && fallback.eligible.map((candidate) => candidate.model).join(",") === "gpt-6-astra,gpt-5.6-sol" && fallback.excluded.some((candidate) => candidate.model === "claude-opus-5"), JSON.stringify(fallback));
+  check("an unavailable Opus 5.5 leaves only reviewed non-Opus-5 flagship fallbacks", fallback.mode === "fallback" && fallback.eligible.map((candidate) => candidate.model).join(",") === "gpt-6-astra,gpt-6-sol" && fallback.excluded.some((candidate) => candidate.model === "claude-opus-5"), JSON.stringify(fallback));
 
   const blocked = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model === "claude-sonnet-5"), FLAGSHIP_POLICY);
   check("a workhorse-only roster blocks instead of silently downgrading", blocked.mode === "blocked" && blocked.eligible.length === 0, JSON.stringify(blocked));
-  check("the approved families exclude retired Opus 5 plus cheaper or legacy tiers", isPolicyApprovedFlagship({ provider: "claude", model: "claude-fable-5" }) && !isPolicyApprovedFlagship({ provider: "claude", model: "claude-opus-5" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-astra" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-sol" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-terra" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.5" }) && !isPolicyApprovedFlagship({ provider: "zai", model: "glm-5.3" }));
+  check("the approved families exclude retired Opus 5 plus cheaper or legacy tiers", isPolicyApprovedFlagship({ provider: "claude", model: "claude-fable-5" }) && !isPolicyApprovedFlagship({ provider: "claude", model: "claude-opus-5" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-astra" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-sol" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-terra" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.5" }) && !isPolicyApprovedFlagship({ provider: "zai", model: "glm-5.3" }));
 }
 
 {
@@ -162,16 +163,16 @@ console.log("Flagship capability floor");
 {
   const notes = {
     astra: modelNote("codex", "gpt-6-astra"),
-    sol: modelNote("codex", "gpt-5.6-sol"),
+    sol: modelNote("codex", "gpt-6-sol"),
     terra: modelNote("codex", "gpt-5.6-terra"),
-    luna: modelNote("codex", "gpt-5.6-luna"),
+    luna: modelNote("codex", "gpt-6-luna"),
     legacy: modelNote("codex", "gpt-5.5"),
     older: modelNote("codex", "gpt-4.1"),
     oSeries: modelNote("codex", "o3"),
   };
   check("Astra is described as expensive frontier capacity", /highest-cost.*frontier-tier.*justify the spend/i.test(notes.astra), notes.astra);
-  check("Sol, Terra, and Luna carry distinct cost tiers", /premium GPT-5\.6/i.test(notes.sol) && /balanced GPT-5\.6/i.test(notes.terra) && /budget GPT-5\.6/i.test(notes.luna), JSON.stringify(notes));
-  check("Luna is framed above legacy 5.5/5.4 for value", /beat legacy GPT-5\.5\/5\.4.*quality and cost/i.test(notes.luna), notes.luna);
+  check("Sol, Terra, and Luna carry distinct cost tiers", /GPT-6 workhorse/i.test(notes.sol) && /balanced GPT-5\.6/i.test(notes.terra) && /budget GPT-6/i.test(notes.luna), JSON.stringify(notes));
+  check("Luna is framed above legacy 5.5/5.4 for value", /focused and high-volume/i.test(notes.luna), notes.luna);
   check("older Codex notes warn against extra-high spend", /older\/non-GPT-5\.6.*avoid extra-high/i.test(notes.legacy) && /older\/non-GPT-5\.6.*avoid extra-high/i.test(notes.older) && /older\/non-GPT-5\.6.*avoid extra-high/i.test(notes.oSeries), JSON.stringify(notes));
 }
 
@@ -180,12 +181,12 @@ console.log("Flagship capability floor");
     { provider: "codex", model: "gpt-5.5", efforts: ["low", "medium", "high", "xhigh"], note: modelNote("codex", "gpt-5.5") },
     { provider: "codex", model: "gpt-4.1", efforts: ["low", "medium", "high", "xhigh"], note: modelNote("codex", "gpt-4.1") },
     { provider: "codex", model: "o3", efforts: ["low", "medium", "high", "xhigh"], note: modelNote("codex", "o3") },
-    { provider: "codex", model: "gpt-5.6-luna", efforts: ["low", "medium", "high", "max"], note: modelNote("codex", "gpt-5.6-luna") },
+    { provider: "codex", model: "gpt-6-luna", efforts: ["low", "medium", "high", "max"], note: modelNote("codex", "gpt-6-luna") },
     { provider: "claude", model: "claude-sonnet-5", efforts: ["low", "medium", "high"], note: "workhorse" },
   ];
   const filtered = filterAutoSelectionCandidates(roster);
-  check("older Codex models are hidden while GPT-5.6+ Codex is dispatchable", !filtered.some((candidate) => ["gpt-5.5", "gpt-4.1", "o3"].includes(candidate.model)) && filtered.some((candidate) => candidate.model === "gpt-5.6-luna"), JSON.stringify(filtered));
-  const fallback = filterAutoSelectionCandidates(roster.filter((candidate) => candidate.model !== "gpt-5.6-luna"));
+  check("older Codex models are hidden while GPT-5.6+ Codex is dispatchable", !filtered.some((candidate) => ["gpt-5.5", "gpt-4.1", "o3"].includes(candidate.model)) && filtered.some((candidate) => candidate.model === "gpt-6-luna"), JSON.stringify(filtered));
+  const fallback = filterAutoSelectionCandidates(roster.filter((candidate) => candidate.model !== "gpt-6-luna"));
   check("legacy Codex remains available when it is the only Codex fallback", fallback.some((candidate) => candidate.model === "gpt-5.5"), JSON.stringify(fallback));
   check("legacy Codex auto-selection offers no extra-high tier", autoSelectableEffortsForCandidate(roster[0]!, roster[0]!.efforts).join(",") === "low,medium,high");
   check("older non-GPT-5 Codex auto-selection is capped too", autoSelectableEffortsForCandidate(roster[1]!, roster[1]!.efforts).join(",") === "low,medium,high" && autoSelectableEffortsForCandidate(roster[2]!, roster[2]!.efforts).join(",") === "low,medium,high");
@@ -277,14 +278,14 @@ console.log("Flagship capability floor");
 
   // ...and a genuinely cheap pick may still say it avoids frontier spend, because that is true.
   const lunaCtx = {
-    candidates: [{ provider: "codex" as const, model: "gpt-5.6-luna", efforts: ["low" as const], note: modelNote("codex", "gpt-5.6-luna") }],
+    candidates: [{ provider: "codex" as const, model: "gpt-6-luna", efforts: ["low" as const], note: modelNote("codex", "gpt-6-luna") }],
     efforts: ["low" as const],
   };
   const lunaReason = "small mechanical edit without needing frontier spend";
   check(
     "the scrub never reaches a non-frontier pick",
-    parseSelection(JSON.stringify({ model: "gpt-5.6-luna", effort: "low", reason: lunaReason }), lunaCtx)?.reason === lunaReason,
-    String(parseSelection(JSON.stringify({ model: "gpt-5.6-luna", effort: "low", reason: lunaReason }), lunaCtx)?.reason),
+    parseSelection(JSON.stringify({ model: "gpt-6-luna", effort: "low", reason: lunaReason }), lunaCtx)?.reason === lunaReason,
+    String(parseSelection(JSON.stringify({ model: "gpt-6-luna", effort: "low", reason: lunaReason }), lunaCtx)?.reason),
   );
 }
 
@@ -298,9 +299,9 @@ console.log("Flagship capability floor");
 }
 
 {
-  const fenced = 'Here you go:\n```json\n{"model": "gpt-5.6-sol", "effort": "high", "reason": "big refactor"}\n```\nHope that helps.';
+  const fenced = 'Here you go:\n```json\n{"model": "gpt-6-sol", "effort": "high", "reason": "big refactor"}\n```\nHope that helps.';
   const pick = parseSelection(fenced, CTX);
-  check("a fenced reply with prose around it still parses", pick?.model === "gpt-5.6-sol", JSON.stringify(pick));
+  check("a fenced reply with prose around it still parses", pick?.model === "gpt-6-sol", JSON.stringify(pick));
   check("the matched candidate's provider is used (codex)", pick?.provider === "codex", String(pick?.provider));
 }
 
@@ -505,9 +506,9 @@ const facts = {
 {
   // A cap-failover mid-task means the work was done by two different models. Crediting either one would
   // be a lie, so it scores but reaches no model's average.
-  const split = gradeSettledTask({ ...facts, runs: [...facts.runs, run({ id: "r3", model: "gpt-5.6-sol" })] });
+  const split = gradeSettledTask({ ...facts, runs: [...facts.runs, run({ id: "r3", model: "gpt-6-sol" })] });
   check("a task split across two models credits neither", split?.gradedModel === null, String(split?.gradedModel));
-  check("…but is still recorded with both named", split?.ranModels === "claude-sonnet-4-6, gpt-5.6-sol", String(split?.ranModels));
+  check("…but is still recorded with both named", split?.ranModels === "claude-sonnet-4-6, gpt-6-sol", String(split?.ranModels));
 }
 
 check("a quota park is not a verdict about the model", gradeSettledTask({ ...facts, state: "review", capParked: true }) === null, "graded a cap park");
@@ -567,6 +568,12 @@ try {
 } finally {
   globalThis.fetch = realFetch;
 }
+
+
+check("superseded saved and dated pins upgrade", currentCodexModel("gpt-5.6-sol") === "gpt-6-sol" && currentCodexModel("GPT-5.6-LUNA-2026-07-01") === "gpt-6-luna");
+check("Terra has no named successor", currentCodexModel("gpt-5.6-terra") === "gpt-5.6-terra");
+check("catalog upgrades deduplicate", currentCodexModels(["gpt-5.6-sol", "gpt-6-sol"]).join() === "gpt-6-sol");
+check("retired models never return as automatic fallback", filterAutoSelectionCandidates([{provider: "codex", model: "gpt-5.6-sol"}, {provider: "codex", model: "gpt-5.6-luna"}]).length === 0);
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);
 if (failed) {

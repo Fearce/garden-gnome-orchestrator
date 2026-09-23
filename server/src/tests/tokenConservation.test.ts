@@ -93,11 +93,11 @@ check(
 );
 check(
   "a flagship Codex pick (Astra) is pulled down to Luna",
-  conservationResolvedModel("codex", "gpt-6-astra", ACTIVE, NOW) === "gpt-5.6-luna",
+  conservationResolvedModel("codex", "gpt-6-astra", ACTIVE, NOW) === "gpt-6-luna",
 );
 check(
   "a flagship Codex Sol pick is pulled down to Luna too",
-  conservationResolvedModel("codex", "gpt-5.6-sol", ACTIVE, NOW) === "gpt-5.6-luna",
+  conservationResolvedModel("codex", "gpt-6-sol", ACTIVE, NOW) === "gpt-6-luna",
 );
 check(
   "an already-economy Codex pick (Terra) passes through unchanged",
@@ -121,19 +121,19 @@ check(
 );
 check(
   "an unreviewed/unlisted Codex id (not on the economy allowlist) IS conserved — fail OPEN, not closed",
-  conservationResolvedModel("codex", "gpt-daybreak-blue-latest", ACTIVE, NOW) === "gpt-5.6-luna",
+  conservationResolvedModel("codex", "gpt-daybreak-blue-latest", ACTIVE, NOW) === "gpt-6-luna",
 );
 check(
   "a legacy non-economy Codex pick (5.4) is pulled down to Luna too, even though Luna's own version number is higher",
-  conservationResolvedModel("codex", "gpt-5.4", ACTIVE, NOW) === "gpt-5.6-luna",
+  conservationResolvedModel("codex", "gpt-5.4", ACTIVE, NOW) === "gpt-6-luna",
 );
 check(
   "a legacy mini Codex pick is also pulled up to the reviewed Luna economy floor",
-  conservationResolvedModel("codex", "gpt-5.4-mini", ACTIVE, NOW) === "gpt-5.6-luna",
+  conservationResolvedModel("codex", "gpt-5.4-mini", ACTIVE, NOW) === "gpt-6-luna",
 );
 check(
   "the pool-blind layer treats Spark like any other legacy id — it compares ids, nothing more",
-  conservationResolvedModel("codex", "gpt-5.3-codex-spark", ACTIVE, NOW) === "gpt-5.6-luna",
+  conservationResolvedModel("codex", "gpt-5.3-codex-spark", ACTIVE, NOW) === "gpt-6-luna",
 );
 
 // --- the Codex wrapper: which BUDGET a model spends is not a property of its id ------------------
@@ -148,19 +148,19 @@ check(
   );
   check(
     "a legacy GENERAL-pool model is still pulled down to Luna",
-    conservationResolvedCodexModel("gpt-5.5", ACTIVE, NOW, sparkOnItsOwnPool) === "gpt-5.6-luna",
+    conservationResolvedCodexModel("gpt-5.5", ACTIVE, NOW, sparkOnItsOwnPool) === "gpt-6-luna",
   );
   check(
     "a flagship general-pool model is still pulled down to Luna",
-    conservationResolvedCodexModel("gpt-6-astra", ACTIVE, NOW, sparkOnItsOwnPool) === "gpt-5.6-luna",
+    conservationResolvedCodexModel("gpt-6-astra", ACTIVE, NOW, sparkOnItsOwnPool) === "gpt-6-luna",
   );
   check(
     "the economy target colliding with a dedicated pool falls back to the unconserved base, never that pool's latch",
-    conservationResolvedCodexModel("gpt-6-astra", ACTIVE, NOW, (model) => model === "gpt-5.6-luna") === "gpt-6-astra",
+    conservationResolvedCodexModel("gpt-6-astra", ACTIVE, NOW, (model) => model === "gpt-6-luna") === "gpt-6-astra",
   );
   check(
     "with no live pool snapshot the caller's predicate is always false, so conservation still applies",
-    conservationResolvedCodexModel("gpt-6-astra", ACTIVE, NOW, never) === "gpt-5.6-luna",
+    conservationResolvedCodexModel("gpt-6-astra", ACTIVE, NOW, never) === "gpt-6-luna",
   );
   check(
     "an inactive window leaves a dedicated-pool model alone too",

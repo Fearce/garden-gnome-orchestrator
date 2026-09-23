@@ -62,9 +62,9 @@ function check(label: string, cond: boolean, detail?: string): void {
 /** The live Codex CLI catalog on the reporting installation, verbatim from kv `cache_codex_cli_models`. */
 const LIVE_ROSTER = [
   "gpt-6-astra",
-  "gpt-5.6-sol",
+  "gpt-6-sol",
   "gpt-5.6-terra",
-  "gpt-5.6-luna",
+  "gpt-6-luna",
   "gpt-daybreak-blue-latest",
   "gpt-5.5",
   "gpt-5.3-codex-spark",
@@ -156,13 +156,13 @@ check(
 );
 check(
   "current tiers are allowed",
-  reviewModelAllowed("gpt-5.6-luna") && reviewModelAllowed("gpt-5.6-terra") && reviewModelAllowed("gpt-6-astra"),
+  reviewModelAllowed("gpt-6-luna") && reviewModelAllowed("gpt-5.6-terra") && reviewModelAllowed("gpt-6-astra"),
 );
 check("a non-Codex model is never touched by a Codex-family rule", reviewModelAllowed("claude-opus-5-5") && reviewModelAllowed("glm-5.3"));
 
 {
   const target = codexReviewTarget("qa", "gpt-5.5", LIVE_ROSTER);
-  check("a retired QA pin is replaced by the budget GPT-5.6 tier", target.model === "gpt-5.6-luna", String(target.model));
+  check("a retired QA pin is replaced by the budget GPT-5.6 tier", target.model === "gpt-6-luna", String(target.model));
   check(
     "the substitution carries the cheap effort",
     target.effort === REVIEW_SUBSTITUTE_EFFORT && target.effort === "low",
@@ -171,7 +171,7 @@ check("a non-Codex model is never touched by a Codex-family rule", reviewModelAl
   check("the excluded id is reported for the owner-facing note", target.replaced === "gpt-5.5", String(target.replaced));
   check("a substitution is never treated as blocked", target.blocked !== true);
 }
-check("the auto-reviewer gets the same floor", codexReviewTarget("reviewer", "gpt-4.1", LIVE_ROSTER).model === "gpt-5.6-luna");
+check("the auto-reviewer gets the same floor", codexReviewTarget("reviewer", "gpt-4.1", LIVE_ROSTER).model === "gpt-6-luna");
 check(
   "the implementor's own configured model is returned untouched",
   codexReviewTarget("implementor", "gpt-5.5", LIVE_ROSTER).model === "gpt-5.5"
@@ -217,7 +217,7 @@ console.log("\n=== review model floor — the wiring (real ThreadManager, real D
   try {
     check(
       "QA resolves to the replacement, not the stored pin",
-      h.internals.codexRoleModel("qa") === "gpt-5.6-luna",
+      h.internals.codexRoleModel("qa") === "gpt-6-luna",
       String(h.internals.codexRoleModel("qa")),
     );
     check(
@@ -241,7 +241,7 @@ console.log("\n=== review model floor — the wiring (real ThreadManager, real D
     );
     check(
       "Settings projects the replacement, so it stops advertising the retired QA model",
-      h.internals.settings().modelOverrides.codex?.qa === "gpt-5.6-luna",
+      h.internals.settings().modelOverrides.codex?.qa === "gpt-6-luna",
       JSON.stringify(h.internals.settings().modelOverrides.codex),
     );
     check(
@@ -251,18 +251,21 @@ console.log("\n=== review model floor — the wiring (real ThreadManager, real D
       JSON.stringify(h.overrides().codex),
     );
 
+    h.internals.setModelOverride("codex", "planner", "gpt-5.6-sol");
+    h.internals.setModelOverride("codex", "researcher", "gpt-5.6-luna");
+    check("saved Sol/Luna pins upgrade in non-review roles too", h.internals.providerRoleModel("codex", "planner") === "gpt-6-sol" && h.internals.providerRoleModel("codex", "researcher") === "gpt-6-luna");
     // A legacy role pin remains raw so the floor can preserve the low-effort substitution, but its
     // Settings response and dispatch target can never expose it as a usable QA choice.
     h.internals.setModelOverride("codex", "qa", "gpt-5.5");
     check(
       "a QA override is projected to the replacement instead of advertised as retired",
-      h.overrides().codex?.qa === "gpt-5.5" && h.internals.settings().modelOverrides.codex?.qa === "gpt-5.6-luna",
+      h.overrides().codex?.qa === "gpt-5.5" && h.internals.settings().modelOverrides.codex?.qa === "gpt-6-luna",
       JSON.stringify(h.internals.settings().modelOverrides.codex),
     );
     h.internals.setSettings({ modelOverrides: { codex: { qa: "gpt-5.5" } } });
     check(
       "the Settings matrix patch cannot make a retired QA model selectable",
-      h.overrides().codex?.qa === "gpt-5.5" && h.internals.settings().modelOverrides.codex?.qa === "gpt-5.6-luna",
+      h.overrides().codex?.qa === "gpt-5.5" && h.internals.settings().modelOverrides.codex?.qa === "gpt-6-luna",
       JSON.stringify(h.internals.settings().modelOverrides.codex),
     );
     h.internals.setModelOverride("codex", "implementor", "gpt-5.5");
@@ -284,7 +287,7 @@ console.log("\n=== review model floor — the wiring (real ThreadManager, real D
   try {
     check(
       "an inherited retired model is floored too, not just an explicit QA pin",
-      h.internals.codexRoleModel("qa") === "gpt-5.6-luna",
+      h.internals.codexRoleModel("qa") === "gpt-6-luna",
       String(h.internals.codexRoleModel("qa")),
     );
     check(

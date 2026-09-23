@@ -38,7 +38,7 @@ export function isPolicyApprovedFlagship(candidate: RoutableModel): boolean {
   // The preceding Opus generation is retired. A live provider catalog can continue to advertise it,
   // but that must not turn it into a reviewed fallback when 5.5 is unavailable.
   if (candidate.provider === "claude") return model === DEFAULT_FLAGSHIP_MODEL || /^claude-fable-/.test(model);
-  if (candidate.provider === "codex") return model === "gpt-6-astra" || (gpt5Minor(model) ?? 0) >= 6;
+  if (candidate.provider === "codex") return (model === "gpt-6-astra" || model === "gpt-6-sol") || (gpt5Minor(model) ?? 0) >= 6;
   return false;
 }
 

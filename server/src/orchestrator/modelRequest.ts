@@ -1,3 +1,4 @@
+import { currentCodexModel } from "../agents/codexModelGeneration.js";
 import type { ImplementorProvider, ModelRequest } from "../types.js";
 
 /** One model the running installation actually knows how to address. Labels carry provider-native
@@ -131,7 +132,7 @@ export function resolveModelRequest(
   candidates: readonly ModelRequestCandidate[],
 ): ModelRequest {
   const requested = label.trim().slice(0, 160);
-  const matches = matchesFor(requested, candidates);
+  const matches = matchesFor(currentCodexModel(requested), candidates);
   const top = matches[0];
   const tied = top ? matches.filter((match) => match.score === top.score) : [];
   if (top && tied.length === 1) {
@@ -181,7 +182,7 @@ export function detectModelRequest(
   for (const clause of clauses(text)) {
     if (!directClause(clause)) continue;
     const requested = requestedFragment(clause);
-    const matches = matchesFor(requested, candidates);
+    const matches = matchesFor(currentCodexModel(requested), candidates);
     const top = matches[0];
     const tied = top ? matches.filter((match) => match.score === top.score) : [];
     if (top && tied.length === 1) {
@@ -219,7 +220,7 @@ export function exactModelRequest(
 ): ModelRequest {
   const requested = model.trim().slice(0, 160);
   const match = cleanedCandidates(candidates).find(
-    (candidate) => candidate.provider === provider && normalize(candidate.model) === normalize(requested),
+    (candidate) => candidate.provider === provider && normalize(candidate.model) === normalize(provider === "codex" ? currentCodexModel(requested) : requested),
   );
   return match
     ? { requested, provider: match.provider, model: match.model, strict: true }

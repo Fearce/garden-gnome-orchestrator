@@ -1,3 +1,4 @@
+import { currentCodexModel } from "./codexModelGeneration.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -40,7 +41,7 @@ const ROLLOUT_POLL_MS = 30_000; // refresh the already-known meter state + chang
 const WAKE_OFF = process.env.CODEX_WAKE === "off";
 /** Exported because it is a claim about what ChatGPT-plan auth can run, which `config.codex.models`
  *  makes independently — under that auth the curated list IS the whole roster, so the two must agree. */
-export const WAKE_MODEL = process.env.CODEX_WAKE_MODEL?.trim() || "gpt-5.6-luna";
+export const WAKE_MODEL = currentCodexModel(process.env.CODEX_WAKE_MODEL?.trim() || "gpt-6-luna");
 const WAKE_EFFORT = "low";
 const WAKE_PROMPT = "Reply with exactly: ok";
 const WAKE_TIMEOUT_MS = 180_000;
