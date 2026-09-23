@@ -21,7 +21,12 @@ function Write-Result([string]$message) {
 }
 
 function Get-Task([string]$name) {
-    Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    try {
+        Get-ScheduledTask -TaskName $name -ErrorAction Stop
+    } catch {
+        if ($_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound_TaskName,*') { return $null }
+        throw
+    }
 }
 
 if ((Get-TimeZone).Id -ne 'Romance Standard Time') { throw 'Expected Europe/Copenhagen Windows time zone.' }

@@ -11,11 +11,20 @@ $deadline = [datetime]::ParseExact('2026-09-24 03:00:00', 'yyyy-MM-dd HH:mm:ss',
 $shutdownExe = Join-Path $env:SystemRoot 'System32\shutdown.exe'
 $shutdownArgs = '/s /f /t 0'
 
+function Get-Task([string]$name) {
+    try {
+        Get-ScheduledTask -TaskName $name -ErrorAction Stop
+    } catch {
+        if ($_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound_TaskName,*') { return $null }
+        throw
+    }
+}
+
 if ((Get-TimeZone).Id -ne 'Romance Standard Time') {
     throw 'Expected the Windows Europe/Copenhagen time zone (Romance Standard Time).'
 }
 
-$existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+$existing = Get-Task $taskName
 
 if ($Action -eq 'Arm' -and (Get-Date) -ge $deadline) {
     throw 'The one-time 03:00 deadline has passed; refusing to arm a later shutdown.'
@@ -23,7 +32,7 @@ if ($Action -eq 'Arm' -and (Get-Date) -ge $deadline) {
 
 if ($Action -eq 'Cancel') {
     if ($existing) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false }
-    if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+    if (Get-Task $taskName) {
         throw "Shutdown deadline $taskName was not removed."
     }
     Write-Output "Cancelled $taskName"
@@ -41,7 +50,7 @@ if ($Action -eq 'Arm' -and -not $existing) {
     Register-ScheduledTask -TaskName $taskName -Action $actionSpec -Trigger $trigger `
         -Settings $settings -Principal $principal `
         -Description 'One-time Copenhagen 03:00 hard shutdown deadline for GGO; cancel if all work finishes early.' | Out-Null
-    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    $existing = Get-Task $taskName
 }
 
 if (-not $existing) { throw "Shutdown deadline $taskName is not registered." }
