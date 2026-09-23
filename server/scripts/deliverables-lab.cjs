@@ -75,6 +75,8 @@ function seed(dataDir) {
   );
   finding.run("dl-lab-f-md", TASK_ID, MD_LABEL, "A markdown deliverable seeded for the lab.", mdPath, MD_LABEL, now - 30_000);
   finding.run("dl-lab-f-png", TASK_ID, PNG_LABEL, "A PNG deliverable seeded for the lab.", pngPath, PNG_LABEL, now - 20_000);
+  db.prepare("INSERT INTO messages (id, thread_id, role, kind, content, created_at) VALUES (?, ?, 'implementor', 'tool', ?, ?)")
+    .run("dl-lab-edit-md", TASK_ID, `Edit ${JSON.stringify({ file_path: mdPath })}`, now - 10_000);
   db.close();
 
   return { mdPath, pngPath };
@@ -88,8 +90,10 @@ function chip(page, label) {
 
 async function checkChangesDrawer(page, check, theme) {
   await page.locator(".changes-chip").first().click();
-  await page.waitForSelector(".git-panel", { timeout: 15_000 });
-  await page.waitForSelector(".git-loading", { state: "detached", timeout: 15_000 });
+  await page.waitForSelector(".git-panel .git-diff-body .diff", { timeout: 15_000 });
+  await page.waitForFunction(() => document.querySelector(".git-diff-body .diff")?.textContent?.includes("Working-tree line for the Changes viewer"), undefined, { timeout: 15_000 });
+  const diffText = await page.locator(".git-diff-body .diff").innerText();
+  check(`${theme} Changes drawer shows the task's diff`, diffText.includes("Working-tree line for the Changes viewer"), diffText.slice(0, 300));
   const positions = [[100, 100], [900, 150], [1050, 400], [1200, 600], [700, 800], [900, 150]];
   for (const [x, y] of positions) {
     await page.mouse.move(x, y);
