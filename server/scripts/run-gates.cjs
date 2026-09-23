@@ -210,6 +210,7 @@ const GATES = [
   "test:hot-paths",
   "test:gate-registration",
   "test:lab-harness",
+  "test:web-dist",
   "test:quality-sweep",
   "test:gates-driver",
   "test:gates-provenance",

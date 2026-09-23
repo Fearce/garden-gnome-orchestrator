@@ -131,7 +131,8 @@ export const config = {
     : undefined,
   dataDir,
   dbPath: resolve(dataDir, "orchestrator.sqlite"),
-  webDist: resolve(serverRoot, "..", "web", "dist"),
+  // WEB_DIST pins a lab instance to a bundle it did not build (see webAutoBuild); prod leaves it unset.
+  webDist: process.env.WEB_DIST ? resolve(process.env.WEB_DIST) : resolve(serverRoot, "..", "web", "dist"),
   defaultWorkspace: process.env.DEFAULT_WORKSPACE ?? (process.platform === "win32" ? "C:\\" : homedir()),
   // Roots the director's find_workspace tool scans to resolve a project name → real path.
   // Split on ; (and : on non-Windows, where : isn't part of a drive-letter path).

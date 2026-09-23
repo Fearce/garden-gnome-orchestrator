@@ -24,7 +24,9 @@ function lifecycleEvent(): string {
   return process.env.npm_lifecycle_event ?? "";
 }
 
-function shouldRunAutoBuild(): boolean {
+export function shouldRunAutoBuild(): boolean {
+  // A pinned bundle is not built from web/ sources, and `npm run build` would write the shared web/dist.
+  if (process.env.WEB_DIST) return false;
   const event = lifecycleEvent();
   // `dev` and root `serve` run Vite separately; static web/dist is only authoritative in built mode.
   return !/(^|:)(dev|serve)(:|$)/.test(event);

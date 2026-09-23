@@ -18,6 +18,7 @@ const {
   loadChromium,
   authPassword,
   requireBuild,
+  requireFreshWebBuild,
   boot,
   killInstance,
   createChecks,
@@ -33,26 +34,6 @@ const GROUP = '.settings-group:has(.settings-group-label:text-is("Agent communic
 const TOGGLE = 'button.switch[aria-label="Keep agent messages concise"]';
 
 const check = createChecks();
-
-/** Refuse to measure an older bundle after a web source edit. */
-function requireFreshWebBuild() {
-  const webRoot = path.resolve(SERVER_ROOT, "..", "web");
-  const built = fs.statSync(path.join(webRoot, "dist", "index.html")).mtimeMs;
-  let newestSource = 0;
-
-  const walk = (dir) => {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const target = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(target);
-      else newestSource = Math.max(newestSource, fs.statSync(target).mtimeMs);
-    }
-  };
-  walk(path.join(webRoot, "src"));
-
-  if (newestSource > built) {
-    throw new Error("web/dist is older than web/src; run `npm run build --prefix web` before this lab");
-  }
-}
 
 function readPersisted(dataDir) {
   const file = path.join(dataDir, "orchestrator.sqlite");

@@ -32,7 +32,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { SERVER_ROOT, loadChromium, authPassword, requireBuild, requireFreshWebBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
 
 // 4361 (+4363 for the HTTPS listener boot() also binds) — clear of every other lab's port. A collision
 // is not a loud failure: boot() resolves against the OTHER instance's /api/me, and the seed then writes
@@ -665,26 +665,6 @@ async function driveManualSweep(page) {
   await page.waitForFunction(() => document.querySelector(".supervisor-run")?.disabled === false, null, { timeout: MANUAL_SWEEP_TIMEOUT_MS });
   console.log(`    re-run: ${JSON.stringify(disabledWhileRunning)}`);
   check("a second sweep can be requested once the first finished", true);
-}
-
-/** requireBuild() only asserts web/dist EXISTS. For a lab whose verdict is CSS, that is the sharpest
- *  way to be green about nothing: an unbuilt edit leaves it measuring the previous bundle. */
-function requireFreshWebBuild() {
-  const src = path.resolve(SERVER_ROOT, "..", "web", "src");
-  const built = fs.statSync(path.resolve(SERVER_ROOT, "..", "web", "dist", "index.html")).mtimeMs;
-  let newest = 0;
-  const walk = (dir) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else newest = Math.max(newest, fs.statSync(p).mtimeMs);
-    }
-  };
-  walk(src);
-  if (newest > built) {
-    console.error("web/dist is older than web/src — run `npm run build --prefix web` first, or this lab measures the previous bundle.");
-    process.exit(2);
-  }
 }
 
 async function rmWithRetry(dir) {

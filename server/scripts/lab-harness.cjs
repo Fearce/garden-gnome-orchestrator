@@ -54,8 +54,13 @@
 //     from server/, `npx tsc -p tsconfig.json --outDir .ide-lab-dist`, then set GGO_LAB_ENTRY to
 //     `.ide-lab-dist/index.js` for the lab process. Both requireBuild() and boot() honor that entry;
 //     an explicit entry argument overrides the environment. ide-lab compiles its own isolated build.
-//     Build web separately with `npm run build --prefix web` from the repo root. An isolated lab
-//     proves behavior, not deployment; verify the live revision separately after committing.
+//     Web gets the same treatment: `npm run build:lab --prefix web` writes `server/.lab-web-dist`, and
+//     GGO_LAB_WEB_DIST=.lab-web-dist points requireBuild() and the instance (via WEB_DIST) at it, so
+//     prod's web auto-builder cannot replace the bundle mid-measurement. Without it the lab serves the
+//     checkout's web/dist. Either way the instance never runs its own web auto-builder (labChildEnv).
+//     build:lab empties its one directory, so two labs running at once need one each: from web/,
+//     `npx vite build --outDir ../server/.lab-web-dist-<lab> --emptyOutDir` + the matching variable.
+//     An isolated lab proves behavior, not deployment; verify the live revision after committing.
 //   • Assert `getComputedStyle`, never the CSS rule you wrote: `main.tsx` loads `styles.css` FIRST, so
 //     `gitChanges.css` / `gitConsole.css` / `diff.css` land later in the bundle and win ties.
 //   • Playwright's `locator.boundingBox()` returns `{x,y,width,height}`, NOT a DOMRect. `right` and
@@ -145,14 +150,45 @@ function labEntry(entry = process.env.GGO_LAB_ENTRY || "dist/index.js") {
   return path.resolve(SERVER_ROOT, entry);
 }
 
-/** Validate the bundle the lab will actually boot, including isolated server builds. */
+/** The web bundle the lab instance serves: the checkout's `web/dist`, or an isolated build named by
+ *  GGO_LAB_WEB_DIST (resolved from server/, like GGO_LAB_ENTRY). */
+function labWebDist() {
+  const pinned = process.env.GGO_LAB_WEB_DIST;
+  return pinned ? path.resolve(SERVER_ROOT, pinned) : path.resolve(SERVER_ROOT, "..", "web", "dist");
+}
+
+/** How to refresh labWebDist(). A plain web build writes the LIVE console's bundle, so never
+ *  suggest it for a pinned lab. */
+function webRebuildHint() {
+  if (labWebDist() === path.resolve(SERVER_ROOT, ".lab-web-dist")) return "run `npm run build:lab --prefix web`";
+  if (process.env.GGO_LAB_WEB_DIST) return "rebuild that bundle (from web/: `npx vite build --outDir <it> --emptyOutDir`)";
+  return "run `npm run build --prefix web`";
+}
+
+/** Validate the bundle the lab will actually boot, including isolated server and web builds. */
 function requireBuild(entry) {
-  for (const file of [labEntry(entry), path.resolve(SERVER_ROOT, "../web/dist/index.html")]) {
+  for (const file of [labEntry(entry), path.join(labWebDist(), "index.html")]) {
     if (!fs.existsSync(file)) {
       console.error(`missing ${file} — compile the selected server entry and build web before running the lab.`);
       process.exit(2);
     }
   }
+}
+
+/** The lab instance's environment. WEB_DIST is always set: it pins the bundle AND switches off the
+ *  instance's own web auto-builder, which would otherwise rebuild the live console's web/dist. */
+function labChildEnv({ dataDir, port, env = {} }) {
+  return {
+    ...process.env,
+    DATA_DIR: dataDir,
+    PORT: String(port),
+    HTTPS_PORT: String(port + 2),
+    ACCOUNT_1_TOKEN: "lab-not-a-real-token",
+    ACCOUNT_2_TOKEN: "lab-not-a-real-token",
+    CLAUDE_CODE_OAUTH_TOKEN: "lab-not-a-real-token",
+    WEB_DIST: labWebDist(),
+    ...env,
+  };
 }
 
 /** Boot a throwaway instance on `port` against `dataDir`, resolving once it answers `/api/me`.
@@ -163,16 +199,7 @@ async function boot({ dataDir, port, env = {}, entry }) {
     cwd: SERVER_ROOT,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
-    env: {
-      ...process.env,
-      DATA_DIR: dataDir,
-      PORT: String(port),
-      HTTPS_PORT: String(port + 2),
-      ACCOUNT_1_TOKEN: "lab-not-a-real-token",
-      ACCOUNT_2_TOKEN: "lab-not-a-real-token",
-      CLAUDE_CODE_OAUTH_TOKEN: "lab-not-a-real-token",
-      ...env,
-    },
+    env: labChildEnv({ dataDir, port, env }),
   });
   const log = fs.createWriteStream(path.join(dataDir, "lab.log"));
   child.stdout.pipe(log);
@@ -223,7 +250,7 @@ async function waitForSettingsReloadSafe(dataDir, key, expected, timeoutMs = 15_
  *  and report it as the current one, which is the failure a lab exists to rule out. */
 function requireFreshWebBuild() {
   const webRoot = path.resolve(SERVER_ROOT, "..", "web");
-  const built = fs.statSync(path.join(webRoot, "dist", "index.html")).mtimeMs;
+  const built = fs.statSync(path.join(labWebDist(), "index.html")).mtimeMs;
   let newest = 0;
   const walk = (dir) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -234,7 +261,7 @@ function requireFreshWebBuild() {
   };
   walk(path.join(webRoot, "src"));
   if (newest > built) {
-    console.error("web/dist is older than web/src — run `npm run build --prefix web` first, or this lab measures the previous bundle.");
+    console.error(`${labWebDist()} is older than web/src — ${webRebuildHint()} first, or this lab measures the previous bundle.`);
     process.exit(2);
   }
 }
@@ -303,4 +330,4 @@ function shotDir(dataDir) {
   return chosen;
 }
 
-module.exports = { SERVER_ROOT, loadChromium, allowConcurrentContexts, authPassword, requireBuild, requireFreshWebBuild, boot, waitForPersisted, waitForSettingsReloadSafe, killInstance, createChecks, boxBounds, shotDir };
+module.exports = { SERVER_ROOT, loadChromium, allowConcurrentContexts, authPassword, labWebDist, labChildEnv, requireBuild, requireFreshWebBuild, boot, waitForPersisted, waitForSettingsReloadSafe, killInstance, createChecks, boxBounds, shotDir };

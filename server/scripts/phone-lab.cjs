@@ -35,7 +35,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { SERVER_ROOT, loadChromium, authPassword, requireBuild, requireFreshWebBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
 
 // Ports in use by sibling labs: 4327, 4331, 4337, 4347, 4351, 4381, 4383, 4385 — plus each one's
 // `port + 2` HTTPS listener. 4391/4393 is clear of both sets. Getting this wrong does NOT fail
@@ -272,24 +272,6 @@ async function drivePass(page, width, views, tabs) {
       landed.heading === label && landed.panel,
       `heading="${landed.heading}" panel=${landed.panel}`,
     );
-  }
-}
-
-/** A lab drives the BUILT bundle; fail loudly rather than measuring the previous one. */
-function requireFreshWebBuild() {
-  const built = fs.statSync(path.resolve(SERVER_ROOT, "..", "web", "dist", "index.html")).mtimeMs;
-  let newest = 0;
-  const walk = (dir) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else newest = Math.max(newest, fs.statSync(p).mtimeMs);
-    }
-  };
-  walk(WEB_SRC);
-  if (newest > built) {
-    console.error("web/dist is older than web/src — run `npm run build --prefix web` first, or this lab measures the previous bundle.");
-    process.exit(2);
   }
 }
 

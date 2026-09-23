@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --port 4318 --strictPort",
     "build": "vite build && node scripts/stamp-web-build.cjs",
+    "build:lab": "vite build --outDir ../server/.lab-web-dist --emptyOutDir",
     "preview": "vite preview --port 4318 --strictPort",
     "typecheck": "tsc --noEmit"
   },

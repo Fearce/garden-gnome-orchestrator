@@ -23,7 +23,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
-const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { SERVER_ROOT, loadChromium, authPassword, requireBuild, requireFreshWebBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
 
 const PORT = 4347;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -417,27 +417,6 @@ async function drivePass(page, { name, width, height }) {
 }
 
 // ---- run ---------------------------------------------------------------------------------------
-
-/** requireBuild() only asserts web/dist EXISTS. For a lab whose entire verdict is CSS that is the
- *  sharpest way to be green about nothing: an unbuilt edit leaves the lab measuring the previous
- *  bundle and reporting it as a pass. Refuse to run against a bundle older than its sources. */
-function requireFreshWebBuild() {
-  const src = path.resolve(SERVER_ROOT, "..", "web", "src");
-  const built = fs.statSync(path.resolve(SERVER_ROOT, "..", "web", "dist", "index.html")).mtimeMs;
-  let newest = 0;
-  const walk = (dir) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else newest = Math.max(newest, fs.statSync(p).mtimeMs);
-    }
-  };
-  walk(src);
-  if (newest > built) {
-    console.error("web/dist is older than web/src — run `npm run build --prefix web` first, or this lab measures the previous bundle.");
-    process.exit(2);
-  }
-}
 
 /** The just-killed instance can hold its sqlite file open for a moment, and on Windows that is an
  *  EBUSY, not a no-op — which would otherwise throw away a whole green run at the cleanup step. */

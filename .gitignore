@@ -14,6 +14,7 @@ server/.code-nav-lab-dist/
 server/.cowork-lab-dist/
 server/.chip-lab-dist/
 server/.token-safety-lab-dist/
+server/.lab-web-dist*/
 web/dist/
 relay/dist/
 *.tsbuildinfo
