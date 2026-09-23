@@ -30,6 +30,17 @@ function Get-Task([string]$name) {
 }
 
 if ((Get-TimeZone).Id -ne 'Romance Standard Time') { throw 'Expected Europe/Copenhagen Windows time zone.' }
+
+# Retire the GGO schedule at the fixed deadline before checks needed only for an
+# early-shutdown audit. The independent Windows deadline remains authoritative.
+if ($Action -eq 'Run' -and $runStartedAt -ge $deadline) {
+    $node = (Get-Command node -ErrorAction Stop).Source
+    & $node $boardScript --expire
+    if ($LASTEXITCODE -ne 0) { throw 'Could not disable the expired GGO schedule.' }
+    Write-Result '03:00 passed; GGO schedule disabled and verified.'
+    return
+}
+
 if (-not (Test-Path -LiteralPath $boardScript)) { throw "Missing board audit: $boardScript" }
 
 if ($Action -eq 'Status') {
@@ -67,15 +78,6 @@ if ($Action -eq 'Arm') {
     return
 }
 
-# The clock is the first decision on every run. The native Windows job already owns shutdown
-# at 03:00; disable future GGO runs even if a pre-deadline check still holds the mutex.
-if ($runStartedAt -ge $deadline) {
-    $node = (Get-Command node -ErrorAction Stop).Source
-    & $node $boardScript --expire
-    if ($LASTEXITCODE -ne 0) { throw 'Could not disable the expired GGO schedule.' }
-    Write-Result '03:00 passed; GGO schedule disabled and verified.'
-    return
-}
 if (-not (Test-Path -LiteralPath $deadlineScript)) { throw "Missing deadline script: $deadlineScript" }
 
 # Both the Windows checker and GGO schedule may fire in the same five-minute slot.
