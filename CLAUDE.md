@@ -12,8 +12,11 @@ await page.goto("http://127.0.0.1:4317/");   // now past the login gate
 # curl: save the cookie jar, then hit authed routes with it.
 PW=$(grep -E '^AUTH_PASSWORD=' server/.env | cut -d= -f2-)
 curl -s -c /tmp/cj.txt -X POST http://127.0.0.1:4317/api/login -H 'content-type: application/json' -d "{\"password\":\"$PW\"}"
-curl -s -b /tmp/cj.txt http://127.0.0.1:4317/api/threads
+curl -s -b /tmp/cj.txt http://127.0.0.1:4317/api/me   # {"authed":true,...}
 ```
+There is NO `/api/threads` list route (404): the board reaches the console only over the WebSocket
+(`hello`/`thread.history`, see `probe:thread-feed`). For a task-state read, open
+`server/data/orchestrator.sqlite` read-only (§ "Debugging a failed task").
 (Google sign-in also works, but the password is simplest for headless agents. Local/LAN only.)
 
 A director's console for running Claude Code agents: a provider-neutral **director** enriches a prompt, dispatches into a pipeline that self-assembles the smallest capable route — a planner and/or researcher when the work benefits, then a capability-routed **implementor** worker you can inject into mid-work. Node/Fastify API (`server/`) + React/Vite console (`web/`), single origin.
