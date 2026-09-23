@@ -12,7 +12,10 @@ $deadlineScript = Join-Path $PSScriptRoot 'shutdown-deadline.ps1'
 $shutdownExe = Join-Path $env:SystemRoot 'System32\shutdown.exe'
 $earlyName = 'GGO-OneTime-Early-Shutdown-2026-09-24'
 $logPath = Join-Path $PSScriptRoot '..\server\data\shutdown-check.log'
-$runStartedAt = if ($Action -eq 'Run') { Get-Date } else { $null }
+$copenhagenTimeZone = [TimeZoneInfo]::FindSystemTimeZoneById('Romance Standard Time')
+$runStartedAt = if ($Action -eq 'Run') {
+    [TimeZoneInfo]::ConvertTime([DateTimeOffset]::Now, $copenhagenTimeZone).DateTime
+} else { $null }
 
 function Write-Result([string]$message) {
     $line = "$(Get-Date -Format o) $message"
@@ -29,8 +32,6 @@ function Get-Task([string]$name) {
     }
 }
 
-if ((Get-TimeZone).Id -ne 'Romance Standard Time') { throw 'Expected Europe/Copenhagen Windows time zone.' }
-
 # Retire the GGO schedule at the fixed deadline before checks needed only for an
 # early-shutdown audit. The independent Windows deadline remains authoritative.
 if ($Action -eq 'Run' -and $runStartedAt -ge $deadline) {
@@ -40,6 +41,8 @@ if ($Action -eq 'Run' -and $runStartedAt -ge $deadline) {
     Write-Result '03:00 passed; GGO schedule disabled and verified.'
     return
 }
+
+if ((Get-TimeZone).Id -ne 'Romance Standard Time') { throw 'Expected Europe/Copenhagen Windows time zone.' }
 
 if ($Action -eq 'Status') {
     $check = Get-Task $checkName
