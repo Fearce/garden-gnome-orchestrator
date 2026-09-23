@@ -8,8 +8,14 @@ const dbPath = path.join(__dirname, '..', 'server', 'data', 'orchestrator.sqlite
 let db;
 try {
   const action = process.argv[2];
+  // The independent Windows checker has no GGO thread. A GGO check may pass its
+  // own ID explicitly; last_thread_id can already point to a newer queued run.
+  const selfThreadId = process.argv[3] || null;
   if (!['--check', '--disable', '--restore', '--expire'].includes(action)) {
     throw new Error('Expected --check, --disable, --restore, or --expire');
+  }
+  if (process.argv.length > 4 || (selfThreadId && !['--check', '--disable'].includes(action))) {
+    throw new Error('Only --check and --disable accept an optional current GGO thread ID');
   }
   db = new Database(dbPath, { readonly: action === '--check', fileMustExist: true });
   db.pragma('busy_timeout = 5000');
@@ -17,9 +23,11 @@ try {
   if (!schedule || (action !== '--expire' && schedule.cron !== '*/5 * * * *')) {
     throw new Error('Expected GGO schedule is missing or changed');
   }
-  const self = schedule.last_thread_id && db.prepare('SELECT id, title, workspace, created_at FROM threads WHERE id = ?').get(schedule.last_thread_id);
-  if (action !== '--expire' && (!self || self.title !== schedule.title || self.workspace !== schedule.workspace || self.created_at < schedule.created_at)) {
-    throw new Error('Cannot identify the current scheduled check thread');
+  const self = selfThreadId && db.prepare('SELECT id, title, workspace, brief, raw_prompt, state, created_at FROM threads WHERE id = ?').get(selfThreadId);
+  if (selfThreadId && (!self || self.title !== schedule.title || self.workspace !== schedule.workspace ||
+      self.brief !== schedule.prompt || self.raw_prompt !== '' || self.created_at < schedule.created_at ||
+      !['planning', 'researching', 'implementing', 'qa', 'reviewing'].includes(self.state))) {
+    throw new Error('Cannot verify the current scheduled check thread');
   }
 
   const unfinishedQuery = db.prepare(`
@@ -33,7 +41,7 @@ try {
       if (action === '--expire' && Date.now() < deadline) {
         throw new Error('Cannot expire the GGO schedule before the fixed 03:00 deadline');
       }
-      if (action === '--disable' && unfinishedQuery.all(self.id).length) {
+      if (action === '--disable' && unfinishedQuery.all(selfThreadId || '').length) {
         throw new Error('Other GGO tasks became unfinished; schedule remains enabled');
       }
       const changed = db.prepare('UPDATE scheduled_tasks SET enabled = 0, next_run_at = NULL, updated_at = ? WHERE id = ?').run(Date.now(), scheduleId);
@@ -56,7 +64,7 @@ try {
     console.log('GGO schedule restored and verified');
     process.exitCode = 0;
   } else if (action === '--check') {
-    const unfinished = unfinishedQuery.all(self.id);
+    const unfinished = unfinishedQuery.all(selfThreadId || '');
     console.log(JSON.stringify({ checkedAt: new Date().toISOString(), unfinished }));
     process.exitCode = unfinished.length ? 1 : 0;
   }
