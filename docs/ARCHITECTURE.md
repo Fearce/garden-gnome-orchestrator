@@ -130,11 +130,14 @@ deliberately no per-command approval gate; it would defeat firing many concurren
 tasks. (The `permission_request` event type exists as a hook point if a future
 opt-in gate is ever wanted.)
 
-Effort: the implementor defaults to `effort: "high"` (Opus 4.8 sweet spot for
-agentic work, per the 4.8 guidance — give the full spec up front, run at high
-effort). The planner picks a per-task tier (`plan.effort`), and in skip-director
-mode the composer's own effort dropdown pins one onto the dispatch
-(`threads.effort_override`), beating the planner's pick.
+Effort is assigned per task. The deterministic route starts narrow edits at low
+or medium, ordinary contained work at medium, and broad or risk-bearing work at
+high; substantial correctness-critical work can start at max. The planner can
+refine that baseline, and automatic model selection can choose a supported tier
+using the same route/planner effort as its starting point. A specific effort
+selected for the run reaches the provider setting and the implementor prompt.
+Precedence is `effort_override` > automatic model pick > planner > route. Legacy
+paths without a task effort still use the provider's high default.
 
 The Implementor row above is the **default** model, not the only one: with the
 opt-in `autoModelSelection` setting the director picks this task's implementor

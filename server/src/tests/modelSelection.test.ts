@@ -19,6 +19,7 @@ import { autoSelectableEffortsForCandidate, buildSelectionPrompt, defaultCandida
 import { gradeSettledTask, outcomeOfState, scoreOutcome } from "../orchestrator/modelGrading.js";
 import { CURATED_CODEX_MODELS, fetchZaiModels } from "../agents/modelCatalog.js";
 import { WAKE_MODEL } from "../agents/codexUsagePing.js";
+import { CODEX_IMPLEMENTOR_DOCTRINE, DIRECTOR_PROMPT, GROK_IMPLEMENTOR_DOCTRINE, IMPLEMENTOR_APPEND, PLANNER_PROMPT } from "../agents/prompts.js";
 import { claudeTokenUsage } from "../agents/runner.js";
 import { codexTokenUsage } from "../agents/codexRunner.js";
 import { providerIntent } from "../orchestrator/providerIntent.js";
@@ -382,6 +383,19 @@ console.log("\n=== the prompt carries what the decision needs ===\n");
   check("the selector must avoid at-risk pools for substantial work", /Do not put substantial work on an at-risk pool/.test(prompt), "runway policy missing");
   check("frontier-tier picks must justify frontier spend", /frontier-tier.*reason must say why that spend is justified.*Never say.*avoids.*frontier spend/s.test(prompt), "frontier-spend reason guidance missing");
 }
+
+console.log("\n=== role prompts honor the task's selected effort ===\n");
+for (const [name, prompt] of [
+  ["Claude implementor", IMPLEMENTOR_APPEND],
+  ["Codex implementor", CODEX_IMPLEMENTOR_DOCTRINE],
+  ["Grok implementor", GROK_IMPLEMENTOR_DOCTRINE],
+] as const) {
+  check(`${name} follows the effort tier selected for its run`, /effort tier selected for this run/i.test(prompt), "selected effort is not named");
+  check(`${name} does not require High unconditionally`, !/at high effort/i.test(prompt), "prompt still says every task runs at high effort");
+}
+check("the planner uses the route effort as its starting point", /route's stated effort as your starting point/i.test(PLANNER_PROMPT), "route baseline guidance missing");
+check("the planner does not call High the default for real features", !/high.*default for a real feature/i.test(PLANNER_PROMPT), "planner still makes High its feature default");
+check("the Director avoids implying every dispatch needs High", /don't imply that every dispatch needs High/i.test(DIRECTOR_PROMPT), "blanket High effort guidance remains");
 
 {
   const empty = buildSelectionPrompt({
