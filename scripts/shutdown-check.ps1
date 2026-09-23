@@ -83,6 +83,7 @@ Register-ScheduledTask -TaskName $earlyName -Action $earlyAction -Trigger $early
     -Settings $earlySettings -Principal $earlyPrincipal -Description 'One-time graceful shutdown after GGO board became idle.' | Out-Null
 $early = Get-Task $earlyName
 if (-not $early -or @($early.Triggers).Count -ne 1 -or $early.Actions[0].Arguments -ne '/s /t 0') {
+    if (Get-Task $earlyName) { Unregister-ScheduledTask -TaskName $earlyName -Confirm:$false }
     throw 'Early shutdown task could not be verified; 03:00 deadline remains armed.'
 }
 
@@ -92,7 +93,18 @@ if ($LASTEXITCODE -ne 0) {
     if (Get-Task $earlyName) { throw 'GGO schedule stayed enabled and early shutdown could not be cancelled.' }
     throw 'GGO schedule was not disabled; early shutdown was cancelled.'
 }
-& $deadlineScript -Action Cancel | Out-Null
-if (Get-Task $checkName) { Unregister-ScheduledTask -TaskName $checkName -Confirm:$false }
-if (Get-Task $checkName) { throw 'Five-minute check is still registered.' }
+try {
+    & $deadlineScript -Action Cancel | Out-Null
+    if (Get-Task $checkName) { Unregister-ScheduledTask -TaskName $checkName -Confirm:$false }
+    if (Get-Task $checkName) { throw 'Five-minute check is still registered.' }
+} catch {
+    $failure = $_
+    if (Get-Task $earlyName) { Unregister-ScheduledTask -TaskName $earlyName -Confirm:$false }
+    if (Get-Task $earlyName) { throw "Could not cancel early shutdown after cleanup failed: $failure" }
+    & $deadlineScript -Action Arm | Out-Null
+    & $node $boardScript --restore
+    if ($LASTEXITCODE -ne 0) { throw "Could not restore the GGO schedule after cleanup failed: $failure" }
+    if (-not (Get-Task $checkName)) { & $PSCommandPath -Action Arm | Out-Null }
+    throw "Cleanup failed; restored the 03:00 deadline and five-minute check: $failure"
+}
 Write-Result "GGO schedule disabled; early graceful shutdown set for $($fireAt.ToString('o')); 03:00 deadline cancelled."

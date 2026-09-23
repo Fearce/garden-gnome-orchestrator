@@ -6,7 +6,7 @@ const scheduleId = '4e52d3f9-ca5c-4b3b-a1fc-dbfc15ba511d';
 const dbPath = path.join(__dirname, '..', 'server', 'data', 'orchestrator.sqlite');
 let db;
 try {
-  db = new Database(dbPath, { readonly: process.argv[2] !== '--disable', fileMustExist: true });
+  db = new Database(dbPath, { readonly: process.argv[2] === '--check', fileMustExist: true });
   db.pragma('busy_timeout = 5000');
   const schedule = db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?').get(scheduleId);
   if (!schedule || schedule.cron !== '*/5 * * * *') throw new Error('Expected five-minute GGO schedule is missing or changed');
@@ -30,6 +30,16 @@ try {
     })();
     console.log('GGO schedule disabled and verified');
     process.exitCode = 0;
+  } else if (process.argv[2] === '--restore') {
+    const nextRun = Math.floor(Date.now() / 300_000 + 1) * 300_000;
+    db.prepare('UPDATE scheduled_tasks SET enabled = 1, next_run_at = ?, updated_at = ? WHERE id = ?')
+      .run(nextRun, Date.now(), scheduleId);
+    const verified = db.prepare('SELECT enabled, next_run_at FROM scheduled_tasks WHERE id = ?').get(scheduleId);
+    if (verified?.enabled !== 1 || verified.next_run_at !== nextRun) {
+      throw new Error('Could not restore the GGO schedule');
+    }
+    console.log('GGO schedule restored and verified');
+    process.exitCode = 0;
   } else if (process.argv[2] === '--check') {
     // The Director may revise a schedule prompt while a run is live. Title, workspace, and
     // creation after the schedule identify this schedule's current and overlapping runs.
@@ -37,7 +47,7 @@ try {
     console.log(JSON.stringify({ checkedAt: new Date().toISOString(), unfinished }));
     process.exitCode = unfinished.length ? 1 : 0;
   } else {
-    throw new Error('Expected --check or --disable');
+    throw new Error('Expected --check, --disable, or --restore');
   }
 } catch (error) {
   console.error(`Board audit failed: ${error.message}`);
