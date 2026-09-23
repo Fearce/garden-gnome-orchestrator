@@ -10,6 +10,7 @@ $deadline = [datetime]::ParseExact('2026-09-24 03:00:00', 'yyyy-MM-dd HH:mm:ss',
 $boardScript = Join-Path $PSScriptRoot 'shutdown-board.cjs'
 $deadlineScript = Join-Path $PSScriptRoot 'shutdown-deadline.ps1'
 $shutdownExe = Join-Path $env:SystemRoot 'System32\shutdown.exe'
+$earlyName = 'GGO-OneTime-Early-Shutdown-2026-09-24'
 $logPath = Join-Path $PSScriptRoot '..\server\data\shutdown-check.log'
 $runStartedAt = if ($Action -eq 'Run') { Get-Date } else { $null }
 
@@ -82,6 +83,7 @@ if ((Get-Date).AddMinutes(2) -ge $deadline) {
     Write-Result 'Idle near 03:00; leaving the native deadline to shut down.'
     return
 }
+$earlyCreated = $false
 try {
     & $deadlineScript -Action Cancel | Out-Null
     & $node $boardScript --disable
@@ -91,11 +93,34 @@ try {
     # A Windows check left running could re-arm the cancelled deadline before the 60-second shutdown.
     if (Get-Task $checkName) { Unregister-ScheduledTask -TaskName $checkName -Confirm:$false }
     if (Get-Task $checkName) { throw 'The five-minute Windows check is still registered.' }
-    Write-Result '03:00 deadline cancelled and verified; GGO schedule disabled and verified. Requesting graceful shutdown in 60 seconds.'
-    & $shutdownExe /s /t 60
-    if ($LASTEXITCODE -ne 0) { throw "Windows rejected graceful shutdown (exit $LASTEXITCODE)." }
+    # shutdown.exe /t 60 silently implies /f. Schedule /t 0 instead so applications
+    # get a normal close request after the log has been written.
+    if (Get-Task $earlyName) { throw "Unexpected early shutdown task $earlyName already exists." }
+    $shutdownAt = (Get-Date).AddSeconds(60)
+    $trigger = New-ScheduledTaskTrigger -Once -At $shutdownAt
+    $trigger.EndBoundary = $shutdownAt.AddMinutes(1).ToString('s')
+    $settings = New-ScheduledTaskSettingsSet -WakeToRun -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries -DeleteExpiredTaskAfter (New-TimeSpan -Hours 1)
+    $principal = New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) `
+        -LogonType Interactive -RunLevel Limited
+    $actionSpec = New-ScheduledTaskAction -Execute $shutdownExe -Argument '/s /t 0'
+    $earlyCreated = $true
+    Register-ScheduledTask -TaskName $earlyName -Action $actionSpec -Trigger $trigger `
+        -Settings $settings -Principal $principal -Description 'One-time graceful GGO shutdown after the board became idle.' | Out-Null
+    $early = Get-Task $earlyName
+    if (-not $early -or @($early.Triggers).Count -ne 1 -or @($early.Actions).Count -ne 1 -or
+        [datetimeoffset]::Parse($early.Triggers[0].StartBoundary).LocalDateTime.ToString('s') -ne $shutdownAt.ToString('s') -or
+        $early.Actions[0].Execute -ne $shutdownExe -or $early.Actions[0].Arguments -ne '/s /t 0' -or
+        $early.Settings.StartWhenAvailable -or -not $early.Settings.WakeToRun -or -not $early.Settings.Enabled) {
+        throw "Could not verify graceful shutdown task $earlyName."
+    }
+    Write-Result '03:00 deadline cancelled and verified; GGO schedule disabled and verified. Graceful shutdown scheduled in 60 seconds.'
 } catch {
     $failure = $_
+    if ($earlyCreated -and (Get-Task $earlyName)) {
+        Unregister-ScheduledTask -TaskName $earlyName -Confirm:$false
+        if (Get-Task $earlyName) { throw "Could not remove unverified early shutdown task $earlyName after: $failure" }
+    }
     # Cancel can fail after removing the job, so verify or restore the fixed deadline.
     & $deadlineScript -Action Arm | Out-Null
     & $node $boardScript --restore
