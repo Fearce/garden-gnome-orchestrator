@@ -85,6 +85,13 @@ The general rule: **stubbing a ThreadManager method does not stub a module-level
   pin the way a dispatch does: `createThread({ effortOverride })`.
 - `dispose()` must `clearInterval(capSupervisor)` + `clearTimeout(tokenResumeTimer)` and
   `db.raw.close()` BEFORE `rmSync`, or Windows throws EBUSY on the sqlite file.
+- **A "restart" (a second `new ThreadManager(db, …)` over the harness DB) arms two UNTRACKED 4s boot
+  timers** that no `clearTimeout` can reach: `markInterrupted` → `scheduleAutoResume` for any task left
+  in flight, and a requeue for any task left `queued`. Both fire after `dispose()` closed the DB, and the
+  gate dies `[crashed]` on "The database connection is not open", seconds into a LATER scenario, so the
+  stack blames the wrong test. Settle every task a stub started (a stubbed `startPipeline` that leaves the
+  row `queued` is a state production never has) and neutralize the restarted manager's `resumeThread`
+  right after constructing it. `test:token-freeze` crashed on every run this way (`833a4d7`).
 - A `StubAccounts` fake must carry every method the constructor's boot-apply calls
   (`setSpreadUsage`, `applyWeeklySafetyPct`, …) or construction crashes — plus `auxToken()`
   if your path can reach `setState(id,"done")`: `announceDone` calls it inside a `void`ed
