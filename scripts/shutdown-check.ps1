@@ -67,6 +67,21 @@ if ($Action -eq 'Arm') {
     return
 }
 
+# Both the Windows checker and GGO schedule may fire in the same five-minute slot.
+# Only one run may cancel the deadline and create an early shutdown task.
+$runMutex = [System.Threading.Mutex]::new($false, 'Global\GGO-OneTime-Shutdown-Check-2026-09-24')
+$ownsMutex = $false
+try {
+    try {
+        $ownsMutex = $runMutex.WaitOne(0)
+    } catch [System.Threading.AbandonedMutexException] {
+        $ownsMutex = $true
+    }
+    if (-not $ownsMutex) {
+        Write-Result 'Another shutdown check is running; leaving the 03:00 deadline in place.'
+        return
+    }
+
 # The clock is the first decision on every run. The native Windows job already owns shutdown
 # at 03:00; this path only turns off future GGO runs and never schedules another shutdown.
 $node = (Get-Command node -ErrorAction Stop).Source
@@ -133,4 +148,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Could not restore the GGO schedule after cleanup failed: $failure" }
     if (-not (Get-Task $checkName)) { & $PSCommandPath -Action Arm | Out-Null }
     throw "Early shutdown failed; restored the 03:00 deadline and GGO schedule: $failure"
+}
+} finally {
+    if ($ownsMutex) { $runMutex.ReleaseMutex() }
+    $runMutex.Dispose()
 }
