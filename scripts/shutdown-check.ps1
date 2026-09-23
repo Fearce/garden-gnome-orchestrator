@@ -122,12 +122,13 @@ try {
     Write-Result '03:00 deadline cancelled and verified; GGO schedule disabled and verified. Graceful shutdown scheduled in 60 seconds.'
 } catch {
     $failure = $_
+    # Restore the fixed fallback before cleanup reads that might themselves fail.
+    # A successful Cancel may already have removed it.
+    & $deadlineScript -Action Arm | Out-Null
     if ($earlyCreated -and (Get-Task $earlyName)) {
         Unregister-ScheduledTask -TaskName $earlyName -Confirm:$false
         if (Get-Task $earlyName) { throw "Could not remove unverified early shutdown task $earlyName after: $failure" }
     }
-    # Cancel can fail after removing the job, so verify or restore the fixed deadline.
-    & $deadlineScript -Action Arm | Out-Null
     & $node $boardScript --restore
     if ($LASTEXITCODE -ne 0) { throw "Could not restore the GGO schedule after cleanup failed: $failure" }
     if (-not (Get-Task $checkName)) { & $PSCommandPath -Action Arm | Out-Null }
