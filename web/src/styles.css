@@ -2116,7 +2116,8 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
    filter has to stay reachable while they do, or picking an agent means scrolling back to the top of
    a 500-entry task. Opaque background for the same reason, since rows now pass underneath it. */
 .feed-filter {
-  display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap;
+  display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid var(--line);
+  flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
   position: sticky; top: 0; z-index: 2; background: var(--bg-1); flex: 0 0 auto;
 }
 /* The two chrome strips that travel SIDEWAYS by design: the narrow bands below make each a nowrap
@@ -2135,6 +2136,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   min-height: 28px; box-sizing: border-box; padding: 1px 10px; border-radius: 100px;
   border: 1px solid var(--line); background: transparent;
   color: var(--text-dim); cursor: pointer; display: inline-flex; align-items: center; gap: 5px;
+  flex: 0 0 auto; max-width: calc(100% - 32px); white-space: nowrap;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 .feed-filter .fchip:hover { color: var(--text); border-color: var(--line-strong); }
@@ -2144,8 +2146,10 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   background: color-mix(in oklch, var(--role, var(--accent)) 14%, transparent);
 }
 .feed-filter .fchip .n { font-size: 9px; opacity: 0.65; font-weight: 600; }
-.feed-filter .fchip-label { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; }
-.feed-filter .tools-toggle { margin-left: auto; }
+.feed-filter .fchip-label { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; overflow: hidden; }
+.feed-filter .fchip-label .role-word { flex: 0 0 auto; }
+.feed-filter .fchip-label .role-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.feed-filter .fchip .n, .feed-filter .fchip .fchip-time, .feed-filter .fchip .gnome { flex: 0 0 auto; }
 .feed-filter .tools-toggle.off { opacity: 0.5; text-decoration: line-through; }
 /* Content of .detail-body, not a scroller of its own: `flex: 1 0 auto` keeps it at its content height
    (the body scrolls it) while still growing to fill the panel when a task has only a few entries, so
@@ -2732,15 +2736,7 @@ body.dl-resizing { user-select: none; }
   .lanes { grid-template-columns: 1fr; }
   .card .title { overflow-wrap: anywhere; }
 
-  /* feed filter scrolls sideways instead of stacking into 2–3 rows, with the same faded edge
-     .detail-controls uses in place of a scrollbar. */
-  .feed-filter {
-    flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
-    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
-  }
-  .feed-filter .fchip { flex: 0 0 auto; min-height: 34px; padding: 7px 11px; font-size: 11px; }
-  .feed-filter .tools-toggle { margin-left: 4px; }
+  .feed-filter .fchip { min-height: 34px; padding: 7px 11px; font-size: 11px; }
 
   /* Deliverables are secondary task chrome. Keep their count visible, but make the file strip opt-in
      on phones so a four-file task cannot consume half of the transcript viewport. */
@@ -3295,18 +3291,6 @@ button.note-from:hover { color: var(--text-dim); }
     mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
   }
   .detail-controls > * { flex: 0 0 auto; }
-  /* Same treatment the compact band already gives it: eight role chips wrap onto a second row and
-     cost another 45px of feed. Scroll them sideways instead, faded at the edge like .detail-controls
-     above rather than under a scrollbar. The tools chip drops its `margin-left: auto` for the same
-     reason the compact band drops it: pinned to the right edge it would sit under the fade at every
-     width whose chips fit. */
-  .feed-filter {
-    flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
-    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
-  }
-  .feed-filter .fchip { flex: 0 0 auto; }
-  .feed-filter .tools-toggle { margin-left: 4px; }
   /* The burn strip is a reference row here, not the focus — the same trim the compact band makes. */
   .acct { padding: 3px 8px; gap: 2px; }
 

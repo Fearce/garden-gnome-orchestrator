@@ -79,6 +79,7 @@ const VIEWPORTS = [
   { width: 900, height: 900, why: "the first desktop band" },
   { width: 1280, height: 900, why: "laptop desktop" },
   { width: 1440, height: 620, why: "desktop, but a SHORT window" },
+  { width: 1600, height: 900, detailWidth: 760, why: "resized wide detail pane" },
 ];
 
 /** The header is collapsible, and its two states are a ~200px swing in how much of the panel the
@@ -137,7 +138,7 @@ function seed(dataDir) {
     "INSERT INTO agent_runs (id, thread_id, role, model, account, effort, session_id, state, cost_usd, num_turns, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'done', ?, ?, ?, ?)",
   );
   run.run("psl-run-director", TASK_ID, "director", "claude-opus-5-5", "logged-in", null, "psl-s0", 0.4, 3, now - 3_600_000, now - 3_590_000);
-  run.run("psl-run-impl", TASK_ID, "implementor", "claude-opus-5-5", "logged-in", "high", "psl-s1", 36.29, 416, now - 3_500_000, now - 700_000);
+  run.run("psl-run-impl", TASK_ID, "implementor", "gpt-6-sol-extended-preview-long-model-name", "logged-in", "high", "psl-s1", 36.29, 416, now - 3_500_000, now - 700_000);
   run.run("psl-run-qa", TASK_ID, "qa", "claude-sonnet-5", "logged-in", "medium", "psl-s2", 4.11, 100, now - 690_000, now - 60_000);
 
   const msg = db.prepare(
@@ -325,6 +326,57 @@ function readPanel(page) {
       viewport: { width: window.innerWidth, height: window.innerHeight },
     };
   });
+}
+
+/** The filter is one scrollable control row even when a model label is longer than the pane. */
+function readFilter(page) {
+  return page.evaluate(() => {
+    const strip = document.querySelector(".feed-filter");
+    if (!strip) return null;
+    const buttons = [...strip.querySelectorAll("button")];
+    const bounds = strip.getBoundingClientRect();
+    return {
+      names: buttons.map((button) => button.textContent.trim().replace(/\s+/g, " ")),
+      centers: buttons.map((button) => {
+        const box = button.getBoundingClientRect();
+        return box.top + box.height / 2;
+      }),
+      stripHeight: bounds.height,
+      stripWidth: strip.clientWidth,
+      scrollWidth: strip.scrollWidth,
+      buttonWidths: buttons.map((button) => button.getBoundingClientRect().width),
+      pageWidth: document.documentElement.scrollWidth,
+      viewportWidth: innerWidth,
+    };
+  });
+}
+
+async function assertFilter(check, tag, page, shot) {
+  const filter = await readFilter(page);
+  check(`${tag} · filter mounted`, !!filter);
+  if (!filter) return;
+  check(`${tag} · TOOLS follows ALL in the same control row`,
+    filter.names[0]?.startsWith("all ") && filter.names[1] === "⛏ tools" && filter.centers.every((center) => Math.abs(center - filter.centers[0]) <= 1),
+    filter.names.join(" | "));
+  check(`${tag} · long model leaves a single legible row`,
+    filter.stripHeight <= 60 && filter.buttonWidths.every((width) => width <= filter.stripWidth - 31),
+    `strip ${Math.round(filter.stripHeight)}px tall, buttons ${filter.buttonWidths.map(Math.round).join("/")}px in ${filter.stripWidth}px`);
+  check(`${tag} · filter causes no page overflow`, filter.pageWidth <= filter.viewportWidth + 1,
+    `${filter.pageWidth}px document in ${filter.viewportWidth}px viewport`);
+  await page.locator(".feed-filter .tools-toggle").click();
+  check(`${tag} · TOOLS still toggles`, await page.locator(".feed-filter .tools-toggle").evaluate((el) => el.classList.contains("off")));
+  await page.locator(".feed-filter .tools-toggle").click();
+  if (filter.scrollWidth > filter.stripWidth + 1) {
+    await page.locator(".feed-filter").evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+    const endVisible = await page.locator(".feed-filter").evaluate((el) => {
+      const end = el.querySelector("button:last-child")?.getBoundingClientRect();
+      const strip = el.getBoundingClientRect();
+      return !!end && end.right <= strip.right - 15;
+    });
+    check(`${tag} · last role remains reachable by scrolling`, endVisible);
+    if (shot) await page.locator(".feed-filter").screenshot({ path: path.join(shot, `${tag.replace(/[^a-z0-9]+/gi, "-")}-filter-end.png`) });
+    await page.locator(".feed-filter").evaluate((el) => { el.scrollLeft = 0; });
+  }
 }
 
 /** The same bug class, swept across the WHOLE console rather than the one panel it was reported in.
@@ -543,7 +595,10 @@ async function openPanel(browser, viewport, head) {
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   // addInitScript, not an evaluate after goto: the collapse preference is read once, in the
   // component's initial state, so a value written after that runs is simply never seen.
-  await page.addInitScript((collapsed) => localStorage.setItem("orch-head-collapsed", collapsed ? "1" : "0"), head.collapsed);
+  await page.addInitScript(({ collapsed, detailWidth }) => {
+    localStorage.setItem("orch-head-collapsed", collapsed ? "1" : "0");
+    if (detailWidth) localStorage.setItem("orch-detail-w", String(detailWidth));
+  }, { collapsed: head.collapsed, detailWidth: viewport.detailWidth });
   // Not `networkidle`: the selected task pulls attachments and the app polls /api/voice/status, so idle
   // is data-dependent and has blown a 30s budget on a busy box (nightly-quality-sweep.md step 6).
   await page.goto(`${BASE}/`, { timeout: 45_000 });
@@ -601,6 +656,7 @@ async function main() {
               `feed ${Math.round(top?.feed?.scrollWidth ?? 0)}/${Math.round(top?.feed?.clientWidth ?? 0)}px wide`,
           );
           assertPanel(check, tag, top);
+          await assertFilter(check, tag, page, args.shot);
           const sheared = await readShells(page);
           check(
             `${tag} · no clipping shell in the console is taller than its own box`,
