@@ -26,6 +26,8 @@ function sleep(ms: number): Promise<void> {
 interface FakeState {
   /** close() was called — the fire-and-forget signal. Ends the MESSAGE STREAM immediately. */
   closed: boolean;
+  /** interrupt() was requested — it can hang independently of child cleanup. */
+  interruptCalled: boolean;
   /** return() was called — the SDK's performCleanup() path, the only one that awaits the child. */
   returned: boolean;
   /** The child process actually exited. This is what a safe `--resume` depends on. */
@@ -35,8 +37,8 @@ interface FakeState {
 /** A stand-in for the SDK's `Query` that keeps the two clocks apart, exactly as the real one does:
  *  `close()` ends the message stream at once and returns; `return()` runs cleanup and only resolves
  *  once the "child" has exited (`exitMs` later). */
-function makeFakeQuery(opts: { exitMs?: number; neverExits?: boolean; autoEnd?: boolean }) {
-  const state: FakeState = { closed: false, returned: false, exited: false };
+function makeFakeQuery(opts: { exitMs?: number; neverExits?: boolean; neverInterrupts?: boolean; autoEnd?: boolean }) {
+  const state: FakeState = { closed: false, interruptCalled: false, returned: false, exited: false };
   async function* messages(): AsyncGenerator<unknown, void> {
     yield { type: "system", subtype: "init", session_id: "fake-session" };
     if (opts.autoEnd) return; // the query ended on its own — consume() finishes, `finished` goes true
@@ -49,6 +51,8 @@ function makeFakeQuery(opts: { exitMs?: number; neverExits?: boolean; autoEnd?: 
       state.closed = true;
     },
     async interrupt(): Promise<undefined> {
+      state.interruptCalled = true;
+      if (opts.neverInterrupts) await new Promise<void>(() => {});
       return undefined;
     },
     async return(value?: unknown): Promise<IteratorResult<unknown, void>> {
@@ -149,6 +153,18 @@ async function primed(query: ReturnType<typeof makeFakeQuery>) {
       "session transcript had not exited yet, so the next --resume still races it",
   );
   assert.ok(elapsed >= 50, `stop() returned in ${elapsed}ms without awaiting the finished query's child exit`);
+}
+
+// 5. An SDK interrupt RPC can hang before the current implementation reaches its bounded disposal race.
+//    The hard stop must move on to Query.return(), which owns process teardown, after the interrupt grace.
+{
+  const query = makeFakeQuery({ neverInterrupts: true });
+  const run = await primed(query);
+  const stopped = await Promise.race([run.stop().then(() => true), sleep(400).then(() => false)]);
+  if (!stopped) query.close(); // release the fake consume loop after recording the regression
+  assert.equal(query.state.interruptCalled, true, "stop() did not attempt the SDK interrupt");
+  assert.equal(stopped, true, "stop() hung forever waiting for interrupt() instead of continuing to disposal");
+  assert.equal(query.state.returned, true, "stop() returned without entering Query.return() cleanup");
 }
 
 console.log("AgentRun.stop() drain race: ok");

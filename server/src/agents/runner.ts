@@ -386,17 +386,29 @@ export class AgentRun implements AgentRunLike {
    *
    *  Disposal runs even when the query already `finished`: consume()'s loop ending means the message
    *  stream closed, not that the process exited — and that run's session is exactly the one about to be
-   *  resumed. Everything stays bounded by STOP_DRAIN_TIMEOUT_MS so a wedged child can't hang the
-   *  pipeline on a stop that never completes. */
+   *  resumed. The SDK's interrupt RPC can itself hang, so it gets only a short part of the total stop
+   *  budget; Query.return() still runs under the remaining bound to tear down the child. */
   async stop(): Promise<void> {
-    await this.interrupt();
-    this.input.close();
+    const stopDeadline = Date.now() + STOP_DRAIN_TIMEOUT_MS;
     const q = this.q;
-    // No query was ever created (constructed, then abandoned before start() — e.g. Co-work's
-    // "the session changed before its agent could start" path). `consume()` never ran, so nothing
-    // will ever emit "end" and the drain below would burn the WHOLE timeout before resolving. There
-    // is no subprocess holding a session here, so there is nothing to wait for.
-    if (!q) return;
+    if (!q) {
+      this.input.close();
+      return;
+    }
+    const interruptBudgetMs = Math.min(1_000, Math.max(0, Math.floor(STOP_DRAIN_TIMEOUT_MS / 4)));
+    let interruptTimer: NodeJS.Timeout | undefined;
+    const interrupted = await Promise.race([
+      this.interrupt().then(() => true),
+      new Promise<false>((resolve) => { interruptTimer = setTimeout(() => resolve(false), interruptBudgetMs); }),
+    ]);
+    if (interruptTimer) clearTimeout(interruptTimer);
+    if (!interrupted) {
+      logCrash(
+        "agentRun.interruptTimeout",
+        `stop() continued to query disposal after interrupt() exceeded ${interruptBudgetMs}ms (session ${this.sessionId ?? "unknown"})`,
+      );
+    }
+    this.input.close();
     const drained = this.finished ? Promise.resolve() : new Promise<void>((resolve) => this.onEnd(resolve));
     const disposed = (async () => {
       try {
@@ -413,7 +425,7 @@ export class AgentRun implements AgentRunLike {
     })();
     let timer: NodeJS.Timeout | undefined;
     const bound = new Promise<"timeout">((resolve) => {
-      timer = setTimeout(() => resolve("timeout"), STOP_DRAIN_TIMEOUT_MS);
+      timer = setTimeout(() => resolve("timeout"), Math.max(0, stopDeadline - Date.now()));
     });
     const outcome = await Promise.race([Promise.all([drained, disposed]).then(() => "drained" as const), bound]);
     if (timer) clearTimeout(timer);
