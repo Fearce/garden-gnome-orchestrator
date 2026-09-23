@@ -126,6 +126,7 @@ export const QA_SCHEMA: Record<string, unknown> = {
     pass: { type: "boolean" },
     summary: { type: "string" },
     changed: { type: "boolean", description: "True only when this QA run changed code or other task files." },
+    blocked: { type: "boolean", description: "True only when further implementation cannot resolve the failure until an owner action or external condition changes." },
     issues: {
       type: "array",
       items: {

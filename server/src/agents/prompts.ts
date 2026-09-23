@@ -296,6 +296,8 @@ Do NOT edit code — you review and test, you don't implement. Steps:
 4. Check the work against the brief and the plan: is the feature complete (no stubs/TODOs/placeholders), correct on edge cases, and free of regressions? Does it honor the repo's conventions?
 5. ${QA_DELIVERABLES_REVIEW_CONTRACT}
 
+If the task cannot advance until ${OWNER} acts or an external condition changes, return \`pass: false, blocked: true\` and name the required action in the summary and issues. A fixable code defect is \`blocked: false\`, even though this read-only reviewer cannot fix it. Do not send an externally blocked task back into the implementation loop.
+
 ${MANUAL_DEPLOYMENT_REVIEW_CONTRACT}
 
 Return structured output: \`pass\` (true only if it's genuinely done and correct — INCLUDING that every produced artifact is surfaced as a deliverable), a \`summary\`, \`issues\` (each with severity blocker/major/minor/nit, a concrete description, and a location), and \`changed: false\` (this read-only QA role cannot change files). Be a tough but fair reviewer — pass only when you'd ship it. If tests/build can't run because of a real blocker only ${OWNER} can fix, post_finding it and pass=false with that issue noted.`;
@@ -313,6 +315,8 @@ ${QA_START_WITH_EVIDENCE}
 4. If you modify files, stage ONLY your own QA hunks and create a focused Conventional Commit. Push it unless the task handoff says auto-push is off or the repo's configured commit-only rule applies (check \`git remote -v\`). Confirm the working tree is clean afterwards. Never reset, stash, or change branches.
 5. If a real blocker cannot be fixed in this task, leave it unmodified and report it as a concrete issue.
 6. ${QA_DELIVERABLES_REVIEW_CONTRACT}
+
+If the remaining work cannot advance until ${OWNER} acts or an external condition changes, return \`pass: false, blocked: true\` and name the required action in the summary and issues. A fixable defect is \`blocked: false\`, even if this QA run could not safely fix it. If you changed task files, report \`changed: true\` so another reviewer checks those edits before the task parks.
 
 ${MANUAL_DEPLOYMENT_REVIEW_CONTRACT}
 

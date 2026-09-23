@@ -79,6 +79,8 @@ console.log("\nvalidateAgainstSchema — PLAN_SCHEMA");
 console.log("\nvalidateAgainstSchema — QA_SCHEMA");
 {
   check("accepts a passing verdict", validateAgainstSchema({ pass: true, summary: "all green", changed: false }, QA_SCHEMA) === null);
+  check("accepts an external blocker verdict", validateAgainstSchema({ pass: false, blocked: true, summary: "Owner must restore access", changed: false }, QA_SCHEMA) === null);
+  check("rejects a non-boolean blocker verdict", validateAgainstSchema({ pass: false, blocked: "yes", summary: "Owner must restore access", changed: false }, QA_SCHEMA) !== null);
   check("rejects a verdict with a non-boolean pass", validateAgainstSchema({ pass: "yes", summary: "s" }, QA_SCHEMA) !== null);
   check("rejects a verdict missing summary", validateAgainstSchema({ pass: false }, QA_SCHEMA) !== null);
   check("rejects a verdict missing changed", validateAgainstSchema({ pass: true, summary: "s" }, QA_SCHEMA) !== null);

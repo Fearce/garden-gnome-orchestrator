@@ -9920,6 +9920,19 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         this.settleReview(thread.id, detail ? `QA could not complete — ${detail}` : "QA could not complete — needs your review.");
         return;
       }
+      // A reviewer may find a stop outside the implementor's control. Replaying the same fix
+      // handoff cannot change it. Verify any editing QA changes independently before parking.
+      if (qa.blocked && !qa.pass && (!pipe.qaAppliesFixes || qa.changed === false)) {
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "qa",
+          summary: "QA is blocked — needs your action before work can continue",
+          detail: formatQaIssues(qa),
+          severity: "warning",
+        });
+        this.settleReview(thread.id, `QA is blocked — ${qa.summary}`);
+        return;
+      }
       if (pipe.qaAppliesFixes) {
         // `changed` is required by the editing-QA prompt. Treat a malformed/legacy omission as changed
         // rather than accepting potentially unverified edits; it costs one more review and fails safe.

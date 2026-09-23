@@ -594,6 +594,8 @@ export interface QaOutput {
   pass: boolean;
   summary: string;
   issues?: QaIssue[];
+  /** The remaining work cannot proceed until an owner action or external condition changes. */
+  blocked?: boolean;
   /** Set by a QA-fixes run when it actually changed the working tree. The pipeline uses this to send
    *  the changed work to another QA pass instead of bouncing it back through the implementor. */
   changed?: boolean;

@@ -84,7 +84,7 @@ interface Harness {
   qaRounds: number[]; // the `round` value each runQA call saw, in order
   implementorStarts: () => number;
   dir: string;
-  setVerdict(v: { pass: boolean; summary: string }): void;
+  setVerdict(v: { pass: boolean; summary: string; blocked?: boolean; changed?: boolean }): void;
   dispose(): void;
 }
 
@@ -114,7 +114,7 @@ function makeHarness(): Harness {
   internals.stopLive = async (): Promise<void> => {};
   internals.runSelfImprovement = async (): Promise<void> => {};
   internals.flushDirectorNotes = (): void => {};
-  internals.runQA = async (_thread: Thread, opts: { round: number }): Promise<{ pass: boolean; summary: string }> => {
+  internals.runQA = async (_thread: Thread, opts: { round: number }): Promise<{ pass: boolean; summary: string; blocked?: boolean; changed?: boolean }> => {
     qaRounds.push(opts.round);
     return verdict;
   };
@@ -227,6 +227,25 @@ async function main(): Promise<void> {
       check("the rounds counted up 1..4", JSON.stringify(h.qaRounds) === JSON.stringify([1, 2, 3, 4]), JSON.stringify(h.qaRounds));
       check("qaRoundsUsed was persisted at the cap", h.db.getThreadStageOutputs(id).qaRoundsUsed === 4, String(h.db.getThreadStageOutputs(id).qaRoundsUsed));
       check("the task parked for review", h.db.getThread(id)?.state === "review", `state=${h.db.getThread(id)?.state}`);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest A1 — an external QA blocker parks without a fix loop");
+  for (const qaAppliesFixes of [false, true]) {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.setVerdict({ pass: false, blocked: true, changed: false, summary: "The live test needs the owner to restore access." });
+      await runLoop(h, id, 4, qaAppliesFixes);
+      check(`blocked QA parks after one round (editing=${qaAppliesFixes})`,
+        h.db.getThread(id)?.state === "review" && h.qaRounds.length === 1,
+        `state=${h.db.getThread(id)?.state}, rounds=${h.qaRounds.length}`);
+      check(`blocked QA does not relaunch implementation (editing=${qaAppliesFixes})`,
+        h.implementorStarts() === 1, String(h.implementorStarts()));
+      check(`blocked QA gives the owner the reason (editing=${qaAppliesFixes})`,
+        (h.db.getThread(id)?.error ?? "").includes("restore access"));
     } finally {
       h.dispose();
     }
