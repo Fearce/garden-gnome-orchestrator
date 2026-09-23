@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CODEX_EFFORTS, GROK_EFFORTS, ZAI_EFFORTS } from "../types.js";
+import { CODEX_EFFORTS, GROK_EFFORTS, MAX_DIRECTOR_DIRECTIVES_CHARS, ZAI_EFFORTS } from "../types.js";
 import type { CodexUsageDTO } from "../agents/codexUsage.js";
 import type { GrokUsageDTO } from "../agents/grokUsage.js";
 import type { ZaiUsageDTO } from "../agents/zaiUsage.js";
@@ -365,6 +365,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         qaAppliesFixes: z.boolean(),
         autoPush: z.boolean(),
         directorName: z.string().max(40),
+        directorDirectives: z.string().max(MAX_DIRECTOR_DIRECTIVES_CHARS),
         maxQaRounds: z.number().int().min(1).max(12),
         maxReviewFixRounds: z.number().int().min(0).max(3),
         maxConcurrent: z.number().int().min(1).max(20),

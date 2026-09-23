@@ -5,6 +5,7 @@ import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../
 import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
+import { DirectorDirectives } from "./DirectorDirectives.js";
 import { Markdown } from "./Markdown.js";
 import { CLAUDE_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, codexEffortsForModel, type CodexEffort, type DirectorItem, type DirectorMessage, type DirectorStatus, type Effort, type OrchestratorSettings, type Role, type TaskSearchHit } from "../types.js";
 import { codexModelOptions } from "../lib/models.js";
@@ -239,6 +240,7 @@ export function Director() {
               </button>
             )}
             <AgentToggles />
+            <DirectorDirectives />
             {/* Mobile-only search affordance — collapses the full-width search row into one tap. */}
             <button
               type="button"

@@ -892,6 +892,23 @@ button { font-family: inherit; cursor: pointer; }
 .agent-toggle.off .agent-dot { background: var(--text-faint); box-shadow: none; }
 .agent-toggle:hover { border-color: var(--line-strong); }
 
+/* ---- standing directives (the Director's personal system-prompt addition) ---- */
+/* Shares the gate pills' shape so the header reads as one row; unset stays dim, set takes the
+   Director's hue. The label drops wherever the header collapses onto one line. */
+.agent-toggle.directives-toggle { flex: 0 0 auto; }
+@media (max-width: 1183.98px), (pointer: coarse) and (max-width: 1365.98px) {
+  .agent-toggle.directives-toggle { padding: 0 10px; }
+  .directives-label { display: none; }
+}
+.modal.directives-modal { width: min(620px, 94vw); }
+.directives-hint { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--text-dim); }
+.modal .directives-input { min-height: 220px; font-size: 13.5px; line-height: 1.55; }
+.directives-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.directives-count { font-size: 11px; color: var(--text-faint); }
+.directives-count.full { color: var(--warn); }
+.directives-error { font-size: 12px; color: var(--danger); }
+.directives-clear { margin-right: auto; }
+
 .settings-btn {
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; border-radius: var(--r-sm); cursor: pointer;

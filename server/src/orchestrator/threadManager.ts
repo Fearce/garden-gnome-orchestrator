@@ -17,6 +17,7 @@ import {
 } from "../agents/runner.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { withCommunicationSystemPolicy, withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
+import { normalizeDirectorDirectives } from "../agents/directorDirectives.js";
 import { codexAllowanceReopened, codexPools, codexUsageCapped, liveCodexUsage, readCodexUsage, readCodexUsageForSnapshot } from "../agents/codexUsage.js";
 import {
   detectTimedComplete,
@@ -2358,7 +2359,7 @@ export class ThreadManager implements OrchestratorApi {
     const files = new Set(plan?.steps.flatMap((step) => step.files ?? []) ?? []);
     const routeEvidence = stage.routeDecision?.evidence;
     return demandForRole(role, {
-      effort: role === "implementor" ? (effort ?? thread.effortOverride ?? plan?.effort) : undefined,
+      effort: role === "implementor" ? (effort ?? thread.effortOverride ?? plan?.effort ?? stage.routeDecision?.implementorEffort) : undefined,
       // A disabled/failed planner used to erase all size evidence here. Preserve the stronger of the
       // planner's repo read and the deterministic dispatch profile so risky multi-part briefs reserve
       // substantial runway before any implementor starts.
@@ -2683,6 +2684,7 @@ export class ThreadManager implements OrchestratorApi {
       qaAppliesFixes: this.settingBool("setting_qa_applies_fixes", false),
       autoPush: this.settingBool("setting_auto_push", true),
       directorName: this.directorName(),
+      directorDirectives: this.db.kvGet("setting_director_directives") ?? "",
       maxQaRounds: this.settingNum("setting_max_qa_rounds", config.maxQaRounds, 1, 12),
       maxReviewFixRounds: this.settingNum("setting_max_review_fix_rounds", config.maxReviewFixRounds, 0, 3),
       maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
@@ -4018,10 +4020,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   /** The implementor's effort for this task: an operator pin beats everything, then the auto-selected
-   *  effort, then the planner's per-task judgement. */
+   *  effort, then the planner's per-task judgement (read back from the saved plan on a resume), then the
+   *  route's. Undefined only for a task with none of those, which resolves to the built-in default. */
   private implementorEffort(threadId: string, planEffort?: Effort): Effort | undefined {
     const thread = this.db.getThread(threadId);
-    return thread?.effortOverride ?? this.db.getThreadStageOutputs(threadId).modelPick?.effort ?? planEffort;
+    const stage = this.db.getThreadStageOutputs(threadId);
+    return thread?.effortOverride ?? stage.modelPick?.effort ?? planEffort ?? stage.plan?.effort ?? stage.routeDecision?.implementorEffort;
   }
 
   /** Which backend an auto-picked task routes to. The pick owns the decision — that IS the feature — but
@@ -4459,6 +4463,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.qaAppliesFixes !== undefined) this.db.kvSet("setting_qa_applies_fixes", patch.qaAppliesFixes ? "1" : "0");
     if (patch.autoPush !== undefined) this.db.kvSet("setting_auto_push", patch.autoPush ? "1" : "0");
     if (patch.directorName !== undefined) this.db.kvSet("setting_director_name", patch.directorName.trim().slice(0, 40));
+    if (patch.directorDirectives !== undefined) {
+      this.db.kvSet("setting_director_directives", normalizeDirectorDirectives(patch.directorDirectives));
+    }
     if (patch.maxQaRounds !== undefined) this.db.kvSet("setting_max_qa_rounds", String(patch.maxQaRounds));
     if (patch.maxReviewFixRounds !== undefined) this.db.kvSet("setting_max_review_fix_rounds", String(patch.maxReviewFixRounds));
     if (patch.maxConcurrent !== undefined) this.db.kvSet("setting_max_concurrent", String(patch.maxConcurrent));
@@ -6911,7 +6918,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       readerEscalation: readerEscalation ?? undefined,
     });
 
-    if (existing?.policyVersion === ROUTE_POLICY_VERSION && existing.modelPolicy && existing.evidence) return existing;
+    if (existing?.policyVersion === ROUTE_POLICY_VERSION && existing.modelPolicy && existing.evidence) {
+      return existing.implementorEffort ? existing : this.backfillRouteEffort(thread.id, existing, classified);
+    }
 
     // Pre-v2 decisions stay sticky for planner/QA execution, but gain the new model floor and structural
     // evidence. When the refreshed classifier agrees on those stages, refresh its reason/signals too;
@@ -6924,6 +6933,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       ? {
           ...existing,
           ...(sameStages ? { reason: classified.reason, signals: classified.signals } : {}),
+          ...(sameStages && !this.implementorHasRun(thread.id) ? { implementorEffort: classified.implementorEffort } : {}),
           modelPolicy: classified.modelPolicy,
           evidence: classified.evidence,
           policyVersion: ROUTE_POLICY_VERSION,
@@ -6932,6 +6942,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.db.updateThreadStageOutputs(thread.id, { routeDecision: decision });
     this.announceRoute(thread.id, decision, settings, !!existing);
     return decision;
+  }
+
+  /** A current-policy route persisted before routes carried an effort. Filled in only while no implementor
+   *  has run (and the reclassified scope still agrees): a task mid-episode already ran at the old default
+   *  and must resume at it, not switch effort under its own session. */
+  private backfillRouteEffort(threadId: string, existing: RouteDecision, classified: RouteDecision): RouteDecision {
+    if (existing.scope !== classified.scope || this.implementorHasRun(threadId)) return existing;
+    const decision = { ...existing, implementorEffort: classified.implementorEffort };
+    this.db.updateThreadStageOutputs(threadId, { routeDecision: decision });
+    return decision;
+  }
+
+  private implementorHasRun(threadId: string): boolean {
+    return this.db.listRuns(threadId).some((run) => run.role === "implementor");
   }
 
   /** Post the route pick into the thread's own history (a system feed message, like an inject/queue
@@ -6953,13 +6977,27 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         : decision.modelPolicy?.tier === "flagship"
           ? `flagship implementor required; ${decision.modelPolicy.preferredModel ?? DEFAULT_FLAGSHIP_MODEL} first, otherwise only a policy-approved flagship fallback`
           : "adaptive cheapest-capable implementor selection";
+    const effort = this.routeEffortNote(threadId, decision, settings);
     const m = this.db.addMessage({
       threadId,
       role: "director",
       kind: "system",
-      content: `🧭 Route ${updated ? "updated" : "selected"} — ${planner}, ${qa}. Model routing: ${modelRoute}. ${decision.reason}`,
+      content: `🧭 Route ${updated ? "updated" : "selected"} — ${planner}, ${qa}. Model routing: ${modelRoute}.${effort ? ` ${effort}` : ""} ${decision.reason}`,
     });
     this.hub.publish({ type: "thread.message", threadId, message: m });
+  }
+
+  /** The route notice's effort sentence: what the implementor will run at, and which later judgement (a
+   *  planner, an automatic model pick) may still refine it — so a `high` is never a silent default. */
+  private routeEffortNote(threadId: string, decision: RouteDecision, settings: OrchestratorSettings): string | undefined {
+    const pinned = this.db.getThread(threadId)?.effortOverride;
+    if (pinned) return `Implementor effort: ${pinned} (owner pin).`;
+    if (!decision.implementorEffort) return undefined;
+    const refiners = [
+      settings.plannerEnabled && decision.usePlanner ? "the planner" : undefined,
+      settings.autoModelSelection ? "automatic model selection" : undefined,
+    ].filter(Boolean);
+    return `Implementor effort: ${decision.implementorEffort}${refiners.length ? ` unless ${refiners.join(" or ")} picks another` : ""}.`;
   }
 
   /** The most recent implementor run's SDK session id for a thread, or undefined if none has one.

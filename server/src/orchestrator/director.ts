@@ -16,6 +16,7 @@ import { clampAgentCount } from "./shotgun.js";
 import { existsSync } from "node:fs";
 import { DIRECTOR_CLI_PROTOCOL, DIRECTOR_CLI_SCHEMA, executeDirectorCliAction, type DirectorCliAction } from "./directorCliBridge.js";
 import { withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
+import { normalizeDirectorDirectives, withDirectorDirectivesUpdate } from "../agents/directorDirectives.js";
 
 const MAX_DIRECTOR_FAILOVERS = 6;
 const MAX_CLI_ACTIONS = 20;
@@ -31,6 +32,9 @@ export class Director {
   private target: DirectorTarget | undefined;
   private readonly sessions = new Map<string, string>();
   private activeSessionKey: string | undefined;
+  /** The standing-directives text each provider session last received, so an owner edit reaches a
+   *  session that will not see a rebuilt system prompt (a live Claude query, a resumed CLI session). */
+  private readonly directivesSeen = new Map<string, string>();
   private targetWasAuto = false;
   private busy = false;
   /** Planned restarts admit steering into this already-live turn, but never start a fresh Director
@@ -170,7 +174,8 @@ export class Director {
       void old.stop();
       void this.start(content);
     } else if (live) {
-      this.run!.send(withCommunicationTurnPolicy(content, this.api.settings().conciseAgentCommunication));
+      const turn = this.withDirectivesUpdate(this.activeSessionKey!, content);
+      this.run!.send(withCommunicationTurnPolicy(turn, this.api.settings().conciseAgentCommunication));
     } else {
       // Neutralize a finished run's not-yet-delivered onEnd callback before starting the next turn.
       // The callback's `this.run !== run` ownership guard will now leave the new pending prompt alone.
@@ -355,15 +360,21 @@ export class Director {
       this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
     }, this.scheduler, this.notes, () => this.taskModeDefaults());
     const memory = createMemoryServer(this.api.memory);
-    const conciseCommunication = this.api.settings().conciseAgentCommunication;
+    const { conciseAgentCommunication: conciseCommunication, directorDirectives: directives } = this.api.settings();
     const cfg = directorConfig(
       { director, memory },
       this.api.directorName(),
-      { conciseCommunication },
+      { conciseCommunication, directives },
     );
     const sessionKey = this.sessionKey(chosen);
     const resume = this.activeSessionKey === sessionKey ? this.sessions.get(sessionKey) : undefined;
     const isCli = chosen.provider === "codex" || chosen.provider === "grok";
+    // A fresh session reads the directives from its system prompt. A resumed one may not (a CLI resume
+    // is never re-prompted), and its history can hold an older replacement block that would outrank
+    // the prompt, so it gets the turn block whenever its last-seen version differs.
+    let turn = firstContent;
+    if (resume) turn = this.withDirectivesUpdate(sessionKey, firstContent);
+    else this.directivesSeen.set(sessionKey, normalizeDirectorDirectives(directives));
     const run = this.api.createDirectorAgent(chosen, cfg, { resume, ...(isCli ? { cliSchema: DIRECTOR_CLI_SCHEMA } : {}) });
     this.target = chosen;
     this.activeSessionKey = sessionKey;
@@ -372,9 +383,19 @@ export class Director {
     this.run = run;
     this.publishStatus();
     this.wire(run, chosen);
-    const instructed = withCommunicationTurnPolicy(firstContent, conciseCommunication);
+    const instructed = withCommunicationTurnPolicy(turn, conciseCommunication);
     const content = resume ? instructed : this.bootstrapContent(instructed, cfg.systemPrompt, isCli);
     run.start(content);
+  }
+
+  private withDirectivesUpdate(sessionKey: string, content: UserContent): UserContent {
+    const current = normalizeDirectorDirectives(this.api.settings().directorDirectives);
+    // A resumed provider session can outlive this process. Its prior directives are therefore unknown
+    // after a restart: even an empty current value needs one explicit `cleared` block to supersede a
+    // non-empty block in that session's history. Once sent, the map suppresses duplicates as usual.
+    if (this.directivesSeen.has(sessionKey) && this.directivesSeen.get(sessionKey) === current) return content;
+    this.directivesSeen.set(sessionKey, current);
+    return withDirectorDirectivesUpdate(content, current);
   }
 
   private async chooseTarget(excludeKeys: ReadonlySet<string> = new Set()): Promise<DirectorTarget | undefined> {

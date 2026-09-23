@@ -191,6 +191,9 @@ export type BoardView = "tasks" | "cowork" | "notes" | "schedules" | "supervisor
 /** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
 export const NOTE_MAX_CHARS = 255;
 
+/** Ceiling on the Director's standing directives, enforced server-side. Mirrors server/src/types.ts. */
+export const MAX_DIRECTOR_DIRECTIVES_CHARS = 4000;
+
 /** One line on the operator's note list: a pointer an agent left for the owner — a branch pushed, a PR
  *  opened — that they click, act on, and delete. Server-authoritative; mirrors server/src/types.ts. */
 export interface OperatorNote {
@@ -589,6 +592,7 @@ export interface OrchestratorSettings {
   qaAppliesFixes: boolean; // off (default) → QA reports findings back to the implementor. on → QA fixes issues directly, then QA re-checks until a pass makes no code changes.
   autoPush: boolean;
   directorName: string; // the director persona's display name, operator-set (default "ChangeNameInSettings")
+  directorDirectives: string; // the owner's standing directives appended to the Director's system prompt (default "" = none; max MAX_DIRECTOR_DIRECTIVES_CHARS)
   maxQaRounds: number;
   maxReviewFixRounds: number; // implementor fix-rounds the auto-reviewer may trigger when it hands a task back (default 1; 0 = hand straight back to the owner)
   maxConcurrent: number;

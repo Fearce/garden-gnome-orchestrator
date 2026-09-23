@@ -661,6 +661,11 @@ export interface RouteDecision {
   /** Added in route policy v2. Optional only so persisted pre-v2 decisions can be upgraded safely. */
   modelPolicy?: ImplementorModelPolicy;
   evidence?: RouteEvidence;
+  /** The implementor effort this route implies. The LAST resort before the built-in default: an owner pin,
+   *  an auto-selected pick and the planner's effort all beat it. Optional because decisions persisted before
+   *  it existed lack it — `resolveRoute` fills it in only while no implementor has run yet, so a task
+   *  mid-episode keeps the effort it was already running at. */
+  implementorEffort?: Effort;
   policyVersion?: number;
 }
 
@@ -956,6 +961,9 @@ export interface TokenSafetyState {
   bypass: { at: number; threshold: number; resumed: number; waiting: number } | null;
 }
 
+/** Ceiling on the Director's standing directives, enforced server-side. Mirrors web/src/types.ts. */
+export const MAX_DIRECTOR_DIRECTIVES_CHARS = 4000;
+
 /**
  * Operator-tunable pipeline settings, persisted server-side in the `kv` table and broadcast to every
  * client (mirrors `approvalMode`). Read live at dispatch/pipeline time, so a change applies to the
@@ -972,6 +980,7 @@ export interface OrchestratorSettings {
   qaAppliesFixes: boolean; // off (default) → QA reports issues to the implementor. on → QA fixes issues itself, then another QA pass verifies each changed working tree until a pass makes no code changes.
   autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
   directorName: string; // the director persona's display name, set by the operator (default "ChangeNameInSettings")
+  directorDirectives: string; // the owner's standing directives: free text appended to the Director's system prompt (default "" = none). Director-only; normalized and capped at MAX_DIRECTOR_DIRECTIVES_CHARS
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
   maxReviewFixRounds: number; // implementor fix-rounds the auto-reviewer may trigger when it hands a task back (default 1; 0 = hand straight back to the owner, the pre-fix-round behavior)
   selfImproveEnabled: boolean; // off (default) → opt-in; on → after a task completes, the implementor runs one extra round building the tools/skills/memories that would have made the task easier

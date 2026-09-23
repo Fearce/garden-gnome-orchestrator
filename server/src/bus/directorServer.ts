@@ -102,6 +102,12 @@ export function createDirectorServer(
         .describe(
           `ONLY when ${config.ownerName} explicitly named the model/capacity to use: copy their exact short label (for example "GPT Spark" or "gpt-5.6-terra"). Omit otherwise — do not make a model choice on their behalf. The server resolves the canonical configured id and enforces it strictly.`,
         ),
+      effort: z
+        .enum(["low", "medium", "high", "max"])
+        .optional()
+        .describe(
+          `Pins the implementor's effort for this task. Set it ONLY when ${config.ownerName} asked for an effort, in this message or in their standing directives. Omit otherwise; the pipeline then picks the effort per task.`,
+        ),
       duration: z
         .string()
         .refine((v) => normalizeDuration(v) != null, "Use a duration like 8h, 90m, 2h30m, or 1d.")
@@ -142,6 +148,7 @@ export function createDirectorServer(
         workspace: args.workspace,
         brief: args.brief,
         requestedModel: args.model,
+        effort: args.effort,
         images: getImages(),
         durationMs,
         agentCount,

@@ -131,14 +131,8 @@ function countWords(text: string): number {
   return t ? t.split(/\s+/).length : 0;
 }
 
-function implementorModelPolicy(
-  riskHits: string[],
-  structural: string[],
-  evidence: RouteEvidence,
-): ImplementorModelPolicy {
-  const direct = RISK_SIGNALS
-    .filter((signal) => signal.flagship && riskHits.includes(signal.name))
-    .map((signal) => signal.name);
+/** Evidence that the work is big, independent of what it touches — shared by the model floor and effort. */
+function scaleSignals(riskHits: string[], structural: string[], evidence: RouteEvidence): string[] {
   const scale: string[] = [];
   if (evidence.wordCount >= 120 && evidence.compoundCount >= 2) {
     scale.push(`long multi-part brief (${evidence.wordCount} words)`);
@@ -157,7 +151,18 @@ function implementorModelPolicy(
   if (riskHits.includes("open-ended/ambiguous") && (evidence.compoundCount >= 2 || evidence.wordCount >= 80)) {
     scale.push("open-ended investigation at substantial scope");
   }
-  const signals = [...new Set([...direct, ...scale])];
+  return scale;
+}
+
+function implementorModelPolicy(
+  riskHits: string[],
+  structural: string[],
+  evidence: RouteEvidence,
+): ImplementorModelPolicy {
+  const direct = RISK_SIGNALS
+    .filter((signal) => signal.flagship && riskHits.includes(signal.name))
+    .map((signal) => signal.name);
+  const signals = [...new Set([...direct, ...scaleSignals(riskHits, structural, evidence)])];
   if (signals.length > 0) {
     return {
       tier: "flagship",
@@ -173,16 +178,40 @@ function implementorModelPolicy(
   };
 }
 
-function completeDecision(
-  decision: Omit<RouteDecision, "modelPolicy" | "evidence" | "policyVersion">,
+// A wrong answer here costs correctness, not just time, so these are the risks that earn `max` — but only
+// with real scale behind them: a one-line "sessions expire early" is flagship work at `high`.
+const CORRECTNESS_CRITICAL = new Set(["security/auth", "money/finance", "data migration/backfill"]);
+
+/**
+ * The implementor effort this route implies — the fallback used only when no owner pin, auto-selected
+ * pick, or planner judgement exists (with the planner off or skipped, that is most tasks). Without it an
+ * unset effort resolves to `high` for everything, including a typo fix.
+ */
+function routeImplementorEffort(
+  scope: RouteScope,
+  narrowHinted: boolean,
   riskHits: string[],
   structural: string[],
   evidence: RouteEvidence,
+): Effort {
+  if (scope === "narrow") return narrowHinted ? "low" : "medium";
+  if (scope === "standard") return "medium";
+  const critical = riskHits.some((name) => CORRECTNESS_CRITICAL.has(name));
+  return critical && scaleSignals(riskHits, structural, evidence).length > 0 ? "max" : "high";
+}
+
+function completeDecision(
+  decision: Omit<RouteDecision, "modelPolicy" | "evidence" | "policyVersion" | "implementorEffort">,
+  riskHits: string[],
+  structural: string[],
+  evidence: RouteEvidence,
+  narrowHinted = false,
 ): RouteDecision {
   return {
     ...decision,
     modelPolicy: implementorModelPolicy(riskHits, structural, evidence),
     evidence,
+    implementorEffort: routeImplementorEffort(decision.scope, narrowHinted, riskHits, structural, evidence),
     policyVersion: ROUTE_POLICY_VERSION,
   };
 }
@@ -213,7 +242,9 @@ const NARROW_FILE_LIMIT = 2;
  *                  is the unsafe direction" rule.
  *
  * Deterministic and explainable: identical input always yields the identical decision, and every decision
- * carries the matched signal names (`signals`) behind its one-line `reason`.
+ * carries the matched signal names (`signals`) behind its one-line `reason`. Each tier also carries the
+ * implementor effort it implies (`routeImplementorEffort`): narrow → low/medium, standard → medium, broad →
+ * high, and max only for substantial correctness-critical work.
  */
 export function selectRoute(input: RouteInput): RouteDecision {
   const text = `${input.title}\n${input.brief}`;
@@ -286,7 +317,7 @@ export function selectRoute(input: RouteInput): RouteDecision {
       scope: "narrow" as RouteScope,
       reason: `narrow, contained change (${signals.join("; ")}) — implementor runs alone, no planning or QA needed`,
       signals,
-    }, riskHits, structural, evidence);
+    }, riskHits, structural, evidence, narrowHits.length > 0);
   }
 
   return completeDecision({

@@ -297,6 +297,68 @@ Handle existing data and future updates with a safe migration or backfill, then 
     }
   }
 
+  // ---- 7. The implementor's effort: owner pin > model pick > planner > route > default ---------------
+  // Reported 2026-09-23: with the planner OFF and auto-selection idle, EVERY implementor ran at `high`,
+  // because an unset effort resolves to high. The route always exists, so it is the fallback that fits
+  // the work; and a resume must re-read the persisted plan's effort rather than silently dropping to it.
+  console.log("\n7. Implementor effort falls back to the route's, and a resume keeps the planner's");
+  {
+    const h = makeHarness();
+    try {
+      const efforts: Array<string | undefined> = [];
+      h.manager.startResumedImplementor = async (_t: unknown, _k: string, _s: unknown, opts?: { effort?: string }): Promise<{ run: unknown; accountId: string }> => {
+        efforts.push(opts?.effort);
+        return { run: { send() {} }, accountId: "acct1" };
+      };
+      h.manager.setSettings({ plannerEnabled: false, qaEnabled: false, autoModelSelection: false });
+
+      const narrow = await h.manager.dispatch({ title: "typo fix", workspace: process.cwd(), brief: NARROW_BRIEF });
+      await h.pollTerminal(narrow);
+      await h.waitIdle(narrow);
+      check("a narrow task with no planner runs its implementor at the route's low effort", efforts.at(-1) === "low", JSON.stringify(efforts));
+      check("the route persists the effort it chose", h.db.getThreadStageOutputs(narrow).routeDecision?.implementorEffort === "low", JSON.stringify(h.db.getThreadStageOutputs(narrow).routeDecision));
+      check("the route notice tells the owner the effort", h.db.listMessages(narrow).some((m: { kind: string; content: string }) => m.kind === "system" && /route selected/i.test(m.content) && /effort: low/i.test(m.content)));
+      check("a resume re-reads the same route effort", h.manager.implementorEffort(narrow) === "low", String(h.manager.implementorEffort(narrow)));
+
+      const pinned = await h.manager.dispatch({ title: "typo fix", workspace: process.cwd(), brief: NARROW_BRIEF, effort: "high" });
+      await h.pollTerminal(pinned);
+      await h.waitIdle(pinned);
+      check("an owner-pinned effort still beats the route", efforts.at(-1) === "high", JSON.stringify(efforts));
+
+      h.db.updateThreadStageOutputs(narrow, { modelPick: { provider: "claude", model: "claude-sonnet-5", effort: "medium", reason: "test" } });
+      check("an auto-selected effort beats the route", h.manager.implementorEffort(narrow) === "medium", String(h.manager.implementorEffort(narrow)));
+
+      h.manager.setSettings({ plannerEnabled: true });
+      h.manager.runRole = async (_t: unknown, role: string): Promise<ResultEvent | undefined> => {
+        h.roleCalls.push(role);
+        if (role === "planner") return { type: "result", subtype: "success", isError: false, structuredOutput: { summary: "plan", steps: [], risks: [], openQuestions: [], nextAgent: "implementor", effort: "max" } };
+        return undefined;
+      };
+      const planned = await h.manager.dispatch({ title: "2fa", workspace: process.cwd(), brief: BROAD_BRIEF });
+      await h.pollTerminal(planned);
+      await h.waitIdle(planned);
+      check("the planner's effort beats the route's", efforts.at(-1) === "max", JSON.stringify(efforts));
+      check("a resume (no plan argument) keeps the planner's effort instead of the route's", h.manager.implementorEffort(planned) === "max", String(h.manager.implementorEffort(planned)));
+
+      // A route persisted before this field existed: a task whose implementor already ran keeps the effort
+      // it ran at (the old default), while one that has not started yet gains the route's effort.
+      const legacyRoute = { usePlanner: false, useQa: false, scope: "narrow", reason: "narrow", signals: [] };
+      const started = h.db.createThread({ title: "typo fix", workspace: process.cwd(), rawPrompt: NARROW_BRIEF, brief: NARROW_BRIEF });
+      const fresh = h.db.createThread({ title: "typo fix", workspace: process.cwd(), rawPrompt: NARROW_BRIEF, brief: NARROW_BRIEF });
+      for (const t of [started, fresh]) {
+        const current = h.manager.resolveRoute(h.db.getThread(t.id), h.manager.settings());
+        h.db.updateThreadStageOutputs(t.id, { routeDecision: { ...legacyRoute, modelPolicy: current.modelPolicy, evidence: current.evidence, policyVersion: current.policyVersion } });
+      }
+      h.db.createRun({ threadId: started.id, role: "implementor", model: "claude-opus-5-5", effort: "high" });
+      h.manager.resolveRoute(h.db.getThread(started.id), h.manager.settings());
+      h.manager.resolveRoute(h.db.getThread(fresh.id), h.manager.settings());
+      check("an in-flight legacy task keeps the effort it already ran at", h.manager.implementorEffort(started.id) === undefined, String(h.manager.implementorEffort(started.id)));
+      check("a not-yet-started legacy task gains the route's effort", h.manager.implementorEffort(fresh.id) === "low", String(h.manager.implementorEffort(fresh.id)));
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);
   if (failed > 0) {
     console.log("Failures:\n" + failures.map((f) => `  - ${f}`).join("\n"));

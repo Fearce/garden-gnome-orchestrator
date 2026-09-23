@@ -209,6 +209,33 @@ console.log("\nAmbiguous/unclear cases default to the full route (bias conservat
   check("an empty brief never routes narrow (no confident signal)", d.scope !== "narrow", JSON.stringify(d));
 }
 
+// ---- implementor effort: the fallback when neither an owner pin, a model pick nor a planner sets one ---
+// With the planner off (or skipped by this very route) and auto-selection idle, nothing else sizes the
+// implementor's effort, and an unset effort resolves to `high` for every task. The route is the one
+// per-task judgement that ALWAYS exists, so it must carry an effort that fits the work it classified.
+console.log("\nImplementor effort fits the classified work");
+{
+  const effortOf = (brief: string, extra: Partial<RouteInput> = {}) => route(brief, extra).implementorEffort;
+  check("a typo fix runs at low effort", effortOf("Fix the typo in the README: 'recieve' should be 'receive'.") === "low", String(effortOf("Fix the typo in the README: 'recieve' should be 'receive'.")));
+  check("a version bump runs at low effort", effortOf("Bump the version to 2.4.1.") === "low", String(effortOf("Bump the version to 2.4.1.")));
+  check("a short narrow ask with no small-change wording gets medium, not low", effortOf("wat pls fix the broken button") === "medium", String(effortOf("wat pls fix the broken button")));
+  check("a contained change with explicit verification gets medium", effortOf("Fix the typo in README.md, then run the test suite.") === "medium", String(effortOf("Fix the typo in README.md, then run the test suite.")));
+  const ordinary = "Expand the screensaver text area so it uses the full vertical space below each house, and keep the fade at the bottom edge.";
+  check("an ordinary not-obviously-contained change gets medium", route(ordinary).scope === "standard" && effortOf(ordinary) === "medium", JSON.stringify(route(ordinary)));
+  check("a bounded investigation (broad, adaptive) gets high", effortOf("Investigate why this one selector returns the wrong label.") === "high");
+  check("a multi-part request gets high", effortOf("Add a loading spinner to the dashboard.\n- Also add a retry button.\n- Also add an error banner.") === "high");
+  check("production/infra work without correctness-critical scale gets high", effortOf("Update the production deploy pipeline config to add a new CI/CD stage.") === "high");
+  check("a short security phrase is flagship but not automatically max", effortOf("Sessions expire far too early.") === "high", String(effortOf("Sessions expire far too early.")));
+  const critical = `Investigate why stale business records remain visible to users and implement a durable end-to-end fix.
+
+Trace the full lifecycle across ingestion sources, stored status timestamps, refresh jobs, query filters,
+ranking, caches, and user-facing results. Handle existing data and future updates with a safe migration or
+backfill, preserve auditability, and add realistic regressions for open, closed, temporary, and unknown states.`;
+  check("substantial correctness-critical data work gets max", effortOf(critical) === "max", String(effortOf(critical)));
+  check("a multi-agent split gets at least high", ["high", "max"].includes(String(effortOf("Improve things.", { shotgun: true }))));
+  check("every route carries an effort", ["", "Improve things.", "Rename foo to bar in a.ts."].every((b) => typeof effortOf(b) === "string"));
+}
+
 // ---- determinism --------------------------------------------------------------------------------
 console.log("\nDeterminism");
 {

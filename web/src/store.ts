@@ -405,6 +405,9 @@ interface State {
   dismiss: (threadId: string) => void;
   setApproval: (on: boolean) => void;
   setSettings: (patch: SettingsPatch) => void;
+  /** Save the Director's standing directives. Returns false when the socket could not carry the write,
+   *  so the dialog keeps the owner's text instead of closing over a lost save. */
+  setDirectorDirectives: (text: string) => boolean;
   testCodex: (apiKey?: string) => void;
   testDiscord: () => void;
   setAccountEnabled: (id: string, enabled: boolean) => void;
@@ -686,6 +689,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   qaAppliesFixes: false,
   autoPush: true,
   directorName: "ChangeNameInSettings",
+  directorDirectives: "",
   maxQaRounds: 4,
   maxReviewFixRounds: 1,
   maxConcurrent: 3,
@@ -1427,6 +1431,11 @@ export const useStore = create<State>((set) => ({
     const { openaiApiKey: _key, discordBotToken: _bot, ...local } = patch;
     set((s) => ({ settings: { ...s.settings, ...local } }));
     sendCommand({ type: "settings.set", settings: patch });
+  },
+  setDirectorDirectives: (text) => {
+    const sent = sendCommand({ type: "settings.set", settings: { directorDirectives: text } });
+    if (sent) set((s) => ({ settings: { ...s.settings, directorDirectives: text } }));
+    return sent;
   },
   testCodex: (apiKey) => {
     set({ codexTesting: true, codexTest: null });

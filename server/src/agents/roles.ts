@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import { EFFORTS, type Effort } from "../types.js";
 import type { AgentRunConfig } from "./runner.js";
 import { conciseCommunicationEnabled, withCommunicationSystemPolicy, type CommunicationPolicyOptions } from "./communicationPolicy.js";
+import { directorDirectivesSystemSection } from "./directorDirectives.js";
 import { BUS_SERVER, BUS_TOOLS, DIRECTOR_SERVER, DIRECTOR_TOOLS, GIT_SERVER, MEMORY_SERVER, OFFICE_SERVER, OFFICE_TOOLS, READER_TOOLS, T } from "./toolNames.js";
 import { COWORKER_PROMPT, DIRECTOR_PROMPT, IMPLEMENTOR_APPEND, PLANNER_PROMPT, QA_FIX_PROMPT, QA_PROMPT, READER_PROMPT, RESEARCHER_PROMPT, REVIEWER_PROMPT } from "./prompts.js";
 
@@ -207,13 +208,14 @@ export function clampEffort(effort: Effort, cap: Effort): Effort {
 export function directorConfig(
   servers: { director: McpServerConfig; memory: McpServerConfig },
   directorName: string,
-  opts?: CommunicationPolicyOptions,
+  opts?: CommunicationPolicyOptions & { directives?: string },
 ): AgentRunConfig {
+  const directives = directorDirectivesSystemSection(opts?.directives ?? "");
   return {
     model: config.models.director,
     cwd: config.defaultWorkspace,
     systemPrompt: withCommunicationSystemPolicy(
-      `${DIRECTOR_PROMPT}\n\nYour name is ${directorName} — that's how ${config.ownerName} and the team refer to you; introduce yourself by it.`,
+      `${DIRECTOR_PROMPT}\n\nYour name is ${directorName} — that's how ${config.ownerName} and the team refer to you; introduce yourself by it.${directives ? `\n\n${directives}` : ""}`,
       conciseCommunicationEnabled(opts),
     ),
     permissionMode: "bypassPermissions",

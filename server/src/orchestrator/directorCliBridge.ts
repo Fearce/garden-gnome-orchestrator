@@ -103,7 +103,7 @@ Commands and fields:
 - reply: message
 - ask_user: header, question, options?, multiSelect?
 - find_workspace: query
-- dispatch: title, workspace, brief, model?, duration?, agents? — set model ONLY by copying an explicit owner model/capacity request (for example "GPT Spark"); omit it otherwise. The server resolves and strictly pins the canonical model.
+- dispatch: title, workspace, brief, model?, effort?, duration?, agents? — set model ONLY by copying an explicit owner model/capacity request (for example "GPT Spark"); omit it otherwise. The server resolves and strictly pins the canonical model. Set effort (low|medium|high|max) ONLY when the owner asked for one, in the message or in their standing directives.
 - dispatch_read: title, workspace, brief
 - list_threads
 - thread_status: threadId
@@ -178,7 +178,7 @@ export async function executeDirectorCliAction(
           brief,
           requestedModel: action.model?.trim() || undefined,
           images,
-          ...(action.kind === "dispatch_read" ? { lane: "read" as const } : { durationMs, agentCount }),
+          ...(action.kind === "dispatch_read" ? { lane: "read" as const } : { durationMs, agentCount, effort: action.effort }),
         });
         return outcome(action.kind, `Dispatched task ${id} ("${title}") in ${workspace}.`, id);
       }
