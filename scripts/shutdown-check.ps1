@@ -31,7 +31,6 @@ function Get-Task([string]$name) {
 
 if ((Get-TimeZone).Id -ne 'Romance Standard Time') { throw 'Expected Europe/Copenhagen Windows time zone.' }
 if (-not (Test-Path -LiteralPath $boardScript)) { throw "Missing board audit: $boardScript" }
-if (-not (Test-Path -LiteralPath $deadlineScript)) { throw "Missing deadline script: $deadlineScript" }
 
 if ($Action -eq 'Status') {
     $check = Get-Task $checkName
@@ -40,6 +39,7 @@ if ($Action -eq 'Status') {
 }
 
 if ($Action -eq 'Arm') {
+    if (-not (Test-Path -LiteralPath $deadlineScript)) { throw "Missing deadline script: $deadlineScript" }
     & $deadlineScript -Action Status | Out-Null
     if (Get-Task $checkName) { throw "Check task $checkName already exists; inspect it before arming another." }
     $now = Get-Date
@@ -76,6 +76,7 @@ if ($runStartedAt -ge $deadline) {
     Write-Result '03:00 passed; GGO schedule disabled and verified.'
     return
 }
+if (-not (Test-Path -LiteralPath $deadlineScript)) { throw "Missing deadline script: $deadlineScript" }
 
 # Both the Windows checker and GGO schedule may fire in the same five-minute slot.
 # Only one run may cancel the deadline and create an early shutdown task.
