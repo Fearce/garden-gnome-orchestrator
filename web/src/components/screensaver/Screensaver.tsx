@@ -19,7 +19,7 @@
  * the single static pass below implement together.
  */
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type AnimationEvent, type CSSProperties } from "react";
 import { useStore } from "../../store.js";
 import { roleColor } from "../../lib/format.js";
 import { DroppedTool, GROUND_Y, PLOT_VB, Plot, Rig, TOOL_MOTION } from "./rig.js";
@@ -41,8 +41,8 @@ import {
   targetFor,
   type CardGeometry,
 } from "./scene.js";
-import { buildHeight, sceneTasks, type SceneTask, type TargetPhase } from "./taskScene.js";
-import { useDocumentHidden, usePrefersReducedMotion } from "./useIdle.js";
+import { buildHeight, sceneTasks, type LaneMessage, type SceneTask, type TargetPhase } from "./taskScene.js";
+import { useDocumentHidden, useMediaQuery, usePrefersReducedMotion } from "./useIdle.js";
 import "./screensaver.css";
 
 /** The pose a lane is actually in: the phase the live data asks for, plus the two transitions
@@ -130,6 +130,34 @@ export function nextPhase(phase: AnimPhase, target: TargetPhase, elapsedSec: num
   }
 }
 
+/** Load the real conversation of every task on stage. The connect snapshot carries one clipped line
+ *  per task, and only a task the owner has opened has its feed in the store; without this the space
+ *  under each house would stay empty for exactly the tasks nobody is looking at. Live messages then
+ *  stream into those feeds on their own. Opening the scene and every reconnect re-ask for all lanes,
+ *  because a feed misses whatever arrived while the socket was down. */
+function useLaneHistories(tasks: SceneTask[]): void {
+  const connected = useStore((s) => s.connected);
+  const prefetch = useStore((s) => s.prefetchThreadHistory);
+  // A phone hides the column (see the 760px rule in screensaver.css), so it fetches nothing for it.
+  const narrow = useMediaQuery(NARROW_VIEWPORT);
+  const laneIds = tasks.map((t) => t.id).join("\n");
+  // Starts true: a feed loaded before this idle period may have missed messages during a reconnect
+  // the scene never saw, so the first ask after mounting refreshes every lane.
+  const stale = useRef(true);
+  useEffect(() => {
+    if (!connected) {
+      stale.current = true;
+      return;
+    }
+    if (narrow) return;
+    prefetch(laneIds ? laneIds.split("\n") : [], stale.current);
+    stale.current = false;
+  }, [laneIds, connected, narrow, prefetch]);
+}
+
+/** Mirrors the stylesheet's narrowest breakpoint, where the message column is hidden. */
+const NARROW_VIEWPORT = "(max-width: 760px)";
+
 /** Where a lane starts the first time it appears. Work already in flight when the scene opens
  *  rappels in, which is how the whole board arrives rather than snapping into place. */
 const initialPhase = (target: TargetPhase): AnimPhase => (target === "working" ? "descending" : target);
@@ -149,6 +177,7 @@ export function Screensaver() {
 
   const reducedMotion = usePrefersReducedMotion();
   const hidden = useDocumentHidden();
+  useLaneHistories(tasks);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const beamRef = useRef<HTMLDivElement>(null);
@@ -343,6 +372,15 @@ export function Screensaver() {
     }
   }, []);
 
+  /** A card is measured while `gs-card-in` still translates and scales it, so the rigging aims a few
+   *  pixels off its plot until something re-measures. Once it has landed, measure again. */
+  const onCardArrived = useCallback(
+    (e: AnimationEvent<HTMLDivElement>) => {
+      if (e.animationName === "gs-card-in") measure();
+    },
+    [measure],
+  );
+
   // Measure before the first paint, and again whenever the cast changes the layout.
   const laneKey = tasks.map((t) => t.id).join("\n");
   useLayoutEffect(() => {
@@ -392,7 +430,7 @@ export function Screensaver() {
       <div className="gs-beam" ref={beamRef} aria-hidden="true">
         <span className="gs-beam-grain" />
       </div>
-      <div className="gs-cards">
+      <div className="gs-cards" onAnimationEnd={onCardArrived}>
         {tasks.map((task) => (
           <LaneCard key={task.id} task={task} register={registerCard} />
         ))}
@@ -419,7 +457,12 @@ const sameCard = (a: { task: SceneTask }, b: { task: SceneTask }): boolean =>
   a.task.role === b.task.role &&
   a.task.badge === b.task.badge &&
   a.task.stateColor === b.task.stateColor &&
-  a.task.activity === b.task.activity;
+  a.task.activity === b.task.activity &&
+  sameHistory(a.task.history, b.task.history);
+
+function sameHistory(a: LaneMessage[], b: LaneMessage[]): boolean {
+  return a.length === b.length && a.every((m, i) => m === b[i] || (m.key === b[i]!.key && m.text === b[i]!.text && m.role === b[i]!.role && m.at === b[i]!.at));
+}
 
 const LaneCard = memo(function LaneCard({
   task,
@@ -450,7 +493,8 @@ const LaneCard = memo(function LaneCard({
       <div className="gs-plot">
         <Plot />
       </div>
-      <div className="gs-activity">{task.activity}</div>
+      {/* The status sits with the house it describes, so the conversation below can run to the
+          bottom of the screen. */}
       <div className="gs-foot">
         <span className="gs-badge">{task.badge}</span>
         <span className="gs-rolechip" style={{ "--gs-role": roleColor(task.role) } as CSSProperties}>
@@ -459,10 +503,41 @@ const LaneCard = memo(function LaneCard({
         </span>
         <span className="gs-elapsed">--:--</span>
       </div>
+      <div className="gs-activity">{task.activity}</div>
+      {task.history.length ? (
+        <ol className="gs-history">
+          {task.history.map((message) => (
+            <HistoryEntry key={message.key} message={message} />
+          ))}
+        </ol>
+      ) : null}
     </article>
   );
 },
 sameCard);
+
+/** A time for today's messages; a date too for anything older, so yesterday's finish does not read as
+ *  this morning's. */
+const clock = (at: number): string => {
+  const when = new Date(at);
+  const time = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return when.toDateString() === new Date().toDateString() ? time : `${when.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+};
+
+/** One earlier message. Keyed by its message id, so a new arrival animates in at the top and the rest
+ *  simply move down rather than re-rendering. */
+function HistoryEntry({ message }: { message: LaneMessage }) {
+  return (
+    <li className="gs-entry" style={message.role ? ({ "--gs-role": roleColor(message.role) } as CSSProperties) : undefined}>
+      <div className="gs-entry-meta">
+        <i />
+        <span>{message.role ?? "note"}</span>
+        <time>{clock(message.at)}</time>
+      </div>
+      <div className="gs-entry-text">{message.text}</div>
+    </li>
+  );
+}
 
 /** A worker is a zero-size anchor pinned under its hook on the beam; everything below hangs from it. */
 const LaneWorker = memo(

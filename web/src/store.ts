@@ -357,6 +357,10 @@ interface State {
   // Fetch the next older page of the selected task's durable feed. A no-op while a page is in flight or
   // once the server has said there is no earlier history.
   loadOlderThreadHistory: (threadId: string) => boolean;
+  // Fetch the newest history page of tasks the owner has not opened, for a surface that narrates
+  // several tasks at once (the screensaver). `refresh` re-asks for loaded ones too: after a reconnect
+  // their feeds missed whatever streamed while the socket was gone. The selected task is never asked.
+  prefetchThreadHistory: (threadIds: string[], refresh?: boolean) => void;
   selectCowork: (id: string | null) => void;
   createCowork: (input: { name?: string; workspace: string; provider?: CoworkSession["requestedProvider"]; model?: string | null }) => boolean;
   sendCowork: (sessionId: string, text: string, mode?: "turn" | CoworkSteeringMode, attachments?: FileAttachment[]) => boolean;
@@ -1249,6 +1253,17 @@ export const useStore = create<State>((set) => ({
     const sent = sendCommand({ type: "thread.history", threadId, before });
     if (sent) set({ threadHistoryLoading: { ...s.threadHistoryLoading, [threadId]: true } });
     return sent;
+  },
+  prefetchThreadHistory: (threadIds, refresh = false) => {
+    const s = useStore.getState();
+    // The open task is kept current by select() and the hello re-fetch already.
+    const asked = threadIds.filter(
+      (id) =>
+        id !== s.selectedThreadId &&
+        (refresh || (!s.threadHistoryLoaded[id] && !s.threadHistoryLoading[id])) &&
+        sendCommand({ type: "thread.history", threadId: id }),
+    );
+    if (asked.length) set((cur) => ({ threadHistoryLoading: { ...cur.threadHistoryLoading, ...Object.fromEntries(asked.map((id) => [id, true])) } }));
   },
   selectCowork: (id) => {
     set({ selectedCoworkId: id, coworkActionError: null });

@@ -58,10 +58,22 @@ export interface SceneTask {
   stateColor: string;
   /** The newest task message, or the live agent text while it is still streaming. */
   activity: string;
+  /** The messages before `activity`, newest first, which fill the card down to the bottom of the
+   *  screen. Empty when only the snapshot preview is known for this task. */
+  history: LaneMessage[];
   /** When the clock started, so the lane can show a real elapsed time. Null while never started. */
   startedAt: number | null;
   /** Where the clock stopped, for a finished task. Null while it is still running. */
   endedAt: number | null;
+}
+
+/** One earlier message in a lane's history. `role` is absent for an owner/system line. */
+export interface LaneMessage {
+  /** Stable across store updates, so a card re-renders and animates only the message that is new. */
+  key: string;
+  role: Role | null;
+  at: number;
+  text: string;
 }
 
 /** How many gnomes the beam can carry before the cards stop being readable. Beyond this the scene
@@ -205,29 +217,60 @@ export function buildHeight(build: BuildProgress, now: number): number {
  *  readable message as one paragraph, rather than showing only its final line: four card rows give an
  *  owner enough context to read it from across the room. Bullet markers and bold runs are stripped
  *  because this compact surface does not render markdown. */
-function laneLine(text: string): string {
+function laneLine(text: string, max = LANE_MESSAGE_MAX): string {
   const lines = text
     .replace(/\r\n/g, "\n")
     .split("\n")
     .map((line) => line.trim().replace(/^[-*+•]\s+/, ""))
     .filter(Boolean);
   const message = lines.join(" ").replace(/\*\*/g, "").trim();
-  return message.length > LANE_MESSAGE_MAX ? `${message.slice(0, LANE_MESSAGE_MAX - 1)}…` : message;
+  return message.length > max ? `${message.slice(0, max - 1)}…` : message;
 }
 
 /** Four readable card rows, with a little extra headroom for wider desktop cards. */
 const LANE_MESSAGE_MAX = 360;
 
-/** The latest conversational line for a task. Tool calls and reasoning are intentionally omitted:
- *  this sits below the house as a readable status from the task, not a stream of implementation
- *  mechanics. A user/director system line still counts because it is a real task message. */
-function latestMessage(feed: FeedItem[] | undefined): string | undefined {
-  if (!feed) return undefined;
-  for (let i = feed.length - 1; i >= 0; i -= 1) {
+/** An earlier message is clamped by line count in CSS; this only bounds the text a card carries, so a
+ *  multi-kilobyte final report does not sit in the DOM of a surface that can show a paragraph of it. */
+const HISTORY_MESSAGE_MAX = 700;
+
+/** More than the tallest screen can show below the headline, so the column always runs off the bottom
+ *  edge into its fade rather than stopping short. */
+export const LANE_HISTORY_MAX = 14;
+
+type ReadableItem = Extract<FeedItem, { kind: "text" | "system" }>;
+
+/** A task's conversational messages, newest first, stopping once `limit` are found. Tool calls and
+ *  reasoning are intentionally omitted: the card is a readable status from the task, not a stream of
+ *  implementation mechanics. A user/director system line still counts because it is a real task
+ *  message. */
+function recentMessages(feed: FeedItem[] | undefined, limit: number): ReadableItem[] {
+  const found: ReadableItem[] = [];
+  if (!feed) return found;
+  for (let i = feed.length - 1; i >= 0 && found.length < limit; i -= 1) {
     const item = feed[i]!;
-    if ((item.kind === "text" || item.kind === "system") && item.text.trim()) return item.text;
+    if ((item.kind === "text" || item.kind === "system") && item.text.trim()) found.push(item);
   }
-  return undefined;
+  return found;
+}
+
+/** The cast is rebuilt on every streamed token, and a history is up to 15 messages x 6 lanes of
+ *  multi-kilobyte text. Feed items keep their identity across store updates, so each one is
+ *  flattened once. */
+const entryCache = new WeakMap<ReadableItem, LaneMessage>();
+
+function historyEntry(item: ReadableItem): LaneMessage {
+  let entry = entryCache.get(item);
+  if (!entry) {
+    entry = {
+      key: item.id ?? `${item.kind}@${item.at}`,
+      role: item.role ?? null,
+      at: item.at,
+      text: laneLine(item.text, HISTORY_MESSAGE_MAX),
+    };
+    entryCache.set(item, entry);
+  }
+  return entry;
 }
 
 /** The last path segment of a workspace, which is the only part that fits a card. */
@@ -285,7 +328,11 @@ export function sceneTasks(
     const threadRuns = byThread.get(thread.id) ?? [];
     const role = roleFor(thread, threadRuns);
     const target = targetPhase(thread.state);
-    const line = drafts[thread.id] || latestMessage(feeds[thread.id]) || thread.latestMessagePreview || thread.briefPreview || thread.brief?.split("\n")[0] || thread.title;
+    const draft = drafts[thread.id];
+    const recent = recentMessages(feeds[thread.id], LANE_HISTORY_MAX + 1);
+    const line = draft || recent[0]?.text || thread.latestMessagePreview || thread.briefPreview || thread.brief?.split("\n")[0] || thread.title;
+    // While a draft streams it IS the headline, so every committed message sits beneath it.
+    const earlier = draft ? recent.slice(0, LANE_HISTORY_MAX) : recent.slice(1);
     return {
       id: thread.id,
       title: thread.title,
@@ -297,6 +344,7 @@ export function sceneTasks(
       badge: stateLabel(thread.state),
       stateColor: stateColor(thread.state),
       activity: laneLine(line),
+      history: earlier.map(historyEntry).filter((m) => m.text),
       startedAt: startOf(threadRuns, thread),
       // A finished task's clock stops when it last changed, which is when it finished.
       endedAt: target === "done" || target === "failed" ? thread.updatedAt : null,

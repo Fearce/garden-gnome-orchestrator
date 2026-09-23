@@ -120,8 +120,25 @@ function seed(dataDir) {
     thread.run(t.id, t.title, t.state, "C:\\Users\\Mikkel\\projects\\garden-gnome-orchestrator", `${t.title} brief line.`, t.title, t.createdAt, NOW - 30_000);
     t.runs.forEach((r, i) => agentRun.run(`${t.id}-run-${i}`, t.id, r.role, "claude-opus-5-5", r.state, r.startedAt, r.endedAt));
   }
+  const message = db.prepare("INSERT INTO messages (id,thread_id,run_id,role,kind,content,created_at) VALUES (?,?,?,?,?,?,?)");
+  for (const [threadId, runId, count] of CONVERSATIONS) {
+    for (let i = 0; i < count; i++) {
+      message.run(`${threadId}-msg-${i}`, threadId, runId, "implementor", "text", conversationLine(threadId, i), NOW - 600_000 + i * 20_000);
+      // Tool traffic between the lines, which the history must leave out.
+      message.run(`${threadId}-tool-${i}`, threadId, runId, "implementor", "tool", "Edit", NOW - 600_000 + i * 20_000 + 5_000);
+    }
+  }
   db.close();
 }
+
+/** Tasks whose conversation the lab seeds, so the column under each house has real history to show.
+ *  None of them is ever opened in the console: the scene has to fetch it on its own. */
+const CONVERSATIONS = [
+  ["lab-working", "lab-working-run-1", 16],
+  ["lab-qa", "lab-qa-run-0", 5],
+];
+const conversationLine = (threadId, i) =>
+  `${threadId} update ${i}: moved the rope anchor, re-measured the plot, and checked the swing lands on the rafter it is aimed at.`;
 
 /** Read every lane's live geometry straight out of the browser: the numbers the scene is actually
  *  drawing with, decomposed from computed transforms rather than from anything the app tells us.
@@ -259,6 +276,42 @@ async function probe(page) {
   return frame;
 }
 
+/** The text column under each house: where the card, its headline and its history actually sit on
+ *  screen, and what the history says. Measured, because "the space is used" is a geometry claim. */
+async function measureColumns(page) {
+  return page.evaluate(() => {
+    const root = document.querySelector(".gs-root");
+    const column = root.querySelector(".gs-cards").getBoundingClientRect();
+    return {
+      viewportH: window.innerHeight,
+      columnBottom: column.bottom,
+      hintTop: root.querySelector(".gs-hint").getBoundingClientRect().top,
+      lanes: Array.from(root.querySelectorAll(".gs-card")).map((card) => {
+        const box = (sel) => {
+          const el = sel ? card.querySelector(sel) : card;
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { top: r.top, bottom: r.bottom, height: r.height };
+        };
+        const entries = Array.from(card.querySelectorAll(".gs-entry"));
+        return {
+          task: card.dataset.task,
+          card: box(null),
+          plot: box(".gs-plot"),
+          activity: box(".gs-activity"),
+          headline: card.querySelector(".gs-activity").textContent,
+          history: box(".gs-history"),
+          entries: entries.map((e) => ({
+            speaker: e.querySelector(".gs-entry-meta span").textContent,
+            text: e.querySelector(".gs-entry-text").textContent,
+            top: e.getBoundingClientRect().top,
+          })),
+        };
+      }),
+    };
+  });
+}
+
 /** Where the tool head lands, from the lane's own measured rope + lean. This is the forward model the
  *  scene's solver is the inverse of; agreeing with the work point is what proves the solve. */
 function impactOf(lane, anchorY) {
@@ -334,6 +387,7 @@ async function main() {
     const posed = await probe(page);
     const lane = (id) => posed.lanes.find((l) => l.task === id);
     const work = lane("lab-working");
+    console.log(`  · working rope settled at ${work.ropeH.toFixed(1)}px (beam ${posed.anchorY.toFixed(0)}px, plot top ${work.plot.t.toFixed(0)}px)`);
     const impact = impactOf(work, posed.anchorY);
     // The rendered timbers name the progress band the lane is in, so the work point is read off the
     // scene's own output rather than recomputed from the store.
@@ -404,6 +458,77 @@ async function main() {
       await page.locator(`.gs-card[data-task="${id}"]`).screenshot({ path: path.join(shots, `${name}-card.png`) });
     }
     await page.screenshot({ path: path.join(shots, "06-scene.png") });
+
+    /* ---- 5b. the text column: every lane's conversation runs down to the bottom of the screen ---- */
+
+    let fetched = true;
+    try {
+      // Each lane's history is its own socket reply, so wait for both before measuring either.
+      await page.waitForFunction(
+        () => ["lab-working", "lab-qa"].every((id) => document.querySelectorAll(`.gs-card[data-task="${id}"] .gs-entry`).length > 0),
+        null,
+        { timeout: 20_000 },
+      );
+    } catch {
+      fetched = false;
+    }
+    check("a lane nobody opened fetches its own conversation", fetched);
+    const cols = await measureColumns(page);
+    const col = (id) => cols.lanes.find((l) => l.task === id);
+    const talk = col("lab-working");
+    check("the headline is still the newest message", /update 15:/.test(talk.headline), talk.headline.slice(0, 60));
+    check(
+      "the earlier messages follow it, newest first",
+      talk.entries.length >= 3 && /update 14:/.test(talk.entries[0].text) && /update 13:/.test(talk.entries[1].text),
+      talk.entries.slice(0, 3).map((e) => e.text.slice(0, 24)).join(" | "),
+    );
+    check("every earlier message names its speaker", talk.entries.every((e) => e.speaker === "implementor"), talk.entries.map((e) => e.speaker).join(","));
+    check("tool calls stay out of the column", !talk.entries.some((e) => e.text === "Edit"));
+    const qaTalk = col("lab-qa").entries;
+    check(
+      "a short conversation is on its card in full, down to the director's brief",
+      qaTalk.length === 5 && qaTalk[4].speaker === "director" && /brief line/.test(qaTalk[4].text),
+      qaTalk.map((e) => `${e.speaker}: ${e.text.slice(0, 20)}`).join(" | "),
+    );
+    check("a lane with no conversation draws no empty column", col("lab-queued").history === null);
+    check(
+      "every card runs down to the bottom of the column",
+      cols.lanes.every((l) => Math.abs(l.card.bottom - cols.columnBottom) <= 2),
+      cols.lanes.map((l) => `${l.task} ${l.card.bottom.toFixed(0)}`).join(", ") + ` vs ${cols.columnBottom.toFixed(0)}`,
+    );
+    check("the column stops above the dismiss hint", cols.columnBottom <= cols.hintTop, `${cols.columnBottom.toFixed(0)} vs hint ${cols.hintTop.toFixed(0)}`);
+    check(
+      "the history fills the card to its bottom edge",
+      talk.history && talk.history.bottom >= talk.card.bottom - 16 && talk.history.height > 40,
+      talk.history ? `history ${talk.history.top.toFixed(0)}..${talk.history.bottom.toFixed(0)} in card ..${talk.card.bottom.toFixed(0)}` : "no history",
+    );
+
+    // A bigger screen gets more of the conversation, and a short one never spills a card's contents.
+    await page.setViewportSize({ width: 1920, height: 1440 });
+    await page.waitForTimeout(400);
+    const tall = (await measureColumns(page)).lanes.find((l) => l.task === "lab-working");
+    const visible = (lane) => lane.entries.filter((e) => e.top < lane.history.bottom - 24).length;
+    check("a taller screen shows more of the conversation", visible(tall) > visible(talk), `${visible(talk)} -> ${visible(tall)} messages`);
+    await page.screenshot({ path: path.join(shots, "06b-text-column-1440p.png") });
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.waitForTimeout(400);
+    const short = await measureColumns(page);
+    check(
+      "on a short screen the card still holds its house and headline",
+      short.lanes.every((l) => l.card.bottom >= l.activity.bottom - 1 && l.card.bottom >= l.plot.bottom),
+      short.lanes.map((l) => `${l.task} card ${l.card.bottom.toFixed(0)} / text ${l.activity.bottom.toFixed(0)}`).join(", "),
+    );
+    await page.screenshot({ path: path.join(shots, "06c-text-column-720p.png") });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForTimeout(400);
+    const phone = await measureColumns(page);
+    check(
+      "a phone keeps compact cards with no message column",
+      phone.lanes.every((l) => l.card.bottom < phone.viewportH - 160 && (!l.history || l.history.height === 0)),
+      phone.lanes.map((l) => `${l.task} ${l.card.bottom.toFixed(0)}`).join(", ") + ` of ${phone.viewportH}px`,
+    );
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await page.waitForTimeout(400);
 
     /* ---- 6. it stops costing anything when the tab is hidden ---- */
 

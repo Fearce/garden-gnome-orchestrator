@@ -77,16 +77,21 @@ export function useIdle(idleMs: number, enabled: boolean): boolean {
 /** Whether this browser is asking for as little motion as possible. Read live rather than once, so
  *  flipping the OS setting takes effect without a reload. */
 export function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(() => matchMediaSafe("(prefers-reduced-motion: reduce)")?.matches ?? false);
+  return useMediaQuery("(prefers-reduced-motion: reduce)");
+}
+
+/** Whether a media query matches, followed live. */
+export function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => matchMediaSafe(query)?.matches ?? false);
   useEffect(() => {
-    const mq = matchMediaSafe("(prefers-reduced-motion: reduce)");
+    const mq = matchMediaSafe(query);
     if (!mq) return;
-    const onChange = (e: MediaQueryListEvent): void => setReduced(e.matches);
+    const onChange = (e: MediaQueryListEvent): void => setMatches(e.matches);
     mq.addEventListener("change", onChange);
-    setReduced(mq.matches);
+    setMatches(mq.matches);
     return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return reduced;
+  }, [query]);
+  return matches;
 }
 
 /** `matchMedia` is missing under the SSR harness the console's UI gates render with. */

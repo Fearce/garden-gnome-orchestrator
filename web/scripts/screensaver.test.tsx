@@ -30,7 +30,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { AgentRun, Thread, ThreadState } from "../src/types.js";
+import type { AgentRun, FeedItem, Thread, ThreadState } from "../src/types.js";
 // The screensaver's graph reaches its own stylesheet, which plain Node cannot load. Must precede the
 // dynamic imports below (see ssrCssStub.mjs).
 import "./ssrCssStub.mjs";
@@ -42,7 +42,30 @@ const read = (rel: string): string => readFileSync(join(WEB, rel), "utf8");
 // automatic one, so React has to be reachable as a global. `localStorage` is what store.ts reads at
 // module scope for the view settings.
 const stored = new Map<string, string>();
+/** Just enough socket for the store's real `sendCommand` to write to. */
+class FakeWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSED = 3;
+  static instances: FakeWebSocket[] = [];
+  readyState = FakeWebSocket.CONNECTING;
+  readonly sent: { type: string; [key: string]: unknown }[] = [];
+  onopen: (() => void) | null = null;
+  onclose: ((event: { code: number }) => void) | null = null;
+  onmessage: ((event: { data: string }) => void) | null = null;
+  constructor(readonly url: string) {
+    FakeWebSocket.instances.push(this);
+  }
+  send(raw: string): void {
+    this.sent.push(JSON.parse(raw));
+  }
+  close(): void {
+    this.readyState = FakeWebSocket.CLOSED;
+  }
+}
 Object.assign(globalThis, {
+  WebSocket: FakeWebSocket,
+  location: { protocol: "http:", host: "localhost", search: "", pathname: "/" },
   React,
   document: { baseURI: "http://localhost/", visibilityState: "visible", hidden: false, addEventListener: () => {}, removeEventListener: () => {} },
   localStorage: {
@@ -52,8 +75,8 @@ Object.assign(globalThis, {
   },
 });
 
-const { useStore, IDLE_MINUTES_MIN, IDLE_MINUTES_MAX } = await import("../src/store.js");
-const { buildHeight, buildProgressFor, sceneTasks, targetPhase, MAX_LANES } = await import("../src/components/screensaver/taskScene.js");
+const { useStore, connect, IDLE_MINUTES_MIN, IDLE_MINUTES_MAX } = await import("../src/store.js");
+const { buildHeight, buildProgressFor, sceneTasks, targetPhase, MAX_LANES, LANE_HISTORY_MAX } = await import("../src/components/screensaver/taskScene.js");
 const { IMPACT_DX, IMPACT_DY, rigFor, targetFor, workPointAt, pulls, slipAmount, RAPPEL } = await import("../src/components/screensaver/scene.js");
 const { Screensaver, nextPhase } = await import("../src/components/screensaver/Screensaver.js");
 
@@ -257,6 +280,74 @@ const toolsOnly = sceneTasks(
 check("tool output never replaces the readable task message", toolsOnly[0]?.activity === "from the brief", toolsOnly[0]?.activity);
 check("the card shows the repo leaf, not the whole path", quiet[0]?.workspace === "garden-gnome-orchestrator", quiet[0]?.workspace);
 
+// The space under the headline: the task's earlier messages, newest first, readable ones only.
+const conversation: FeedItem[] = [
+  { kind: "system", at: NOW - 5_000, id: "m1", text: "owner asked for more text" },
+  { kind: "text", at: NOW - 4_000, role: "planner", runId: "p", id: "m2", text: "**Plan:**\n- widen the card\n- fill the space" },
+  { kind: "tool", at: NOW - 3_500, role: "implementor", runId: "r", id: "t1", name: "Edit", input: {} },
+  { kind: "tool_result", at: NOW - 3_400, runId: "r", id: "t1", messageId: "t1r", isError: false, preview: "private tool output" },
+  { kind: "thinking", at: NOW - 3_300, role: "implementor", runId: "r", id: "th", text: "private reasoning" },
+  { kind: "text", at: NOW - 3_000, role: "implementor", runId: "r", id: "m3", text: "wrote the column" },
+  { kind: "text", at: NOW - 2_000, role: "implementor", runId: "r", id: "m4", text: "newest update" },
+];
+const withHistory = sceneTasks({ a: thread({ id: "a", state: "implementing" }) }, {}, {}, MAX_LANES, { a: conversation })[0]!;
+check("the headline is still the newest message", withHistory.activity === "newest update", withHistory.activity);
+check(
+  "the messages before it fill the space below, newest first",
+  withHistory.history.map((m) => m.key).join(",") === "m3,m2,m1",
+  withHistory.history.map((m) => m.key).join(","),
+);
+check("tool calls, tool output and reasoning never enter the history", !withHistory.history.some((m) => /private|Edit/.test(m.text)));
+check("a history message is flattened like the headline", withHistory.history[1]?.text === "Plan: widen the card fill the space", withHistory.history[1]?.text);
+check("each history message names who said it", withHistory.history[0]?.role === "implementor" && withHistory.history[2]?.role === null);
+const streaming = sceneTasks({ a: thread({ id: "a", state: "implementing" }) }, {}, { a: "typing right now" }, MAX_LANES, { a: conversation })[0]!;
+check(
+  "while a reply streams, the newest committed message moves down into the history",
+  streaming.activity === "typing right now" && streaming.history[0]?.key === "m4" && streaming.history.length === 4,
+  streaming.history.map((m) => m.key).join(","),
+);
+const long = sceneTasks(
+  { a: thread({ id: "a", state: "implementing" }) },
+  {},
+  {},
+  MAX_LANES,
+  { a: Array.from({ length: 60 }, (_, i): FeedItem => ({ kind: "text", at: NOW + i, role: "implementor", runId: "r", id: `n${i}`, text: `message ${i} ${"y".repeat(900)}` })) },
+)[0]!;
+check("the history is bounded however long the task has run", long.history.length === LANE_HISTORY_MAX, String(long.history.length));
+check("the history starts right under the headline", long.history[0]?.key === "n58", long.history[0]?.key);
+check("one huge message cannot flood the card", long.history.every((m) => m.text.length <= 700 && m.text.endsWith("…")));
+const again = sceneTasks({ a: thread({ id: "a", state: "implementing" }) }, {}, { a: "a token later" }, MAX_LANES, { a: conversation })[0]!;
+check("a streamed token re-uses every flattened message instead of redoing it", again.history.every((m, i) => m === streaming.history[i]));
+check("a task whose conversation is not loaded has no history to invent", previewed[0]?.history.length === 0 && quiet[0]?.history.length === 0);
+
+// The screensaver loads those conversations itself; the owner has opened none of them.
+connect();
+const wire = FakeWebSocket.instances[0]!;
+wire.readyState = FakeWebSocket.OPEN;
+wire.onopen?.();
+wire.sent.length = 0; // connect's own snapshot request
+const asked = (): string => wire.sent.map((f) => `${f.type}:${String(f.threadId)}`).join(",");
+useStore.setState({ threadHistoryLoaded: { seen: true }, threadHistoryLoading: { busy: true } });
+useStore.getState().prefetchThreadHistory(["seen", "busy", "fresh"]);
+check(
+  "lanes nobody opened get their history fetched",
+  asked() === "thread.history:fresh" && useStore.getState().threadHistoryLoading.fresh === true,
+  asked(),
+);
+useStore.getState().prefetchThreadHistory(["fresh"]);
+check("an in-flight fetch is not repeated", wire.sent.length === 1, asked());
+useStore.getState().prefetchThreadHistory(["seen", "busy"], true);
+check("a reconnect re-asks for every lane", asked() === "thread.history:fresh,thread.history:seen,thread.history:busy", asked());
+wire.readyState = FakeWebSocket.CLOSED;
+wire.sent.length = 0;
+useStore.getState().prefetchThreadHistory(["other"]);
+check("a fetch that could not be sent is not marked in flight", !useStore.getState().threadHistoryLoading.other && wire.sent.length === 0);
+wire.readyState = FakeWebSocket.OPEN;
+useStore.setState({ selectedThreadId: "open" });
+useStore.getState().prefetchThreadHistory(["open", "shut"], true);
+check("the task the owner has open is never fetched twice", asked() === "thread.history:shut", asked());
+useStore.setState({ threadHistoryLoaded: {}, threadHistoryLoading: {}, selectedThreadId: null });
+
 /* ---- 3. the lifecycle --------------------------------------------------------------------------- */
 
 // A task's whole life, driven through the state machine the way the render loop drives it.
@@ -324,7 +415,11 @@ Object.assign(useStore.getInitialState(), {
   runs: { r1: run({ id: "r1", threadId: "a", role: "implementor" }) },
   threadDrafts: {},
   threadFeeds: {
-    a: [{ kind: "text", at: NOW, role: "implementor", runId: "r1", text: "Latest implementation message" }],
+    a: [
+      { kind: "system", at: NOW - 2_000, id: "h1", text: "Owner steer from earlier" },
+      { kind: "text", at: NOW - 1_000, role: "implementor", runId: "r1", id: "h2", text: "Earlier implementation message" },
+      { kind: "text", at: NOW, role: "implementor", runId: "r1", id: "h3", text: "Latest implementation message" },
+    ],
   },
 });
 const markup = renderToStaticMarkup(React.createElement(Screensaver));
@@ -336,6 +431,15 @@ check("every card carries the full thirteen-piece build", (markup.match(/gs-b-pi
 check("a task's real title is on its card", markup.includes("Rope physics for the office gnomes"));
 check("a task's real state is on its badge", markup.includes(">implementing<") && markup.includes(">failed<"));
 check("the latest task message renders below its house", markup.includes("Latest implementation message"));
+check(
+  "the earlier messages render beneath it, newest first, and only on the lane that has any",
+  (markup.match(/class="gs-history"/g) ?? []).length === 1 &&
+    markup.indexOf("Latest implementation message") < markup.indexOf("Earlier implementation message") &&
+    markup.indexOf("Earlier implementation message") < markup.indexOf("Owner steer from earlier"),
+);
+check("each earlier message is labelled with its speaker", /gs-entry-meta"><i><\/i><span>implementor<\/span>/.test(markup) && /<span>note<\/span>/.test(markup));
+const cardA = markup.slice(markup.indexOf('data-task="a"'));
+check("the status row sits with the house, above the conversation", cardA.indexOf("gs-foot") < cardA.indexOf("gs-activity"));
 check("nothing in the scene is focusable or clickable", !/<(?:button|a |input|select)/.test(markup));
 check("the scene is inert to assistive tech", markup.includes('role="presentation"'));
 
@@ -404,6 +508,19 @@ check("the scene never redefines a console token", !/^\s*:root\s*\{/m.test(sheet
 // The accent, role and state hues are read through var(), so a theme retints the whole scene.
 check("the pennant flies the console's accent", /\.gs-b-pennant\s*\{\s*fill:\s*var\(--accent\)/.test(sheet));
 check("the message area reserves four readable lines", /\.gs-activity\s*\{[^}]*-webkit-line-clamp:\s*4[^}]*min-height:\s*5\.4em/s.test(sheet));
+check("the cards run down to the hint, not to their content", /\.gs-cards\s*\{[^}]*top:\s*38%;[^}]*bottom:\s*56px/s.test(sheet));
+// Without `contain: size` the history's full height becomes the card's minimum and the card grows
+// off the bottom of the screen instead of the column clipping into its fade.
+check(
+  "the history takes the leftover space and never sizes the card",
+  /\.gs-history\s*\{[^}]*flex:\s*1 1 0;[^}]*contain:\s*size;[^}]*overflow:\s*hidden/s.test(sheet) && /\.gs-card\s*\{[^}]*min-height:\s*min-content/s.test(sheet),
+);
+check("the history fades out at the bottom edge", /\.gs-history\s*\{[^}]*mask-image:\s*linear-gradient\(to bottom/s.test(sheet));
+const phoneAt = sheet.indexOf("@media (max-width: 760px)");
+const phone = sheet.slice(phoneAt, sheet.indexOf("\n}", phoneAt));
+check("a phone hides the message column", /\.gs-history\s*\{\s*display:\s*none/.test(phone));
+check("a phone's cards size to their content instead of stretching into empty panels", /\.gs-cards\s*\{[^}]*bottom:\s*auto/.test(phone));
+check("the phone breakpoint the fetch skips is the stylesheet's own", read("src/components/screensaver/Screensaver.tsx").includes('"(max-width: 760px)"'));
 check("styles.css is left alone", !read("src/styles.css").includes("gs-root"));
 
 /* ---- summary ------------------------------------------------------------------------------------ */
@@ -416,3 +533,4 @@ if (failed.length) {
   process.exit(1);
 }
 console.log("Screensaver gate passed - solver, live-data mapping, lifecycle, settings and CSS scoping all hold.");
+process.exit(0); // connect() armed the store's socket timers

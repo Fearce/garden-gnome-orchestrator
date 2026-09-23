@@ -86,9 +86,13 @@
   opacity: 0.85;
 }
 
+/* The cards run from under the ropes to just above the hint, so every lane's conversation can fill
+   the lower part of the screen. Their top is set so the ropes stay short enough to leave that
+   column real room. */
 .gs-root .gs-cards {
   position: absolute;
-  top: 46%;
+  top: 38%;
+  bottom: 56px;
   left: 0;
   right: 0;
   display: flex;
@@ -124,7 +128,7 @@
 
 .gs-root .gs-empty {
   position: absolute;
-  inset: 46% 0 auto;
+  inset: 38% 0 auto;
   margin: 0;
   text-align: center;
   color: var(--text-faint);
@@ -137,6 +141,10 @@
   flex: 1 1 0;
   min-width: 208px;
   max-width: 268px;
+  /* Stretched to the full column, but never shorter than the house and its headline: on a short
+     screen the card grows past the column instead of spilling its contents out of its own box. The
+     history's `contain: size` is what keeps it out of this minimum. */
+  min-height: min-content;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -211,6 +219,68 @@
   overflow: hidden;
   line-height: 1.35;
   min-height: 5.4em;
+  flex: none;
+}
+
+/* Everything the task said before the headline, newest first, until the screen runs out. The column
+   is clipped rather than scrolled and fades out at the bottom edge, so a message cut off by the
+   screen reads as "more below", not as a broken sentence. */
+.gs-root .gs-history {
+  flex: 1 1 0;
+  min-height: 0;
+  contain: size;
+  margin: 2px 0 0;
+  padding: 9px 0 0;
+  list-style: none;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 72px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 72px), transparent);
+}
+.gs-root .gs-entry {
+  flex: none;
+  animation: gs-entry-in 520ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+}
+/* A message that arrives while the scene is up slides in at the top and pushes the rest down. */
+@keyframes gs-entry-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: none; }
+}
+.gs-root .gs-entry-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 2px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.01em;
+  color: var(--gs-role, var(--text-faint));
+}
+.gs-root .gs-entry-meta i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
+}
+.gs-root .gs-entry-meta time {
+  margin-left: auto;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.gs-root .gs-entry-text {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-faint);
+  opacity: 0.86;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 7;
+  overflow: hidden;
+  overflow-wrap: anywhere; /* agent messages are full of long paths */
 }
 .gs-root .gs-foot {
   display: flex;
@@ -608,9 +678,11 @@
   .gs-root .gs-card { min-width: 168px; }
 }
 @media (max-width: 760px) {
-  .gs-root .gs-cards { gap: 14px; padding: 0 12px; }
+  /* No message column here, so the cards go back to their own height rather than stretching into
+     empty panels. */
+  .gs-root .gs-cards { gap: 14px; padding: 0 12px; bottom: auto; }
   .gs-root .gs-card { min-width: 128px; padding: 9px 10px 8px; }
-  .gs-root .gs-ws, .gs-root .gs-activity { display: none; }
+  .gs-root .gs-ws, .gs-root .gs-activity, .gs-root .gs-history { display: none; }
 }
 
 /* Motion is the whole point here, so reduced motion keeps the staging and the poses (the gnome
@@ -619,6 +691,7 @@
 @media (prefers-reduced-motion: reduce) {
   .gs-root,
   .gs-root .gs-card,
+  .gs-root .gs-entry,
   .gs-root .gs-hint,
   .gs-root .gs-sway,
   .gs-root .gs-recoil,
