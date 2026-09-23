@@ -88,6 +88,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'GGO schedule was not disabled after cancelling the deadline.' }
     & $node $boardScript --check
     if ($LASTEXITCODE -ne 0) { throw 'The board changed or could not be verified after disabling the GGO schedule.' }
+    # A Windows check left running could re-arm the cancelled deadline before the 60-second shutdown.
+    if (Get-Task $checkName) { Unregister-ScheduledTask -TaskName $checkName -Confirm:$false }
+    if (Get-Task $checkName) { throw 'The five-minute Windows check is still registered.' }
     Write-Result '03:00 deadline cancelled and verified; GGO schedule disabled and verified. Requesting graceful shutdown in 60 seconds.'
     & $shutdownExe /s /t 60
     if ($LASTEXITCODE -ne 0) { throw "Windows rejected graceful shutdown (exit $LASTEXITCODE)." }
@@ -97,5 +100,6 @@ try {
     & $deadlineScript -Action Arm | Out-Null
     & $node $boardScript --restore
     if ($LASTEXITCODE -ne 0) { throw "Could not restore the GGO schedule after cleanup failed: $failure" }
+    if (-not (Get-Task $checkName)) { & $PSCommandPath -Action Arm | Out-Null }
     throw "Early shutdown failed; restored the 03:00 deadline and GGO schedule: $failure"
 }
