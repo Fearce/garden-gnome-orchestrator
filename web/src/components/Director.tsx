@@ -268,36 +268,35 @@ export function Director() {
             )}
             <AgentToggles />
             <DirectorDirectives />
-            <button
-              ref={searchToggleRef}
-              type="button"
-              className={"rail-search-toggle" + (searchExpanded ? " on" : "")}
-              aria-label={searchExpanded ? "Close search" : "Search tasks and the director conversation"}
-              aria-expanded={searchExpanded}
-              title={searchExpanded ? "Close search" : "Search tasks and the director conversation"}
-              onClick={() => {
-                if (searchExpanded) {
-                  setSearchText("");
-                  setSearchOpen(false);
-                } else {
-                  setSearchOpen(true);
-                  requestAnimationFrame(() => searchInputRef.current?.focus());
-                }
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                {searchExpanded ? <path d="M18 6 6 18M6 6l12 12" /> : <><circle cx="11" cy="11" r="7" /><path d="m20 20-3.2-3.2" /></>}
-              </svg>
-            </button>
           </div>
         </div>
       </div>
 
       <div ref={searchRowRef} className={"rail-search" + (searchExpanded ? " open" : "")}>
-        <svg className="rail-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <circle cx="11" cy="11" r="7" />
-          <path d="m20 20-3.2-3.2" />
-        </svg>
+        {searchExpanded ? (
+          <svg className="rail-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7" />
+            <path d="m20 20-3.2-3.2" />
+          </svg>
+        ) : (
+          <button
+            ref={searchToggleRef}
+            className="rail-search-toggle"
+            type="button"
+            aria-label="Expand search tasks and the director conversation"
+            aria-expanded="false"
+            title="Expand search"
+            onClick={() => {
+              setSearchOpen(true);
+              requestAnimationFrame(() => searchInputRef.current?.focus());
+            }}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="m20 20-3.2-3.2" />
+            </svg>
+          </button>
+        )}
         <input
           ref={searchInputRef}
           className="rail-search-input"
@@ -310,13 +309,27 @@ export function Director() {
             if (e.key === "Escape") {
               setSearchText("");
               setSearchOpen(false);
-              searchToggleRef.current?.focus();
+              requestAnimationFrame(() => searchToggleRef.current?.focus());
             }
           }}
         />
         {searchText && (
           <button className="rail-search-clear" type="button" aria-label="Clear search" title="Clear search" onClick={() => { setSearchText(""); searchInputRef.current?.focus(); }}>
             ×
+          </button>
+        )}
+        {searchExpanded && (
+          <button
+            className="rail-search-collapse"
+            type="button"
+            aria-label="Collapse search"
+            aria-expanded="true"
+            title="Collapse search"
+            onClick={() => { setSearchText(""); setSearchOpen(false); }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="m6 15 6-6 6 6" />
+            </svg>
           </button>
         )}
       </div>
