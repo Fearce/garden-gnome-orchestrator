@@ -328,7 +328,7 @@ function readPanel(page) {
   });
 }
 
-/** The filter is one scrollable control row even when a model label is longer than the pane. */
+/** Role controls occupy complete, balanced rows even when a model label is longer than the pane. */
 function readFilter(page) {
   return page.evaluate(() => {
     const strip = document.querySelector(".feed-filter-roles");
@@ -341,17 +341,18 @@ function readFilter(page) {
     const wrapperBounds = wrapper.getBoundingClientRect();
     return {
       names: buttons.map((button) => button.textContent.trim().replace(/\s+/g, " ")),
-      centers: buttons.map((button) => {
+      buttons: buttons.map((button) => {
         const box = button.getBoundingClientRect();
-        return box.top + box.height / 2;
+        return { top: box.top, center: box.top + box.height / 2, left: box.left, right: box.right, width: box.width, title: button.title };
       }),
       stripHeight: bounds.height,
       stripWidth: strip.clientWidth,
       scrollWidth: strip.scrollWidth,
-      buttonWidths: buttons.map((button) => button.getBoundingClientRect().width),
       tools: { top: toolBounds.top, right: toolBounds.right, height: toolBounds.height },
       toolsOutsideRoles: !strip.contains(tools),
       rolesBottom: bounds.bottom,
+      rolesLeft: bounds.left,
+      rolesRight: bounds.right,
       wrapperRight: wrapperBounds.right,
       pageWidth: document.documentElement.scrollWidth,
       viewportWidth: innerWidth,
@@ -363,14 +364,18 @@ async function assertFilter(check, tag, page, shot) {
   const filter = await readFilter(page);
   check(`${tag} · filter mounted`, !!filter);
   if (!filter) return;
-  check(`${tag} · role filters share one row and TOOLS stays separate on the right`,
+  const firstRow = filter.buttons.filter((button) => Math.abs(button.center - filter.buttons[0].center) <= 1);
+  const secondRow = filter.buttons.filter((button) => Math.abs(button.center - filter.buttons[2].center) <= 1);
+  check(`${tag} · role filters stay aligned and TOOLS stays separate on the right`,
     filter.names[0]?.startsWith("all ") && filter.toolsOutsideRoles
-      && filter.centers.every((center) => Math.abs(center - filter.centers[0]) <= 1)
+      && (filter.stripWidth <= 360 ? firstRow.length === 2 && secondRow.length === 2 : firstRow.length === filter.buttons.length)
       && filter.tools.top >= filter.rolesBottom - 1 && Math.abs(filter.tools.right - (filter.wrapperRight - 16)) <= 1,
-    filter.names.join(" | "));
-  check(`${tag} · long model leaves a single legible row`,
-    filter.stripHeight <= 60 && filter.buttonWidths.every((width) => width <= filter.stripWidth - 31),
-    `strip ${Math.round(filter.stripHeight)}px tall, buttons ${filter.buttonWidths.map(Math.round).join("/")}px in ${filter.stripWidth}px`);
+    `${filter.names.join(" | ")} · row ${firstRow.length}/${secondRow.length}, tools ${Math.round(filter.tools.top)}/${Math.round(filter.tools.right)}, roles bottom ${Math.round(filter.rolesBottom)}, wrapper right ${Math.round(filter.wrapperRight)}`);
+  check(`${tag} · long model leaves every role control fully visible`,
+    filter.buttons.every((button) => button.left >= filter.rolesLeft + 15 && button.right <= filter.rolesRight - 15)
+      && filter.scrollWidth <= filter.stripWidth + 1
+      && filter.buttons.some((button) => button.title.toLowerCase().includes("extended preview long model name")),
+    `strip ${Math.round(filter.stripHeight)}px tall, buttons ${filter.buttons.map((button) => Math.round(button.width)).join("/")}px in ${filter.stripWidth}px`);
   check(`${tag} · filter causes no page overflow`, filter.pageWidth <= filter.viewportWidth + 1,
     `${filter.pageWidth}px document in ${filter.viewportWidth}px viewport`);
   await page.locator(".feed-filter .tools-toggle").click();
@@ -381,17 +386,6 @@ async function assertFilter(check, tag, page, shot) {
   check(`${tag} · long implementor filter still selects`, await implementor.evaluate((el) => el.classList.contains("on")));
   if (shot) await page.locator(".feed-filter").screenshot({ path: path.join(shot, `${tag.replace(/[^a-z0-9]+/gi, "-")}-filter-implementor.png`) });
   await page.locator(".feed-filter-roles button").first().click();
-  if (filter.scrollWidth > filter.stripWidth + 1) {
-    await page.locator(".feed-filter-roles").evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-    const endVisible = await page.locator(".feed-filter-roles").evaluate((el) => {
-      const end = el.querySelector("button:last-child")?.getBoundingClientRect();
-      const strip = el.getBoundingClientRect();
-      return !!end && end.right <= strip.right - 15;
-    });
-    check(`${tag} · last role remains reachable by scrolling`, endVisible);
-    if (shot) await page.locator(".feed-filter").screenshot({ path: path.join(shot, `${tag.replace(/[^a-z0-9]+/gi, "-")}-filter-end.png`) });
-    await page.locator(".feed-filter-roles").evaluate((el) => { el.scrollLeft = 0; });
-  }
 }
 
 /** The same bug class, swept across the WHOLE console rather than the one panel it was reported in.
@@ -485,12 +479,12 @@ function assertPanel(check, tag, P) {
     composer ? `the composer sits ${px(composer.bottom - detail.bottom)} below the panel` : "no visible composer in the panel",
   );
 
-  // The filter strip travels sideways by design in the narrow bands. What it must not do is show a
-  // scrollbar for it: that bar is the pale line reported across the top of the transcript.
+  // Every role control must stay inside the filter strip, with no horizontal scrollbar across the
+  // top of the transcript.
   check(
-    `${tag} · the filter strip carries no scrollbar of its own (scrollbar-width: ${P.filter ? P.filter.scrollbarWidth : "?"})`,
-    !!P.filter && P.filter.scrollbarWidth === "none",
-    P.filter ? `.feed-filter overflows by ${px(P.filter.scrollWidth - P.filter.clientWidth)} with scrollbar-width: ${P.filter.scrollbarWidth}` : "no .feed-filter",
+    `${tag} · the filter strip fits without a horizontal scrollbar`,
+    !!P.filter && P.filter.scrollWidth <= P.filter.clientWidth + SLACK,
+    P.filter ? `.feed-filter overflows by ${px(P.filter.scrollWidth - P.filter.clientWidth)}` : "no .feed-filter",
   );
 
   // Themed scrollbars: the report is that the native light chrome is jarring on the dark theme.

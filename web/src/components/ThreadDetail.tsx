@@ -1008,7 +1008,10 @@ export function ThreadDetail() {
                   >
                     <Gnome role={role} size={15} />
                     <span className="fchip-label">
-                      <RoleLabel role={role} name={nameFor(role)} model={roleSummary?.label} modelTitle={roleSummary?.title} />
+                      <span className="fchip-role-full">
+                        <RoleLabel role={role} name={nameFor(role)} model={roleSummary?.label} modelTitle={roleSummary?.title} />
+                      </span>
+                      <span className="fchip-role-short">{role === "implementor" ? "impl" : role === "director" ? "dir" : role}</span>
                     </span>
                     <span className="n">{counts[role] ?? 0}</span>
                     {r ? <RoleElapsed className="fchip-time" runs={roleRuns} /> : null}

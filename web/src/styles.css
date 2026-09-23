@@ -1944,8 +1944,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
    is laid out first and the body takes the rest; when the panel is too short for both (a short window,
    or an expanded header carrying a deadline editor and two rows of controls), the header shrinks and
    scrolls INSIDE ITSELF instead of pushing the body to zero. `overflow-x` is hidden rather than auto
-   because the two rows that legitimately travel sideways here, .detail-controls and .feed-filter,
-   each scroll on their own. */
+   because .detail-controls handles its own horizontal overflow. */
 .detail-head {
   padding: 13px 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px;
   flex: 0 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto;
@@ -2118,17 +2117,32 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .feed-filter {
   border-bottom: 1px solid var(--line);
   position: sticky; top: 0; z-index: 2; background: var(--bg-1); flex: 0 0 auto;
+  container-type: inline-size;
 }
 .feed-filter-roles {
   display: flex; align-items: center; gap: 6px; padding: 8px 16px 4px;
-  flex-wrap: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch;
 }
+.feed-filter .feed-filter-roles .fchip { flex: 1 1 0; min-width: 0; max-width: none; overflow: hidden; }
+.feed-filter .feed-filter-roles .fchip:first-child { flex: 0 0 auto; }
 .feed-filter-tools { display: flex; justify-content: flex-end; padding: 0 16px 8px; }
-/* The two chrome strips that travel SIDEWAYS by design stay on one line. A native horizontal
-   scrollbar would take scarce vertical room and look like it belonged to the transcript below.
-   Keep it hidden on the role row and the header controls. */
-.detail-controls, .feed-filter-roles { scrollbar-width: none; }
-.detail-controls::-webkit-scrollbar, .feed-filter-roles::-webkit-scrollbar { width: 0; height: 0; }
+/* Header controls travel sideways; role filters stay fully visible in equal-width rows. */
+.detail-controls { scrollbar-width: none; }
+.detail-controls::-webkit-scrollbar { width: 0; height: 0; }
+.feed-filter .fchip-role-short { display: none; }
+@container (max-width: 800px) {
+  .feed-filter-roles .fchip-time { display: none; }
+}
+@container (max-width: 620px) {
+  .feed-filter-roles .fchip-label .role-name { display: none; }
+}
+@container (max-width: 520px) {
+  .feed-filter-roles .fchip-role-full { display: none; }
+  .feed-filter-roles .fchip-role-short { display: inline; }
+}
+@container (max-width: 360px) {
+  .feed-filter-roles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .feed-filter-roles .fchip { width: 100%; padding-inline: 6px; }
+}
 .feed-filter .fchip {
   font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase;
   /* Fixed height + border-box so every chip lines up regardless of whether it carries a gnome
