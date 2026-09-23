@@ -12,13 +12,13 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const Database = require("better-sqlite3");
 const {
   SERVER_ROOT,
   loadChromium,
   authPassword,
   requireBuild,
   requireFreshWebBuild,
+  waitForSettingsReloadSafe,
   boot,
   killInstance,
   createChecks,
@@ -35,28 +35,10 @@ const TOGGLE = 'button.switch[aria-label="Keep agent messages concise"]';
 
 const check = createChecks();
 
-function readPersisted(dataDir) {
-  const file = path.join(dataDir, "orchestrator.sqlite");
-  try {
-    const db = new Database(file, { readonly: true });
-    const row = db.prepare("SELECT value FROM kv WHERE key = ?").get(KV_KEY);
-    db.close();
-    return row?.value ?? null;
-  } catch {
-    return null;
-  }
-}
-
-/** The switch updates optimistically. Wait for SQLite, the server-owned state, before trusting it. */
-async function waitForPersisted(dataDir, expected, timeoutMs = 15_000) {
-  const deadline = Date.now() + timeoutMs;
-  let actual = null;
-  while (Date.now() < deadline) {
-    actual = readPersisted(dataDir);
-    if (actual === expected) return actual;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  return actual;
+/** SettingsPanel's own category list, so adding a category is not a lab failure. */
+function declaredCategories() {
+  const source = fs.readFileSync(path.resolve(SERVER_ROOT, "..", "web", "src", "components", "SettingsPanel.tsx"), "utf8");
+  return [...source.matchAll(/\{ id: "[a-z-]+", section: "[^"]+", label: "([^"]+)"/g)].map((match) => match[1]);
 }
 
 async function waitForUiCheck(waiter) {
@@ -150,7 +132,8 @@ async function verifyDesktop(browser, dataDir) {
     await openSettings(page, { login: true });
 
     const categories = await page.locator(".settings-nav-item").allInnerTexts();
-    check("the desktop rail organizes settings into eight categories", categories.length === 8, categories.join(" | "));
+    const declared = declaredCategories();
+    check("the desktop rail shows every declared category, in order", declared.length > 0 && categories.join(" | ") === declared.join(" | "), categories.join(" | "));
     check("General is the focused default category", (await page.locator('.settings-nav-item[aria-current="page"]').innerText()) === "General");
     check("only one settings page is visible at a time", (await page.locator(".settings-category-panel:visible").count()) === 1);
     await page.click('[data-settings-category="pipeline"]');
@@ -220,7 +203,7 @@ async function verifyDesktop(browser, dataDir) {
     check("the copy preserves diligence and decision evidence", safeguards.every((part) => copy.includes(part)), copy);
 
     await page.click(TOGGLE);
-    const storedOff = await waitForPersisted(dataDir, "0");
+    const storedOff = await waitForSettingsReloadSafe(dataDir, KV_KEY, "0");
     check("turning it OFF reaches the server and persists", storedOff === "0", String(storedOff));
 
     await openSettings(page, { reload: true });
@@ -286,7 +269,7 @@ async function verifyMobile(browser, dataDir) {
     check("the page has no hidden horizontal spill", !!layout && layout.documentWidth <= layout.viewport.width + 1, JSON.stringify(layout));
 
     await page.tap(TOGGLE);
-    const storedOn = await waitForPersisted(dataDir, "1");
+    const storedOn = await waitForSettingsReloadSafe(dataDir, KV_KEY, "1");
     check("turning it ON from a phone reaches the server and persists", storedOn === "1", String(storedOn));
 
     await openSettings(page, { reload: true });
