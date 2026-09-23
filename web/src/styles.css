@@ -564,6 +564,14 @@ button { font-family: inherit; cursor: pointer; }
 .msg.user .bubble { background: var(--bg-3); border: 1px solid var(--line); }
 .msg.director .bubble { background: transparent; border-left: 2px solid var(--role-director); padding-left: 11px; border-radius: 0; }
 .bubble { padding: 9px 12px; border-radius: var(--r-md); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; color: var(--text); }
+/* Keep the preference inside the director conversation, including markdown with its own fixed sizes. */
+.transcript .bubble { font-size: var(--director-chat-font-size, 14px); }
+.transcript .md .md-h1 { font-size: calc(var(--director-chat-font-size, 14px) + 2px); }
+.transcript .md .md-h2 { font-size: calc(var(--director-chat-font-size, 14px) + .5px); }
+.transcript .md .md-h3 { font-size: calc(var(--director-chat-font-size, 14px) - .5px); }
+.transcript .md .md-h4, .transcript .md .md-h5, .transcript .md .md-h6 { font-size: calc(var(--director-chat-font-size, 14px) - 1px); }
+.transcript .md .md-pre code { font-size: calc(var(--director-chat-font-size, 14px) - 2.5px); }
+.transcript .md .md-table { font-size: calc(var(--director-chat-font-size, 14px) - 2px); }
 .msg.draft .bubble { color: var(--text-dim); }
 .delivery-receipt {
   display: inline-flex; align-items: center; gap: 5px; width: fit-content; color: var(--text-faint);

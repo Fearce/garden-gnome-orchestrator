@@ -223,6 +223,8 @@ interface State {
   // Which look the console wears (Settings → Appearance). "classic" is the original console and puts
   // NO attribute on <html>, so choosing it can't change a single existing rule — see lib/theme.ts.
   theme: ThemeId;
+  // Text in the director conversation only; leaves the rest of the console at its theme size.
+  directorChatFontSize: number;
   // Which typefaces the console is set in (Settings → Appearance). `uiFont` drives --font-sans,
   // `monoFont` drives --font-mono and `displayFont` drives --font-display (the masthead, the card
   // headers, the section titles). All three are independent, so a serif interface never turns a
@@ -422,6 +424,7 @@ interface State {
   setTaskSort: (v: TaskSort) => void;
   setTaskDragAndDrop: (v: boolean) => void;
   setTheme: (v: ThemeId) => void;
+  setDirectorChatFontSize: (v: number) => void;
   setUiFont: (v: FontId) => void;
   setMonoFont: (v: MonoFontId) => void;
   setDisplayFont: (v: DisplayFontId) => void;
@@ -566,6 +569,11 @@ const isTaskSort = (v: unknown): v is TaskSort => typeof v === "string" && (TASK
  *  is not a number at all, degrades to the default rather than disabling the feature. */
 export const IDLE_MINUTES_MIN = 1;
 export const IDLE_MINUTES_MAX = 240;
+export const DIRECTOR_CHAT_FONT_MIN = 12;
+export const DIRECTOR_CHAT_FONT_MAX = 18;
+export const DIRECTOR_CHAT_FONT_DEFAULT = 14;
+const clampDirectorChatFontSize = (n: number): number =>
+  Number.isFinite(n) ? Math.min(DIRECTOR_CHAT_FONT_MAX, Math.max(DIRECTOR_CHAT_FONT_MIN, Math.round(n))) : DIRECTOR_CHAT_FONT_DEFAULT;
 const clampIdleMinutes = (v: unknown): number => {
   const n = Math.round(Number(v));
   if (!Number.isFinite(n)) return 5;
@@ -587,6 +595,7 @@ interface ViewSettings {
   // The console's look. Read at boot by the inline script in index.html too, which paints the theme
   // before the bundle runs — keep the stored key and shape in step with it.
   theme: ThemeId;
+  directorChatFontSize: number;
   // The typefaces, read by that same pre-paint script: a face applied only after the bundle loads
   // reflows the whole console once on every load, which is worse than a colour flash.
   uiFont: FontId;
@@ -597,7 +606,7 @@ interface ViewSettings {
   screensaver: boolean;
   screensaverIdleMinutes: number;
 }
-const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, showEmptyHardDeadline: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, displayFont: DEFAULT_DISPLAY_FONT, screensaver: true, screensaverIdleMinutes: 5 };
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, showEmptyHardDeadline: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, directorChatFontSize: DIRECTOR_CHAT_FONT_DEFAULT, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, displayFont: DEFAULT_DISPLAY_FONT, screensaver: true, screensaverIdleMinutes: 5 };
 const loadViewSettings = (): ViewSettings => {
   try {
     const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
@@ -610,6 +619,7 @@ const loadViewSettings = (): ViewSettings => {
       taskDragAndDrop: typeof v.taskDragAndDrop === "boolean" ? v.taskDragAndDrop : VIEW_DEFAULTS.taskDragAndDrop,
       taskSort: isTaskSort(v.taskSort) ? v.taskSort : VIEW_DEFAULTS.taskSort,
       theme: isThemeId(v.theme) ? v.theme : VIEW_DEFAULTS.theme,
+      directorChatFontSize: clampDirectorChatFontSize(v.directorChatFontSize ?? DIRECTOR_CHAT_FONT_DEFAULT),
       uiFont: isFontId(v.uiFont) ? v.uiFont : VIEW_DEFAULTS.uiFont,
       monoFont: isMonoFontId(v.monoFont) ? v.monoFont : VIEW_DEFAULTS.monoFont,
       displayFont: isDisplayFontId(v.displayFont) ? v.displayFont : VIEW_DEFAULTS.displayFont,
@@ -632,6 +642,7 @@ const persistView = (s: ViewSettings, patch: Partial<ViewSettings>): void =>
     taskSort: s.taskSort,
     taskDragAndDrop: s.taskDragAndDrop,
     theme: s.theme,
+    directorChatFontSize: s.directorChatFontSize,
     uiFont: s.uiFont,
     monoFont: s.monoFont,
     displayFont: s.displayFont,
@@ -1193,6 +1204,7 @@ export const useStore = create<State>((set) => ({
   taskSort: loadViewSettings().taskSort,
   taskDragAndDrop: loadViewSettings().taskDragAndDrop,
   theme: loadViewSettings().theme,
+  directorChatFontSize: loadViewSettings().directorChatFontSize,
   uiFont: loadViewSettings().uiFont,
   monoFont: loadViewSettings().monoFont,
   displayFont: loadViewSettings().displayFont,
@@ -1510,6 +1522,12 @@ export const useStore = create<State>((set) => ({
       // Animated, because this one is the owner watching the console change under their own click.
       applyTheme(v, true);
       return { theme: v };
+    }),
+  setDirectorChatFontSize: (v) =>
+    set((s) => {
+      const directorChatFontSize = clampDirectorChatFontSize(v);
+      persistView(s, { directorChatFontSize });
+      return { directorChatFontSize };
     }),
   setUiFont: (v) =>
     set((s) => {

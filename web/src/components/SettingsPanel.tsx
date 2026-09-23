@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { IDLE_MINUTES_MAX, IDLE_MINUTES_MIN, useStore } from "../store.js";
+import { DIRECTOR_CHAT_FONT_MAX, DIRECTOR_CHAT_FONT_MIN, IDLE_MINUTES_MAX, IDLE_MINUTES_MIN, useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, claudeEffortsForModel, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type AccountDTO, type CodexEffort, type Effort, type GrokEffort, type Role, type UsageSavingPolicy, type ZaiEffort } from "../types.js";
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
@@ -28,7 +28,7 @@ const SETTINGS_CATEGORIES = [
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
   { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
   { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles.", keywords: "relay collaboration coworkers team machine url password presence chatroom" },
-  { id: "appearance", section: "Workspace", label: "Appearance", description: "Choose how the console looks on this browser.", keywords: "theme themes look dark colours colors palette classic nocturne skin style font fonts typeface typefaces typography interface monospace mono serif sans display heading headings headline title titles masthead wordmark card header ligatures inter geist plex fira grotesk bricolage instrument animation screensaver idle afk gnomes scene away timeout" },
+  { id: "appearance", section: "Workspace", label: "Appearance", description: "Choose how the console looks on this browser.", keywords: "theme themes look dark colours colors palette classic nocturne skin style font fonts font size director chat transcript typeface typefaces typography interface monospace mono serif sans display heading headings headline title titles masthead wordmark card header ligatures inter geist plex fira grotesk bricolage instrument animation screensaver idle afk gnomes scene away timeout" },
   { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed.", keywords: "composer board completed drag reorder output model picker recent repositories ui hard deadline banner" },
 ] as const satisfies readonly SettingsCategory[];
 
@@ -67,6 +67,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setTaskDragAndDrop = useStore((s) => s.setTaskDragAndDrop);
   const theme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
+  const directorChatFontSize = useStore((s) => s.directorChatFontSize);
+  const setDirectorChatFontSize = useStore((s) => s.setDirectorChatFontSize);
   const uiFont = useStore((s) => s.uiFont);
   const setUiFont = useStore((s) => s.setUiFont);
   const monoFont = useStore((s) => s.monoFont);
@@ -478,6 +480,16 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   onChange={setUiFont}
                   ariaLabel="Interface typeface"
                   sample="Dispatch the implementor and watch it work"
+                />
+              </Group>
+              <Group label="Director chat">
+                <NumberRow
+                  label="Transcript text size (px)"
+                  hint="Changes the user and director messages in the chat transcript. Stored in this browser."
+                  value={directorChatFontSize}
+                  min={DIRECTOR_CHAT_FONT_MIN}
+                  max={DIRECTOR_CHAT_FONT_MAX}
+                  onChange={setDirectorChatFontSize}
                 />
               </Group>
               <Group label="Heading typeface">

@@ -54,6 +54,7 @@ export function Director() {
   const items = useStore((s) => s.director);
   const outbound = useStore((s) => s.outboundMessages);
   const draft = useStore((s) => s.directorDraft);
+  const directorChatFontSize = useStore((s) => s.directorChatFontSize);
   const busy = useStore((s) => s.directorBusy);
   const sendPrompt = useStore((s) => s.sendPrompt);
   const sendDirect = useStore((s) => s.sendDirect);
@@ -302,7 +303,7 @@ export function Director() {
       {directorSearch ? (
         <DirectorSearchResults search={directorSearch} directorName={directorName} onGoToTask={goToTask} />
       ) : (
-        <div className="transcript" ref={scrollRef}>
+        <div className="transcript" ref={scrollRef} style={{ "--director-chat-font-size": `${directorChatFontSize}px` } as CSSProperties}>
           {transcriptItems.length === 0 && (
             <div className="faint" style={{ fontSize: 13 }}>
               Tell the Director what you want. It pulls your memories, asks anything it needs to avoid steering wrong, then
