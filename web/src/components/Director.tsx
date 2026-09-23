@@ -343,7 +343,7 @@ export function Director() {
         </div>
       )}
 
-      <div className={"composer" + (att.dragging ? " dragging" : "") + (skip ? " direct" : "")} {...att.dropHandlers}>
+      <div className={"composer-options" + (att.dragging ? " dragging" : "")} {...att.dropHandlers}>
         {recentRepos.length > 1 &&
           (isCompact ? (
             <RecentReposSelect
@@ -434,6 +434,8 @@ export function Director() {
             {skip && openComposerSections.includes("codex") && <ComposerEffortPickers provider="codex" />}
           </div>}
         </div>}
+      </div>
+      <div className={"composer" + (att.dragging ? " dragging" : "") + (skip ? " direct" : "")} {...att.dropHandlers}>
         <textarea
           value={text}
           placeholder={

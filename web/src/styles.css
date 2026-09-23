@@ -496,7 +496,9 @@ button { font-family: inherit; cursor: pointer; }
 .rail-search-toggle.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, var(--line)); }
 .rail-search-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .rail-head .who .role-tag { color: var(--role-director); }
-.transcript { flex: 1; overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
+/* Keep several chat lines visible when composer sections open. At shorter viewport heights, give the
+   pinned send area room first; history still scrolls inside this reserved pane. */
+.transcript { flex: 1 1 280px; min-height: clamp(160px, 30vh, 240px); overflow-y: auto; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 
 /* Search results stand in for the transcript while a query is active. */
 .rail-search { display: none; align-items: center; gap: 8px; padding: 8px 14px; border-bottom: 1px solid var(--line); }
@@ -605,7 +607,11 @@ button { font-family: inherit; cursor: pointer; }
 .tool-chip .k { color: var(--accent); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-chip .arg { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.composer { border-top: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+/* The controls are their own scrollport above the pinned compose area. Their flex children keep their
+   natural sizes as this area shrinks, while attachments can grow the compose area without hiding Send. */
+.composer-options { flex: 0 1 auto; min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.composer-options > * { flex: none; }
+.composer { flex: none; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
 .composer textarea {
   width: 100%; resize: none; min-height: 64px; max-height: 200px;
   background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-md);
@@ -749,7 +755,7 @@ button { font-family: inherit; cursor: pointer; }
 .ws-opt.hi svg { color: var(--accent); }
 
 /* ---- image attachments (composer previews + chat thumbnails) ---- */
-.composer.dragging, .inject-bar.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; border-radius: var(--r-md); }
+.composer.dragging, .composer-options.dragging, .inject-bar.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; border-radius: var(--r-md); }
 .composer-thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
 .thumb { position: relative; width: 52px; height: 52px; }
 .thumb img {
