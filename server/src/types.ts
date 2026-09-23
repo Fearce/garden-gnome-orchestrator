@@ -69,7 +69,7 @@ const CODEX_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max
  * Ultra; the rest of the GPT-5.6 and GPT-6 families reach Max, while earlier models stop at Extra High. */
 export function codexEffortsForModel(model: string): readonly CodexEffort[] {
   const id = model.trim();
-  if (/^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
+  if (/^(?:gpt-6-(?:astra|sol)|gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
   if (/^(?:gpt-6|gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
   return CODEX_PRE_MAX_EFFORTS;
 }

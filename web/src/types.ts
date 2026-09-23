@@ -33,7 +33,7 @@ const CODEX_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max
 /** Cold-start mirror of server/src/types.ts; prefer settings.codexModelEfforts once connected. */
 export function codexEffortsForModel(model: string): readonly CodexEffort[] {
   const id = model.trim();
-  if (/^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
+  if (/^(?:gpt-6-(?:astra|sol)|gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
   if (/^(?:gpt-6|gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
   return CODEX_PRE_MAX_EFFORTS;
 }
@@ -856,9 +856,9 @@ export type SettingsPatch = Partial<
 /** Flagship Codex models suggested when the live list hasn't loaded yet (most-capable first). */
 export const CODEX_MODELS = [
   "gpt-6-astra",
-  "gpt-5.6-sol",
+  "gpt-6-sol",
   "gpt-5.6-terra",
-  "gpt-5.6-luna",
+  "gpt-6-luna",
   "gpt-daybreak-blue-latest",
   "gpt-5.5",
   "gpt-5.4",

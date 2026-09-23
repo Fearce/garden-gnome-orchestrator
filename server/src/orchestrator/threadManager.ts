@@ -1,3 +1,4 @@
+import { currentCodexModel, currentCodexModels } from "../agents/codexModelGeneration.js";
 import type { AccountDispatchPreview, AccountManager } from "../accounts/accountManager.js";
 import { bySafetyHeadroom, untilReset, weeklySafetyPool } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
@@ -2773,7 +2774,7 @@ export class ThreadManager implements OrchestratorApi {
     const raw = this.db.kvGet("setting_model_overrides");
     if (!raw) return {};
     try {
-      const v = JSON.parse(raw) as unknown;
+      const v = JSON.parse(raw, (_key, value) => typeof value === "string" ? currentCodexModel(value) : value) as unknown;
       return v && typeof v === "object" && !Array.isArray(v) ? (v as ModelOverrides) : {};
     } catch {
       return {};
@@ -2785,7 +2786,7 @@ export class ThreadManager implements OrchestratorApi {
     const raw = this.db.kvGet("setting_usage_saving");
     if (!raw) return {};
     try {
-      const parsed = JSON.parse(raw) as UsageSavingPolicies;
+      const parsed = JSON.parse(raw, (_key, value) => typeof value === "string" ? currentCodexModel(value) : value) as UsageSavingPolicies;
       return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? sanitizeUsageSaving(parsed) : {};
     } catch {
       return {};
@@ -2796,7 +2797,7 @@ export class ThreadManager implements OrchestratorApi {
   private usageSavingSettings(): UsageSavingPolicies {
     const saved = this.storedUsageSaving();
     const defaults: UsageSavingPolicies = {
-      [CODEX_SUB_ID]: { enabled: false, thresholdPct: 90, model: "gpt-5.6-luna", effort: "low" },
+      [CODEX_SUB_ID]: { enabled: false, thresholdPct: 90, model: "gpt-6-luna", effort: "low" },
       [GROK_SUB_ID]: { enabled: false, thresholdPct: 90, model: this.grokModel(), effort: "low" },
       [ZAI_SUB_ID]: { enabled: false, thresholdPct: 90, model: this.zaiModel(), effort: "low" },
     };
@@ -2990,7 +2991,7 @@ export class ThreadManager implements OrchestratorApi {
    *  models the ACTIVE auth mode exposes, plus the currently-selected model so a manual pin never vanishes. */
   private pickableCodexModels(): string[] {
     const selected = [this.codexModel(), this.storedUsageSaving()[CODEX_SUB_ID]?.model, ...Object.values(this.modelOverrides()[CODEX_SUB_ID] ?? {})].filter((x): x is string => !!x);
-    return uniq([...this.codexRosterModels(), ...selected]);
+    return currentCodexModels([...this.codexRosterModels(), ...selected]);
   }
 
   /** Models this running installation can name without guessing. Live provider catalogs are preferred;
@@ -3149,10 +3150,10 @@ export class ThreadManager implements OrchestratorApi {
   private codexRosterModels(): string[] {
     if (chatgptLoginAvailable()) {
       const cli = this.modelCatalog.codexCliModels().map((model) => model.id);
-      return cli.length ? cli : CURATED_CODEX_MODELS;
+      return currentCodexModels(cli.length ? cli : CURATED_CODEX_MODELS);
     }
     const live = this.modelCatalog.codexModels();
-    return live.length ? live : CURATED_CODEX_MODELS;
+    return currentCodexModels(live.length ? live : CURATED_CODEX_MODELS);
   }
 
   /** Exact CLI-advertised tiers under ChatGPT auth; documented family fallbacks cover cold start and
@@ -3509,7 +3510,7 @@ export class ThreadManager implements OrchestratorApi {
       } else if (provider === "codex") {
         const saving = savingFor(CODEX_SUB_ID);
         // conserve:false — see the Claude branch above; this freezes as the session's strict pin too.
-        model = saving?.model ?? model ?? this.providerRoleModel("codex", "implementor", undefined, { conserve: false });
+        model = currentCodexModel(saving?.model ?? model ?? this.providerRoleModel("codex", "implementor", undefined, { conserve: false }));
         const effort = (saving?.effort ?? session.effort ?? this.codexEffort(model)) as CodexEffort;
         target = { provider, model, effort, accountId: "openai-codex", accountLabel: `codex:${model}` };
         const fresh = coworkFreshKickoff(this.db, history, prompt);
@@ -3979,7 +3980,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  substitution below. */
   private pinnedModel(threadId: string, provider: ImplementorProvider): string | undefined {
     const request = this.db.getThread(threadId)?.modelRequest;
-    return request?.provider === provider && request.model ? request.model : undefined;
+    return request?.provider === provider && request.model ? (provider === "codex" ? currentCodexModel(request.model) : request.model) : undefined;
   }
 
   /** The model `startImplementor` will dispatch for this task on `provider`, plus the saving policy that
@@ -4009,7 +4010,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const saving = this.usageSavingTarget(this.usageSavingSubId(provider, accountId));
     if (saving) return { model: saving.model, saving };
     const picked = this.pickedModel(threadId, provider);
-    if (provider === "codex") return { model: picked ?? this.providerRoleModel("codex", "implementor"), saving };
+    if (provider === "codex") return { model: currentCodexModel(picked ?? this.providerRoleModel("codex", "implementor")), saving };
     if (provider === "grok") return { model: picked ?? this.grokModel(), saving };
     if (provider === "zai") return { model: picked ?? this.zaiModel(), saving };
     const subId = accountId ?? this.accounts.dispatchPreview().account.id;
@@ -4162,7 +4163,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  then the legacy `setting_codex_model` kv (so pre-matrix configs migrate seamlessly), then the
    *  built-in default. Never inherits a Claude default — a Claude model id is invalid for the Codex CLI. */
   private codexModel(): string {
-    return (
+    return currentCodexModel(
       this.modelOverrides()[CODEX_SUB_ID]?.implementor?.trim() ||
       this.db.kvGet("setting_codex_model")?.trim() ||
       config.codex.defaultModel
@@ -5127,7 +5128,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // for a run that will never touch it is exactly what would keep an idle pool out of the ladder —
     // and conversely, quoting the idle pool for an implementor would claim room it cannot use.
     const saving = ignoreGeneralCapLatch ? undefined : this.usageSavingTarget(CODEX_SUB_ID);
-    const model = modelOverride ?? saving?.model ?? (role ? this.codexRoleModel(role, demand) : this.codexModel());
+    const model = currentCodexModel(modelOverride ?? saving?.model ?? (role ? this.codexRoleModel(role, demand) : this.codexModel()));
     const pools = this.codexPoolSnapshot();
     const pool = pools ? poolForModel(pools, model) : undefined;
     const dedicated = pool?.modelSlug ? pool : undefined;
@@ -5270,7 +5271,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         error: `Requested model "${request.requested}" could not be resolved from this installation's live/configured model catalogs. Refresh the provider login/catalog or name an exact available model; no substitute was started.`,
       };
     }
-    const model = request.model;
+    const model = request.provider === "codex" ? currentCodexModel(request.model) : request.model;
     const exact = (values: readonly string[]): boolean => values.some((value) => normalizeModelId(value) === normalizeModelId(model));
 
     if (request.provider === "claude") {
