@@ -1,7 +1,7 @@
 // Deterministic version floor for the Claude Opus family: never run a role on an Opus older than 5.5.
 //
 // Same defect shape as `reviewModelFloor.ts`, on the other backend. The persisted per-subscription role
-// override matrix is enforced verbatim by `modelFor`, so a stored `acct1.implementor = "claude-opus-5"`
+// override matrix is enforced verbatim by `modelFor`, so a stored `acct1.implementor` naming the bare-major 5.0 Opus
 // kept dispatching the retired predecessor long after 5.5 shipped — on every role, on every run, with
 // nothing below the matrix to refuse it. `modelRoutingPolicy` already excluded retired Opus from the
 // reviewed FLAGSHIP set and `filterAutoSelectionCandidates` already dropped legacy Codex ids, but
@@ -33,7 +33,7 @@ export interface ClaudeOpusTarget {
 /**
  * The Opus version an id names, or null when it is not an Opus at all.
  *
- * Ids here are `claude-opus-<major>[-<minor>][-<snapshot date>]` (`claude-opus-5`,
+ * Ids here are `claude-opus-<major>[-<minor>][-<snapshot date>]` (`claude-opus-6`,
  * `claude-opus-5-5`, `claude-opus-4-5-20251101`). A bare major means `.0`, and an 8-digit trailing
  * group is a snapshot date rather than a version part — reading `20251101` as the minor would rank
  * every dated build above every current one.
