@@ -43,7 +43,7 @@ async function shot(page, name) {
   await page.screenshot({ path: path.join(shots, `${name}.png`) });
 }
 
-async function open(page, { login = false, reload = false } = {}) {
+async function open(page, { login = false, reload = false, directorPane = false } = {}) {
   if (login) {
     const response = await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
     if (!response.ok()) throw new Error(`login failed with HTTP ${response.status()}`);
@@ -52,6 +52,10 @@ async function open(page, { login = false, reload = false } = {}) {
   else await page.goto(`${BASE}/`, { timeout: NAV_TIMEOUT });
   // Settings are server-authoritative; the account chip only renders once the socket's hello landed.
   await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+  // The mobile console opens on the board and hides the Director rail until its tab is selected.
+  if (directorPane && (page.viewportSize()?.width ?? Infinity) < 900) {
+    await page.locator(".mobile-nav button").first().click();
+  }
   await page.waitForSelector(PILL, { timeout: 10_000 });
 }
 
@@ -138,7 +142,7 @@ async function verifyPhone(browser, dataDir) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true, deviceScaleFactor: 3 });
   try {
     const page = await context.newPage();
-    await open(page, { login: true });
+    await open(page, { login: true, directorPane: true });
     const layout = await page.evaluate((pill) => {
       const box = (sel) => {
         const el = document.querySelector(sel);
