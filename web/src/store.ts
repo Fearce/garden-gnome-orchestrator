@@ -405,6 +405,9 @@ interface State {
   testDiscord: () => void;
   setAccountEnabled: (id: string, enabled: boolean) => void;
   setAccountWeeklySafety: (id: string, weeklySafetyPct: number) => void;
+  /** Store or clear a subscription's `user:profile` token (the banked-reset credential). Returns
+   *  whether the command actually went out, so the field can stay open when the socket was down. */
+  setAccountProfileToken: (id: string, token: string) => boolean;
   setShowCompleted: (v: boolean) => void;
   setVerbosity: (v: Verbosity) => void;
   setTaskSort: (v: TaskSort) => void;
@@ -1428,6 +1431,12 @@ export const useStore = create<State>((set) => ({
     // Optimistic: reflect the new ceiling locally; the server's `accounts` broadcast confirms the clamped value.
     set((s) => ({ accounts: s.accounts.map((a) => (a.id === id ? { ...a, weeklySafetyPct } : a)) }));
     sendCommand({ type: "account.setSafety", id, weeklySafetyPct });
+  },
+  setAccountProfileToken: (id, token) => {
+    // Deliberately NOT optimistic. The server has to actually try the token before anyone can say
+    // whether it works, and projecting `profileTokenPresent` locally would show a confident tick over
+    // a token that is about to come back rejected for the wrong scope.
+    return sendCommand({ type: "account.setProfileToken", id, token });
   },
   setShowCompleted: (v) =>
     set((s) => {

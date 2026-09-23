@@ -486,8 +486,22 @@ export interface AccountDTO {
   // Model-scoped pool caps (Fable's separately-gated allowance): dispatch resolves `fallback` in place
   // of `model` on this sub until `resetsAt`. The account's normal windows are unaffected.
   modelLimits?: { model: string; fallback: string; resetsAt: number }[];
+  // Banked resets — a limit reset this subscription has been granted and not yet spent. ABSENT means
+  // not known (no profile token, or the read failed); `available: 0` is what says none are banked.
+  resetCredits?: ResetCreditsDTO;
+  resetCreditsError?: string | null;
+  profileTokenPresent?: boolean;
   updatedAt: number;
   error?: string | null;
+}
+
+/** Mirrors server/src/accounts/resetCredits.ts — a subscription's banked-reset standing. */
+export interface ResetCreditsDTO {
+  available: number;
+  pending: number;
+  expiresAt: number | null;
+  title: string | null;
+  readAt: number;
 }
 
 /** Codex (ChatGPT-plan) usage windows — mirrors the server's CodexUsageDTO. `fiveHour` is the rolling
@@ -505,6 +519,9 @@ export interface CodexUsageDTO {
   /** Last soft failure reason when no meter reading is available at all (CLI missing, no auth, RPC
    *  failure, or nothing read yet). Only set when fiveHour/sevenDay are both null. */
   error?: string | null;
+  /** Banked resets this plan has been granted and not yet spent. Absent until a live app-server ping
+   *  lands, so absent means "not read", never "none banked". */
+  resetCredits?: ResetCreditsDTO;
 }
 
 /** Grok (SuperGrok) usage — mirrors the server's GrokUsageDTO. Weekly used-% comes from the CLI log /
@@ -1278,6 +1295,7 @@ export type ClientCommand =
   | { type: "discord.test" }
   | { type: "account.set"; id: string; enabled: boolean }
   | { type: "account.setSafety"; id: string; weeklySafetyPct: number }
+  | { type: "account.setProfileToken"; id: string; token: string }
   | { type: "thread.changes"; threadId: string }
   | { type: "thread.git"; threadId: string }
   | { type: "thread.gitSummary"; threadId: string }

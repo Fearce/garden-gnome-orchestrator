@@ -41,6 +41,7 @@ import type {
   Thread,
   ThreadSummary,
 } from "../types.js";
+import type { ResetCreditsDTO } from "../accounts/resetCredits.js";
 
 // ---- Server -> Client events (outbound; not validated) ----
 
@@ -61,11 +62,21 @@ export interface AccountDTO {
   // Model-scoped pool caps (Fable's separately-gated allowance): dispatch resolves `fallback` in place
   // of `model` on this sub until `resetsAt`. The account's normal windows are unaffected.
   modelLimits?: { model: string; fallback: string; resetsAt: number }[];
+  // Banked resets — a limit reset this subscription has been granted and not yet spent. ABSENT means
+  // not known (no profile token, or the read failed); `available: 0` is what says none are banked.
+  resetCredits?: ResetCreditsDTO;
+  // Why `resetCredits` is absent, when there is something actionable to say. Null while simply
+  // unconfigured, which is the ordinary state and not worth wording as an error.
+  resetCreditsError?: string | null;
+  // Whether a `user:profile` token is configured for this subscription. The token itself is never
+  // broadcast — this is the same write-only treatment the Discord/z.ai keys get.
+  profileTokenPresent?: boolean;
   updatedAt: number;
   error?: string | null;
 }
 
 export type { CodexUsageDTO } from "../agents/codexUsage.js";
+export type { ResetCreditsDTO } from "../accounts/resetCredits.js";
 export type { GrokUsageDTO } from "../agents/grokUsage.js";
 export type { ZaiUsageDTO } from "../agents/zaiUsage.js";
 
@@ -448,6 +459,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("account.set"), id: z.string(), enabled: z.boolean() }),
   // Set a Claude account's soft weekly-safety ceiling (1-100; 100 = off): above it, new tasks route to another sub.
   z.object({ type: z.literal("account.setSafety"), id: z.string(), weeklySafetyPct: z.number().int().min(1).max(100) }),
+  // Store (or, with an empty string, clear) a Claude account's `user:profile` OAuth token — the second
+  // credential that makes its BANKED RESETS readable. Never echoed back; only `profileTokenPresent`
+  // rides the accounts broadcast. Bounded because it arrives from a LAN-reachable client.
+  z.object({ type: z.literal("account.setProfileToken"), id: z.string(), token: z.string().max(4096) }),
   z.object({ type: z.literal("thread.changes"), threadId: z.string() }),
   z.object({ type: z.literal("thread.git"), threadId: z.string() }),
   z.object({ type: z.literal("thread.gitSummary"), threadId: z.string() }),

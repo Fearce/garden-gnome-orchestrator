@@ -4,6 +4,8 @@ import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
 import type { Account } from "./account.js";
 import { pingUsage, type PingFailReason, type PingUsage } from "./usagePing.js";
+import { fetchProfileUsage, type ProfileFailReason } from "./profileUsage.js";
+import type { ResetCreditsDTO } from "./resetCredits.js";
 import type { AccountUsageEntry } from "./usageSnapshot.js";
 import { ResetStagger, WINDOW_MS } from "./resetStagger.js";
 import { logCrash } from "../crashLog.js";
@@ -40,6 +42,15 @@ interface AccountState {
   // dispatch on this account falls back to the model's stand-in (fallbackModelFor) instead of parking —
   // the account's NORMAL windows still have headroom, so the account itself stays in rotation.
   modelLimits: Map<string, number>;
+  /** Banked resets this subscription has been granted and not spent, from the profile-scoped read.
+   *  Null means NOT KNOWN (no token, a failed read, or a token that belongs to another org) — never
+   *  "none banked", which is `available: 0`. */
+  resetCredits: ResetCreditsDTO | null;
+  /** Why `resetCredits` is null, when there is something actionable to say. Null while unconfigured. */
+  resetCreditsError: string | null;
+  /** The org this subscription's AGENT token belongs to, from the usage ping's response header. The
+   *  profile token's own org is checked against it before its credits are attributed here. */
+  organizationId: string | null;
   updatedAt: number;
 }
 
@@ -365,6 +376,9 @@ export class AccountManager {
         holdUntil: null,
         extWakeAt: null,
         modelLimits: new Map(),
+        resetCredits: null,
+        resetCreditsError: null,
+        organizationId: null,
         updatedAt: 0,
       });
       this.stagger?.register(a.id, () => this.phase(a.id));
@@ -515,6 +529,74 @@ export class AccountManager {
     return st.holdUntil != null && st.holdUntil > now;
   }
 
+  /**
+   * Set (or, with a blank value, clear) one subscription's profile-scoped token at runtime.
+   *
+   * Mirrors `applyEnabled`/`applyWeeklySafetyPct`: ThreadManager persists it and calls this, both on
+   * change and at boot. Changing it drops the cached credits immediately — the old reading belongs to
+   * the old token, and showing it beside a new one would outlive whatever the owner was fixing.
+   */
+  setProfileToken(id: string, token: string): void {
+    const st = this.states.get(id);
+    if (!st) return;
+    const next = token.trim() || undefined;
+    if (st.account.profileToken === next) return;
+    st.account.profileToken = next;
+    st.resetCredits = null;
+    st.resetCreditsError = null;
+    st.updatedAt = Date.now();
+    this.publish();
+    if (next) void this.readResetCredits(st).then(() => this.publish());
+  }
+
+  /** Whether a subscription has a profile token configured, and its last 4 characters — the only two
+   *  facts about it that may leave the server (the pattern the Discord/z.ai keys already follow). */
+  profileTokenState(id: string): { present: boolean; last4: string | null } {
+    const token = this.states.get(id)?.account.profileToken?.trim();
+    return { present: !!token, last4: token ? token.slice(-4) : null };
+  }
+
+  /**
+   * Read one subscription's banked resets.
+   *
+   * Deliberately NOT part of `pingOne`, and deliberately not skipped for a held account: this is a
+   * plain REST GET against `/api/oauth/usage`, so unlike the Haiku ping it cannot start a 5h window and
+   * cannot disturb the reset stagger. An account being held idle is exactly when knowing it has a
+   * banked reset is most useful.
+   */
+  private async readResetCredits(st: AccountState): Promise<void> {
+    const token = st.account.profileToken?.trim();
+    if (!token) {
+      this.applyResetCredits(st, null, null);
+      return;
+    }
+    const result = await fetchProfileUsage(token);
+    if (!result.ok) {
+      this.applyResetCredits(st, null, profileErrorMessage(result.reason));
+      return;
+    }
+    // A token from the WRONG subscription would otherwise publish that subscription's banked reset on
+    // this chip — the one failure that makes this feature worse than not having it. Both orgs must be
+    // known to reject; if either is unknown we have no evidence of a mismatch, so the reading stands.
+    if (st.organizationId && result.organizationId && st.organizationId !== result.organizationId) {
+      this.applyResetCredits(st, null, `profile token belongs to a different subscription (org ${result.organizationId.slice(0, 8)}…)`);
+      return;
+    }
+    this.applyResetCredits(st, result.credits, null);
+  }
+
+  /** One writer for the pair, so `resetCredits` and its error can never both be set — a chip showing a
+   *  count beside a complaint about why there is no count is incoherent. */
+  private applyResetCredits(st: AccountState, credits: ResetCreditsDTO | null, error: string | null): void {
+    const unchanged = st.resetCreditsError === error
+      && st.resetCredits?.available === credits?.available
+      && st.resetCredits?.pending === credits?.pending
+      && st.resetCredits?.expiresAt === credits?.expiresAt;
+    st.resetCredits = credits;
+    st.resetCreditsError = error;
+    if (!unchanged) st.updatedAt = Date.now();
+  }
+
   private async pingAll(): Promise<void> {
     // Skip held accounts: their 5h window is deliberately idle until their stagger slot, and any ping
     // would start it early. They're usable regardless (utilization 0 post-reset) and a dispatch to one
@@ -524,7 +606,14 @@ export class AccountManager {
       const st = this.states.get(a.id);
       return !st || !this.inHold(st, now);
     });
-    await Promise.all(due.map((a) => this.pingOne(a)));
+    // Banked resets are read for EVERY account, including the held ones the ping skips — see
+    // `readResetCredits` for why that is safe. Both run on the same cadence because the reading is
+    // free and changes rarely; the point is that a granted reset shows up without the owner opening
+    // the native app, not that it shows up within seconds.
+    await Promise.all([
+      ...due.map((a) => this.pingOne(a)),
+      ...[...this.states.values()].map((st) => this.readResetCredits(st)),
+    ]);
     this.publish();
     this.onUsage?.();
   }
@@ -583,6 +672,9 @@ export class AccountManager {
     st.sevenDay = u.sevenDay;
     st.fiveHourReset = u.fiveHourReset;
     st.sevenDayReset = u.sevenDayReset;
+    // Only ever widened, never cleared by a header-less response: this is the reference a profile
+    // token is matched against, and losing it would silently turn a mismatch check into a no-op.
+    if (u.organizationId) st.organizationId = u.organizationId;
     st.usageAt = now;
     st.usageStale = false;
     st.error = null;
@@ -1128,6 +1220,9 @@ export class AccountManager {
       modelLimits: [...s.modelLimits]
         .filter(([, r]) => r > now)
         .map(([model, resetsAt]) => ({ model, fallback: fallbackModelFor(model) ?? model, resetsAt })),
+      resetCredits: s.resetCredits ?? undefined,
+      resetCreditsError: s.resetCreditsError,
+      profileTokenPresent: !!s.account.profileToken?.trim(),
       updatedAt: s.updatedAt,
       error: s.error,
     }));
@@ -1194,6 +1289,30 @@ function clampSafetyPct(pct: number): number {
 /** The still-live model-pool latches as a persistable record, dropping expired entries. */
 function liveModelLimits(st: AccountState, now: number): Record<string, number> {
   return Object.fromEntries([...st.modelLimits].filter(([, r]) => r > now));
+}
+
+/**
+ * Short, actionable label for why a BANKED-RESET read had no answer — shown in the chip's hover text.
+ *
+ * `unconfigured` returns null rather than a string: no profile token is the ordinary state on a fresh
+ * installation, and wording it as an error would put a permanent complaint on every chip about a
+ * feature the owner may never configure. The console renders that case as a plain hint instead.
+ */
+function profileErrorMessage(reason: ProfileFailReason): string | null {
+  switch (reason) {
+    case "unconfigured":
+      return null;
+    case "scope":
+      return "profile token lacks user:profile — paste the claude login token, not a setup-token";
+    case "auth":
+      return "profile token rejected — re-copy it from ~/.claude/.credentials.json";
+    case "network":
+      return "banked-reset read failed (network)";
+    case "timeout":
+      return "banked-reset read timed out — host busy";
+    case "unreadable":
+      return "banked-reset read returned an unreadable body";
+  }
 }
 
 /** Short, actionable label for why a usage ping had no usable read — shown on the chip. */

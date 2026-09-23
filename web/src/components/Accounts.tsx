@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../store.js";
 import { effortLabel, isCapParked, modelLabel } from "../lib/format.js";
-import type { AccountDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO, ZaiEffort, ZaiUsageDTO } from "../types.js";
+import type { AccountDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO, ResetCreditsDTO, ZaiEffort, ZaiUsageDTO } from "../types.js";
 
 const clamp = (pct: number | null): number => (pct == null ? 0 : Math.min(100, Math.max(0, pct)));
 const label = (pct: number | null): string => (pct == null ? "—" : `${Math.round(pct)}%`);
@@ -289,6 +289,7 @@ function CodexChip({
         <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
         <span className="acct-label">Codex</span>
         <span className={tagCls}>{tag}</span>
+        <ResetCreditBadge credits={usage?.resetCredits} provider="Codex" now={now} />
         {errored ? <span className="acct-tag">no usage</span> : null}
       </div>
       {showMeters ? (
@@ -318,6 +319,30 @@ function CodexChip({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * A banked limit reset the provider has granted and we have not spent — "1 reset" on the chip.
+ *
+ * Deliberately renders NOTHING at zero, and nothing for a pending-only grant. The top bar is width-
+ * constrained (see `.claude/rules/topbar-accounts-strip.md`: every chip that grows moves the single-row
+ * wrap bound), and the owner's whole ask was to notice a reset without opening the native app — which
+ * is a question only worth answering when the answer is yes. `pending` and the expiry ride the hover
+ * text, where they cost no width.
+ */
+function ResetCreditBadge({ credits, provider, now }: { credits: ResetCreditsDTO | undefined; provider: string; now: number }) {
+  if (!credits || credits.available <= 0) return null;
+  const what = credits.title ?? "limit reset";
+  const expiry = credits.expiresAt != null ? ` · expires in ${countdown(credits.expiresAt, now)}` : "";
+  const waiting = credits.pending > 0 ? ` · ${credits.pending} more granted but not usable yet` : "";
+  return (
+    <span
+      className="acct-tag reset-credit"
+      title={`${credits.available} banked ${what.toLowerCase()}${credits.available === 1 ? "" : "s"} on ${provider}${expiry}${waiting} — spend it from the provider's own app when you hit a limit.`}
+    >
+      ↻{credits.available}
+    </span>
   );
 }
 
@@ -515,6 +540,7 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
         ) : stale ? (
           <span className="acct-tag dim">stale</span>
         ) : null}
+        <ResetCreditBadge credits={a.resetCredits} provider={a.label} now={now} />
         {(a.modelLimits ?? [])
           .filter((ml) => ml.resetsAt > now)
           .map((ml) => (

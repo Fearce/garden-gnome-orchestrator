@@ -66,6 +66,7 @@ class UsageAccounts {
   applyEnabled(_id: string, _enabled: boolean): void {}
   applyWeeklySafetyPct(_id: string, _pct: number): void {}
   setSpreadUsage(_on: boolean): void {}
+  setProfileToken(_id: string, _token: string): void {}
   isModelLimited(_id: string, _model: string): boolean { return false; }
   dispatchPreview(): Record<string, unknown> {
     return {

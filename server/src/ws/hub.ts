@@ -369,6 +369,9 @@ export async function handleCommand(
     case "account.setSafety":
       ctx.manager.setAccountWeeklySafety(cmd.id, cmd.weeklySafetyPct);
       break;
+    case "account.setProfileToken":
+      ctx.manager.setAccountProfileToken(cmd.id, cmd.token);
+      break;
     case "thread.changes": {
       const changes = await ctx.manager.getChanges(cmd.threadId);
       send(socket, { type: "thread.changes", threadId: cmd.threadId, diff: changes.diff, log: changes.log });

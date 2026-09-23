@@ -164,6 +164,7 @@ const GATES = [
   "test:retired-model-id",
   "test:auto-model",
   "test:claude-opus-floor",
+  "test:reset-credits",
   "test:review-model-floor",
   "test:director-provider",
   "test:model-request",

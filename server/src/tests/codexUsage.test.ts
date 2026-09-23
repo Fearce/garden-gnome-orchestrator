@@ -159,11 +159,44 @@ try {
   );
   const live = readCodexUsage();
   check("live pings invalidate and replace a cached rollout reading", live?.fiveHour === 4 && live.pools?.length === 1, JSON.stringify(live));
+
   check(
     "capacity reads still refresh from both rollout homes after a ping",
     __codexUsageTestHooks.rolloutScanCount() === afterPingScanCount + 2,
     `${__codexUsageTestHooks.rolloutScanCount()} vs ${afterPingScanCount}`,
   );
+
+  // ---- banked resets survive a NEWER rollout ----
+  //
+  // `rateLimitResetCredits` rides the live app-server ping; a rollout snapshot has no such field. The
+  // rollout is also the newer reading most of the time Codex is actually working, so spreading the
+  // winning snapshot alone made a granted reset vanish from the chip the moment a turn ran. Same trap
+  // `pools` already documents, and the reason both are attached independently of who won.
+  {
+    const creditAt = Date.now() + 2_000;
+    noteCodexPing({
+      fiveHour: 4,
+      sevenDay: 5,
+      fiveHourReset: creditAt + 2 * 3_600_000,
+      sevenDayReset: creditAt + 3 * 24 * 3_600_000,
+      planType: "pro",
+      updatedAt: creditAt,
+      resetCredits: { available: 1, pending: 0, expiresAt: creditAt + 30 * 86_400_000, title: "Full reset", readAt: creditAt },
+    });
+    check("a ping carrying banked resets reports them", readCodexUsage()?.resetCredits?.available === 1, JSON.stringify(readCodexUsage()?.resetCredits));
+    // A real turn lands afterwards: newer, and carrying only the plan-wide windows.
+    writeRollout(home, creditAt + 60_000, 77, 88);
+    // clearReadCache, NOT reset() — reset() drops `livePing` itself, which would make this assertion
+    // pass or fail for a reason that has nothing to do with the merge under test.
+    __codexUsageTestHooks.clearReadCache();
+    const afterTurn = readCodexUsage();
+    check("the newer rollout really did win the meters", afterTurn?.fiveHour === 77, JSON.stringify(afterTurn));
+    check(
+      "…and the banked reset SURVIVES it instead of being blanked by a reading that never had the field",
+      afterTurn?.resetCredits?.available === 1,
+      JSON.stringify(afterTurn?.resetCredits),
+    );
+  }
 
   // --- the provider's own limit-reached verdict (`limitStateOf`) ---
   // This mapping is what lets fresh telemetry overturn a provider-STATED cap, so the ABSENT case has

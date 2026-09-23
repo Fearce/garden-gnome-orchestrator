@@ -2,6 +2,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, s
 import { join } from "node:path";
 import { config } from "../config.js";
 import { GENERAL_LIMIT_ID, type CodexPool } from "./codexPools.js";
+import type { ResetCreditsDTO } from "../accounts/resetCredits.js";
 
 /**
  * The provider's own answer to "is a limit currently reached on this pool?", from
@@ -40,6 +41,10 @@ export interface CodexUsageDTO {
    *  next successful ping/rollout read. Only ever set when the DTO carries no fiveHour/sevenDay reading,
    *  so a chip can tell "genuinely no data, here's why" apart from a silent blank. */
   error?: string | null;
+  /** Banked resets this plan has been granted and not yet spent. Available from the live app-server
+   *  ping only — a rollout snapshot carries just the windows — so ABSENT means "not read yet", never
+   *  "none banked"; `available: 0` is what says none. */
+  resetCredits?: ResetCreditsDTO;
 }
 
 interface RateLimitWindow {
@@ -297,6 +302,25 @@ function restoreLimitState(value: unknown): { limitState?: CodexLimitState } {
   return value === "none" || value === "reached" ? { limitState: value } : {};
 }
 
+/** The cache file is on disk, so the restored credits get the same field-by-field whitelist the pools
+ *  get rather than being trusted wholesale. A malformed block restores as ABSENT (unknown), never as a
+ *  zero — a hand-edited or truncated cache must not be able to claim the owner has no banked reset. */
+function restoreResetCredits(value: unknown): { resetCredits?: ResetCreditsDTO } {
+  if (!value || typeof value !== "object") return {};
+  const v = value as Partial<ResetCreditsDTO>;
+  if (typeof v.available !== "number" || !Number.isInteger(v.available) || v.available < 0) return {};
+  if (typeof v.readAt !== "number" || !Number.isFinite(v.readAt)) return {};
+  return {
+    resetCredits: {
+      available: v.available,
+      pending: typeof v.pending === "number" && Number.isInteger(v.pending) && v.pending >= 0 ? v.pending : 0,
+      expiresAt: typeof v.expiresAt === "number" && Number.isFinite(v.expiresAt) ? v.expiresAt : null,
+      title: typeof v.title === "string" && v.title.trim() ? v.title.trim().slice(0, 80) : null,
+      readAt: v.readAt,
+    },
+  };
+}
+
 function restorePool(pool: CodexPool): CodexPool {
   const { limitState: _dropped, ...rest } = pool;
   return { ...rest, ...restoreLimitState(pool.limitState) };
@@ -322,6 +346,7 @@ function loadPersistedCache(): CodexUsageDTO | null {
       // that field is what may overturn a cap latch, so it must not be trusted just because the only
       // reader today (the presentation snapshot) never decides anything with it.
       pools: Array.isArray(value.pools) ? value.pools.map(restorePool) : undefined,
+      ...restoreResetCredits(value.resetCredits),
     };
   } catch {
     return null;
@@ -371,6 +396,11 @@ function readCodexUsageUncached(now: number): CodexUsageDTO | null {
   // attach them independently of which snapshot won `best` above, or a rollout newer than the ping
   // (the common case while Codex is actually running turns) would silently blank the dedicated meters.
   const pools = codexPools();
+  // Banked resets ride the live ping for exactly the same reason pools do, so they need the same
+  // independent attachment. A rollout snapshot is the NEWER reading most of the time Codex is actually
+  // working, and it carries no `rateLimitResetCredits` at all — spreading `best` alone therefore made a
+  // granted reset disappear from the chip the moment a turn ran.
+  const resetCredits = codexResetCredits();
   const inferred = turnFiveHourReset(latestTurn, now);
   if ((best.fiveHourReset == null || best.fiveHourReset <= now) && inferred) {
     return {
@@ -379,9 +409,17 @@ function readCodexUsageUncached(now: number): CodexUsageDTO | null {
       fiveHourResetEstimated: inferred.estimated,
       wakeAt,
       ...(pools ? { pools } : {}),
+      ...(resetCredits ? { resetCredits } : {}),
     };
   }
-  return { ...best, wakeAt, ...(pools ? { pools } : {}) };
+  return { ...best, wakeAt, ...(pools ? { pools } : {}), ...(resetCredits ? { resetCredits } : {}) };
+}
+
+/** Banked resets from the freshest live ping, or null when no fresh ping has landed. Separate from
+ *  `readCodexUsage` for the same reason `codexPools` is: a rollout snapshot cannot answer this, and a
+ *  confident "none banked" derived from a reading that never contained the field would be a lie. */
+export function codexResetCredits(): ResetCreditsDTO | null {
+  return liveCodexUsage()?.resetCredits ?? null;
 }
 
 /** Every independently-metered Codex pool from the freshest live ping, or null when no fresh ping has

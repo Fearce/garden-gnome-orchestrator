@@ -43,6 +43,7 @@ class StubAccounts {
   applyEnabled(_id: string, _enabled: boolean): void {}
   applyWeeklySafetyPct(_id: string, _pct: number): void {}
   setSpreadUsage(_on: boolean): void {}
+  setProfileToken(_id: string, _token: string): void {}
   auxToken(): string | undefined { return undefined; }
 }
 

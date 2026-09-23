@@ -44,6 +44,13 @@ if (implicitTestDataDir) {
  * orchestrator load-balances by burn ratio; with 0 it falls back to a single
  * account using CLAUDE_CODE_OAUTH_TOKEN or the inherited CLI login.
  */
+/** A `user:profile` token is optional everywhere, so an unset/blank env var must add NO key rather
+ *  than an empty string — `profileToken: ""` would read as configured-but-broken in the DTO. */
+function profileToken(envVar: string): { profileToken?: string } {
+  const value = process.env[envVar]?.trim();
+  return value ? { profileToken: value } : {};
+}
+
 function loadAccounts(): Account[] {
   const accts: Account[] = [];
   for (let i = 1; i <= 8; i++) {
@@ -53,10 +60,16 @@ function loadAccounts(): Account[] {
       id: process.env[`ACCOUNT_${i}_ID`] ?? `acct${i}`,
       label: process.env[`ACCOUNT_${i}_LABEL`] ?? `account ${i}`,
       token,
+      ...profileToken(`ACCOUNT_${i}_PROFILE_TOKEN`),
     });
   }
   if (accts.length) return accts;
-  return [{ id: "default", label: "logged-in", token: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "" }];
+  return [{
+    id: "default",
+    label: "logged-in",
+    token: process.env.CLAUDE_CODE_OAUTH_TOKEN ?? "",
+    ...profileToken("ACCOUNT_1_PROFILE_TOKEN"),
+  }];
 }
 
 // LAN exposure safety: the orchestrator drives bypassPermissions agents, so we

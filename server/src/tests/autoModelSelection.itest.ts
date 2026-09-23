@@ -66,6 +66,7 @@ class StubAccounts {
   applyEnabled(_id: string, _enabled: boolean): void {}
   applyWeeklySafetyPct(_id: string, _pct: number): void {}
   setSpreadUsage(_on: boolean): void {}
+  setProfileToken(_id: string, _token: string): void {}
   isModelLimited(_id: string, _model: string): boolean {
     return false;
   }
@@ -257,10 +258,17 @@ async function main(): Promise<void> {
       check("the live roster is not padded with inaccessible curated ids", roster.length === live.length, JSON.stringify(roster));
       check("manual pickers still union live and the latest curated models", pickable.length > roster.length && pickable.includes("claude-fable-5-1"), JSON.stringify(pickable));
       const candidates = h.internals.implementorModelRoster() as { model: string; efforts: Effort[] }[];
-      const opus = candidates.find((candidate) => candidate.model === "claude-opus-4-8");
+      const opus = candidates.find((candidate) => candidate.model === "claude-opus-5-5");
       const sonnet = candidates.find((candidate) => candidate.model === "claude-sonnet-4-6");
       const haiku = candidates.find((candidate) => candidate.model === HAIKU);
-      check("Opus 4.8 exposes all five effort levels", opus?.efforts.join(",") === "low,medium,high,xhigh,max", JSON.stringify(opus));
+      check("Opus 5.5 exposes all five effort levels", opus?.efforts.join(",") === "low,medium,high,xhigh,max", JSON.stringify(opus));
+      // The version floor: a retired Opus is not an automatic candidate while a current one is
+      // dispatchable, but it stays on the manual picker so an existing pin never vanishes from its list.
+      check(
+        "a retired Opus is not offered to automatic selection",
+        !candidates.some((candidate) => candidate.model === "claude-opus-4-8") && pickable.includes("claude-opus-4-8"),
+        JSON.stringify(candidates.map((candidate) => candidate.model)),
+      );
       check("Sonnet 4.6 exposes Max but not unsupported Extra High", sonnet?.efforts.join(",") === "low,medium,high,max", JSON.stringify(sonnet));
       check("Haiku exposes only its supported effort levels", haiku?.efforts.join(",") === "low,medium,high", JSON.stringify(haiku));
     } finally {

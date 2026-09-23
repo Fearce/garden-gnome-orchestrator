@@ -10,6 +10,7 @@ import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
 import { classifyRateWindows, noteCodexPing, noteCodexUsageError, noteCodexWake, readCodexUsageForSnapshot, type CodexLimitState, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 import { GENERAL_LIMIT_ID, normalizeLimitName, type CodexPool } from "./codexPools.js";
+import { parseCodexResetCredits } from "../accounts/resetCredits.js";
 
 /**
  * A live Codex usage read — the ChatGPT-plan counterpart of the Claude Haiku ping. The rollout-file
@@ -74,6 +75,10 @@ interface RpcRateLimits {
 interface RpcRateLimitsResult {
   rateLimits?: RpcRateLimits | null;
   rateLimitsByLimitId?: Record<string, RpcRateLimits> | null;
+  /** Banked resets the plan has been granted and not yet spent — the ChatGPT app's "rate limit reset"
+   *  credits. Plan-wide, not per pool, so it sits beside the maps rather than inside one. Left `unknown`
+   *  because `resetCredits.ts` owns the shape; an older CLI omits it entirely. */
+  rateLimitResetCredits?: unknown;
 }
 
 /** Read the live plan-wide rate limits via `codex app-server`. Seeds auth exactly like an implementor
@@ -121,12 +126,17 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
       return null;
     }
     const pools = toPools(result);
+    const resetCredits = parseCodexResetCredits(result?.rateLimitResetCredits, readAt);
     const usage: CodexUsageDTO = {
       ...classifyRateWindows(toMeterWindow(rl.primary), toMeterWindow(rl.secondary)),
       planType: rl.planType ?? null,
       updatedAt: readAt,
       ...withLimitState(rl),
       ...(pools.length ? { pools } : {}),
+      // Absent (not zero) when the CLI omitted the field, so the chip can tell "none banked" from
+      // "this Codex build does not report them" — the same present-and-null vs. absent rule
+      // `limitStateOf` keeps one function down.
+      ...(resetCredits ? { resetCredits } : {}),
     };
     if (usage.fiveHour == null && usage.sevenDay == null) {
       // no meter info in the response — treat as a failed read

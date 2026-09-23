@@ -12,6 +12,11 @@ export interface PingUsage {
   sevenDayReset: number | null; // epoch ms
   fiveHourRejected: boolean;
   sevenDayRejected: boolean;
+  /** The subscription's organization uuid, from `anthropic-organization-id`. Carried so a SEPARATE
+   *  profile-scoped token (profileUsage.ts) can be proved to belong to this same subscription before
+   *  its banked resets are shown here — attributing one sub's reset to another would be worse than
+   *  showing nothing. Null when the header was absent. */
+  organizationId: string | null;
 }
 
 /**
@@ -78,6 +83,7 @@ async function attemptPing(token: string, timeoutMs: number): Promise<PingResult
       sevenDayReset: epochMs(h.get("anthropic-ratelimit-unified-7d-reset")),
       fiveHourRejected: h.get("anthropic-ratelimit-unified-5h-status") === "rejected",
       sevenDayRejected: h.get("anthropic-ratelimit-unified-7d-status") === "rejected",
+      organizationId: h.get("anthropic-organization-id")?.trim() || null,
     },
   };
 }

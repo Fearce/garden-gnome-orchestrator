@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { IDLE_MINUTES_MAX, IDLE_MINUTES_MIN, useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, claudeEffortsForModel, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type CodexEffort, type Effort, type GrokEffort, type Role, type UsageSavingPolicy, type ZaiEffort } from "../types.js";
+import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, claudeEffortsForModel, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type AccountDTO, type CodexEffort, type Effort, type GrokEffort, type Role, type UsageSavingPolicy, type ZaiEffort } from "../types.js";
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
 import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
@@ -1422,6 +1422,81 @@ function AccountWeeklySafety({ accountId, value }: { accountId: string; value: n
   );
 }
 
+/**
+ * One subscription's `user:profile` OAuth token — the second credential that makes its BANKED RESETS
+ * readable, and the ONLY thing it is used for.
+ *
+ * It exists because the agent tokens cannot answer this question at all: a `claude setup-token` is
+ * scoped `user:inference`, and `/api/oauth/usage` (where a granted-but-unspent reset lives) requires
+ * `user:profile`. Optional everywhere — without it the chip simply shows no banked-reset badge.
+ *
+ * Write-only, like the z.ai/Discord keys above: the field never receives the stored value back, only
+ * `profileTokenPresent` and whatever the server says went wrong with it.
+ */
+function AccountProfileToken({ acct }: { acct: AccountDTO }) {
+  const setAccountProfileToken = useStore((s) => s.setAccountProfileToken);
+  const [draft, setDraft] = useState("");
+  const [reveal, setReveal] = useState(false);
+  const save = (value: string): void => {
+    if (!setAccountProfileToken(acct.id, value)) return; // socket down — keep the draft rather than losing it
+    setDraft("");
+    setReveal(false);
+  };
+  const banked = acct.resetCredits;
+  return (
+    <div className="sub-field">
+      <label className="sub-label">Banked-reset token</label>
+      <div className="key-input">
+        <input
+          type={reveal ? "text" : "password"}
+          value={draft}
+          spellCheck={false}
+          autoComplete="off"
+          placeholder={acct.profileTokenPresent ? "••••••••  (stored)" : "sk-ant-oat… with user:profile"}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && draft.trim()) save(draft.trim());
+          }}
+        />
+        <button
+          type="button"
+          className="key-eye"
+          aria-label={reveal ? "Hide token" : "Reveal token"}
+          title={reveal ? "Hide" : "Reveal"}
+          onClick={() => setReveal((r) => !r)}
+        >
+          {reveal ? <EyeOff /> : <Eye />}
+        </button>
+      </div>
+      <div className="sub-actions">
+        <button className="sub-btn primary" disabled={!draft.trim()} onClick={() => save(draft.trim())}>
+          {acct.profileTokenPresent ? "Replace token" : "Save token"}
+        </button>
+        {acct.profileTokenPresent && (
+          <button className="sub-btn ghost" onClick={() => save("")}>
+            Remove
+          </button>
+        )}
+      </div>
+      {acct.resetCreditsError ? (
+        <div className="sub-msg bad">{acct.resetCreditsError}</div>
+      ) : banked ? (
+        <div className="sub-msg dim">
+          {banked.available > 0
+            ? `${banked.available} banked reset${banked.available === 1 ? "" : "s"} available${banked.pending > 0 ? ` · ${banked.pending} not usable yet` : ""}.`
+            : "No banked resets right now."}
+        </div>
+      ) : (
+        <div className="sub-msg dim">
+          Optional. Lets GGO show this subscription's banked limit resets so you don't have to open Claude Code to notice one. Paste{" "}
+          <code>claudeAiOauth.accessToken</code> from <code>~/.claude/.credentials.json</code> — a <code>claude setup-token</code> will not
+          work, it lacks the <code>user:profile</code> scope.
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Per-subscription exact low-usage route. The threshold stays editable while off; model and effort only
  * appear once enabled so each provider card remains compact by default. */
 function UsageSavingField({
@@ -1821,6 +1896,7 @@ function AccountCard({
       {acct.enabled && <AccountEffort accountId={acct.id} />}
       {acct.enabled && <AccountUsageSaving accountId={acct.id} />}
       {acct.enabled && <AccountWeeklySafety accountId={acct.id} value={acct.weeklySafetyPct} />}
+      {acct.enabled && <AccountProfileToken acct={acct} />}
     </div>
   );
 }

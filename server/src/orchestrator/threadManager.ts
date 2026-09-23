@@ -1107,6 +1107,7 @@ export class ThreadManager implements OrchestratorApi {
     this.reconcileManualDeployments();
     this.applyAccountEnabled();
     this.applyAccountWeeklySafety();
+    this.applyAccountProfileTokens();
     this.accounts.setSpreadUsage(this.settingBool("setting_spread_usage", false));
     this.loadCodexCap();
     this.loadPoolCaps();
@@ -5693,6 +5694,31 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (applied) this.db.kvSet(`account_weekly_safety_${id}`, String(this.accounts.dto().find((a) => a.id === id)?.weeklySafetyPct ?? pct));
     this.hub.publish({ type: "accounts", accounts: this.accounts.dto() });
     return applied;
+  }
+
+  /** Restore each Claude account's persisted `user:profile` token into the live AccountManager on boot.
+   *  An env-configured token (`ACCOUNT_<n>_PROFILE_TOKEN`) is already on the account, so kv only writes
+   *  over it when a value was actually stored here — the Settings field is the override, not a blanker. */
+  private applyAccountProfileTokens(): void {
+    for (const a of config.accounts) {
+      const v = this.db.kvGet(`account_profile_token_${a.id}`);
+      if (v != null) this.accounts.setProfileToken(a.id, v);
+    }
+  }
+
+  /**
+   * Store (or, with an empty string, clear) a Claude account's `user:profile` OAuth token.
+   *
+   * This token is a SECRET and is stored exactly like the Discord/z.ai keys: written to kv, never read
+   * back to a client, and represented on the wire only by `profileTokenPresent`. It is used for one
+   * GET — the banked-reset read — and never to run a model.
+   */
+  setAccountProfileToken(id: string, token: string): void {
+    const value = token.trim().slice(0, 4096);
+    this.accounts.setProfileToken(id, value);
+    if (value) this.db.kvSet(`account_profile_token_${id}`, value);
+    else this.db.kvDelete(`account_profile_token_${id}`);
+    this.hub.publish({ type: "accounts", accounts: this.accounts.dto() });
   }
 
   /** Resolve which backend implements tasks right now from the subscription toggles, or an error

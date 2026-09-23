@@ -231,6 +231,14 @@ button { font-family: inherit; cursor: pointer; }
 .acct.stale .meter-fill { opacity: 0.4; }
 .acct.stale .meter-v { color: var(--text-faint); }
 .acct-tag.dim { color: var(--text-faint); }
+/* Only the FIRST tag claims the auto margin that pushes the row right; the rest hug it. Without this a
+   second tag gets its own `margin-left: auto` and flex splits the free space BETWEEN them, stranding
+   one mid-chip. Latent until the banked-reset badge made two tags the common case. */
+.acct-tag + .acct-tag { margin-left: 4px; }
+/* A banked reset is good news, unlike every other tag on this row (which are failures in --danger).
+   Amber rather than the "ok" green: green here would read as the chip's health, and this is a separate
+   fact about the subscription that happens to be positive. */
+.acct-tag.reset-credit { color: var(--accent); letter-spacing: 0.02em; }
 .acct.errored { border-color: oklch(0.68 0.2 25 / 0.55); }
 .acct-err { font-family: var(--font-mono); font-size: 9px; line-height: 1.3; color: var(--danger); max-width: 168px; }
 /* Codex status chip — a presence/status chip (OpenAI has no rolling headroom % to meter), narrower
