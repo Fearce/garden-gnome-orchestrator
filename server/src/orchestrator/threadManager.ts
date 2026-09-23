@@ -9501,18 +9501,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       "---",
       "## ⏪ Resuming — you already worked on this task in an earlier session",
     ];
-    // Rendered verbatim, ahead of the (possibly lossy) compressed handoff below — a standing directive
-    // must survive this reseed even if the Haiku summary of the prior session didn't happen to retain it.
-    const directives = this.standingDirectivesBlock(thread.id);
-    if (directives) {
-      parts.push(directives, "");
-    }
-    if (opts?.restartNote) {
-      parts.push(opts.restartNote, "");
-    }
-    if (opts?.directorNote) {
-      parts.push(opts.directorNote, "");
-    }
     if (handoff) {
       parts.push(
         `Your earlier session was compressed locally (${handoff.haiku ? "Haiku summary of the older turns + the most recent turns verbatim" : "static strip of the transcript"}) instead of reloaded in full — reloading the whole transcript is the costly part of a resume. Absorb this handoff to recover your prior context, then continue; do NOT summarize it back.`,
@@ -9534,8 +9522,23 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       "## Current workspace progress (git)",
       progress,
       "",
-      `Continue from here against the plan above: re-read any current file you need (contents may have changed since the handoff), finish the remaining work, and don't redo what's already done. ${tail}`,
     );
+    // The compressed transcript is historical evidence, not a new instruction. Keep every currently
+    // authoritative item *after* it: otherwise a model change can see an old verbatim transcript tail
+    // later in the prompt than the owner injection that caused the resume, and act as if history won.
+    // This is intentionally also after the git snapshot — it is the final instruction-bearing context.
+    const directives = this.standingDirectivesBlock(thread.id);
+    if (directives || opts?.restartNote || opts?.directorNote) {
+      parts.push(
+        "## Current authoritative task context (newer than the compressed handoff above)",
+        "The material below is current. It overrides conflicting assumptions or instructions in the historical handoff.",
+      );
+      if (directives) parts.push("", directives);
+      if (opts?.restartNote) parts.push("", opts.restartNote);
+      if (opts?.directorNote) parts.push("", opts.directorNote);
+      parts.push("");
+    }
+    parts.push(`Continue from here against the plan above: re-read any current file you need (contents may have changed since the handoff), finish the remaining work, and don't redo what's already done. ${tail}`);
     return parts.join("\n");
   }
 

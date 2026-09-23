@@ -234,7 +234,13 @@ async function main(): Promise<void> {
 
       const coldSession = "cold-claude-session";
       const coldPath = join(projectDir, `${coldSession}.jsonl`);
-      writeFileSync(coldPath, ""); // empty transcript: compressSession finds it but strips to nothing — no Haiku call
+      // This transcript says the opposite of the fresh owner instruction below. It must remain useful
+      // history, but the cold reseed must put the fresh instruction AFTER it so recency cannot invert
+      // their meaning when the model changes provider.
+      writeFileSync(
+        coldPath,
+        `${JSON.stringify({ message: { role: "user", content: [{ type: "text", text: "STALE TRANSCRIPT: continue the abandoned route; do not use the new bot session." }] } })}\n`,
+      );
       const old = new Date(Date.now() - 120 * 60_000);
       utimesSync(coldPath, old, old);
       h.db.updateRun(h.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5-5", account: "acct-a" }).id, { sessionId: coldSession });
@@ -252,7 +258,7 @@ async function main(): Promise<void> {
       const baseKickoff = h.db.getThreadStageOutputs(id).kickoff!;
       await realStartResumed(thread, baseKickoff, coldSession, {
         resumeNudge: "continue",
-        directorNote: "Every Claude subscription hit its usage cap partway through this task, so you're taking over.",
+        directorNote: "CURRENT OWNER: use the new bot session; do not follow the abandoned route.",
         qaFollows: true,
       });
 
@@ -260,6 +266,18 @@ async function main(): Promise<void> {
       const text = starts[0]?.text ?? "";
       check("the cold seed is the real composeResumeKickoff output (names the resume)", text.includes("Resuming"), text.slice(0, 200));
       check("the cold seed carries the standing directive verbatim", text.includes(BRANCH_DIRECTIVE), text);
+      const staleAt = text.indexOf("STALE TRANSCRIPT");
+      const currentAt = text.indexOf("CURRENT OWNER");
+      check(
+        "the fresh owner instruction is after contradictory compressed history",
+        staleAt >= 0 && currentAt > staleAt,
+        `staleAt=${staleAt}; currentAt=${currentAt}`,
+      );
+      check(
+        "the final instruction block explicitly marks fresh context as authoritative",
+        text.lastIndexOf("Current authoritative task context") > staleAt,
+        text,
+      );
       await settle();
     } finally {
       if (oldProjectsDir == null) delete process.env.CLAUDE_PROJECTS_DIR;
