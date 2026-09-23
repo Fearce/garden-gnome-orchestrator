@@ -30,18 +30,27 @@ try {
     throw new Error('Cannot verify the current scheduled check thread');
   }
 
+  // Each five-minute fire creates a separate GGO thread. They are all instances
+  // of this check, including queued fires, and must not keep the board busy by
+  // themselves. Match the frozen schedule fields so similarly titled owner work
+  // still counts as unfinished.
   const unfinishedQuery = db.prepare(`
     SELECT id, title, state FROM threads
     WHERE state NOT IN ('done', 'cancelled', 'closed')
       AND id != ?
+      AND NOT (title = ? AND workspace = ? AND brief = ? AND raw_prompt = ''
+        AND created_at >= ?)
     ORDER BY created_at DESC
   `);
+  const unfinished = () => unfinishedQuery.all(
+    selfThreadId || '', schedule.title, schedule.workspace, schedule.prompt, schedule.created_at,
+  );
   if (action === '--disable' || action === '--expire') {
     db.transaction(() => {
       if (action === '--expire' && Date.now() < deadline) {
         throw new Error('Cannot expire the GGO schedule before the fixed 03:00 deadline');
       }
-      if (action === '--disable' && unfinishedQuery.all(selfThreadId || '').length) {
+      if (action === '--disable' && unfinished().length) {
         throw new Error('Other GGO tasks became unfinished; schedule remains enabled');
       }
       const changed = db.prepare('UPDATE scheduled_tasks SET enabled = 0, next_run_at = NULL, updated_at = ? WHERE id = ?').run(Date.now(), scheduleId);
@@ -64,9 +73,9 @@ try {
     console.log('GGO schedule restored and verified');
     process.exitCode = 0;
   } else if (action === '--check') {
-    const unfinished = unfinishedQuery.all(selfThreadId || '');
-    console.log(JSON.stringify({ checkedAt: new Date().toISOString(), unfinished }));
-    process.exitCode = unfinished.length ? 1 : 0;
+    const remaining = unfinished();
+    console.log(JSON.stringify({ checkedAt: new Date().toISOString(), unfinished: remaining }));
+    process.exitCode = remaining.length ? 1 : 0;
   }
 } catch (error) {
   console.error(`Board audit failed: ${error.message}`);
