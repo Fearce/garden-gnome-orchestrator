@@ -11574,18 +11574,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     await this.applyRetitle(threadId, await titleFromBrief(brief, this.accounts.auxToken()).catch(() => null), "brief");
   }
 
-  /** Operator rename from the console: set a task's board title verbatim and broadcast it. Trims +
-   *  length-caps (mirroring the protocol bound), no-ops on an empty result or an unchanged title, and
-   *  updates every open board live via thread.upsert. */
+  /** Operator rename from the console: save the title and permanently bar automatic retitles.
+   *  Trims + length-caps (mirroring the protocol bound) and updates every open board live. */
   renameThread(threadId: string, title: string): Thread | null {
     // Collapse interior whitespace/newlines so a pasted multi-line string can't produce a broken lane
     // label — the title is operator-supplied over the LAN socket, so sanitize at this trust boundary.
     const trimmed = title.replace(/\s+/g, " ").trim().slice(0, 200);
     if (!trimmed) return null;
     const current = this.db.getThread(threadId);
-    if (!current || current.title === trimmed) return current;
-    const t = this.db.updateThread(threadId, { title: trimmed });
+    if (!current) return null;
+    const t = this.db.renameThreadByOwner(threadId, trimmed);
     if (!t) return null;
+    if (current.title === trimmed) return t;
     this.hub.publish({ type: "thread.upsert", thread: t });
     this.hub.log("info", `Renamed ${threadId.slice(0, 8)} → "${trimmed}"`);
     return t;
@@ -11595,9 +11595,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private applyRetitle(threadId: string, title: string | null, reason: string): void {
     try {
       if (!title) return;
-      const current = this.db.getThread(threadId);
-      if (!current || current.title === title) return; // gone, or no change — skip the churn
-      const t = this.db.updateThread(threadId, { title });
+      const t = this.db.retitleThreadAutomatically(threadId, title);
       if (!t) return;
       this.hub.publish({ type: "thread.upsert", thread: t });
       this.hub.log("info", `Retitled ${threadId.slice(0, 8)} from ${reason} → "${title}"`);

@@ -7,6 +7,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS threads (
   id            TEXT PRIMARY KEY,
   title         TEXT NOT NULL,
+  owner_title_locked INTEGER NOT NULL DEFAULT 0,
   state         TEXT NOT NULL,
   workspace     TEXT NOT NULL,
   brief         TEXT NOT NULL DEFAULT '',

@@ -757,6 +757,7 @@ export class Db {
       "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE cowork_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
+      "ALTER TABLE threads ADD COLUMN owner_title_locked INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE threads ADD COLUMN effort_override TEXT",
       "ALTER TABLE threads ADD COLUMN model_request TEXT",
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
@@ -2038,16 +2039,32 @@ export class Db {
     })();
   }
 
-  updateThread(id: string, patch: Partial<Pick<Thread, "title" | "state" | "brief" | "workspace" | "error">>): Thread | null {
+  updateThread(id: string, patch: Partial<Pick<Thread, "state" | "brief" | "workspace" | "error">>): Thread | null {
     const current = this.getThread(id);
     if (!current) return null;
     const next = { ...current, ...patch, updatedAt: now() };
     this.raw
       .prepare(
-        `UPDATE threads SET title=@title, state=@state, brief=@brief, workspace=@workspace, error=@error, updated_at=@updatedAt WHERE id=@id`,
+        `UPDATE threads SET state=@state, brief=@brief, workspace=@workspace, error=@error, updated_at=@updatedAt WHERE id=@id`,
       )
       .run(next);
     return next;
+  }
+
+  /** A pencil edit permanently reserves the title for the owner, including across server restarts. */
+  renameThreadByOwner(id: string, title: string): Thread | null {
+    const result = this.raw.prepare(
+      "UPDATE threads SET title = ?, owner_title_locked = 1, updated_at = ? WHERE id = ?",
+    ).run(title, now(), id);
+    return result.changes ? this.getThread(id) : null;
+  }
+
+  /** The lock check and write share one statement so a late title result cannot win a race. */
+  retitleThreadAutomatically(id: string, title: string): Thread | null {
+    const result = this.raw.prepare(
+      "UPDATE threads SET title = ?, updated_at = ? WHERE id = ? AND owner_title_locked = 0 AND title <> ?",
+    ).run(title, now(), id, title);
+    return result.changes ? this.getThread(id) : null;
   }
 
   /** Soft-close a thread: stamp state='closed', remember the state it came from (closed_prev_state,

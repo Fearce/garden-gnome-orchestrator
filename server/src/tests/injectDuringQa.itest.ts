@@ -854,7 +854,7 @@ async function main(): Promise<void> {
       }).startResumedImplementor.bind(h.mgr);
 
       const warmId = seedTask(h);
-      h.db.updateThread(warmId, { title: "warm-claude" });
+      h.db.renameThreadByOwner(warmId, "warm-claude");
       const warmSession = "warm-claude-session";
       writeFileSync(join(projectDir, `${warmSession}.jsonl`), "");
       // Same reason as the Codex row below: seed the model this backend resolves right now, so a
@@ -864,7 +864,7 @@ async function main(): Promise<void> {
       await realStartResumed(h.db.getThread(warmId)!, "BASE", warmSession, { resumeNudge: "NUDGE", directorNote: "NUDGE", qaFollows: true, images: [imageBlock] });
 
       const codexId = seedTask(h);
-      h.db.updateThread(codexId, { title: "codex-resume" });
+      h.db.renameThreadByOwner(codexId, "codex-resume");
       const codexSession = "codex-session";
       // The prior run's model must be the one this backend resolves RIGHT NOW, or the resume never
       // happens and this case silently stops testing what it is named for: a CLI session is bound to
@@ -876,7 +876,7 @@ async function main(): Promise<void> {
       await realStartResumed(h.db.getThread(codexId)!, "BASE", codexSession, { resumeNudge: "NUDGE", directorNote: "NUDGE", qaFollows: true, images: [imageBlock] });
 
       const coldId = seedTask(h);
-      h.db.updateThread(coldId, { title: "cold-claude" });
+      h.db.renameThreadByOwner(coldId, "cold-claude");
       const coldSession = "cold-claude-session";
       const coldPath = join(projectDir, `${coldSession}.jsonl`);
       writeFileSync(coldPath, "");
