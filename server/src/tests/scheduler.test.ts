@@ -102,6 +102,65 @@ async function main(): Promise<void> {
   check("dispatch got the pinned backend, so the pair stays exact", last.requestedProvider === "codex");
   check("runNow records lastRunAt + lastThreadId", db.getScheduledTask(id)!.lastRunAt != null && db.getScheduledTask(id)!.lastThreadId != null);
 
+  console.log("scheduler: one fire at a time");
+  // 2026-09-23: a five-minute shutdown check stacked up to nine concurrent implementor+QA tasks in one
+  // repo because each fire ignored whether the previous one was still working. Drive the real tick with
+  // a predecessor in every state and check which ones let the next fire through.
+  const tick = () => (scheduler as unknown as { tick(): void }).tick();
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+  const guardId = scheduler.create({ title: "Guarded", workspace: ws, prompt: "check", cron: "*/5 * * * *" }).schedule!.id;
+  const prev = db.createThread({ title: "Guarded", workspace: ws, brief: "check", rawPrompt: "check" });
+  db.updateScheduledTask(guardId, { lastThreadId: prev.id });
+  const fireDue = async (): Promise<boolean> => {
+    db.updateScheduledTask(guardId, { nextRunAt: Date.now() - 1000 });
+    const n = dispatched.length;
+    tick();
+    await settle();
+    const fired = dispatched.length > n;
+    // Point the schedule back at the seeded predecessor so every case measures the same thing.
+    db.updateScheduledTask(guardId, { lastThreadId: prev.id });
+    return fired;
+  };
+  for (const state of ["queued", "implementing", "qa", "awaiting_user", "paused", "reviewing"] as const) {
+    db.updateThread(prev.id, { state });
+    check(`a fire is skipped while the previous run is ${state}`, !(await fireDue()));
+    check(`a skipped fire still advances the cadence (${state})`, (db.getScheduledTask(guardId)!.nextRunAt ?? 0) > Date.now());
+  }
+  for (const state of ["done", "review", "failed", "cancelled", "closed"] as const) {
+    db.updateThread(prev.id, { state });
+    check(`a fire proceeds once the previous run is ${state}`, await fireDue());
+  }
+  db.updateScheduledTask(guardId, { lastThreadId: "purged-thread" });
+  db.updateScheduledTask(guardId, { nextRunAt: Date.now() - 1000 });
+  const beforePurged = dispatched.length;
+  tick();
+  await settle();
+  check("a purged predecessor never blocks the schedule", dispatched.length === beforePurged + 1);
+
+  db.updateThread(prev.id, { state: "implementing" });
+  db.updateScheduledTask(guardId, { lastThreadId: prev.id });
+  const refused = await scheduler.runNow(guardId);
+  check("Run now refuses while the previous run is still working", !refused.ok && /implementing/.test(refused.error ?? ""));
+
+  // Two due ticks inside one slow dispatch: the second must see the first in flight, since lastThreadId
+  // is only written once dispatch resolves.
+  db.updateThread(prev.id, { state: "done" });
+  let release: () => void = () => {};
+  const slow = new Scheduler(db, hub, async (input) => {
+    dispatched.push(input);
+    await new Promise<void>((r) => (release = r));
+    return prev.id;
+  });
+  const n0 = dispatched.length;
+  db.updateScheduledTask(guardId, { nextRunAt: Date.now() - 1000 });
+  (slow as unknown as { tick(): void }).tick();
+  db.updateScheduledTask(guardId, { nextRunAt: Date.now() - 1000 });
+  (slow as unknown as { tick(): void }).tick();
+  check("a fire whose dispatch is still in flight blocks the next", dispatched.length === n0 + 1);
+  release();
+  await settle();
+  scheduler.remove(guardId);
+
   console.log("scheduler: effort clear");
   scheduler.update(id, { effort: null });
   check("effort cleared to null", db.getScheduledTask(id)!.effort == null);

@@ -113,7 +113,7 @@ Commands and fields:
 - read_findings: threadId? (omit for all)
 - next_token_shift: all? (read-only) — when the next usage window rolls over and hands capacity back. Timestamps come back server-local with an explicit date and UTC offset; quote them as-is.
 - post_operator_note: note, url?
-- create_scheduled_task: title, workspace, prompt, cron, enabled?, effort?, model? (model is a strict pin when explicitly requested)
+- create_scheduled_task: title, workspace, prompt, cron, enabled?, effort?, model? (model is a strict pin when explicitly requested). Every fire is a full implementation task that can commit; never use it to poll a condition or wait for an event.
 - list_scheduled_tasks
 - update_scheduled_task: id plus any of title/workspace/prompt/cron/enabled/effort/model
 - delete_scheduled_task: id

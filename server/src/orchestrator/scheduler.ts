@@ -2,8 +2,30 @@ import { existsSync } from "node:fs";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { DispatchInput } from "./api.js";
-import type { Effort, ImplementorProvider, ScheduledTask } from "../types.js";
+import type { Effort, ImplementorProvider, ScheduledTask, ThreadState } from "../types.js";
 import { isValidCron, nextRun } from "./cron.js";
+
+/** States in which a schedule's previous fire still has an agent working, or one that will resume
+ *  (a paused session, an open question, a plan awaiting approval). A new fire is skipped while its
+ *  predecessor sits in one of these. `review` is deliberately absent: the work has stopped and waits on
+ *  the owner's verdict, and blocking on it would silently halt a daily schedule until someone clicks.
+ *
+ *  Why this exists: a shutdown check scheduled every five minutes (2026-09-23) fired on that cadence while each fire took
+ *  10-40 minutes, so up to nine full implementor+QA tasks ran at once in one repo, each re-verifying and
+ *  re-committing the same helper scripts. One fire at a time is the bound the pipeline needs. */
+const UNFINISHED_STATES: ReadonlySet<ThreadState> = new Set<ThreadState>([
+  "intake",
+  "enriching",
+  "queued",
+  "awaiting_user",
+  "planning",
+  "researching",
+  "awaiting_approval",
+  "implementing",
+  "qa",
+  "paused",
+  "reviewing",
+]);
 
 /** The fields a create/update accepts; everything else (timestamps, lastThreadId) is scheduler-managed. */
 export interface ScheduleInput {
@@ -39,6 +61,9 @@ const TICK_MS = 30_000;
  */
 export class Scheduler {
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Schedules whose dispatch is awaiting its thread id. `lastThreadId` is written only after dispatch
+   *  resolves, so without this a fire started in that window would not see its own predecessor. */
+  private readonly dispatching = new Set<string>();
 
   constructor(
     private readonly db: Db,
@@ -122,6 +147,12 @@ export class Scheduler {
   async runNow(id: string): Promise<ScheduleResult> {
     const s = this.db.getScheduledTask(id);
     if (!s) return { ok: false, error: "No such scheduled task." };
+    const busy = this.previousRunBusy(s);
+    if (busy) {
+      const error = `The previous run is still ${busy}. Finish or cancel it before starting another.`;
+      this.hub.log("warn", `Scheduled task "${s.title}" was not run: ${error}`);
+      return { ok: false, error };
+    }
     await this.dispatchRun(s);
     return { ok: true, schedule: this.db.getScheduledTask(id) ?? undefined };
   }
@@ -136,9 +167,23 @@ export class Scheduler {
       // following tick must see a future nextRunAt, never this same past slot — so a schedule can never
       // double-fire. Recompute from `now` so downtime skips missed slots instead of stacking a backlog.
       this.db.updateScheduledTask(s.id, { nextRunAt: nextRun(s.cron, now) });
+      const busy = this.previousRunBusy(s);
+      if (busy) {
+        this.hub.log("info", `Scheduled task "${s.title}" skipped this fire: its previous run is still ${busy}.`);
+        continue;
+      }
       void this.dispatchRun(s);
     }
     if (due) this.broadcast();
+  }
+
+  /** Describes why the schedule's previous fire still counts as running (e.g. "dispatching", "qa (task
+   *  1a2b3c4d)"), or null when a new fire may start. A missing thread (purged, deleted) never blocks. */
+  private previousRunBusy(s: ScheduledTask): string | null {
+    if (this.dispatching.has(s.id)) return "dispatching";
+    if (!s.lastThreadId) return null;
+    const state = this.db.getThread(s.lastThreadId)?.state;
+    return state && UNFINISHED_STATES.has(state) ? `${state} (task ${s.lastThreadId.slice(0, 8)})` : null;
   }
 
   /** Dispatch one run of a schedule through the normal pipeline and record the last-run bookkeeping.
@@ -150,6 +195,7 @@ export class Scheduler {
       this.hub.log("warn", `Scheduled task "${s.title}" skipped — workspace ${s.workspace} does not exist.`);
       return;
     }
+    this.dispatching.add(s.id);
     try {
       const threadId = await this.dispatch({
         title: s.title,
@@ -164,6 +210,8 @@ export class Scheduler {
       this.broadcast();
     } catch (e) {
       this.hub.log("error", `Scheduled task "${s.title}" failed to dispatch: ${String(e)}`);
+    } finally {
+      this.dispatching.delete(s.id);
     }
   }
 
