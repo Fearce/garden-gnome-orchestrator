@@ -401,7 +401,20 @@ export class Director {
   private async chooseTarget(excludeKeys: ReadonlySet<string> = new Set()): Promise<DirectorTarget | undefined> {
     const auto = this.api.settings().autoModelSelection;
     const available = this.api.directorTargets(auto).filter((t) => !excludeKeys.has(t.key));
-    const sticky = this.target && auto === this.targetWasAuto && !excludeKeys.has(this.target.key) && this.api.directorTargetReady(this.target)
+    const priority = this.api.temporaryAccountPriority();
+    const priorityTargets = priority
+      ? available.filter((target) => target.provider === "claude" && target.accountId === priority.accountId && this.api.directorTargetReady(target))
+      : [];
+    if (priorityTargets.length) {
+      this.targetWasAuto = auto;
+      this.db.kvSet("director_temporary_priority_until", String(priority!.until));
+      return priorityTargets.find((target) => target.key === this.target?.key)
+        ?? this.api.preferredDirectorTarget(priorityTargets);
+    }
+    const priorityUntil = Number(this.db.kvGet("director_temporary_priority_until"));
+    const priorityExpired = priorityUntil > 0 && priorityUntil <= Date.now();
+    if (priorityExpired) this.db.kvDelete("director_temporary_priority_until");
+    const sticky = !priorityExpired && this.target && auto === this.targetWasAuto && !excludeKeys.has(this.target.key) && this.api.directorTargetReady(this.target)
       ? available.find((t) => t.key === this.target!.key)
       : undefined;
     if (sticky) return sticky;

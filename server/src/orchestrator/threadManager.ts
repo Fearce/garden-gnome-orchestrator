@@ -1109,6 +1109,8 @@ export class ThreadManager implements OrchestratorApi {
     this.applyAccountWeeklySafety();
     this.applyAccountProfileTokens();
     this.accounts.setSpreadUsage(this.settingBool("setting_spread_usage", false));
+    const temporaryPriority = this.temporaryAccountPriority();
+    this.accounts.setTemporaryPriority?.(temporaryPriority?.accountId ?? "", temporaryPriority?.until ?? 0);
     this.loadCodexCap();
     this.loadPoolCaps();
     this.loadGrokCap();
@@ -5249,6 +5251,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // carry their backend ceilings.
     const safety = weeklySafetyPool(capacityPool);
     const pool = safety.candidates;
+    // An owner can spend one expiring Claude subscription first. This is only a tie-break inside
+    // hard availability, task-sized capacity and weekly-safety tiers; explicit model pins bypass it.
+    const accountPriority = this.temporaryAccountPriority();
+    const claude = pool.find((candidate) => candidate.provider === "claude");
+    if (!safety.allOver && accountPriority && claude && this.accounts.dispatchPreview(demand).account.id === accountPriority.accountId) return claude;
     // Spread usage: balance across ALL backends by lowest weekly usage. The all-over-safety no-freeze
     // fallback (most headroom) supersedes both it and the default soonest-reset order.
     const priority = safety.allOver
@@ -5257,6 +5264,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         ? providerSpreadUsage
         : providerPriority;
     return pool.reduce((best, c) => (priority(best, c) <= 0 ? best : c));
+  }
+
+  temporaryAccountPriority(): { accountId: string; until: number } | null {
+    try {
+      const value: unknown = JSON.parse(this.db.kvGet("temporary_claude_account_priority") ?? "null");
+      if (value && typeof value === "object" && "accountId" in value && "until" in value &&
+        typeof value.accountId === "string" && typeof value.until === "number" &&
+        Number.isFinite(value.until) && value.until > Date.now()) {
+        return { accountId: value.accountId, until: value.until };
+      }
+    } catch { /* malformed or absent operator setting: use ordinary routing */ }
+    return null;
   }
 
   private preferredImplementorProvider(candidates: ProviderCandidate[], demand?: CapacityDemand): ImplementorProvider {
@@ -7275,6 +7294,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (this.cancelled(thread.id)) return undefined;
     if (
       (role === "planner" || role === "reader") &&
+      !this.temporaryAccountPriority() &&
       !initialResume &&
       !opts?.preferredProvider &&
       !opts?.forcedProvider

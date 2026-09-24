@@ -99,6 +99,19 @@ const accountStub = new StubAccounts();
 const manager = new ThreadManager(db, new EventHub(), new FileMemoryService(join(root, "memory")), accountStub as unknown as AccountManager);
 const thread = db.createThread({ title: "QA falls back after a Codex cap", workspace, rawPrompt: "verify", brief: "verify" });
 const internals = manager as any;
+
+const preferredReset = Date.now() + 12 * 60 * 60_000;
+const personalCandidate = { provider: "claude", hasHeadroom: true, fiveHour: 10, sevenDay: 54, sevenDayReset: preferredReset, weeklySafetyPct: 100 };
+const codexCandidate = { provider: "codex", hasHeadroom: true, fiveHour: 10, sevenDay: 38, sevenDayReset: Date.now() + 60 * 60_000, weeklySafetyPct: 100 };
+check("ordinary provider routing spends the sooner-resetting pool", internals.preferredProviderCandidate([personalCandidate, codexCandidate]).provider === "codex");
+db.kvSet("temporary_claude_account_priority", JSON.stringify({ accountId: "claude-a", until: preferredReset }));
+check("an owner account priority selects Claude across providers", internals.preferredProviderCandidate([personalCandidate, codexCandidate]).provider === "claude");
+check("hard headroom still wins", internals.preferredProviderCandidate([{ ...personalCandidate, hasHeadroom: false }, codexCandidate]).provider === "codex");
+check("weekly safety still wins", internals.preferredProviderCandidate([{ ...personalCandidate, weeklySafetyPct: 50 }, codexCandidate]).provider === "codex");
+db.kvSet("temporary_claude_account_priority", JSON.stringify({ accountId: "claude-a", until: Date.now() - 1 }));
+check("expired owner priority restores ordinary provider routing", internals.preferredProviderCandidate([personalCandidate, codexCandidate]).provider === "codex");
+db.kvDelete("temporary_claude_account_priority");
+
 const realGrokImplementorReady = internals.grokImplementorReady;
 const providers: string[] = [];
 const verdict: QaOutput = { pass: true, summary: "Claude completed the review", issues: [] };

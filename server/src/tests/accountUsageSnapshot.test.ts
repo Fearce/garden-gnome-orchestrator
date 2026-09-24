@@ -74,6 +74,26 @@ check("entries carry the label the warning names", snapshot.accounts.acct2?.labe
 // defaulted it to now() would make an unmeasured account look freshly measured at 0%.
 check("an unpinged sub reports no reading", snapshot.accounts.acct1?.usageAt === 0);
 check("an unpinged sub has no utilization", snapshot.accounts.acct1?.fiveHour === null);
+
+console.log("account-usage: temporary owner account priority");
+const priorityManager = new AccountManager([personal, secondary], new EventHub());
+const priorityStates = (priorityManager as any).states;
+const priorityReset = Date.now() + 12 * 60 * 60_000;
+Object.assign(priorityStates.get("acct1"), { fiveHour: 10, sevenDay: 54, sevenDayReset: priorityReset });
+Object.assign(priorityStates.get("acct2"), { fiveHour: 10, sevenDay: 38, sevenDayReset: Date.now() + 60 * 60_000 });
+check("ordinary routing spends the sooner-resetting account", priorityManager.dispatchPreview().account.id === "acct2");
+priorityManager.setTemporaryPriority("acct1", priorityReset);
+check("temporary priority changes the preview", priorityManager.dispatchPreview().account.id === "acct1");
+check("temporary priority changes the actual dispatch", priorityManager.select().account.id === "acct1");
+priorityStates.get("acct1").rateLimited = true;
+priorityStates.get("acct1").rateLimitResetAt = Date.now() + 60 * 60_000;
+check("a rate-limited preferred account falls back", priorityManager.dispatchPreview().account.id === "acct2");
+priorityStates.get("acct1").rateLimited = false;
+priorityStates.get("acct1").weeklySafetyPct = 50;
+check("weekly safety still excludes the preferred account", priorityManager.dispatchPreview().account.id === "acct2");
+priorityStates.get("acct1").weeklySafetyPct = 100;
+priorityManager.setTemporaryPriority("acct1", Date.now() - 1);
+check("the priority expires at its captured reset", priorityManager.dispatchPreview().account.id === "acct2");
 check("cadence rides along so a consumer can size its staleness bound", snapshot.pingIntervalMs > 0);
 
 // A dashboard can open before AccountManager.start() begins its asynchronous boot pings. It must show

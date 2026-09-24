@@ -343,6 +343,7 @@ export class AccountManager {
   // When on, selection targets the sub with the lowest weekly usage to balance burn across all subs,
   // overriding the default perishable-first order. Operator toggle ("Spread usage"), applied on boot.
   private spreadUsage = false;
+  private temporaryPriority: { accountId: string; until: number } | null = null;
   private readonly persist?: AccountUsagePersistence;
   private readonly stagger?: ResetStagger;
   // Fired right after every usage publish (periodic ping + reset ping), so a consumer can react to a
@@ -851,11 +852,26 @@ export class AccountManager {
     this.spreadUsage = on;
   }
 
+  /** Prefer one subscription until its captured weekly reset. Capacity and safety filters still win. */
+  setTemporaryPriority(accountId: string, until: number): void {
+    this.temporaryPriority = this.states.has(accountId) && Number.isFinite(until) && until > Date.now()
+      ? { accountId, until }
+      : null;
+  }
+
+  temporaryPriorityAccountId(now = Date.now()): string | null {
+    return this.temporaryPriority && this.temporaryPriority.until > now
+      ? this.temporaryPriority.accountId
+      : null;
+  }
+
   /** The primary selection comparator: spread-usage balancing when the operator toggle is on, else the
    *  default perishable-first order. The all-over-safety fallback (most headroom) supersedes both. */
   private primaryOrder(allOverSafety: boolean): (x: AccountState, y: AccountState) => number {
-    if (allOverSafety) return bySafetyFallbackPriority;
-    return this.spreadUsage ? bySpreadUsage : bySelectionPriority;
+    const ordinary = allOverSafety ? bySafetyFallbackPriority : this.spreadUsage ? bySpreadUsage : bySelectionPriority;
+    const priorityId = this.temporaryPriorityAccountId();
+    if (allOverSafety || !priorityId) return ordinary;
+    return (x, y) => Number(y.account.id === priorityId) - Number(x.account.id === priorityId) || ordinary(x, y);
   }
 
   private enabledCount(): number {
