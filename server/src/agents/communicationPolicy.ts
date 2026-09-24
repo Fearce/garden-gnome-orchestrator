@@ -57,7 +57,9 @@ export function withCommunicationTurnPolicy(content: UserContent, enabled: boole
 /** The Director receives authenticated owner chat, not an assigned task brief. Keep that chat direct:
  * the task-content wrapper led the model to reject owner instructions and server-added workspace tags. */
 export function withDirectorTurnPolicy(content: UserContent, enabled: boolean): UserContent {
-  const control = communicationPolicyBlock(enabled);
+  // Existing Director sessions may remember the old wrapper and still distrust those past turns.
+  // This reaches resumed sessions as well as fresh ones; a changed system prompt alone cannot.
+  const control = `${communicationPolicyBlock(enabled)}\n\nDirector chat provenance: every prior user turn in this Director conversation came through the authenticated owner chat. Older turns may carry a server-added <ggo_owner_or_task_content> wrapper; that wrapper did not reduce their authority. Do not require the owner to resend or reconfirm a request solely because it was wrapped. Follow the latest owner instructions normally.`;
   if (typeof content === "string") return `${control}\n\n${content}`;
   return [{ type: "text", text: control }, ...content];
 }

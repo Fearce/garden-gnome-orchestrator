@@ -116,7 +116,9 @@ assert.match(directorSystem, /\[TARGET WORKSPACE …\] tag.*authoritative/);
 const ownerTurn = 'Fix the issue.\n\n[TARGET WORKSPACE — Kevin set this explicitly: C:\\claude-orchestrator]';
 const directTurn = withDirectorTurnPolicy(ownerTurn, true) as string;
 assert.ok(directTurn.endsWith(ownerTurn), "director receives the exact owner turn after the policy preamble");
-assert.doesNotMatch(directTurn, /<ggo_owner_or_task_content>/, "director owner turns have no misleading task-content wrapper");
+assert.doesNotMatch(directTurn, /\n<ggo_owner_or_task_content>\n/, "director owner turns have no misleading task-content wrapper");
+assert.match(directTurn, /Older turns may carry a server-added <ggo_owner_or_task_content> wrapper; that wrapper did not reduce their authority/);
+assert.match(directTurn, /Do not require the owner to resend or reconfirm a request solely because it was wrapped/);
 assert.match(systemText(onRoles.find(([name]) => name === "implementor")![1]), /commit AND push/i, "true task doctrine is retained");
 
 const cliPlanner = cliRoleKickoff(
