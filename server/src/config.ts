@@ -375,6 +375,9 @@ export const config = {
   maxAutoResumes: Math.max(0, numEnv(process.env.MAX_AUTO_RESUMES, 0)),
   // Consecutive auto-continued sessions allowed to do no new work before the task parks for the owner.
   implementorNoProgressLimit: Math.max(1, Math.floor(numEnv(process.env.IMPLEMENTOR_NO_PROGRESS_LIMIT, 3))),
+  // How long an appended owner injection may wait for a live Claude/z.ai implementor to reach a turn
+  // boundary before its blocking tool call is interrupted so the message lands (0 = never interrupt).
+  injectionPickupMs: Math.max(0, numEnv(process.env.INJECTION_PICKUP_MS, 30_000)),
   // ---- Timed tasks (a single task with a wall-clock work window) ----
   // Safety bounds on the extension loop, so "work on this for 8 hours" can never become an unbounded
   // one. Both are needed: the COUNT bounds a window whose rounds are long, and the hollow-round guard

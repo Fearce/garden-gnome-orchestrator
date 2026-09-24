@@ -1,6 +1,6 @@
 import { CodexAgentRun } from "../agents/codexRunner.js";
 import { GrokAgentRun } from "../agents/grokRunner.js";
-import type { AgentRunLike, SendOpts } from "../agents/runner.js";
+import { AgentRun, type AgentRunLike, type SendOpts } from "../agents/runner.js";
 
 /**
  * Format a live owner injection consistently for every implementor backend.
@@ -45,4 +45,10 @@ export function injectionSendOptions(
   return mode === "interrupt" || run instanceof CodexAgentRun || run instanceof GrokAgentRun
     ? { priority: "now" }
     : undefined;
+}
+
+/** Only a plain append to a streaming SDK run (Claude, z.ai) can sit unread behind a blocking tool call;
+ *  an interrupt and every Codex/Grok send already stop the in-flight work (see injectionPickup.ts). */
+export function injectionNeedsPickupWatch(run: AgentRunLike, mode: "append" | "interrupt"): boolean {
+  return mode === "append" && run instanceof AgentRun;
 }

@@ -144,6 +144,7 @@ const GATES = [
   "test:qa-budget-scope",
   "test:inject-qa",
   "test:standing-directives",
+  "test:injection-pickup",
   "test:chat-steering",
   "test:cowork",
   "test:cowork-summary",

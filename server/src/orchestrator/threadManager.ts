@@ -132,7 +132,8 @@ import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import { coworkContentWithAttachments } from "../coworkAttachments.js";
-import { acknowledgedInjection, injectionSendOptions, structuredAcknowledgedInjection } from "./injection.js";
+import { acknowledgedInjection, injectionNeedsPickupWatch, injectionSendOptions, structuredAcknowledgedInjection } from "./injection.js";
+import { watchInjectionPickup } from "./injectionPickup.js";
 import {
   ReviewInjectionStore,
   reviewInjectionLabel,
@@ -867,6 +868,8 @@ const REMOTE_CHAT_SEEN_MAX = 500;
 
 export class ThreadManager implements OrchestratorApi {
   private readonly live = new Map<string, LiveImplementor>();
+  // One pending "has the implementor read the owner's injection yet?" watch per task (injectionPickup.ts).
+  private readonly injectionPickupWatches = new Set<string>();
   private readonly activeRuns = new Map<string, Set<AgentRunLike>>();
   // The cross-machine office, when the operator has joined one. Null is the normal, fully-working state:
   // every office path degrades to the local-only behaviour it had before the feature existed.
@@ -11054,6 +11057,31 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.reviewing.has(threadId) || this.db.getAutoReviewEpisode(threadId)?.status === "running";
   }
 
+  /** Interrupt a live implementor that is still inside one blocking tool call when an appended injection
+   *  has waited `config.injectionPickupMs` unread. A task waiting on its own question is left alone. */
+  private watchInjectionPickup(threadId: string, run: AgentRunLike, mode: "append" | "interrupt"): void {
+    if (!injectionNeedsPickupWatch(run, mode) || this.injectionPickupWatches.has(threadId)) return;
+    this.injectionPickupWatches.add(threadId);
+    watchInjectionPickup(run, {
+      timeoutMs: config.injectionPickupMs,
+      mayInterrupt: () => this.live.get(threadId)?.run === run && this.db.getThread(threadId)?.state === "implementing",
+      onInterrupt: (waitedMs) => this.noteInjectionPickupInterrupt(threadId, waitedMs),
+      onSettled: () => this.injectionPickupWatches.delete(threadId),
+    });
+  }
+
+  private noteInjectionPickupInterrupt(threadId: string, waitedMs: number): void {
+    const seconds = Math.round(waitedMs / 1000);
+    const m = this.db.addMessage({
+      threadId,
+      role: "director",
+      kind: "system",
+      content: `⏱ The implementor hadn't read your message after ${seconds}s. It was stuck in one long tool call, so that call was stopped and your message was delivered.`,
+    });
+    this.hub.publish({ type: "thread.message", threadId, message: m });
+    this.hub.log("info", `Injection pickup on ${threadId.slice(0, 8)}: unread after ${seconds}s, interrupted the blocking tool call.`);
+  }
+
   async injectThread(
     threadId: string,
     message: string,
@@ -11379,6 +11407,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           "Auto-review had already handed work to its fix implementor; the instruction joined that active fix.",
         );
         this.sendCommunication(impl.run, contentWithImages(acknowledgedInjection(message), blocks), injectionSendOptions(impl.run, "append"));
+        this.watchInjectionPickup(threadId, impl.run, "append");
         this.markReviewImplementorDelivered(queued, impl.runId);
         return {
           ok: true,
@@ -11433,6 +11462,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         contentWithImages(acknowledgedInjection(message), blocks),
         injectionSendOptions(live.run, mode),
       );
+      this.watchInjectionPickup(threadId, live.run, mode);
       const m = this.db.addMessage({
         threadId,
         role: "director",
@@ -11515,11 +11545,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // it reached the resumed implementor via the kickoff's directorNote but never showed in the
     // history. This branch now OWNS the feed echo for every cold inject (review/paused/done/failed);
     // resumeThread no longer echoes, so there's exactly one message and no state-dependent double.
+    // Say that an agent is starting: its first reply waits on a whole CLI boot, which took 2m17s on a
+    // loaded box (2026-09-24), and a bare "injected" line read as the task having frozen.
+    const settlesWithoutAgent = qaBypassRequested && !!thread && (thread.state === "done" || DONEABLE.has(thread.state));
     const m = this.db.addMessage({
       threadId,
       role: "director",
       kind: "system",
-      content: `↪ injected: ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
+      content: `↪ injected${settlesWithoutAgent ? "" : " (no agent was running, so one is starting to answer it)"}: ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
       attachments: injectRefs(),
     });
     this.hub.publish({ type: "thread.message", threadId, message: m });
