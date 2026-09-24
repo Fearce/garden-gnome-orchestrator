@@ -16,7 +16,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks } = require("./lab-harness.cjs");
+const { SERVER_ROOT, loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, waitForSettingsReloadSafe } = require("./lab-harness.cjs");
 
 const PORT = 4337;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -36,15 +36,25 @@ async function waitForServerHello(page) {
  * neutral defaults or an optimistic pre-reload selection. Polling the two fields also tolerates React's
  * post-hello render on a busy host without concealing a genuinely stale persisted setting. */
 async function waitForTaskModeSettings(page, duration, agents) {
-  await page.waitForFunction(
-    ({ duration, agents }) => {
-      const window = document.querySelector(".composer-taskmode select[aria-label='Work window']");
-      const collaborators = document.querySelector(".composer-taskmode select[aria-label='Agents']");
-      return window?.value === duration && collaborators?.value === agents;
-    },
-    { duration, agents },
-    { timeout: 30_000 },
-  );
+  // The Work section is deliberately collapsed by default, so the controls do not exist until the
+  // disclosure opens. Re-open it after every page reload before checking server-persisted values.
+  const expandWork = await page.$(".composer-taskmode button[aria-label='Expand Work']");
+  if (expandWork) await expandWork.click();
+  await page.waitForSelector(".composer-taskmode select[aria-label='Work window']", { timeout: 30_000 });
+  try {
+    await page.waitForFunction(
+      ({ duration, agents }) => {
+        const window = document.querySelector(".composer-taskmode select[aria-label='Work window']");
+        const collaborators = document.querySelector(".composer-taskmode select[aria-label='Agents']");
+        return window?.value === duration && collaborators?.value === agents;
+      },
+      { duration, agents },
+      { timeout: 30_000 },
+    );
+  } catch {
+    const actual = await page.$$eval(".composer-taskmode select", (els) => els.map((e) => ({ label: e.getAttribute("aria-label"), value: e.value })));
+    throw new Error(`task-mode settings stayed ${JSON.stringify(actual)} after reload; expected window=${duration}, agents=${agents}`);
+  }
 }
 
 /** Seed the rows the surfaces read. Done directly against the throwaway DB after boot, so no agent
@@ -149,16 +159,19 @@ async function main() {
     await page.click('[data-thread-id="t-lead"]');
     await page.waitForSelector(".taskmode-panel", { timeout: 15_000 });
     const collabs = await page.$$eval(".taskmode-collab .taskmode-collab-title", (els) => els.map((e) => e.textContent.trim()));
-    check("the lead's panel lists both shares", collabs.includes("Share: the api") && collabs.includes("Share: the web"), collabs.join(" | "));
+    check("the lead's panel lists both shares", collabs.some((title) => title.endsWith("Share: the api")) && collabs.some((title) => title.endsWith("Share: the web")), collabs.join(" | "));
     const collabStates = await page.$$eval(".taskmode-collab .taskmode-collab-state", (els) => els.map((e) => e.textContent.trim().toLowerCase()));
     check("...each with its own live state", collabStates.some((s) => s.includes("done")) && collabStates.length === 2, collabStates.join(" | "));
 
+    const assignments = await page.$$eval(".taskmode-collab", (els) => els.map((e) => e.getAttribute("title") || ""));
+    check("...and names the files each share owns", assignments.some((title) => title.includes("owns: src/api, src/db")) && assignments.some((title) => title.includes("owns: web/src")), assignments.join(" | "));
+
     // Clicking a share opens it — the collaborator is reachable even though it is off the board.
-    await page.click(".taskmode-collab");
+    await page.click('.taskmode-collab[title^="Share: the api"]');
     await page.waitForTimeout(400);
-    const shareRow = await page.$eval(".taskmode-panel", (e) => e.textContent).catch(() => "");
-    check("a hidden collaborator can still be opened from its lead", /share of/i.test(shareRow), shareRow.slice(0, 120));
-    check("...and names the files it owns", /src\/api/.test(shareRow), shareRow.slice(0, 200));
+    const sharePanel = await page.$eval(".taskmode-panel", (e) => ({ text: e.textContent, files: e.querySelector(".taskmode-files")?.textContent || "" })).catch(() => ({ text: "", files: "" }));
+    check("a hidden collaborator can still be opened from its lead", /share of/i.test(sharePanel.text), sharePanel.text.slice(0, 120));
+    check("the opened share lists the files it owns", /src\/api/.test(sharePanel.files), sharePanel.files);
 
     // ---- the timed task's panel -------------------------------------------------------------------
     await page.click('[data-thread-id="t-timed"]');
@@ -175,13 +188,17 @@ async function main() {
     // ---- the composer row: a real round-trip through the server ------------------------------------
     const durSel = ".composer-taskmode select[aria-label='Work window']";
     const agtSel = ".composer-taskmode select[aria-label='Agents']";
+    await waitForTaskModeSettings(page, "0", "1");
     check("the composer shows the task-mode row", !!(await page.$(durSel)) && !!(await page.$(agtSel)));
     check("it starts off (no time limit, 1 agent)", (await page.$eval(durSel, (e) => e.value)) === "0" && (await page.$eval(agtSel, (e) => e.value)) === "1");
     check("...and is visually quiet while off", !(await page.$eval(".composer-taskmode", (e) => e.className.includes("on"))));
 
     await page.selectOption(durSel, "480");
     await page.selectOption(agtSel, "3");
-    await page.waitForTimeout(600); // the value round-trips through settings.set → the server → the broadcast
+    await Promise.all([
+      waitForSettingsReloadSafe(DATA_DIR, "setting_task_duration_minutes", "480"),
+      waitForSettingsReloadSafe(DATA_DIR, "setting_task_agent_count", "3"),
+    ]);
     check("the row lights up once a mode is on", await page.$eval(".composer-taskmode", (e) => e.className.includes("on")));
     check("the duration select is lit", await page.$eval(durSel, (e) => e.className.includes("lit")));
     check("the agents select is lit", await page.$eval(agtSel, (e) => e.className.includes("lit")));
@@ -200,7 +217,10 @@ async function main() {
 
     // Clearing it must genuinely reset both, not just the one that was touched.
     await page.click(".taskmode-clear");
-    await page.waitForTimeout(600);
+    await Promise.all([
+      waitForSettingsReloadSafe(DATA_DIR, "setting_task_duration_minutes", "0"),
+      waitForSettingsReloadSafe(DATA_DIR, "setting_task_agent_count", "1"),
+    ]);
     await page.reload({ timeout: 45_000 });
     await page.waitForSelector(".composer-taskmode", { timeout: 45_000 });
     await waitForServerHello(page);
