@@ -308,7 +308,7 @@ async function main(): Promise<void> {
       const first = h.dispatch("first");
       const waiting = h.dispatch("waiting");
       const note = `steer me (${mode})`;
-      const res = await h.mgr.injectThread(waiting, note, mode, undefined, { retitle: false });
+      const res = await h.mgr.injectThread(waiting, note, mode);
       check(`${mode}: the inject was accepted`, res.ok === true, JSON.stringify(res));
       check(`${mode}: the task is still queued (state untouched)`, h.state(waiting) === "queued", `state=${h.state(waiting)}`);
       check(`${mode}: the message is buffered for the implementor`, (h.internals.directorNotes.get(waiting) ?? []).includes(note));
@@ -327,7 +327,7 @@ async function main(): Promise<void> {
       h.mgr.setSettings({ maxConcurrent: 1, maxConcurrentPerRepo: 0 });
       h.dispatch("first");
       const waiting = h.dispatch("waiting");
-      await h.mgr.injectThread(waiting, "do this too", "queue", undefined, { retitle: false });
+      await h.mgr.injectThread(waiting, "do this too", "queue");
       check("queue mode buffered it as a director note", (h.internals.directorNotes.get(waiting) ?? []).includes("do this too"));
       check(
         "queue mode did NOT invent a QA fix-handoff",

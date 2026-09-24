@@ -105,7 +105,7 @@ import { buildGitProgressBlock, workspaceGitFingerprint } from "./gitProgress.js
 import { ROUTE_POLICY_VERSION, selectRoute } from "./routeSelection.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, runGit, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
-import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
+import { titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { tokenShiftReport, type TokenShiftReport } from "./usageWindows.js";
 import { isCapacityStallPark, MAX_CAPACITY_STALL_RESUMES } from "./capacityStall.js";
@@ -6651,15 +6651,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     // Neither a standing owner directive nor a new objective: this is the watchdog's own model-generated
     // correction, aimed at the live agent it just checked (the guard above refuses to send one when
-    // nothing is live). `retitle: false` matches injectSupervisorInstruction — steering must not rename
-    // the owner's lane; without it a stall nudge relabelled the card "You appear stalled - report your
-    // current status."
-    return this.injectThread(threadId, message, "interrupt", undefined, { standing: false, retitle: false });
+    // nothing is live). Steering must not rename the owner's lane.
+    return this.injectThread(threadId, message, "interrupt", undefined, { standing: false });
   }
 
-  /** An authenticated Supervisor-chat instruction uses the ordinary task injection machinery but is
-   * not a new objective, so it must not auto-retitle the lane. The conversational supervisor has no
-   * direct runner access; this is its only steering seam. */
+  /** An authenticated Supervisor-chat instruction uses the ordinary task injection machinery.
+   * The conversational supervisor has no direct runner access; this is its only steering seam. */
   canInjectSupervisorInstruction(threadId: string): boolean {
     const thread = this.db.getThread(threadId);
     if (!thread || !["planning", "researching", "implementing", "qa", "reviewing", "awaiting_user"].includes(thread.state)) return false;
@@ -6694,7 +6691,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       : state === "reviewing" || this.autoReviewOwns(threadId)
         ? "reviewer"
         : "implementor";
-    return this.injectThread(threadId, `Supervisor instruction from the owner: ${message}`, mode, undefined, { retitle: false, recipient });
+    return this.injectThread(threadId, `Supervisor instruction from the owner: ${message}`, mode, undefined, { recipient });
   }
 
   /** Supervisor notices are Discord-only. They never spill into the generic webhook while the separately
@@ -11062,7 +11059,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     message: string,
     mode: "append" | "interrupt" | "queue",
     images?: ImageAttachment[],
-    options: { retitle?: boolean; recipient?: "implementor" | "qa" | "reviewer"; standing?: boolean } = {},
+    options: { recipient?: "implementor" | "qa" | "reviewer"; standing?: boolean } = {},
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (thread && this.settings().manualSupervisionEnabled &&
@@ -11086,12 +11083,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (thread && !qaBypassRequested && options.standing !== false && message.trim()) {
       this.recordStandingDirective(threadId, message.trim());
     }
-    // Auto-retitle the lane to reflect the LATEST directive — the user runs several tasks at once and
-    // loses track when a lane's scope drifts from its original title. Fire-and-forget (void): the
-    // model call must never block, slow, or throw into the inject path. Covers every inject branch
-    // below (live, QA-forward, pre-implementor buffer, resume, cold-resume) from this one spot.
-    // A control-only "finish without QA" instruction is not a new task objective. Retitling the card to
-    // that sentence hides the actual work title and makes this control flow unnecessarily confusing.
     // Persist injected images as attachments so the feed can render them as thumbnails (the blocks
     // sent to the model are transient). Lazy + memoized: only the branch that actually echoes a feed
     // message calls it, so the cold-resume path (which adds no feed row) never orphans attachment
@@ -11116,7 +11107,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (thread && mode !== "queue" && options.recipient === "qa" && thread.state !== "qa" && !this.liveQa.has(threadId)) {
       return this.routeReviewRecipientRace(thread, "qa", mode, message, injectRefs(), images);
     }
-    if (thread && !qaBypassRequested && options.retitle !== false) void this.retitleFromInjection(threadId, message);
     // Queue mode: DON'T touch the implementor's current turn — hold the message until it reaches its
     // hand-off boundary, where drainQueuedImplementor gives it to the implementor before QA. A live
     // implementor OR the QA stage (implementor stopped for review, about to re-run on a bounce or settle
@@ -11543,14 +11533,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.resumeThread(threadId, message, true);
   }
 
-  /** Regenerate a task's board title from a freshly-injected directive (short → verbatim, longer →
-   *  a ≤8-word Haiku summary), then broadcast the rename so the lane updates live. Best-effort: any
-   *  failure is swallowed and the title simply stays as-is — this must never disturb the inject path. */
-  private async retitleFromInjection(threadId: string, message: string): Promise<void> {
-    if (this.restartDrainActive()) return;
-    await this.applyRetitle(threadId, await titleFromInjection(message, this.accounts.auxToken()).catch(() => null), "injection");
-  }
-
   /** Give a skip-director task a real board title (short → verbatim, longer → a ≤8-word Haiku summary)
    *  in place of the truncated first line it was dispatched with. Best-effort and fired after dispatch,
    *  so it never blocks the pipeline; gated by the skipDirectorRetitle setting at the call site. */
@@ -11784,7 +11766,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // markInterrupted flips the thread to "failed" first, so that routes through the branch below.
     if (thread.state === "qa" || (thread.state === "awaiting_user" && this.liveQa.has(threadId))) {
       if (message?.trim()) {
-        return this.injectThread(threadId, message, "append", undefined, { retitle: false });
+        return this.injectThread(threadId, message, "append");
       }
       return { ok: true, state: thread.state };
     }
@@ -11796,7 +11778,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // goes to whichever agent is actually live; a bare Resume is a no-op (the episode settles the task).
     if (thread.state === "reviewing" || this.autoReviewOwns(threadId)) {
       if (message?.trim()) {
-        return this.injectThread(threadId, message, "append", undefined, { retitle: false });
+        return this.injectThread(threadId, message, "append");
       }
       return { ok: true, state: thread.state };
     }
@@ -13588,11 +13570,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // `standing: false` — a critical finding is another AGENT's urgent note to the implementor that is
       // live right now (this method returns early when none is), including a cross-task notify_thread.
       // It is not owner policy, so it must not be pinned into every later kickoff as an owner directive.
-      // `retitle: false` for the same reason: it is not a change of objective, and letting it through
-      // renamed the owner's task card to the finding text ("The login test is failing right now").
       void this.injectThread(finding.threadId, `${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`, "interrupt", undefined, {
         standing: false,
-        retitle: false,
       });
       this.db.markFindingRouted(finding.id);
     } else if (finding.severity === "warning") {

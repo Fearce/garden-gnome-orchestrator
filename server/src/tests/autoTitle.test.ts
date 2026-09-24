@@ -1,7 +1,7 @@
 // Board titles must HINT at the work, never comment on it. Dated ledger of the real titles that went
 // wrong — paste the observed string in verbatim when a new one appears, and watch it fail first.
 import assert from "node:assert/strict";
-import { looksLikeCommentary, titleFromBrief, titleFromInjection } from "../orchestrator/titleFromInjection.js";
+import { looksLikeCommentary, titleFromBrief } from "../orchestrator/titleFromInjection.js";
 
 // 2026-08-14, thread e26b5a50 @ D:\WowPs — a World of Warcraft server bug reported in game terms.
 // The titler answered the "what a coding task is being asked to do" framing by disputing it.
@@ -92,12 +92,6 @@ assert.match(sent(1), /commented on the request instead of labelling it/);
 stubModel([REAL_BAD, "This is still not a coding task"]);
 assert.equal(await titleFromBrief(OBSERVED_BRIEF, "stub-token"), null, "a second commentary must not become the title");
 assert.equal(sentPrompts.length, 2, "exactly one corrective retry, then give up");
-
-// The injection path shares the rules and the guard.
-stubModel([REAL_BAD, REAL_BAD]);
-assert.equal(await titleFromInjection(OBSERVED_BRIEF, "stub-token"), null);
-assert.doesNotMatch(sent(0), /a coding task is now being asked/);
-assert.match(sent(0), /never judge, classify, refuse/);
 
 globalThis.fetch = realFetch;
 console.log("autoTitle: commentary guard, corrective retry and neutral title framing verified");

@@ -376,7 +376,6 @@ async function testInjectReachesTheRound(): Promise<void> {
   const id = seedAcceptedTask(db, workspace, true); // 'implementing' — the state the round really holds
   h.mgr.selfImproving.add(id); // the episode runSelfImprovement opens
 
-  h.mgr.retitleFromInjection = async (): Promise<void> => {}; // real one is a voided model call — keep the gate free + offline
   let spawned = 0;
   h.mgr.resumeImplementorOnly = async (): Promise<void> => {
     spawned++;

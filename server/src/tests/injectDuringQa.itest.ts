@@ -204,8 +204,7 @@ function makeHarness(): Harness {
   };
 }
 
-/** Every inject fires an auto-retitle that is deliberately un-awaited (`void`), so it lands a tick or two
- *  after the call returns. Yield to it before closing the DB, or its write throws into the next test. */
+/** Let queued async delivery work settle before closing the DB. */
 const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 25));
 
 function seedTask(h: Harness): string {
@@ -310,6 +309,7 @@ async function main(): Promise<void> {
       check("the QA interrupt feed omits routine review-injection lifecycle spam", !feed.some((c) => /\[(accepted|queued|delivered|handled)\]|✓ RI-/.test(c)), JSON.stringify(feed));
       check("the durable QA supersede marker was cleared after resume", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
       await settle();
+      check("interrupt injection kept the task title", h.db.getThread(id)?.title === "mock qa-inject task", h.db.getThread(id)?.title);
     } finally {
       h.dispose();
     }
@@ -333,6 +333,7 @@ async function main(): Promise<void> {
       check("it was queued for the implementor too", h.drained.some((q) => q.some((m) => m.includes("offhand slot"))), JSON.stringify(h.drained));
       check("append did not stop the first QA run", agents[0]!.stops === 0 && !agents[0]!.stopped, `stops=${agents[0]!.stops}`);
       await settle();
+      check("append injection kept the task title", h.db.getThread(id)?.title === "mock qa-inject task", h.db.getThread(id)?.title);
     } finally {
       h.dispose();
     }
@@ -371,6 +372,7 @@ async function main(): Promise<void> {
       check("that one line carries the owner instruction", !!cInterrupt[0]?.includes("addon options"), JSON.stringify(cInterrupt[0] ?? null));
       check("the QA-fix-handoff interrupt omits routine review-injection lifecycle spam", !cFeed.some((c) => /\[(accepted|queued|delivered|handled)\]|✓ RI-/.test(c)), JSON.stringify(cFeed));
       await settle();
+      check("injection during the handoff kept the task title", h.db.getThread(id)?.title === "mock qa-inject task", h.db.getThread(id)?.title);
     } finally {
       h.dispose();
     }
@@ -493,7 +495,7 @@ async function main(): Promise<void> {
       h.internals.liveReviewerRunId.set(id, run.id);
       h.internals.reviewing.add(id);
 
-      const r = await h.mgr.injectThread(id, "use the new reviewer instruction before deciding", "append", undefined, { retitle: false });
+      const r = await h.mgr.injectThread(id, "use the new reviewer instruction before deciding", "append");
       const row = h.internals.reviewInjections.listThread(id)[0] as { reviewerRunId: string | null; status: string };
       check("the CLI-backed review inject was accepted", r.ok && r.state === "reviewing", JSON.stringify(r));
       check("delivery still names the exact persisted reviewer run", row.status === "delivered_reviewer" && row.reviewerRunId === run.id, JSON.stringify(row));
@@ -998,7 +1000,7 @@ async function main(): Promise<void> {
       check("the resumed implementor settled the task done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
       check("the supersede handoff was consumed", !h.db.getThreadStageOutputs(id).qaSuperseded, JSON.stringify(h.db.getThreadStageOutputs(id)));
       check("the bypass remains durable after settlement", typeof h.db.getThreadStageOutputs(id).ownerQaBypassedAt === "number", JSON.stringify(h.db.getThreadStageOutputs(id)));
-      check("the no-QA control directive did not auto-retitle the card", h.db.getThread(id)?.title === "mock qa-inject task", h.db.getThread(id)?.title);
+      check("the no-QA control directive kept the task title", h.db.getThread(id)?.title === "mock qa-inject task", h.db.getThread(id)?.title);
     } finally {
       h.dispose();
     }

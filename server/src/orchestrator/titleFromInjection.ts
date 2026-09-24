@@ -1,15 +1,11 @@
-// Derive a concise board title from raw prose — used in two places, both best-effort:
-//   • titleFromInjection: after the director injects a directive into a running task, so a lane whose
-//     scope drifted (created "Fix the login redirect bug", re-injected to do unrelated work) stops
-//     showing the stale title. The user runs several tasks at once and loses track otherwise.
-//   • titleFromBrief: when the director is SKIPPED, the raw message is dispatched verbatim and the only
-//     title we'd otherwise have is its truncated first line ("trash"). This gives skip-director tasks a
-//     real board title without paying for the full Sonnet director — just one cheap Haiku call.
+// Derive a concise board title from raw prose when the director is SKIPPED. The only title we'd
+// otherwise have is its truncated first line ("trash"). This gives skip-director tasks a real
+// board title without paying for the full Sonnet director — just one cheap Haiku call.
 //
 // Short prose (< SHORT_WORD_LIMIT words) is used verbatim — no model latency for "re-run the tests".
 // Longer prose gets a single ≤8-word Haiku summary via the same raw OAuth fetch the resume compressor
 // uses (accountManager.auxToken()). Any failure (no token, network, non-200) returns null so the caller
-// simply leaves the title unchanged — this is best-effort, never blocks the inject or dispatch path.
+// simply leaves the title unchanged — this is best-effort, never blocks dispatch.
 // A summary that comments on the request rather than naming it counts as a failure too (see COMMENTARY):
 // it gets one corrective retry, then falls back to the raw first line the caller already has.
 
@@ -25,7 +21,6 @@ type Block = { type?: string; text?: string };
 // it's a gaming bug report about World of…". The owner wants a hint at the work, not an opinion about it.
 const TITLE_RULES = `This is a label on a card, not a reply to the person: never judge, classify, refuse, or remark on what you are given, and never say what it is not. However it is worded — a bug report, a complaint, a symptom described in a product's own terms, a rant — it is real work someone is doing, so just name it, in the requester's own vocabulary. Output ONLY the label: no quotes, no surrounding punctuation, no trailing period, no "Task:" prefix. Prefer imperative voice`;
 
-const INJECTION_PROMPT = `You are relabelling a card on a work board. In 8 words or fewer, name what the card is now being asked to do. ${TITLE_RULES} (e.g. "Re-run integration tests after the rename"). The directive follows:`;
 const BRIEF_PROMPT = `You are labelling a card on a work board. In 8 words or fewer, name what is being asked for. ${TITLE_RULES} (e.g. "Add a dark-mode toggle to settings"). The request follows:`;
 const RETRY_SUFFIX = `\nYour previous attempt commented on the request instead of labelling it. Do not describe or categorise the request — name the work, and nothing else.`;
 
@@ -149,13 +144,8 @@ async function autoTitle(message: string, token: string | undefined, prompt: str
   return retry && !looksLikeCommentary(retry) ? clampToWord(retry) : null;
 }
 
-/** A new board title summarising the latest injected directive, or null to leave the title unchanged. */
-export function titleFromInjection(message: string, token: string | undefined): Promise<string | null> {
-  return autoTitle(message, token, INJECTION_PROMPT);
-}
-
 /** A board title for a skip-director dispatch, whose raw message is the whole brief, or null to keep the
- *  caller's fallback (the truncated first line). Same verbatim-short / Haiku-long behaviour as injection. */
+ *  caller's fallback (the truncated first line). Short prose stays verbatim; longer prose uses Haiku. */
 export function titleFromBrief(message: string, token: string | undefined): Promise<string | null> {
   return autoTitle(message, token, BRIEF_PROMPT);
 }
