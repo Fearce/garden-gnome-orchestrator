@@ -701,6 +701,12 @@ button { font-family: inherit; cursor: pointer; }
   .transcript { min-height: clamp(0px, calc(30vh - 120px), 240px); }
   .composer-options { min-height: 56px; }
 }
+@media (max-height: 480px) and (max-width: 899.98px),
+       (max-height: 480px) and (pointer: coarse) and (max-width: 1365.98px) {
+  /* Some phone keyboards leave less rail height than the pinned composer needs. Keep the send and
+     repository controls reachable by letting the rail scroll as a whole on these short screens. */
+  .rail { overflow-y: auto; }
+}
 .recent-repos-label {
   font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint);
   margin-right: 2px;

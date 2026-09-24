@@ -286,6 +286,28 @@ async function drivePass(page, { name, width, height }) {
   });
   check(`${name}: with a keyboard up (560px tall) the repo row stays fully visible`, short.reposH > 0 && short.reposShown >= short.reposH, JSON.stringify(short));
   check(`${name}: …and Send stays inside the rail`, short.sendBottom > 0 && short.sendBottom <= short.railBottom, JSON.stringify(short));
+  // On very short phones, the rail header + pinned composer can outgrow the rail itself. It must
+  // become a user-scrollable region so the repo row and Send can still be reached instead of clipped.
+  await page.setViewportSize({ width: 390, height: 450 });
+  if (width >= 900) await page.tap('.mobile-nav .mnav-btn:has-text("Director")');
+  await page.waitForTimeout(300);
+  const tiny = await page.evaluate(() => {
+    const rail = document.querySelector(".rail"), repos = document.querySelector(".recent-repos.compact");
+    const send = document.querySelector(".composer .btn.primary, .composer button[type=submit], .composer .send-btn");
+    if (!rail || !repos || !send) return { missing: true };
+    const rr = rail.getBoundingClientRect();
+    const canScroll = ["auto", "scroll"].includes(getComputedStyle(rail).overflowY) && rail.scrollHeight > rail.clientHeight + 1;
+    const contained = (el) => { const r = el.getBoundingClientRect(); return r.top >= rr.top && r.bottom <= rr.bottom; };
+    if (!contained(send) && canScroll) rail.scrollTop = rail.scrollHeight;
+    const afterRail = rail.getBoundingClientRect(), afterRepos = repos.getBoundingClientRect(), afterSend = send.getBoundingClientRect();
+    return {
+      railHeight: Math.round(afterRail.height), overflowY: getComputedStyle(rail).overflowY,
+      canScroll, repoHeight: Math.round(afterRepos.height),
+      repoVisible: Math.round(Math.max(0, Math.min(afterRail.bottom, afterRepos.bottom) - Math.max(afterRail.top, afterRepos.top))),
+      sendVisible: afterSend.top >= afterRail.top && afterSend.bottom <= afterRail.bottom,
+    };
+  });
+  check(`${name}: at 390×450, repo chips and Send remain reachable`, !tiny.missing && tiny.repoHeight > 0 && tiny.repoVisible >= tiny.repoHeight && tiny.sendVisible, JSON.stringify(tiny));
   await page.setViewportSize({ width, height });
   await page.waitForTimeout(300);
   if (width < 900) await page.tap('.mobile-nav .mnav-btn:has-text("Tasks")');
