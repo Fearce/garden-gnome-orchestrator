@@ -348,7 +348,7 @@ function TaskMode({ thread }: { thread: Thread }) {
 
       {collaborators.length ? (
         <div className="taskmode-row">
-          <span className="taskmode-key mono">agents</span>
+          <span className="taskmode-key mono">{thread.agentCount === 1 ? "past agent" : "agents"}</span>
           <span className="taskmode-val taskmode-collabs">
             {collaborators.map((c) => (
               <button
