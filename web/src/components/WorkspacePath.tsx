@@ -9,8 +9,8 @@ import { useStore } from "../store.js";
  */
 
 /** Split a path into the dimmed parent and the bright leaf folder that the chip highlights. The leaf
- *  keeps its leading separator so it reads naturally, and it's the part the user scans for, so it is
- *  never truncated; the parent is what gives way when space is tight. */
+ *  keeps its leading separator so it reads naturally. The parent gives way first in a narrow chip;
+ *  the full path remains in the button's label and tooltip. */
 export function splitWorkspace(p: string): { parent: string; leaf: string } {
   const norm = p.replace(/[\\/]+$/, "");
   const i = Math.max(norm.lastIndexOf("\\"), norm.lastIndexOf("/"));

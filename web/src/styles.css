@@ -1718,7 +1718,8 @@ button { font-family: inherit; cursor: pointer; }
 @media (prefers-reduced-motion: reduce) { .card-drag-overlay .card { transform: none; } }
 .card .title { font-size: 15px; font-weight: 600; line-height: 1.3; padding-right: 22px; }
 /* The target repo is a primary scan target (which task to open/resume), so it's a distinct chip:
-   the repo folder (leaf) is bright + bold and never truncates; the parent path dims and gives way. */
+   the repo folder (leaf) is bright + bold; the parent path gives way first, and only a folder name
+   wider than the card itself is ellipsized. The button tooltip keeps the full path. */
 /* Unscoped on purpose: one <WorkspacePath> button serves the board card, the scheduled-task card and
    the detail header, so the chip cannot drift between them. Clicking it opens the folder in the
    host's file manager, so it needs a click affordance the card underneath doesn't already give:
@@ -1727,7 +1728,7 @@ button { font-family: inherit; cursor: pointer; }
    would dissolve into it. */
 .ws-path {
   appearance: none; margin: 0; text-align: left; color: inherit;
-  display: flex; align-items: center; gap: 5px; max-width: 100%; overflow: hidden;
+  display: flex; align-items: center; gap: 5px; min-width: 0; max-width: 100%; overflow: hidden;
   font-family: var(--font-mono); font-size: 11.5px;
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 3px 8px;
   cursor: pointer; transition: border-color 0.14s, color 0.14s;
@@ -1735,9 +1736,10 @@ button { font-family: inherit; cursor: pointer; }
 .ws-path:hover { border-color: color-mix(in oklch, var(--accent) 55%, transparent); }
 .ws-path:hover .ws-parent { color: var(--text-dim); }
 .ws-path:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.card > .ws-path, .sched-card > .ws-path { align-self: flex-start; }
 .ws-ico { flex: 0 0 auto; color: var(--accent); }
-.ws-parent { color: var(--text-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.14s; }
-.ws-leaf { flex: 0 0 auto; color: var(--text); font-weight: 700; white-space: nowrap; }
+.ws-parent { flex: 0 1000 auto; color: var(--text-faint); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color 0.14s; }
+.ws-leaf { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text); font-weight: 700; white-space: nowrap; }
 /* Detail-panel header: the same button, minus the pill. The header line under the title stays the
    quiet mono meta it has always been (a second chip up there beside the state badges would be
    noise); the folder icon is the only added mark, and hover brightens the path itself. */
@@ -2839,7 +2841,7 @@ body.dl-resizing { user-select: none; }
 .sched-view { display: flex; flex-direction: column; min-height: 0; }
 .sched-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 
-.sched-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.sched-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: 12px; }
 
 .sched-card {
   background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-lg);
@@ -4069,7 +4071,7 @@ button.note-from:hover { color: var(--text-dim); }
 .cowork-board { margin-top: 22px; padding-top: 12px; border-top: 1px solid var(--line); }
 .cowork-board-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 11px; }
 .cowork-board-head h3 { margin: 0; color: var(--text-faint); font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
-.cowork-board-lanes { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 13px; align-content: start; }
+.cowork-board-lanes { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 13px; align-content: start; }
 .cowork-card {
   display: flex; flex-direction: column; overflow: hidden; position: relative;
   border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-1);
