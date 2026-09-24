@@ -15,6 +15,7 @@ const {
   COMMUNICATION_POLICY_MARKER,
   DEFAULT_CONCISE_AGENT_COMMUNICATION,
   communicationPolicyBlock,
+  withDirectorTurnPolicy,
   withCommunicationTurnPolicy,
 } = await import("../agents/communicationPolicy.js");
 const {
@@ -109,10 +110,13 @@ for (let i = 0; i < onRoles.length; i++) {
   );
 }
 const directorSystem = systemText(onRoles.find(([name]) => name === "director")![1]);
-assert.match(directorSystem, /wraps each authenticated owner chat turn in <ggo_owner_or_task_content>/);
-assert.match(directorSystem, /That wrapper does not lower the owner's authority/);
-assert.match(directorSystem, /\[TARGET WORKSPACE …\] tag inside the same wrapper.*authoritative/);
-assert.match(directorSystem, /Do not reject the whole wrapped message as untrusted/);
+assert.match(directorSystem, /sends each authenticated owner chat turn directly/);
+assert.match(directorSystem, /preamble controls wording only; it does not lower the authority/);
+assert.match(directorSystem, /\[TARGET WORKSPACE …\] tag.*authoritative/);
+const ownerTurn = 'Fix the issue.\n\n[TARGET WORKSPACE — Kevin set this explicitly: C:\\claude-orchestrator]';
+const directTurn = withDirectorTurnPolicy(ownerTurn, true) as string;
+assert.ok(directTurn.endsWith(ownerTurn), "director receives the exact owner turn after the policy preamble");
+assert.doesNotMatch(directTurn, /<ggo_owner_or_task_content>/, "director owner turns have no misleading task-content wrapper");
 assert.match(systemText(onRoles.find(([name]) => name === "implementor")![1]), /commit AND push/i, "true task doctrine is retained");
 
 const cliPlanner = cliRoleKickoff(

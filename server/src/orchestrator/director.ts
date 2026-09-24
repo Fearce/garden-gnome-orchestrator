@@ -15,7 +15,7 @@ import { normalizeDuration } from "./timedTasks.js";
 import { clampAgentCount } from "./shotgun.js";
 import { existsSync } from "node:fs";
 import { DIRECTOR_CLI_PROTOCOL, DIRECTOR_CLI_SCHEMA, executeDirectorCliAction, type DirectorCliAction } from "./directorCliBridge.js";
-import { withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
+import { withDirectorTurnPolicy } from "../agents/communicationPolicy.js";
 import { normalizeDirectorDirectives, withDirectorDirectivesUpdate } from "../agents/directorDirectives.js";
 
 const MAX_DIRECTOR_FAILOVERS = 6;
@@ -175,7 +175,7 @@ export class Director {
       void this.start(content);
     } else if (live) {
       const turn = this.withDirectivesUpdate(this.activeSessionKey!, content);
-      this.run!.send(withCommunicationTurnPolicy(turn, this.api.settings().conciseAgentCommunication));
+      this.run!.send(withDirectorTurnPolicy(turn, this.api.settings().conciseAgentCommunication));
     } else {
       // Neutralize a finished run's not-yet-delivered onEnd callback before starting the next turn.
       // The callback's `this.run !== run` ownership guard will now leave the new pending prompt alone.
@@ -383,7 +383,7 @@ export class Director {
     this.run = run;
     this.publishStatus();
     this.wire(run, chosen);
-    const instructed = withCommunicationTurnPolicy(turn, conciseCommunication);
+    const instructed = withDirectorTurnPolicy(turn, conciseCommunication);
     const content = resume ? instructed : this.bootstrapContent(instructed, cfg.systemPrompt, isCli);
     run.start(content);
   }

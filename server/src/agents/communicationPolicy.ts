@@ -53,3 +53,11 @@ export function withCommunicationTurnPolicy(content: UserContent, enabled: boole
     { type: "text", text: "</ggo_owner_or_task_content>" },
   ];
 }
+
+/** The Director receives authenticated owner chat, not an assigned task brief. Keep that chat direct:
+ * the task-content wrapper led the model to reject owner instructions and server-added workspace tags. */
+export function withDirectorTurnPolicy(content: UserContent, enabled: boolean): UserContent {
+  const control = communicationPolicyBlock(enabled);
+  if (typeof content === "string") return `${control}\n\n${content}`;
+  return [{ type: "text", text: control }, ...content];
+}
