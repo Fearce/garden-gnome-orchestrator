@@ -150,6 +150,7 @@
     "test:deliverables": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/deliverables-ui.test.tsx && tsx --tsconfig ../web/tsconfig.json ../web/scripts/deliverables-retry-reset.test.ts",
     "test:run-attribution": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/run-attribution-ui.test.tsx",
     "test:collaborator-feed": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/collaborator-feed-ui.test.tsx",
+    "test:collapse-shotgun-task": "node scripts/collapse-shotgun-task.test.cjs",
     "test:deliverables-probe": "node scripts/deliverables-probe.test.cjs",
     "test:elapsed-probe": "node scripts/probe-elapsed.test.cjs",
     "test:reveal-workspace": "tsx src/tests/revealWorkspace.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/workspace-path-ui.test.tsx",
