@@ -236,10 +236,35 @@ export function collaboratorSettled(state: string): boolean {
 /** The ownership contract prepended to every collaborator's brief — and to the lead's own share, which
  *  is under exactly the same constraint. This is the single place the rule is worded, so the lead and
  *  the collaborators cannot be told different things. */
-export function ownershipBlock(mine: ShotgunAssignment, peers: { title: string; files: string[]; name?: string }[]): string {
+export interface OwnershipPeer {
+  title: string;
+  files: string[];
+  name?: string;
+  lead?: boolean;
+}
+
+/** Whether the agent reading the block is the lead. The lead must be TOLD so: with the collaborator
+ *  wording it read "a lead agent reconciles everything" as someone else, and spent a live task posting
+ *  "Lead — …" requests for an unowned file into a room where nobody would ever answer. */
+export type OwnershipPosition = { lead: true } | { lead: false; leadName?: string; leadTitle?: string };
+
+export function ownershipBlock(mine: ShotgunAssignment, peers: OwnershipPeer[], position: OwnershipPosition = { lead: false }): string {
   const peerLines = peers.length
-    ? peers.map((p) => `- ${p.name ? `${p.name} — ` : ""}"${p.title}" owns: ${p.files.join(", ")}`).join("\n")
+    ? peers.map((p) => `- ${p.name ? `${p.name} — ` : ""}"${p.title}"${p.lead ? " (the LEAD)" : ""} owns: ${p.files.join(", ")}`).join("\n")
     : "- (none yet — the other collaborators are still starting)";
+  const leadRef = !position.lead && position.leadName ? `the lead agent (${position.leadName})` : "the lead agent";
+  // The name is resolved before any agent is live, and a clash with another live agent renames it at
+  // start, so the task title is the stable handle.
+  const leadHandle =
+    !position.lead && position.leadTitle
+      ? ` The lead is the implementor on "${position.leadTitle}". Office names can change when agents start, so if \`office_look\` shows a different name for it, use that one.`
+      : "";
+  const editRule = position.lead
+    ? "- Edit inside your share, plus any path NO other agent owns — as the lead, unowned paths are yours. Announce such an edit in the office chat (`chat_post(scope:\"team\")`) first. Never edit a path another agent owns; ask them in the office chat instead."
+    : `- Edit ONLY inside your share. If your work genuinely requires a change outside it, say so in the office chat (\`chat_post(scope:"team")\`) — to the path's owner, or to ${leadRef} for a path no one owns — and let them make it. Do not reach in.`;
+  const finishRule = position.lead
+    ? "- You are the LEAD of this task. No other agent is \"the lead\", so never address requests to one. Teammates bring you requests for paths outside their shares; answer and act on them. Do NOT declare the overall task finished yet. Once every collaborator has stopped, you get an integration pass to reconcile the combined tree, and then a QA pass reviews it."
+    : `- Do NOT run the whole task's final integration, and do NOT declare the overall task finished — ${leadRef} reconciles everything and a QA pass reviews the combined result. Finish YOUR share properly and stop.${leadHandle}`;
   return [
     "## 🔀 You are one of several agents working this repository RIGHT NOW",
     "",
@@ -250,11 +275,11 @@ export function ownershipBlock(mine: ShotgunAssignment, peers: { title: string; 
     `**Owned by other agents — do NOT edit these, even to fix something obviously wrong in them:**\n${peerLines}`,
     "",
     "Rules for working in a shared tree:",
-    "- Edit ONLY inside your share. If your work genuinely requires a change outside it, say so in the office chat (`chat_post(scope:\"team\")`) and let the owner of that path make it — do not reach in.",
+    editRule,
     "- Stage your OWN files by path when you commit (`git add <your paths>`), never `git add -A` or `git add .` — the tree contains teammates' uncommitted work and a broad add commits it under your message.",
     "- Re-read `git status`/`git diff` before every commit and confirm the hunks are yours.",
     "- Coordinate in the office: `office_look` to see who is here, `chat_read(scope:\"team\")` for what they have said, `chat_post(scope:\"team\")` to flag anything that affects them (a shared interface you changed, a build you broke, a dependency you added).",
-    "- Do NOT run the whole task's final integration, and do NOT declare the overall task finished — a lead agent reconciles everything and a QA pass reviews the combined result. Finish YOUR share properly and stop.",
+    finishRule,
   ].join("\n");
 }
 

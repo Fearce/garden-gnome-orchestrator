@@ -40,6 +40,7 @@ import {
   integrationBrief,
   isShotgun,
   ownershipBlock,
+  type OwnershipPeer,
   validateDecomposition,
   type CollaboratorOutcome,
   type ShotgunAssignment,
@@ -6271,11 +6272,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const siblings = this.db
       .listCollaborators(thread.parentId)
       .filter((t) => t.id !== thread.id && t.assignment)
-      .map((t) => ({ title: t.assignment!.title, files: t.assignment!.files }));
+      .map((t): OwnershipPeer => ({ title: t.assignment!.title, files: t.assignment!.files, name: this.officeName(t.id, "implementor") }));
     const lead = this.db.getThread(thread.parentId);
     const leadShare = this.db.getThreadStageOutputs(thread.parentId).shotgunAssignment;
-    if (lead && leadShare) siblings.unshift({ title: leadShare.title, files: leadShare.files });
-    return ownershipBlock(thread.assignment, siblings);
+    const leadName = this.officeName(thread.parentId, "implementor");
+    if (lead && leadShare) siblings.unshift({ title: leadShare.title, files: leadShare.files, name: leadName, lead: true });
+    return ownershipBlock(thread.assignment, siblings, { lead: false, leadName, leadTitle: lead?.title });
   }
 
   /** Rehydrate images from their durable feed attachments after a server restart. In-memory blocks are
@@ -9280,7 +9282,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return [
       kickoff,
       "",
-      ownershipBlock(mine, peers.map((assignment) => ({ title: assignment.title, files: assignment.files }))),
+      ownershipBlock(mine, peers.map((assignment) => ({ title: assignment.title, files: assignment.files })), { lead: true }),
       "",
       "## Your share of this task",
       mine.objective,
@@ -9295,12 +9297,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       { id: "lead", assignment: lead },
       ...children.filter((child) => child.assignment).map((child) => ({ id: child.id, assignment: child.assignment! })),
     ];
+    const leadId = children[0]?.parentId;
+    const leadName = leadId ? this.officeName(leadId, "implementor") : undefined;
+    const leadTitle = leadId ? this.db.getThread(leadId)?.title : undefined;
     for (const child of children) {
       if (!child.assignment) continue;
       const peers = shares
         .filter((share) => share.id !== child.id)
-        .map((share) => ({ title: share.assignment.title, files: share.assignment.files }));
-      this.shotgunOwnership.set(child.id, ownershipBlock(child.assignment, peers));
+        .map((share): OwnershipPeer => ({
+          title: share.assignment.title,
+          files: share.assignment.files,
+          name: share.id === "lead" ? leadName : this.officeName(share.id, "implementor"),
+          lead: share.id === "lead",
+        }));
+      this.shotgunOwnership.set(child.id, ownershipBlock(child.assignment, peers, { lead: false, leadName, leadTitle }));
     }
   }
 

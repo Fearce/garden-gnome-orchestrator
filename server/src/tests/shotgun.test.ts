@@ -178,6 +178,20 @@ check("forbids a broad `git add`", block.includes("git add -A") && block.include
 check("tells it not to declare the whole task done", block.toLowerCase().includes("do not declare the overall task finished"));
 check("points at the office for cross-share issues", block.includes('chat_post(scope:"team")'));
 check("degrades cleanly when no peers are known yet", ownershipBlock(A("api", ["src/api"]), []).includes("still starting"));
+// A lead handed the collaborator wording read "a lead agent reconciles everything" as someone else and
+// addressed "Lead — …" requests for an unowned file to nobody (live task 1a67d70b, 2026-09-24).
+const leadBlock = ownershipBlock(A("quests", ["src/quests"]), [{ title: "economy", files: ["src/economy"], name: "Tor" }], { lead: true });
+check("the lead is told it IS the lead", leadBlock.includes("You are the LEAD of this task") && !leadBlock.includes("a lead agent reconciles"));
+check("the lead may take unowned paths, never a peer's", leadBlock.includes("any path NO other agent owns") && leadBlock.includes("Never edit a path another agent owns"));
+check("the lead still does not declare the whole task done", leadBlock.toLowerCase().includes("do not declare the overall task finished"));
+const collabBlock = ownershipBlock(A("economy", ["src/economy"]), [{ title: "quests", files: ["src/quests"], name: "Lumi", lead: true }], { lead: false, leadName: "Lumi" });
+check("a collaborator is told who the lead is", collabBlock.includes("the lead agent (Lumi)") && collabBlock.includes('Lumi — "quests" (the LEAD)'));
+check("a collaborator sends unowned-path requests to the lead", collabBlock.includes("to the lead agent (Lumi) for a path no one owns"));
+check("a collaborator is not told it is the lead", !collabBlock.includes("You are the LEAD"));
+// The name is picked before agents go live and can be reassigned on a clash, so the lead's task title
+// is also given as a stable handle.
+const titledBlock = ownershipBlock(A("economy", ["src/economy"]), [], { lead: false, leadName: "Lumi", leadTitle: "Develop the bot" });
+check("a collaborator can find the lead by task title if its name changed", titledBlock.includes('the implementor on "Develop the bot"') && titledBlock.includes("office_look"));
 
 console.log("\n7 — the integration brief the lead receives");
 const brief = integrationBrief([

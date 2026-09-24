@@ -431,6 +431,11 @@ async function main(): Promise<void> {
       check("the lead's kickoff keeps the original brief", kickoff.includes("BASE KICKOFF"));
       check("...and gains its own share", kickoff.includes("build the api"));
       check("...and the ownership contract naming the peers' files", kickoff.includes("src/web") && kickoff.includes("docs"));
+      check("...and tells the lead it IS the lead", kickoff.includes("You are the LEAD of this task"));
+      const leadName = h.mgr.officeName(id, "implementor");
+      const held = h.internals.shotgunOwnership.get(kids[0]!.id) as string | undefined;
+      check("a spawned collaborator is told the lead by its office name", !!held && held.includes(`the lead agent (${leadName})`), held?.slice(-600));
+      check("...and is not told it is the lead", !!held && !held.includes("You are the LEAD"));
       check("a finding reports the split", h.db.listFindings(id).some((f) => f.summary.includes("Split across 3 agents")), h.db.listFindings(id).map((f) => f.summary).join(" | "));
 
       // Sticky: a resume must not re-decompose and spawn a SECOND set of agents onto the same tree.
@@ -801,6 +806,7 @@ async function main(): Promise<void> {
       check("...and its sibling's", block.includes("docs"));
       check("...and the LEAD's share, which is owned too", block.includes("src/api"), block.slice(0, 400));
       check("...and still carries the do-not-edit-outside rule", block.toLowerCase().includes("only inside your share"));
+      check("...and names the lead after a restart too", block.includes(`the lead agent (${h.mgr.officeName(lead, "implementor")})`) && block.includes("(the LEAD)"));
       check("a non-collaborator gets no block at all", h.internals.collaboratorOwnershipBlock(h.db.getThread(lead)!) === undefined);
       void k2;
     } finally {

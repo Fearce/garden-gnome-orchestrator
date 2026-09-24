@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore, type OutboundMessage } from "../store.js";
 import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
 import { agentName, isCollaborationRoom, repoRoom } from "../types.js";
@@ -6,6 +6,8 @@ import { canAutoReview, clock, formatDuration, FROZEN_CONTROL_TOOLTIP, isCapPark
 import { Countdown, Elapsed, RoleElapsed } from "../lib/timing.js";
 import { canOpenIde, ideWorkspaceTarget, threadOrigin } from "../lib/codeNav.js";
 import { roleModelSummary } from "../lib/runAttribution.js";
+import { collaboratorIdsOf, historyFloor, mergeCollaboratorFeeds } from "../lib/collaboratorFeed.js";
+import { useShallow } from "zustand/react/shallow";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { Gnome } from "./Gnome.js";
 import { Deliverables } from "./Deliverables.js";
@@ -267,6 +269,33 @@ function summarize(input: unknown): string {
 }
 
 
+const EMPTY_FEED: FeedItem[] = [];
+
+/** A shotgun lead's collaborator ids, with a stable identity while the set is unchanged (the `threads`
+ *  map changes on every task update). */
+function useCollaboratorIds(threads: Record<string, Thread>, id: string | null): string[] {
+  const key = useMemo(() => (id ? collaboratorIdsOf(threads, id).join(",") : ""), [threads, id]);
+  return useMemo(() => (key ? key.split(",") : []), [key]);
+}
+
+/** Load each collaborator's history, because only an opened task has its feed loaded and a
+ *  collaborator is never opened from the board. Opening the panel and every reconnect re-ask, since a
+ *  feed misses whatever arrived while the socket was down. */
+function useCollaboratorHistories(ids: string[]): void {
+  const connected = useStore((s) => s.connected);
+  const prefetch = useStore((s) => s.prefetchThreadHistory);
+  const stale = useRef(true);
+  useEffect(() => {
+    if (!connected) {
+      stale.current = true;
+      return;
+    }
+    if (!ids.length) return;
+    prefetch(ids, stale.current);
+    stale.current = false;
+  }, [ids, connected, prefetch]);
+}
+
 /** The task-mode strip: a timed task's window, and a shotgun task's collaborators.
  *
  *  Renders NOTHING for an ordinary task, which is most of them — this is progressive disclosure, not a
@@ -275,6 +304,7 @@ function summarize(input: unknown): string {
  */
 function TaskMode({ thread }: { thread: Thread }) {
   const select = useStore((s) => s.select);
+  const nameOverrides = useStore((s) => s.nameOverrides);
   // The stable `threads` map, then derive — a selector returning a fresh array would never be
   // reference-equal to the previous one and would re-render this panel forever (React #185).
   const threads = useStore((s) => s.threads);
@@ -329,7 +359,7 @@ function TaskMode({ thread }: { thread: Thread }) {
                 title={`${c.title} — ${stateLabel(c.state)}${c.assignment?.files.length ? `\nowns: ${c.assignment.files.join(", ")}` : ""}`}
               >
                 <span className="taskmode-collab-dot" aria-hidden="true" />
-                <span className="taskmode-collab-title">{c.title}</span>
+                <span className="taskmode-collab-title">{`${agentName(nameOverrides, c.id, "implementor")} · ${c.title}`}</span>
                 <span className="taskmode-collab-state">{stateLabel(c.state)}</span>
               </button>
             ))}
@@ -498,8 +528,8 @@ export function ThreadDetail() {
   const nameOverrides = useStore((s) => s.nameOverrides);
   const directorName = useStore((s) => s.settings.directorName);
   const showAgentModel = useStore((s) => s.settings.showAgentModel);
-  const historyHasMore = useStore((s) => (id ? s.threadHistoryHasMore[id] ?? false : false));
-  const historyLoading = useStore((s) => (id ? s.threadHistoryLoading[id] ?? false : false));
+  const historyHasMoreById = useStore((s) => s.threadHistoryHasMore);
+  const historyLoadingById = useStore((s) => s.threadHistoryLoading);
   const historyLoaded = useStore((s) => (id ? s.threadHistoryLoaded[id] ?? false : false));
   // The project chatroom for THIS task's repo, if one exists (≥2 participants ever collaborated here —
   // possibly in a PAST task, since the room persists). Repo-keyed so a fresh task on a repo with
@@ -530,7 +560,27 @@ export function ThreadDetail() {
   const lastSentRef = useRef(""); // last injected message, recalled with ↑ when the field is empty
 
   const thread = id ? threads[id] : undefined;
-  const persistedFeed = id ? feeds[id] ?? [] : [];
+  // A shotgun task's other agents are hidden child threads with no card of their own, so their work is
+  // shown here, in the lead's feed, under their own names.
+  const collabIds = useCollaboratorIds(threads, id);
+  useCollaboratorHistories(collabIds);
+  const leadFeed = (id ? feeds[id] : undefined) ?? EMPTY_FEED;
+  const groupIds = useMemo(() => (id ? [id, ...collabIds] : []), [id, collabIds]);
+  // Only this group's feeds: the whole map changes on every event for any task.
+  const collabFeeds = useStore(useShallow((s) => collabIds.map((c) => s.threadFeeds[c] ?? EMPTY_FEED)));
+  const collabHasMore = useStore(useShallow((s) => groupIds.map((t) => s.threadHistoryHasMore[t] ?? false)));
+  const mergedFeed = useMemo(() => {
+    if (!collabIds.length) return mergeCollaboratorFeeds(leadFeed, []);
+    const floor = historyFloor([leadFeed, ...collabFeeds].map((items, i) => ({ items, hasMore: collabHasMore[i] ?? false })));
+    return mergeCollaboratorFeeds(leadFeed, collabIds.map((threadId, i) => ({ threadId, items: collabFeeds[i]! })), floor);
+  }, [leadFeed, collabIds, collabFeeds, collabHasMore]);
+  const persistedFeed = mergedFeed.items;
+  const historyHasMore = groupIds.some((t) => historyHasMoreById[t] ?? false);
+  const historyLoading = groupIds.some((t) => historyLoadingById[t] ?? false);
+  const collabNameFor = useMemo(
+    () => new Map(collabIds.map((c) => [c, (role: Role) => (role === "director" ? directorName : agentName(nameOverrides, c, role))])),
+    [collabIds, nameOverrides, directorName],
+  );
   const taskMemos = id ? implementationMemos[id] ?? [] : [];
   const feed = useMemo(() => {
     if (!id) return persistedFeed;
@@ -557,10 +607,11 @@ export function ThreadDetail() {
   // agent.reasoning that clears the draft, so gate on trimmed text to avoid a stray 💭 bubble.
   const thinkingDraftRaw = id ? thinkingDrafts[id] : undefined;
   const thinkingDraft = thinkingDraftRaw?.text.trim() ? thinkingDraftRaw : undefined;
+  const collabDraftSig = collabIds.map((c) => `${drafts[c]?.text.length ?? 0}:${thinkingDrafts[c]?.text.length ?? 0}`).join(",");
 
   // Deliverables are a durable file index, intentionally independent of transcript retention. A long
   // task can trim old activity without hiding files the owner still needs to View or Download.
-  const deliverables = id ? threadDeliverables[id] ?? [] : [];
+  const deliverables = id ? [id, ...collabIds].flatMap((t) => threadDeliverables[t] ?? []) : [];
   const feedItems = useMemo(() => feed.filter((f) => !(f.kind === "finding" && f.finding.kind === "deliverable")), [feed]);
 
   const [roleFilter, setRoleFilter] = useState<Role | "all">("all");
@@ -603,9 +654,9 @@ export function ThreadDetail() {
 
   const runRole = useMemo(() => {
     const m: Record<string, Role> = {};
-    for (const r of Object.values(runs)) if (r.threadId === id) m[r.id] = r.role;
+    for (const r of Object.values(runs)) if (r.threadId === id || collabIds.includes(r.threadId)) m[r.id] = r.role;
     return m;
-  }, [runs, id]);
+  }, [runs, id, collabIds]);
 
   const counts = useMemo(() => {
     const c: Partial<Record<Role, number>> = {};
@@ -639,21 +690,22 @@ export function ThreadDetail() {
   const hiddenAbove = visible.length - windowed.length;
   // Reset the window when the viewed subset changes (task switch, filter, tools toggle).
   useEffect(() => setRenderCount(RENDER_WINDOW), [id, roleFilter, showTools]);
-  // After older rows are prepended, keep the same content under the viewport (no jump).
+  // After older rows are prepended, keep the same content under the viewport (no jump). A shotgun task
+  // pages several feeds at once, so hold the anchor until the last of them has answered.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const a = growAnchorRef.current;
-    if (el && a) {
+    if (el && a && !historyLoading) {
       el.scrollTop = el.scrollHeight - a.height + a.top;
       growAnchorRef.current = null;
     }
-  }, [renderCount, visible.length]);
+  }, [renderCount, visible.length, historyLoading]);
 
   // Stick to the bottom only when already near it, so reading an earlier agent
   // isn't yanked down when a live agent appends below.
   useEffect(() => {
     if (stickRef.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
-  }, [visible.length, draft, thinkingDraft]);
+  }, [visible.length, draft, thinkingDraft, collabDraftSig]);
   // Switching filter: jump to the start of a specific agent (read top-down), or to live for "all".
   useEffect(() => {
     const el = scrollRef.current;
@@ -716,28 +768,35 @@ export function ThreadDetail() {
   // restamped every earlier message with whatever the role ran last. A run the client doesn't hold
   // yields no label rather than a borrowed one. Keyed by a signature over this task's runs so the
   // returned lookup keeps a stable identity across renders (FeedRow is memoised on it).
-  const modelSig = showAgentModel ? threadRuns.map((r) => `${r.id}:${r.model}:${r.effort ?? ""}`).join("|") : "";
+  const labelledRuns = collabIds.length ? Object.values(runs).filter((r) => r.threadId === id || collabIds.includes(r.threadId)) : threadRuns;
+  const modelSig = showAgentModel ? labelledRuns.map((r) => `${r.id}:${r.model}:${r.effort ?? ""}`).join("|") : "";
   const modelFor = useMemo(() => {
     const byRun = new Map<string, string>();
     if (showAgentModel) {
-      for (const run of threadRuns) {
+      for (const run of labelledRuns) {
         const label = modelEffortLabel(run.model, run.effort);
         if (label) byRun.set(run.id, label);
       }
     }
     return (runId: string | undefined | null): string | undefined => (runId ? byRun.get(runId) : undefined);
-    // threadRuns is captured for the map build; modelSig is the real dependency (its data fingerprint).
+    // labelledRuns is captured for the map build; modelSig is the real dependency (its data fingerprint).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showAgentModel, modelSig]);
 
   // The agent-filter chip stands for a role's whole history rather than one message, so it names the
   // current model and counts the others when the role ran on several.
   const roleModelFor = useMemo(
-    () => (role: Role) => (showAgentModel ? roleModelSummary(threadRuns, role) : undefined),
+    () => (role: Role) => (showAgentModel ? roleModelSummary(labelledRuns, role) : undefined),
     // Same fingerprint dependency as modelFor above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [showAgentModel, modelSig],
   );
+
+  // A shotgun task's role chip filters every agent in that role, so it names them all: "Lumi +1".
+  const chipNames = (role: Role): { label: string; all: string[] } => {
+    const all = [nameFor(role), ...collabIds.filter((c) => labelledRuns.some((r) => r.threadId === c && r.role === role)).map((c) => agentName(nameOverrides, c, role))];
+    return { label: all.length > 1 ? `${all[0]} +${all.length - 1}` : all[0]!, all };
+  };
 
   const doInject = async (mode: "append" | "interrupt" | "queue") => {
     // Frozen tasks accept no manual inject/interrupt — the server auto-resumes them. Guard the handler
@@ -764,14 +823,20 @@ export function ThreadDetail() {
       setRenderCount((c) => c + RENDER_WINDOW);
     } else if (el.scrollTop < 240 && hiddenAbove === 0 && historyHasMore && !historyLoading && !growAnchorRef.current) {
       growAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
-      if (!loadOlderThreadHistory(id)) growAnchorRef.current = null;
+      if (!loadOlderForGroup()) growAnchorRef.current = null;
     }
   };
+
+  // Every agent in the group pages back; rows below the group's shared floor stay hidden until all of
+  // them have caught up (historyFloor), so the merged timeline never shows one agent alone.
+  function loadOlderForGroup(): boolean {
+    return groupIds.filter((t) => loadOlderThreadHistory(t)).length > 0;
+  }
 
   const loadEarlierHistory = () => {
     const el = scrollRef.current;
     if (el) growAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
-    if (!loadOlderThreadHistory(id)) growAnchorRef.current = null;
+    if (!loadOlderForGroup()) growAnchorRef.current = null;
   };
 
   const startResize = useColumnResize(
@@ -1010,18 +1075,19 @@ export function ThreadDetail() {
                 const roleRuns = threadRuns.filter((r) => r.role === role);
                 const r = latestRunOf(threadRuns, role);
                 const roleSummary = roleModelFor(role);
+                const names = chipNames(role);
                 return (
                   <button
                     key={role}
                     className={"fchip" + (roleFilter === role ? " on" : "")}
                     style={{ "--role": roleColor(role) } as CSSProperties}
                     onClick={() => setRoleFilter(role)}
-                    title={[role, nameFor(role), roleSummary?.title ?? roleSummary?.label].filter(Boolean).join(" · ")}
+                    title={[role, names.all.join(", "), roleSummary?.title ?? roleSummary?.label].filter(Boolean).join(" · ")}
                   >
                     <Gnome role={role} size={15} />
                     <span className="fchip-label">
                       <span className="fchip-role-full">
-                        <RoleLabel role={role} name={nameFor(role)} model={roleSummary?.label} modelTitle={roleSummary?.title} />
+                        <RoleLabel role={role} name={names.label} model={roleSummary?.label} modelTitle={roleSummary?.title} />
                       </span>
                       <span className="fchip-role-short">{role === "implementor" ? "impl" : role === "director" ? "dir" : role}</span>
                     </span>
@@ -1106,7 +1172,13 @@ export function ThreadDetail() {
             </button>
           )}
           {windowed.map((f) => (
-            <FeedRow key={feedKey(f)} item={f} nameFor={nameFor} modelFor={modelFor} />
+            <FeedRow
+              key={feedKey(f)}
+              item={f}
+              nameFor={collabNameFor.get(mergedFeed.sourceOf.get(f) ?? "") ?? nameFor}
+              modelFor={modelFor}
+              source={f.kind === "system" ? collabNameFor.get(mergedFeed.sourceOf.get(f) ?? "")?.("implementor") : undefined}
+            />
           ))}
           {showTools && thinkingDraft && (roleFilter === "all" || thinkingDraft.role === roleFilter) && (
             <div className="fi thinking draft" style={roleVar(thinkingDraft.role)}>
@@ -1129,6 +1201,38 @@ export function ThreadDetail() {
               <Markdown className="body" text={draft.text} />
             </div>
           )}
+          {collabIds.map((c) => {
+            const d = drafts[c];
+            const t = thinkingDrafts[c]?.text.trim() ? thinkingDrafts[c] : undefined;
+            const showThinking = showTools && t && (roleFilter === "all" || t.role === roleFilter);
+            const showDraft = d && (roleFilter === "all" || d.role === roleFilter);
+            if (!showThinking && !showDraft) return null;
+            return (
+              <Fragment key={`draft:${c}`}>
+                {showThinking ? (
+                  <div className="fi thinking draft" style={roleVar(t.role)}>
+                    <div className="head">
+                      <span className="role-tag dim">
+                        <RoleLabel role={t.role} name={agentName(nameOverrides, c, t.role)} model={modelFor(t.runId)} />
+                      </span>
+                    </div>
+                    <Markdown className="body" text={"💭 " + t.text} />
+                  </div>
+                ) : null}
+                {showDraft ? (
+                  <div className="fi draft" style={roleVar(d.role)}>
+                    <div className="head">
+                      <Gnome role={d.role} size={30} />
+                      <span className="role-tag" style={{ color: roleColor(d.role) }}>
+                        <RoleLabel role={d.role} name={agentName(nameOverrides, c, d.role)} model={modelFor(d.runId)} />
+                      </span>
+                    </div>
+                    <Markdown className="body" text={d.text} />
+                  </div>
+                ) : null}
+              </Fragment>
+            );
+          })}
         </div>
       </div>
 
@@ -1264,10 +1368,13 @@ const FeedRow = memo(function FeedRow({
   item,
   nameFor,
   modelFor,
+  source,
 }: {
   item: FeedItem;
   nameFor: (role: Role) => string;
   modelFor: (runId: string | undefined | null) => string | undefined;
+  /** A collaborator's name on a system row, which otherwise names no agent and reads as the lead's. */
+  source?: string;
 }) {
   switch (item.kind) {
     case "text":
@@ -1336,7 +1443,7 @@ const FeedRow = memo(function FeedRow({
     case "system":
       return (
         <div className={"fi system" + (item.delivery ? ` delivery-${item.delivery}` : "")}>
-          <div className="body">{item.text}</div>
+          <div className="body">{source ? `${source} · ${item.text}` : item.text}</div>
           <MessageThumbs refs={item.attachments} />
           {item.delivery ? (
             <span className={"delivery-receipt " + item.delivery} role="status" title={item.deliveryError}>

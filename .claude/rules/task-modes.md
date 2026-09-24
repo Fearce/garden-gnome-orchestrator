@@ -32,6 +32,15 @@ Read before touching `orchestrator/timedTasks.ts`, `orchestrator/shotgun.ts`, `r
   the moment the agent echoed its instructions back. `test:timed-tasks` pins both directions.
 
 ## Shotgun
+- **The lead must be TOLD it is the lead.** `ownershipBlock` takes an `OwnershipPosition`. With the
+  collaborator wording ("a lead agent reconciles everything"), live task 1a67d70b's lead took that to
+  mean another agent. It posted "Lead — …" requests into the room for an unowned file, and nobody
+  answered (2026-09-24). The lead may edit paths no one owns. Collaborators get the lead's office name.
+- **A collaborator is only visible through the lead's panel.** It has no card and is never selected, so
+  its feed exists in the store only because `ThreadDetail` prefetches it (`useCollaboratorHistories`).
+  Its rows are labelled from the COLLABORATOR's thread id (`sourceOf`), never the lead's. The lead's
+  `nameFor` would print the lead's name on another agent's words. Gate `test:collaborator-feed`,
+  browser `npm run collaborator-feed-lab --prefix server`.
 - **Overlapping file ownership is a REJECTION.** Collaborators share one checkout on one branch, so
   nothing merges their changes and two agents in one file lose work with no signal. The bias is one-way:
   a false "unsafe" costs a degrade to one complete agent, a false "safe" costs work. `pathsCollide` makes

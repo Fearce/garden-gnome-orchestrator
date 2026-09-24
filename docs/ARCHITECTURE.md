@@ -510,8 +510,9 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
     **bypass both concurrency caps** — the lead holds a slot and then blocks on its children, so queueing
     a child behind a cap its own parent occupies deadlocks the pair; `MAX_AGENTS` bounds it instead. The
     barrier polls DURABLE child state rather than holding promises, which is what lets an auto-resumed
-    lead re-read where its children got to after a bounce. Collaborators are hidden from the board and
-    rendered inside the lead's detail panel.
+    lead re-read where its children got to after a bounce. Collaborators are hidden from the board; the
+    lead's detail panel fetches their histories and interleaves their rows into its feed under each
+    agent's own name (`web/src/lib/collaboratorFeed.ts`).
 - **Finding routing:** when a finding lands on a thread whose implementor is
   live, the manager either (a) `inject`s it as a follow-up user message, or
   (b) `interrupt → resume(sessionId)` with augmented context — chosen by
