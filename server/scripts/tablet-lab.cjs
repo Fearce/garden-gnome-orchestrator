@@ -271,6 +271,23 @@ async function drivePass(page, { name, width, height }) {
   }
   check(`${name}: the transcript gets at least 40% of the rail`, rail.transcript >= rail.rail * 0.4, railBudget);
   check(`${name}: …and is taller than the composer below it`, rail.transcript > rail.composer, railBudget);
+  // An on-screen keyboard takes ~a third of the height. The desktop transcript floor once crushed the
+  // options row to 24px there: a 12px sliver of repo chips, with Send pushed under the bottom nav.
+  await page.setViewportSize({ width, height: 560 });
+  await page.waitForTimeout(300);
+  const short = await page.evaluate(() => {
+    const r = (s) => document.querySelector(s)?.getBoundingClientRect();
+    const opts = r(".composer-options"), repos = r(".recent-repos"), rail = r(".rail"), send = r(".composer .btn.primary, .composer button[type=submit], .composer .send-btn");
+    return {
+      reposShown: opts && repos ? Math.round(Math.min(opts.bottom, repos.bottom) - Math.max(opts.top, repos.top)) : -1,
+      reposH: repos ? Math.round(repos.height) : -1,
+      sendBottom: send ? Math.round(send.bottom) : -1, railBottom: rail ? Math.round(rail.bottom) : -1,
+    };
+  });
+  check(`${name}: with a keyboard up (560px tall) the repo row stays fully visible`, short.reposH > 0 && short.reposShown >= short.reposH, JSON.stringify(short));
+  check(`${name}: …and Send stays inside the rail`, short.sendBottom > 0 && short.sendBottom <= short.railBottom, JSON.stringify(short));
+  await page.setViewportSize({ width, height });
+  await page.waitForTimeout(300);
   if (width < 900) await page.tap('.mobile-nav .mnav-btn:has-text("Tasks")');
 
   console.log("\n  DETAIL — open a task, reach its controls, close it");
@@ -291,6 +308,13 @@ async function drivePass(page, { name, width, height }) {
   check(`${name}: the inject composer is fully visible`, inViewport(composer, width, height), JSON.stringify(composer));
   await page.tap(".mobile-compose-close");
   check(`${name}: closing the inject composer restores the disclosure`, await page.isVisible(".mobile-inject-toggle"));
+  // The tools chip sat in a shrink-to-fit parent while its max-width was a % of that parent, so it
+  // clipped its own label ("too") in landscape while staying "inside the viewport".
+  const tools = await page.$eval(".feed-filter-tools .tools-toggle", (e) => {
+    const r = e.getBoundingClientRect();
+    return { right: Math.round(r.right), scrollW: e.scrollWidth, clientW: e.clientWidth };
+  });
+  check(`${name}: the tools chip shows its whole label`, tools.scrollW <= tools.clientW + 1 && tools.right <= width, JSON.stringify(tools));
   // A detector that cannot detect is worse than none — the rows inside .detail clip their own
   // children, so prove the collector sees a deliberate spill before trusting it to report zero.
   const proof = await page.evaluate((collect) => {

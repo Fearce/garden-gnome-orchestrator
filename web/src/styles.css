@@ -693,6 +693,14 @@ button { font-family: inherit; cursor: pointer; }
 .recent-repos.compact .recent-repos-label,
 .recent-repos.compact .repo-chip { flex: 0 0 auto; }
 .recent-repos.compact .repo-chip { max-width: min(220px, calc(100% - 45px)); }
+/* Same bands as COMPACT_MQ in Director.tsx. A phone with its keyboard up leaves the rail ~370px, and
+   the desktop transcript floor (160px+) then crushed .composer-options to 24px: the repo chips showed
+   a 12px sliver and Send dropped under the bottom nav. Here the transcript floor scales down with the
+   screen, and the options keep enough height for the repo row; the rest of the options still scroll. */
+@media (max-width: 899.98px), (pointer: coarse) and (max-width: 1365.98px) {
+  .transcript { min-height: clamp(0px, calc(30vh - 120px), 240px); }
+  .composer-options { min-height: 56px; }
+}
 .recent-repos-label {
   font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint);
   margin-right: 2px;
@@ -3321,6 +3329,9 @@ button.note-from:hover { color: var(--text-dim); }
   }
   .feed-filter .feed-filter-roles .fchip { flex: 0 0 auto; width: auto; }
   .feed-filter-tools { flex: 0 0 auto; padding: 0 8px 0 0; }
+  /* The base .fchip max-width is a % of its parent; this parent is now shrink-to-fit, so the %
+     resolved against the chip's own width and clipped "tools" to "too". */
+  .feed-filter-tools .fchip { max-width: none; }
   .deliverables { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; min-height: var(--tap); padding: 0 16px; }
   .deliverable-strip { flex: 0 0 auto; flex-wrap: nowrap; }
   .detail-head .deadline-panel { padding: 4px 8px; }
