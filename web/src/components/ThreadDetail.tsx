@@ -516,6 +516,7 @@ export function ThreadDetail() {
   const inject = useStore((s) => s.inject);
   const interrupt = useStore((s) => s.interrupt);
   const resume = useStore((s) => s.resume);
+  const proceed = useStore((s) => s.proceed);
   const cancel = useStore((s) => s.cancel);
   const retry = useStore((s) => s.retry);
   const markDone = useStore((s) => s.markDone);
@@ -527,6 +528,7 @@ export function ThreadDetail() {
   const openOffice = useStore((s) => s.openOffice);
   const nameOverrides = useStore((s) => s.nameOverrides);
   const directorName = useStore((s) => s.settings.directorName);
+  const manualSupervision = useStore((s) => s.settings.manualSupervisionEnabled);
   const showAgentModel = useStore((s) => s.settings.showAgentModel);
   const historyHasMoreById = useStore((s) => s.threadHistoryHasMore);
   const historyLoadingById = useStore((s) => s.threadHistoryLoading);
@@ -755,6 +757,8 @@ export function ThreadDetail() {
   // Resume covers a failed task too: the pipeline is resume-aware and re-runs from the stage that
   // died (reusing saved plan/research and the implementor's prior session) instead of from scratch.
   const isResumable = thread.state === "paused" || thread.state === "review" || thread.state === "failed";
+  const awaitingProceed = thread.state === "paused" && thread.error?.startsWith("Awaiting Proceed to ");
+  const manualInjectBlocked = manualSupervision && (qaStage || awaitingProceed);
   const terminal = isTerminal(thread.state);
   // Pipeline workers are per-task agents; the director is the singleton persona from settings.
   const nameFor = useMemo(
@@ -801,7 +805,7 @@ export function ThreadDetail() {
   const doInject = async (mode: "append" | "interrupt" | "queue") => {
     // Frozen tasks accept no manual inject/interrupt — the server auto-resumes them. Guard the handler
     // itself (not just the disabled attribute) so a keyboard ⌘/Ctrl+Enter can't slip an inject through.
-    if (frozen) return;
+    if (frozen || manualInjectBlocked || (manualSupervision && mode !== "append")) return;
     const t = msg.trim();
     if (!t) return;
     lastSentRef.current = t;
@@ -932,7 +936,12 @@ export function ThreadDetail() {
                   {qaStage ? "Stop QA" : "⏸ Interrupt"}
                 </button>
               )}
-              {isResumable && (
+              {awaitingProceed && (
+                <button className="btn primary sm" onClick={() => proceed(id)} title={thread.error ?? undefined}>
+                  ▶ Proceed
+                </button>
+              )}
+              {isResumable && !awaitingProceed && (
                 <button className="btn primary sm" onClick={() => resume(id)}>
                   ▶ Resume
                 </button>
@@ -1268,10 +1277,10 @@ export function ThreadDetail() {
         {frozen ? <span className="inject-frost" aria-hidden="true" /> : null}
         <textarea
           value={msg}
-          placeholder={frozen ? "Frozen — every account this task needs is rate-limited; it auto-resumes on its own." : `Send current instruction to the ${recipientLabel}…  (paste/drop images · ⌘/Ctrl+Enter = inject)`}
+          placeholder={frozen ? "Frozen — every account this task needs is rate-limited; it auto-resumes on its own." : manualInjectBlocked ? "Manual supervision: wait for Proceed or the current QA result." : `Send current instruction to the ${recipientLabel}…  (paste/drop images · ⌘/Ctrl+Enter = inject)`}
           onChange={(e) => setMsg(e.target.value)}
           onPaste={att.onPaste}
-          disabled={frozen}
+          disabled={frozen || manualInjectBlocked}
           title={frozen ? FROZEN_CONTROL_TOOLTIP : undefined}
           onKeyDown={(e) => {
             if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
@@ -1293,7 +1302,7 @@ export function ThreadDetail() {
           <button
             className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("queue")}
-            disabled={frozen || !msg.trim()}
+            disabled={frozen || manualSupervision || !msg.trim()}
             title={frozen ? FROZEN_CONTROL_TOOLTIP : "Queue this for the implementor without interrupting — it picks it up when it finishes its current work, before handing off to QA"}
           >
             Queue
@@ -1301,7 +1310,7 @@ export function ThreadDetail() {
           <button
             className={"btn primary sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("append")}
-            disabled={frozen || !msg.trim()}
+            disabled={frozen || manualInjectBlocked || !msg.trim()}
             title={
               frozen
                 ? FROZEN_CONTROL_TOOLTIP
@@ -1317,7 +1326,7 @@ export function ThreadDetail() {
           <button
             className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("interrupt")}
-            disabled={frozen || !msg.trim()}
+            disabled={frozen || manualSupervision || !msg.trim()}
             title={
               frozen
                 ? FROZEN_CONTROL_TOOLTIP

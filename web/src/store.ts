@@ -396,6 +396,7 @@ interface State {
   ) => Promise<boolean>;
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
+  proceed: (threadId: string) => void;
   setDeadline: (threadId: string, deadlineAt: number | null) => Promise<boolean>;
   setTaskModel: (threadId: string, provider: ImplementorProvider | null, model: string | null) => Promise<boolean>;
   cancel: (threadId: string) => void;
@@ -699,6 +700,7 @@ const OFFLINE_OFFICE: OnlineOfficeDTO = {
 const DEFAULT_SETTINGS: OrchestratorSettings = {
   conciseAgentCommunication: true,
   plannerEnabled: true,
+  manualSupervisionEnabled: false,
   researcherEnabled: true,
   qaEnabled: true,
   differentProviderQa: false,
@@ -1426,6 +1428,7 @@ export const useStore = create<State>((set) => ({
   },
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
+  proceed: (threadId) => sendCommand({ type: "thread.proceed", threadId }),
   setDeadline: (threadId, deadlineAt) =>
     sendThreadActionCommand({ type: "thread.deadline", threadId, deadlineAt }, "deadline", threadId),
   setTaskModel: (threadId, provider, model) => {

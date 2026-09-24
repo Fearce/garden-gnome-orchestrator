@@ -2596,6 +2596,34 @@ export class ThreadManager implements OrchestratorApi {
 
   // ---- dispatch + pipeline ----
 
+  /** A durable, one-use owner grant. Returning false ends the current pipeline and releases its slot. */
+  private manualStage(threadId: string, to: string): boolean {
+    const pending = this.db.getThreadStageOutputs(threadId).manualProceed;
+    if (pending?.to === to && pending.granted) {
+      this.db.updateThreadStageOutputs(threadId, { manualProceed: null });
+      return true;
+    }
+    if (!this.settings().manualSupervisionEnabled && !pending) return true;
+    if (!pending) this.db.updateThreadStageOutputs(threadId, { manualProceed: { to, granted: false } });
+    this.setState(threadId, "paused", `Awaiting Proceed to ${to}.`);
+    return false;
+  }
+
+  async proceedThread(threadId: string): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    const pending = this.db.getThreadStageOutputs(threadId).manualProceed;
+    if (thread.state !== "paused" || !pending || pending.granted) {
+      return { ok: false, state: thread.state, error: "This task is not waiting for Proceed." };
+    }
+    if (this.restartDrainActive()) return { ok: false, state: thread.state, error: "GGO is restarting. Proceed after it reconnects." };
+    this.db.updateThreadStageOutputs(threadId, { manualProceed: { ...pending, granted: true } });
+    this.setState(threadId, "queued");
+    if (!this.dispatchQueue.includes(threadId)) this.dispatchQueue.push(threadId);
+    this.pumpQueue();
+    return { ok: true, state: "queued" };
+  }
+
   async dispatch(input: DispatchInput): Promise<string> {
     // Keep a requested window dormant while this task waits in the concurrency queue. Its absolute
     // deadline is stamped only when runPipeline actually claims a slot — queued time is not work time.
@@ -2684,6 +2712,7 @@ export class ThreadManager implements OrchestratorApi {
     return {
       conciseAgentCommunication: this.settingBool("setting_concise_agent_communication", true),
       plannerEnabled: this.settingBool("setting_planner_enabled", true),
+      manualSupervisionEnabled: this.settingBool("setting_manual_supervision_enabled", false),
       researcherEnabled: this.settingBool("setting_researcher_enabled", true),
       qaEnabled: this.settingBool("setting_qa_enabled", true),
       differentProviderQa: this.settingBool("setting_different_provider_qa", false),
@@ -4468,6 +4497,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.db.kvSet("setting_concise_agent_communication", patch.conciseAgentCommunication ? "1" : "0");
     }
     if (patch.plannerEnabled !== undefined) this.db.kvSet("setting_planner_enabled", patch.plannerEnabled ? "1" : "0");
+    if (patch.manualSupervisionEnabled !== undefined) this.db.kvSet("setting_manual_supervision_enabled", patch.manualSupervisionEnabled ? "1" : "0");
     if (patch.researcherEnabled !== undefined) this.db.kvSet("setting_researcher_enabled", patch.researcherEnabled ? "1" : "0");
     if (patch.qaEnabled !== undefined) this.db.kvSet("setting_qa_enabled", patch.qaEnabled ? "1" : "0");
     if (patch.differentProviderQa !== undefined) this.db.kvSet("setting_different_provider_qa", patch.differentProviderQa ? "1" : "0");
@@ -6722,6 +6752,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         const promoted = await this.handleReadLane(thread, directorNote, saved);
         if (!promoted) return; // answered / errored / unrecoverable restart — already settled by finalizeReader
         thread = promoted;
+        if (!this.manualStage(threadId, "planning or implementation")) return;
+      }
+
+      // An escalated reader clears its lane before parking. Resume its pending gate here.
+      if (thread.lane !== "read" && saved.manualProceed?.to === "planning or implementation") {
+        if (!this.manualStage(threadId, "planning or implementation")) return;
       }
 
       // Default mode (the vanilla lane): one stock implementor session, no planner/QA/self-improvement/
@@ -6765,6 +6801,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             return undefined;
           });
           if (this.cancelled(threadId)) return;
+          this.db.updateThreadStageOutputs(threadId, { manualPlannerRan: true });
           // A quota-exhausted planner did not complete a deliberate "no plan" outcome. Preserve the
           // unfinished stage and park it with the durable cap marker, so the supervisor retries this
           // exact stage after a provider frees up instead of sending an implementor a fabricated blank plan.
@@ -6787,12 +6824,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       //    implementor afterward. researchDone (and a settled-planning resume) guard against re-running it.
       let research = saved.research ?? undefined;
       if (!planningSettled && settings.researcherEnabled && plan?.nextAgent === "researcher" && !saved.researchDone) {
+        if ((saved.manualPlannerRan || this.db.getThreadStageOutputs(threadId).manualPlannerRan) && !this.manualStage(threadId, "researcher")) return;
         this.setState(threadId, "researching");
         research = await this.runResearcher(thread, plan).catch((e) => {
           this.hub.log("warn", `Researcher failed on ${threadId.slice(0, 8)}: ${String(e)}`);
           return undefined;
         });
         if (this.cancelled(threadId)) return;
+        this.db.updateThreadStageOutputs(threadId, { manualResearcherRan: true });
         // Same invariant as planning: quota exhaustion is not a valid empty research result and must
         // resume before the implementor sees the handoff.
         if (this.capParked.has(threadId)) {
@@ -6845,7 +6884,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // 4. Shotgun — decide the split ONCE, spawn the collaborators, and narrow this (lead) kickoff to
       //    its own share. A no-op for an ordinary task, a collaborator, or a task that can't be split
       //    safely; in the last case it degrades to a normal single-agent run and says why.
-      kickoff = await this.prepareShotgun(thread, plan, kickoff);
+      if (!this.db.listRuns(threadId).some((run) => run.role === "implementor") &&
+          saved.qaCapRetryRound == null && saved.qaInterruptedRetryRound == null && !saved.qaFixHandoff &&
+          saved.manualProceed?.to !== "planning or implementation" &&
+          (this.db.getThreadStageOutputs(threadId).manualPlannerRan || this.db.getThreadStageOutputs(threadId).manualResearcherRan ||
+            this.db.listRuns(threadId).some((run) => run.role === "reader")) &&
+          !this.manualStage(threadId, "implementor")) return;
+      // Manual supervision runs one worker at a time; a shotgun split would create peers without clicks.
+      if (!settings.manualSupervisionEnabled) kickoff = await this.prepareShotgun(thread, plan, kickoff);
       if (this.cancelled(threadId)) return;
       const prepared = this.db.getThreadStageOutputs(threadId);
       if (prepared.shotgunRecoveryBlocked) {
@@ -9755,6 +9801,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     if (!qaOnlyRetry) {
       if (pendingQaFixHandoff) {
+        if (!this.manualStage(thread.id, "implementor fix round")) return;
         this.qaFixHandoff.add(thread.id);
         const delivered = {
           messages: uniqueText(pendingQaFixHandoff.messages ?? []),
@@ -9819,7 +9866,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // A TIMED task keeps working its window from here; a SHOTGUN lead then waits for its collaborators
       // and reconciles the combined tree. Both are no-ops for an ordinary task, and both sit BEFORE the
       // QA hand-off on purpose — QA reviews the finished, integrated result exactly once.
-      res = await this.runTimedWindow(thread, effort, kickoff, res, qaFollows);
+      if (!this.settings().manualSupervisionEnabled) {
+        res = await this.runTimedWindow(thread, effort, kickoff, res, qaFollows);
+      }
       if (this.cancelled(thread.id)) return;
       res = await this.integrateShotgun(thread, effort, kickoff, res, qaFollows);
       if (this.cancelled(thread.id)) return;
@@ -9866,9 +9915,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
     // In QA-fixes mode each changed QA pass is handed to an explicit verifier. The legacy path below
     // deliberately leaves these unset, preserving its existing implementor↔QA behavior exactly.
-    let qaFixForcedProvider: ImplementorProvider | undefined;
-    let qaFixForceFresh = false;
-    let qaFixSummary: string | undefined;
+    let qaFixForcedProvider: ImplementorProvider | undefined = savedQa.manualQaVerification?.forcedProvider;
+    let qaFixForceFresh = savedQa.manualQaVerification?.forceFresh ?? false;
+    let qaFixSummary: string | undefined = savedQa.manualQaVerification?.priorFixSummary;
     // The charged round must get exactly one replacement QA attempt even if an operator lowered
     // maxQaRounds while recovery was pending. It was already within the budget when it was charged;
     // silently dropping it would turn a recoverable interruption into a permanent review park.
@@ -9894,6 +9943,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // lastImplementorSession for the fix-round resume.
       await this.stopLive(thread.id);
       const retryingDirectQaRound = qaOnlyRetry && round === qaRetryRound;
+      const pendingQaProceed = this.db.getThreadStageOutputs(thread.id).manualProceed?.to === "QA";
+      if (this.settings().manualSupervisionEnabled && !qaOnlyRetry) {
+        this.db.updateThreadStageOutputs(thread.id, { qaCapRetryRound: round });
+      }
+      if ((!qaOnlyRetry || pendingQaProceed) && !this.manualStage(thread.id, "QA")) return;
       const qa = await this.runQA(thread, {
         round,
         applyFixes: pipe.qaAppliesFixes,
@@ -9935,7 +9989,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (qa) {
         // A real QA verdict completed the retry. Clear before any later state transition so a restart
         // cannot mistake a normal non-pass/fix round for a still-pending direct QA handoff.
-        this.db.updateThreadStageOutputs(thread.id, { qaCapRetryRound: undefined, qaInterruptedRetryRound: undefined });
+        this.db.updateThreadStageOutputs(thread.id, { qaCapRetryRound: undefined, qaInterruptedRetryRound: undefined, manualQaVerification: null });
       } else if (this.capParked.get(thread.id) === "qa") {
         // Preserve the charged round through review→failed→pipeline and even a server bounce, so the
         // supervisor retries QA itself rather than relaunching the already-complete implementor.
@@ -10005,6 +10059,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             detail: `The changed tree is being sent to ${verifier} for another QA pass; it will not be accepted until a QA run makes no further code changes.`,
             severity: "note",
           });
+          if (this.settings().manualSupervisionEnabled) {
+            this.db.updateThreadStageOutputs(thread.id, {
+              qaCapRetryRound: round + 1,
+              manualQaVerification: { forcedProvider: qaFixForcedProvider, forceFresh: qaFixForceFresh, priorFixSummary: qaFixSummary },
+            });
+            this.manualStage(thread.id, "QA");
+            return;
+          }
           continue;
         }
 
@@ -10111,6 +10173,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // awaited) compression — startImplementor flips it to "implementing" only once the run is live — so
       // an inject/resume during that window routes to the QA buffer rather than spawning a second agent.
       const handoff = this.rememberQaFixHandoff(thread.id, fixMsg);
+      if (!this.manualStage(thread.id, "implementor fix round")) return;
       const deliveredHandoff = {
         messages: uniqueText(handoff.messages ?? []),
         attachmentIds: uniqueText(handoff.attachmentIds ?? []),
@@ -10480,7 +10543,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const settleDone = (): void => {
       if (this.db.getThread(thread.id)?.state !== "done") this.setState(thread.id, "done");
     };
-    if (!this.settings().selfImproveEnabled) { settleDone(); return; }
+    if (!this.settings().selfImproveEnabled || this.settings().manualSupervisionEnabled) { settleDone(); return; }
     // A shotgun collaborator finished one SHARE, not a task. The reflection round is about what the whole
     // job needed, so it belongs to the lead — running it per share would spend N bonus Opus rounds on N
     // partial views, and each one would be reflecting on a tree the other shares are still changing.
@@ -10982,6 +11045,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     options: { retitle?: boolean; recipient?: "implementor" | "qa" | "reviewer"; standing?: boolean } = {},
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
+    if (thread && this.settings().manualSupervisionEnabled &&
+        (mode === "queue" || mode === "interrupt" || thread.state === "qa" || this.liveQa.has(threadId))) {
+      return { ok: false, state: thread.state, error: "Manual supervision is on. Use Append for the active implementor, or wait for Proceed before starting another agent." };
+    }
     const qaBypassRequested = thread ? this.armOwnerQaBypass(threadId, message) : false;
     if (thread && !qaBypassRequested) {
       this.invalidateManualDeploymentForNewWork(threadId, "the owner added new task instructions");
@@ -11627,6 +11694,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   async resumeThread(threadId: string, message?: string, operatorInitiated = false): Promise<ThreadActionResult> {
     let thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    if (this.db.getThreadStageOutputs(threadId).manualProceed) {
+      return { ok: false, state: thread.state, error: "This task is waiting for the owner to click Proceed." };
+    }
     if (this.deadlineDue(thread)) {
       await this.expireActiveDeadline(threadId, thread.activeDeadlineAt!);
       return {
@@ -12225,6 +12295,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   async autoReview(threadId: string, source: AutoReviewSource = "owner"): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    if (source !== "owner" && this.settings().manualSupervisionEnabled) {
+      return { ok: false, state: thread.state, error: "Manual supervision requires an owner click before review." };
+    }
     if (this.settleManualDeployment(threadId)) {
       return { ok: true, state: "done", message: "Complete in GGO; the verified manual deployment remains pending." };
     }
@@ -12324,7 +12397,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  run — puts it back in 'review' or moves it to 'done'. */
   private async runAutoReview(thread: Thread, claimToken: string): Promise<void> {
     try {
-      const total = this.settings().maxReviewFixRounds;
+      const total = this.settings().manualSupervisionEnabled ? 0 : this.settings().maxReviewFixRounds;
       let res = await this.reviewToVerdict(thread, this.freshReviewKickoff(thread));
       if (this.parkSupersededAutoReview(thread.id, claimToken)) return;
       let fixRounds = 0;

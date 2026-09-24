@@ -586,6 +586,7 @@ export interface OrchestratorSettings {
   /** On by default: agents use short, direct, plain-language prose without losing required evidence. */
   conciseAgentCommunication: boolean;
   plannerEnabled: boolean;
+  manualSupervisionEnabled: boolean;
   researcherEnabled: boolean;
   qaEnabled: boolean;
   differentProviderQa: boolean; // off (default) → QA runs on the default backend. on → QA is routed to a DIFFERENT enabled provider than the implementor (cross-provider review); falls back to normal QA when no other provider is enabled+ready.
@@ -1275,6 +1276,7 @@ export type ClientCommand =
   | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt" | "queue"; recipient?: "implementor" | "qa" | "reviewer"; images?: ImageAttachment[]; clientId?: string }
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
+  | { type: "thread.proceed"; threadId: string }
   | { type: "thread.deadline"; threadId: string; deadlineAt: number | null }
   | { type: "thread.model"; threadId: string; provider: ImplementorProvider | null; model: string | null; clientId?: string }
   | { type: "thread.cancel"; threadId: string }

@@ -284,6 +284,9 @@ export async function handleCommand(
     case "thread.resume":
       sendThreadAction(socket, cmd.threadId, "resume", await ctx.manager.resumeThread(cmd.threadId, cmd.message, true));
       break;
+    case "thread.proceed":
+      sendThreadAction(socket, cmd.threadId, "proceed", await ctx.manager.proceedThread(cmd.threadId));
+      break;
     case "thread.deadline":
       sendThreadAction(socket, cmd.threadId, "deadline", await ctx.manager.setActiveDeadline(cmd.threadId, cmd.deadlineAt));
       break;

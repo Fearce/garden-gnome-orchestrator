@@ -359,6 +359,83 @@ Handle existing data and future updates with a safe migration or backfill, then 
     }
   }
 
+  console.log("\n8. Manual supervision waits at every new-agent boundary");
+  {
+    const h = makeHarness();
+    const waitFor = async (id: string, state: string): Promise<void> => {
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline && h.db.getThread(id)?.state !== state) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await h.waitIdle(id);
+    };
+    try {
+      h.manager.setSettings({ manualSupervisionEnabled: true });
+      const id = await h.manager.dispatch({ title: "supervised 2fa", workspace: process.cwd(), brief: BROAD_BRIEF });
+      await waitFor(id, "paused");
+      check("planner is the only first agent", h.roleCalls.join(",") === "planner", h.roleCalls.join(","));
+      check("implementor handoff is durable", h.db.getThreadStageOutputs(id).manualProceed?.to === "implementor");
+      const blocked = await h.manager.resumeThread(id);
+      check("Resume cannot bypass Proceed", blocked.ok === false && h.roleCalls.length === 1);
+      await h.manager.proceedThread(id);
+      await waitFor(id, "paused");
+      check("QA waits after implementation", h.roleCalls.join(",") === "planner" && h.db.getThreadStageOutputs(id).manualProceed?.to === "QA", h.roleCalls.join(","));
+      await h.manager.proceedThread(id);
+      await h.pollTerminal(id);
+      await h.waitIdle(id);
+      check("one click starts exactly one QA stage", h.roleCalls.join(",") === "planner,qa", h.roleCalls.join(","));
+      check("accepted task finishes", h.db.getThread(id)?.state === "done", h.db.getThread(id)?.state);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\n9. Research and QA repair each require their own Proceed");
+  {
+    const h = makeHarness();
+    const waitForPause = async (id: string): Promise<void> => {
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline && h.db.getThread(id)?.state !== "paused") {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      await h.waitIdle(id);
+    };
+    try {
+      h.manager.setSettings({ manualSupervisionEnabled: true });
+      let qaCalls = 0;
+      h.manager.runRole = async (_t: unknown, role: string): Promise<ResultEvent | undefined> => {
+        h.roleCalls.push(role);
+        if (role === "planner") return { type: "result", subtype: "success", isError: false, structuredOutput: { summary: "plan", steps: [], risks: [], openQuestions: [], nextAgent: "researcher" } };
+        if (role === "researcher") return { type: "result", subtype: "success", isError: false, structuredOutput: { summary: "research", findings: [], sources: [] } };
+        if (role === "qa") {
+          qaCalls++;
+          return { type: "result", subtype: "success", isError: false, structuredOutput: { pass: qaCalls > 1, summary: qaCalls > 1 ? "fixed" : "fix this", issues: qaCalls > 1 ? [] : ["fix this"] } };
+        }
+        return undefined;
+      };
+      const id = await h.manager.dispatch({ title: "supervised research", workspace: process.cwd(), brief: BROAD_BRIEF });
+      await waitForPause(id);
+      check("researcher did not start with planner", h.roleCalls.join(",") === "planner" && h.db.getThreadStageOutputs(id).manualProceed?.to === "researcher");
+      await h.manager.proceedThread(id);
+      await waitForPause(id);
+      check("researcher stopped before implementor", h.roleCalls.join(",") === "planner,researcher" && h.db.getThreadStageOutputs(id).manualProceed?.to === "implementor");
+      await h.manager.proceedThread(id);
+      await waitForPause(id);
+      await h.manager.proceedThread(id);
+      await waitForPause(id);
+      check("failed QA stops before fix round", qaCalls === 1 && h.db.getThreadStageOutputs(id).manualProceed?.to === "implementor fix round");
+      await h.manager.proceedThread(id);
+      await waitForPause(id);
+      check("fix round stops before another QA", qaCalls === 1 && h.db.getThreadStageOutputs(id).manualProceed?.to === "QA");
+      await h.manager.proceedThread(id);
+      await h.pollTerminal(id);
+      await h.waitIdle(id);
+      check("second QA can accept after its click", qaCalls === 2 && h.db.getThread(id)?.state === "done");
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);
   if (failed > 0) {
     console.log("Failures:\n" + failures.map((f) => `  - ${f}`).join("\n"));

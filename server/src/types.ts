@@ -837,6 +837,10 @@ export interface ModelEffortStat extends ModelStat {
  * from the latest implementor agent_run's session_id, so only the upstream stages live here.
  */
 export interface StageOutputs {
+  manualProceed?: { to: string; granted: boolean } | null;
+  manualPlannerRan?: boolean;
+  manualResearcherRan?: boolean;
+  manualQaVerification?: { forcedProvider?: ImplementorProvider; forceFresh: boolean; priorFixSummary?: string } | null;
   plan?: PlanOutput | null; // the planner's structured plan (null = planner ran but produced nothing)
   planDone?: boolean; // the planner stage ran (true even if it produced nothing) — don't re-run on resume
   research?: ResearchOutput | null; // the researcher's brief, when the planner routed to it
@@ -977,6 +981,7 @@ export interface OrchestratorSettings {
    *  permissions, tools, or structured outputs. On by default; read live for each new/resumed turn. */
   conciseAgentCommunication: boolean;
   plannerEnabled: boolean; // off → skip the planner; the implementor runs straight from the brief
+  manualSupervisionEnabled: boolean; // off by default; each new agent stage waits for an owner Proceed click
   researcherEnabled: boolean; // off → never run the researcher even if the planner routes to it
   qaEnabled: boolean; // off → skip the QA loop; the implementor's output is final
   differentProviderQa: boolean; // off (default) → QA runs on the default backend (Claude). on → QA is routed to a DIFFERENT enabled provider than the one that implemented the task (e.g. GPT/Codex reviews Claude's work, and vice-versa), for an independent cross-provider review. Falls back to normal QA when no other provider is enabled+ready.

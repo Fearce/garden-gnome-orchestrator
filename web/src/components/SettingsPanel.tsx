@@ -309,6 +309,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             <SettingsCategoryPanel id="pipeline" active={!isSearching && activeCategoryId === "pipeline"}>
               <Group label="Pipeline">
                 <ToggleRow
+                  label="Manual supervision"
+                  hint="Off by default. Each task pauses before its next agent starts; open it and click Proceed. Parallel collaborators, timed continuation turns, queued follow-ups, and self-improvement do not start automatically."
+                  on={settings.manualSupervisionEnabled}
+                  onChange={(v) => setSettings({ manualSupervisionEnabled: v })}
+                />
+                <ToggleRow
                   label="Auto-push"
                   hint="On: completed tasks commit AND push. Off: implementor commits locally only — you push manually."
                   on={settings.autoPush}

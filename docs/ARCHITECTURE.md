@@ -287,6 +287,16 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   route (else it settles to `review`) — with QA routed around, a clean implementor finish goes
   straight to `done` instead. The optional approval gate (§12) fires after the plan + any
   research exist, before the implementor.
+- **Manual supervision** is a default-off pipeline setting. When enabled, `manualStage` persists a
+  one-use `stage_outputs.manualProceed` grant and parks the task before each new role: promoted
+  reader to pipeline, planner to researcher/implementor, researcher to implementor, implementor
+  to QA, QA to implementor fix, and changed QA to another QA pass. The detail panel sends
+  `thread.proceed`; a normal Resume cannot consume the grant. Proceed returns the task to the
+  concurrency queue, so a click still respects global and per-repo limits. The pending stage
+  survives a restart. Manual mode also suppresses parallel shotgun workers, timed continuation
+  turns, self-improvement, unattended auto-review, and automatic auto-review fix rounds. Queue
+  and interrupt injections are rejected while the setting is on; active implementors still accept
+  Append instructions. Turning the setting off does not itself release a pending stage.
 - **Read lane (`dispatch_read`) — a single-agent short-circuit, immune to route selection.** A
   thread dispatched with `lane: "read"` (the director's `dispatch_read` tool) skips the whole
   planner→implementor→QA pipeline and the route decision above entirely: `runPipeline` sees the
@@ -301,7 +311,7 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
   (`readerEscalation`), clears `lane` (so the READ badge drops and the thread can never re-enter
   this branch — the structural loop guard), appends its evidence to the brief so the planner/
   implementor inherit the investigation instead of repeating it, and falls through into the SAME
-  `runPipeline` call — no new dispatch, no new thread id, no click required. Its reason and partial
+  `runPipeline` call — no new dispatch or thread id (manual supervision adds a Proceed click). Its reason and partial
   answer are task evidence for the same deterministic route selection, not a blanket full-route
   override: an obvious narrow edit can go directly to the implementor, explicit verification can add
   QA without planning, and broad/risky evidence keeps both safeguards. A
