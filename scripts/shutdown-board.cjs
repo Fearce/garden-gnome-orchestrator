@@ -8,13 +8,13 @@ const dbPath = path.join(__dirname, '..', 'server', 'data', 'orchestrator.sqlite
 let db;
 try {
   const action = process.argv[2];
-  // The independent Windows checker has no GGO thread. A GGO check may pass its
-  // own ID explicitly; last_thread_id can already point to a newer queued run.
-  const selfThreadId = process.argv[3] || null;
+  // Exclude only the current scheduled check thread. Older fires remain ordinary
+  // unfinished GGO work if one is still queued or running.
+  const requestedSelfId = process.argv[3] || null;
   if (!['--check', '--disable', '--restore', '--expire'].includes(action)) {
     throw new Error('Expected --check, --disable, --restore, or --expire');
   }
-  if (process.argv.length > 4 || (selfThreadId && !['--check', '--disable'].includes(action))) {
+  if (process.argv.length > 4 || (requestedSelfId && !['--check', '--disable'].includes(action))) {
     throw new Error('Only --check and --disable accept an optional current GGO thread ID');
   }
   db = new Database(dbPath, { readonly: action === '--check', fileMustExist: true });
@@ -23,28 +23,27 @@ try {
   if (!schedule || (action !== '--expire' && schedule.cron !== '*/5 * * * *')) {
     throw new Error('Expected GGO schedule is missing or changed');
   }
-  const self = selfThreadId && db.prepare('SELECT id, title, workspace, brief, raw_prompt, state, created_at FROM threads WHERE id = ?').get(selfThreadId);
-  if (selfThreadId && (!self || self.title !== schedule.title || self.workspace !== schedule.workspace ||
-      self.brief !== schedule.prompt || self.raw_prompt !== '' || self.created_at < schedule.created_at ||
-      !['planning', 'researching', 'implementing', 'qa', 'reviewing'].includes(self.state))) {
+  const threadById = db.prepare('SELECT id, title, workspace, brief, raw_prompt, state, created_at FROM threads WHERE id = ?');
+  const matchesScheduledCheck = thread => thread && thread.title === schedule.title &&
+    thread.workspace === schedule.workspace && thread.brief === schedule.prompt && thread.raw_prompt === '' &&
+    thread.created_at >= schedule.created_at;
+  const activeStates = ['queued', 'planning', 'researching', 'implementing', 'qa', 'reviewing'];
+  const latest = schedule.last_thread_id ? threadById.get(schedule.last_thread_id) : null;
+  const selfThreadId = requestedSelfId || (matchesScheduledCheck(latest) && activeStates.includes(latest.state) ? latest.id : null);
+  const self = selfThreadId && threadById.get(selfThreadId);
+  if (requestedSelfId && (!matchesScheduledCheck(self) || !activeStates.includes(self.state))) {
     throw new Error('Cannot verify the current scheduled check thread');
   }
 
-  // Each five-minute fire creates a separate GGO thread. They are all instances
-  // of this check, including queued fires, and must not keep the board busy by
-  // themselves. Match the frozen schedule fields so similarly titled owner work
-  // still counts as unfinished.
+  // Each five-minute fire creates a separate GGO thread. Match the current run
+  // by its recorded ID; title/prompt matching alone would hide older active fires.
   const unfinishedQuery = db.prepare(`
     SELECT id, title, state FROM threads
     WHERE state NOT IN ('done', 'cancelled', 'closed')
       AND id != ?
-      AND NOT (title = ? AND workspace = ? AND brief = ? AND raw_prompt = ''
-        AND created_at >= ?)
     ORDER BY created_at DESC
   `);
-  const unfinished = () => unfinishedQuery.all(
-    selfThreadId || '', schedule.title, schedule.workspace, schedule.prompt, schedule.created_at,
-  );
+  const unfinished = () => unfinishedQuery.all(selfThreadId || '');
   if (action === '--disable' || action === '--expire') {
     db.transaction(() => {
       if (action === '--expire' && Date.now() < deadline) {
