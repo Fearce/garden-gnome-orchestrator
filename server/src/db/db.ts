@@ -748,6 +748,15 @@ export class Db {
   }
 
   private migrate(): void {
+    // Older databases cannot identify which titles were edited by hand. Preserve every existing
+    // board title on upgrade; only tasks created after this migration start eligible for auto-retitle.
+    const hasOwnerTitleLock = (this.raw.pragma("table_info(threads)") as Array<{ name: string }>).some(
+      (column) => column.name === "owner_title_locked",
+    );
+    if (!hasOwnerTitleLock) {
+      this.raw.exec("ALTER TABLE threads ADD COLUMN owner_title_locked INTEGER NOT NULL DEFAULT 0");
+      this.raw.exec("UPDATE threads SET owner_title_locked = 1");
+    }
     // Add columns introduced after a DB may already exist. Duplicate-column
     // errors are expected on an up-to-date DB and ignored.
     for (const stmt of [
@@ -757,7 +766,6 @@ export class Db {
       "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE cowork_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
-      "ALTER TABLE threads ADD COLUMN owner_title_locked INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE threads ADD COLUMN effort_override TEXT",
       "ALTER TABLE threads ADD COLUMN model_request TEXT",
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
