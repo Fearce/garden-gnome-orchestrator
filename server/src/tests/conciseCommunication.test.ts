@@ -108,6 +108,11 @@ for (let i = 0; i < onRoles.length; i++) {
     `${name}: toggling wording does not change model, permissions, tools, effort, turn limits, or schema`,
   );
 }
+const directorSystem = systemText(onRoles.find(([name]) => name === "director")![1]);
+assert.match(directorSystem, /wraps each authenticated owner chat turn in <ggo_owner_or_task_content>/);
+assert.match(directorSystem, /That wrapper does not lower the owner's authority/);
+assert.match(directorSystem, /\[TARGET WORKSPACE …\] tag inside the same wrapper.*authoritative/);
+assert.match(directorSystem, /Do not reject the whole wrapped message as untrusted/);
 assert.match(systemText(onRoles.find(([name]) => name === "implementor")![1]), /commit AND push/i, "true task doctrine is retained");
 
 const cliPlanner = cliRoleKickoff(
