@@ -241,7 +241,15 @@ Read the run trail to tell causes apart:
 - run `state='error'` → a real failure, an involuntary **cutoff**, or a **usage cap**. Read the row's
   `error` text: it now names the reason (the SDK's `errors`, else the subtype). "Stopped at the
   per-session turn ceiling" is the deliberate role turn ceiling — benign, warm-resumed on the implementor
-  path, and several per long task are expected, NOT failures. A QA run cut off the same way is continued
+  path, and several per long task are expected, NOT failures. **There is no fixed count of implementor
+  continuations** (`MAX_AUTO_RESUMES` defaults to 0 = unbounded; setting it is an opt-in cap): a task that keeps
+  doing new work is continued for as long as it takes. Only `IMPLEMENTOR_NO_PROGRESS_LIMIT` (3) consecutive
+  sessions with no new work park it: no new finding of its own, fewer than 3 distinct tool actions absent
+  from recent sessions, and no Git workspace change; empty resumes count too
+  (`orchestrator/continuationProgress.ts`). That park says "did no new work" and is deliberately NOT
+  capacity-shaped, so a window rollover never re-wakes a wedge. The old
+  fixed cap of 8 parked task 3ab7019e mid-work after six productive sessions. Gate:
+  `test:continuation-progress`. A QA run cut off the same way is continued
   too: it warm-resumes the SAME review session with a fresh turn budget, charged to a durable **per-review**
   allowance (`qaCutoffResumesThisRound`, max 2, separate from the QA-round budget) that renews whenever a
   round reaches a verdict — what it bounds is one WEDGED review, and a round that answered isn't wedged; it
@@ -255,9 +263,10 @@ Read the run trail to tell causes apart:
   query reached the model — the explicit zero telemetry decides (`ranSilently`; that replay shape parked
   task 7b4d99a0 after its verifier hit the ceiling). Benign on its own: it is never read as an
   answer on any path whose output GATES the pipeline, and each of those recovers it — the implementor retries
-  on a FRESH session seeded from a compressed handoff (parking only if its whole auto-resume budget goes that
-  way), a QA round re-runs the review fresh once (durable `qaSilentRetries`, since re-waking the same
-  session is what already failed), and the auto-reviewer starts its review over (in-process, sharing
+  on a FRESH session seeded from a compressed handoff (each empty session counts toward the no-progress
+  streak above, so repeated empty resumes still park), a QA round re-runs the review fresh once (durable
+  `qaSilentRetries`, since re-waking the same session is what already failed), and the auto-reviewer starts
+  its review over (in-process, sharing
   `MAX_REVIEW_RECOVERIES` with its cutoff continuations). Every empty run is stamped with this text, so a
   `done` row with 0 turns is never left to look like a finish. **Its CAUSE is a teardown race, and the only
   cure is `AgentRun.stop()` awaiting the child's real exit** — the recovery above is expensive (a fresh

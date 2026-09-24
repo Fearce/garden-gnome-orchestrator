@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, type Dirent } from "node:fs";
 import { join } from "node:path";
 import { runGit } from "../gitService.js";
@@ -54,6 +55,27 @@ export async function buildGitProgressBlock(workspace: string): Promise<string> 
     statText || "(none)",
     cappedDiff ? `\nUncommitted diff:\n${cappedDiff}` : "",
   ].join("\n");
+}
+
+/** A hash of the workspace's git state (HEAD, status and diff against HEAD) — equal before and after a
+ *  session that changed nothing. Covers the parent-of-checkouts case the same way the block above does,
+ *  bounded to the same child listing. Null when there is no repo to read, which callers must treat as
+ *  "unknown", never as "changed". */
+export async function workspaceGitFingerprint(workspace: string): Promise<string | null> {
+  const probe = await runGit(workspace, ["rev-parse", "--is-inside-work-tree"]);
+  const repos = probe.code === 0 ? [workspace] : childRepoNames(workspace).slice(0, MAX_CHILD_REPOS_LISTED).map((n) => join(workspace, n));
+  if (repos.length === 0) return null;
+  const hash = createHash("sha1");
+  for (const repo of repos) {
+    const reads = await Promise.all([
+      runGit(repo, ["rev-parse", "HEAD"]),
+      runGit(repo, ["status", "--porcelain"]),
+      runGit(repo, ["diff", "HEAD"]),
+    ]);
+    hash.update(repo);
+    for (const r of reads) hash.update(`\0${r.code}\0${r.stdout}`);
+  }
+  return hash.digest("hex");
 }
 
 /** The workspace itself is not a repo, so point at whichever immediate children are, instead of running

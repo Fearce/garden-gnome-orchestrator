@@ -369,9 +369,12 @@ export const config = {
   // diff, it does implementor-grade work — edits files, builds, runs the suite, commits — so it needs an
   // implementor-grade budget. Read-only QA keeps its own, much smaller ceiling in `qaConfig`.
   qaFixMaxTurns: Number(process.env.QA_FIX_MAX_TURNS ?? implementorMaxTurns),
-  // Cap on consecutive turn-limit auto-resumes per implementor→QA loop, so a wedged implementor that
-  // keeps hitting the ceiling without progressing can't spin forever — it settles to review instead.
-  maxAutoResumes: Number(process.env.MAX_AUTO_RESUMES ?? 8),
+  // Optional hard cap on implementor auto-continues (turn ceiling, stall, empty resume) per loop. 0 (the
+  // default) = no cap: a task that keeps doing new work is continued for as long as it takes. What stops a
+  // WEDGED implementor is the no-progress streak below, not a count (orchestrator/continuationProgress.ts).
+  maxAutoResumes: Math.max(0, numEnv(process.env.MAX_AUTO_RESUMES, 0)),
+  // Consecutive auto-continued sessions allowed to do no new work before the task parks for the owner.
+  implementorNoProgressLimit: Math.max(1, Math.floor(numEnv(process.env.IMPLEMENTOR_NO_PROGRESS_LIMIT, 3))),
   // ---- Timed tasks (a single task with a wall-clock work window) ----
   // Safety bounds on the extension loop, so "work on this for 8 hours" can never become an unbounded
   // one. Both are needed: the COUNT bounds a window whose rounds are long, and the hollow-round guard

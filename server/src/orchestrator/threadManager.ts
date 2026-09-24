@@ -100,7 +100,7 @@ import {
   type CapacityWindow,
 } from "./capacityRouting.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
-import { buildGitProgressBlock } from "./gitProgress.js";
+import { buildGitProgressBlock, workspaceGitFingerprint } from "./gitProgress.js";
 import { ROUTE_POLICY_VERSION, selectRoute } from "./routeSelection.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, runGit, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
@@ -108,6 +108,7 @@ import { titleFromInjection, titleFromBrief } from "./titleFromInjection.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { tokenShiftReport, type TokenShiftReport } from "./usageWindows.js";
 import { isCapacityStallPark, MAX_CAPACITY_STALL_RESUMES } from "./capacityStall.js";
+import { ActionHistory, assessSessionProgress, noProgressParkText } from "./continuationProgress.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import {
   declareManualDeployment,
@@ -924,9 +925,9 @@ export class ThreadManager implements OrchestratorApi {
   // hand-off boundary rather than mid-run: held here while the implementor works, then drained by
   // drainQueuedImplementor when the run finishes — the implementor does this work too before QA gets it.
   private readonly queuedForImplementor = new Map<string, string[]>();
-  // Per-thread count of consecutive turn-limit auto-resumes inside the current implementor→QA loop.
-  // Reset when the loop (re)enters, cleared when it exits, and capped at config.maxAutoResumes so a
-  // wedged implementor that keeps hitting the turn ceiling without progress can't spin forever.
+  // Per-thread count of auto-continues inside the current implementor→QA loop. Reset when the loop
+  // (re)enters, cleared when it exits. It numbers the continuations; it bounds them only when the optional
+  // config.maxAutoResumes is set — a wedged implementor is stopped by the no-progress streak instead.
   private readonly autoResumes = new Map<string, number>();
   // During QA the implementor is fully stopped (the slot is exclusive — one agent at a time), so the
   // QA agent is the only thing running. Append steering reaches THAT QA agent; interrupt steering stops
@@ -8647,7 +8648,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * implementor said "doing that now", the SDK cut it off at the turn cap, and the task parked on a
    * manual Resume button. A turn-limit stop is always involuntary (a genuine finish ends with success),
    * so we relaunch the warm session and keep going until it really finishes, is cancelled, looks done,
-   * or the auto-resume cap is reached — at which point `res` flows into the unchanged QA/review logic.
+   * or several sessions in a row do no new work (`continuationProgress.ts`) — at which point `res` flows
+   * into the unchanged QA/review logic. There is no fixed count: a task that keeps working keeps going.
    *
    * Relaunch = stop the maxed-out query, then warm-resume its session in a FRESH query. maxTurns is a
    * per-query ceiling ("max turns before the query stops"), and num_turns does NOT reset within a still-
@@ -8673,23 +8675,43 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // call, and every stop()/provider read below has to address the live child. Tracking the argument
     // instead is what let a turn-ceiling resume spawn a second agent onto the same workspace while the
     // real one kept committing.
+    let gitBefore = await workspaceGitFingerprint(thread.workspace);
     let turn = await this.awaitImplementorResult(thread, effort, kickoff, run, accountId, useNext, continueMsg);
     let res = turn.res;
     let current = turn.run;
     let silent = this.ranSilently(thread.id, "implementor", attemptFrom, res);
     if (silent) this.markSilentRun(thread.id, "implementor");
+    // No fixed count bounds this loop: a task keeps being continued while its sessions keep doing new work.
+    // Only a streak of sessions that did nothing new parks it (see continuationProgress.ts).
+    const history = new ActionHistory(config.implementorNoProgressLimit + 1);
+    let idleStreak = 0;
+    let wedged = false;
     while (
       (this.isTurnLimitStop(res) || this.implementorStalled(thread.id, res) || silent) &&
       !this.cancelled(thread.id) &&
-      // The "looks done" guard reads the last implementor MESSAGE — but a silent run produced none, so that
-      // message belongs to an EARLIER session and says nothing about this attempt. A QA fix-round resume is
-      // the common case: the pre-QA session signed off with "all tests pass", so vetoing on it would skip
-      // the retry entirely and park a task whose fix round never actually ran.
-      (silent || !this.implementorLooksDone(thread.id)) &&
-      (this.autoResumes.get(thread.id) ?? 0) < config.maxAutoResumes
+      // A turn-ceiling stop is involuntary even if the last text sounded final. A silent run produced no
+      // new text, so its last message may belong to an earlier completed round. Only a voluntary finish
+      // may use that text to avoid a redundant continuation.
+      (this.isTurnLimitStop(res) || silent || !this.implementorLooksDone(thread.id))
     ) {
       const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
       if (!session) break; // no session to resume from — fall through to the QA/review handling
+      const gitAfter = await workspaceGitFingerprint(thread.workspace);
+      const progress = assessSessionProgress(
+        this.db.roleActivitySince(thread.id, "implementor", attemptFrom),
+        history.union(),
+        gitBefore !== null && gitAfter !== null && gitBefore !== gitAfter,
+      );
+      history.record(progress.actionKeys);
+      gitBefore = gitAfter;
+      idleStreak = progress.progressed ? 0 : idleStreak + 1;
+      // An explicitly configured hard cap keeps its existing terminal reason. The default is unbounded,
+      // so ordinary repeated empty sessions still reach the no-progress park below.
+      if (!this.withinAutoResumeCap(thread.id)) break;
+      if (idleStreak >= config.implementorNoProgressLimit) {
+        wedged = true;
+        break;
+      }
       const n = (this.autoResumes.get(thread.id) ?? 0) + 1;
       this.autoResumes.set(thread.id, n);
       // Three involuntary-park cases share this resume: a turn-ceiling cutoff (error_max_turns), a voluntary
@@ -8698,7 +8720,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // never comes; they differ only in the nudge, and in whether the dead session may be resumed again.
       const turnLimit = this.isTurnLimitStop(res);
       const reason = silent ? "resumed session produced nothing" : turnLimit ? "turn limit hit" : "ended its turn without finishing";
-      this.logAutoResume(thread.id, n, reason);
+      this.logAutoResume(thread.id, n, reason, idleStreak);
       const nudge = silent
         ? SILENT_RESUME_NUDGE
         : turnLimit
@@ -8722,6 +8744,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (!start) break; // cancelled while compressing the prior session
       this.flushDirectorNotes(thread.id, start.run);
       attemptFrom = this.attemptStart(thread.id);
+      gitBefore = await workspaceGitFingerprint(thread.workspace);
       turn = await this.awaitImplementorResult(thread, effort, kickoff, start.run, start.accountId, false, nudge);
       res = turn.res;
       current = turn.run;
@@ -8731,7 +8754,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Still silent on the way out (the auto-resume budget ran out, or there was no session left to resume):
     // the implementor did NOT finish, so replace its hollow success with a real failure. Without this the
     // caller reads `res && !res.isError` as a clean finish and hands unfinished work to QA — the exact bug.
-    if (silent && !this.cancelled(thread.id)) {
+    if (wedged && !this.cancelled(thread.id)) {
+      res = { type: "result", subtype: "error_during_execution", isError: true, result: noProgressParkText(idleStreak) };
+    } else if (silent && !this.cancelled(thread.id)) {
       res = { type: "result", subtype: "error_during_execution", isError: true, result: SILENT_RUN_ERROR };
     }
     // Three consecutive transient API failures exhausted the same-provider retries. Hand the task to
@@ -8980,11 +9005,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return `Implementor ended without completing — ${why ?? tail}`;
   }
 
-  /** Whether the implementor's most recent text message reads as a genuine completion rather than a
-   *  mid-thought cutoff. Used as a secondary guard so that even on a turn-limit stop we DON'T auto-resume
-   *  when the agent clearly signalled it was done — and (deliberately strict) we DO resume on anything
-   *  forward-looking ("doing that now"), because a missed resume costs a manual click while an extra warm
-   *  resume of an already-done task is cheap and harmless. */
+  /** Whether the implementor's most recent text reads as a genuine completion. This only guards a
+   *  voluntary finish; a turn-ceiling stop is involuntary even if the last text sounded final. */
   private implementorLooksDone(threadId: string): boolean {
     const last = this.db.lastMessageOf(threadId, "implementor", "text");
     return !!last && IMPLEMENTOR_DONE_RE.test(last.content.slice(-600).toLowerCase());
@@ -9002,11 +9024,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return IMPLEMENTOR_STALL_RE.test(tail) && !IMPLEMENTOR_DONE_RE.test(tail);
   }
 
-  /** Surface an auto-resume both in the global activity log and as a system line in the task feed, so the
-   *  continuation is visible without the user ever touching the Resume button. `reason` distinguishes a
-   *  turn-limit cutoff from a voluntary "promised to confirm later" stall. */
-  private logAutoResume(threadId: string, n: number, reason: string): void {
-    const text = `Auto-resuming implementor (${reason}, continuing… ${n}/${config.maxAutoResumes})`;
+  /** The optional `MAX_AUTO_RESUMES` hard cap. Unset or 0 means unbounded. */
+  private withinAutoResumeCap(threadId: string): boolean {
+    const cap = config.maxAutoResumes;
+    return !(cap > 0) || (this.autoResumes.get(threadId) ?? 0) < cap;
+  }
+
+  /** Log each continuation in the task feed. `reason` distinguishes cutoff, stall and empty resume. */
+  private logAutoResume(threadId: string, n: number, reason: string, idleStreak = 0): void {
+    const count = config.maxAutoResumes > 0 ? `${n}/${config.maxAutoResumes}` : `${n}`;
+    const idle = idleStreak > 0 ? `; no new work in ${idleStreak}/${config.implementorNoProgressLimit} session(s)` : "";
+    const text = `Auto-resuming implementor (${reason}, continuing… ${count}${idle})`;
     this.hub.log("info", text);
     const m = this.db.addMessage({ threadId, role: "implementor", kind: "system", content: `↻ ${text}` });
     this.hub.publish({ type: "thread.message", threadId, message: m });
@@ -10514,8 +10542,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (this.cancelled(thread.id)) return;
     const start = this.startImplementor(thread, SELF_IMPROVE_MSG, { resume: session, effort });
     this.flushDirectorNotes(thread.id, start.run);
-    // A bonus gets exactly one provider invocation. Ordinary implementation recovery can spend eight
-    // more launches on a cutoff or empty result and can also fail over on process errors; none is
+    // A bonus gets exactly one provider invocation. Ordinary implementation can keep continuing
+    // cutoffs or empty results while it makes progress, and can fail over on process errors; none is
     // justified after QA has already accepted the task.
     const attemptFrom = this.attemptStart(thread.id);
     let timedOut = false;

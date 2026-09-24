@@ -77,6 +77,9 @@ const STALL_MARKERS = [
   // A bounce during an auto-review or its fix round. The lane is in-process by design, so nothing resumes
   // it on its own — only a fresh Auto-review click does, which is exactly what `stalled` means.
   /Auto-review was (?:interrupted by a server restart|fixing the issues it found)/i,
+  // The implementor auto-continue gave up because several sessions in a row did no new work
+  // (continuationProgress.ts noProgressParkText). A wedge: Resume, or a note with direction, clears it.
+  /did no new work/i,
 ];
 
 // The pipeline finished and handed the call to the owner. Long-lived by design; never a defect.

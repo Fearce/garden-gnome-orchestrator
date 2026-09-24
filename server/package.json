@@ -175,6 +175,7 @@
     "test:self-improve-restart": "tsx src/tests/selfImproveRestart.itest.ts",
     "test:restart-revival": "tsx src/tests/restartResumeRevival.itest.ts",
     "test:silent-resume": "tsx src/tests/silentResume.itest.ts",
+    "test:continuation-progress": "tsx src/tests/continuationProgress.itest.ts",
     "test:implementor-handover": "tsx src/tests/implementorHandover.itest.ts",
     "test:cli-role-kickoff": "tsx src/tests/cliRoleKickoff.test.ts",
     "test:per-repo": "tsx src/tests/perRepoConcurrency.itest.ts",

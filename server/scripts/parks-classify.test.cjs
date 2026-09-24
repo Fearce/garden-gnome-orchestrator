@@ -63,8 +63,17 @@ for (const err of [
   "The auto-review's fix round didn't finish — Run failed (error_during_execution). The issues it was sent to fix are still open, so this needs your review.",
   "Auto-review was interrupted by a server restart — click “Auto-review & mark done” to run it again.",
   "Auto-review was fixing the issues it found when a server restart interrupted it — whatever the implementor had already changed is still in the working tree. Click “Auto-review & mark done” to re-review from there.",
+  // A wedged implementor: its auto-continue stopped on a no-progress streak. It must NOT read as a
+  // capacity stall (a rollover would re-wake the wedge) nor as a by-design verdict wait.
+  "Implementor ended without completing — auto-continue stopped: 3 consecutive sessions did no new work (the same actions repeated, or nothing at all, no new findings, and no change to the workspace). It looks stuck and needs your review: send it direction, or resume it to keep going.",
 ]) {
   assert.equal(cls(err), "stalled", `should be a stall: ${err}`);
+}
+{
+  // That wording is written by continuationProgress.ts, not threadManager.ts, so the drift guard below
+  // cannot see it; tie the marker to its real source here.
+  const src = fs.readFileSync(path.resolve(__dirname, "..", "src", "orchestrator", "continuationProgress.ts"), "utf8");
+  assert.ok(src.includes("did no new work"), "the no-progress park wording moved — update STALL_MARKERS in probe-parks.cjs");
 }
 
 // --- verdict: finished, waiting on the owner — by design ---------------------------------------------

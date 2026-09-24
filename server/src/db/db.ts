@@ -2899,6 +2899,36 @@ export class Db {
     return row.n;
   }
 
+  /** What a role did since `since`: its tool-call rows, the findings it posted, and every finding summary
+   *  the task held before. Feeds the auto-continue progress check (`continuationProgress.ts`). Tool content
+   *  is clipped in SQL because a row can carry a whole written file, and only the leading text is needed
+   *  to tell one action from another. */
+  roleActivitySince(
+    threadId: string,
+    role: Message["role"],
+    since: number,
+  ): { actions: string[]; findingSummaries: string[]; earlierFindingSummaries: string[] } {
+    const actions = this.raw
+      .prepare(
+        "SELECT substr(content, 1, 4000) AS content FROM messages WHERE thread_id = ? AND role = ? AND kind = 'tool' AND created_at >= ? ORDER BY created_at, rowid",
+      )
+      .all(threadId, role, since) as { content: string }[];
+    // Only this task's own runs count: another task's `notify_thread` lands here with ITS run id and role.
+    const findingSummaries = this.raw
+      .prepare(
+        "SELECT summary FROM findings WHERE thread_id = ? AND from_role = ? AND created_at >= ? AND from_run_id IN (SELECT id FROM agent_runs WHERE thread_id = ?)",
+      )
+      .all(threadId, role, since, threadId) as { summary: string }[];
+    const earlierFindingSummaries = this.raw
+      .prepare("SELECT summary FROM findings WHERE thread_id = ? AND created_at < ?")
+      .all(threadId, since) as { summary: string }[];
+    return {
+      actions: actions.map((r) => r.content),
+      findingSummaries: findingSummaries.map((r) => r.summary),
+      earlierFindingSummaries: earlierFindingSummaries.map((r) => r.summary),
+    };
+  }
+
   /** The most recent message of a given role+kind for a thread, or null — a single indexed lookup so
    *  callers (e.g. the auto-resume "looks done?" check) don't materialize the whole message history. */
   lastMessageOf(threadId: string, role: Message["role"], kind: Message["kind"]): Message | null {
