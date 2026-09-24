@@ -47,6 +47,19 @@ import {
   type ShotgunPlan,
 } from "./shotgun.js";
 import {
+  isJevSubTask,
+  MAX_SUBTASK_DEPTH,
+  MAX_SUBTASK_REPORT_ROUNDS,
+  SubTaskService,
+  subTaskContractBlock,
+  subTaskDepth,
+  subTaskIntegrationBrief,
+  subTaskReport,
+  type SubAgentRosterEntry,
+  type SubTaskHost,
+} from "./subTasks.js";
+import { JEV_DEFAULT_MODEL, JEV_MODELS } from "../agents/jevClient.js";
+import {
   dedicatedPools,
   dedicatedPoolModel,
   describePool,
@@ -470,6 +483,8 @@ export type SettingsPatch = Partial<
     | "grokAccount"
     | "zaiKeyPresent"
     | "zaiKeyLast4"
+    | "jevKeyPresent"
+    | "jevKeyLast4"
     | "discordTokenPresent"
     | "discordTokenLast4"
     | "xhighEnabled"
@@ -479,7 +494,7 @@ export type SettingsPatch = Partial<
     | "grokModels"
     | "zaiModels"
   >
-> & { openaiApiKey?: string; zaiApiKey?: string; discordBotToken?: string };
+> & { openaiApiKey?: string; zaiApiKey?: string; jevApiKey?: string; discordBotToken?: string };
 
 /** The slice of operator settings the implementor→QA stage needs, captured at pipeline start. */
 interface PipeOpts {
@@ -868,6 +883,9 @@ const REMOTE_CHAT_SEEN_MAX = 500;
 
 export class ThreadManager implements OrchestratorApi {
   private readonly live = new Map<string, LiveImplementor>();
+  /** Sub-agents spawned into child threads (orchestrator/subTasks.ts). Built before restart
+   *  reconciliation, which publishes state changes the service listens to. */
+  readonly subTasks: SubTaskService;
   // One pending "has the implementor read the owner's injection yet?" watch per task (injectionPickup.ts).
   private readonly injectionPickupWatches = new Set<string>();
   private readonly activeRuns = new Map<string, Set<AgentRunLike>>();
@@ -1081,6 +1099,7 @@ export class ThreadManager implements OrchestratorApi {
     readonly freeProviders?: FreeProviderService,
   ) {
     this.reviewInjections = new ReviewInjectionStore(db);
+    this.subTasks = new SubTaskService(this.subTaskHost());
     // Token-reset recovery is unconditional now. Remove obsolete persisted controls so an upgraded DB
     // cannot silently retain an "off" value that strands work, and settings snapshots have no dead data.
     this.db.kvDelete("setting_auto_resume_on_token_reset");
@@ -2633,7 +2652,9 @@ export class ThreadManager implements OrchestratorApi {
     // Keep a requested window dormant while this task waits in the concurrency queue. Its absolute
     // deadline is stamped only when runPipeline actually claims a slot — queued time is not work time.
     const durationMs = input.durationMs && input.durationMs > 0 ? input.durationMs : null;
-    const modelRequest = input.lane === "read"
+    // A sub-task's model is exactly what its spawner named (requestedProvider/Model below), and a Jev
+    // one has none: its brief is a question list, never a model request to detect.
+    const modelRequest = input.lane === "read" || (input.subTask && !input.requestedModel)
       ? null
       : input.requestedModel?.trim()
         // A caller that supplies the provider chose both halves from the live roster, so the model is
@@ -2659,7 +2680,10 @@ export class ThreadManager implements OrchestratorApi {
       agentCount: input.agentCount ?? null,
       parentId: input.parentId ?? null,
       assignment: input.assignment ?? null,
+      subTask: input.subTask ?? null,
     });
+    // Before the first await: the pipeline reads these the moment enqueueOrRun starts it.
+    if (input.jev) this.db.updateThreadStageOutputs(thread.id, { jevState: input.jev.state, jevQuestions: input.jev.questions });
     // Stamp the repo's HEAD NOW, before any agent runs — the "before" point for scoping this task's
     // Changes chip to its own diff. Captured pre-enqueue so a foreign commit that lands between here and
     // the implementor starting is still excluded (its files aren't in the task's written-file set). Null
@@ -2756,6 +2780,8 @@ export class ThreadManager implements OrchestratorApi {
       zaiWeeklySafetyPct: this.settingNum("setting_zai_weekly_safety", 100, 1, 100),
       zaiKeyPresent: !!this.zaiApiKey(),
       zaiKeyLast4: this.zaiKeyLast4(),
+      jevKeyPresent: !!this.jevApiKey(),
+      jevKeyLast4: this.jevKeyLast4(),
       zaiModels: this.pickableZaiModels(),
       discordNotify: this.settingBool("setting_discord_notify", false),
       discordChannelId: this.discordChannelId(),
@@ -3068,7 +3094,7 @@ export class ThreadManager implements OrchestratorApi {
     if (request && !request.model) {
       const resolved = resolveModelRequest(request.requested, candidates);
       if (resolved.model) request = resolved;
-    } else if (!request && thread.lane !== "read" && thread.lane !== "vanilla") {
+    } else if (!request && thread.lane !== "read" && thread.lane !== "vanilla" && !thread.subTask) {
       request = detectModelRequest([thread.rawPrompt, thread.brief].filter(Boolean).join("\n"), candidates);
     }
     if (!request) return thread;
@@ -3114,6 +3140,7 @@ export class ThreadManager implements OrchestratorApi {
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    if (isJevSubTask(thread)) return { ok: false, state: thread.state, error: "A Jev sub-task always runs on Jev; it has no implementor model to select." };
     if (thread.lane === "read") {
       return { ok: false, state: thread.state, error: "Read-only tasks have no implementor model to select." };
     }
@@ -4414,6 +4441,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return k && k.length >= 4 ? k.slice(-4) : null;
   }
 
+  /** The TypeSafe API key Jev sub-agents call with: the kv-stored UI value, else the env fallback. Never
+   *  broadcast — only its presence + last 4 chars leave the server. */
+  jevApiKey(): string | undefined {
+    return this.db.kvGet("jev_api_key")?.trim() || config.jev.apiKey;
+  }
+
+  private jevKeyLast4(): string | null {
+    const k = this.jevApiKey();
+    return k && k.length >= 4 ? k.slice(-4) : null;
+  }
+
   /** The Discord bot token used for phone notifications: the kv-stored UI value if present, else the
    *  server/.env fallback. NEVER broadcast — only its presence + last 4 chars leave the server. */
   private discordBotToken(): string | undefined {
@@ -4566,6 +4604,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Write-only z.ai key: store the trimmed value, or clear it (empty string) so settings() falls back to
     // the env key. The raw key is never returned to clients — only zaiKeyPresent/last4 are.
     if (patch.zaiApiKey !== undefined) this.db.kvSet("zai_api_key", patch.zaiApiKey.trim());
+    // Write-only TypeSafe key for Jev sub-agents; empty clears it back to TYPESAFE_API_KEY.
+    if (patch.jevApiKey !== undefined) this.db.kvSet("jev_api_key", patch.jevApiKey.trim());
     if (patch.discordNotify !== undefined) this.db.kvSet("setting_discord_notify", patch.discordNotify ? "1" : "0");
     // A pasted channel LINK or `<#id>` mention is the common paste; stored verbatim it 404s on every
     // notice, so the id is lifted out of whichever shape arrived.
@@ -6459,12 +6499,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * owner notices, terminal cleanup, or model grading. */
   private publishState(t: Thread): void {
     this.hub.publish({ type: "thread.upsert", thread: t });
+    if (t.subTask) this.subTasks.onStateChanged(t);
     // The concurrency slot is released HERE, from the task's own state, rather than only from the
     // owning run's `finally`. A parked or settled task is not being worked on, so it must not occupy a
     // slot even when whatever was awaiting it never unwinds. The run's own release is still correct and
     // still fires; both are idempotent, and the first one to land pumps the queue.
     if (SLOT_FREE_STATES.has(t.state) && !this.acceptingBeforeBonus.has(t.id) && !this.db.getThreadStageOutputs(t.id).selfImproving) this.releasePipelineSlot(t.id);
-    if (t.state === "done") {
+    // A sub-task reports to the agent that spawned it; the owner hears about the parent task instead of
+    // one phone notice per sub-agent.
+    if (t.subTask) {
+      /* no owner notice */
+    } else if (t.state === "done") {
       const deployment = t.manualDeployment?.status === "verified" ? t.manualDeployment : null;
       this.notifyOwner(
         deployment
@@ -6760,6 +6805,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         this.setState(threadId, "failed", `Workspace "${thread.workspace}" does not exist on disk — agents can't run there. Re-dispatch with a valid path.`);
         return;
       }
+      // A Jev sub-agent is one typed-judgement HTTP call, not an agent session: no route, no kickoff.
+      if (isJevSubTask(thread)) {
+        await this.subTasks.runJev(thread);
+        return;
+      }
       const saved = this.db.getThreadStageOutputs(threadId);
       // Read lane (dispatch_read): short-circuit the normal task-aware implementation route to a single
       // read-only reader stage. readerDone (mirroring planDone) makes the answer sticky across resume, so
@@ -6876,6 +6926,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (collaborator) {
         const owned = this.collaboratorOwnershipBlock(thread);
         if (owned) kickoff = `${kickoff}\n\n${owned}`;
+      }
+      if (thread.subTask && !saved.kickoff) {
+        const parent = thread.parentId ? this.db.getThread(thread.parentId) : null;
+        kickoff = `${kickoff}\n\n${subTaskContractBlock({
+          spec: thread.subTask,
+          parentTitle: parent?.title ?? "(a task that no longer exists)",
+          canSpawn: subTaskDepth(this.db, thread) < MAX_SUBTASK_DEPTH,
+        })}`;
       }
       if (this.approvalMode() && !saved.approved) {
         this.setState(threadId, "awaiting_approval");
@@ -8274,6 +8332,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         onManualDeployOnly: (claim) => {
           this.recordCliManualDeployment(thread, runId, claim);
         },
+        onSubTask: vanilla ? undefined : (raw) => {
+          void this.spawnFromCliBridge(thread, runId, raw);
+        },
       });
       // If this run had to self-heal a wedged resume, remember it so every later turn skips the resume
       // attempt (and its 60s watchdog) and goes straight to fresh — resume keeps wedging on this thread.
@@ -8308,6 +8369,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         },
         onManualDeployOnly: (claim) => {
           this.recordCliManualDeployment(thread, runId, claim);
+        },
+        onSubTask: (raw) => {
+          void this.spawnFromCliBridge(thread, runId, raw);
         },
       });
       // Reuse the CLI-resume-wedged set (shared by both CLI backends): once a resume self-heals to fresh,
@@ -9583,6 +9647,183 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
   }
 
+  // ================= SUB-TASKS — sub-agents an agent spawned (orchestrator/subTasks.ts) ================
+
+  /** The narrow seam SubTaskService works through, so that module never imports ThreadManager. */
+  private subTaskHost(): SubTaskHost {
+    return {
+      db: this.db,
+      hub: this.hub,
+      dispatch: (input) => this.dispatch(input),
+      officeName: (threadId, role) => this.officeName(threadId, role),
+      roster: () => this.subAgentRoster(),
+      jevApiKey: () => this.jevApiKey(),
+      nudgeLive: (threadId, text) => {
+        const live = this.live.get(threadId);
+        // CLI backends turn every send into an interrupt-and-resume of the whole batch, which is a poor
+        // trade for a heads-up; they receive the result at the barrier instead.
+        if (!live || live.run.finished || !(live.run instanceof AgentRun)) return;
+        this.sendCommunication(live.run, text, { priority: "next" });
+      },
+      injectThread: (threadId, message, mode, images, options) => this.injectThread(threadId, message, mode, images, options),
+      setState: (threadId, state, error) => this.setState(threadId, state, error),
+      cancelThread: (threadId) => this.cancelThread(threadId),
+    };
+  }
+
+  /** Every backend a sub-agent may run on, as the spawning agent sees it: whether it is configured,
+   *  whether it has capacity now, and each model with the effort tiers it accepts. */
+  private subAgentRoster(): SubAgentRosterEntry[] {
+    const settings = this.settings();
+    const entry = (
+      provider: SubAgentRosterEntry["provider"],
+      available: boolean,
+      reason: string,
+      hasHeadroom: boolean,
+      defaultModel: string | null,
+      models: string[],
+      effortsFor: (model: string) => readonly Effort[],
+    ): SubAgentRosterEntry => ({
+      provider,
+      available,
+      ...(available ? {} : { reason }),
+      hasHeadroom: available && hasHeadroom,
+      defaultModel: available ? defaultModel : null,
+      models: available ? uniq(models).map((id) => ({ id, efforts: [...effortsFor(id)] })) : [],
+    });
+    const claudeEnabled = this.accounts.dto().some((account) => account.enabled);
+    const cap = (efforts: readonly Effort[]): Effort[] => efforts.filter((effort) => effort !== "xhigh" || config.enableXhigh);
+    return [
+      entry(
+        "claude",
+        claudeEnabled,
+        "no Claude subscription is enabled",
+        this.providerReady("claude"),
+        this.providerRoleModel("claude", "implementor"),
+        this.pickableClaudeModels(),
+        (model) => cap(claudeEffortsForModel(model)),
+      ),
+      entry(
+        "codex",
+        settings.codexEnabled && (settings.hasOpenaiKey || settings.codexChatgptLogin),
+        settings.codexEnabled ? "Codex has no ChatGPT login or OpenAI key" : "Codex is switched off in Settings",
+        this.providerReady("codex"),
+        this.providerRoleModel("codex", "implementor"),
+        this.pickableCodexModels(),
+        (model) => this.codexSupportedEfforts(model),
+      ),
+      entry(
+        "grok",
+        settings.grokEnabled && settings.grokSignedIn,
+        settings.grokEnabled ? "Grok is not signed in" : "Grok is switched off in Settings",
+        this.providerReady("grok"),
+        this.providerRoleModel("grok", "implementor"),
+        this.pickableGrokModels(),
+        (model) => grokEffortsForModel(model),
+      ),
+      entry(
+        "zai",
+        settings.zaiEnabled && settings.zaiKeyPresent,
+        settings.zaiEnabled ? "z.ai has no API key" : "z.ai is switched off in Settings",
+        this.providerReady("zai"),
+        this.providerRoleModel("zai", "implementor"),
+        this.pickableZaiModels(),
+        (model) => zaiEffortsForModel(model),
+      ),
+      entry("jev", !!this.jevApiKey(), "no TypeSafe API key is stored (Settings → Subscriptions → Jev)", true, JEV_DEFAULT_MODEL, [...JEV_MODELS], () => []),
+    ];
+  }
+
+  /** A CLI implementor (Codex/Grok) emitted `SUBTASK: {json}`. It has no tool result to read, so a refusal
+   *  goes back as a heads-up finding, which reaches the live run. */
+  private async spawnFromCliBridge(thread: Thread, runId: string, raw: unknown): Promise<void> {
+    const res = await this.subTasks.spawn({ threadId: thread.id, role: "implementor", runId }, raw);
+    if (res.ok) return;
+    this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Sub-agent not spawned", detail: res.message, severity: "warning" });
+  }
+
+  /**
+   * The sub-task barrier, at every implementor hand-off. Waits for this task's still-running sub-agents,
+   * then resumes the implementor with each result it has not received yet, so no sub-agent's work is
+   * silently dropped between a parent's last turn and QA. Bounded by MAX_SUBTASK_REPORT_ROUNDS (a round can
+   * spawn more sub-agents) and by the barrier timeout; both limits say so in the task's feed.
+   */
+  private async integrateSubTasks(
+    thread: Thread,
+    effort: Effort | undefined,
+    kickoff: string,
+    res: ResultEvent | undefined,
+    qaFollows: boolean,
+  ): Promise<ResultEvent | undefined> {
+    let stoppedWaiting = false;
+    for (;;) {
+      if (this.cancelled(thread.id)) return res;
+      if (!stoppedWaiting && this.subTasks.unsettled(thread.id).length) stoppedWaiting = !(await this.awaitSubTasks(thread));
+      if (this.cancelled(thread.id)) return res;
+      const pending = this.subTasks.unreported(thread.id);
+      if (!pending.length) return res;
+      const rounds = this.db.getThreadStageOutputs(thread.id).subTaskRounds ?? 0;
+      if (rounds >= MAX_SUBTASK_REPORT_ROUNDS || !res || res.isError) {
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "implementor",
+          summary: `⑂ ${pending.length} sub-task result(s) were not handed back to the implementor`,
+          detail: `${!res || res.isError ? "The implementor's own run did not finish cleanly" : `The sub-task report limit (${MAX_SUBTASK_REPORT_ROUNDS} rounds) was reached`}, so these results need a human look: ${pending.map((c) => `"${c.title}" (${c.state})`).join(", ")}. Open each sub-task from this task's panel.`,
+          severity: "warning",
+        });
+        return res;
+      }
+      const message = subTaskIntegrationBrief(pending.map((child) => subTaskReport(this.db, child)));
+      for (const child of pending) this.subTasks.markReported(child.id);
+      this.db.updateThreadStageOutputs(thread.id, { subTaskRounds: rounds + 1 });
+      await this.stopLive(thread.id);
+      if (this.cancelled(thread.id)) return res;
+      const start = await this.startResumedImplementor(
+        thread,
+        kickoff,
+        this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
+        { effort, resumeNudge: message, directorNote: message, qaFollows },
+      );
+      if (!start) return res;
+      this.flushDirectorNotes(thread.id, start.run);
+      res = await this.awaitImplementorCompletion(thread, effort, kickoff, start.run, start.accountId, false, message, qaFollows);
+      res = await this.drainQueuedFollowUps(thread, effort, kickoff, res, qaFollows);
+    }
+  }
+
+  /** Block until every running sub-task of `thread` settles. False when the barrier timed out first. */
+  private async awaitSubTasks(thread: Thread): Promise<boolean> {
+    const deadline = Date.now() + config.subTaskBarrierTimeoutMs;
+    let announced = false;
+    for (;;) {
+      const running = this.subTasks.unsettled(thread.id);
+      if (!running.length) return true;
+      if (this.cancelled(thread.id)) return false;
+      if (Date.now() > deadline) {
+        this.postFinding({
+          threadId: thread.id,
+          fromRole: "implementor",
+          summary: `⑂ Stopped waiting for ${running.length} sub-task(s) after ${formatDuration(config.subTaskBarrierTimeoutMs)}`,
+          detail: `Still running: ${running.map((c) => `"${c.title}" (${c.state})`).join(", ")}. They keep working; open them from this task's panel.`,
+          severity: "warning",
+        });
+        return false;
+      }
+      if (!announced) {
+        announced = true;
+        this.setState(thread.id, "implementing");
+        const m = this.db.addMessage({
+          threadId: thread.id,
+          role: "implementor",
+          kind: "system",
+          content: `⑂ Waiting for ${running.length} sub-task(s) to finish before handing off: ${running.map((c) => `"${c.title}"`).join(", ")}.`,
+        });
+        this.hub.publish({ type: "thread.message", threadId: thread.id, message: m });
+      }
+      await new Promise((r) => setTimeout(r, config.subTaskBarrierPollMs));
+    }
+  }
+
   /** Implementor → QA → fix, repeated until QA passes or we run out of rounds. The live
    *  implementor is stopped on every exit so a finished/parked task stops counting as live;
    *  later injects fall back to the resume path (lastImplementorSession). */
@@ -10259,6 +10500,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  stops on cancel, an errored/parked run (don't pile work onto a task that's already failing), or an
    *  empty queue. A no-op (returns `res` untouched) when nothing was queued — the common case. */
   private async drainQueuedImplementor(
+    thread: Thread,
+    effort: Effort | undefined,
+    kickoff: string,
+    res: ResultEvent | undefined,
+    qaFollows: boolean,
+  ): Promise<ResultEvent | undefined> {
+    res = await this.drainQueuedFollowUps(thread, effort, kickoff, res, qaFollows);
+    return this.integrateSubTasks(thread, effort, kickoff, res, qaFollows);
+  }
+
+  /** The Queue button's half of the hand-off boundary (see drainQueuedImplementor). */
+  private async drainQueuedFollowUps(
     thread: Thread,
     effort: Effort | undefined,
     kickoff: string,
@@ -11090,6 +11343,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     options: { recipient?: "implementor" | "qa" | "reviewer"; standing?: boolean } = {},
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
+    // A Jev sub-task has no session to steer: the owner's message is another question against its state.
+    if (thread && isJevSubTask(thread)) {
+      if (options.standing === false) return { ok: false, state: thread.state, error: "A Jev sub-task only answers the owner's questions." };
+      return this.subTasks.ownerQuestion(thread, message);
+    }
     if (thread && this.settings().manualSupervisionEnabled &&
         (mode === "queue" || mode === "interrupt" || thread.state === "qa" || this.liveQa.has(threadId))) {
       return { ok: false, state: thread.state, error: "Manual supervision is on. Use Append for the active implementor, or wait for Proceed before starting another agent." };
@@ -11754,6 +12012,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // is terminal until an explicit Retry, so never let that stale timer resurrect gameplay or other
     // autonomous work behind the operator's back.
     if (thread.state === "cancelled") return { ok: false, error: "Task is cancelled. Retry it to start again." };
+    if (isJevSubTask(thread)) {
+      // Re-asks whatever a restart or an API failure left unanswered; settles straight back otherwise.
+      void this.subTasks.runJev(thread);
+      return { ok: true, state: "implementing" };
+    }
     if (this.tokenLimitTripped && !this.activePipelines.has(threadId) && !this.hasActiveRun(threadId)) {
       return { ok: false, state: thread.state, error: "Token safety is holding new work until the blocking usage window resets." };
     }
@@ -12102,6 +12365,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   async cancelThread(threadId: string): Promise<ThreadActionResult> {
     this.stopping.add(threadId);
     this.dropFromQueue(threadId); // if it was waiting for a slot, it never starts now
+    this.subTasks.abortJev(threadId);
     const set = this.activeRuns.get(threadId);
     if (set) {
       for (const r of set) {
@@ -12154,6 +12418,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     this.setState(threadId, "cancelled");
     this.stopping.delete(threadId);
+    await this.subTasks.cancelChildren(threadId);
     return { ok: true, state: "cancelled" };
   }
 

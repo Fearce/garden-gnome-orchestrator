@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS threads (
   -- CONTRACT that keeps parallel agents from overwriting each other in the one shared working tree, so it
   -- is persisted rather than held in memory: a resumed collaborator must be handed the same share.
   assignment    TEXT,
+  -- Set on a SUB-TASK thread, as JSON ({provider, model, effort, spawnedByRole, spawnedByName, spawnedByRunId}):
+  -- a sub-agent another agent spawned into its own child thread (parent_id names the spawning task). NULL on
+  -- every other thread, which is also what tells a sub-task apart from a shotgun collaborator. Kept small on
+  -- purpose because it rides on every board snapshot row; a Jev sub-task's state and answers live in
+  -- stage_outputs.
+  sub_task      TEXT,
   -- Clipped copy of this task's newest readable (text/system) message, for the board snapshot. Stored
   -- rather than derived: deriving it per row is a correlated seek into the messages table, and the
   -- snapshot reads EVERY task, so on this installation it cost 2,773 random page reads per client

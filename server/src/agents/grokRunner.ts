@@ -9,7 +9,7 @@ import { config } from "../config.js";
 import { trackBlockingSync } from "../eventLoopMonitor.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
-import { endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, extractCliBridgeMessages } from "./officeBridge.js";
+import { endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, endsWithOpenSubTaskMarker, extractCliBridgeMessages } from "./officeBridge.js";
 import {
   formatStructuredRoleFeed,
   parseStructuredText,
@@ -47,6 +47,8 @@ export interface GrokRunConfig {
   onDeliverable?: (label: string, path: string) => void;
   /** Structured evidence that the only remaining action is the owner's manual deployment. */
   onManualDeployOnly?: (claim: unknown) => void;
+  /** A standalone `SUBTASK: {json}` line — the CLI's spawn_subagent (orchestrator/subTasks.ts). */
+  onSubTask?: (spec: unknown) => void;
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Grok headless takes only a
@@ -610,7 +612,8 @@ export class GrokAgentRun implements AgentRunLike {
       !endsWithOpenOfficeMarker(this.textBuf) &&
       !endsWithOpenOperatorNoteMarker(this.textBuf) &&
       !endsWithOpenDeliverableMarker(this.textBuf) &&
-      !endsWithOpenManualDeploymentMarker(this.textBuf)
+      !endsWithOpenManualDeploymentMarker(this.textBuf) &&
+      !endsWithOpenSubTaskMarker(this.textBuf)
     ) {
       this.textBuf += "\n";
     }
@@ -648,6 +651,13 @@ export class GrokAgentRun implements AgentRunLike {
         this.cfg.onManualDeployOnly?.(deployment.claim);
       } catch {
         /* authoritative validation happens in ThreadManager; a bad side-channel cannot fail the turn */
+      }
+    }
+    for (const spawn of bridge.subTasks) {
+      try {
+        this.cfg.onSubTask?.(spawn.spec);
+      } catch {
+        /* the spawn service validates and reports; a bad side-channel cannot fail the turn */
       }
     }
     this.textBuf = bridge.visible;

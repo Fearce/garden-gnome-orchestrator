@@ -13,7 +13,7 @@ import {
   trigramMatchExpr,
   type BackfillStep,
 } from "./searchIndex.js";
-import { BRIEF_PREVIEW_CHARS, COWORK_SNIPPET_CHARS } from "../types.js";
+import { BRIEF_PREVIEW_CHARS, COWORK_SNIPPET_CHARS, SUB_AGENT_PROVIDERS } from "../types.js";
 import type {
   AgentRun,
   AgentRunState,
@@ -58,6 +58,7 @@ import type {
   Severity,
   ShotgunAssignment,
   StageOutputs,
+  SubTaskSpec,
   SupervisorAction,
   SupervisorChatActionResult,
   SupervisorChatStatus,
@@ -134,6 +135,7 @@ function rowToThreadFields(r: Row, manualDeploymentRaw: unknown): Thread {
     agentCount: (r.agent_count as number | null) ?? null,
     parentId: (r.parent_id as string | null) ?? null,
     assignment: parseAssignment(r.assignment),
+    subTask: parseSubTask(r.sub_task),
     manualDeployment: manualDeploymentSummary(manualDeploymentRaw),
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
@@ -182,7 +184,7 @@ function rowToThreadSummaryFromListing(r: Row): ThreadSummary {
  *  Shared by every bulk listing query so they stay in sync with `rowToThreadFields`. */
 const THREAD_LISTING_COLUMNS = `id, title, state, workspace, brief, raw_prompt, error, effort_override,
   model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
-  active_deadline_at, agent_count, parent_id, assignment, created_at, updated_at,
+  active_deadline_at, agent_count, parent_id, assignment, sub_task, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
 
 /** The message kinds a board card can quote back as "what this task last said" — the two the feed
@@ -199,7 +201,7 @@ const THREAD_SUMMARY_COLUMNS = `id, title, state, workspace, error, effort_overr
   substr(brief, 1, ${BRIEF_PREVIEW_CHARS}) AS brief_preview,
   latest_message_preview,
   model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
-  active_deadline_at, agent_count, parent_id, assignment, created_at, updated_at,
+  active_deadline_at, agent_count, parent_id, assignment, sub_task, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
 
 function parseModelRequest(raw: unknown): ModelRequest | null {
@@ -236,6 +238,25 @@ function parseAssignment(raw: unknown): ShotgunAssignment | null {
   try {
     const v = JSON.parse(raw) as ShotgunAssignment;
     return v && typeof v === "object" && typeof v.objective === "string" ? { ...v, files: Array.isArray(v.files) ? v.files : [] } : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseSubTask(raw: unknown): SubTaskSpec | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const v = JSON.parse(raw) as SubTaskSpec;
+    return v && typeof v === "object" && (SUB_AGENT_PROVIDERS as readonly string[]).includes(v.provider)
+      ? {
+          provider: v.provider,
+          model: typeof v.model === "string" ? v.model : null,
+          effort: v.effort ?? null,
+          spawnedByRole: v.spawnedByRole,
+          spawnedByName: v.spawnedByName ?? null,
+          spawnedByRunId: v.spawnedByRunId ?? null,
+        }
+      : null;
   } catch {
     return null;
   }
@@ -777,6 +798,7 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN agent_count INTEGER",
       "ALTER TABLE threads ADD COLUMN parent_id TEXT",
       "ALTER TABLE threads ADD COLUMN assignment TEXT",
+      "ALTER TABLE threads ADD COLUMN sub_task TEXT",
       "ALTER TABLE chat_messages ADD COLUMN sender_name TEXT",
       "ALTER TABLE findings ADD COLUMN kind TEXT NOT NULL DEFAULT 'finding'",
       "ALTER TABLE findings ADD COLUMN path TEXT",
@@ -813,6 +835,9 @@ export class Db {
     // After the ALTER, never in SCHEMA: on a pre-sha256 DB the column doesn't exist yet when
     // SCHEMA runs, and exec(SCHEMA) is unguarded — the failed index would abort boot.
     this.raw.exec("CREATE INDEX IF NOT EXISTS idx_attachments_content ON attachments(sha256, name, media_type)");
+    // A parent's collaborators and sub-tasks are looked up on every sub-task state change and by the
+    // sub-task barrier's poll; without this each lookup walks every thread row.
+    this.raw.exec("CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_id) WHERE parent_id IS NOT NULL");
     this.installLatestMessagePreviewTrigger();
     this.backfillDirectorThreadLinks();
     this.backfillRemoteChatInstances();
@@ -1545,6 +1570,7 @@ export class Db {
     agentCount?: number | null;
     parentId?: string | null;
     assignment?: ShotgunAssignment | null;
+    subTask?: SubTaskSpec | null;
   }): Thread {
     const t: Thread = {
       id: newId(),
@@ -1562,6 +1588,7 @@ export class Db {
       agentCount: input.agentCount ?? null,
       parentId: input.parentId ?? null,
       assignment: input.assignment ?? null,
+      subTask: input.subTask ?? null,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -1571,10 +1598,10 @@ export class Db {
         // nothing to quote, and NULL is reserved to mean "a row older than the column" so the backfill
         // walk has an exact, shrinking set to work through.
         `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, effort_override, model_request, lane,
-                             duration_ms, deadline_at, agent_count, parent_id, assignment, latest_message_preview,
+                             duration_ms, deadline_at, agent_count, parent_id, assignment, sub_task, latest_message_preview,
                              created_at, updated_at)
          VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @effortOverride, @modelRequest, @lane,
-                @durationMs, @deadlineAt, @agentCount, @parentId, @assignment, '', @createdAt, @updatedAt)`,
+                @durationMs, @deadlineAt, @agentCount, @parentId, @assignment, @subTask, '', @createdAt, @updatedAt)`,
       )
       // better-sqlite3 binds only primitives, so the assignment rides as JSON text (the mapper parses
       // it back); everything else on the DTO is already a scalar.
@@ -1582,6 +1609,7 @@ export class Db {
         ...t,
         modelRequest: t.modelRequest ? JSON.stringify(t.modelRequest) : null,
         assignment: t.assignment ? JSON.stringify(t.assignment) : null,
+        subTask: t.subTask ? JSON.stringify(t.subTask) : null,
       });
     return t;
   }
@@ -1648,9 +1676,15 @@ export class Db {
   }
 
   /** Collaborator threads belonging to a lead, oldest first — the order they were assigned, which is the
-   *  order the decomposition ranked them. */
+   *  order the decomposition ranked them. Sub-tasks share parent_id but are not collaborators: counting
+   *  one here would make a shotgun lead's durable split look incomplete after a restart. */
   listCollaborators(parentId: string): Thread[] {
-    return (this.raw.prepare("SELECT * FROM threads WHERE parent_id = ? ORDER BY created_at ASC").all(parentId) as Row[]).map(rowToThread);
+    return (this.raw.prepare("SELECT * FROM threads WHERE parent_id = ? AND sub_task IS NULL ORDER BY created_at ASC, rowid ASC").all(parentId) as Row[]).map(rowToThread);
+  }
+
+  /** The sub-tasks an agent on `parentId` spawned, oldest first. */
+  listSubTasks(parentId: string): Thread[] {
+    return (this.raw.prepare("SELECT * FROM threads WHERE parent_id = ? AND sub_task IS NOT NULL ORDER BY created_at ASC, rowid ASC").all(parentId) as Row[]).map(rowToThread);
   }
 
   /** Set (or clear) a task's timed work window. Managed on its own for the same reason as
@@ -2148,6 +2182,11 @@ export class Db {
       const preservedStage = this.getThreadStageOutputs(tid);
       const preservedReaderEscalation = preservedStage.readerEscalation;
       const preservedDirectives = preservedStage.standingDirectives;
+      // A Jev sub-task's state and spawn questions ARE its brief; a retry re-asks them.
+      const preservedJev =
+        preservedStage.jevState !== undefined && preservedStage.jevQuestions
+          ? { jevState: preservedStage.jevState, jevQuestions: preservedStage.jevQuestions }
+          : null;
       const blobs = this.threadAttachmentIds(tid);
       this.raw.prepare("DELETE FROM agent_runs WHERE thread_id = ?").run(tid);
       // Deliverables are a durable owner-facing file index. Their paths remain guarded at serve time,
@@ -2166,10 +2205,11 @@ export class Db {
         .run({
           id: tid,
           stageOutputs:
-            preservedReaderEscalation || preservedDirectives?.length
+            preservedReaderEscalation || preservedDirectives?.length || preservedJev
               ? JSON.stringify({
                   ...(preservedReaderEscalation ? { readerEscalation: preservedReaderEscalation } : {}),
                   ...(preservedDirectives?.length ? { standingDirectives: preservedDirectives } : {}),
+                  ...(preservedJev ?? {}),
                 })
               : null,
         });

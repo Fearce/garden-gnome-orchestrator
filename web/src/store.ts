@@ -738,6 +738,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   zaiEffort: "max",
   zaiWeeklySafetyPct: 100,
   zaiKeyPresent: false,
+  jevKeyPresent: false,
   zaiKeyLast4: null,
   zaiModels: [],
   discordNotify: false,

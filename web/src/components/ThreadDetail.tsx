@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore, type OutboundMessage } from "../store.js";
-import type { AgentRun, FeedItem, Role, Thread } from "../types.js";
+import type { AgentRun, FeedItem, Role, SubAgentProvider, SubTaskSpec, Thread } from "../types.js";
 import { agentName, isCollaborationRoom, repoRoom } from "../types.js";
 import { canAutoReview, clock, formatDuration, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed } from "../lib/timing.js";
@@ -308,9 +308,14 @@ function TaskMode({ thread }: { thread: Thread }) {
   // The stable `threads` map, then derive — a selector returning a fresh array would never be
   // reference-equal to the previous one and would re-render this panel forever (React #185).
   const threads = useStore((s) => s.threads);
-  const collaborators = useMemo(() => Object.values(threads).filter((t) => t.parentId === thread.id), [threads, thread.id]);
+  const children = useMemo(
+    () => Object.values(threads).filter((t) => t.parentId === thread.id).sort((a, b) => a.createdAt - b.createdAt),
+    [threads, thread.id],
+  );
+  const collaborators = useMemo(() => children.filter((t) => !t.subTask), [children]);
+  const subTasks = useMemo(() => children.filter((t) => t.subTask), [children]);
   const lead = useStore((s) => (thread.parentId ? s.threads[thread.parentId] : undefined));
-  if (!thread.deadlineAt && !thread.durationMs && !collaborators.length && !thread.parentId) return null;
+  if (!thread.deadlineAt && !thread.durationMs && !children.length && !thread.parentId) return null;
 
   return (
     <div className="taskmode-panel">
@@ -334,7 +339,20 @@ function TaskMode({ thread }: { thread: Thread }) {
 
       {/* A collaborator says which task it belongs to and what it owns — the two things that explain
           why it exists and why its diff is deliberately partial. */}
-      {thread.parentId ? (
+      {thread.parentId && thread.subTask ? (
+        <div className="taskmode-row">
+          <span className="taskmode-key mono">sub-task of</span>
+          <span className="taskmode-val">
+            <button className="taskmode-link" onClick={() => select(thread.parentId!)} title="Open the task that spawned this sub-agent">
+              {lead?.title ?? "the parent task"}
+            </button>
+            <span className="subtask-runtime mono">{subTaskRuntime(thread.subTask)}</span>
+            {thread.subTask.spawnedByName ? (
+              <span className="taskmode-files">spawned by {thread.subTask.spawnedByName} ({thread.subTask.spawnedByRole})</span>
+            ) : null}
+          </span>
+        </div>
+      ) : thread.parentId ? (
         <div className="taskmode-row">
           <span className="taskmode-key mono">share of</span>
           <span className="taskmode-val">
@@ -366,8 +384,37 @@ function TaskMode({ thread }: { thread: Thread }) {
           </span>
         </div>
       ) : null}
+
+      {subTasks.length ? (
+        <div className="taskmode-row">
+          <span className="taskmode-key mono">sub-tasks</span>
+          <span className="taskmode-val taskmode-collabs">
+            {subTasks.map((c) => (
+              <button
+                key={c.id}
+                className="taskmode-collab subtask-chip"
+                style={{ "--state-color": stateColor(c.state) } as CSSProperties}
+                onClick={() => select(c.id)}
+                title={`${c.title} — ${stateLabel(c.state)}\n${subTaskRuntime(c.subTask!)}${c.subTask!.spawnedByName ? `\nspawned by ${c.subTask!.spawnedByName}` : ""}\nOpen to watch it or message it directly.`}
+              >
+                <span className="taskmode-collab-dot" aria-hidden="true" />
+                <span className="subtask-provider mono">{PROVIDER_SHORT[c.subTask!.provider]}</span>
+                <span className="taskmode-collab-title">{c.title}</span>
+                <span className="taskmode-collab-state">{stateLabel(c.state)}</span>
+              </button>
+            ))}
+          </span>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+const PROVIDER_SHORT: Record<SubAgentProvider, string> = { claude: "Claude", codex: "Codex", grok: "Grok", zai: "z.ai", jev: "Jev" };
+
+/** "Codex · gpt-5.6-sol · high" — what a sub-agent actually runs on. */
+function subTaskRuntime(spec: SubTaskSpec): string {
+  return [PROVIDER_SHORT[spec.provider], spec.model, spec.effort].filter(Boolean).join(" · ");
 }
 
 const DEADLINE_PRESETS = [
@@ -1277,7 +1324,7 @@ export function ThreadDetail() {
         {frozen ? <span className="inject-frost" aria-hidden="true" /> : null}
         <textarea
           value={msg}
-          placeholder={frozen ? "Frozen — every account this task needs is rate-limited; it auto-resumes on its own." : manualInjectBlocked ? "Manual supervision: wait for Proceed or the current QA result." : `Send current instruction to the ${recipientLabel}…  (paste/drop images · ⌘/Ctrl+Enter = inject)`}
+          placeholder={frozen ? "Frozen — every account this task needs is rate-limited; it auto-resumes on its own." : manualInjectBlocked ? "Manual supervision: wait for Proceed or the current QA result." : thread.subTask?.provider === "jev" ? "Ask Jev another question about this sub-task's state — plain text is a yes/no question, or paste a JSON question map  (⌘/Ctrl+Enter = ask)" : `Send current instruction to the ${recipientLabel}…  (paste/drop images · ⌘/Ctrl+Enter = inject)`}
           onChange={(e) => setMsg(e.target.value)}
           onPaste={att.onPaste}
           disabled={frozen || manualInjectBlocked}
@@ -1295,10 +1342,13 @@ export function ThreadDetail() {
         <ComposerThumbs images={att.images} onRemove={att.remove} />
         <div className="row">
           <AttachButton onPick={att.addFiles} />
-          <TaskModelPicker
-            thread={thread}
-            active={isLive || threadRuns.some((run) => run.role === "implementor" && runActive(run.state))}
-          />
+          {/* A Jev sub-task has no implementor model to pin: it is always the one Jev endpoint. */}
+          {thread.subTask?.provider === "jev" ? null : (
+            <TaskModelPicker
+              thread={thread}
+              active={isLive || threadRuns.some((run) => run.role === "implementor" && runActive(run.state))}
+            />
+          )}
           <button
             className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}
             onClick={() => doInject("queue")}

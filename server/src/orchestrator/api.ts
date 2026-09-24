@@ -2,7 +2,8 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
 import type { TokenShiftReport } from "./usageWindows.js";
-import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, Thread, ThreadLane } from "../types.js";
+import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, JevJson, JevQuestion, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, SubTaskSpec, Thread, ThreadLane } from "../types.js";
+import type { SubTaskService } from "./subTasks.js";
 
 export interface DispatchInput {
   title: string;
@@ -29,6 +30,10 @@ export interface DispatchInput {
   // of the work this collaborator exclusively owns. Never set by the director or the console.
   parentId?: string | null;
   assignment?: ShotgunAssignment | null;
+  // Set only by SubTaskService when an agent spawns a SUB-TASK (parentId = the spawning task). A coding
+  // sub-agent also carries requestedProvider+requestedModel as its exact pin; a Jev one carries `jev`.
+  subTask?: SubTaskSpec | null;
+  jev?: { state: JevJson; questions: Record<string, JevQuestion> } | null;
 }
 
 export interface AskUserInput {
@@ -105,6 +110,8 @@ export interface OrchestratorApi {
   readonly db: Db;
   readonly hub: EventHub;
   readonly memory: MemoryService;
+  /** Sub-agents an agent spawned into child threads (spawn_subagent and friends). */
+  readonly subTasks: SubTaskService;
 
   /** Block until the user answers in the GUI; returns the answer text. */
   askUser(input: AskUserInput): Promise<string>;

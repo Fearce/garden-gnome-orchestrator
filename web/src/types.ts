@@ -161,6 +161,9 @@ export interface Thread {
   agentCount?: number | null;
   parentId?: string | null;
   assignment?: ShotgunAssignment | null;
+  // A SUB-TASK: a sub-agent another agent spawned (parentId names the spawning task). Shown inside the
+  // parent's panel, never on the board.
+  subTask?: SubTaskSpec | null;
   manualDeployment?: ManualDeploymentSummary | null;
   createdAt: number;
   updatedAt: number;
@@ -641,6 +644,8 @@ export interface OrchestratorSettings {
   zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (100 = off): above it, tasks route off z.ai
   zaiKeyPresent: boolean; // read-only: an API key is stored (raw key never reaches the client)
   zaiKeyLast4?: string | null; // read-only: last 4 chars for the masked field
+  jevKeyPresent: boolean; // read-only: a TypeSafe key for Jev sub-agents is stored (raw key never reaches the client)
+  jevKeyLast4?: string | null; // read-only: last 4 chars for the masked field
   // Phone notifications: post to a Discord channel when a task settles done, needs your input (a review
   // park or an agent's question), or fails. Pipeline chatter is never posted.
   discordNotify: boolean;
@@ -691,6 +696,53 @@ export type ModelOverrides = Record<string, Partial<Record<Role, string>>>;
 
 /** The implementor backends (mirrors the server's ImplementorProvider). */
 export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
+
+// ---- Sub-tasks: a sub-agent an agent spawned, living in its own child thread (orchestrator/subTasks.ts) ----
+
+/** Every backend a sub-agent can run on. The four implementor backends run a full coding agent in the
+ *  sub-task; `jev` is TypeSafe AI's decision-only System One model, which answers typed questions about a
+ *  state with calibrated probabilities and never generates text or uses tools. Mirrored byte-for-byte from server/src/types.ts. */
+export type SubAgentProvider = ImplementorProvider | "jev";
+export const SUB_AGENT_PROVIDERS: readonly SubAgentProvider[] = ["claude", "codex", "grok", "zai", "jev"];
+
+/** Any JSON value, as the Jev API accepts for a state, an instruction or a criterion. */
+export type JevJson = string | number | boolean | null | JevJson[] | { [key: string]: JevJson };
+
+/** One typed Jev question. `noul` = probability of yes, `choice` = one of up to 255 options, `score` = a
+ *  2–10 level rubric. Mirrored byte-for-byte from server/src/types.ts. */
+export type JevQuestion =
+  | { type: "noul"; instructions: JevJson; criteria?: { true?: JevJson; false?: JevJson } }
+  | { type: "choice"; instructions: JevJson; criteria: Record<string, JevJson> }
+  | { type: "score"; instructions: JevJson; criteria: JevJson[] };
+
+/** Jev's typed answer to one question. Mirrored byte-for-byte from server/src/types.ts. */
+export type JevAnswer =
+  | { type: "noul"; noul: number }
+  | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
+  | { type: "score"; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number };
+
+/** One Jev call a sub-task made, persisted so the parent agent and the owner can read every answer. */
+export interface JevEvaluation {
+  at: number;
+  model: string; // the versioned model that answered, e.g. jev-1.13.0
+  questions: Record<string, JevQuestion>;
+  answers: Record<string, JevAnswer>;
+  inputTokens: number;
+  costUsd: number;
+  askedBy: "agent" | "owner"; // the spawning agent (or a follow-up through message_subtask) vs. the owner's inject
+}
+
+/** What makes a child thread a SUB-TASK rather than a shotgun collaborator: the sub-agent's exact backend
+ *  and model, and who spawned it. Deliberately small, because it rides on every board snapshot row — a Jev
+ *  sub-task's state and answers live in stage_outputs instead. Mirrored byte-for-byte from server/src/types.ts. */
+export interface SubTaskSpec {
+  provider: SubAgentProvider;
+  model: string | null; // the exact model the sub-agent is pinned to (null only when it could not be resolved)
+  effort: Effort | null;
+  spawnedByRole: Role;
+  spawnedByName: string | null; // the spawning agent's office name, so the child reads "spawned by Nim"
+  spawnedByRunId: string | null;
+}
 
 // ---- Co-work: durable human-led coding conversations ----
 
@@ -846,6 +898,8 @@ export type SettingsPatch = Partial<
     | "grokAccount"
     | "zaiKeyPresent"
     | "zaiKeyLast4"
+    | "jevKeyPresent"
+    | "jevKeyLast4"
     | "discordTokenPresent"
     | "discordTokenLast4"
     | "xhighEnabled"
@@ -856,7 +910,7 @@ export type SettingsPatch = Partial<
     | "grokModels"
     | "zaiModels"
   >
-> & { openaiApiKey?: string; zaiApiKey?: string; discordBotToken?: string };
+> & { openaiApiKey?: string; zaiApiKey?: string; jevApiKey?: string; discordBotToken?: string };
 
 /** Flagship Codex models suggested when the live list hasn't loaded yet (most-capable first). */
 export const CODEX_MODELS = [

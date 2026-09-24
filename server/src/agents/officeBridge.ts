@@ -71,6 +71,14 @@ const MAX_DELIVERABLE_WIRE_CHARS = 4096;
 const MANUAL_DEPLOY_ONLY_RE = /`?MANUAL_DEPLOY_ONLY[ \t]*:[ \t]*/gi;
 const MAX_MANUAL_DEPLOY_ONLY_WIRE_CHARS = 12_000;
 
+// A CLI implementor spawns a sub-agent (orchestrator/subTasks.ts) with the same JSON the spawn_subagent
+// tool takes, on one line. Case-sensitive and anchored on the opening brace, unlike the markers above,
+// because "Subtask:" is ordinary prose in a plan and must never be read as a spawn.
+//
+//   SUBTASK: {"provider":"claude","model":"claude-sonnet-5","title":"Port tests","brief":"..."}
+const SUBTASK_RE = /`?SUBTASK[ \t]*:[ \t]*(?=\{)/g;
+const MAX_SUBTASK_WIRE_CHARS = 60_000;
+
 export interface ExtractOfficeChatOpts {
   /**
    * When true (default), a marker that runs to end-of-string is treated as complete (Codex whole
@@ -103,6 +111,10 @@ export interface CliManualDeployment {
   claim: unknown;
 }
 
+export interface CliSubTask {
+  spec: unknown;
+}
+
 export interface ExtractOperatorNotesOpts {
   /**
    * Same streaming contract as {@link ExtractOfficeChatOpts.openEnded}: a marker at the end of a live
@@ -131,8 +143,10 @@ export function extractCliBridgeMessages(
   notes: CliOperatorNote[];
   deliverables: CliDeliverable[];
   manualDeployments: CliManualDeployment[];
+  subTasks: CliSubTask[];
 } {
-  const deployment = extractManualDeployments(text, opts);
+  const spawns = extractSubTasks(text, opts);
+  const deployment = extractManualDeployments(spawns.visible, opts);
   const files = extractDeliverables(deployment.visible, opts);
   const office = extractOfficeChat(files.visible, opts);
   const notes = extractOperatorNotes(office.visible, opts);
@@ -142,6 +156,49 @@ export function extractCliBridgeMessages(
     notes: notes.notes,
     deliverables: files.deliverables,
     manualDeployments: deployment.manualDeployments,
+    subTasks: spawns.subTasks,
+  };
+}
+
+/** Strip valid one-line `SUBTASK: {json}` markers. A payload that is not a JSON object stays visible so
+ * the attempt is not silently lost; field validation belongs to the spawn service, not the parser. */
+export function extractSubTasks(text: string, opts?: ExtractOfficeChatOpts): { visible: string; subTasks: CliSubTask[] } {
+  const openEnded = opts?.openEnded !== false;
+  const subTasks: CliSubTask[] = [];
+  if (!text) return { visible: "", subTasks };
+  let out = "";
+  let cursor = 0;
+  SUBTASK_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = SUBTASK_RE.exec(text)) !== null) {
+    const markerStart = match.index;
+    const bodyStart = SUBTASK_RE.lastIndex;
+    out += text.slice(cursor, markerStart);
+    const taken = takeJsonBridgeBody(text, bodyStart, openEnded, match[0].startsWith("`"), startsSubTaskMarker, MAX_SUBTASK_WIRE_CHARS);
+    if (!taken.complete) {
+      cursor = markerStart;
+      SUBTASK_RE.lastIndex = text.length;
+      break;
+    }
+    const markerEnd = taken.bodyEnd + (taken.trailingTick ? 1 : 0);
+    try {
+      const spec = JSON.parse(taken.body) as unknown;
+      if (!spec || typeof spec !== "object" || Array.isArray(spec)) throw new Error("not an object");
+      subTasks.push({ spec });
+      out += "\n";
+    } catch {
+      out += text.slice(markerStart, markerEnd);
+    }
+    cursor = markerEnd;
+    SUBTASK_RE.lastIndex = cursor;
+  }
+  out += text.slice(cursor);
+  const hasOpenMarker = !openEnded && endsWithOpenCliBridgeMarker(out);
+  return {
+    visible: hasOpenMarker
+      ? out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
+      : out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(),
+    subTasks,
   };
 }
 
@@ -162,7 +219,7 @@ export function extractManualDeployments(
     const markerStart = match.index;
     const bodyStart = MANUAL_DEPLOY_ONLY_RE.lastIndex;
     out += text.slice(cursor, markerStart);
-    const taken = takeManualDeploymentBody(text, bodyStart, openEnded, match[0].startsWith("`"));
+    const taken = takeJsonBridgeBody(text, bodyStart, openEnded, match[0].startsWith("`"), startsManualDeploymentMarker, MAX_MANUAL_DEPLOY_ONLY_WIRE_CHARS);
     if (!taken.complete) {
       cursor = markerStart;
       MANUAL_DEPLOY_ONLY_RE.lastIndex = text.length;
@@ -471,7 +528,7 @@ function takeOperatorNoteBody(
       complete = true;
       break;
     }
-    if (startsOfficeMarker(text, i) || startsDeliverableMarker(text, i) || startsManualDeploymentMarker(text, i)) {
+    if (startsOfficeMarker(text, i) || startsDeliverableMarker(text, i) || startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i)) {
       complete = true;
       break;
     }
@@ -514,7 +571,7 @@ function takeDeliverableBody(
       complete = true;
       break;
     }
-    if (startsDeliverableMarker(text, i) || startsOfficeMarker(text, i) || startsOperatorNoteMarker(text, i) || startsManualDeploymentMarker(text, i)) {
+    if (startsDeliverableMarker(text, i) || startsOfficeMarker(text, i) || startsOperatorNoteMarker(text, i) || startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i)) {
       complete = true;
       break;
     }
@@ -545,6 +602,24 @@ function startsManualDeploymentMarker(text: string, i: number): boolean {
   return /^manual_deploy_only[ \t]*:/i.test(text.slice(j));
 }
 
+function startsSubTaskMarker(text: string, i: number): boolean {
+  let j = i;
+  if (text[j] === "`") j++;
+  return /^SUBTASK[ \t]*:[ \t]*\{/.test(text.slice(j, j + 40));
+}
+
+/** True when a Grok stream ends inside an incomplete SUBTASK JSON line. */
+export function endsWithOpenSubTaskMarker(text: string): boolean {
+  if (!text) return false;
+  SUBTASK_RE.lastIndex = 0;
+  let last: RegExpExecArray | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = SUBTASK_RE.exec(text)) !== null) last = match;
+  if (!last) return false;
+  const bodyStart = last.index + last[0].length;
+  return !takeJsonBridgeBody(text, bodyStart, false, last[0].startsWith("`"), startsSubTaskMarker, MAX_SUBTASK_WIRE_CHARS).complete;
+}
+
 /** True when a Grok stream ends inside an incomplete deliverable line. */
 export function endsWithOpenDeliverableMarker(text: string): boolean {
   if (!text) return false;
@@ -566,18 +641,28 @@ export function endsWithOpenManualDeploymentMarker(text: string): boolean {
   while ((match = MANUAL_DEPLOY_ONLY_RE.exec(text)) !== null) last = match;
   if (!last) return false;
   const bodyStart = last.index + last[0].length;
-  return !takeManualDeploymentBody(text, bodyStart, false, last[0].startsWith("`")).complete;
+  return !takeJsonBridgeBody(text, bodyStart, false, last[0].startsWith("`"), startsManualDeploymentMarker, MAX_MANUAL_DEPLOY_ONLY_WIRE_CHARS).complete;
 }
 
 function endsWithOpenCliBridgeMarker(text: string): boolean {
-  return endsWithOpenOfficeMarker(text) || endsWithOpenOperatorNoteMarker(text) || endsWithOpenDeliverableMarker(text) || endsWithOpenManualDeploymentMarker(text);
+  return (
+    endsWithOpenOfficeMarker(text) ||
+    endsWithOpenOperatorNoteMarker(text) ||
+    endsWithOpenDeliverableMarker(text) ||
+    endsWithOpenManualDeploymentMarker(text) ||
+    endsWithOpenSubTaskMarker(text)
+  );
 }
 
-function takeManualDeploymentBody(
+/** Scan one single-line JSON bridge payload (MANUAL_DEPLOY_ONLY, SUBTASK). `startsOwn` is the marker's
+ * own start test: a second marker of the same kind glued onto the line ends the first. */
+function takeJsonBridgeBody(
   text: string,
   bodyStart: number,
   openEnded: boolean,
   wrapped: boolean,
+  startsOwn: (text: string, i: number) => boolean,
+  maxChars: number,
 ): { body: string; bodyEnd: number; trailingTick: boolean; complete: boolean } {
   let i = bodyStart;
   let trailingTick = false;
@@ -597,8 +682,10 @@ function takeManualDeploymentBody(
       startsOfficeMarker(text, i) ||
       startsOperatorNoteMarker(text, i) ||
       startsDeliverableMarker(text, i) ||
-      (i > bodyStart && startsManualDeploymentMarker(text, i)) ||
-      i - bodyStart >= MAX_MANUAL_DEPLOY_ONLY_WIRE_CHARS
+      (startsOwn !== startsManualDeploymentMarker && startsManualDeploymentMarker(text, i)) ||
+      (startsOwn !== startsSubTaskMarker && startsSubTaskMarker(text, i)) ||
+      (i > bodyStart && startsOwn(text, i)) ||
+      i - bodyStart >= maxChars
     ) {
       complete = true;
       break;
@@ -685,7 +772,7 @@ function takeOfficeBody(
       break;
     }
 
-    if (startsManualDeploymentMarker(text, i)) {
+    if (startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i)) {
       bodyParts.push(text.slice(lineStart, i));
       complete = true;
       break;

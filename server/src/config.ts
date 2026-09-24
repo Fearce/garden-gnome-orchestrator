@@ -395,6 +395,17 @@ export const config = {
   // holding promises) is what makes the barrier survive a restart: the states are durable, the promises
   // would not be, and the lead is auto-resumed straight back into this wait.
   shotgunBarrierPollMs: Math.max(1_000, numEnv(process.env.SHOTGUN_BARRIER_POLL_MS, 5_000)),
+  // ---- Sub-tasks (orchestrator/subTasks.ts) ----
+  // How long a parent whose turn has ended waits for its still-running sub-agents before handing off
+  // without them. Bounded for the same reason as the shotgun barrier: one wedged sub-agent must not
+  // strand its parent forever. Polled from durable state so a restart re-enters the same wait.
+  subTaskBarrierTimeoutMs: Math.max(1_000, numEnv(process.env.SUBTASK_BARRIER_TIMEOUT_MS, 6 * 3_600_000)),
+  subTaskBarrierPollMs: Math.max(50, numEnv(process.env.SUBTASK_BARRIER_POLL_MS, 5_000)),
+  // Jev (TypeSafe AI's decision-only System One model) as a sub-agent type. The UI can store a key in kv
+  // (`jev_api_key`, write-only); this env value is the fallback. Never broadcast — only presence + last 4.
+  jev: {
+    apiKey: process.env.TYPESAFE_API_KEY?.trim() || process.env.JEV_API_KEY?.trim() || undefined,
+  },
   // Current frontier Claude models and Grok 4.6 support xhigh. Keep it available by default so smart
   // selection can use every supported tier; a machine can still opt out explicitly in its local env.
   enableXhigh: process.env.ENABLE_XHIGH !== "false",

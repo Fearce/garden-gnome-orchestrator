@@ -1,10 +1,11 @@
 import type { FeedItem, Thread } from "../types.js";
 
 /** The collaborator threads of a shotgun lead, oldest first. A collaborator has no board card of its
- *  own, so the lead's panel is the only place its work can be seen. */
+ *  own, so the lead's panel is the only place its work can be seen. A sub-task shares parentId but is
+ *  not interleaved: it is its own conversation, opened from the parent's sub-task strip. */
 export function collaboratorIdsOf(threads: Record<string, Thread>, leadId: string): string[] {
   return Object.values(threads)
-    .filter((t) => t.parentId === leadId)
+    .filter((t) => t.parentId === leadId && !t.subTask)
     .sort((a, b) => a.createdAt - b.createdAt)
     .map((t) => t.id);
 }

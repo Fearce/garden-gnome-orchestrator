@@ -1873,6 +1873,84 @@ function SubscriptionsSection() {
         <UsageSavingField subId={ZAI_SUB_ID} models={zaiModelOptions(settings.zaiModels)} defaultModel={settings.zaiModel} effortsFor={zaiEffortsForModel} />
         <ZaiWeeklySafety />
       </SubCard>
+
+      <JevCard />
+    </div>
+  );
+}
+
+/** Jev is not an implementor backend, so it has no rotation toggle: it is a sub-agent type agents can
+ *  spawn for typed judgements, available whenever a TypeSafe key is stored. */
+function JevCard() {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const [draft, setDraft] = useState("");
+  const [reveal, setReveal] = useState(false);
+  const save = () => {
+    if (!draft.trim()) return;
+    setSettings({ jevApiKey: draft.trim() });
+    setDraft("");
+    setReveal(false);
+  };
+  return (
+    <div className={"sub-card" + (settings.jevKeyPresent ? " active" : "")}>
+      <div className="sub-card-head">
+        <div className="sub-id">
+          <span className="sub-name">Jev</span>
+          <span className="sub-vendor">TypeSafe AI</span>
+          {settings.jevKeyPresent && <span className="sub-badge">sub-agent ready</span>}
+        </div>
+      </div>
+      <div className="sub-card-meta">
+        {settings.jevKeyPresent ? "Agents can spawn Jev sub-tasks." : "Add a TypeSafe API key to let agents spawn Jev sub-tasks."}
+      </div>
+      <div className="sub-msg dim">
+        A decision-only model: agents hand it a state and typed questions (yes/no, pick one, rubric score) and get calibrated
+        probabilities back in about a second. Each call is its own sub-task you can open and ask follow-up questions in. Billed per
+        input token ($0.042 per million); output is free.
+      </div>
+      <div className="sub-field">
+        <label className="sub-label">TypeSafe API key</label>
+        <div className="key-input">
+          <input
+            type={reveal ? "text" : "password"}
+            value={draft}
+            spellCheck={false}
+            autoComplete="off"
+            placeholder={settings.jevKeyPresent ? `••••••••${settings.jevKeyLast4 ?? ""}` : "apikey_…"}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") save();
+            }}
+          />
+          <button
+            type="button"
+            className="key-eye"
+            aria-label={reveal ? "Hide key" : "Reveal key"}
+            title={reveal ? "Hide" : "Reveal"}
+            onClick={() => setReveal((r) => !r)}
+          >
+            {reveal ? <EyeOff /> : <Eye />}
+          </button>
+        </div>
+        <div className="sub-actions">
+          <button className="sub-btn primary" disabled={!draft.trim()} onClick={save}>
+            {settings.jevKeyPresent ? "Replace key" : "Save key"}
+          </button>
+          {settings.jevKeyPresent && (
+            <button
+              className="sub-btn ghost"
+              onClick={() => {
+                setSettings({ jevApiKey: "" });
+                setDraft("");
+              }}
+            >
+              Remove
+            </button>
+          )}
+        </div>
+        {settings.jevKeyPresent && !draft.trim() && <div className="sub-msg dim">Key stored (••••{settings.jevKeyLast4 ?? ""}).</div>}
+      </div>
     </div>
   );
 }

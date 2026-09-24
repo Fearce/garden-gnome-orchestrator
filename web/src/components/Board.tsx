@@ -581,8 +581,14 @@ const Card = memo(function Card({
   // fresh array is never reference-equal to the last one, so Zustand sees a change on every store read
   // and the card re-renders forever (React #185). Returning a number compares by value.
   const collabCount = useStore((s) => thread.agentCount && thread.agentCount > 1
-    ? Object.values(s.threads).filter((t) => t.parentId === thread.id).length
+    ? Object.values(s.threads).filter((t) => t.parentId === thread.id && !t.subTask).length
     : 0);
+  // Same primitive-selector rule as collabCount above.
+  const subTaskCount = useStore((s) => {
+    let n = 0;
+    for (const t of Object.values(s.threads)) if (t.parentId === thread.id && t.subTask) n++;
+    return n;
+  });
 
   // The ✕ soft-closes a parked task (review / paused / done / failed / cancelled) — it moves to the
   // Closed list below, restorable, rather than being deleted outright. A running task shows no ✕, so
@@ -694,6 +700,11 @@ const Card = memo(function Card({
           {collabCount ? (
             <span className="shotgun-badge" title={`${collabCount + 1} agents working this task in parallel`}>
               ⚡ {collabCount + 1}
+            </span>
+          ) : null}
+          {subTaskCount ? (
+            <span className="subtask-badge" title={`${subTaskCount} sub-agent(s) spawned by this task — open the task to see and talk to them`}>
+              ⑂ {subTaskCount}
             </span>
           ) : null}
           {impl?.effort ? (

@@ -49,6 +49,8 @@ export interface CodexRunConfig {
   onDeliverable?: (label: string, path: string) => void;
   /** Structured evidence that the only remaining action is the owner's manual deployment. */
   onManualDeployOnly?: (claim: unknown) => void;
+  /** A standalone `SUBTASK: {json}` line — the CLI's spawn_subagent (orchestrator/subTasks.ts). */
+  onSubTask?: (spec: unknown) => void;
   /** When set, this run is a structured role (planner/researcher/qa) rather than the free-form implementor:
    *  the CLI can't be handed our json_schema tool, so the kickoff instructs it to end with a fenced ```json
    *  block, and its final message is parsed against this schema into `result.structuredOutput`. A parse/shape
@@ -773,6 +775,13 @@ export class CodexAgentRun implements AgentRunLike {
               this.cfg.onManualDeployOnly?.(deployment.claim);
             } catch {
               /* authoritative validation happens in ThreadManager; a bad side-channel cannot fail the turn */
+            }
+          }
+          for (const spawn of bridge.subTasks) {
+            try {
+              this.cfg.onSubTask?.(spawn.spec);
+            } catch {
+              /* the spawn service validates and reports; a bad side-channel cannot fail the turn */
             }
           }
           if (bridge.visible) {

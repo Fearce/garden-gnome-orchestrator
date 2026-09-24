@@ -187,6 +187,8 @@ export interface Thread {
   agentCount?: number | null; // collaborators the owner asked for; null/1 = an ordinary single-agent task
   parentId?: string | null; // set on a COLLABORATOR: the lead task it belongs to (hidden from the board, shown inside the lead)
   assignment?: ShotgunAssignment | null; // a collaborator's owned share — objective + the files it exclusively owns
+  // ---- Sub-task: a sub-agent another agent spawned (orchestrator/subTasks.ts). parentId names the spawning task ----
+  subTask?: SubTaskSpec | null;
   /** Owner-facing projection of the durable deploy-only handoff stored in stage_outputs. */
   manualDeployment?: ManualDeploymentSummary | null;
   createdAt: number;
@@ -936,6 +938,13 @@ export interface StageOutputs {
   /** A legacy/partial split was found without a complete durable ownership contract. It is quarantined
    *  for a human instead of resuming a lead alongside unknown peers in the shared working tree. */
   shotgunRecoveryBlocked?: string;
+  // ---- Sub-tasks (orchestrator/subTasks.ts) ----
+  subTaskReported?: boolean; // on a SUB-TASK: its settled result reached the spawning agent — the barrier must not re-deliver it
+  subTaskRounds?: number; // on a PARENT: report rounds the sub-task barrier has run — bounded, so spawn→report can't loop forever
+  jevState?: JevJson; // on a Jev sub-task: the state every question (the first and each follow-up) is evaluated against
+  jevQuestions?: Record<string, JevQuestion>; // on a Jev sub-task: the questions it was spawned with
+  jevEvaluations?: JevEvaluation[]; // on a Jev sub-task: every call it made, oldest first
+  jevPending?: { questions: Record<string, JevQuestion>; askedBy: JevEvaluation["askedBy"] } | null; // a Jev call in flight — re-asked if a restart cuts it off
   qaSilentRetriesThisRound?: number; // the same retries, but only those spent on the review currently running
   // — zeroed the moment a round reaches a verdict, for the reason qaCutoffResumesThisRound exists. An empty
   // run is a property of ONE review too: a round whose retry WORKED still spent the lifetime count, so a
@@ -1042,6 +1051,10 @@ export interface OrchestratorSettings {
   zaiWeeklySafetyPct: number; // 1-100 soft weekly ceiling (default 100 = off): at/above this z.ai weekly utilization, new tasks route to another backend
   zaiKeyPresent: boolean; // read-only — an API key is stored (env or kv); the raw key is never broadcast
   zaiKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
+  // Jev (TypeSafe AI's decision-only model) as a SUB-AGENT type: available to agents' spawn_subagent the
+  // moment a key is stored (kv `jev_api_key`, else env TYPESAFE_API_KEY). Metered per input token.
+  jevKeyPresent: boolean; // read-only — a TypeSafe API key is stored (env or kv); the raw key is never broadcast
+  jevKeyLast4?: string | null; // read-only — last 4 chars of the stored key, for the masked field
   zaiModels: string[]; // read-only: pickable z.ai GLM model ids (curated ∪ selected)
   // ---- Phone notifications: post to a Discord channel when a task finishes or needs you ----
   discordNotify: boolean; // off (default) → nothing is posted; on → a Discord message when a task settles done, needs your input (a review park or an agent's question), or fails. Pipeline chatter (cap failover, auto-resume) is never posted.
@@ -1088,6 +1101,53 @@ export interface OrchestratorSettings {
 
 /** The implementor backend chosen at dispatch by the subscription toggles. */
 export type ImplementorProvider = "claude" | "codex" | "grok" | "zai";
+
+// ---- Sub-tasks: a sub-agent an agent spawned, living in its own child thread (orchestrator/subTasks.ts) ----
+
+/** Every backend a sub-agent can run on. The four implementor backends run a full coding agent in the
+ *  sub-task; `jev` is TypeSafe AI's decision-only System One model, which answers typed questions about a
+ *  state with calibrated probabilities and never generates text or uses tools. Mirrored byte-for-byte in web/src/types.ts. */
+export type SubAgentProvider = ImplementorProvider | "jev";
+export const SUB_AGENT_PROVIDERS: readonly SubAgentProvider[] = ["claude", "codex", "grok", "zai", "jev"];
+
+/** Any JSON value, as the Jev API accepts for a state, an instruction or a criterion. */
+export type JevJson = string | number | boolean | null | JevJson[] | { [key: string]: JevJson };
+
+/** One typed Jev question. `noul` = probability of yes, `choice` = one of up to 255 options, `score` = a
+ *  2–10 level rubric. Mirrored byte-for-byte in web/src/types.ts. */
+export type JevQuestion =
+  | { type: "noul"; instructions: JevJson; criteria?: { true?: JevJson; false?: JevJson } }
+  | { type: "choice"; instructions: JevJson; criteria: Record<string, JevJson> }
+  | { type: "score"; instructions: JevJson; criteria: JevJson[] };
+
+/** Jev's typed answer to one question. Mirrored byte-for-byte in web/src/types.ts. */
+export type JevAnswer =
+  | { type: "noul"; noul: number }
+  | { type: "choice"; choice: string; probabilities: Record<string, number>; confidence: number }
+  | { type: "score"; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number };
+
+/** One Jev call a sub-task made, persisted so the parent agent and the owner can read every answer. */
+export interface JevEvaluation {
+  at: number;
+  model: string; // the versioned model that answered, e.g. jev-1.13.0
+  questions: Record<string, JevQuestion>;
+  answers: Record<string, JevAnswer>;
+  inputTokens: number;
+  costUsd: number;
+  askedBy: "agent" | "owner"; // the spawning agent (or a follow-up through message_subtask) vs. the owner's inject
+}
+
+/** What makes a child thread a SUB-TASK rather than a shotgun collaborator: the sub-agent's exact backend
+ *  and model, and who spawned it. Deliberately small, because it rides on every board snapshot row — a Jev
+ *  sub-task's state and answers live in stage_outputs instead. Mirrored byte-for-byte in web/src/types.ts. */
+export interface SubTaskSpec {
+  provider: SubAgentProvider;
+  model: string | null; // the exact model the sub-agent is pinned to (null only when it could not be resolved)
+  effort: Effort | null;
+  spawnedByRole: Role;
+  spawnedByName: string | null; // the spawning agent's office name, so the child reads "spawned by Nim"
+  spawnedByRunId: string | null;
+}
 
 // ---- Co-work: durable, human-led coding conversations ----
 

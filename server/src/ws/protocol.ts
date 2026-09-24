@@ -408,6 +408,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         // Write-only: the raw z.ai API key is accepted here and stored server-side, never echoed back.
         // An empty string clears it (falls back to ZAI_API_KEY). The broadcast carries only zaiKeyPresent/last4.
         zaiApiKey: z.string().max(300),
+        // Write-only: the TypeSafe API key Jev sub-agents call with. Empty clears it (falls back to
+        // TYPESAFE_API_KEY). The broadcast carries only jevKeyPresent/last4.
+        jevApiKey: z.string().max(300),
         // Write-only: the raw OpenAI key is accepted here and stored server-side, never echoed back.
         // An empty string clears it. The broadcast OrchestratorSettings carries only hasOpenaiKey/last4.
         openaiApiKey: z.string().max(300),

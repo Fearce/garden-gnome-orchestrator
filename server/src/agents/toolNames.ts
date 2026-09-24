@@ -20,6 +20,12 @@ export const T = {
   notifyThread: `mcp__${BUS_SERVER}__notify_thread`,
   busAskUser: `mcp__${BUS_SERVER}__ask_user`,
   postNote: `mcp__${BUS_SERVER}__post_operator_note`,
+  // Registered on the bus only for the implementor (bus/busServer.ts subTaskTools).
+  listSubagentModels: `mcp__${BUS_SERVER}__list_subagent_models`,
+  spawnSubagent: `mcp__${BUS_SERVER}__spawn_subagent`,
+  listSubtasks: `mcp__${BUS_SERVER}__list_subtasks`,
+  waitForSubtasks: `mcp__${BUS_SERVER}__wait_for_subtasks`,
+  messageSubtask: `mcp__${BUS_SERVER}__message_subtask`,
   officeLook: `mcp__${OFFICE_SERVER}__office_look`,
   officeSetName: `mcp__${OFFICE_SERVER}__office_set_name`,
   chatPost: `mcp__${OFFICE_SERVER}__chat_post`,

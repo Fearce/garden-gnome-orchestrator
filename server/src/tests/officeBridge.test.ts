@@ -7,11 +7,13 @@ import {
   endsWithOpenOfficeMarker,
   endsWithOpenOperatorNoteMarker,
   endsWithOpenManualDeploymentMarker,
+  endsWithOpenSubTaskMarker,
   extractCliBridgeMessages,
   extractDeliverables,
   extractOfficeChat,
   extractOperatorNotes,
   extractManualDeployments,
+  extractSubTasks,
 } from "../agents/officeBridge.js";
 
 // Canonical standalone line (Codex agent_message shape).
@@ -501,6 +503,45 @@ import {
   const malformed = extractCliBridgeMessages("MANUAL_DEPLOY_ONLY: definitely-not-json\n");
   assert.deepEqual(malformed.manualDeployments, []);
   assert.match(malformed.visible, /MANUAL_DEPLOY_ONLY/, "malformed terminal evidence remains auditable in the transcript");
+}
+
+// SUBTASK: a CLI implementor's spawn_subagent. JSON on one line, stripped from the transcript.
+{
+  const raw = 'Splitting off the tests.\nSUBTASK: {"provider":"codex","title":"Port tests","brief":"port them"}\nContinuing.';
+  const result = extractCliBridgeMessages(raw, { detectGluedTurns: false });
+  assert.deepEqual(result.subTasks, [{ spec: { provider: "codex", title: "Port tests", brief: "port them" } }]);
+  assert.ok(!result.visible.includes("SUBTASK"));
+  assert.match(result.visible, /Splitting off the tests\./);
+  assert.match(result.visible, /Continuing\./);
+}
+
+// "Subtask:" in ordinary prose is never a spawn — the marker is uppercase and needs an opening brace.
+{
+  for (const prose of ["Subtask: write the parser tests.", "SUBTASK: write the parser tests.", "subtask: {not really}"]) {
+    const result = extractSubTasks(prose);
+    assert.deepEqual(result.subTasks, [], prose);
+    assert.equal(result.visible, prose, prose);
+  }
+}
+
+// A malformed payload stays visible, so the attempt is auditable rather than silently dropped.
+{
+  const result = extractSubTasks('SUBTASK: {"provider":"claude",\n');
+  assert.deepEqual(result.subTasks, []);
+  assert.match(result.visible, /SUBTASK/);
+}
+
+// Grok streaming: an open SUBTASK line waits for its end, and other markers stop at it.
+{
+  const partial = extractCliBridgeMessages('SUBTASK: {"provider":"jev","title":"j"', { openEnded: false });
+  assert.deepEqual(partial.subTasks, []);
+  assert.equal(endsWithOpenSubTaskMarker(partial.visible), true);
+  const finished = extractCliBridgeMessages(partial.visible + ',"state":"x","questions":{}}\n', { openEnded: true });
+  assert.deepEqual(finished.subTasks, [{ spec: { provider: "jev", title: "j", state: "x", questions: {} } }]);
+
+  const glued = extractCliBridgeMessages('OFFICE[team]: taking the tests SUBTASK: {"provider":"claude","title":"t","brief":"b"}\n', { openEnded: true });
+  assert.deepEqual(glued.posts, [{ scope: "project", body: "taking the tests" }]);
+  assert.equal(glued.subTasks.length, 1);
 }
 
 console.log("All officeBridge extraction checks passed.");

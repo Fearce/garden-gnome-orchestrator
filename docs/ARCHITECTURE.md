@@ -523,6 +523,17 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
     lead re-read where its children got to after a bounce. Collaborators are hidden from the board; the
     lead's detail panel fetches their histories and interleaves their rows into its feed under each
     agent's own name (`web/src/lib/collaboratorFeed.ts`).
+- **Sub-tasks — a sub-agent an agent spawned** (`orchestrator/subTasks.ts`). The implementor's
+  built-in SDK Agent/Task tool is disallowed. It spawns through the bus (`spawn_subagent` and friends)
+  or, on a CLI backend, a standalone `SUBTASK: {json}` line. The spawn becomes a child thread with
+  `parent_id` plus a `sub_task` spec (provider, exact model, effort, spawner). The spec is what
+  distinguishes it from a shotgun collaborator. A coding sub-agent (claude/codex/grok/zai) runs the
+  ordinary implementor path under a strict exact model pin, with no planner/QA and exempt from the
+  concurrency caps. A Jev sub-agent (TypeSafe AI's decision-only model, `agents/jevClient.ts`) is one
+  HTTP call per question set: `runPipeline` short-circuits to `SubTaskService.runJev`. Results reach
+  the parent through `wait_for_subtasks` or through the hand-off barrier (`integrateSubTasks`, after
+  the queued follow-ups). The barrier waits on durable child state, then warm-resumes the parent with
+  each unreported result before QA. `subTaskReported` on the child makes delivery exactly-once.
 - **Finding routing:** when a finding lands on a thread whose implementor is
   live, the manager either (a) `inject`s it as a follow-up user message, or
   (b) `interrupt → resume(sessionId)` with augmented context — chosen by

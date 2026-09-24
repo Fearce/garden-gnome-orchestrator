@@ -6,6 +6,7 @@ import { OperatorNotes } from "../orchestrator/notes.js";
 import { NOTE_MAX_CHARS, type Role } from "../types.js";
 import { BUS_SERVER } from "../agents/toolNames.js";
 import { config } from "../config.js";
+import { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS, spawnSubAgentShape } from "../orchestrator/subTasks.js";
 
 export interface BusContext {
   threadId: string;
@@ -215,6 +216,75 @@ Post at most one or two per task, at the END, once the thing is actually there t
   return createSdkMcpServer({
     name: BUS_SERVER,
     version: "0.1.0",
-    tools: [postFinding, postDeliverable, handoffManualDeployment, readFindings, notifyThread, askUser, postOperatorNote],
+    tools: [
+      postFinding,
+      postDeliverable,
+      handoffManualDeployment,
+      readFindings,
+      notifyThread,
+      askUser,
+      postOperatorNote,
+      // Sub-agents edit the shared working tree, so only the role that owns edits may spawn them.
+      ...(ctx.role === "implementor" ? subTaskTools(api, ctx) : []),
+    ],
   });
+}
+
+/** spawn_subagent and its companions (orchestrator/subTasks.ts). They replace the SDK's built-in Agent
+ *  tool, which is blocked for the implementor: a sub-agent spawned here is a real sub-task the owner can
+ *  open and talk to, on any provider and model. */
+function subTaskTools(api: OrchestratorApi, ctx: BusContext) {
+  const text = (t: string, isError = false) => ({ content: [{ type: "text" as const, text: t }], ...(isError ? { isError: true } : {}) });
+
+  const listModels = tool(
+    "list_subagent_models",
+    "List every backend and model a sub-agent can run on right now, with the effort tiers each model accepts and which providers are unavailable or out of capacity. Read this before spawn_subagent when you want a specific provider or model.",
+    {},
+    async () => text(api.subTasks.rosterText()),
+  );
+
+  const spawn = tool(
+    "spawn_subagent",
+    `Spawn a sub-agent as a SUB-TASK: its own thread under this task that ${config.ownerName} can open, watch and message like any agent. Use it instead of doing everything yourself when a piece of the job is separable — and pick the best tool for it: ANY provider and ANY model (e.g. hand a slice to Codex while you continue, or use a cheaper model for a mechanical chore).
+
+Two kinds:
+- Coding sub-agent — provider "claude", "codex", "grok" or "zai". Give a complete standalone \`brief\`; it works in THIS repository and working tree (no separate checkout), does not commit unless the brief says so, and its final report comes back to you. Give it work that does not touch the files you are editing.
+- Jev — provider "jev": TypeSafe AI's decision-only model. No text, no tools, never edits files. Give it a \`state\` (the content) and typed \`questions\`; it returns calibrated probabilities in about a second, in this same tool result. Good for classifying, verifying a claim against a document, picking among options, or scoring on a rubric — cheaply and at scale.
+
+Coding sub-agents run in the background: keep working, then call wait_for_subtasks to collect results (about a minute per call). If you end your turn first, their results are handed to you before the task moves on.`,
+    spawnSubAgentShape,
+    async (args) => {
+      const res = await api.subTasks.spawn({ threadId: ctx.threadId, role: ctx.role, runId: ctx.getRunId() ?? null }, args);
+      return text(res.message, !res.ok);
+    },
+  );
+
+  const list = tool(
+    "list_subtasks",
+    "List the sub-tasks you spawned on this task, with each one's id, provider/model and state.",
+    {},
+    async () => text(api.subTasks.listText(ctx.threadId)),
+  );
+
+  const wait = tool(
+    "wait_for_subtasks",
+    `Block until your sub-tasks finish (all of them, or only \`ids\`), or until \`timeout_seconds\` passes (default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS}). Returns each finished sub-agent's final report — every result is delivered exactly once — plus which are still running. Keep each wait to about a minute and call again to keep waiting: ${config.ownerName}'s messages reach you only between tool calls.`,
+    {
+      ids: z.array(z.string()).optional().describe("Sub-task ids (or unique prefixes) to wait for. Omit for all of your sub-tasks."),
+      timeout_seconds: z.number().int().min(1).max(MAX_WAIT_SECONDS).optional(),
+    },
+    async (args) => text(await api.subTasks.wait(ctx.threadId, args.ids, args.timeout_seconds)),
+  );
+
+  const message = tool(
+    "message_subtask",
+    "Send a message to one of your sub-tasks. A coding sub-agent receives it as steering (a finished one is resumed with it); its updated result comes back to you. A Jev sub-task treats it as another question about its original state: a JSON question map is used as given, plain text becomes one yes/no question — and the answer comes back in this tool result.",
+    {
+      id: z.string().describe("The sub-task id (or a unique prefix)."),
+      message: z.string().min(1).max(40_000),
+    },
+    async (args) => text(await api.subTasks.message(ctx.threadId, args.id, args.message)),
+  );
+
+  return [listModels, spawn, list, wait, message];
 }

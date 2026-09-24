@@ -295,8 +295,11 @@ export function implementorConfig(
     // Edit/Bash/…) so dispatched implementors run unsupervised — but the broken
     // built-in question tool is disallowed so it uses the bus ask_user instead
     // (vanilla has no bus tool to fall back on either — headless still can't answer a prompt).
+    // The built-in Agent/Task sub-agent is blocked too: it is invisible and unreachable for the owner,
+    // so every sub-agent goes through the bus's spawn_subagent and becomes a sub-task. Default mode keeps
+    // stock Claude Code's own tool, since it has no bus to offer instead.
     permissionMode: "bypassPermissions",
-    disallowedTools: ["AskUserQuestion"],
+    disallowedTools: opts?.vanilla ? ["AskUserQuestion"] : ["AskUserQuestion", "Agent", "Task"],
     mcpServers: opts?.vanilla ? {} : { [BUS_SERVER]: servers.bus, [OFFICE_SERVER]: servers.office },
     settingSources: ["user", "project", "local"],
     effort: resolveEffort(opts?.effort),

@@ -3528,6 +3528,17 @@ button.note-from:hover { color: var(--text-dim); }
   border: 1px solid color-mix(in oklch, var(--shot) 45%, transparent);
 }
 
+/* Sub-tasks: sub-agents this task spawned. A cool teal, apart from the shotgun amber, because these are
+   helpers on possibly other providers, not peers splitting one objective. */
+.subtask-badge {
+  --sub: oklch(0.8 0.1 190);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em; font-weight: 700;
+  padding: 2px 7px; border-radius: 100px; white-space: nowrap;
+  color: var(--sub);
+  background: color-mix(in oklch, var(--sub) 13%, transparent);
+  border: 1px solid color-mix(in oklch, var(--sub) 45%, transparent);
+}
+
 /* ── The composer's task-mode row ────────────────────────────────────────────────────────────────
    Quiet when off (this is not the common case and must not compete with the prompt box), and clearly
    lit when on — a forgotten 8-hour window or a forgotten 3-agent split is expensive, so "is it on?"
@@ -3685,6 +3696,12 @@ button.note-from:hover { color: var(--text-dim); }
   font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.05em;
   text-transform: uppercase; color: var(--state-color);
 }
+/* A sub-task chip leads with the backend it runs on — the reason it exists is often "a different model". */
+.subtask-provider {
+  font-size: 9.5px; letter-spacing: 0.04em; color: var(--text-faint);
+  padding-right: 6px; border-right: 1px solid var(--border);
+}
+.subtask-runtime { font-size: 10.5px; color: var(--text-dim); }
 
 /* Phone Supervisor board. This comes last deliberately: the shared compact rules establish the
    one-pane shell, while this closes the remaining board-header and audit-row min-content escapes
