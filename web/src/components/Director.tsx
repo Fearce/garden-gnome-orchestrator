@@ -27,14 +27,14 @@ export function directorRuntimeLabel(status: DirectorStatus | null, busy: boolea
 }
 
 // Tracks "this rail has no room to spare" (mirrors the CSS bands — keep the two in step) so a few
-// controls can swap to a space-frugal layout: the wrapping recent-repo chips become a single dropdown
-// row. Re-renders on viewport crossings (rotate / resize).
+// controls can use a space-frugal layout: the recent-repo chips scroll on one row.
+// Re-renders on viewport crossings (rotate / resize).
 //
 // The second clause is not decoration. Nine remembered repos wrap to FOUR rows of chips — 162px of a
 // 679px rail — and at 1280×800 landscape that left the transcript 149px, i.e. no visible conversation
 // at all. Width alone never catches it: the rail is ~384px wide whatever the viewport is, so the
-// chips wrap exactly the same at 1280 as at 800. A coarse pointer means a tablet means the rail's
-// height is the scarce thing, and the dropdown is one row instead of four.
+// chips wrap exactly the same at 1280 as at 800. A coarse pointer means the rail's height is scarce,
+// so the chips scroll sideways instead of growing to four rows.
 const COMPACT_MQ = "(max-width: 899.98px), (pointer: coarse) and (max-width: 1365.98px)";
 
 function useIsCompact(): boolean {
@@ -357,16 +357,8 @@ export function Director() {
       )}
 
       <div className={"composer-options" + (att.dragging ? " dragging" : "")} {...att.dropHandlers}>
-        {recentRepos.length > 1 &&
-          (isCompact ? (
-            <RecentReposSelect
-              repos={recentRepos.slice(0, maxRecentRepos)}
-              active={ws.trim()}
-              onPick={setWs}
-              onRemove={removeRepo}
-            />
-          ) : (
-            <div className="recent-repos" role="group" aria-label="Recent repositories">
+        {recentRepos.length > 1 && (
+          <div className={"recent-repos" + (isCompact ? " compact" : "")} role="group" aria-label="Recent repositories">
               <span className="recent-repos-label mono">repos</span>
               {recentRepos.slice(0, maxRecentRepos).map((p) => {
                 const active = p === ws.trim();
@@ -392,8 +384,8 @@ export function Director() {
                   </span>
                 );
               })}
-            </div>
-          ))}
+          </div>
+        )}
         <div className="composer-mode">
           <button
             type="button"
@@ -604,55 +596,6 @@ const DURATIONS: { min: number; label: string }[] = [
 
 /** Mirrors MIN_AGENTS/MAX_AGENTS on the server (orchestrator/shotgun.ts); the server clamps anyway. */
 const AGENT_COUNTS = [1, 2, 3, 4, 5, 6];
-
-/** Mobile substitute for the wrapping recent-repo chips: a single dropdown row. The chips flex-wrap into
- *  several rows on a phone (a long list ate most of the composer's vertical space, pushing the transcript
- *  off-screen), so on mobile the same list collapses to a native `<select>` plus a remove button that
- *  drops whichever repo is currently selected. Picking an entry fills the workspace path exactly like a
- *  chip does. */
-function RecentReposSelect({
-  repos,
-  active,
-  onPick,
-  onRemove,
-}: {
-  repos: string[];
-  active: string;
-  onPick: (p: string) => void;
-  onRemove: (p: string) => void;
-}) {
-  const selected = repos.includes(active) ? active : "";
-  return (
-    <div className="recent-repos-select" role="group" aria-label="Recent repositories">
-      <span className="recent-repos-label mono">repos</span>
-      <select
-        className="repo-select"
-        value={selected}
-        aria-label="Pick a recent repository"
-        onChange={(e) => {
-          if (e.target.value) onPick(e.target.value);
-        }}
-      >
-        <option value="">Recent repos…</option>
-        {repos.map((p) => (
-          <option key={p} value={p}>
-            {repoLabel(p)}
-          </option>
-        ))}
-      </select>
-      <button
-        type="button"
-        className="repo-select-x"
-        disabled={!selected}
-        aria-label={selected ? `Remove ${selected} from recent repos` : "Remove selected repo from recents"}
-        title="Remove the selected repo from recents"
-        onClick={() => selected && onRemove(selected)}
-      >
-        ×
-      </button>
-    </div>
-  );
-}
 
 /** Compact shortcuts for the implementor backends. Claude writes the global implementor default that
  *  subscriptions inherit unless overridden; Codex writes codex.implementor for OpenAI failover/routing.

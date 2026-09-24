@@ -39,6 +39,9 @@ const TAP_EXCEPTIONS = [
   { sel: ".agent-toggle", min: 34, why: "pipeline gates: 5 chips in the rail header, 44 wraps the row" },
   { sel: ".fchip", min: 34, why: "feed filter: a horizontally-scrolled strip of 8" },
   { sel: ".rail-search-toggle", min: 34, why: "sits in the same rail-header row as the gates" },
+  { sel: ".composer-disclosure", min: 34, why: "inline at the end of a compact composer row" },
+  { sel: ".codectx-btn", min: 34, why: "two context actions in the narrow detail header" },
+  { sel: ".ws-path", min: 34, why: "repo chip in a card or detail title; 44 would crowd the header" },
   { sel: ".board-tab", min: 34, why: "a text heading that doubles as the view switcher" },
   { sel: ".card-chatroom", min: 34, why: "inline in a card's meta row" },
   { sel: ".closed-toggle", min: 34, why: "a quiet disclosure line under the board's lanes" },
@@ -252,12 +255,20 @@ async function drivePass(page, { name, width, height }) {
     const chips = [...document.querySelectorAll(".repo-chip")];
     return {
       rail: h(".rail"), head: h(".rail-head"), search: h(".rail-search"), transcript: h(".transcript"), composer: h(".composer"),
-      dropdown: !!document.querySelector(".recent-repos-select"),
+      compactChips: !!document.querySelector(".recent-repos.compact"),
       chipRows: new Set(chips.map((e) => Math.round(e.getBoundingClientRect().top))).size,
+      chipCount: chips.length,
+      scrollable: (() => { const e = document.querySelector(".recent-repos.compact"); return !!e && getComputedStyle(e).overflowX === "auto"; })(),
     };
   });
   const railBudget = `transcript ${rail.transcript} of ${rail.rail} (${Math.round((rail.transcript / rail.rail) * 100)}%) — head ${rail.head}, search ${rail.search}, composer ${rail.composer}`;
-  check(`${name}: the recent repos are a dropdown, not rows of wrapping chips`, rail.dropdown && rail.chipRows === 0, `dropdown=${rail.dropdown} chipRows=${rail.chipRows}`);
+  check(`${name}: recent repo chips stay in one scrollable row`, rail.compactChips && rail.chipCount > 1 && rail.chipRows === 1 && rail.scrollable, `compact=${rail.compactChips} chips=${rail.chipCount} rows=${rail.chipRows} scrollable=${rail.scrollable}`);
+  if (rail.chipCount > 1) {
+    const repo = page.locator(".recent-repos.compact .repo-chip").nth(1);
+    const path = await repo.getAttribute("title");
+    await repo.locator(".repo-chip-pick").tap();
+    check(`${name}: a repo chip selects its workspace`, !!path && await page.inputValue(".composer input.ws") === path, `picked=${path}`);
+  }
   check(`${name}: the transcript gets at least 40% of the rail`, rail.transcript >= rail.rail * 0.4, railBudget);
   check(`${name}: …and is taller than the composer below it`, rail.transcript > rail.composer, railBudget);
   if (width < 900) await page.tap('.mobile-nav .mnav-btn:has-text("Tasks")');
@@ -274,8 +285,12 @@ async function drivePass(page, { name, width, height }) {
   }
   const close = await rectOf(page, '.detail-head .close-x:not(.head-toggle)');
   check(`${name}: its ✕ is on screen and tappable`, inViewport(close, width, height) && Math.min(close.w, close.h) >= TAP_MIN, JSON.stringify(close));
+  check(`${name}: the inject composer has a visible disclosure`, await page.isVisible(".mobile-inject-toggle"));
+  await page.tap(".mobile-inject-toggle");
   const composer = await rectOf(page, ".inject-bar textarea");
   check(`${name}: the inject composer is fully visible`, inViewport(composer, width, height), JSON.stringify(composer));
+  await page.tap(".mobile-compose-close");
+  check(`${name}: closing the inject composer restores the disclosure`, await page.isVisible(".mobile-inject-toggle"));
   // A detector that cannot detect is worse than none — the rows inside .detail clip their own
   // children, so prove the collector sees a deliberate spill before trusting it to report zero.
   const proof = await page.evaluate((collect) => {
@@ -297,9 +312,14 @@ async function drivePass(page, { name, width, height }) {
   // header is invisible to a tap sweep and to an overflow check, and 50/50 stayed green while the
   // feed was down to 32% of an 800px screen.
   console.log("\n  VERTICAL BUDGET — the feed is what the screen is for");
+  // The header preference persists across contexts. Start each orientation expanded so the budget
+  // and the collapse/expand checks measure the same state.
+  if (await page.isVisible(".detail-head.collapsed")) await page.tap(".detail-title-actions .head-toggle");
   // Measure only once the whole column exists. The deliverables strip mounts a beat after the head,
   // and measuring across that gap made this check flip between 28% and 44% run to run — an
   // assertion that races the render is worse than no assertion.
+  await page.waitForSelector(".deliverables .deliverables-label", { timeout: 10_000 });
+  if (await page.isVisible(".deliverables.collapsed .deliverables-label")) await page.tap(".deliverables-label");
   await page.waitForSelector(".deliverables .dl-chip", { timeout: 10_000 });
   const space = () =>
     page.evaluate(() => {
@@ -338,7 +358,7 @@ async function drivePass(page, { name, width, height }) {
   const download = await rectOf(page, ".dl-pop.open a.btn");
   check(`${name}: Download is on screen`, inViewport(download, width, height), JSON.stringify(download));
   check(`${name}: …and Copy path with it`, await page.isVisible('.dl-pop.open button:has-text("Copy path")'));
-  await page.tap(".deliverables-label"); // outside the chip, and inert (the title is click-to-rename)
+  await page.tap(".feed"); // outside the chip, without collapsing the deliverables disclosure
   await page.waitForSelector(".dl-pop.open", { state: "detached", timeout: 5_000 }).catch(() => {});
   check(`${name}: tapping away closes it`, (await page.$(".dl-pop.open")) === null);
   // The second chip is a .bin — no preview to open, so its icon used to do nothing at all.

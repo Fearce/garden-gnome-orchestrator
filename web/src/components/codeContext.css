@@ -47,6 +47,9 @@
   max-width: 240px; flex: 0 1 auto; min-width: 0;
 }
 .codectx-btn:hover { border-color: var(--line-strong); background: var(--bg-2); color: var(--text); }
+@media (pointer: coarse) and (max-width: 1365.98px) {
+  .codectx-btn { min-height: 34px; }
+}
 .codectx-btn > svg { flex: 0 0 auto; color: var(--text-faint); }
 .codectx-btn:hover > svg { color: var(--accent); }
 .codectx-btn > span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

@@ -686,6 +686,13 @@ button { font-family: inherit; cursor: pointer; }
 
 /* ---- recent repo chips (composer) ---- */
 .recent-repos { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.recent-repos.compact {
+  flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; min-width: 0; max-width: 100%;
+  overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch;
+}
+.recent-repos.compact .recent-repos-label,
+.recent-repos.compact .repo-chip { flex: 0 0 auto; }
+.recent-repos.compact .repo-chip { max-width: min(220px, calc(100% - 45px)); }
 .recent-repos-label {
   font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint);
   margin-right: 2px;
@@ -713,26 +720,6 @@ button { font-family: inherit; cursor: pointer; }
   padding: 3px 7px 3px 4px; font-size: 13px; line-height: 1; transition: color 0.12s;
 }
 .repo-chip-x:hover { color: var(--text); }
-
-/* Recent repos as a single dropdown row instead of wrapping chips. Which of the two renders is
-   decided in Director.tsx (see COMPACT_MQ), not here — nine remembered repos wrap to FOUR rows of
-   chips, 162px of a 679px rail, which is what left the transcript 149px on a tablet. So this styling
-   is unconditional: the component only mounts it when the rail cannot afford the chips. */
-.recent-repos-select { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.recent-repos-select .recent-repos-label { flex: 0 0 auto; }
-.repo-select {
-  flex: 1 1 auto; min-width: 0; height: 40px; padding: 0 10px;
-  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
-  color: var(--text); font-family: var(--font-mono); font-size: 14px; cursor: pointer;
-}
-.repo-select:focus { outline: none; border-color: var(--accent); }
-.repo-select-x {
-  flex: 0 0 auto; width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
-  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
-  color: var(--text-faint); font-size: 20px; line-height: 1; cursor: pointer;
-}
-.repo-select-x:active { background: var(--bg-3); color: var(--text); }
-.repo-select-x:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* ---- workspace path autocomplete ---- */
 .ws-wrap { position: relative; flex: 1; display: flex; }
@@ -3267,7 +3254,7 @@ button.note-from:hover { color: var(--text-dim); }
   .detail > .resize-handle { display: none; }
 
   /* The director rail had 149px of transcript out of 679 — 22%, no visible conversation at all.
-     The repo dropdown (Director.tsx) removes 122px of wrapped chips; these compact the header too. */
+     The one-row repo strip removes 122px of wrapped chips; these compact the header too. */
   .rail-head { padding: 8px 12px; }
   .rail-head-row { flex-wrap: nowrap; gap: 8px; }
   /* The name is `flex: 1 1 auto` beside a rigid action row, so the gates were served first and the
@@ -3308,6 +3295,38 @@ button.note-from:hover { color: var(--text-dim); }
     mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
   }
   .detail-controls > * { flex: 0 0 auto; }
+  @media (pointer: coarse) {
+  .detail-head { gap: 4px; }
+  /* Keep the transcript readable on an 800px-tall tablet. The compose box opens on demand;
+     all role filters and files remain reachable by swiping their single rows. */
+  .mobile-inject-toggle {
+    display: flex; flex: 0 0 auto; align-items: center; min-height: var(--tap);
+    padding: 0 16px; border: 0; border-top: 1px solid var(--line);
+    background: var(--bg-1); color: var(--text-dim); font: 13px var(--font-sans); text-align: left;
+  }
+  .mobile-inject-toggle:disabled { color: var(--text-faint); }
+  .inject-bar.mobile-collapsed { display: none; }
+  .inject-bar { position: relative; }
+  .mobile-compose-close {
+    display: inline-flex; position: absolute; top: 11px; right: 12px; z-index: 3;
+    width: var(--tap); height: var(--tap); align-items: center; justify-content: center;
+    border: 0; border-radius: var(--r-sm); background: var(--bg-2);
+    color: var(--text-dim); font-size: 20px;
+  }
+  .inject-bar textarea { padding-right: calc(var(--tap) + 10px); }
+  .feed-filter { display: flex; align-items: center; }
+  .feed-filter-roles {
+    flex: 1 1 auto; min-width: 0; overflow-x: auto; display: flex; flex-wrap: nowrap;
+    padding: 4px 8px; -webkit-overflow-scrolling: touch;
+  }
+  .feed-filter .feed-filter-roles .fchip { flex: 0 0 auto; width: auto; }
+  .feed-filter-tools { flex: 0 0 auto; padding: 0 8px 0 0; }
+  .deliverables { flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; min-height: var(--tap); padding: 0 16px; }
+  .deliverable-strip { flex: 0 0 auto; flex-wrap: nowrap; }
+  .detail-head .deadline-panel { padding: 4px 8px; }
+  .deadline-panel .deadline-exact, .deadline-panel .deadline-none { display: none; }
+  .deadline-summary { min-height: var(--tap-sm); }
+  }
   /* The burn strip is a reference row here, not the focus — the same trim the compact band makes. */
   .acct { padding: 3px 8px; gap: 2px; }
 
@@ -3388,9 +3407,6 @@ button.note-from:hover { color: var(--text-dim); }
      19px target beside a 20px name. The board's Closed disclosure was 22px. */
   .repo-chip-pick { min-height: var(--tap-sm); padding: 0 4px 0 10px; }
   .repo-chip-x { min-height: var(--tap-sm); min-width: var(--tap-sm); padding: 0 8px; }
-  /* The dropdown that replaces those chips on a tablet — 40px is the compact band's mouse-era size. */
-  .repo-select { height: var(--tap); font-size: 16px; }
-  .repo-select-x { width: var(--tap); height: var(--tap); }
   .closed-toggle { min-height: var(--tap-sm); padding: 4px 8px; }
   /* The workspace chip became a button (it opens the folder), so it needs a finger-sized box too. */
   .ws-path { min-height: var(--tap-sm); }
@@ -4290,4 +4306,11 @@ html.theme-transition * {
   .board-head .board-tabs { display: none; }
   .board-head .board-area-select { display: flex; align-items: center; gap: 10px; width: 100%; color: var(--text-dim); font-size: 12px; }
   .board-area-select select { flex: 1; min-width: 0; min-height: 38px; padding: 6px 10px; background: var(--bg-1); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-sm); font: inherit; }
+}
+
+@media (pointer: coarse) and (max-width: 1365.98px) {
+  .rail-search-toggle, .composer-disclosure { min-width: var(--tap-sm); min-height: var(--tap-sm); }
+  .board-area-select select, .mnav-area select { min-height: var(--tap); }
+  .deliverables-label { min-height: var(--tap); }
+  .task-model-trigger { min-width: var(--tap); min-height: var(--tap); }
 }

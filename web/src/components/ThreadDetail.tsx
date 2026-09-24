@@ -359,6 +359,12 @@ function isCompactViewport(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(max-width: 899.98px)").matches;
 }
 
+const COMPACT_COMPOSER_MQ = "(max-width: 899.98px), (pointer: coarse) and (max-width: 1365.98px)";
+
+function isCompactComposerViewport(): boolean {
+  return typeof window !== "undefined" && window.matchMedia(COMPACT_COMPOSER_MQ).matches;
+}
+
 /** Per-task hard-stop editor. This is intentionally separate from TaskMode's work window: a work window
  *  waits for a round boundary and runs closing QA, while this control is an emergency/operator budget that
  *  stops even a busy role at the instant. Editing the clock never auto-resumes a deadline-parked task. */
@@ -509,10 +515,16 @@ export function ThreadDetail() {
   const [showChanges, setShowChanges] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
-  // A phone opens as a transcript, not as two rows of composing chrome. One tap reveals the full
+  // A phone or touch tablet opens as a transcript, not as two rows of composing chrome. One tap reveals the full
   // injection surface; a successful send folds it away again. CSS keeps the full bar visible if a
   // narrow session is later resized onto desktop, so this state never strands the controls.
-  const [composerExpanded, setComposerExpanded] = useState(() => !isCompactViewport());
+  const [composerExpanded, setComposerExpanded] = useState(() => !isCompactComposerViewport());
+  useEffect(() => {
+    const mq = window.matchMedia(COMPACT_COMPOSER_MQ);
+    const onChange = () => { if (mq.matches) setComposerExpanded(false); };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
   const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastSentRef = useRef(""); // last injected message, recalled with ↑ when the field is empty
@@ -738,7 +750,7 @@ export function ThreadDetail() {
     if (!sent) return;
     setMsg("");
     att.clear();
-    if (isCompactViewport()) setComposerExpanded(false);
+    if (isCompactComposerViewport()) setComposerExpanded(false);
   };
 
   const onFeedScroll = () => {
