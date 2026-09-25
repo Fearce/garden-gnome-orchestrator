@@ -312,8 +312,32 @@ async function runPool(gates, jobs, run) {
   return results;
 }
 
+/** Each gate's most recent duration in ms, read from the transcripts' verdict lines. The completion
+ *  stamp would be simpler, but it is deleted at the start of a run and never written by an interrupted
+ *  one, while the transcripts keep every verdict. Later sources win; an unreadable one is skipped. */
+function gateDurations(sources = [PREVIOUS_TRANSCRIPT, TRANSCRIPT], read = (source) => fs.readFileSync(source, "utf8")) {
+  const durations = new Map();
+  for (const source of sources) {
+    let text;
+    try {
+      text = read(source);
+    } catch {
+      continue;
+    }
+    for (const m of text.matchAll(/^─+ (\S+): (?:passed|FAILED) in ([\d.]+)s\b/gm)) durations.set(m[1], Number(m[2]) * 1000);
+  }
+  return durations;
+}
+
+/** Slowest first, so no long gate starts late and runs alone while the other workers sit idle. An
+ *  unmeasured gate goes first of all: it is new, and nothing says it is quick. The sort is stable. */
+function longestFirst(entries, durations) {
+  const cost = ({ gate }) => durations.get(gate) ?? Infinity;
+  return [...entries].sort((a, b) => cost(b) - cost(a));
+}
+
 /** Run gates with exclusive local resources after the bounded pool, keeping suite order in results. */
-async function runGateGroups(gates, jobs, run, serialGates = SERIAL_GATES) {
+async function runGateGroups(gates, jobs, run, serialGates = SERIAL_GATES, durations = new Map()) {
   const results = Array(gates.length);
   const parallel = [];
   const serial = [];
@@ -321,7 +345,7 @@ async function runGateGroups(gates, jobs, run, serialGates = SERIAL_GATES) {
     (serialGates.has(gate) ? serial : parallel).push({ gate, index });
   }
 
-  const pooled = await runPool(parallel, jobs, async ({ gate, index }) => ({ index, result: await run(gate, index) }));
+  const pooled = await runPool(longestFirst(parallel, durations), jobs, async ({ gate, index }) => ({ index, result: await run(gate, index) }));
   for (const { index, result } of pooled) results[index] = result;
   for (const { gate, index } of serial) results[index] = await run(gate, index);
   return results;
@@ -531,6 +555,7 @@ async function main(argv = process.argv.slice(2)) {
     // Only a full run may touch the stamp: it is the record of a whole suite at a commit, and a subset
     // neither proves nor disproves it.
     if (!subset) clearCompletedStamp();
+    const durations = gateDurations();
     log = guardBrokenPipe(openTranscript(transcript));
     clearLiveLogs();
     // The path goes out FIRST, not just in the summary: a backgrounded run is watched from the
@@ -552,7 +577,7 @@ async function main(argv = process.argv.slice(2)) {
       if (!r.output.endsWith("\n")) log.write("\n");
       log.write(`──────── ${gate}: ${r.ok ? "passed" : "FAILED"} in ${(r.ms / 1000).toFixed(1)}s ────────\n`);
       return r;
-    });
+    }, SERIAL_GATES, durations);
 
     const summary = summaryText(results, transcript);
     say(summary);
@@ -583,6 +608,7 @@ module.exports = {
   runGateGroups,
   busyText,
   failedGatesFrom,
+  gateDurations,
   parseSelection,
   classifyFailure,
   clearCompletedStamp,

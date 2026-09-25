@@ -38,6 +38,7 @@ const {
   runGateGroups,
   busyText,
   failedGatesFrom,
+  gateDurations,
   parseSelection,
   classifyFailure,
   clearCompletedStamp,
@@ -125,6 +126,22 @@ async function assertExclusiveGates() {
   });
   assert.equal(peak, 2, "ordinary gates still use the bounded pool");
   assert.deepEqual(results, gates.map((gate, index) => ({ gate, index })), "isolated gates retain selection order in results");
+}
+
+async function assertLongestFirst() {
+  const gates = ["quick", "new-gate", "slow", "test:deploy-plan", "medium"];
+  const durations = new Map([["quick", 1_000], ["slow", 90_000], ["medium", 20_000], ["test:deploy-plan", 500]]);
+  const started = [];
+  const results = await runGateGroups(gates, 1, async (gate, index) => {
+    started.push(gate);
+    return { gate, index };
+  }, SERIAL_GATES, durations);
+  assert.deepEqual(
+    started,
+    ["new-gate", "slow", "medium", "quick", "test:deploy-plan"],
+    "the slowest known gates start first so none runs alone at the end; an unmeasured gate may be slow too",
+  );
+  assert.deepEqual(results, gates.map((gate, index) => ({ gate, index })), "results and live-log numbers keep selection order");
 }
 
 // --- 2. a broken pipe is survivable; nothing else is -------------------------------------------
@@ -421,7 +438,17 @@ assert.match(
   "with no transcript there is nothing to re-run, and saying so beats running the whole suite unasked",
 );
 
-Promise.all([assertCrashSafeLease(), assertBoundedPool(), assertExclusiveGates()])
+const timed = gateDurations(["older", "newer", "missing"], (source) => {
+  if (source === "missing") throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+  return source === "older"
+    ? `${RULE} test:git: passed in 9.0s ${RULE}\n${RULE} test:ide: passed in 2.0s ${RULE}`
+    : `interrupted half way\n${RULE} test:ide: FAILED in 30.5s ${RULE}`;
+});
+assert.equal(timed.get("test:git"), 9_000, "a gate the newest run never reached keeps its older timing");
+assert.equal(timed.get("test:ide"), 30_500, "the newest transcript wins, and a failed gate's time still counts");
+assert.equal(timed.size, 2, "an unreadable transcript is skipped, not fatal");
+
+Promise.all([assertCrashSafeLease(), assertBoundedPool(), assertExclusiveGates(), assertLongestFirst()])
   .then(() => console.log(`runGates: all assertions passed (${GATES.length} gates, transcript ${path.relative(ROOT, TRANSCRIPT)})`))
   .catch((err) => {
     console.error(err);
