@@ -277,6 +277,21 @@ function runGate(gate, livePath) {
   });
 }
 
+/** The live files are only useful for the run in progress. A previous run's leftovers (or a longer
+ *  suite's higher-numbered files after a subset run) would pose as running gates, so start empty.
+ *  Called under the lease, so no other runner is writing here. */
+function clearLiveLogs(dir = LIVE_DIR) {
+  fs.mkdirSync(dir, { recursive: true });
+  for (const name of fs.readdirSync(dir)) {
+    if (!name.endsWith(".log")) continue;
+    try {
+      fs.rmSync(path.join(dir, name), { force: true });
+    } catch {
+      /* a file held open by a viewer is harmless; its gate slot is rewritten in place */
+    }
+  }
+}
+
 /** Fixed worker pool, returning results in suite order even when gates finish out of order. */
 async function runPool(gates, jobs, run) {
   const results = Array(gates.length);
@@ -461,7 +476,17 @@ function closeTranscript(log) {
 }
 
 async function main(argv = process.argv.slice(2)) {
-  const jobs = gateJobs();
+  let jobs;
+  try {
+    jobs = gateJobs();
+  } catch (err) {
+    say(`
+=== cannot run ===
+    ${err.message}
+
+`);
+    return USAGE_EXIT_CODE;
+  }
   const selection = parseSelection(argv);
   if (selection.error) {
     say(`\n=== cannot run ===\n    ${selection.error}\n    usage: npm run test:gates [-- --failed | <gate> ...]\n\n`);
@@ -487,7 +512,7 @@ async function main(argv = process.argv.slice(2)) {
     // neither proves nor disproves it.
     if (!subset) clearCompletedStamp();
     log = guardBrokenPipe(openTranscript(transcript));
-    fs.mkdirSync(LIVE_DIR, { recursive: true });
+    clearLiveLogs();
     // The path goes out FIRST, not just in the summary: a backgrounded run is watched from the
     // transcript, and by the time the summary prints there is nothing left to watch.
     const scope = subset
@@ -531,6 +556,7 @@ module.exports = {
   TRANSCRIPT,
   SUBSET_TRANSCRIPT,
   LIVE_DIR,
+  clearLiveLogs,
   gateJobs,
   runPool,
   busyText,

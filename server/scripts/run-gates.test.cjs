@@ -31,6 +31,7 @@ const {
   TRANSCRIPT,
   SUBSET_TRANSCRIPT,
   LIVE_DIR,
+  clearLiveLogs,
   gateJobs,
   runPool,
   busyText,
@@ -73,6 +74,14 @@ assert.equal(gateJobs("1"), 1);
 assert.equal(gateJobs("4"), 4);
 assert.throws(() => gateJobs("0"), /GGO_GATE_JOBS/);
 assert.throws(() => gateJobs("many"), /GGO_GATE_JOBS/);
+{
+  const liveDir = fs.mkdtempSync(path.join(os.tmpdir(), "gates-live-"));
+  fs.writeFileSync(path.join(liveDir, "179-test-stale.log"), "previous run");
+  fs.writeFileSync(path.join(liveDir, "keep.txt"), "not a gate log");
+  clearLiveLogs(liveDir);
+  assert.deepEqual(fs.readdirSync(liveDir), ["keep.txt"], "a previous run's live logs must not pose as running gates");
+  fs.rmSync(liveDir, { recursive: true, force: true });
+}
 
 async function assertBoundedPool() {
   let active = 0;
