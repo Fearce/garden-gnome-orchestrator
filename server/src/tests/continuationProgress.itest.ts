@@ -221,6 +221,10 @@ console.log("\n=== 0b. workspace changes count as progress ===");
   try {
     check("non-repository fingerprint is unknown", await workspaceGitFingerprint(dir) === null);
     execFileSync("git", ["init", "-q", dir]);
+    // The owner's global core.hooksPath runs a real validation suite on every commit (~3s each here).
+    const emptyHooks = join(dir, ".git", "gate-empty-hooks");
+    mkdirSync(emptyHooks);
+    execFileSync("git", ["-C", dir, "config", "core.hooksPath", emptyHooks]);
     const clean = await workspaceGitFingerprint(dir);
     writeFileSync(join(dir, "artifact.txt"), "first");
     const written = await workspaceGitFingerprint(dir);

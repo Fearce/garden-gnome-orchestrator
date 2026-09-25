@@ -50,6 +50,12 @@ The **Co-work** tab is pair development: an owner prompt claims one owner-scoped
   `server/data/crash.log` (written by the process guards in `server/src/crashLog.ts`).
 - Full free gate suite: `npm run test:gates` from the repo root. It streams terse progress and writes
   the complete transcript to `server/data/gates-last.log`.
+- **A gate that builds a throwaway git repo must point `core.hooksPath` at an empty directory.** Every repo
+  inherits the owner's global hook suite, which costs ~3s per commit, clone, checkout or push; seven gates
+  spent ~150s of suite time in it until 2026-09-25. After `init`, run `git config core.hooksPath <repo>/.git/gate-empty-hooks`
+  (`compiled-diff.test.cjs`). For a gate that clones, pass `-c core.hooksPath=<empty dir>` on every call,
+  because the clone runs `post-checkout` before repo config exists (`manualDeployment.test.ts`). Do not
+  set a suite-wide env override: `ide.itest.ts` deliberately runs its repo's own `.git/hooks`.
 - **Build/typecheck suddenly fails with `Cannot find module '@anthropic-ai/claude-agent-sdk'` (a wall of
   TS2307s) or `'tsc' is not recognized`?** Not your diff — a concurrent/interrupted `npm install` left
   `server/node_modules` PARTIAL (common here: many agents share one checkout). Fix: `npm install --prefix

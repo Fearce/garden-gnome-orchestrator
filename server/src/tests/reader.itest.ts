@@ -21,7 +21,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
@@ -111,6 +111,10 @@ async function testGitAllowlist(): Promise<void> {
   const tmp = mkdtempSync(join(tmpdir(), "reader-git-"));
   try {
     git(tmp, "init", "-q");
+    // The owner's global core.hooksPath runs a real validation suite on every commit (~3s each here).
+    const emptyHooks = join(tmp, ".git", "gate-empty-hooks");
+    mkdirSync(emptyHooks);
+    git(tmp, "config", "core.hooksPath", emptyHooks);
     git(tmp, "config", "user.name", "Reader Test");
     git(tmp, "config", "user.email", "reader-test@example.com");
     writeFileSync(join(tmp, "hello.txt"), "one\ntwo\n");

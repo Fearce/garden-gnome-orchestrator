@@ -110,8 +110,11 @@ assert.ok(
 
 // --- real nested checkout: the shape that rejected valid handoffs ------------------------------------
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "gg-md-probe-"));
+// The owner's global core.hooksPath runs a real validation suite on every commit and push (~3s each).
+const noHooks = path.join(tmp, "no-hooks");
+fs.mkdirSync(noHooks);
 const run = (cwd, ...args) => {
-  const result = spawnSync("git", ["-C", cwd, "-c", "user.email=gate@example.com", "-c", "user.name=gate", ...args], {
+  const result = spawnSync("git", ["-C", cwd, "-c", "user.email=gate@example.com", "-c", "user.name=gate", "-c", `core.hooksPath=${noHooks}`, ...args], {
     encoding: "utf8",
     windowsHide: true,
   });

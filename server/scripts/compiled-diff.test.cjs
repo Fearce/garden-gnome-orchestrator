@@ -54,6 +54,10 @@ const webDiff = (a, b) => webInputDiff(a, b, repo);
 
 try {
   git("init", "-q");
+  // The owner's global core.hooksPath runs a real validation suite on every commit (~3s each here).
+  const emptyHooks = path.join(repo, ".git", "gate-empty-hooks");
+  fs.mkdirSync(emptyHooks);
+  git("config", "core.hooksPath", emptyHooks);
   write("server/src/index.ts", "export const v = 1;\n");
   write("server/tsconfig.json", '{"compilerOptions":{"target":"ES2022"}}\n');
   write("server/src/tests/thing.test.ts", "// a test\n");

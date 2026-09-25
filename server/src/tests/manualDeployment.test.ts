@@ -15,7 +15,8 @@ import {
 } from "../orchestrator/manualDeployment.js";
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", windowsHide: true }).trim();
+  // Command-level, so a clone's own checkout skips the owner's global hook suite too (~3s per hook run).
+  return execFileSync("git", ["-C", cwd, "-c", `core.hooksPath=${noHooks}`, ...args], { encoding: "utf8", windowsHide: true }).trim();
 }
 
 function commit(cwd: string, file: string, content: string, subject: string): string {
@@ -47,6 +48,8 @@ function claim(commitSha: string): ManualDeploymentClaim {
 }
 
 const root = mkdtempSync(join(tmpdir(), "ggo-manual-deploy-"));
+const noHooks = join(root, "no-hooks");
+mkdirSync(noHooks);
 try {
   assert.equal(isConfiguredCommitOnlyOrigin("HTTPS://EXAMPLE.TEST/Commit-Only.git", "commit-only"), true);
   assert.equal(isConfiguredCommitOnlyOrigin("https://example.test/ordinary.git", "commit-only"), false);

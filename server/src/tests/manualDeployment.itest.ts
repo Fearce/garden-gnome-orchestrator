@@ -38,7 +38,8 @@ class StubAccounts {
 }
 
 function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", windowsHide: true }).trim();
+  // Command-level, so a clone's own checkout skips the owner's global hook suite too (~3s per hook run).
+  return execFileSync("git", ["-C", cwd, "-c", `core.hooksPath=${noHooks}`, ...args], { encoding: "utf8", windowsHide: true }).trim();
 }
 
 function commit(cwd: string, file: string, content: string, subject: string): string {
@@ -88,6 +89,8 @@ const routeWithQa: RouteDecision = {
 };
 
 const root = mkdtempSync(join(tmpdir(), "manual-deployment-integration-"));
+const noHooks = join(root, "no-hooks");
+mkdirSync(noHooks);
 const originalPattern = config.noPushRepoPattern;
 try {
   const origin = join(root, "commit-only-origin.git");

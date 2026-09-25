@@ -23,6 +23,10 @@ function git(cwd: string, ...args: string[]): void {
 function initRepo(path: string): void {
   mkdirSync(path);
   git(path, "init", "--quiet");
+  // The owner's global core.hooksPath runs a real validation suite on every commit (~3s each here).
+  const emptyHooks = join(path, ".git", "gate-empty-hooks");
+  mkdirSync(emptyHooks);
+  git(path, "config", "core.hooksPath", emptyHooks);
   git(path, "config", "user.name", "Git Console Test");
   git(path, "config", "user.email", "git-console-test@example.com");
   writeFileSync(join(path, "README.md"), "fixture\n");
