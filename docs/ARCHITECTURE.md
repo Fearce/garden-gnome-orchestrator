@@ -237,6 +237,8 @@ review ──"Auto-review & mark done"──▶ reviewing ──▶ done        
                                           │  └── implementing        (fix round: the reviewer's issues,
                                           │          (×maxReviewFixRounds)   handed to the implementor)
                                           └────────▶ review          (handed back, with reasons)
+
+done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review          (owner asked for QA after the fact)
 ```
 
 - **Closing a task is a soft move, not a delete.** The ✕ on a card → `thread.close` →
