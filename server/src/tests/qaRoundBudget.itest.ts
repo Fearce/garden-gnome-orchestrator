@@ -282,6 +282,25 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("Start QA — a Done Jev sub-task is refused instead of re-running its Jev call");
+  {
+    const h = makeHarness();
+    try {
+      const jev = h.db.createThread({
+        title: "jev judgement",
+        workspace: h.workspace,
+        rawPrompt: "judge it",
+        subTask: { provider: "jev", model: null, effort: null, spawnedByRole: "implementor", spawnedByName: null, spawnedByRunId: null },
+      });
+      h.db.updateThread(jev.id, { state: "done" });
+      const refused = await h.mgr.startQa(jev.id);
+      check("Start QA refuses a Jev sub-task", !refused.ok && h.db.getThread(jev.id)?.state === "done", JSON.stringify(refused));
+      check("the refused Jev sub-task carries no QA marker", !h.db.getThreadStageOutputs(jev.id).ownerStartedQa);
+    } finally {
+      h.dispose();
+    }
+  }
+
   check("Start QA command is accepted", clientCommandSchema.safeParse({ type: "thread.startQa", threadId: "abc" }).success);
   check("Start QA command requires a thread ID", !clientCommandSchema.safeParse({ type: "thread.startQa" }).success);
 

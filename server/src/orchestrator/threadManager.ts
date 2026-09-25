@@ -12602,6 +12602,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
     if (thread.state !== "done") return { ok: false, state: thread.state, error: "Start QA is available only on a Done task." };
+    // runPipeline dispatches a Jev sub-task to runJev before it reads ownerStartedQa, so starting QA
+    // there would silently re-run the Jev call instead of reviewing anything.
+    if (isJevSubTask(thread)) return { ok: false, state: "done", error: "A Jev sub-task is a single judgement call; it has no implementation for QA to review." };
     if (this.restartDrainActive()) return { ok: false, state: "done", error: "GGO is restarting now. Start QA once the console reconnects." };
     if (this.coworkWorkspaceBusy?.(thread.workspace)) return { ok: false, state: "done", error: "A Co-worker turn is using this workspace. Wait for it to finish before starting QA." };
     if (!existsSync(thread.workspace)) return { ok: false, state: "done", error: `Workspace "${thread.workspace}" does not exist.` };

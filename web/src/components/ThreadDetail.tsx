@@ -1027,7 +1027,7 @@ export function ThreadDetail() {
                   ✓ Mark done
                 </button>
               )}
-              {thread.state === "done" && (
+              {thread.state === "done" && thread.subTask?.provider !== "jev" && (
                 <button className="btn review sm" onClick={() => startQa(id)} title="Review the completed work through the normal QA and implementor fix loop">
                   Start QA
                 </button>
