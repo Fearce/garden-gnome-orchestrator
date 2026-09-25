@@ -129,12 +129,12 @@ function qaLoopReading(input) {
   if (interruptedRetryRound != null) {
     if (ownerStartedQa) {
       lines.push(
-        `  Â· QA round ${interruptedRetryRound} is on the owner-started direct-review route; this marker bypasses implementation replay ` +
+        `  · QA round ${interruptedRetryRound} is on the owner-started direct-review route; this marker bypasses implementation replay ` +
           "and does not by itself show that a restart occurred.",
       );
     } else {
       lines.push(
-        `  Â· QA round ${interruptedRetryRound} is waiting for a restart-interrupted retry; this marker names the already-charged round, ` +
+        `  · QA round ${interruptedRetryRound} is waiting for a restart-interrupted retry; this marker names the already-charged round, ` +
           "not another launch (boot recovery retries QA directly without replaying the implementor).",
       );
     }
