@@ -2831,7 +2831,27 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   private sendCommunication(run: AgentRunLike, content: UserContent, opts?: SendOpts): void {
+    // A CLI send during the one-launch self-improvement bonus would spawn a second provider process
+    // (the batch runner replays every send as a new resume turn). Owner steering is re-queued by
+    // injectThread/resumeThread before it gets here; ambient pushes (office chat, heads-up findings,
+    // sub-task notices) are dropped rather than reopening the accepted task.
+    const bonusThread = this.cliBonusThreadOf(run);
+    if (bonusThread) {
+      this.hub.log("info", `[SELF-IMPROVE] ${bonusThread.slice(0, 8)}: withheld a message from the CLI bonus run to keep it to one launch`);
+      return;
+    }
     run.send(this.communicationContent(content), opts);
+  }
+
+  /** The thread whose live implementor `run` is, when that run is a Codex/Grok self-improvement bonus. */
+  private cliBonusThreadOf(run: AgentRunLike): string | undefined {
+    for (const [threadId, live] of this.live) {
+      if (live.run !== run) continue;
+      if (!this.selfImproving.has(threadId)) return undefined;
+      const provider = this.implementorProvider.get(threadId);
+      return provider === "codex" || provider === "grok" ? threadId : undefined;
+    }
+    return undefined;
   }
 
   // ---- per-(subscription × role) model selection ----

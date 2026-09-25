@@ -352,11 +352,18 @@ async function testCliBonusRunsOnce(): Promise<void> {
       launches++;
       resumeSession = opts.resume;
       freshFallback = opts.freshFallback;
-      return { run: { stop: async (): Promise<void> => {}, send: (): void => { sends++; } }, runId: "bonus", accountId: provider };
+      const run = { stop: async (): Promise<void> => {}, send: (): void => { sends++; } };
+      // Register it as the live implementor, as the real startImplementor does, so every push path
+      // that targets `this.live` (office chat, heads-up findings, sub-task notices) can reach it.
+      h.mgr.live.set(id, { run, runId: "bonus", accountId: provider === "codex" ? "openai-codex" : "xai-grok" });
+      return { run, runId: "bonus", accountId: provider };
     };
     h.mgr.awaitTurnResult = async (): Promise<unknown> => {
       await h.mgr.injectThread(id, "owner follow-up", "append");
       await h.mgr.resumeThread(id, "resume follow-up");
+      // Ambient pushes share sendCommunication; a CLI send here would replay as a second process.
+      h.mgr.deliverChatToPeers({ scope: "project", workspace, threadId: "someone-else", role: "implementor", senderName: "Peer", body: "heads up" });
+      h.mgr.route({ id: "f1", threadId: id, fromRole: "qa", severity: "warning", summary: "heads-up finding" });
       return OK_RESULT;
     };
     h.mgr.drainQueuedImplementor = async (): Promise<unknown> => {
