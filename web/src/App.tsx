@@ -6,6 +6,7 @@ import { Board } from "./components/Board.js";
 import { ThreadDetail } from "./components/ThreadDetail.js";
 import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
+import { PortalLink } from "./components/PortalLink.js";
 import { Office } from "./components/Office.js";
 import { NoticeBanner } from "./components/NoticeBanner.js";
 import { LazyChunkBoundary } from "./components/LazyChunkBoundary.js";
@@ -75,6 +76,7 @@ export function App() {
             {focusMode ? null : <span className="sub">director&nbsp;console</span>}
           </div>
         </div>
+        <PortalLink />
         <FocusToggle />
         <RailToggle />
         {focusMode ? null : (

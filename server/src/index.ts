@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { registerPortalLink } from "./portalLink.js";
 import type { FastifyInstance, FastifyServerOptions } from "fastify";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
@@ -267,6 +268,7 @@ async function main(): Promise<void> {
     registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos, onlineOffice, cowork, codeContext });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
     registerIdeRoutes(app, ide, isAuthed);
+    registerPortalLink(app, isAuthed);
 
     // `build` is which dist THIS process loaded, read once at boot — the fact that turns "is the live
     // server running current code?" into a comparison instead of an inference from mtimes.
