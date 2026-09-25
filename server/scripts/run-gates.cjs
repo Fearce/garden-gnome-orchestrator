@@ -102,6 +102,7 @@ const GATES = [
   "test:provider-serves-role",
   "test:provider-fallback",
   "test:park-classify",
+  "test:portal-link",
   "test:archive-thread",
   "test:restore-archived-deliverables",
   "test:deliverable-dedup",
@@ -222,6 +223,10 @@ const GATES = [
   "test:gates-provenance",
 ];
 
+// These integration gates bind fixed local ports. Let the pooled gates finish before running them,
+// so each fixed-port gate has the suite's local resources to itself.
+const SERIAL_GATES = new Set(["test:deploy-plan", "test:lab-harness"]);
+
 // npm is a .cmd on Windows; Node blocks spawning .cmd/.bat without a shell, so
 // run through the shell there. On POSIX a plain `npm` invocation is enough.
 const win = process.platform === "win32";
@@ -304,6 +309,21 @@ async function runPool(gates, jobs, run) {
   }));
   const failure = workers.find((worker) => worker.status === "rejected");
   if (failure) throw failure.reason;
+  return results;
+}
+
+/** Run gates with exclusive local resources after the bounded pool, keeping suite order in results. */
+async function runGateGroups(gates, jobs, run, serialGates = SERIAL_GATES) {
+  const results = Array(gates.length);
+  const parallel = [];
+  const serial = [];
+  for (const [index, gate] of gates.entries()) {
+    (serialGates.has(gate) ? serial : parallel).push({ gate, index });
+  }
+
+  const pooled = await runPool(parallel, jobs, async ({ gate, index }) => ({ index, result: await run(gate, index) }));
+  for (const { index, result } of pooled) results[index] = result;
+  for (const { gate, index } of serial) results[index] = await run(gate, index);
   return results;
 }
 
@@ -522,7 +542,7 @@ async function main(argv = process.argv.slice(2)) {
     say(header);
     log.write(header);
 
-    const results = await runPool(selection.gates, jobs, async (gate, index) => {
+    const results = await runGateGroups(selection.gates, jobs, async (gate, index) => {
       const livePath = path.join(LIVE_DIR, `${String(index + 1).padStart(3, "0")}-${gate.replace(/[^a-z0-9-]/gi, "-")}.log`);
       say(`  … ${gate}\n`);
       log.write(`  … ${gate} (live: ${livePath})\n`);
@@ -556,9 +576,11 @@ module.exports = {
   TRANSCRIPT,
   SUBSET_TRANSCRIPT,
   LIVE_DIR,
+  SERIAL_GATES,
   clearLiveLogs,
   gateJobs,
   runPool,
+  runGateGroups,
   busyText,
   failedGatesFrom,
   parseSelection,

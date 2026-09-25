@@ -198,6 +198,7 @@
     "test:readme-claims": "tsx src/tests/readmeClaims.test.ts",
     "test:stale-gnomes": "tsx src/tests/staleGnomeCleanup.itest.ts",
     "test:git": "tsx src/tests/gitService.itest.ts",
+    "test:portal-link": "tsx src/tests/portalLink.test.ts",
     "test:repo-console": "tsx src/tests/repoConsole.test.ts",
     "test:git-console-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/git-console-ui.test.ts",
     "test:lazy-chunks-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/lazy-chunks-ui.test.ts",

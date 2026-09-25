@@ -31,9 +31,11 @@ const {
   TRANSCRIPT,
   SUBSET_TRANSCRIPT,
   LIVE_DIR,
+  SERIAL_GATES,
   clearLiveLogs,
   gateJobs,
   runPool,
+  runGateGroups,
   busyText,
   failedGatesFrom,
   parseSelection,
@@ -104,6 +106,25 @@ async function assertBoundedPool() {
     settled = true;
   }), /worker failed/);
   assert.equal(settled, true, "a worker failure must not release the suite lease while another child runs");
+}
+
+async function assertExclusiveGates() {
+  for (const gate of SERIAL_GATES) assert.ok(GATES.includes(gate), `${gate} must remain registered`);
+
+  const gates = ["parallel-a", "test:deploy-plan", "parallel-b", "test:lab-harness", "parallel-c"];
+  const active = new Set();
+  let peak = 0;
+  const results = await runGateGroups(gates, 2, async (gate, index) => {
+    active.add(gate);
+    peak = Math.max(peak, active.size);
+    if (SERIAL_GATES.has(gate)) assert.equal(active.size, 1, `${gate} must run with no other gate active`);
+    else assert.ok(![...active].some((name) => SERIAL_GATES.has(name)), `${gate} must wait until isolated gates finish`);
+    await new Promise((resolve) => setTimeout(resolve, gate === "parallel-a" ? 20 : 5));
+    active.delete(gate);
+    return { gate, index };
+  });
+  assert.equal(peak, 2, "ordinary gates still use the bounded pool");
+  assert.deepEqual(results, gates.map((gate, index) => ({ gate, index })), "isolated gates retain selection order in results");
 }
 
 // --- 2. a broken pipe is survivable; nothing else is -------------------------------------------
@@ -400,7 +421,7 @@ assert.match(
   "with no transcript there is nothing to re-run, and saying so beats running the whole suite unasked",
 );
 
-Promise.all([assertCrashSafeLease(), assertBoundedPool()])
+Promise.all([assertCrashSafeLease(), assertBoundedPool(), assertExclusiveGates()])
   .then(() => console.log(`runGates: all assertions passed (${GATES.length} gates, transcript ${path.relative(ROOT, TRANSCRIPT)})`))
   .catch((err) => {
     console.error(err);
