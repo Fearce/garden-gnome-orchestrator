@@ -297,6 +297,32 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("Start QA — a Resume note reaches the fix-round implementor");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      // Failed during the implementor fix round after QA round 1 bounced: no direct-QA retry marker.
+      h.db.updateThread(id, { state: "failed", error: "interrupted" });
+      h.db.updateThreadStageOutputs(id, { ownerStartedQa: true, qaRoundsUsed: 1 });
+      h.mgr.setSettings({ qaEnabled: false, maxQaRounds: 2 });
+      h.setVerdict({ pass: true, summary: "fixed" });
+      const notes: (string | undefined)[] = [];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const internals = h.mgr as any;
+      const priorStart = internals.startResumedImplementor;
+      internals.startResumedImplementor = async (_t: Thread, _k: string, _s: unknown, opts: { directorNote?: string }): Promise<unknown> => {
+        notes.push(opts?.directorNote);
+        return priorStart();
+      };
+      await internals.runPipeline(id, "OWNER-STEER: also rename the flag");
+      check("the resumed fix-round implementor receives the owner's Resume note", notes.length === 1 && !!notes[0]?.includes("OWNER-STEER"), JSON.stringify(notes));
+      check("QA follows the fix round and accepts", JSON.stringify(h.qaRounds) === "[2]" && h.db.getThread(id)?.state === "done", JSON.stringify(h.qaRounds));
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log("Start QA — a Done Jev sub-task is refused instead of re-running its Jev call");
   {
     const h = makeHarness();

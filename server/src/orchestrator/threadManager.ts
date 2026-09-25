@@ -6812,7 +6812,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       }
       const saved = this.db.getThreadStageOutputs(threadId);
       if (saved.ownerStartedQa) {
-        await this.runImplementorQa(thread, saved.kickoff ?? thread.brief, this.implementorEffort(threadId), this.latestImplementorSession(threadId), undefined, {
+        // A Resume (with a message) of an owner-started QA episode that failed during its fix round
+        // must still hand the owner's steering to the resumed implementor, same as the normal route.
+        const buffered = this.directorNotes.get(threadId);
+        this.directorNotes.delete(threadId);
+        const rawNote = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n");
+        const note = rawNote ? acknowledgedInjection(rawNote) : undefined;
+        await this.runImplementorQa(thread, saved.kickoff ?? thread.brief, this.implementorEffort(threadId), this.latestImplementorSession(threadId), note, {
           qaEnabled: true,
           maxQaRounds: settings.maxQaRounds,
           qaAppliesFixes: settings.qaAppliesFixes,
