@@ -54,6 +54,7 @@
     "test:capacity-stall": "tsx src/tests/capacityStall.test.ts",
     "test:usage-windows": "tsx src/tests/usageWindows.test.ts",
     "test:child-runner": "tsx src/tests/childRunner.test.ts",
+    "test:update-blocker": "tsx src/tests/updateBlocker.test.ts",
     "test:event-loop": "tsx src/tests/eventLoopMonitor.test.ts",
     "test:ext-wake": "tsx src/tests/extWakeProbe.test.ts",
     "test:account-usage": "tsx src/tests/accountUsageSnapshot.test.ts",

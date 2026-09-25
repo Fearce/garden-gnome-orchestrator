@@ -34,12 +34,17 @@ export interface UpdateStatus {
   checkedAt: number;
   /** A human-readable reason the check is degraded (offline, detached HEAD, no upstream); null when fine. */
   error: string | null;
+  /** Uncommitted local paths the upstream also changes. `git pull --ff-only` refuses to overwrite them,
+   *  so while this is non-empty the update cannot apply until they are committed, stashed or discarded. */
+  blockedBy: string[];
 }
 
 export interface ApplyResult {
   ok: boolean;
   /** Which step failed, when ok is false. */
   stage?: "pull" | "install" | "build";
+  /** The local paths that stopped the pull, when that is why it failed. */
+  blockedBy?: string[];
   /** The process supervisor has accepted an immediate restart; the client should wait, then reload. */
   restarting: boolean;
   /** The build is staged; current agents finish before the restart is fired. */
@@ -57,7 +62,7 @@ export interface ApplyResult {
 }
 
 function emptyStatus(): UpdateStatus {
-  return { branch: null, behind: 0, ahead: 0, localSha: null, remoteSha: null, remoteSubject: null, checkedAt: 0, error: null };
+  return { branch: null, behind: 0, ahead: 0, localSha: null, remoteSha: null, remoteSubject: null, checkedAt: 0, error: null, blockedBy: [] };
 }
 
 type PlannedRestart = (input: { label?: string; commit?: string; stampedAt?: number }) => RestartRequestResult;
@@ -132,7 +137,45 @@ export async function gitStatusAt(cwd = REPO_ROOT): Promise<UpdateStatus> {
     out.remoteSha = sha || null;
     out.remoteSubject = subject || null;
   }
+  if (out.behind > 0) out.blockedBy = await localChangesUpstreamTouches(cwd);
   return out;
+}
+
+function nulSeparated(stdout: string): string[] {
+  return stdout.split("\0").filter(Boolean);
+}
+
+/** The uncommitted paths a fast-forward to `@{u}` would have to overwrite: exactly the set that makes
+ *  `git pull --ff-only` abort with "Your local changes ... would be overwritten". Any staged change and
+ *  any unstaged edit blocks when the upstream changes that path; an untracked file blocks when the
+ *  upstream adds one at the same path. An unstaged DELETION does not (git just checks the new version
+ *  out), and dirt the upstream never touches rides the pull untouched. Both are left out on purpose:
+ *  reporting them would refuse an update git itself would allow. */
+async function localChangesUpstreamTouches(cwd: string): Promise<string[]> {
+  const [upstream, staged, unstaged, untracked] = await Promise.all([
+    runGit(["diff", "--name-only", "-z", "HEAD...@{u}"], cwd),
+    runGit(["diff", "--name-only", "-z", "--cached", "HEAD"], cwd),
+    runGit(["diff", "--name-only", "-z", "--diff-filter=d"], cwd),
+    runGit(["ls-files", "-z", "--others", "--exclude-standard"], cwd),
+  ]);
+  if (upstream.code !== 0) return [];
+  const incoming = new Set(nulSeparated(upstream.stdout));
+  const local = [staged, unstaged, untracked].flatMap((r) => nulSeparated(r.stdout));
+  return [...new Set(local.filter((path) => incoming.has(path)))].sort();
+}
+
+/** Why the checkout cannot fast-forward, in words the owner can act on; null when nothing stands in the way. */
+export function updateBlocker(status: UpdateStatus, repoRoot = REPO_ROOT): string | null {
+  if (status.ahead > 0 && status.behind > 0) {
+    const commits = `${status.ahead} local commit${status.ahead === 1 ? "" : "s"}`;
+    return `This checkout has ${commits} that the upstream does not, so it cannot fast-forward. Push or rebase ${status.ahead === 1 ? "it" : "them"} in ${repoRoot}, then update again.`;
+  }
+  const paths = status.blockedBy;
+  if (!paths.length) return null;
+  const shown = paths.slice(0, 5).join(", ");
+  const more = paths.length > 5 ? ` and ${paths.length - 5} more` : "";
+  const files = `${paths.length} file${paths.length === 1 ? " has" : "s have"}`;
+  return `${files} uncommitted changes in ${repoRoot} that the update would overwrite: ${shown}${more}. Commit, stash or discard ${paths.length === 1 ? "it" : "them"}, then update again.`;
 }
 
 // Date.now is wrapped so the module stays mockable and the lint rule about bare Date.now in scripts
@@ -235,6 +278,16 @@ function installTargets(changed: string[]): Array<{ label: string; cwd: string }
   return out;
 }
 
+/** Mark `res` as a pull that cannot proceed when `status` says so; true when it did. */
+function refuseBlocked(res: ApplyResult, status: UpdateStatus): boolean {
+  const blocker = updateBlocker(status);
+  if (!blocker) return false;
+  res.stage = "pull";
+  res.blockedBy = status.blockedBy;
+  res.error = blocker;
+  return true;
+}
+
 /** Pull the latest upstream, install changed package sets, rebuild, and (if server code changed) restart. User-initiated only. */
 export async function applyUpdate(requestRestart: PlannedRestart): Promise<ApplyResult> {
   const res: ApplyResult = {
@@ -253,14 +306,20 @@ export async function applyUpdate(requestRestart: PlannedRestart): Promise<Apply
   }
   applying = true;
   try {
+    // Refuse up front, naming the files, rather than letting the pull abort with git's raw stderr: a
+    // leftover edit in this shared checkout otherwise fails every click the same unexplained way.
+    if (refuseBlocked(res, await refreshStatus(true))) return res;
+
     const before = (await runGit(["rev-parse", "HEAD"])).stdout.trim();
 
     const pull = await runGit(["pull", "--ff-only"], REPO_ROOT, GIT_TIMEOUT_MS);
     res.log += `$ git pull --ff-only\n${(pull.stdout + pull.stderr).trim()}\n`;
     if (pull.code !== 0) {
+      // The pull fetched again, so a file dirtied or a commit pushed since the check can still stop it.
+      cache = await gitStatusAt();
+      if (refuseBlocked(res, cache)) return res;
       res.stage = "pull";
-      // The usual culprits: local edits, or the branch diverged so a fast-forward isn't possible.
-      res.error = pull.stderr.trim() || "git pull failed (local changes or a diverged branch?)";
+      res.error = pull.stderr.trim() || "git pull failed";
       return res;
     }
 

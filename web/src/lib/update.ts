@@ -15,6 +15,7 @@ export function startUpdateWatch(): void {
         behind?: number;
         branch?: string | null;
         remoteSubject?: string | null;
+        blockedBy?: string[];
       };
       const behind = s.behind ?? 0;
       useStore.getState().setGitUpdate({
@@ -22,6 +23,7 @@ export function startUpdateWatch(): void {
         behind,
         branch: s.branch ?? null,
         remoteSubject: s.remoteSubject ?? null,
+        blockedBy: s.blockedBy ?? [],
       });
     } catch {
       /* offline / transient — keep the last-known state and try again next tick */

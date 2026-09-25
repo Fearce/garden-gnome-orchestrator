@@ -407,13 +407,18 @@ function UpdateBadge() {
 
   const behind = gitUpdate?.behind ?? 0;
   const branch = gitUpdate?.branch ?? "master";
+  const commits = `${behind} new commit${behind === 1 ? "" : "s"} on ${branch}`;
+  const blockedBy = gitAvailable ? (gitUpdate?.blockedBy ?? []) : [];
+  const blocked = blockedBy.length > 0;
   const title = applying
     ? "Updating — pulling latest and rebuilding…"
     : error
       ? `${error} (click to retry)`
-      : gitAvailable
-        ? `Update available — ${behind} new commit${behind === 1 ? "" : "s"} on ${branch}. Click to pull, rebuild & reload.`
-        : "New build available — click to refresh.";
+      : blocked
+        ? `Update blocked: ${commits}, but uncommitted changes to ${blockedBy.join(", ")} would be overwritten. Click for details.`
+        : gitAvailable
+          ? `Update available — ${commits}. Click to pull, rebuild & reload.`
+          : "New build available — click to refresh.";
 
   const onClick = (): void => {
     if (applying) return;
@@ -423,7 +428,7 @@ function UpdateBadge() {
 
   return (
     <button
-      className={"update-badge" + (applying ? " applying" : "") + (error ? " error" : "")}
+      className={"update-badge" + (applying ? " applying" : "") + (error || blocked ? " error" : "")}
       title={title}
       aria-label={title}
       onClick={onClick}

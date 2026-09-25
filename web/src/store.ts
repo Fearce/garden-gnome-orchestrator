@@ -531,6 +531,8 @@ export interface GitUpdate {
   behind: number;
   branch: string | null;
   remoteSubject: string | null;
+  /** Uncommitted local files the update would overwrite; non-empty means a click will be refused. */
+  blockedBy: string[];
 }
 
 const lsBool = (k: string, d: boolean): boolean => {
@@ -1749,9 +1751,13 @@ export const useStore = create<State>((set) => ({
         needsManualRestart?: boolean;
         restartDeferred?: boolean;
         restartReason?: string;
+        blockedBy?: string[];
       };
       if (!res.ok || !j.ok) {
-        set({ updateApplying: false, updateError: j.error || "Update failed — check the server log." });
+        const message = j.error || "Update failed — check the server log.";
+        // The badge tooltip alone hid this: a click just stopped spinning. Say it where it is seen.
+        const title = j.blockedBy ? "Update blocked" : "Update failed";
+        set({ updateApplying: false, updateError: message, notice: { level: "warn", title, message } });
         return;
       }
       // A drain-waiting backend update deliberately leaves this page on the matching old bundle until
@@ -1780,7 +1786,8 @@ export const useStore = create<State>((set) => ({
       }
       location.reload();
     } catch {
-      set({ updateApplying: false, updateError: "Update failed — check the server log." });
+      const message = "Update failed — check the server log.";
+      set({ updateApplying: false, updateError: message, notice: { level: "warn", title: "Update failed", message } });
     }
   },
 }));
