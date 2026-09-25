@@ -1,3 +1,10 @@
+---
+paths:
+  - "server/src/db/**"
+  - "server/src/ws/hub.ts"
+  - "server/scripts/probe-hot-paths.cjs"
+---
+
 # Ordering, paging, and snapshot-slimming a hot SQLite read (`messages`/`findings`/`threads`)
 
 Read before touching `db.ts`'s `listMessagePage`/`listMessages`/`listFindings`/`listThreadSummaries`, their indexes in `schema.ts`, or `ws/hub.ts`'s `buildHello` — or before adding any NEW query that orders/pages a UUID-keyed table by `created_at`. The 2026-09-04 perf pass (`14daac9`, `04154de`, `7a0cbca`) got this wrong twice before it got it right; each mistake shipped, passed its own gate, and was only caught by measuring the LIVE 800-task/512k-message DB. (Pagination retention is documented separately in `add-a-message-kind.md` §"the task feed is PAGINATED" — don't duplicate it here.)

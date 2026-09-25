@@ -1,3 +1,9 @@
+---
+paths:
+  - "server/src/tests/*.itest.ts"
+  - "server/src/orchestrator/threadManager.ts"
+---
+
 # Writing a ThreadManager integration test that actually proves something
 
 For any change to pipeline behavior in `orchestrator/threadManager.ts` — resume/retry logic, the QA loop, failover, gating. The cheap seam is a REAL `Db` (temp file) + `EventHub` + a stub AccountManager, stubbing ONLY the agent spawn. No `claude` subprocess, no quota, ~1s. (For "does the lane actually answer" use the real-agent harness in `e2e-a-pipeline-lane.md` instead — it costs money.) References: `silentResume` (one private method), `qaRoundBudget` / `tokenFreezeResume` / `autoReview` (full harness), `officeGating`, `perRepoConcurrency` — all `*.itest.ts`.

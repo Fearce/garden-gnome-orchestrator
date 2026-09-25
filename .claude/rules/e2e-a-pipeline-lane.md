@@ -1,3 +1,9 @@
+---
+paths:
+  - "server/src/orchestrator/threadManager.ts"
+  - "server/src/agents/roles.ts"
+---
+
 # E2E-driving a pipeline lane headlessly (isolated instance, no prod)
 
 When you change **pipeline-level server behavior** — a new dispatch lane, a role

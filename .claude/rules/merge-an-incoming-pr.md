@@ -1,3 +1,9 @@
+---
+paths:
+  - "server/scripts/run-gates.cjs"
+  - "server/scripts/gate-registration.test.cjs"
+---
+
 # Merging an incoming PR (this repo is public — contributions arrive as fork PRs)
 
 The repo went public 2026-07-22, so "merge these PRs in" is a recurring ask. PRs come

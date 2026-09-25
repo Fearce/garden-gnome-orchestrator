@@ -1,3 +1,14 @@
+---
+paths:
+  - "web/src/threadDeliverables.ts"
+  - "web/src/components/Deliverables.tsx"
+  - "web/src/components/DeliverableModal.tsx"
+  - "server/src/orchestrator/deliverableCheck.ts"
+  - "server/src/bus/busServer.ts"
+  - "server/src/index.ts"
+  - "server/scripts/*deliverables*.cjs"
+---
+
 # Deliverables (the owner-facing file cards): the traps, not the tour
 
 Read before touching `web/src/threadDeliverables.ts`, the `threadDeliverables` slice in

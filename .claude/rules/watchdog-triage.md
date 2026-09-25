@@ -1,3 +1,9 @@
+---
+paths:
+  - "server/src/orchestrator/supervisor.ts"
+  - "server/src/orchestrator/supervisorChat.ts"
+---
+
 # Watchdog tasks — triage BEFORE you work
 
 When the brief is "check on earlier work" (overnight watchdog, "make sure that

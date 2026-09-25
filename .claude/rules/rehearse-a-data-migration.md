@@ -1,3 +1,8 @@
+---
+paths:
+  - "server/src/db/**"
+---
+
 # Rehearsing a data migration against the real DB before you deploy it
 
 For any `migrate()` step that REWRITES or DELETES existing rows — a backfill, a de-duplication, a

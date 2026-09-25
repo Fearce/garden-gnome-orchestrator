@@ -1,3 +1,14 @@
+---
+paths:
+  - "server/src/types.ts"
+  - "web/src/types.ts"
+  - "web/src/store.ts"
+  - "web/src/components/ThreadDetail.tsx"
+  - "server/src/agents/runner.ts"
+  - "server/src/agents/grokRunner.ts"
+  - "server/src/agents/codexRunner.ts"
+---
+
 # Adding a persisted feed message kind (the reload-path fan-out)
 
 For a NEW kind of agent output that must survive reload in the thread feed — a `text`/`tool`/`thinking`-style row, not a one-off. The reference is the Grok `thinking` (reasoning) kind: a durable message + a live draft mirroring the `agent.delta`→`agent.text` pair. (For a whole new entity the console lists/edits use `add-a-broadcast-collection.md`; for a knob use `add-a-setting.md`; for a new agent role or thread state use `add-a-role-or-thread-state.md`.)

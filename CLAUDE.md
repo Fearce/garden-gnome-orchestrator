@@ -13,3 +13,11 @@ Node/Fastify API in `server/`, React/Vite console in `web/`, one origin. The imp
 - Other agents may edit this checkout at the same time. Coordinate in the office when another task shares the repo. Recheck `git status`, `git diff`, and `git diff --cached` before committing.
 - Use Conventional Commits. Never use `git add -A`, `git add .`, a bare `git commit`, `--no-verify`, or force-push main/master. For separate files use `python C:/Users/theke/.claude/scripts/safe_commit.py -m "type: summary" -- path/to/file`. For overlapping files use `stage_my_hunks.py` as described in the archived shared-worktree section.
 - Surface generated owner-facing files as deliverables using an absolute path inside the task workspace. Ordinary source/config edits are not deliverables. See the archived deliverables section for containment and verification details.
+
+## Topic rules
+`.claude/rules/*.md` load only when you touch the files they cover. Some tasks are defined by the brief rather than by a file. For these, read the rule first:
+- Health or quality sweep, or resume after a restart: `.claude/rules/nightly-quality-sweep.md`.
+- "Check on earlier work" or a watchdog: `.claude/rules/watchdog-triage.md`.
+- Merging an incoming PR: `.claude/rules/merge-an-incoming-pr.md`.
+- Pipeline or ThreadManager behavior: `.claude/rules/threadmanager-itest.md` and `.claude/rules/e2e-a-pipeline-lane.md`.
+- Any other area: `ls .claude/rules`; each file name describes its topic.

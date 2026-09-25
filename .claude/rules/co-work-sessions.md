@@ -1,3 +1,12 @@
+---
+paths:
+  - "server/src/orchestrator/cowork*.ts"
+  - "server/src/tests/cowork*"
+  - "web/src/components/CoWork.tsx"
+  - "web/src/components/Cowork*.tsx"
+  - "web/src/lib/coworkTranscript.ts"
+---
+
 # Co-work sessions (the interactive lane) — the traps, not the tour
 
 Read before touching `orchestrator/cowork.ts`, `prepareCoworkerRun`, `coworkerRunOptions`, the

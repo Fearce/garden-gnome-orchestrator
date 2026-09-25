@@ -1,3 +1,12 @@
+---
+paths:
+  - "server/src/orchestrator/timedTasks.ts"
+  - "server/src/orchestrator/shotgun.ts"
+  - "server/src/tests/taskModes.itest.ts"
+  - "server/src/tests/timedTasks.test.ts"
+  - "server/src/tests/shotgun.test.ts"
+---
+
 # Timed + shotgun task modes (the traps, not the tour)
 
 Read before touching `orchestrator/timedTasks.ts`, `orchestrator/shotgun.ts`, `runTimedWindow`,

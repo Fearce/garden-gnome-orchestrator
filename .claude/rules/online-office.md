@@ -1,3 +1,9 @@
+---
+paths:
+  - "server/src/office/**"
+  - "relay/**"
+---
+
 # The Online Office (coordination across machines)
 
 The local office groups agents by workspace PATH; the ONLINE office groups them by **repository

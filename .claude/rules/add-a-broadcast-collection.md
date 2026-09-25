@@ -1,3 +1,13 @@
+---
+paths:
+  - "server/src/db/schema.ts"
+  - "server/src/ws/protocol.ts"
+  - "server/src/ws/hub.ts"
+  - "web/src/store.ts"
+  - "server/src/orchestrator/scheduler.ts"
+  - "server/src/orchestrator/notes.ts"
+---
+
 # Adding a server-authoritative broadcast collection + WS commands + view
 
 For a whole new persisted entity the console lists and edits live — the Scheduled

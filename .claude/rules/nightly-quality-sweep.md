@@ -1,3 +1,11 @@
+---
+paths:
+  - "scripts/quality-sweep.cjs"
+  - "server/scripts/nightly-health.cjs"
+  - "server/scripts/run-gates.cjs"
+  - "server/scripts/probe-*.cjs"
+---
+
 # Nightly / quality sweep + resume-after-bounce
 
 When the brief is a health/quality sweep ("nightly check", "make sure everything is smooth") or an auto-resume after a completed restart, run `npm run quality` (`scripts/quality-sweep.cjs`) — every numbered step runs in order, never stopping at the first failure (every step is read-only), then prints a per-step verdict. Re-check just the failures with `npm run quality -- <step numbers>`. A green exit says nothing about ladder depth, park counts or DB growth — that's what §5, §4 and §8 are for. **Read that output from `server/data/quality-sweep-last.log`, not from your terminal buffer.** The sweep prints ~1500 lines — more than one command can hold — so piping it through `tail` silently discards steps 1-6, and re-running those probes to get them back is pure waste. Every run rewrites the transcript in full, live, and survives you piping the command itself to `head`. Gate: `test:quality-sweep`. The run takes ~10min: launch `npm run quality` with the Bash tool's own `run_in_background: true` (NOT shell `&` + manual `tail` polling — that cost one run ~15 wasted calls re-checking a log by hand) and block on the transcript's ONE terminal marker — `=== sweep summary ===`. Do not wait on "verdict": individual steps print their own `=== verdict ===` headers (step 3 does, at ~40s), so that grep returns mid-sweep and you read a half-finished log.

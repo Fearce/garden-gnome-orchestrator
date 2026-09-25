@@ -1,3 +1,10 @@
+---
+paths:
+  - "server/src/orchestrator/manualDeployment.ts"
+  - "server/src/tests/manualDeployment*"
+  - "server/scripts/probe-manual-deployment*.cjs"
+---
+
 # The manual-deployment handoff (settling `done` when only the owner's deploy is left)
 
 Read before touching `orchestrator/manualDeployment.ts`, the `manualDeployment*` methods on

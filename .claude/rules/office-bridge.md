@@ -1,3 +1,11 @@
+---
+paths:
+  - "server/src/agents/officeBridge.ts"
+  - "server/src/agents/grokRunner.ts"
+  - "server/src/agents/codexRunner.ts"
+  - "server/src/tests/officeBridge.test.ts"
+---
+
 # CLI text bridges (Codex / Grok chat + owner notes + deliverables)
 
 CLI backends have no MCP servers, so three surfaces reach them as markers in assistant
