@@ -13,7 +13,7 @@ paths:
 # Adding a console theme or typeface (Settings → Appearance)
 
 Read before adding a third theme, editing `web/src/themes/*.css`, or touching a Classic
-rule a theme answers. CLAUDE.md § "Appearance themes" has the shape; this is what bites.
+rule a theme answers. `docs/agent-reference/CLAUDE-full.md` § "Appearance themes" has the shape; this is what bites.
 
 ## The one thing to keep true
 **Classic is `styles.css` with NO attribute on `<html>`.** That is the entire mechanism by

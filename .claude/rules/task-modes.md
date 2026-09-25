@@ -11,7 +11,7 @@ paths:
 
 Read before touching `orchestrator/timedTasks.ts`, `orchestrator/shotgun.ts`, `runTimedWindow`,
 `prepareShotgun`/`integrateShotgun`, or the thread columns `duration_ms`/`deadline_at`/`agent_count`/
-`parent_id`/`assignment`. CLAUDE.md § "Timed tasks and shotgun tasks" has the shape; this is what bites.
+`parent_id`/`assignment`. `docs/agent-reference/CLAUDE-full.md` § "Timed tasks and shotgun tasks" has the shape; this is what bites.
 
 ## Both modes
 - **MODES on the ordinary pipeline, not lanes.** The read lane short-circuits `runPipeline`; these don't.

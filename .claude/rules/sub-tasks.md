@@ -11,7 +11,7 @@ paths:
 
 Read before touching `orchestrator/subTasks.ts`, `agents/jevClient.ts`, the sub-task tools in
 `bus/busServer.ts`, the `SUBTASK:` bridge, `integrateSubTasks`/`awaitSubTasks` in `threadManager.ts`,
-or the `threads.sub_task` column. CLAUDE.md § "Sub-tasks" has the shape. Related: `task-modes.md`
+or the `threads.sub_task` column. `docs/agent-reference/CLAUDE-full.md` § "Sub-tasks" has the shape. Related: `task-modes.md`
 (shotgun collaborators share `parent_id` and several rules), `office-bridge.md` (the CLI marker grammar).
 
 ## The one thing to keep true

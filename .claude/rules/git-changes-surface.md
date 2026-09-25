@@ -39,7 +39,7 @@ separate repo-wide `getGitSummary` has its own `summaryCache` keyed by repoRoot.
 **Want only branch + push standing? Use `getRepoHeadState`** — same `readRepoHead` ref
 reads, no branch list / numstat / commit log, cached per repo root (`headStateCache`,
 also bust by `bustGitCaches`). `orchestrator/codeContext.ts` reads it for the contextual
-rows (CLAUDE.md § "Contextual code navigation", which owns the drawer's Edit/commit/repo
+rows (`docs/agent-reference/CLAUDE-full.md` § "Contextual code navigation", which owns the drawer's Edit/commit/repo
 routes); a screenful of them through the full status walks the tree once per surface.
 
 ## Not this surface — the two others that also say "git"

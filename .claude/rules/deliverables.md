@@ -14,7 +14,7 @@ paths:
 Read before touching `web/src/threadDeliverables.ts`, the `threadDeliverables` slice in
 `web/src/store.ts`, `web/src/components/Deliverables.tsx`, the `/api/deliverable/:id` route in
 `server/src/index.ts`, `server/src/orchestrator/deliverableCheck.ts`, or the `post_deliverable` tool in
-`server/src/bus/busServer.ts`. CLAUDE.md § "Deliverables" has the shape; this is what bites.
+`server/src/bus/busServer.ts`. `docs/agent-reference/CLAUDE-full.md` § "Deliverables" has the shape; this is what bites.
 Related: `add-a-message-kind.md` (the feed retention this surface must NOT inherit),
 `office-bridge.md` (the CLI `DELIVERABLE:` marker), `qa-fixes-mode.md` (the QA backstop).
 

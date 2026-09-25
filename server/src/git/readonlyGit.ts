@@ -41,8 +41,9 @@ const REPO_ROOT_TTL_MS = 15_000;
 
 /** Resolve the git repo a task's work lives in. A task's `workspace` is USUALLY the repo itself, but
  *  it's often the PARENT of a nested repo (e.g. workspace `…/claude-orchastrator` vs. the repo at
- *  `…/claude-orchastrator/claude-orchestrator`, per CLAUDE.md). So: (1) if the workspace is inside a
- *  repo, use that repo's top level; (2) else pick the best nested checkout one level down; (3) else null
+ *  `…/claude-orchastrator/claude-orchestrator`, per `docs/agent-reference/CLAUDE-full.md`).
+ *  Resolution: (1) use the containing repo's top level; (2) else pick the best nested checkout one
+ *  level down; (3) else null
  *  (not a repo — the caller surfaces a graceful "no git" state). Cached per workspace (negatives too). */
 async function resolveRepoRoot(workspace: string): Promise<string | null> {
   if (!workspace) return null;

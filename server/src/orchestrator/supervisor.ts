@@ -1,5 +1,5 @@
 // Director Supervisor: a lightweight watchdog over active tasks (Settings → Director Supervisor, off by
-// default). See CLAUDE.md's "Director Supervisor" section for the policy in one place; this file is the
+// default). See `docs/agent-reference/CLAUDE-full.md` for Director Supervisor policy; this file is the
 // mechanism.
 //
 // Off, it costs nothing: `setEnabled` is the only thing that ever arms the sweep timer, and the hub

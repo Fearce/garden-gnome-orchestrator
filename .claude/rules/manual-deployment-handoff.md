@@ -8,7 +8,7 @@ paths:
 # The manual-deployment handoff (settling `done` when only the owner's deploy is left)
 
 Read before touching `orchestrator/manualDeployment.ts`, the `manualDeployment*` methods on
-ThreadManager, `handoff_manual_deployment`, or `db.finishManualDeployment`. CLAUDE.md has the shape;
+ThreadManager, `handoff_manual_deployment`, or `db.finishManualDeployment`. `docs/agent-reference/CLAUDE-full.md` has the shape;
 this is what bites. Related: `qa-fixes-mode.md` (the QA gate that can also verify one),
 `add-a-role-or-thread-state.md` (states), `office-bridge.md` (the CLI marker).
 

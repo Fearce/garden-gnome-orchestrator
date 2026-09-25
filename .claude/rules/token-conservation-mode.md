@@ -10,7 +10,7 @@ paths:
 
 # The two model-downgrade features — token conservation's three traps, and usage saving's one
 
-Read before touching `tokenConservation.ts` or either `modelFor`/`providerRoleModel` call site in `orchestrator/threadManager.ts`. CLAUDE.md has the feature shape; this is what a `code-reviewer` pass caught in the shipped diff (all three fixed before commit `4cb4db8` — keep them fixed).
+Read before touching `tokenConservation.ts` or either `modelFor`/`providerRoleModel` call site in `orchestrator/threadManager.ts`. `docs/agent-reference/CLAUDE-full.md` has the feature shape; this is what a `code-reviewer` pass caught in the shipped diff (all three fixed before commit `4cb4db8` — keep them fixed).
 
 ## 1. A permanent pin must opt OUT explicitly, never rely on ordering
 `prepareCoworkerRun`'s first Auto Co-work turn resolves a model and FREEZES it as a strict pin for every later turn in that session (`co-work-sessions.md` — "a pin is strict: fail the turn, never substitute"). A transient conservation downgrade landing there is not transient anymore: it is stuck even after the window resets, for the rest of the session's life. `modelFor`/`providerRoleModel` both take an `opts.conserve` flag for exactly this — Co-work's two call sites (`threadManager.ts`, the `account.id` / `"codex"` implementor branches around the Auto Co-work kickoff) pass `conserve: false`. **Any future per-role model-selection knob must do the same at those two call sites** — the freeze is a property of Co-work's session model, not of this feature, so the next knob will hit it too.

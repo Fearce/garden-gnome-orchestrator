@@ -77,4 +77,4 @@ Two flavors:
 Unit gate for the usage parser (`test:zai-usage` is the reference; register in `run-gates.cjs`). Prove it
 actually RUNS end-to-end with the throwaway harness (`e2e-a-pipeline-lane.md`) — a typecheck never catches a
 dead env branch. Browser-test the chip + settings round-trip (`browser-test-throwaway-instance`). Deploy the
-server change yourself via the atomic hub restart (CLAUDE.md).
+server change yourself via the atomic hub restart (`docs/agent-reference/CLAUDE-full.md`).

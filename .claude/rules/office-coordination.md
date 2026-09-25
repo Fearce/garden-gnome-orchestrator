@@ -48,7 +48,7 @@ machines in the same repository, so a task alone in its checkout still gets the 
   agent still shows as a walking gnome even though it posts nothing. Don't "fix" that.
 - **`directorChatPost` steers EVERY live implementor in the room at `priority: "now"` — an interrupt**
   (of the turn, at the running tool's END: measured 2026-09-24, a `"now"` send does not stop a Bash call
-  mid-flight; only `interrupt()` does — CLAUDE.md § "An appended injection never waits…").
+  mid-flight; only `interrupt()` does — `docs/agent-reference/CLAUDE-full.md` § "An appended injection never waits…").
   An aborted turn returns `subtype:"success"`, empty `result`; only `terminal_reason` (`aborted_tools`/
   `aborted_streaming`) tells it from a finish, so the pipeline read four half-done project tasks as
   finished and sent them to QA (2026-08-24). `AgentRun` flags it `aborted`, `awaitTurnResult` awaits

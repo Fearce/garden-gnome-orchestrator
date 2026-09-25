@@ -78,6 +78,6 @@ rule you just edited — a silent lie exactly when you need the truth.
   common — always test your rule against "a feature request about the thing itself".
 
 Verify: `npm run typecheck && npm run test:schedule-detect --prefix server`, then the
-probe. Server change ⇒ deploy it yourself (CLAUDE.md § "Deploying a change").
+probe. Server change ⇒ deploy it yourself (`docs/agent-reference/CLAUDE-full.md` § "Deploying a change").
 Mirror case — prose the model WRITES rather than reads (titles, spoken lines): the same
 three surfaces apply, plus a guard on the reply. See `ancillary-haiku-prose.md`.

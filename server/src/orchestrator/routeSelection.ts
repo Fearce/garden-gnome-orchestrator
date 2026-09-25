@@ -1,7 +1,8 @@
 // Deterministic, explainable pre-planner routing: whether THIS task benefits from the planner and/or QA,
-// independent of whether those roles are ENABLED (enabled = available, not mandatory — see CLAUDE.md
-// "Task-aware route selection"). A pure function of the task's own title/brief text plus a few structural
-// dispatch signals (shotgun/timed/effort) — no model call, so the pick is reproducible, free, and instant.
+// independent of whether those roles are ENABLED (enabled = available, not mandatory; see
+// `docs/agent-reference/CLAUDE-full.md`, "Task-aware route selection"). A pure function of the task's own
+// title/brief plus a few structural dispatch signals (shotgun/timed/effort) — no model call,
+// so the pick is reproducible, free, and instant.
 //
 // Bias mirrors the read lane's own philosophy (docs/ARCHITECTURE.md §5): when signals are mixed or absent,
 // keep the full route. A wrongly-kept planner/QA costs a bit of time; a wrongly-skipped one on a risky or

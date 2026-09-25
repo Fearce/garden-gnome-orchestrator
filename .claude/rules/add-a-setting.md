@@ -65,4 +65,4 @@ drops empty-value env vars, so dotenv reloads `.env`'s real password; the memory
 has the fix). Kill it by PORT owner via `Get-NetTCPConnection -LocalPort 4327` →
 `Stop-Process`, NOT `pkill -f node`, which silently no-ops in Git Bash on Windows
 and could match prod). Server
-change ⇒ deploy yourself via the atomic hub restart (see CLAUDE.md).
+change ⇒ deploy yourself via the atomic hub restart (see `docs/agent-reference/CLAUDE-full.md`).

@@ -9,7 +9,7 @@ paths:
 
 # Task / Co-work / Supervisor → IDE and Git (the traps, not the tour)
 
-CLAUDE.md § "Contextual code navigation" has the shape. This is what bites, plus the provenance the system genuinely does NOT have. Siblings: `git-changes-surface.md` (the per-task drawer this routes out of), `verify-a-ui-change-shipped.md` (labs), `add-a-broadcast-collection.md` (the wire pattern).
+`docs/agent-reference/CLAUDE-full.md` § "Contextual code navigation" has the shape. This is what bites, plus the provenance the system genuinely does NOT have. Siblings: `git-changes-surface.md` (the per-task drawer this routes out of), `verify-a-ui-change-shipped.md` (labs), `add-a-broadcast-collection.md` (the wire pattern).
 
 ## The one thing to keep true
 **A route is rendered only when it can be taken.** `canOpenIde`/`canOpenGit`/`ideFileTarget` all return null rather than a best guess, and the caller renders nothing. A button that opens the wrong file is worse than no button, because the operator believes it. The unavailable cases explain themselves in place of the routes (`RepoReading` prints `context.error` verbatim) — "no context" and "still loading" must stay distinguishable, so the row never silently blanks.

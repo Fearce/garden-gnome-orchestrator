@@ -7,7 +7,8 @@ import { SUPERVISED_RESTART_CODE } from "./crashLog.js";
 // drift on which mechanism owns the process or on what a refused restart looks like.
 
 /** The script-hub that owns this server's process on the Windows deployment. Its atomic restart re-arms
- *  keepAlive and survives the caller being killed mid-restart (see CLAUDE.md "Deploying a change"). */
+ *  keepAlive and survives the caller being killed mid-restart (see `docs/agent-reference/CLAUDE-full.md`,
+ *  "Deploying a change"). */
 const HUB_URL = (process.env.SCRIPT_HUB_URL || "http://127.0.0.1:3939").replace(/\/$/, "");
 const HUB_ID = process.env.SCRIPT_HUB_ID || "claude-orchestrator";
 
@@ -49,7 +50,8 @@ export async function restartRoute(): Promise<RestartRoute> {
  * outside this process tree and therefore survives the caller: a successful one kills us mid-`await`.
  *
  * Reaching the resolve at all therefore means the restart did NOT land, which is a real case worth
- * naming: the hub answers 200 with an empty kill list when the listener is elevated (see CLAUDE.md).
+ * naming: the hub answers 200 with an empty kill list when the listener is elevated
+ * (see `docs/agent-reference/CLAUDE-full.md`).
  */
 export async function restartSelf(): Promise<RestartAttempt> {
   const route = await restartRoute();

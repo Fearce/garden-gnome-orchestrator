@@ -106,4 +106,4 @@ Cross-refs: `threadmanager-itest.md` — the FREE seam (stub the agent spawn, re
 covers pipeline LOGIC, and the traps that make such a test pass while proving nothing; reach
 for it first and keep this harness for "does the lane actually answer".
 `add-a-setting.md` / `add-a-thread-column.md` (the change patterns this
-verifies), CLAUDE.md § "Debugging a failed task" (the `agent_runs` run-trail columns).
+verifies), `docs/agent-reference/CLAUDE-full.md` § "Debugging a failed task" (the `agent_runs` run-trail columns).

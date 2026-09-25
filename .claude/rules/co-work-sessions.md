@@ -11,7 +11,7 @@ paths:
 
 Read before touching `orchestrator/cowork.ts`, `prepareCoworkerRun`, `coworkerRunOptions`, the
 `cowork_sessions`/`cowork_turns`/`cowork_messages` tables or `web/src/components/CoWork.tsx`.
-CLAUDE.md § "Co-work" has the shape. (Read lane: `e2e-a-pipeline-lane.md`. Task modes: `task-modes.md`.)
+`docs/agent-reference/CLAUDE-full.md` § "Co-work" has the shape. (Read lane: `e2e-a-pipeline-lane.md`. Task modes: `task-modes.md`.)
 
 ## The one thing to keep true
 **Co-work is a LANE, and it owns no task.** No `threads` row, no `agent_runs` row, no findings, no
