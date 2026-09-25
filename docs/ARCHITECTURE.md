@@ -152,7 +152,7 @@ implementor, prefers `claude-opus-5-5`, and lets outcome history judge only poli
 If none has task-sized runway, the card waits in `review` with the exact reason; it never silently runs a
 workhorse. A strict owner model pin remains an exact task-local exception.
 Every auto-selected task is graded when it settles so the next pick reads real outcomes rather than
-priors (CLAUDE.md § "Auto model selection"). Precedence is then
+priors ([archived agent guide](agent-reference/CLAUDE-full.md) § "Auto model selection"). Precedence is then
 `effort_override` > the pick > the planner.
 
 The smart picker also reads a persistent LiveBench snapshot refreshed every 24 hours from the leaderboard's
@@ -578,7 +578,7 @@ tables hold lightweight attachment refs; the shared `attachments` table deduplic
 `implementation_memos` holds the owner-facing implementor completion report — one idempotent row per
 implementor run (`UNIQUE(thread_id, run_id)`) with a monotonic per-task `revision`, so QA/reviewer/
 Supervisor feed traffic can never bury it. `run_id` deliberately carries no FK: a Retry deletes the runs
-and feed rows but every prior work revision stays auditable (CLAUDE.md § "Implementor work memos").
+and feed rows but every prior work revision stays auditable ([archived agent guide](agent-reference/CLAUDE-full.md) § "Implementor work memos").
 `threads.stage_outputs` (JSON, nullable) holds the per-stage outputs that make a
 task resumable (§5) — kept off the WS wire (it can be multi-KB) and read only by
 the resume path, not folded into the `Thread` DTO. Schema inlined in
