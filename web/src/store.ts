@@ -728,7 +728,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   openaiKeyLast4: null,
   codexChatgptLogin: false,
   grokEnabled: false,
-  grokModel: "grok-4.6",
+  grokModel: "grok-4.7",
   grokEffort: "xhigh",
   grokWeeklySafetyPct: 100,
   grokSignedIn: false,

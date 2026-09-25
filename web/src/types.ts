@@ -920,7 +920,7 @@ export const CODEX_MODELS = [
 ] as const;
 
 /** Grok models suggested when the live list hasn't loaded yet. */
-export const GROK_MODELS = ["grok-4.6"] as const;
+export const GROK_MODELS = ["grok-4.7", "grok-4.6"] as const;
 
 /** z.ai (GLM) models suggested for the picker — the plan's fixed GLM id set (most-capable first curated). */
 export const ZAI_MODELS = ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.6", "glm-4.5-air", "glm-4.5"] as const;
