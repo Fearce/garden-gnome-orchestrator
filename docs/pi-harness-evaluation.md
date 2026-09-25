@@ -41,7 +41,8 @@ On top of it sit three structural gaps: **no MCP**, **no forced structured outpu
 But the mirror image is genuinely attractive. Our *non-Claude* backends —
 `codexRunner.ts` (38 KB) and `grokRunner.ts` (37 KB) — are hand-rolled CLI wrappers that had to give
 up MCP, and therefore had to rebuild the office as a text bridge, structured output as a regex
-scraper, and deliverables not at all (a gap `CLAUDE.md` documents outright). Pi speaks Codex, Grok,
+scraper, and deliverables not at all (a gap documented in the [archived agent guide]
+(agent-reference/CLAUDE-full.md)). Pi speaks Codex, Grok,
 z.ai, Gemini and 20+ providers through one loop, with real in-process tools. **One Pi-driven
 `AgentRunLike` could replace both runners and hand the fallback lane capabilities it has never
 had** (§6).

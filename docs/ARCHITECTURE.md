@@ -623,7 +623,7 @@ React + Vite + Zustand. A **director board**: left rail = chat with the
 director; main = concurrent thread lanes (state, live agent text, tool calls,
 findings); a thread opens to a detail view with the inject/interrupt controls.
 Design: intentional type + OKLCH palette, mission-control density — no AI-slop
-defaults (see root CLAUDE.md doctrine).
+defaults.
 
 **Hiding the chrome.** Two per-browser toggles sit at the left of the top bar,
 both persisted in `localStorage` and neither touching the server: the rail
