@@ -203,7 +203,7 @@ to `127.0.0.1`. Do not put it on the public internet.
 | `npm run dev` | Working on the server. Adds `tsx watch`, which hot-restarts on changes and **kills in-flight tasks**. |
 | `npm run build && npm start` | Production. Serves the built console from `:4317` alone. |
 | `npm run typecheck` | server, web and relay. |
-| `npm run test:gates` | The full local test suite. No agents, no quota, a few minutes. |
+| `npm run test:gates` | The full local test suite. No agents or quota; three gates run at a time. Set `GGO_GATE_JOBS=1` to diagnose timing-sensitive failures serially. |
 
 ## Layout
 

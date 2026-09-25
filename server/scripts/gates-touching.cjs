@@ -2,9 +2,9 @@
 /**
  * Which gates exercise this symbol — and run them, before paying for the whole suite.
  *
- * The full free suite is ~45 minutes on this box, so the expensive mistake is discovering a broken
- * gate one suite at a time. That is exactly what a change to a SHARED seam does: 2026-09-17 added a
- * `this.accounts.select()` call to `startResumedImplementor`, every itest whose StubAccounts carried
+ * The full free suite is several minutes even with parallel gates, so the expensive mistake is
+ * discovering a broken gate one suite at a time. That is exactly what a change to a SHARED seam does:
+ * 2026-09-17 added a `this.accounts.select()` call to `startResumedImplementor`, every itest whose StubAccounts carried
  * only `dispatchPreview` then crashed, and each one surfaced a full suite run apart.
  *
  * The fix is not a smarter suite, it is asking the question first: which test files mention the thing

@@ -30,6 +30,9 @@ const {
   PREVIOUS_TRANSCRIPT,
   TRANSCRIPT,
   SUBSET_TRANSCRIPT,
+  LIVE_DIR,
+  gateJobs,
+  runPool,
   busyText,
   failedGatesFrom,
   parseSelection,
@@ -63,6 +66,35 @@ for (const runtimePath of [LOCK_DB, OWNER_FILE]) {
     "server/data",
     "gate lease artifacts belong beside the ignored transcript",
   );
+}
+assert.equal(path.relative(ROOT, LIVE_DIR).split(path.sep).join("/"), "server/data/gates-live");
+assert.equal(gateJobs(""), 3);
+assert.equal(gateJobs("1"), 1);
+assert.equal(gateJobs("4"), 4);
+assert.throws(() => gateJobs("0"), /GGO_GATE_JOBS/);
+assert.throws(() => gateJobs("many"), /GGO_GATE_JOBS/);
+
+async function assertBoundedPool() {
+  let active = 0;
+  let peak = 0;
+  const gates = ["slow", "fast", "third", "fourth"];
+  const results = await runPool(gates, 2, async (gate) => {
+    active++;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setTimeout(resolve, gate === "slow" ? 30 : 5));
+    active--;
+    return gate;
+  });
+  assert.equal(peak, 2, "the runner uses its concurrency budget");
+  assert.deepEqual(results, gates, "out-of-order finishes still report in registration order");
+  assert.deepEqual(await runPool([], 3, () => { throw new Error("unexpected gate"); }), []);
+  let settled = false;
+  await assert.rejects(runPool(["bad", "in-flight"], 2, async (gate) => {
+    if (gate === "bad") throw new Error("worker failed");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    settled = true;
+  }), /worker failed/);
+  assert.equal(settled, true, "a worker failure must not release the suite lease while another child runs");
 }
 
 // --- 2. a broken pipe is survivable; nothing else is -------------------------------------------
@@ -359,7 +391,7 @@ assert.match(
   "with no transcript there is nothing to re-run, and saying so beats running the whole suite unasked",
 );
 
-assertCrashSafeLease()
+Promise.all([assertCrashSafeLease(), assertBoundedPool()])
   .then(() => console.log(`runGates: all assertions passed (${GATES.length} gates, transcript ${path.relative(ROOT, TRANSCRIPT)})`))
   .catch((err) => {
     console.error(err);

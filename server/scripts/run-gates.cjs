@@ -5,13 +5,9 @@
 // real agent run. Keep this list in sync with package.json test scripts when
 // adding a new FREE gate.
 //
-// The terminal stays terse — one line per gate — because that is what makes a 5-minute suite
-// scannable. Everything each gate actually printed goes to `server/data/gates-last.log`, which is
-// where you watch a run from: the suite is nearly always backgrounded, and a backgrounded command
-// piped through `tail` writes NOTHING until it exits (tail must buffer to know which lines are
-// last), so for its whole run you cannot tell a wedged gate from a slow one. That cost a full
-// re-run on 2026-08-17. The transcript grows live, so `tail -20 server/data/gates-last.log`
-// answers "which gate is it on, and what is it doing" at any moment.
+// The terminal stays terse — one start and finish line per gate. The transcript records each
+// completed gate's full output; while a gate runs its own file under data/gates-live grows live.
+// This keeps concurrent gate output readable and still exposes a wedged gate's last message.
 // One OS-backed lease owns that shared transcript and completion stamp. A concurrent invocation
 // exits temporarily unavailable before touching either artifact; running two copies made git-heavy
 // gates time out and let each process overwrite the other's evidence.
@@ -39,6 +35,8 @@ const STAMP = path.join(SERVER_DIR, "data", "gates-last.json");
 // already offers as `npm run quality -- <steps>` — but a partial run is not a suite verdict, so it must
 // not be able to overwrite the full run's evidence or leave a stamp `probe:gates` would read as a green.
 const SUBSET_TRANSCRIPT = path.join(SERVER_DIR, "data", "gates-subset.log");
+const LIVE_DIR = path.join(SERVER_DIR, "data", "gates-live");
+const DEFAULT_JOBS = 3;
 const BUSY_EXIT_CODE = 75;
 const USAGE_EXIT_CODE = 2;
 
@@ -249,26 +247,49 @@ function say(text) {
   }
 }
 
-/** Run one gate, streaming its output into the transcript AS IT ARRIVES (never buffered to the end,
- *  which is what makes a live `tail` of the log useful) while the terminal gets one line per gate. */
-function runGate(gate, log) {
+/** Bound concurrency so independent throwaway-repo and database tests share the machine fairly.
+ *  One worker preserves the old serial behavior for diagnosing timing-sensitive failures. */
+function gateJobs(value = process.env.GGO_GATE_JOBS) {
+  const jobs = value == null || value === "" ? DEFAULT_JOBS : Number(value);
+  if (!Number.isInteger(jobs) || jobs < 1 || jobs > 4) throw new Error("GGO_GATE_JOBS must be an integer from 1 to 4");
+  return jobs;
+}
+
+/** Run one gate. Its own live file receives output immediately; the shared transcript gets the
+ *  complete, contiguous output on completion so concurrent gates cannot interleave stack traces. */
+function runGate(gate, livePath) {
   return new Promise((resolve) => {
     const started = Date.now();
     let output = "";
+    const live = fs.createWriteStream(livePath, { flags: "w" });
     const child = spawn("npm", ["run", gate], { cwd: SERVER_DIR, stdio: ["ignore", "pipe", "pipe"], shell: win, windowsHide: true });
     const take = (chunk) => {
       const text = chunk.toString();
       output += text;
-      if (log) log.write(text);
+      live.write(text);
     };
     child.stdout.on("data", take);
     child.stderr.on("data", take);
     child.on("error", (err) => {
       take(`\n! could not start "npm run ${gate}": ${err.message}\n`);
-      resolve({ gate, ok: false, ms: Date.now() - started, output });
     });
-    child.on("close", (code) => resolve({ gate, ok: code === 0, code, ms: Date.now() - started, output }));
+    child.on("close", (code) => live.end(() => resolve({ gate, ok: code === 0, code, ms: Date.now() - started, output })));
   });
+}
+
+/** Fixed worker pool, returning results in suite order even when gates finish out of order. */
+async function runPool(gates, jobs, run) {
+  const results = Array(gates.length);
+  let next = 0;
+  const workers = await Promise.allSettled(Array.from({ length: Math.min(jobs, gates.length) }, async () => {
+    while (next < gates.length) {
+      const index = next++;
+      results[index] = await run(gates[index], index);
+    }
+  }));
+  const failure = workers.find((worker) => worker.status === "rejected");
+  if (failure) throw failure.reason;
+  return results;
 }
 
 /** Git state, or nulls — the suite must still run in a tarball with no repo around it. */
@@ -440,6 +461,7 @@ function closeTranscript(log) {
 }
 
 async function main(argv = process.argv.slice(2)) {
+  const jobs = gateJobs();
   const selection = parseSelection(argv);
   if (selection.error) {
     say(`\n=== cannot run ===\n    ${selection.error}\n    usage: npm run test:gates [-- --failed | <gate> ...]\n\n`);
@@ -465,25 +487,27 @@ async function main(argv = process.argv.slice(2)) {
     // neither proves nor disproves it.
     if (!subset) clearCompletedStamp();
     log = guardBrokenPipe(openTranscript(transcript));
+    fs.mkdirSync(LIVE_DIR, { recursive: true });
     // The path goes out FIRST, not just in the summary: a backgrounded run is watched from the
     // transcript, and by the time the summary prints there is nothing left to watch.
     const scope = subset
       ? `${selection.gates.length} of ${GATES.length} gates (${selection.mode === "failed" ? "last run's failures" : "selected"}) — a subset, NOT a suite pass`
       : `${GATES.length} free test gates`;
-    const header = `\n=== running ${scope} ===\n    transcript: ${transcript}\n\n`;
+    const header = `\n=== running ${scope} (${jobs} concurrent) ===\n    transcript: ${transcript}\n\n`;
     say(header);
     log.write(header);
 
-    const results = [];
-    for (const gate of selection.gates) {
-      say(`  … ${gate} `);
-      log.write(`\n──────── ${gate} ────────\n`);
-      const r = await runGate(gate, log);
-      results.push(r);
-      const verdict = `${r.ok ? "✓" : "✗"} (${(r.ms / 1000).toFixed(1)}s)\n`;
-      say(verdict);
+    const results = await runPool(selection.gates, jobs, async (gate, index) => {
+      const livePath = path.join(LIVE_DIR, `${String(index + 1).padStart(3, "0")}-${gate.replace(/[^a-z0-9-]/gi, "-")}.log`);
+      say(`  … ${gate}\n`);
+      log.write(`  … ${gate} (live: ${livePath})\n`);
+      const r = await runGate(gate, livePath);
+      say(`  ${r.ok ? "✓" : "✗"} ${gate} (${(r.ms / 1000).toFixed(1)}s)\n`);
+      log.write(`\n──────── ${gate} ────────\n${r.output}`);
+      if (!r.output.endsWith("\n")) log.write("\n");
       log.write(`──────── ${gate}: ${r.ok ? "passed" : "FAILED"} in ${(r.ms / 1000).toFixed(1)}s ────────\n`);
-    }
+      return r;
+    });
 
     const summary = summaryText(results, transcript);
     say(summary);
@@ -506,6 +530,9 @@ module.exports = {
   PREVIOUS_TRANSCRIPT,
   TRANSCRIPT,
   SUBSET_TRANSCRIPT,
+  LIVE_DIR,
+  gateJobs,
+  runPool,
   busyText,
   failedGatesFrom,
   parseSelection,
