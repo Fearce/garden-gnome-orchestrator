@@ -6811,6 +6811,19 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         return;
       }
       const saved = this.db.getThreadStageOutputs(threadId);
+      if (saved.ownerStartedQa) {
+        await this.runImplementorQa(thread, saved.kickoff ?? thread.brief, this.implementorEffort(threadId), this.latestImplementorSession(threadId), undefined, {
+          qaEnabled: true,
+          maxQaRounds: settings.maxQaRounds,
+          qaAppliesFixes: settings.qaAppliesFixes,
+          autoPush: settings.autoPush,
+        });
+        const settled = this.db.getThread(threadId);
+        if (settled && (settled.state === "done" || (settled.state === "review" && !(settled.error ?? "").startsWith(CAP_PARK_PREFIX)))) {
+          this.db.updateThreadStageOutputs(threadId, { ownerStartedQa: undefined });
+        }
+        return;
+      }
       // Read lane (dispatch_read): short-circuit the normal task-aware implementation route to a single
       // read-only reader stage. readerDone (mirroring planDone) makes the answer sticky across resume, so
       // a server restart mid-read can't re-run the reader and double-post the answer. releaseSlot still
@@ -10219,7 +10232,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         // This is a continuation of a paid-but-cap-rejected or restart-interrupted QA pass, not another
         // implementor/QA cycle.
         // It warm-resumes only if that backend is still ready; runRole drops the session on a handoff.
-        continuation: retryingDirectQaRound,
+        continuation: retryingDirectQaRound && !(savedQa.ownerStartedQa && (savedQa.qaRoundsUsed ?? 0) === 0),
       }).catch((e) => {
         this.hub.log("warn", `QA failed on ${thread.id.slice(0, 8)}: ${String(e)}`);
         return undefined;
@@ -12582,6 +12595,37 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.setState(threadId, "done");
     this.hub.log("info", `Marked task ${threadId.slice(0, 8)} done (was ${thread.state}).`);
     return { ok: true, state: "done" };
+  }
+
+  /** Reopen completed implementation at QA, including tasks whose original route had QA off. */
+  async startQa(threadId: string): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (thread.state !== "done") return { ok: false, state: thread.state, error: "Start QA is available only on a Done task." };
+    if (this.restartDrainActive()) return { ok: false, state: "done", error: "GGO is restarting now. Start QA once the console reconnects." };
+    if (this.coworkWorkspaceBusy?.(thread.workspace)) return { ok: false, state: "done", error: "A Co-worker turn is using this workspace. Wait for it to finish before starting QA." };
+    if (!existsSync(thread.workspace)) return { ok: false, state: "done", error: `Workspace "${thread.workspace}" does not exist.` };
+    if (this.activePipelines.has(threadId) || this.hasActiveRun(threadId)) return { ok: false, state: "done", error: "An agent is still working on this task. Wait for it to finish before starting QA." };
+    // The old hard stop governed the completed work episode. An expired deadline must not
+    // immediately park this explicitly requested review as soon as its state leaves Done.
+    if (thread.activeDeadlineAt != null && thread.activeDeadlineAt <= Date.now()) {
+      this.disarmActiveDeadline(threadId);
+      this.db.setActiveDeadline(threadId, null);
+    }
+    this.invalidateManualDeploymentForNewWork(threadId, "the owner started a new QA review");
+    this.db.updateThreadStageOutputs(threadId, {
+      ownerStartedQa: true,
+      ownerQaBypassedAt: undefined,
+      qaRoundsUsed: 0,
+      qaCapRetryRound: undefined,
+      qaInterruptedRetryRound: 1,
+      qaSuperseded: null,
+      qaFixHandoff: null,
+    });
+    this.setState(threadId, "qa");
+    this.postFinding({ threadId, fromRole: "qa", summary: "Owner started QA on the completed task.", severity: "info" });
+    void this.runPipeline(threadId);
+    return { ok: true, state: "qa" };
   }
 
   /** "Auto-review & mark done": the owner delegates their OWN final review of a parked task to one agent

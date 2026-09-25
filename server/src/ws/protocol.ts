@@ -341,6 +341,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // bloat the lane; the server rejects an empty result and leaves the title unchanged.
   z.object({ type: z.literal("thread.rename"), threadId: z.string(), title: z.string().min(1).max(200) }),
   z.object({ type: z.literal("thread.markDone"), threadId: z.string() }),
+  z.object({ type: z.literal("thread.startQa"), threadId: z.string() }),
   // Delegate the owner's own review of a parked task to one reviewer agent, which either accepts it as
   // done or hands it back with reasons (see ThreadManager.autoReview).
   z.object({ type: z.literal("thread.autoReview"), threadId: z.string() }),

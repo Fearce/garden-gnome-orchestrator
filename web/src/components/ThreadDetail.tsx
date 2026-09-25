@@ -567,6 +567,7 @@ export function ThreadDetail() {
   const cancel = useStore((s) => s.cancel);
   const retry = useStore((s) => s.retry);
   const markDone = useStore((s) => s.markDone);
+  const startQa = useStore((s) => s.startQa);
   const autoReview = useStore((s) => s.autoReview);
   const select = useStore((s) => s.select);
   const loadOlderThreadHistory = useStore((s) => s.loadOlderThreadHistory);
@@ -1024,6 +1025,11 @@ export function ThreadDetail() {
               {isDoneable(thread.state) && (
                 <button className="btn success sm" onClick={() => markDone(id)} title="Accept this task as finished and mark it done">
                   ✓ Mark done
+                </button>
+              )}
+              {thread.state === "done" && (
+                <button className="btn review sm" onClick={() => startQa(id)} title="Review the completed work through the normal QA and implementor fix loop">
+                  Start QA
                 </button>
               )}
               <button

@@ -864,6 +864,9 @@ export interface StageOutputs {
   // automatic, sticky classification), this human override wins at every later implementor-to-QA
   // boundary, including after a server restart. A Retry wipes stage_outputs and resets it.
   ownerQaBypassedAt?: number;
+  // An owner explicitly started QA on a completed task. Keep the direct-QA route through
+  // restarts and fix rounds even when the global QA setting or task route disabled it.
+  ownerStartedQa?: boolean;
   // Never inferred from ordinary findings or error prose; this versioned evidence is the only
   // automatic route from a deploy-only handoff to done.
   manualDeployment?: ManualDeployment | null;

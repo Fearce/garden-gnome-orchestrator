@@ -1337,6 +1337,7 @@ export type ClientCommand =
   | { type: "thread.retry"; threadId: string }
   | { type: "thread.rename"; threadId: string; title: string }
   | { type: "thread.markDone"; threadId: string }
+  | { type: "thread.startQa"; threadId: string }
   | { type: "thread.autoReview"; threadId: string }
   | { type: "thread.close"; threadId: string }
   | { type: "thread.restore"; threadId: string }

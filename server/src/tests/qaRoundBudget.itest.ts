@@ -61,6 +61,7 @@ function check(label: string, cond: boolean, detail?: string): void {
 
 class StubAccounts {
   onUsageRefresh(_cb: () => void): void {}
+  auxToken(): string | undefined { return undefined; }
   effectiveUtilization(): number | null {
     return null;
   }
@@ -82,6 +83,7 @@ interface Harness {
   db: InstanceType<typeof Db>;
   workspace: string;
   qaRounds: number[]; // the `round` value each runQA call saw, in order
+  qaContinuations: boolean[];
   implementorStarts: () => number;
   dir: string;
   setVerdict(v: { pass: boolean; summary: string; blocked?: boolean; changed?: boolean }): void;
@@ -99,6 +101,7 @@ function makeHarness(): Harness {
   const mgr = new ThreadManager(db, hub, memory, new StubAccounts() as unknown as AccountManager);
 
   const qaRounds: number[] = [];
+  const qaContinuations: boolean[] = [];
   let implementorStarts = 0;
   let verdict = { pass: false, summary: "not satisfied" };
 
@@ -114,8 +117,9 @@ function makeHarness(): Harness {
   internals.stopLive = async (): Promise<void> => {};
   internals.runSelfImprovement = async (): Promise<void> => {};
   internals.flushDirectorNotes = (): void => {};
-  internals.runQA = async (_thread: Thread, opts: { round: number }): Promise<{ pass: boolean; summary: string; blocked?: boolean; changed?: boolean }> => {
+  internals.runQA = async (_thread: Thread, opts: { round: number; continuation?: boolean }): Promise<{ pass: boolean; summary: string; blocked?: boolean; changed?: boolean }> => {
     qaRounds.push(opts.round);
+    qaContinuations.push(!!opts.continuation);
     return verdict;
   };
 
@@ -124,6 +128,7 @@ function makeHarness(): Harness {
     db,
     workspace,
     qaRounds,
+    qaContinuations,
     implementorStarts: () => implementorStarts,
     dir,
     setVerdict(v) {
@@ -214,6 +219,71 @@ const runLoop = (h: Harness, id: string, maxQaRounds: number, qaAppliesFixes = f
 
 async function main(): Promise<void> {
   console.log("\n=== QA-round budget is durable across resumes — integration test (real machinery) ===\n");
+
+  console.log("Start QA — a Done task enters a fresh QA round even when QA was disabled");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const run = h.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5-5" });
+      h.db.updateRun(run.id, { state: "done", endedAt: Date.now() });
+      const earlierQa = h.db.createRun({ threadId: id, role: "qa", model: "claude-opus-5-5" });
+      h.db.updateRun(earlierQa.id, { state: "done", sessionId: "earlier-qa-session", endedAt: Date.now() });
+      h.db.updateThread(id, { state: "done" });
+      h.mgr.setSettings({ qaEnabled: false, maxQaRounds: 2 });
+      h.setVerdict({ pass: true, summary: "looks good" });
+      const started = await h.mgr.startQa(id);
+      check("Start QA accepts completed implementation", started.ok && started.state === "qa", JSON.stringify(started));
+      check("a second click cannot start another QA run", !(await h.mgr.startQa(id)).ok);
+      const deadline = Date.now() + 4000;
+      while ((h.mgr as any).activePipelines.has(id) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+      check("QA ran once without restarting implementation", JSON.stringify(h.qaRounds) === "[1]" && h.implementorStarts() === 0, JSON.stringify(h.qaRounds));
+      check("a new owner QA review does not continue an earlier QA session", h.qaContinuations[0] === false);
+      check("QA acceptance restored Done", h.db.getThread(id)?.state === "done");
+      check("the direct-QA recovery marker was cleared", !h.db.getThreadStageOutputs(id).ownerStartedQa);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("Start QA — a failing verdict uses the usual implementor fix and QA loop");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "done" });
+      h.mgr.setSettings({ qaEnabled: false, maxQaRounds: 2 });
+      h.setVerdict({ pass: false, summary: "fix the defect" });
+      await h.mgr.startQa(id);
+      const deadline = Date.now() + 4000;
+      while ((h.mgr as any).activePipelines.has(id) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+      check("failed QA calls the implementor once and then QA again", h.implementorStarts() === 1 && JSON.stringify(h.qaRounds) === "[1,2]", JSON.stringify(h.qaRounds));
+      check("round limit parks unresolved issues for review", h.db.getThread(id)?.state === "review");
+      check("the direct-QA marker clears after the review park", !h.db.getThreadStageOutputs(id).ownerStartedQa);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("Start QA — restart recovery preserves the direct QA entry");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "failed", error: "interrupted by a server restart" });
+      h.db.updateThreadStageOutputs(id, { ownerStartedQa: true, qaRoundsUsed: 1, qaInterruptedRetryRound: 1 });
+      h.mgr.setSettings({ qaEnabled: false, maxQaRounds: 2 });
+      h.setVerdict({ pass: true, summary: "recovered" });
+      await (h.mgr as any).runPipeline(id);
+      check("restart goes straight to the charged QA round", JSON.stringify(h.qaRounds) === "[1]" && h.implementorStarts() === 0, JSON.stringify(h.qaRounds));
+      check("recovered QA can accept the task", h.db.getThread(id)?.state === "done");
+    } finally {
+      h.dispose();
+    }
+  }
+
+  check("Start QA command is accepted", clientCommandSchema.safeParse({ type: "thread.startQa", threadId: "abc" }).success);
+  check("Start QA command requires a thread ID", !clientCommandSchema.safeParse({ type: "thread.startQa" }).success);
 
   // -- Test A: a fresh episode spends exactly maxQaRounds and then parks -------------------------------
   console.log("Test A — QA never satisfied: the loop runs exactly maxQaRounds and parks for review");

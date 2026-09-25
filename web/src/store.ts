@@ -403,6 +403,7 @@ interface State {
   retry: (threadId: string) => void;
   rename: (threadId: string, title: string) => void;
   markDone: (threadId: string) => void;
+  startQa: (threadId: string) => void;
   autoReview: (threadId: string) => void;
   close: (threadId: string) => void;
   restore: (threadId: string) => void;
@@ -1440,6 +1441,7 @@ export const useStore = create<State>((set) => ({
   retry: (threadId) => sendCommand({ type: "thread.retry", threadId }),
   rename: (threadId, title) => sendCommand({ type: "thread.rename", threadId, title }),
   markDone: (threadId) => sendCommand({ type: "thread.markDone", threadId }),
+  startQa: (threadId) => sendCommand({ type: "thread.startQa", threadId }),
   autoReview: (threadId) => sendCommand({ type: "thread.autoReview", threadId }),
   close: (threadId) => sendCommand({ type: "thread.close", threadId }),
   restore: (threadId) => sendCommand({ type: "thread.restore", threadId }),

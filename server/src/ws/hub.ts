@@ -311,6 +311,12 @@ export async function handleCommand(
     case "thread.markDone":
       sendThreadAction(socket, cmd.threadId, "markDone", await ctx.manager.markDone(cmd.threadId));
       break;
+    case "thread.startQa": {
+      const result = await ctx.manager.startQa(cmd.threadId);
+      if (!result.ok && result.error) ctx.hub.log("warn", result.error);
+      sendThreadAction(socket, cmd.threadId, "startQa", result);
+      break;
+    }
     case "thread.autoReview": {
       const result = await ctx.manager.autoReview(cmd.threadId);
       // Every rejection here is a state the operator can see but the button couldn't rule out at click
