@@ -12606,6 +12606,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // there would silently re-run the Jev call instead of reviewing anything.
     if (isJevSubTask(thread)) return { ok: false, state: "done", error: "A Jev sub-task is a single judgement call; it has no implementation for QA to review." };
     if (this.restartDrainActive()) return { ok: false, state: "done", error: "GGO is restarting now. Start QA once the console reconnects." };
+    if (this.tokenLimitTripped) return { ok: false, state: "done", error: "Token safety is holding new work until the blocking usage window resets." };
     if (this.coworkWorkspaceBusy?.(thread.workspace)) return { ok: false, state: "done", error: "A Co-worker turn is using this workspace. Wait for it to finish before starting QA." };
     if (!existsSync(thread.workspace)) return { ok: false, state: "done", error: `Workspace "${thread.workspace}" does not exist.` };
     if (this.activePipelines.has(threadId) || this.hasActiveRun(threadId)) return { ok: false, state: "done", error: "An agent is still working on this task. Wait for it to finish before starting QA." };

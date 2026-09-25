@@ -568,6 +568,7 @@ export function ThreadDetail() {
   const retry = useStore((s) => s.retry);
   const markDone = useStore((s) => s.markDone);
   const startQa = useStore((s) => s.startQa);
+  const tokenSafetyTripped = useStore((s) => !!s.tokenSafety?.tripped);
   const autoReview = useStore((s) => s.autoReview);
   const select = useStore((s) => s.select);
   const loadOlderThreadHistory = useStore((s) => s.loadOlderThreadHistory);
@@ -1028,7 +1029,12 @@ export function ThreadDetail() {
                 </button>
               )}
               {thread.state === "done" && thread.subTask?.provider !== "jev" && (
-                <button className="btn review sm" onClick={() => startQa(id)} title="Review the completed work through the normal QA and implementor fix loop">
+                <button
+                  className={"btn review sm" + (tokenSafetyTripped ? " frozen-ctl" : "")}
+                  onClick={() => startQa(id)}
+                  disabled={tokenSafetyTripped}
+                  title={tokenSafetyTripped ? "Token safety is holding new work until the blocking usage window resets." : "Review the completed work through the normal QA and implementor fix loop"}
+                >
                   Start QA
                 </button>
               )}

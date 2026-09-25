@@ -220,6 +220,21 @@ const runLoop = (h: Harness, id: string, maxQaRounds: number, qaAppliesFixes = f
 async function main(): Promise<void> {
   console.log("\n=== QA-round budget is durable across resumes — integration test (real machinery) ===\n");
 
+  console.log("Start QA — token safety blocks fresh review work");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "done" });
+      (h.mgr as any).tokenLimitTripped = true;
+      const refused = await h.mgr.startQa(id);
+      check("Start QA is refused during the token safety freeze", !refused.ok && !!refused.error?.includes("Token safety"), JSON.stringify(refused));
+      check("a token-safety rejection leaves the task done and unmarked", h.db.getThread(id)?.state === "done" && !h.db.getThreadStageOutputs(id).ownerStartedQa);
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log("Start QA — a Done task enters a fresh QA round even when QA was disabled");
   {
     const h = makeHarness();
