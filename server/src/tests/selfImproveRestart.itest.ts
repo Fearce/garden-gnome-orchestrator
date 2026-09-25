@@ -334,19 +334,42 @@ async function testBonusFailureDoesNotResume(): Promise<void> {
   }
 }
 
-async function testCliBonusIsSkipped(): Promise<void> {
-  const { db, dir, workspace } = makeDb("self-improve-cli-");
-  const h = boot(db, dir, workspace);
-  h.mgr.setSettings({ selfImproveEnabled: true });
-  const id = seedAcceptedTask(db, workspace, false);
-  h.mgr.latestImplementorSession = (): string => "cli-session";
-  h.mgr.implementorProvider.set(id, "codex");
-  let launches = 0;
-  h.mgr.startImplementor = (): never => { launches++; throw new Error("CLI bonus launched"); };
-  await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF");
-  check("CLI bonus cannot self-heal into extra launches", launches === 0 && db.getThread(id)?.state === "done");
-  check("CLI skip is visible", db.listFindings(id).some((f) => f.summary.includes("CLI resume cannot meet")));
-  h.dispose();
+async function testCliBonusRunsOnce(): Promise<void> {
+  for (const provider of ["codex", "grok"] as const) {
+    const { db, dir, workspace } = makeDb(`self-improve-${provider}-`);
+    const h = boot(db, dir, workspace);
+    h.mgr.setSettings({ selfImproveEnabled: true });
+    const id = seedAcceptedTask(db, workspace, false);
+    h.mgr.latestImplementorSession = (): string => "cli-session";
+    h.mgr.implementorProvider.set(id, provider);
+    h.mgr.stopLive = async (): Promise<void> => {};
+    let launches = 0;
+    let sends = 0;
+    let followUps = 0;
+    let resumeSession: string | undefined;
+    let freshFallback: string | undefined;
+    h.mgr.startImplementor = (_thread: Thread, _message: string, opts: { resume?: string; freshFallback?: string }): unknown => {
+      launches++;
+      resumeSession = opts.resume;
+      freshFallback = opts.freshFallback;
+      return { run: { stop: async (): Promise<void> => {}, send: (): void => { sends++; } }, runId: "bonus", accountId: provider };
+    };
+    h.mgr.awaitTurnResult = async (): Promise<unknown> => {
+      await h.mgr.injectThread(id, "owner follow-up", "append");
+      await h.mgr.resumeThread(id, "resume follow-up");
+      return OK_RESULT;
+    };
+    h.mgr.drainQueuedImplementor = async (): Promise<unknown> => {
+      followUps++;
+      check(`${provider}: owner instructions are queued for ordinary work`, ["owner follow-up", "resume follow-up"].every((message) => h.mgr.queuedForImplementor.get(id)?.includes(message)));
+      return OK_RESULT;
+    };
+    await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF");
+    check(`${provider}: bonus resumes once without fresh fallback`, launches === 1 && resumeSession === "cli-session" && freshFallback === undefined, `launches=${launches}, session=${resumeSession}, fallback=${freshFallback}`);
+    check(`${provider}: steering does not start another CLI turn`, sends === 0 && followUps === 1, `sends=${sends}, followUps=${followUps}`);
+    check(`${provider}: accepted task stays done`, db.getThread(id)?.state === "done");
+    h.dispose();
+  }
 }
 
 async function testStaleMarkerCleared(): Promise<void> {
@@ -423,7 +446,7 @@ async function main(): Promise<void> {
   await testMarkerLifecycle();
   await testConcurrentRoundIsOneShot();
   await testBonusFailureDoesNotResume();
-  await testCliBonusIsSkipped();
+  await testCliBonusRunsOnce();
   await testStaleMarkerCleared();
   await testInjectReachesTheRound();
 

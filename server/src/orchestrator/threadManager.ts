@@ -10553,7 +10553,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         thread,
         kickoff,
         this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id),
-        { effort, resumeNudge: msg, directorNote: msg, qaFollows, images: this.reviewInjectionImages(durableRows) },
+        { effort, resumeNudge: msg, directorNote: msg, qaFollows, images: uniqueImageBlocks([...(this.threadImages.get(thread.id) ?? []), ...this.reviewInjectionImages(durableRows)]) },
       );
       if (!start) break; // cancelled while compressing the prior session
       if (durableRows.length) this.markReviewImplementorDelivered(durableRows, start.runId, (row) => row.mode === "interrupt");
@@ -10850,14 +10850,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
     if (!session) { settleDone(); return; } // no session to build on
     this.db.updateThreadStageOutputs(thread.id, { selfImproveAttempted: true });
-    // CLI resume can self-heal by spawning a fresh process inside one logical turn. This optional
-    // round cannot promise a single launch on those backends, so skip it explicitly.
-    const provider = this.implementorProvider.get(thread.id) ?? this.priorImplementorProvider(thread.id);
-    if (provider === "codex" || provider === "grok") {
-      settleDone();
-      this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Self-improvement round skipped — CLI resume cannot meet the one-launch limit", severity: "info" });
-      return;
-    }
+    // CLI bonus runs have no freshFallback, and owner steering is queued for the normal follow-up
+    // rather than sent into their batch process. Each bonus therefore starts at most one CLI process.
     // Two markers, two jobs. The DURABLE one survives the process: it is how markInterrupted knows a
     // restart landed on already-accepted work and must settle the task done instead of resuming it into
     // the pipeline. The IN-MEMORY one is the episode the inject/resume gates key on while we're alive.
@@ -10906,7 +10900,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!stopped) throw new Error(`The prior run did not stop within ${SELF_IMPROVE_TIMEOUT_MS / 60_000} minutes.`);
     if (this.cancelled(thread.id)) return;
     const start = this.startImplementor(thread, SELF_IMPROVE_MSG, { resume: session, effort });
-    this.flushDirectorNotes(thread.id, start.run);
+    if (start.run instanceof CodexAgentRun || start.run instanceof GrokAgentRun) {
+      const notes = this.directorNotes.get(thread.id);
+      if (notes?.length) {
+        this.directorNotes.delete(thread.id);
+        this.queuedForImplementor.set(thread.id, [...(this.queuedForImplementor.get(thread.id) ?? []), ...notes]);
+      }
+    } else this.flushDirectorNotes(thread.id, start.run);
     // A bonus gets exactly one provider invocation. Ordinary implementation can keep continuing
     // cutoffs or empty results while it makes progress, and can fail over on process errors; none is
     // justified after QA has already accepted the task.
@@ -10927,16 +10927,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     const silent = !timedOut && this.ranSilently(thread.id, "implementor", attemptFrom, res);
     if (silent) this.markSilentRun(thread.id, "implementor");
-    // A queued owner instruction is separate task work. Close the bonus identity before launching it;
-    // that follow-up uses the normal implementor recovery policy and reopens the accepted card.
-    if (!timedOut && res && !res.isError && !silent && this.queuedForImplementor.get(thread.id)?.length) {
-      this.db.updateThreadStageOutputs(thread.id, { selfImproving: false });
-      this.selfImproving.delete(thread.id);
-      res = await this.drainQueuedImplementor(thread, effort, kickoff, res, false);
-      if (this.cancelled(thread.id)) return;
-      if (res && !res.isError) this.setState(thread.id, "done");
-      else this.settleReview(thread.id, this.implementorParkReason(res, "the queued owner follow-up needs review."));
-    }
     // A cap flagged during this bonus round must not tag the task's settle — the task is going 'done',
     // and a stale flag could otherwise leak into a later settle of this thread.
     this.capParked.delete(thread.id);
@@ -10948,6 +10938,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         detail: timedOut ? `Stopped after ${SELF_IMPROVE_TIMEOUT_MS / 60_000} minutes.` : silent ? SILENT_RUN_ERROR : res?.isError ? runErrorText(res) : "The bonus run ended without a result.",
         severity: "note",
       });
+    }
+    // A queued owner instruction is separate task work and must run even if this optional bonus
+    // failed or timed out. Close the bonus identity before the normal implementor resume.
+    if (this.queuedForImplementor.get(thread.id)?.length && !this.cancelled(thread.id)) {
+      this.db.updateThreadStageOutputs(thread.id, { selfImproving: false });
+      this.selfImproving.delete(thread.id);
+      const followUp = await this.drainQueuedImplementor(
+        thread, effort, kickoff, { type: "result", subtype: "success", isError: false }, false,
+      );
+      if (this.cancelled(thread.id)) return;
+      if (followUp && !followUp.isError) this.setState(thread.id, "done");
+      else this.settleReview(thread.id, this.implementorParkReason(followUp, "the queued owner follow-up needs review."));
     }
   }
 
@@ -11706,6 +11708,22 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (this.selfImproving.has(threadId)) {
       const impl = this.live.get(threadId);
       const blocks = images?.length ? images.map(toImageBlock) : [];
+      // A CLI send starts another process after this batch closes. Keep the one-launch bonus bound by
+      // treating owner steering as ordinary task work at the hand-off instead.
+      if (this.implementorProvider.get(threadId) === "codex" || this.implementorProvider.get(threadId) === "grok") {
+        this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
+        if (blocks.length) this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...blocks]);
+        const m = this.db.addMessage({
+          threadId,
+          role: "director",
+          kind: "system",
+          content: `⧗ queued for the implementor after self-improvement: ${message}${blocks.length ? ` [+${blocks.length} image(s)]` : ""}`,
+          attachments: injectRefs(),
+        });
+        this.hub.publish({ type: "thread.message", threadId, message: m });
+        this.touchThread(threadId);
+        return { ok: true, state: thread?.state ?? "implementing" };
+      }
       // Buffered notes are drained by flushDirectorNotes when the round's implementor goes live, so the
       // pre-launch window (stopLive → compressed seed) loses nothing either.
       if (impl) {
@@ -12101,9 +12119,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // done. A bare Resume is a no-op (the round finishes on its own); steering reaches the round.
     if (this.selfImproving.has(threadId)) {
       if (message?.trim()) {
-        const impl = this.live.get(threadId);
-        if (impl) this.sendCommunication(impl.run, acknowledgedInjection(message), { priority: "now" });
-        else this.bufferDirectorNote(threadId, message);
+        if (this.implementorProvider.get(threadId) === "codex" || this.implementorProvider.get(threadId) === "grok") {
+          this.queuedForImplementor.set(threadId, [...(this.queuedForImplementor.get(threadId) ?? []), message]);
+        } else {
+          const impl = this.live.get(threadId);
+          if (impl) this.sendCommunication(impl.run, acknowledgedInjection(message), { priority: "now" });
+          else this.bufferDirectorNote(threadId, message);
+        }
       }
       return { ok: true, state: thread.state };
     }
