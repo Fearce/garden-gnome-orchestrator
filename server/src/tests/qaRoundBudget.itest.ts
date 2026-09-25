@@ -342,6 +342,20 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("Start QA — a Done read-lane answer is refused instead of opening an editing fix loop");
+  {
+    const h = makeHarness();
+    try {
+      const read = h.db.createThread({ title: "read question", workspace: h.workspace, rawPrompt: "how does X work?", lane: "read" });
+      h.db.updateThread(read.id, { state: "done" });
+      const refused = await h.mgr.startQa(read.id);
+      check("Start QA refuses a read-lane task", !refused.ok && h.db.getThread(read.id)?.state === "done", JSON.stringify(refused));
+      check("the refused read-lane task carries no QA marker", !h.db.getThreadStageOutputs(read.id).ownerStartedQa);
+    } finally {
+      h.dispose();
+    }
+  }
+
   check("Start QA command is accepted", clientCommandSchema.safeParse({ type: "thread.startQa", threadId: "abc" }).success);
   check("Start QA command requires a thread ID", !clientCommandSchema.safeParse({ type: "thread.startQa" }).success);
 

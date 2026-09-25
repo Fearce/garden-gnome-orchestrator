@@ -1029,7 +1029,7 @@ export function ThreadDetail() {
                   ✓ Mark done
                 </button>
               )}
-              {thread.state === "done" && thread.subTask?.provider !== "jev" && (
+              {thread.state === "done" && thread.subTask?.provider !== "jev" && thread.lane !== "read" && (
                 <button
                   className={"btn review sm" + (tokenSafetyTripped ? " frozen-ctl" : "")}
                   onClick={() => startQa(id)}

@@ -12653,6 +12653,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // runPipeline dispatches a Jev sub-task to runJev before it reads ownerStartedQa, so starting QA
     // there would silently re-run the Jev call instead of reviewing anything.
     if (isJevSubTask(thread)) return { ok: false, state: "done", error: "A Jev sub-task is a single judgement call; it has no implementation for QA to review." };
+    // A read-lane task answered a question without changing the tree. A QA fix round would put an
+    // editing implementor on that question, so there is nothing safe for this loop to review.
+    if (thread.lane === "read") return { ok: false, state: "done", error: "A read-only answer has no implementation for QA to review." };
     if (this.restartDrainActive()) return { ok: false, state: "done", error: "GGO is restarting now. Start QA once the console reconnects." };
     if (this.tokenLimitTripped) return { ok: false, state: "done", error: "Token safety is holding new work until the blocking usage window resets." };
     if (this.coworkWorkspaceBusy?.(thread.workspace)) return { ok: false, state: "done", error: "A Co-worker turn is using this workspace. Wait for it to finish before starting QA." };
