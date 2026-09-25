@@ -18,7 +18,7 @@ import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
 
-const { CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, ModelCatalog } = await import("../agents/modelCatalog.js");
+const { CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, CURATED_ZAI_MODELS, ModelCatalog } = await import("../agents/modelCatalog.js");
 
 let passed = 0;
 let failed = 0;
@@ -82,6 +82,8 @@ const catalog = new ModelCatalog(db, accounts, () => "openai-key", () => "zai-ke
 try {
   check("the Claude cold-start fallback begins with the latest Fable", CURATED_CLAUDE_MODELS[0] === "claude-fable-5-1", CURATED_CLAUDE_MODELS.join(","));
   check("the Codex cold-start fallback begins with Astra", CURATED_CODEX_MODELS[0] === "gpt-6-astra", CURATED_CODEX_MODELS.join(","));
+  check("the Grok cold-start fallback matches the current CLI roster", CURATED_GROK_MODELS.join(",") === "grok-4.7", CURATED_GROK_MODELS.join(","));
+  check("the z.ai cold-start fallback includes current GLM-5.3 FlashX", CURATED_ZAI_MODELS.includes("glm-5.3-flashx"), CURATED_ZAI_MODELS.join(","));
   // Observed rather than awaited bare: the pre-fix shape read each provider's key OUTSIDE its try, so a
   // throw abandoned the whole refresh. Letting that propagate here would crash the run instead of naming
   // the defect, and every later assertion would go unrun.

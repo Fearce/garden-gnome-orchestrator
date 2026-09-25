@@ -30,6 +30,9 @@ const SEED = [
 function seed(dataDir) {
   const db = new Database(path.join(dataDir, "orchestrator.sqlite"));
   const at = Date.now();
+  const setKv = db.prepare("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+  setKv.run("cache_grok_models", JSON.stringify(["grok-4.7"]));
+  setKv.run("cache_zai_models", JSON.stringify([]));
   const insert = db.prepare(
     `INSERT INTO model_grades(thread_id, workspace, title, provider, model, effort, reason, outcome, score,
        qa_rounds, cost_usd, num_turns, duration_ms, ran_models, graded_model, created_at, graded_at)
@@ -92,14 +95,15 @@ async function main() {
   const check = createChecks();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "model-lab-"));
   const keep = process.argv.includes("--keep");
+  const labEnv = { GROK_HOME_DIR: path.join(dataDir, ".grok"), ZAI_API_KEY: "" };
   console.log(`model-select-lab — ${BASE} (data ${dataDir})`);
 
   try {
     // First boot creates the schema; seed into it, then boot again so the hello frame carries the stats.
-    await boot({ dataDir, port: PORT });
+    await boot({ dataDir, port: PORT, env: labEnv });
     killInstance(PORT);
     seed(dataDir);
-    await boot({ dataDir, port: PORT });
+    await boot({ dataDir, port: PORT, env: labEnv });
 
     const browser = await loadChromium().launch();
     try {
@@ -129,6 +133,17 @@ async function main() {
       // A reload proves it was PERSISTED server-side rather than held in the client's store.
       const second = await openSettings(browser);
       check("it survives a reload (persisted server-side)", (await second.getAttribute(TOGGLE, "aria-checked")) === "true", await second.getAttribute(TOGGLE, "aria-checked"));
+
+      await second.click('[data-settings-category="subscriptions"]');
+      const grokCard = second.locator(".sub-card").filter({ hasText: "xAI" });
+      await grokCard.locator(".sub-disclosure").click();
+      const grokOptions = await grokCard.locator(".sub-model-row").first().locator("select option").allTextContents();
+      check("the Grok picker only offers the model in the current CLI roster", grokOptions.includes("grok-4.7") && !grokOptions.includes("grok-4.6"), JSON.stringify(grokOptions));
+
+      const zaiCard = second.locator(".sub-card").filter({ hasText: "Zhipu" });
+      await zaiCard.locator(".sub-disclosure").click();
+      const zaiOptions = await zaiCard.locator(".sub-model-row").first().locator("select option").allTextContents();
+      check("the z.ai picker keeps GLM-5.3 FlashX in its cold-start options", zaiOptions.includes("glm-5.3-flashx"), JSON.stringify(zaiOptions));
       await second.close();
     } finally {
       await browser.close();
