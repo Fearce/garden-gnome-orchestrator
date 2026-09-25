@@ -24,6 +24,16 @@ Climb this ladder, stopping once you have enough:
    relative to `server/`): `S=$(curl -s :4317/ | grep -o 'assets/index-[^"]*\.js'); grep -c "<label>"
    web/dist/$S`. Settings rows and buttons render their `label` UNCONDITIONALLY, so a hit is
    render-equivalent — but NOT proof for dynamically-built or feature-gated text. Drive those.
+
+   **This rung cannot see WHERE a thing lands, and that is a whole class of bug it reads as green.**
+   "I still cannot see deliverables" was reported three times; the third time the strip was present,
+   `display: flex`, expanded, holding its chip, at `y = -13347px`, because it had been moved inside a
+   scrollport that auto-scrolls to the newest message (`73d2bd5`). Every string grep, every data test
+   and every store test was correct and green throughout. So when the complaint is "I cannot see X"
+   rather than "X is wrong", RENDERED IS NOT VISIBLE: the only assertion that settles it measures
+   geometry against the viewport (`getBoundingClientRect()` vs the panel's own box), and that means a
+   browser, i.e. rung 4. Once measured, put the assertion in the lab that owns that surface, never in
+   a data test that cannot fail on it. `panel-scroll-lab.cjs` carries this one.
 3. **Server logic** — `npm run test:gates --prefix server` (free, ~5min) for queue/routing/cap mechanics;
    add a gate for new logic.
 
@@ -85,5 +95,14 @@ nine-provider invocation.
 **Often it can't be driven anyway:** a pending director question sits as a full-screen `.scrim` + `.modal`
 intercepting ALL pointer events, and dismissing it to reach Settings silently kills a real question that
 was the owner's to answer. Use a lab, or steps 1–3 (this burned a verify pass on three features).
+
+**Two board facts that cost a run each when reading prod for a SPECIFIC task** (2026-09-18). An open
+task's card is `.card` and clicking it only selects (local state plus a `thread.history` read), so it is
+within the no-mutation line. A CLOSED task is a different element, `.closed-card`, and it has no
+click-to-open at all: its only controls are Restore and Delete, both mutations, so a closed task's panel
+simply cannot be opened on prod. Reach for a lab instead of hunting for a selector that is not there.
+The store is not on `window` either, so there is no `select(id)` shortcut. And wait on `.accounts .acct`
+rather than `.workbench`: the shell mounts before the socket's `hello`, so a check that opens on the
+shell reads neutral defaults and an empty board.
 
 Cross-ref: `e2e-a-pipeline-lane.md` (driving a server-side LANE, no browser).

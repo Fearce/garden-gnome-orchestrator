@@ -68,18 +68,23 @@ Steps 3/4 read runs and parks, so neither sees the failure the owner switched th
 
 ## Related
 - Office harvest gotchas: `.claude/rules/office-bridge.md`
-- Shared-checkout commits and rebases. **This entry has been wrong FIVE times, always about WHERE
-  the helper lives.** Every earlier version sent you to `~/Claude/tools/` — a directory that exists
-  on no machine this repo is worked from — and told you to trust the empty listing, so the agent
-  read "absent" and hand-rolled it (2026-09-11, 2026-09-18). It is a PYTHON tool, and it lives in the
-  maintainer's own agent config rather than in this repo — so it is there for some contributors and
-  genuinely absent for others, and `probe:doc-paths` now says which you are:
-  **`python ~/.claude/scripts/stage_my_hunks.py --list <file>`**, then `--contains "<marker>"` or
-  `--keep 1,4`, stages only YOUR hunks of a file a peer is also editing. It diffs at zero context and
-  reconstructs against the exact HEAD blob, so unlike a hand-rolled split it cannot double this
-  repo's CRLF line endings into a whole-file diff; `--selftest` proves it first. **Before rebuilding
-  ANY helper run `python ~/.claude/scripts/findtool.py <words>`** — searching every tool home at once
-  is the step all five wrong versions skipped.
+- Shared-checkout commits and rebases. **This entry has been wrong SIX times, always about WHERE
+  the helper lives, and the sixth version is why it no longer names a path at all.** Each rewrite
+  asserted that some specific directory did or did not hold the hunk splitter, an agent read the
+  assertion instead of looking, and rebuilt the tool (2026-09-11, 2026-09-16 x3, 2026-09-18). The
+  fifth version swung the other way and declared `~/Claude/tools/` "a directory that exists on no
+  machine this repo is worked from", pointing instead at `~/.claude/scripts/stage_my_hunks.py`. On
+  the maintainer's own box that is exactly backwards: `~/Claude/tools/` holds 54 tools including
+  `stage-my-hunks.sh`, `safe-commit.sh` and `commit-staged-only.sh`, and the `.py` path it sent you
+  to does not exist. A sixth agent lost calls to that on 2026-09-18.
+  **So stop encoding an answer that is machine-specific, and ASK: `python ~/.claude/scripts/findtool.py
+  <words>`.** It searches every tool home plus the memory catalogue in one command and prints what is
+  actually on THIS machine, so it is right on a box that has these tools and equally right on one
+  that does not (it exits 1 and tells you to build it). Run it before rebuilding ANY helper. That
+  lookup is the step all six wrong versions skipped, and skipping it is what the rewrites cost.
+  The splitter, whatever its filename here, stages only YOUR hunks of a file a peer is also editing:
+  it diffs at zero context and reconstructs against the exact HEAD blob, so unlike a hand-rolled
+  split it cannot double this repo's CRLF line endings into a whole-file diff.
   Portable, and what to use when you do not have those: **`git commit --only <paths> -F <msgfile>`** commits exactly those
   paths whatever a peer left staged, and never finish with a bare `git commit`, which takes the whole
   shared index. **`git reset` first if the index is already populated** by an earlier session —
