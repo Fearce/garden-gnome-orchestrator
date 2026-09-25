@@ -379,6 +379,31 @@ async function testCliBonusRunsOnce(): Promise<void> {
   }
 }
 
+/** After a restart the in-memory provider map is empty, so the bonus reads its session from the DB. It
+ *  must resume that session on the backend that minted it, not startImplementor's Claude default. */
+async function testRestartedCliBonusKeepsItsBackend(): Promise<void> {
+  for (const provider of ["codex", "grok"] as const) {
+    const { db, dir, workspace } = makeDb(`self-improve-restart-${provider}-`);
+    const h = boot(db, dir, workspace);
+    h.mgr.setSettings({ selfImproveEnabled: true });
+    const id = seedAcceptedTask(db, workspace, false);
+    const run = db.createRun({ threadId: id, role: "implementor", model: `${provider}-model`, account: `${provider}:${provider}-model` });
+    db.raw.prepare("UPDATE agent_runs SET session_id = ?, started_at = ? WHERE id = ?").run(`${provider}-session`, Date.now() + 1000, run.id);
+    h.mgr.stopLive = async (): Promise<void> => {};
+    let launchedOn: string | undefined;
+    let resumeSession: string | undefined;
+    h.mgr.startImplementor = (_thread: Thread, _message: string, opts: { resume?: string }): unknown => {
+      launchedOn = h.mgr.implementorProvider.get(id);
+      resumeSession = opts.resume;
+      return { run: { stop: async (): Promise<void> => {}, send: (): void => {} }, runId: "bonus", accountId: provider };
+    };
+    h.mgr.awaitTurnResult = async (): Promise<unknown> => OK_RESULT;
+    await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF");
+    check(`${provider}: restarted bonus resumes on the session's own backend`, launchedOn === provider && resumeSession === `${provider}-session`, `provider=${launchedOn}, session=${resumeSession}`);
+    h.dispose();
+  }
+}
+
 async function testStaleMarkerCleared(): Promise<void> {
   console.log("\nTest D — a fresh pipeline entry drops a stale marker\n");
   const { db, dir, workspace } = makeDb("self-improve-stale-");
@@ -454,6 +479,7 @@ async function main(): Promise<void> {
   await testConcurrentRoundIsOneShot();
   await testBonusFailureDoesNotResume();
   await testCliBonusRunsOnce();
+  await testRestartedCliBonusKeepsItsBackend();
   await testStaleMarkerCleared();
   await testInjectReachesTheRound();
 

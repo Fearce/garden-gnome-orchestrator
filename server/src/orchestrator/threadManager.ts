@@ -10867,9 +10867,19 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // the same live task during a hand-over.
     const bonusStage = this.db.getThreadStageOutputs(thread.id);
     if (this.selfImproving.has(thread.id) || bonusStage.selfImproving || bonusStage.selfImproveAttempted) return;
-    const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
+    const liveSession = this.lastImplementorSession.get(thread.id);
+    const session = liveSession ?? this.latestImplementorSession(thread.id);
     if (!session) { settleDone(); return; } // no session to build on
     this.db.updateThreadStageOutputs(thread.id, { selfImproveAttempted: true });
+    // A session id resumes only on the backend that minted it. After a restart the in-memory provider is
+    // empty (startImplementor would default to Claude) or re-routed, so a DB-sourced Codex/Grok session
+    // would be fed to the wrong CLI and the CLI inject gates below would not recognize the round. Pin the
+    // provider of the run that owns the session; latestImplementorSession and priorImplementorProvider
+    // read the same row.
+    if (!liveSession) {
+      const owner = this.priorImplementorProvider(thread.id);
+      if (owner) this.implementorProvider.set(thread.id, owner);
+    }
     // CLI bonus runs have no freshFallback, and owner steering is queued for the normal follow-up
     // rather than sent into their batch process. Each bonus therefore starts at most one CLI process.
     // Two markers, two jobs. The DURABLE one survives the process: it is how markInterrupted knows a
