@@ -1191,6 +1191,8 @@ export interface SharedRepo {
 export type ServerEvent =
   | {
       type: "hello";
+      /** Missing on an older server while a staged deployment waits to restart. */
+      startQaSupported?: boolean;
       threads: Thread[];
       runs: AgentRun[];
       findings: Finding[];

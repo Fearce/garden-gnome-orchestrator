@@ -124,6 +124,7 @@ function dropKey<V>(record: Record<string, V>, key: string): Record<string, V> {
 }
 
 interface State {
+  startQaSupported: boolean;
   connected: boolean;
   // A newer web bundle is live on the server (version.ts spotted a hash change). Drives the quiet
   // top-bar "refresh for the new build" badge; an idle tab still auto-reloads, so this mainly persists
@@ -1147,6 +1148,7 @@ function failPendingThreadActions(): void {
 }
 
 export const useStore = create<State>((set) => ({
+  startQaSupported: false,
   connected: false,
   updateReady: false,
   gitUpdate: null,
@@ -1441,7 +1443,19 @@ export const useStore = create<State>((set) => ({
   retry: (threadId) => sendCommand({ type: "thread.retry", threadId }),
   rename: (threadId, title) => sendCommand({ type: "thread.rename", threadId, title }),
   markDone: (threadId) => sendCommand({ type: "thread.markDone", threadId }),
-  startQa: (threadId) => sendCommand({ type: "thread.startQa", threadId }),
+  startQa: (threadId) => {
+    if (!useStore.getState().startQaSupported) {
+      const message = "Start QA is waiting for the server update. GGO will restart after active agent work finishes.";
+      useStore.setState({ notice: { level: "warn", title: "Start QA unavailable", message } });
+      notify("Start QA unavailable", message);
+      return;
+    }
+    if (!sendCommand({ type: "thread.startQa", threadId })) {
+      const message = "The console is reconnecting. Try Start QA again when it is connected.";
+      useStore.setState({ notice: { level: "warn", title: "Start QA unavailable", message } });
+      notify("Start QA unavailable", message);
+    }
+  },
   autoReview: (threadId) => sendCommand({ type: "thread.autoReview", threadId }),
   close: (threadId) => sendCommand({ type: "thread.close", threadId }),
   restore: (threadId) => sendCommand({ type: "thread.restore", threadId }),
@@ -1909,6 +1923,7 @@ function applyEvent(ev: ServerEvent): void {
       // omits the field; mergeSettings(undefined) would hand back all-defaults and snap the toggles back
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
       useStore.setState((s) => ({
+        startQaSupported: ev.startQaSupported === true,
         threads,
         // Hello carries a bounded fleet-wide slice of runs, so it must not replace the ones an open
         // task loaded from its own history — the feed needs a message's own run to name the model that

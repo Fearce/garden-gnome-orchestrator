@@ -87,6 +87,7 @@ const HELLO_CACHE_MS = 2_000;
 function buildHello(ctx: WsContext): ServerEvent {
   return {
     type: "hello",
+    startQaSupported: true,
     threads: ctx.db.listThreadSummaries(),
     runs: ctx.db.listAllRuns(SNAPSHOT_RUNS),
     findings: ctx.db.listFindings(undefined, SNAPSHOT_FINDINGS),

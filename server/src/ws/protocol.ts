@@ -83,6 +83,7 @@ export type { ZaiUsageDTO } from "../agents/zaiUsage.js";
 export type ServerEvent =
   | {
       type: "hello";
+      startQaSupported: true;
       threads: ThreadSummary[];
       runs: AgentRun[];
       findings: Finding[];
