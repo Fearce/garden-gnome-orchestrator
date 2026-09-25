@@ -222,7 +222,7 @@ function declaredOverrides() {
  *
  * "Selector matches nothing installed" and "npm could not tell us what is installed" look
  * identical downstream, and this checkout is shared — a concurrent or interrupted
- * `npm install` leaves node_modules partial (see CLAUDE.md), which would otherwise report
+ * `npm install` leaves node_modules partial (see docs/agent-reference/CLAUDE-full.md), which would otherwise report
  * every override dead and fail the sweep on a healthy package.json. A sound tree reports
  * no problems at all, so this valve stays shut in normal operation.
  */

@@ -99,7 +99,7 @@ function classifyDeliverable(row, io = fs) {
 }
 
 /**
- * CLAUDE.md documents one recurring way a deliverable 404s: a RELATIVE path resolves against the task
+ * docs/agent-reference/CLAUDE-full.md documents one recurring way a deliverable 404s: a RELATIVE path resolves against the task
  * WORKSPACE, which here is routinely the PARENT of the git checkout, so a file saved into the repo is
  * not found. That is a fixable mistake rather than rot, so when a relative path is missing, look one
  * level down for the same basename and name the absolute path that WOULD have worked.

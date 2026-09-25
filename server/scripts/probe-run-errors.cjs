@@ -22,7 +22,7 @@
 //     those the turn count IS the evidence: num_turns at/over the role's ceiling means a turn-ceiling cutoff.
 //     An opaque row UNDER the ceiling can't be classified at all — it's reported as such, not guessed.
 //   • "Claude Code process exited with code 1073807364" is Windows 0x40010004 (DBG_TERMINATE_PROCESS): the CLI
-//     child was TREE-KILLED from outside (the script-hub stop+start footgun CLAUDE.md warns about) while the
+//     child was TREE-KILLED from outside (the script-hub stop+start footgun docs/agent-reference/CLAUDE-full.md warns about) while the
 //     server itself survived — so boot auto-resume never applies and the pipeline parks the task for a human.
 
 const fs = require("node:fs");

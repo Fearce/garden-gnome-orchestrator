@@ -1,9 +1,9 @@
 // Is the process bound to a port running COMPILED `dist/index.js`, or TypeScript SOURCE loaded
-// directly by tsx (CLAUDE.md's "supervisor" deployment: `npm run serve` -> scripts/supervise.cjs ->
+// directly by tsx (docs/agent-reference/CLAUDE-full.md's "supervisor" deployment: `npm run serve` -> scripts/supervise.cjs ->
 // `node <tsx cli> src/index.ts`, `ORCH_SUPERVISED=1` -> `process.exit(75)` -> respawn on fresh source)?
 //
 // `nightly-health.cjs`'s "process vs dist" section asked a dist-shaped question (process start vs
-// dist mtime) of every process, on the assumption that CLAUDE.md's Windows script-hub/dist deployment
+// dist mtime) of every process, on the assumption that docs/agent-reference/CLAUDE-full.md's Windows script-hub/dist deployment
 // is the only shape. It is not: this same repo also runs under `npm run serve`, where the process
 // never reads `dist` at all. On 2026-09-11 that produced two false claims in one sweep against a
 // perfectly healthy process: a "process started at/after dist mtime (fresh build likely loaded)" line

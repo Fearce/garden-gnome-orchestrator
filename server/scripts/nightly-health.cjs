@@ -18,7 +18,7 @@
 //     BUT that heuristic, and dist itself, only mean something when the process
 //     actually LOADS dist (see scripts/listener-shape.cjs). A process running
 //     TypeScript source directly under tsx (`npm run serve` -> supervise.cjs,
-//     CLAUDE.md's "supervisor" deployment shape) is also unstamped, and for
+//     docs/agent-reference/CLAUDE-full.md's "supervisor" deployment shape) is also unstamped, and for
 //     that shape dist is irrelevant: the check instead compares server/src
 //     mtimes directly against the process start.
 //   • reliability symbols still present in dist (office/Grok QA path)?
@@ -289,7 +289,7 @@ async function main() {
       const distMs = fs.statSync(sampleDist).mtimeMs;
       ok(`dist/agents/grokRunner.js mtime ${new Date(distMs).toISOString()}`);
 
-      // 2026-09-11: on a machine running `npm run serve` (CLAUDE.md's "supervisor" deployment shape,
+      // 2026-09-11: on a machine running `npm run serve` (docs/agent-reference/CLAUDE-full.md's "supervisor" deployment shape,
       // scripts/supervise.cjs -> tsx loading src/index.ts directly), this process never reads dist at
       // all, so every dist-mtime comparison below describes a build it never opened. Say so plainly,
       // once, instead of leaving the reader to rediscover the process tree by hand, which is what the
@@ -333,7 +333,7 @@ async function main() {
             stopReach && stopReach.state === "unreachable"
               ? unreachableRemedy(stopReach)
               : stopReach && stopReach.state === "reachable"
-                ? "the hub CAN reach this process, so the refusals are not a matcher miss — check whether the listener is elevated (CLAUDE.md) or the hub's process enumeration is degraded"
+                ? "the hub CAN reach this process, so the refusals are not a matcher miss — check whether the listener is elevated (docs/agent-reference/CLAUDE-full.md, \"Deploying a change\") or the hub's process enumeration is degraded"
                 : `the cause is unmeasured (${stopReach ? stopReach.reason : "no reach check ran"}) — run \`node scripts/hub-stop-reach.cjs ${pid}\``;
           warn(
             `${vsDist.detail} — the restart coordinator has ` +

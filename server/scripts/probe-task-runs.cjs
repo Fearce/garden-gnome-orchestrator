@@ -13,7 +13,7 @@
 //   • the persisted task route, deterministic model capability floor/evidence, automatic pick, and any
 //     exact owner pin — enough to tell policy from capacity fallback and the model that really ran.
 //   • the thread's state/error, then every agent_run in order (role · model · account · state · cost ·
-//     turns · duration · error) — the run trail CLAUDE.md's "Debugging a failed task" section names.
+//     turns · duration · error) — the run trail docs/agent-reference/CLAUDE-full.md's "Debugging a failed task" section names.
 //   • one control-flow timeline joining runs, findings (including capacity reservations), owner/supervisor
 //     messages, and server boot/reconcile records. It prints system-local time AND explicit UTC so an
 //     owner's "around 15:17" and SQLite's epoch no longer look two hours apart.
