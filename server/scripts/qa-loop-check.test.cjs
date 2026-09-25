@@ -62,6 +62,14 @@ assert.equal(accountedLaunches({ roundsUsed: 10, interrupted: 2 }), 10, "an inte
   assert.match(text(r), /QA round 2 is waiting for a restart-interrupted retry/);
   assert.doesNotMatch(text(r), /2 pending restart-interrupted QA retry round/, "the restart marker must not enter launch arithmetic");
 }
+// Start QA uses the same direct-review marker before any restart has occurred. Its owner flag gives the
+// probe the context needed to describe that entry without claiming the server was restarted.
+{
+  const r = qaLoopReading({ ...base, launches: 1, roundsUsed: 1, interruptedRetryRound: 1, ownerStartedQa: true });
+  assert.match(text(r), /QA round 1 is on the owner-started direct-review route/);
+  assert.match(text(r), /does not by itself show that a restart occurred/);
+  assert.doesNotMatch(text(r), /waiting for a restart-interrupted retry/);
+}
 
 // --- THE 2026-08-17 REGRESSION ------------------------------------------------
 // The check compared QA *launches* against the *rounds* cap. Real production tasks run

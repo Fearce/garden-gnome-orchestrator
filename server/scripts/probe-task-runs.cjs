@@ -384,6 +384,7 @@ section("QA-loop check");
     roundsUsed: stage.qaRoundsUsed ?? null,
     capRetryRound: stage.qaCapRetryRound,
     interruptedRetryRound: stage.qaInterruptedRetryRound,
+    ownerStartedQa: stage.ownerStartedQa === true,
     cutoffResumes: stage.qaCutoffResumes,
     silentRetries: stage.qaSilentRetries,
     cutoffResumesThisRound: stage.qaCutoffResumesThisRound,

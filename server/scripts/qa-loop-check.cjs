@@ -109,7 +109,7 @@ function accountedLaunches(input) {
  * exceeding maxQaRounds.
  */
 function qaLoopReading(input) {
-  const { cap, launches, roundsUsed, capRetryRound, interruptedRetryRound, interrupted, appliesFixes } = input;
+  const { cap, launches, roundsUsed, capRetryRound, interruptedRetryRound, ownerStartedQa, interrupted, appliesFixes } = input;
   const lines = [];
   const accounted = accountedLaunches(input);
   const parts = launchTerms().map((term) => `${num(input[term.input])} ${term.label}`);
@@ -127,10 +127,17 @@ function qaLoopReading(input) {
     );
   }
   if (interruptedRetryRound != null) {
-    lines.push(
-      `  Â· QA round ${interruptedRetryRound} is waiting for a restart-interrupted retry; this marker names the already-charged round, ` +
-        "not another launch (boot recovery retries QA directly without replaying the implementor).",
-    );
+    if (ownerStartedQa) {
+      lines.push(
+        `  Â· QA round ${interruptedRetryRound} is on the owner-started direct-review route; this marker bypasses implementation replay ` +
+          "and does not by itself show that a restart occurred.",
+      );
+    } else {
+      lines.push(
+        `  Â· QA round ${interruptedRetryRound} is waiting for a restart-interrupted retry; this marker names the already-charged round, ` +
+          "not another launch (boot recovery retries QA directly without replaying the implementor).",
+      );
+    }
   }
 
   // The durable counter is the only thing maxQaRounds is enforced against. A task
