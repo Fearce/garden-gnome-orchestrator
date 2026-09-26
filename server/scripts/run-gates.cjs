@@ -154,6 +154,7 @@ const GATES = [
   "test:chat-steering",
   "test:cowork",
   "test:cowork-summary",
+  "test:cowork-worktree",
   "test:cowork-ui",
   "test:cowork-health",
   "test:auto-review",
