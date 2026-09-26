@@ -21,16 +21,17 @@ import { Countdown, Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
 import { splitWorkspace, WorkspacePath } from "./WorkspacePath.js";
-import { ScheduledTasks } from "./ScheduledTasks.js";
-import { OperatorNotes } from "./OperatorNotes.js";
-import { SupervisorPanel } from "./SupervisorPanel.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
-import { CoworkPopup, NewCoworkButton } from "./CoWork.js";
+import { NewCoworkButton } from "./NewCoworkButton.js";
 import { ClosedCoworkCard, CoworkCard, useBoardCoworkSessions } from "./CoworkCards.js";
 import { ManualDeploymentBadge } from "./ManualDeploymentStatus.js";
 import { LazyChunkBoundary } from "./LazyChunkBoundary.js";
 import type { DragCardProps } from "../lib/dragCard.js";
 const Ide = lazy(() => import("./ide/Ide.js").then(m => ({ default: m.Ide })));
+const CoworkPopup = lazy(() => import("./CoWork.js").then(m => ({ default: m.CoworkPopup })));
+const ScheduledTasks = lazy(() => import("./ScheduledTasks.js").then(m => ({ default: m.ScheduledTasks })));
+const OperatorNotes = lazy(() => import("./OperatorNotes.js").then(m => ({ default: m.OperatorNotes })));
+const SupervisorPanel = lazy(() => import("./SupervisorPanel.js").then(m => ({ default: m.SupervisorPanel })));
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -155,7 +156,7 @@ export function Board() {
   const cowork = useBoardCoworkSessions();
   const setTaskOrder = useStore((s) => s.setTaskOrder);
   const setTaskSort = useStore((s) => s.setTaskSort);
-  const all = Object.values(threads);
+  const all = useMemo(() => Object.values(threads), [threads]);
   // Token freeze: any task cap-parked (every account rate-limited) frosts the tasks pane. Derived from the
   // threads we already subscribe to — no extra store read — and mirrors the server's cap-park scan.
   const frozen = all.some((t) => isCapParked(t));
@@ -165,9 +166,9 @@ export function Board() {
   // A shotgun COLLABORATOR is part of another task, not a task of its own: showing N of them beside
   // their lead is exactly the card clutter the compact-UX brief rules out, and the lead's own card
   // already reports their progress. They stay fully selectable — the lead's detail panel links to them.
-  const activeThreads = all.filter((t) => !t.parentId && t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)));
-  // Open Co-work sessions ride in the same list as the tasks; closed ones join closed tasks below.
-  const active = [...activeThreads.map(taskItem), ...cowork.open.map(coworkItem)];
+  const activeThreads = useMemo(() => all.filter((t) => !t.parentId && t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state))), [all, showCompleted]);
+  // Open Co-work sessions share task sorting and pagination.
+  const active = useMemo(() => [...activeThreads.map(taskItem), ...cowork.open.map(coworkItem)], [activeThreads, cowork.open]);
   // The id of the card currently being dragged (null when idle); declared here so `list` can freeze its
   // order mid-drag.
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -191,10 +192,10 @@ export function Board() {
     setTaskSort(sort);
     if (dndEnabled) setTaskOrder([...active].sort(sortComparator(sort)).map((t) => t.id));
   };
-  const closed = all
+  const closed = useMemo(() => all
     .filter((t) => t.state === "closed")
-    .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));
-  const closedSessions = [...cowork.closed].sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));
+    .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0)), [all]);
+  const closedSessions = useMemo(() => [...cowork.closed].sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0)), [cowork.closed]);
   const [page, setPage] = useState(0);
 
   const pageCount = Math.max(1, Math.ceil(list.length / PER_PAGE));
@@ -270,15 +271,13 @@ export function Board() {
         ) : null}
       </div>
       {(ideOpened || boardView === "ide") && <div className="ide-mount" hidden={boardView !== "ide"}><LazyChunkBoundary label="IDE" className="ide-load-error"><Suspense fallback={<p>Opening IDE…</p>}><Ide /></Suspense></LazyChunkBoundary></div>}
-      {/* The Co-work popup is ALWAYS mounted and renders nothing until a card opens it. Unmounting it would
-          drop the unsent draft and staged attachments on every close; see CoworkPopup. */}
-      <CoworkPopup />
+      <CoworkGate />
       {boardView === "ide" ? null : boardView === "schedules" ? (
-        <ScheduledTasks />
+        <LazyChunkBoundary label="Schedules"><Suspense fallback={<p>Opening schedules…</p>}><ScheduledTasks /></Suspense></LazyChunkBoundary>
       ) : boardView === "notes" ? (
-        <OperatorNotes />
+        <LazyChunkBoundary label="Notes"><Suspense fallback={<p>Opening notes…</p>}><OperatorNotes /></Suspense></LazyChunkBoundary>
       ) : boardView === "supervisor" ? (
-        <SupervisorPanel />
+        <LazyChunkBoundary label="Supervisor"><Suspense fallback={<p>Opening supervisor…</p>}><SupervisorPanel /></Suspense></LazyChunkBoundary>
       ) : (
         <>
           {list.length === 0 ? (
@@ -806,4 +805,12 @@ function GripIcon() {
       <circle cx="8" cy="9.5" r="1.1" />
     </svg>
   );
+}
+
+// Load the conversation only when first opened, then retain its drafts across closes.
+function CoworkGate() {
+  const selectedId = useStore((s) => s.selectedCoworkId);
+  const [opened, setOpened] = useState(false);
+  useEffect(() => { if (selectedId) setOpened(true); }, [selectedId]);
+  return opened || selectedId ? <LazyChunkBoundary label="Co-work"><Suspense fallback={null}><CoworkPopup /></Suspense></LazyChunkBoundary> : null;
 }

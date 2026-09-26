@@ -1,5 +1,6 @@
 import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyInstance } from "fastify";
+import { CONSOLE_MOUNT } from "./webMount.js";
 import { isLoopbackAddress } from "./orchestrator/restartCoordinator.js";
 
 /**
@@ -29,7 +30,7 @@ const FORWARDING_HEADERS = [
 ] as const;
 
 // Routes a signed-out browser needs to reach the sign-in screen and finish Google sign-in.
-const SIGN_IN_ROUTES = new Set(["/api/me", "/api/auth/google", "/api/auth/callback", "/api/logout"]);
+const SIGN_IN_ROUTES = new Set([CONSOLE_MOUNT, "/api/me", "/api/auth/google", "/api/auth/callback", "/api/logout"]);
 // The built console's static files (the @fastify/static wildcard). Unmatched URLs fall through to the
 // SPA shell or an /api 404 and are allowed too: neither reaches a handler. The wildcard also matches
 // unknown /api paths, which stay gated so an API miss never answers a signed-out stranger differently.

@@ -326,20 +326,6 @@ export function CoworkPopup() {
   );
 }
 
-/** The board's way into a new session. Creation opens the new session's popup (the store selects it on
- *  the server's receipt), so the owner lands straight in the conversation they just asked for. */
-export function NewCoworkButton({ className = "btn ghost sm" }: { className?: string }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button className={`${className} cowork-new`} onClick={() => setOpen(true)} title="Start a Co-work session: a conversation you lead turn by turn">
-        <PlusIcon /> New Co-work
-      </button>
-      {open ? <NewCoworkModal onClose={() => setOpen(false)} /> : null}
-    </>
-  );
-}
-
 interface ModelOption {
   key: string;
   provider: ImplementorProvider;
@@ -556,7 +542,6 @@ function CoworkSummaryModal({ sessionId, onClose }: { sessionId: string; onClose
 }
 
 function CloseIcon() { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>; }
-function PlusIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M12 5v14M5 12h14" /></svg>; }
 function SendIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></svg>; }
 function StopIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>; }
 function TrashIcon() { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5" /></svg>; }

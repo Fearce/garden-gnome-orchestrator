@@ -122,8 +122,8 @@ const transcriptSource = read("src/components/CoworkTranscript.tsx");
 const storeSource = read("src/store.ts");
 const appSource = read("src/App.tsx");
 
-assert.match(boardSource, /\n\s*<CoworkPopup \/>\n/,
-  "the Co-work popup is mounted unconditionally instead of being unmounted on every close");
+assert.match(boardSource, /<CoworkGate \/>/, "Co-work loads through its retained gate");
+assert.match(boardSource, /return opened \|\| selectedId \? <LazyChunkBoundary/, "the popup stays mounted after its first visit");
 assert.match(coworkSource, /if \(!selected\) return null;/, "and a closed popup renders nothing over the board");
 assert.match(storeSource, /coworkScroll: Record<string, \{ top: number; stuck: boolean \}>/,
   "scroll position is per session and lives in the store, which outlives the component");
@@ -191,9 +191,8 @@ assert.equal(renderToStaticMarkup(React.createElement(BoardLanes)), "", "no sess
 // ---- 4. the director is never blocked ----------------------------------------------------------
 // The rail is a SIBLING of the board and is rendered unconditionally, which is what makes a live
 // Co-work turn non-modal: whatever the board is showing, the director is still there to talk to.
-assert.match(appSource, /\n\s*<Director \/>\n\s*<Board \/>/, "the director rail is a sibling of the board, not something a board view can replace");
-const directorLine = appSource.split("\n").find((line) => line.includes("<Director />"))!;
-assert.equal(directorLine.trim(), "<Director />", "the director rail is rendered unconditionally - no view, state or session may gate it");
+assert.match(appSource, /\n\s*<DirectorGate mobilePane=\{mobilePane\} railHidden=\{railHidden\} \/>\n\s*<Board \/>/, "the director rail stays a sibling of the board, independent of the selected board area");
+assert.match(appSource, /return opened \|\| visible \? <Director \/> : null/, "once used, the Director stays mounted across pane changes");
 assert.match(appSource, /className=\{"mnav-btn" \+ \(pane === "director" \? " on" : ""\)\}/,
   "the phone nav always offers the director pane, including while a Co-work turn streams");
 

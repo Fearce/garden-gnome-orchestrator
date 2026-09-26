@@ -38,14 +38,24 @@ function previewUrl(a: ImageAttachment): string {
 type Rejection = "type" | "size" | "convert" | "unreadable";
 
 async function readBase64(f: File): Promise<string | null> {
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result));
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(f);
-  });
-  const comma = dataUrl.indexOf(",");
-  return comma < 0 ? null : dataUrl.slice(comma + 1);
+  try {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(r.error);
+      r.onabort = () => reject(new Error("File read interrupted"));
+      r.readAsDataURL(f);
+    });
+    const comma = dataUrl.indexOf(",");
+    return comma < 0 ? null : dataUrl.slice(comma + 1);
+  } catch {
+    // Some mobile providers fail FileReader even while Blob's read still works. Callers already
+    // enforce the size cap; retry once through that independent API, preserving the original bytes.
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    const chunks: string[] = [];
+    for (let i = 0; i < bytes.length; i += 32768) chunks.push(String.fromCharCode(...bytes.subarray(i, i + 32768)));
+    return btoa(chunks.join(""));
+  }
 }
 
 /** Decode a picked file into something a canvas can draw. `createImageBitmap` is the cheap path and is
@@ -172,7 +182,7 @@ function rejectionNotice(counts: Record<Rejection, number>): { level: "warn"; ti
 export interface AttachmentsApi {
   images: ImageAttachment[];
   dragging: boolean;
-  addFiles: (files: FileList | File[]) => void;
+  addFiles: (files: FileList | File[]) => Promise<void>;
   remove: (i: number) => void;
   clear: () => void;
   onPaste: (e: React.ClipboardEvent) => void;
@@ -190,7 +200,7 @@ export function useAttachments(): AttachmentsApi {
   const [dragging, setDragging] = useState(false);
 
   const addFiles = useCallback((files: FileList | File[]) => {
-    void (async () => {
+    return (async () => {
       const next: ImageAttachment[] = [];
       const rejected: Record<Rejection, number> = { size: 0, type: 0, convert: 0, unreadable: 0 };
       for (const f of Array.from(files)) {
@@ -278,7 +288,7 @@ interface CoworkDraftAttachment {
 export interface CoworkAttachmentsApi {
   files: FileAttachment[];
   dragging: boolean;
-  addFiles: (files: FileList | File[]) => void;
+  addFiles: (files: FileList | File[]) => Promise<void>;
   remove: (index: number) => void;
   clear: () => void;
   onPaste: (event: React.ClipboardEvent) => void;
@@ -317,7 +327,7 @@ export function useCoworkAttachments(): CoworkAttachmentsApi {
 
   const addFiles = useCallback((input: FileList | File[]) => {
     const startedInGeneration = generation.current;
-    void (async () => {
+    return (async () => {
       const candidates: CoworkDraftAttachment[] = [];
       const rejected = { imageSize: 0, fileSize: 0, unreadable: 0, count: 0, total: 0 };
       for (const source of Array.from(input)) {
@@ -480,7 +490,7 @@ export function MessageThumbs({ refs }: { refs?: AttachmentRef[] }) {
           // Position-qualified: attachments are content-addressed server-side, so the same picture sent
           // twice in one message is the same id twice.
           <button className="msg-thumb" key={`${r.id}:${i}`} type="button" onClick={() => setOpen(i)} title={r.name} aria-label={`View ${r.name}`}>
-            <img src={attachmentUrl(r)} alt={r.name} />
+            <img src={attachmentUrl(r)} alt={r.name} loading="lazy" decoding="async" />
           </button>
         ))}
       </div>
@@ -673,8 +683,9 @@ function Lightbox({
 }
 
 /** Paperclip file-picker button (Lucide paperclip — real icon, not an emoji). */
-export function AttachButton({ onPick }: { onPick: (files: FileList) => void }) {
+export function AttachButton({ onPick }: { onPick: (files: FileList) => void | Promise<void> }) {
   const ref = useRef<HTMLInputElement>(null);
+  const [reading, setReading] = useState(false);
   return (
     <>
       <input
@@ -686,9 +697,17 @@ export function AttachButton({ onPick }: { onPick: (files: FileList) => void }) 
         accept="image/*"
         multiple
         style={{ display: "none" }}
-        onChange={(e) => {
-          if (e.target.files?.length) onPick(e.target.files);
-          e.target.value = "";
+        onChange={async (event) => {
+          const input = event.currentTarget;
+          setReading(true);
+          try {
+            if (input.files?.length) await onPick(input.files);
+          } finally {
+            // Android content providers can revoke the selected file when this is cleared.
+            // Keep it selected through sniffing, FileReader and any image conversion.
+            input.value = "";
+            setReading(false);
+          }
         }}
       />
       <button
@@ -696,6 +715,8 @@ export function AttachButton({ onPick }: { onPick: (files: FileList) => void }) 
         type="button"
         title="Attach images"
         aria-label="Attach images"
+        disabled={reading}
+        aria-busy={reading}
         onClick={() => ref.current?.click()}
       >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -708,8 +729,9 @@ export function AttachButton({ onPick }: { onPick: (files: FileList) => void }) 
 
 /** Co-work's picker deliberately has no accept filter: screenshots get visual previews, while source,
  * documents, archives and other files become safe download cards plus agent-readable local copies. */
-export function CoworkAttachButton({ onPick, disabled = false }: { onPick: (files: FileList) => void; disabled?: boolean }) {
+export function CoworkAttachButton({ onPick, disabled = false }: { onPick: (files: FileList) => void | Promise<void>; disabled?: boolean }) {
   const ref = useRef<HTMLInputElement>(null);
+  const [reading, setReading] = useState(false);
   return (
     <>
       <input
@@ -717,9 +739,15 @@ export function CoworkAttachButton({ onPick, disabled = false }: { onPick: (file
         type="file"
         multiple
         style={{ display: "none" }}
-        onChange={(event) => {
-          if (event.target.files?.length) onPick(event.target.files);
-          event.target.value = "";
+        onChange={async (event) => {
+          const input = event.currentTarget;
+          setReading(true);
+          try {
+            if (input.files?.length) await onPick(input.files);
+          } finally {
+            input.value = "";
+            setReading(false);
+          }
         }}
       />
       <button
@@ -727,7 +755,8 @@ export function CoworkAttachButton({ onPick, disabled = false }: { onPick: (file
         type="button"
         title="Attach screenshots or files"
         aria-label="Attach screenshots or files"
-        disabled={disabled}
+        disabled={disabled || reading}
+        aria-busy={reading}
         onClick={() => ref.current?.click()}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
