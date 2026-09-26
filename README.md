@@ -195,7 +195,7 @@ documented inline there. The ones worth knowing about:
 non-local without a password or Google sign-in configured, the server refuses and binds back
 to `127.0.0.1`. Do not put it on the public internet directly. For access from anywhere, use
 the Google-locked Tailscale Funnel link in [docs/remote-access.md](docs/remote-access.md)
-(`npm run remote-access --prefix server -- on`), which keeps the listener on `127.0.0.1`.
+(`npm run remote-access -- on`), which keeps the listener on `127.0.0.1`.
 
 ### Run modes
 

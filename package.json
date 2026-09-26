@@ -15,6 +15,7 @@
     "typecheck": "npm run typecheck --prefix server && npm run typecheck --prefix web && npm run typecheck --prefix relay",
     "test:gates": "npm run test:gates --prefix server",
     "health": "npm run health --prefix server",
+    "remote-access": "node server/scripts/remote-access.cjs",
     "quality": "node scripts/quality-sweep.cjs",
     "probe:console": "node web/scripts/console-smoke.cjs",
     "preprobe:providers": "npm run test:console-probe",
