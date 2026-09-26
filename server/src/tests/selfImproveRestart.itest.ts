@@ -472,10 +472,47 @@ async function testInjectReachesTheRound(): Promise<void> {
   h.dispose();
 }
 
+async function testApprovedTaskRestriction(): Promise<void> {
+  console.log("\nApproved external tasks skip bonus work without changing other tasks\n");
+  const { db, dir, workspace } = makeDb("approved-task-policy-");
+  const h = boot(db, dir, workspace);
+  h.mgr.setSettings({ selfImproveEnabled: true });
+  h.mgr.enqueueOrRun = (id: string): void => {
+    check("restriction is durable before enqueue", db.getThreadStageOutputs(id).skipSelfImprovement === true);
+  };
+  const { Director } = await import("../orchestrator/director.js");
+  const { clientCommandSchema } = await import("../ws/protocol.js");
+  const { EventHub } = await import("../events.js");
+  const director = new Director(h.mgr, db, new EventHub(), {} as never, {} as never);
+  h.mgr.setSettings({ skipDirectorRetitle: false });
+  const command = clientCommandSchema.parse({type:"prompt.direct",text:"Only update the approved file.",workspace,skipSelfImprovement:true});
+  check("authenticated protocol retains the explicit restriction", command.type === "prompt.direct" && command.skipSelfImprovement === true);
+  check("protocol cannot turn on a bonus via false", !clientCommandSchema.safeParse({type:"prompt.direct",text:"Task",skipSelfImprovement:false}).success);
+  await director.dispatchDirect("Only update the approved file.",workspace,undefined,undefined,true);
+  const id = db.listThreads()[0]!.id;
+  db.updateThread(id,{state:"done"});
+  h.mgr.latestImplementorSession = (): string => "approved-session";
+  const round = stubRoundLeaves(h);
+  await h.mgr.runSelfImprovement(db.getThread(id)!,undefined,"Approved brief");
+  check("an enabled global bonus does not run for this task", round.markerDuringRound.length === 0);
+  check("global setting remains enabled", h.mgr.settings().selfImproveEnabled === true);
+  db.resetThreadForRetry(id);
+  check("retry preserves the restriction", db.getThreadStageOutputs(id).skipSelfImprovement === true);
+  const afterRetry = stubRoundLeaves(h);
+  await h.mgr.runSelfImprovement(db.getThread(id)!,undefined,"Retry approved brief");
+  check("retry cannot start the forbidden bonus", afterRetry.markerDuringRound.length === 0);
+  const ordinary = seedAcceptedTask(db,workspace,false);
+  const normalRound = stubRoundLeaves(h);
+  await h.mgr.runSelfImprovement(db.getThread(ordinary)!,undefined,"Ordinary GGO task");
+  check("ordinary tasks retain their enabled bonus", normalRound.markerDuringRound.length === 1);
+  h.dispose();
+}
+
 async function main(): Promise<void> {
   console.log("\n=== Self-improvement round is restart-safe — integration test (real machinery) ===");
   await testRestartDuringTheRound();
   await testMarkerLifecycle();
+  await testApprovedTaskRestriction();
   await testConcurrentRoundIsOneShot();
   await testBonusFailureDoesNotResume();
   await testCliBonusRunsOnce();

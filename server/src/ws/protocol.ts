@@ -84,6 +84,7 @@ export type ServerEvent =
   | {
       type: "hello";
       startQaSupported: true;
+      skipSelfImprovementSupported?: true;
       threads: ThreadSummary[];
       runs: AgentRun[];
       findings: Finding[];
@@ -258,7 +259,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // Skip-director mode: bypass the provider-neutral director and dispatch straight into the pipeline
   // (its first active stage — planner if enabled, else the implementor). workspace is required since
   // there's no director to resolve one.
-  z.object({ type: z.literal("prompt.direct"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, clientId: z.string().uuid().optional() }),
+  z.object({ type: z.literal("prompt.direct"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, clientId: z.string().uuid().optional(), skipSelfImprovement: z.literal(true).optional() }),
   // Default mode: dispatch straight to the vanilla lane (no director, no wrapper prompt, no
   // planner/QA/self-improvement/review — one stock implementor session that stays warm). model/effort
   // ride along from the composer's own pick; omitted/"auto" = GGO decides at dispatch time.

@@ -88,6 +88,7 @@ function buildHello(ctx: WsContext): ServerEvent {
   return {
     type: "hello",
     startQaSupported: true,
+    skipSelfImprovementSupported: true,
     threads: ctx.db.listThreadSummaries(),
     runs: ctx.db.listAllRuns(SNAPSHOT_RUNS),
     findings: ctx.db.listFindings(undefined, SNAPSHOT_FINDINGS),
@@ -226,7 +227,7 @@ export async function handleCommand(
       ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images, cmd.source, cmd.clientId);
       break;
     case "prompt.direct":
-      await ctx.director.dispatchDirect(cmd.text, cmd.workspace, cmd.images, cmd.clientId);
+      await ctx.director.dispatchDirect(cmd.text, cmd.workspace, cmd.images, cmd.clientId, cmd.skipSelfImprovement);
       break;
     case "prompt.vanilla":
       await ctx.director.dispatchVanilla(cmd.text, cmd.workspace, cmd.images, cmd.model, cmd.effort, cmd.clientId);

@@ -839,6 +839,8 @@ export interface ModelEffortStat extends ModelStat {
  * from the latest implementor agent_run's session_id, so only the upstream stages live here.
  */
 export interface StageOutputs {
+  /** Durable task-local restriction; retries retain it and other tasks keep their settings. */
+  skipSelfImprovement?: true;
   manualProceed?: { to: string; granted: boolean } | null;
   manualPlannerRan?: boolean;
   manualResearcherRan?: boolean;

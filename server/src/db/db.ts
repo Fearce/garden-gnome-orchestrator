@@ -2259,11 +2259,12 @@ export class Db {
         .run({
           id: tid,
           stageOutputs:
-            preservedReaderEscalation || preservedDirectives?.length || preservedJev
+            preservedReaderEscalation || preservedDirectives?.length || preservedJev || preservedStage.skipSelfImprovement === true
               ? JSON.stringify({
                   ...(preservedReaderEscalation ? { readerEscalation: preservedReaderEscalation } : {}),
                   ...(preservedDirectives?.length ? { standingDirectives: preservedDirectives } : {}),
                   ...(preservedJev ?? {}),
+                  ...(preservedStage.skipSelfImprovement === true ? { skipSelfImprovement: true } : {}),
                 })
               : null,
         });

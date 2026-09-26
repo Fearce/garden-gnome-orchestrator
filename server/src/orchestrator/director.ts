@@ -193,7 +193,7 @@ export class Director {
    * one. The user message + a confirmation are echoed into the director chat so the transcript shows
    * what was sent; the long-lived director session is left completely untouched.
    */
-  async dispatchDirect(text: string, workspace?: string, images?: ImageAttachment[], messageId?: string): Promise<void> {
+  async dispatchDirect(text: string, workspace?: string, images?: ImageAttachment[], messageId?: string, skipSelfImprovement?: true): Promise<void> {
     if (this.replayedOwnerMessage(messageId)) return;
     // Skip-director is an EXPLICIT owner choice, so honor it unconditionally: even a scheduling-shaped
     // message goes straight to the pipeline. (We used to reroute anything that looked like a schedule
@@ -233,6 +233,7 @@ export class Director {
       brief: text,
       images,
       effort: effort === "auto" ? undefined : effort,
+      ...(skipSelfImprovement === true ? { skipSelfImprovement: true as const } : {}),
       ...this.taskModeDefaults(),
     });
     const note = this.postDirectorNote(`Skipped the director — dispatched "${title}" straight to the pipeline (task ${id.slice(0, 8)}).`);

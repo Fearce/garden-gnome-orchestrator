@@ -2683,6 +2683,7 @@ export class ThreadManager implements OrchestratorApi {
       subTask: input.subTask ?? null,
     });
     // Before the first await: the pipeline reads these the moment enqueueOrRun starts it.
+    if (input.skipSelfImprovement === true) this.db.updateThreadStageOutputs(thread.id, { skipSelfImprovement: true });
     if (input.jev) this.db.updateThreadStageOutputs(thread.id, { jevState: input.jev.state, jevQuestions: input.jev.questions });
     // Stamp the repo's HEAD NOW, before any agent runs — the "before" point for scoping this task's
     // Changes chip to its own diff. Captured pre-enqueue so a foreign commit that lands between here and
@@ -10855,7 +10856,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const settleDone = (): void => {
       if (this.db.getThread(thread.id)?.state !== "done") this.setState(thread.id, "done");
     };
-    if (!this.settings().selfImproveEnabled || this.settings().manualSupervisionEnabled) { settleDone(); return; }
+    if (this.db.getThreadStageOutputs(thread.id).skipSelfImprovement === true || !this.settings().selfImproveEnabled || this.settings().manualSupervisionEnabled) { settleDone(); return; }
     // A shotgun collaborator finished one SHARE, not a task. The reflection round is about what the whole
     // job needed, so it belongs to the lead — running it per share would spend N bonus Opus rounds on N
     // partial views, and each one would be reflecting on a tree the other shares are still changing.
