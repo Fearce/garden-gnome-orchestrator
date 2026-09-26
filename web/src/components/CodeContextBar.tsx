@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { useStore, codeKey } from "../store.js";
 import type { CodeContext, CodeOrigin, CodeSubjectKind } from "../types.js";
 import { branchLabel, canOpenGit, canOpenIde, ideFileTarget, ideWorkspaceTarget } from "../lib/codeNav.js";
@@ -130,7 +130,11 @@ function RepoReading({ context }: { context: CodeContext }) {
       <BranchIcon />
       <b className={context.detached ? "detached" : undefined}>{branchLabel(context)}</b>
       {context.repoName ? <span className="codectx-repo">{context.repoName}</span> : null}
-      {context.unpushed > 0 ? <UnpushedCount context={context} /> : null}
+      {context.unpushed > 0 ? (
+        <span className="codectx-count" title={`${context.unpushed} local commit${context.unpushed === 1 ? "" : "s"} not on the push remote`}>
+          ↑{context.unpushed}
+        </span>
+      ) : null}
       {context.behind > 0 ? (
         <span className="codectx-count" title={`${context.behind} commit${context.behind === 1 ? "" : "s"} to pull`}>
           ↓{context.behind}
@@ -143,71 +147,6 @@ function RepoReading({ context }: { context: CodeContext }) {
       ) : null}
       {context.hasUncommitted ? <span className="codectx-dot" title="The working tree has uncommitted changes" /> : null}
     </span>
-  );
-}
-
-/**
- * The ↑N unpushed count, which pushes those commits when clicked, after a confirm, because a push
- * publishes. It goes through the Git console's own push action, so the live-agent gate still applies:
- * a refusal gets a second, explicit "push anyway". Only a repo whose policy allows pushing gets the
- * button; anywhere else the count stays a plain reading.
- */
-function UnpushedCount({ context }: { context: CodeContext }) {
-  const repoAction = useStore((s) => s.repoAction);
-  const repoBusy = useStore((s) => s.repoBusy);
-  const result = useStore((s) => s.repoResult);
-  // When this badge sent a push, so the shared result slot is only read for our own action.
-  const [sentAt, setSentAt] = useState<number | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
-
-  const { unpushed, repoPath, branch } = context;
-  const commits = `${unpushed} commit${unpushed === 1 ? "" : "s"}`;
-  const canPush = context.pushState === "unpushed" && !context.detached && !!repoPath && !!branch;
-
-  useEffect(() => {
-    if (sentAt == null || !result || result.at < sentAt || !repoPath) return;
-    setSentAt(null);
-    if (result.ok) return;
-    if (result.blocked && window.confirm(`${result.message}\n\nPush ${branch} anyway?`)) {
-      setSentAt(Date.now());
-      repoAction(repoPath, { action: "push" }, true);
-      return;
-    }
-    setFailure(result.message);
-  }, [result, sentAt, repoPath, branch, repoAction]);
-
-  if (!canPush || !repoPath) {
-    return (
-      <span className="codectx-count" title={`${commits} not on the push remote`}>
-        ↑{unpushed}
-      </span>
-    );
-  }
-
-  const pushing = sentAt != null;
-  const push = () => {
-    if (!window.confirm(`Push ${commits} on ${branch} to the remote?`)) return;
-    setFailure(null);
-    setSentAt(Date.now());
-    repoAction(repoPath, { action: "push" });
-  };
-  return (
-    <>
-      <button
-        type="button"
-        className={"codectx-count codectx-push" + (pushing ? " pushing" : "")}
-        disabled={pushing || repoBusy}
-        title={pushing ? `Pushing ${branch}...` : `${commits} not on the push remote. Click to push.`}
-        onClick={push}
-      >
-        ↑{unpushed}
-      </button>
-      {failure ? (
-        <button type="button" className="codectx-push-err" title={`${failure}\n\nClick to dismiss`} onClick={() => setFailure(null)}>
-          push failed: {failure}
-        </button>
-      ) : null}
-    </>
   );
 }
 
