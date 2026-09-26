@@ -17,7 +17,7 @@ Object.assign(globalThis, {
 });
 const { useStore } = await import("../src/store.js");
 const { CoworkPopup, NewCoworkButton, NewCoworkModal } = await import("../src/components/CoWork.js");
-const { CoworkCard, EarlierCoworkSection } = await import("../src/components/CoworkCards.js");
+const { ClosedCoworkCard, CoworkCard } = await import("../src/components/CoworkCards.js");
 
 const at = Date.now();
 const session: CoworkSession = {
@@ -178,9 +178,16 @@ assert.match(card, /class="gnome"/, "the card carries the Co-worker gnome");
 assert.match(card, /class="cowork-chip">Co-work</, "the card is labelled as Co-work, not as a task");
 assert.match(card, /Co-worker:<\/span> Changed the responsive shell/, "the card shows the latest conversational line");
 assert.doesNotMatch(card, /Promote|QA|Mark done/i, "the card owns no pipeline semantics");
-const earlier = renderToStaticMarkup(React.createElement(EarlierCoworkSection, { sessions: [session] }));
-assert.match(earlier, /Earlier Co-work · 1/, "older sessions stay reachable from the board");
-assert.equal(renderToStaticMarkup(React.createElement(EarlierCoworkSection, { sessions: [] })), "", "no earlier sessions, no section");
+// It follows the board's rules like a task: a ✕ to close it, the grip when drag-to-reorder is on.
+assert.match(card, /aria-label="Close Co-work session"/, "an idle session can be closed off the board");
+const liveCard = renderToStaticMarkup(React.createElement(CoworkCard, { session: { ...session, state: "running", activeTurnId: "t" } }));
+assert.doesNotMatch(liveCard, /aria-label="Close Co-work session"/, "a live turn cannot be closed, like a running task");
+const draggable = renderToStaticMarkup(React.createElement(CoworkCard, { session, draggableCard: true, dragProps: { role: "button", tabIndex: 0 } }));
+assert.match(draggable, /class="cowork-card state-idle draggable"/, "a Co-work card takes part in drag-to-reorder");
+assert.match(draggable, /class="card-grip"/, "with the same grip a task card shows");
+const closedRow = renderToStaticMarkup(React.createElement(ClosedCoworkCard, { session: { ...session, closedAt: at } }));
+assert.match(closedRow, />Restore</, "a closed session can be restored to the board");
+assert.match(closedRow, />Delete</, "or deleted for good");
 
 const modal = renderToStaticMarkup(React.createElement(NewCoworkModal, { onClose: () => {} }));
 assert.match(modal, /New Co-work session/, "creation flow is fully rendered");
@@ -210,7 +217,8 @@ assert.match(storeSource, /attachments: attachments\.length \? attachments : und
 assert.doesNotMatch(appSource, /openBoardView\("cowork"\)|value="cowork"/, "mobile navigation has no separate Co-work area");
 assert.doesNotMatch(boardSource, /view: "cowork"/, "the board has no separate Co-work tab");
 assert.match(boardSource, /<CoworkPopup \/>/, "the popup is mounted unconditionally, so a draft survives close and reopen");
-assert.match(boardSource, /cowork\.current\.map\(\(session\) => <CoworkCard/, "Co-work cards sit in the task lanes");
+assert.match(boardSource, /const active = \[\.\.\.activeThreads\.map\(taskItem\), \.\.\.cowork\.open\.map\(coworkItem\)\]/, "Co-work cards share the task list: one sort, one drag order, one pager");
+assert.match(boardSource, /<ClosedSection threads=\{closed\} sessions=\{closedSessions\} \/>/, "closed sessions wait in the same Closed list as closed tasks");
 assert.match(coworkSource, /window\.addEventListener\("keydown"/, "Esc closes the popup");
 assert.match(coworkSource, /event\.defaultPrevented/, "an Esc a field already consumed does not also close the popup");
 assert.match(cssSource, /--role-coworker:/, "the Co-worker has its own identity colour");

@@ -371,6 +371,8 @@ interface State {
   sendCowork: (sessionId: string, text: string, mode?: "turn" | CoworkSteeringMode, attachments?: FileAttachment[]) => boolean;
   stopCowork: (sessionId: string) => void;
   renameCowork: (sessionId: string, name: string) => void;
+  /** Close a session off the board into the Closed list (restorable), or bring it back. */
+  setCoworkClosed: (sessionId: string, closed: boolean) => void;
   deleteCowork: (sessionId: string) => void;
   clearCoworkError: () => void;
   rememberCoworkScroll: (sessionId: string, at: { top: number; stuck: boolean }) => void;
@@ -1350,6 +1352,7 @@ export const useStore = create<State>((set) => ({
     sendCommand({ type: "cowork.stop", sessionId });
   },
   renameCowork: (sessionId, name) => sendCommand({ type: "cowork.rename", sessionId, name: name.trim() }),
+  setCoworkClosed: (sessionId, closed) => sendCommand({ type: closed ? "cowork.close" : "cowork.restore", sessionId }),
   deleteCowork: (sessionId) => sendCommand({ type: "cowork.delete", sessionId }),
   clearCoworkError: () => set({ coworkActionError: null }),
   rememberCoworkScroll: (sessionId, at) => set((s) => ({ coworkScroll: { ...s.coworkScroll, [sessionId]: at } })),

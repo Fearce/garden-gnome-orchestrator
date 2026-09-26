@@ -104,6 +104,13 @@ the disposable file cache, which the next turn rehydrates. Gate `test:cowork-hea
 - **The board card owns nothing.** `CoworkCards.tsx` may read session state and send the steering
   commands the composer already sends. A "mark done", a QA pip or a findings list on that card is the
   exact defect this lane exists to prevent.
+- **But it follows the board's rules like a task card.** Open sessions are `BoardItem`s in the SAME list
+  as tasks (`Board.tsx`: one sort, one persisted drag order with `cowork:<id>` keys, one pager); ✕ sets
+  `closed_at` (`cowork.close`, refused mid-turn, like a running task's hidden ✕) and the session waits in
+  the shared Closed list until Restore, Delete, or a new message (which reopens it). Closing only moves the
+  card; it is not settling. A closed session is never auto-purged, unlike a task: nothing else holds that
+  context. Under drag the board still regroups by the sort's primary key, so a "Newest first" sort never
+  ties and a drag cannot override it; the lab drags under "Project".
 - **The summary is deterministic on purpose.** `coworkSummary.ts` never calls a model: the owner reads it
   when a session was timeboxed or abandoned, which is when capacity is least likely to be there. A commit
   is only reported when git printed its `[branch sha] subject` receipt in a SUCCESSFUL tool RESULT — the

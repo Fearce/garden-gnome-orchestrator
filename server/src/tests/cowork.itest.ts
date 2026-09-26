@@ -303,6 +303,13 @@ async function main(): Promise<void> {
     check("the transcript opens with the branch and how to bring it back", !!note && /cowork\/pair-beside-tasks/.test(note.content) && /merge/.test(note.content));
     if (paired.session) cowork.remove(paired.session.id);
 
+    const closedOff = cowork.setClosed(created.session!.id, true);
+    check("an idle session closes off the board, restorably", closedOff.ok && !!closedOff.session?.closedAt);
+    const restored = cowork.setClosed(created.session!.id, false);
+    check("and restores to it", restored.ok && restored.session?.closedAt === null);
+    check("close and restore parse at the WebSocket boundary", ["cowork.close", "cowork.restore"].every((type) => clientCommandSchema.safeParse({ type, sessionId: created.session!.id }).success));
+    cowork.setClosed(created.session!.id, true);
+
     const sessionId = created.session!.id;
     const rejectedAttachment = cowork.send(sessionId, "Do not persist this", undefined, [{ ...sourceFile, dataBase64: "%%%" }]);
     check("direct manager callers cannot bypass attachment validation", !rejectedAttachment.ok && db.listCoworkTurns(sessionId).length === 0);
@@ -310,6 +317,9 @@ async function main(): Promise<void> {
     const clientId = "db39da8d-5a43-4a44-85ae-335b14434991";
     const first = cowork.send(sessionId, "Add a durable Co-work feature and verify it.", clientId, [screenshot, sourceFile]);
     check("first prompt starts", first.ok);
+    check("picking a closed conversation back up puts it back on the board", db.getCoworkSession(sessionId)?.closedAt === null);
+    const closeLive = cowork.setClosed(sessionId, true);
+    check("a live turn cannot be closed, like a running task", !closeLive.ok && !db.getCoworkSession(sessionId)?.closedAt);
     check("running state and active turn are persisted before reply", db.getCoworkSession(sessionId)?.state === "running" && !!db.getCoworkSession(sessionId)?.activeTurnId);
     const duplicate = cowork.send(sessionId, "Start an overlapping turn");
     check("a second prompt cannot overlap", !duplicate.ok && duplicate.error?.includes("already running"));

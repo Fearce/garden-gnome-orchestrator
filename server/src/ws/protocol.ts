@@ -300,6 +300,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("cowork.stop"), sessionId: z.string() }),
   z.object({ type: z.literal("cowork.rename"), sessionId: z.string(), name: z.string().trim().min(1).max(120) }),
+  z.object({ type: z.literal("cowork.close"), sessionId: z.string() }),
+  z.object({ type: z.literal("cowork.restore"), sessionId: z.string() }),
   z.object({ type: z.literal("cowork.delete"), sessionId: z.string() }),
   z.object({ type: z.literal("cowork.history"), sessionId: z.string() }),
   z.object({ type: z.literal("cowork.summary"), sessionId: z.string() }),

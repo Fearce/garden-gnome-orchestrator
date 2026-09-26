@@ -3,16 +3,18 @@ import { useStore } from "../store.js";
 import type { CoworkSession, CoworkSteeringMode } from "../types.js";
 import { Elapsed } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
+import type { DragCardProps } from "../lib/dragCard.js";
 
 /** Co-work sessions on the task board.
  *
  *  A Co-work session sits in the task lanes as its own KIND of card: the Co-worker gnome, the Co-work
  *  chip and the chartreuse stripe say "a conversation you lead", not "a pipeline task". Clicking one opens
- *  the conversation as a popup over the board, so pairing never hides the rest of the work.
+ *  the conversation as a popup over the board, so pairing never hides the rest of the work. It follows the
+ *  board's rules like a task: sorted and dragged in the same list, closed with ✕ into the Closed list.
  *
- *  They are still DISPLAY-ONLY plus the steering the conversation already offers (queue / inject /
+ *  Beyond that it is DISPLAY-ONLY plus the steering the conversation already offers (queue / inject /
  *  interrupt / stop): a session owns no thread, so there is no pipeline state, no QA, no done and no
- *  findings to show or settle here. */
+ *  findings to show or settle here. Closing is not settling: it only moves the card. */
 
 /** The repo folder a session works in: the last path segment, which is what the owner scans by. Kept
  *  local for the same reason the conversation header keeps its own copy: this is a label, not the
@@ -38,35 +40,54 @@ const STATE_TEXT: Record<CoworkSession["state"], string> = {
   idle: "idle",
 };
 
-/** The sessions worth a card in the lanes: everything live or in error, plus anything touched recently
- *  enough to still be the thing the owner is doing. The rest are one click away under "Earlier". */
-const RECENT_MS = 6 * 60 * 60_000;
-
 function isLive(session: CoworkSession): boolean {
   return session.state === "running" || session.state === "stopping";
 }
 
-/** Splits every session into the ones that get a card in the lanes (live first, then newest) and the
- *  older ones folded below the board. The Co-work tab is gone, so nothing may fall off the board. */
-export function useBoardCoworkSessions(): { current: CoworkSession[]; earlier: CoworkSession[] } {
+/** Splits the sessions the way the board splits tasks: open ones are cards in the lanes, sorted and
+ *  dragged with the tasks; closed ones wait in the Closed list until restored or deleted. */
+export function useBoardCoworkSessions(): { open: CoworkSession[]; closed: CoworkSession[] } {
   const sessions = useStore((state) => state.coworkSessions);
   return useMemo(() => {
-    const cutoff = Date.now() - RECENT_MS;
-    const byRecency = Object.values(sessions)
-      .sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || b.updatedAt - a.updatedAt);
-    const isCurrent = (session: CoworkSession) => isLive(session) || session.state === "error" || session.updatedAt >= cutoff;
-    return { current: byRecency.filter(isCurrent), earlier: byRecency.filter((session) => !isCurrent(session)) };
+    const all = Object.values(sessions);
+    return { open: all.filter((session) => !session.closedAt), closed: all.filter((session) => !!session.closedAt) };
   }, [sessions]);
 }
 
-export function CoworkCard({ session }: { session: CoworkSession }) {
+export function CoworkCard({ session, innerRef, style, dragging, draggableCard, dragProps }: { session: CoworkSession } & DragCardProps) {
   const open = useStore((state) => state.selectCowork);
+  const close = useStore((state) => state.setCoworkClosed);
   const selected = useStore((state) => state.selectedCoworkId === session.id);
   const live = isLive(session);
   const [steering, setSteering] = useState(false);
   const clock = live && session.activeTurnStartedAt ? session.activeTurnStartedAt : session.updatedAt;
   return (
-    <article className={`cowork-card state-${session.state}${selected ? " sel" : ""}`}>
+    <article
+      ref={innerRef}
+      className={`cowork-card state-${session.state}${selected ? " sel" : ""}${dragging ? " dragging" : ""}${draggableCard ? " draggable" : ""}`}
+      style={style}
+      {...dragProps}
+    >
+      {draggableCard ? (
+        <span className="card-grip" aria-hidden="true" title="Drag anywhere on the card to reorder">
+          <GripIcon />
+        </span>
+      ) : null}
+      {/* Like a task's ✕: hidden while a turn runs, so live work is never put away mid-turn. */}
+      {!live ? (
+        <button
+          className="card-dismiss"
+          title="Close: move to the Closed list (restorable)"
+          aria-label="Close Co-work session"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            close(session.id, true);
+          }}
+        >
+          ✕
+        </button>
+      ) : null}
       <button className="cowork-card-open" onClick={() => open(session.id)} title="Open this conversation">
         <div className="cowork-card-top">
           <Gnome role="coworker" size={15} active={live || session.state === "error"} />
@@ -105,32 +126,53 @@ export function CoworkCard({ session }: { session: CoworkSession }) {
   );
 }
 
-/** Older sessions, folded under the board the way closed tasks are. Nothing here is live; a row opens the
- *  same popup a card does. */
-export function EarlierCoworkSection({ sessions }: { sessions: CoworkSession[] }) {
+/** A closed session in the board's Closed list, beside closed tasks and with the same two actions. The
+ *  difference is honest rather than cosmetic: a closed task auto-removes after 30 days, but a closed
+ *  conversation is kept until the owner deletes it, because nothing else holds that context. */
+export function ClosedCoworkCard({ session }: { session: CoworkSession }) {
   const open = useStore((state) => state.selectCowork);
-  const [expanded, setExpanded] = useState(false);
-  if (!sessions.length) return null;
+  const restore = useStore((state) => state.setCoworkClosed);
+  const remove = useStore((state) => state.deleteCowork);
   return (
-    <section className="closed-section cowork-earlier">
-      <button className="closed-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-        <span className={"closed-caret" + (expanded ? " open" : "")} aria-hidden="true">›</span>
-        Earlier Co-work · {sessions.length}
+    <div className="closed-card">
+      <button className="closed-card-main cowork-closed-open" onClick={() => open(session.id)} title="Open this conversation">
+        <Gnome role="coworker" size={13} active={false} />
+        <span className="closed-card-title" title={session.name}>{session.name}</span>
       </button>
-      {expanded ? (
-        <div className="closed-list">
-          {sessions.map((session) => (
-            <button key={session.id} className="closed-card cowork-earlier-row" onClick={() => open(session.id)} title="Open this conversation">
-              <span className="closed-card-main">
-                <Gnome role="coworker" size={13} active={false} />
-                <span className="closed-card-title">{session.name}</span>
-              </span>
-              <span className="closed-expiry">{repoLabel(session.workspace)} · {lastTouched(session.updatedAt)}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </section>
+      <div className="closed-card-foot">
+        <span className="closed-expiry" title="Closed Co-work sessions are kept until you delete them">
+          Co-work · {repoLabel(session.workspace)} · {lastTouched(session.updatedAt)}
+        </span>
+        <span className="closed-actions">
+          <button className="btn ghost sm" onClick={() => restore(session.id, false)} title="Move this session back to the board">
+            Restore
+          </button>
+          <button
+            className="btn danger sm"
+            title="Permanently delete this session and its conversation"
+            onClick={() => {
+              if (window.confirm(`Permanently delete "${session.name}" and its conversation? This can't be undone.`)) remove(session.id);
+            }}
+          >
+            Delete
+          </button>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** The task card's quiet 6-dot grip, so a draggable Co-work card reads exactly like a draggable task. */
+function GripIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden="true">
+      <circle cx="4" cy="2.5" r="1.1" />
+      <circle cx="8" cy="2.5" r="1.1" />
+      <circle cx="4" cy="6" r="1.1" />
+      <circle cx="8" cy="6" r="1.1" />
+      <circle cx="4" cy="9.5" r="1.1" />
+      <circle cx="8" cy="9.5" r="1.1" />
+    </svg>
   );
 }
 

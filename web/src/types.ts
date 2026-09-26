@@ -776,6 +776,8 @@ export interface CoworkSession {
   error: string | null;
   createdAt: number;
   updatedAt: number;
+  /** When the owner closed it off the board (restorable), or null while it is on the board. */
+  closedAt?: number | null;
   /** Derived, never a column: the live turn's start, so a board card can run an elapsed clock without
    *  fetching that session's history. Null whenever no turn is claimed. */
   activeTurnStartedAt: number | null;
@@ -1331,6 +1333,8 @@ export type ClientCommand =
   | { type: "cowork.steer"; sessionId: string; text: string; mode: CoworkSteeringMode; attachments?: FileAttachment[]; clientId?: string }
   | { type: "cowork.stop"; sessionId: string }
   | { type: "cowork.rename"; sessionId: string; name: string }
+  | { type: "cowork.close"; sessionId: string }
+  | { type: "cowork.restore"; sessionId: string }
   | { type: "cowork.delete"; sessionId: string }
   | { type: "cowork.history"; sessionId: string }
   | { type: "cowork.summary"; sessionId: string }

@@ -38,10 +38,10 @@ const { groupCoworkTranscript, toolBurstLabel, toolBurstTools, toolCallSummary, 
 const { useStore } = await import("../src/store.js");
 const { CoworkCard, useBoardCoworkSessions } = await import("../src/components/CoworkCards.js");
 
-/** Renders what the board would put in its lanes: the cards the hook picks as current, in its order. */
+/** Renders what the board would put in its lanes: the sessions the hook keeps open. */
 function BoardLanes() {
-  const { current } = useBoardCoworkSessions();
-  return React.createElement(React.Fragment, null, current.map((session) => React.createElement(CoworkCard, { key: session.id, session })));
+  const { open } = useBoardCoworkSessions();
+  return React.createElement(React.Fragment, null, open.map((session) => React.createElement(CoworkCard, { key: session.id, session })));
 }
 
 const at = Date.now();
@@ -178,8 +178,12 @@ const idleCards = renderToStaticMarkup(React.createElement(BoardLanes));
 assert.match(idleCards, /idle/, "a recently-used idle session still shows, so returning to it is one click");
 assert.ok(!idleCards.includes(">Stop<"), "an idle session offers no stop control");
 
-Object.assign(ssr, { coworkSessions: { [session.id]: { ...session, state: "idle" as const, activeTurnId: null, activeTurnStartedAt: null, updatedAt: at - 3 * 86_400_000 } } });
-assert.equal(renderToStaticMarkup(React.createElement(BoardLanes)), "", "a days-old idle session leaves the lanes for the Earlier fold");
+// Like a task, a session stays on the board however old it is, until the owner closes it.
+const idle = { ...session, state: "idle" as const, activeTurnId: null, activeTurnStartedAt: null, updatedAt: at - 3 * 86_400_000 };
+Object.assign(ssr, { coworkSessions: { [session.id]: idle } });
+assert.match(renderToStaticMarkup(React.createElement(BoardLanes)), /Pair on the shell/, "a days-old open session keeps its card");
+Object.assign(ssr, { coworkSessions: { [session.id]: { ...idle, closedAt: at } } });
+assert.equal(renderToStaticMarkup(React.createElement(BoardLanes)), "", "a closed session leaves the lanes for the Closed list");
 
 Object.assign(ssr, { coworkSessions: {} });
 assert.equal(renderToStaticMarkup(React.createElement(BoardLanes)), "", "no sessions means no cards");

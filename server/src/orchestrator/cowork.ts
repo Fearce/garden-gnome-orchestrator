@@ -295,6 +295,18 @@ export class CoworkManager {
     return created;
   }
 
+  /** Closes a session off the board (restorable), or restores it. Never while a turn is live, the same
+   *  rule that hides a running task's ✕. */
+  setClosed(sessionId: string, closed: boolean): CoworkActionResult {
+    const session = this.db.getCoworkSession(sessionId);
+    if (!session) return { ok: false, error: "Co-work session not found." };
+    if (closed && (session.activeTurnId || this.live.has(sessionId))) return { ok: false, session, error: "Stop the running turn before closing this session." };
+    const updated = this.db.setCoworkSessionClosed(sessionId, closed);
+    if (!updated) return { ok: true, session };
+    this.publishSession(updated);
+    return { ok: true, session: updated };
+  }
+
   rename(sessionId: string, name: string): CoworkActionResult {
     const clean = cleanName(name);
     if (!clean) return { ok: false, error: "Session name cannot be empty." };
@@ -388,6 +400,8 @@ export class CoworkManager {
     // Read the prior transcript before beginCoworkTurn adds this prompt; fresh-session fallback should
     // include the history once and the current instruction once.
     const history = providerHistory(this.db.listCoworkMessages(sessionId));
+    // Picking a closed conversation back up puts it back on the board, as restoring it would.
+    if (session.closedAt) this.db.setCoworkSessionClosed(sessionId, false);
     const claimed = this.db.beginCoworkTurn(sessionId, text, clientId, attachments);
     if (!claimed.ok) return { ok: false, session: claimed.session ?? undefined, error: claimed.error };
     this.hub.publish({ type: "cowork.message", message: claimed.message });

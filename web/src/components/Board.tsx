@@ -1,4 +1,4 @@
-import { lazy, Suspense, memo, useEffect, useMemo, useRef, useState, type CSSProperties, type HTMLAttributes } from "react";
+import { lazy, Suspense, memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
   DndContext,
@@ -14,7 +14,7 @@ import {
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
-import type { AgentRun, BoardView, Role, Thread, ThreadState } from "../types.js";
+import type { AgentRun, BoardView, CoworkSession, Role, Thread, ThreadState } from "../types.js";
 import { repoRoom } from "../types.js";
 import { activityPreview, closesInDays, formatDuration, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
@@ -26,9 +26,10 @@ import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { CoworkPopup, NewCoworkButton } from "./CoWork.js";
-import { CoworkCard, EarlierCoworkSection, useBoardCoworkSessions } from "./CoworkCards.js";
+import { ClosedCoworkCard, CoworkCard, useBoardCoworkSessions } from "./CoworkCards.js";
 import { ManualDeploymentBadge } from "./ManualDeploymentStatus.js";
 import { LazyChunkBoundary } from "./LazyChunkBoundary.js";
+import type { DragCardProps } from "../lib/dragCard.js";
 const Ide = lazy(() => import("./ide/Ide.js").then(m => ({ default: m.Ide })));
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
@@ -48,9 +49,23 @@ const coarsePointerActivation = () =>
 // review/failed stay visible because they still want the owner's attention.
 const COMPLETED_STATES = new Set<Thread["state"]>(["done", "cancelled"]);
 
+/** What the board sorts, orders and pages: a task, or a Co-work session. They share one list so a session
+ *  follows every rule a task card does (the sort, the manual drag order, the pager); the facts every sort
+ *  reads are lifted onto the item once, so no comparator has to know which kind it holds. A session's id
+ *  is prefixed so it can sit in the same persisted drag order as task ids. */
+interface SortFacts {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  rank: number;
+  workspace: string;
+  title: string;
+}
+type BoardItem = SortFacts & ({ kind: "task"; thread: Thread } | { kind: "cowork"; session: CoworkSession });
+
 // Most-recently-active first: a state change, an inject, or a resume bumps updatedAt, so a task you
 // just touched jumps to the front. Ties (and brand-new tasks) fall back to creation order.
-const byRecency = (a: Thread, b: Thread) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt;
+const byRecency = (a: SortFacts, b: SortFacts) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt;
 
 // Lifecycle rank for the "Status" sort: live work first (an agent is on it), then tasks waiting on a
 // human, then review, then the terminal outcomes. Exhaustive over ThreadState so adding a new state is
@@ -74,17 +89,30 @@ const STATUS_RANK: Record<ThreadState, number> = {
   closed: 9,
 };
 
+// A Co-work session on the same scale: a live turn is work in progress, an error waits on the owner, and
+// an idle session is waiting for the owner's next prompt, which is what review means for a task.
+const COWORK_RANK: Record<CoworkSession["state"], number> = { running: 2, stopping: 2, error: 3, idle: 5 };
+
+const taskItem = (thread: Thread): BoardItem => ({
+  kind: "task", thread, id: thread.id, createdAt: thread.createdAt, updatedAt: thread.updatedAt,
+  rank: STATUS_RANK[thread.state], workspace: thread.workspace, title: thread.title,
+});
+const coworkItem = (session: CoworkSession): BoardItem => ({
+  kind: "cowork", session, id: `cowork:${session.id}`, createdAt: session.createdAt, updatedAt: session.updatedAt,
+  rank: COWORK_RANK[session.state], workspace: session.workspace, title: session.name,
+});
+
 // The repo folder (last path segment), lower-cased and sans separator — the key the user scans by when
 // sorting "by project". splitWorkspace keeps the leading slash for display, so strip it here.
-const repoKey = (t: Thread) => splitWorkspace(t.workspace).leaf.replace(/^[\\/]+/, "").toLowerCase();
+const repoKey = (t: SortFacts) => splitWorkspace(t.workspace).leaf.replace(/^[\\/]+/, "").toLowerCase();
 
 // The board sort options, in dropdown order. Each carries its comparator; byRecency is the shared
 // tiebreaker so equal-rank tasks still read newest-touched-first.
-const SORT_OPTIONS: { value: TaskSort; label: string; cmp: (a: Thread, b: Thread) => number }[] = [
+const SORT_OPTIONS: { value: TaskSort; label: string; cmp: (a: SortFacts, b: SortFacts) => number }[] = [
   { value: "created_desc", label: "Newest first", cmp: (a, b) => b.createdAt - a.createdAt },
   { value: "created_asc", label: "Oldest first", cmp: (a, b) => a.createdAt - b.createdAt },
   { value: "updated", label: "Last updated", cmp: byRecency },
-  { value: "status", label: "Status", cmp: (a, b) => STATUS_RANK[a.state] - STATUS_RANK[b.state] || byRecency(a, b) },
+  { value: "status", label: "Status", cmp: (a, b) => a.rank - b.rank || byRecency(a, b) },
   { value: "workspace", label: "Project", cmp: (a, b) => repoKey(a).localeCompare(repoKey(b)) || byRecency(a, b) },
   { value: "title", label: "Alphabetical", cmp: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }) || byRecency(a, b) },
 ];
@@ -94,11 +122,11 @@ const sortComparator = (sort: TaskSort) => (SORT_OPTIONS.find((o) => o.value ===
 // is regrouped by this key while equal-rank cards keep their manual order — so a real key change (a status
 // flip, a rename) reflows the card live, but a bare updatedAt bump, which shares a rank, never reshuffles a
 // group and yanks a card out from under a drag. Exhaustive over TaskSort by construction.
-const PRIMARY_CMP: Record<TaskSort, (a: Thread, b: Thread) => number> = {
+const PRIMARY_CMP: Record<TaskSort, (a: SortFacts, b: SortFacts) => number> = {
   created_desc: (a, b) => b.createdAt - a.createdAt,
   created_asc: (a, b) => a.createdAt - b.createdAt,
   updated: (a, b) => b.updatedAt - a.updatedAt,
-  status: (a, b) => STATUS_RANK[a.state] - STATUS_RANK[b.state],
+  status: (a, b) => a.rank - b.rank,
   workspace: (a, b) => repoKey(a).localeCompare(repoKey(b)),
   title: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }),
 };
@@ -107,11 +135,11 @@ const PRIMARY_CMP: Record<TaskSort, (a: Thread, b: Thread) => number> = {
  *  manual slot (so a live updatedAt bump never reshuffles them); tasks not yet placed — brand-new
  *  ones — lead by recency, matching the default board's feel until they're dragged. Stale ids in
  *  `order` (closed/dismissed since) simply fall away because they're no longer in the active set. */
-function orderByManual(active: Thread[], order: string[]): Thread[] {
+function orderByManual(active: BoardItem[], order: string[]): BoardItem[] {
   const byId = new Map(active.map((t) => [t.id, t]));
   const placed = new Set(order);
   const fresh = active.filter((t) => !placed.has(t.id)).sort(byRecency);
-  const kept = order.map((id) => byId.get(id)).filter((t): t is Thread => !!t);
+  const kept = order.map((id) => byId.get(id)).filter((t): t is BoardItem => !!t);
   return [...fresh, ...kept];
 }
 
@@ -137,7 +165,9 @@ export function Board() {
   // A shotgun COLLABORATOR is part of another task, not a task of its own: showing N of them beside
   // their lead is exactly the card clutter the compact-UX brief rules out, and the lead's own card
   // already reports their progress. They stay fully selectable — the lead's detail panel links to them.
-  const active = all.filter((t) => !t.parentId && t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)));
+  const activeThreads = all.filter((t) => !t.parentId && t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)));
+  // Open Co-work sessions ride in the same list as the tasks; closed ones join closed tasks below.
+  const active = [...activeThreads.map(taskItem), ...cowork.open.map(coworkItem)];
   // The id of the card currently being dragged (null when idle); declared here so `list` can freeze its
   // order mid-drag.
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -164,6 +194,7 @@ export function Board() {
   const closed = all
     .filter((t) => t.state === "closed")
     .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));
+  const closedSessions = [...cowork.closed].sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));
   const [page, setPage] = useState(0);
 
   const pageCount = Math.max(1, Math.ceil(list.length / PER_PAGE));
@@ -199,7 +230,7 @@ export function Board() {
     useSensor(PointerSensor, { activationConstraint: coarsePointerActivation() }),
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
-  const activeThread = activeId ? threads[activeId] : undefined;
+  const activeItem = activeId ? list.find((item) => item.id === activeId) : undefined;
 
   const onDragStart = (e: DragStartEvent) => setActiveId(String(e.active.id));
   const onDragEnd = (e: DragEndEvent) => {
@@ -215,12 +246,9 @@ export function Board() {
     setTaskOrder(arrayMove(ids, from, to));
   };
 
-  // Co-work sessions lead the lanes on the first page: they are the work the owner is doing by hand right
-  // now. They sit outside the sort, the drag order and the pager because they are not tasks.
   const lanes = (
     <div className="lanes">
-      {cur === 0 ? cowork.current.map((session) => <CoworkCard key={session.id} session={session} />) : null}
-      {pageItems.map((t) => (dndEnabled ? <SortableCard key={t.id} thread={t} /> : <Card key={t.id} thread={t} />))}
+      {pageItems.map((item) => (dndEnabled ? <SortableItem key={item.id} item={item} /> : <ItemCard key={item.id} item={item} />))}
     </div>
   );
 
@@ -253,7 +281,7 @@ export function Board() {
         <SupervisorPanel />
       ) : (
         <>
-          {list.length === 0 && cowork.current.length === 0 ? (
+          {list.length === 0 ? (
             <div className="empty">
               <div className="big">No tasks running</div>
               <div className="faint">Dispatch one from the Director on the left, or start a Co-work session above.</div>
@@ -265,7 +293,7 @@ export function Board() {
                   <SortableContext items={pageItems.map((t) => t.id)} strategy={rectSortingStrategy}>
                     {lanes}
                   </SortableContext>
-                  <DragOverlay>{activeThread ? <div className="card-drag-overlay"><Card thread={activeThread} draggableCard /></div> : null}</DragOverlay>
+                  <DragOverlay>{activeItem ? <div className="card-drag-overlay"><ItemCard item={activeItem} draggableCard /></div> : null}</DragOverlay>
                 </DndContext>
               ) : (
                 lanes
@@ -285,8 +313,7 @@ export function Board() {
               ) : null}
             </>
           )}
-          <EarlierCoworkSection sessions={cowork.earlier} />
-          <ClosedSection threads={closed} />
+          <ClosedSection threads={closed} sessions={closedSessions} />
         </>
       )}
     </main>
@@ -406,7 +433,7 @@ const CLOSED_OPEN_KEY = "orch-closed-open";
 
 /** The Closed holding area: a quiet, collapsed-by-default row at the bottom of the board. It's a
  *  safety net, not something you browse — so it stays out of the way until you expand it. */
-function ClosedSection({ threads }: { threads: Thread[] }) {
+function ClosedSection({ threads, sessions }: { threads: Thread[]; sessions: CoworkSession[] }) {
   const [open, setOpen] = useState(() => {
     try {
       return localStorage.getItem(CLOSED_OPEN_KEY) === "1";
@@ -414,7 +441,8 @@ function ClosedSection({ threads }: { threads: Thread[] }) {
       return false;
     }
   });
-  if (threads.length === 0) return null;
+  const count = threads.length + sessions.length;
+  if (count === 0) return null;
   const toggle = () =>
     setOpen((v) => {
       const next = !v;
@@ -431,10 +459,13 @@ function ClosedSection({ threads }: { threads: Thread[] }) {
         <span className={"closed-caret" + (open ? " open" : "")} aria-hidden="true">
           ›
         </span>
-        Closed · {threads.length}
+        Closed · {count}
       </button>
       {open ? (
         <div className="closed-list">
+          {sessions.map((session) => (
+            <ClosedCoworkCard key={session.id} session={session} />
+          ))}
           {threads.map((t) => (
             <ClosedCard key={t.id} thread={t} />
           ))}
@@ -531,14 +562,7 @@ const Card = memo(function Card({
   dragging,
   draggableCard,
   dragProps,
-}: {
-  thread: Thread;
-  innerRef?: (el: HTMLElement | null) => void;
-  style?: CSSProperties;
-  dragging?: boolean;
-  draggableCard?: boolean;
-  dragProps?: HTMLAttributes<HTMLDivElement>;
-}) {
+}: { thread: Thread } & DragCardProps) {
   // useShallow keeps the array reference stable when this thread's run set is unchanged.
   const threadRuns = useStore(useShallow((s) => Object.values(s.runs).filter((r) => r.threadId === thread.id)));
   const findCount = useStore((s) => s.findings.reduce((n, f) => (f.threadId === thread.id ? n + 1 : n), 0));
@@ -748,12 +772,18 @@ const Card = memo(function Card({
  *  drag activator (the grip is just a discoverability affordance) — the PointerSensor's 6px activation
  *  distance keeps a plain click selecting/opening the card, and only a deliberate drag reorders. Inner
  *  controls (the ✕) stopPropagation, so they never get caught as a drag-vs-click. */
-function SortableCard({ thread }: { thread: Thread }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: thread.id });
+/** One board item as its card: a task's card or a Co-work session's. Both take the same drag props, so
+ *  the sortable wrapper and the drag overlay never branch on the kind. */
+function ItemCard({ item, ...drag }: { item: BoardItem } & DragCardProps) {
+  return item.kind === "task" ? <Card thread={item.thread} {...drag} /> : <CoworkCard session={item.session} {...drag} />;
+}
+
+function SortableItem({ item }: { item: BoardItem }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id });
   const style: CSSProperties = { transform: CSS.Transform.toString(transform), transition };
   return (
-    <Card
-      thread={thread}
+    <ItemCard
+      item={item}
       innerRef={setNodeRef}
       style={style}
       dragging={isDragging}

@@ -313,6 +313,52 @@ async function directorBox(page) {
     check("the conversation itself is untouched by the promotion", await page.isVisible('.lanes .cowork-card:has-text("Earlier exploration")'));
     await page.screenshot({ path: path.join(shots, "11-promoted-task.png") });
 
+    // ---- 5. a Co-work card follows the board's rules: close, restore, drag -------------------------
+    if (await page.isVisible(".detail")) await page.click('.detail-title-actions .close-x[aria-label="Close"]');
+    check("a live session offers no ✕, like a running task", (await page.locator('.lanes .cowork-card:has-text("Pair on the responsive shell") .card-dismiss').count()) === 0);
+    await page.hover('.lanes .cowork-card:has-text("Earlier exploration")');
+    await page.click('.lanes .cowork-card:has-text("Earlier exploration") .card-dismiss');
+    await page.waitForSelector('.lanes .cowork-card:has-text("Earlier exploration")', { state: "detached", timeout: 10000 });
+    check("the ✕ closes an idle session off the board", true);
+    check("without opening its conversation", (await page.locator(".cowork-popup").count()) === 0);
+    if (!(await page.isVisible(".closed-list"))) await page.click(".closed-toggle");
+    await page.waitForSelector('.closed-list .closed-card:has-text("Earlier exploration")', { timeout: 10000 });
+    check("it waits in the Closed list beside closed tasks", await page.isVisible('.closed-list .closed-card:has-text("Earlier exploration") button:text-is("Restore")'));
+    await page.screenshot({ path: path.join(shots, "12-closed-session.png") });
+    await page.click('.closed-list .closed-card:has-text("Earlier exploration") button:text-is("Restore")');
+    await page.waitForSelector('.lanes .cowork-card:has-text("Earlier exploration")', { timeout: 10000 });
+    check("Restore puts it back on the board", true);
+
+    // Drag-to-reorder is a view setting; turn it on the way the Settings toggle stores it. Under drag the
+    // board still groups by the sort's primary key, and every card here shares one repo, so the "Project"
+    // sort leaves the order to the drag alone (a created-at sort never ties, so it would override any drag).
+    await page.evaluate(() => {
+      const raw = localStorage.getItem("director_settings");
+      localStorage.setItem("director_settings", JSON.stringify({ ...(raw ? JSON.parse(raw) : {}), taskDragAndDrop: true, taskSort: "workspace" }));
+    });
+    await page.reload();
+    await page.waitForSelector(".lanes .cowork-card.draggable", { timeout: 20000 });
+    const order = () => page.$$eval(".lanes > *", (cards) => cards.map((card) => (card.textContent ?? "").slice(0, 40)));
+    const before = await order();
+    const cards = page.locator(".lanes > *");
+    const from = await page.locator('.lanes .cowork-card:has-text("Pair on the responsive shell")').boundingBox();
+    const to = await cards.last().boundingBox();
+    await page.mouse.move(from.x + from.width / 2, from.y + 30);
+    await page.mouse.down();
+    await page.mouse.move(from.x + from.width / 2 + 10, from.y + 40, { steps: 4 });
+    await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 20 });
+    await page.mouse.up();
+    await page.waitForTimeout(600);
+    const after = await order();
+    check("a Co-work card drags to a new place among the tasks", after[after.length - 1].includes("Pair on the responsive shell") && before.join() !== after.join(), JSON.stringify({ before, after }));
+    const saved = await page.evaluate(() => localStorage.getItem("orch-task-order") ?? "");
+    check("and its place is saved in the same order as the tasks", saved.includes(`cowork:${"lab-cowork-session"}`), saved);
+    await page.reload();
+    await page.waitForSelector(".lanes .cowork-card", { timeout: 20000 });
+    const reloaded = await order();
+    check("the order survives a reload", reloaded.join() === after.join(), JSON.stringify(reloaded));
+    await page.screenshot({ path: path.join(shots, "13-dragged.png") });
+
     check("no console errors anywhere in the run", errors.length === 0, errors.slice(0, 3).join(" | "));
     console.log(`\nscreenshots: ${shots}`);
     code = check.summary();

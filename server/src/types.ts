@@ -1183,6 +1183,8 @@ export interface CoworkSession {
   error: string | null;
   createdAt: number;
   updatedAt: number;
+  /** When the owner closed it off the board (restorable), or null while it is on the board. */
+  closedAt: number | null;
   /** Derived, never a column: the live turn's start, so a board card can run an elapsed clock without
    *  fetching that session's history. Null whenever no turn is claimed. */
   activeTurnStartedAt: number | null;

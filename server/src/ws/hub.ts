@@ -258,6 +258,10 @@ export async function handleCommand(
     case "cowork.rename":
       sendCoworkAction(socket, "rename", ctx.cowork.rename(cmd.sessionId, cmd.name));
       break;
+    case "cowork.close":
+    case "cowork.restore":
+      sendCoworkAction(socket, cmd.type === "cowork.close" ? "close" : "restore", ctx.cowork.setClosed(cmd.sessionId, cmd.type === "cowork.close"));
+      break;
     case "cowork.delete":
       sendCoworkAction(socket, "delete", ctx.cowork.remove(cmd.sessionId));
       break;
