@@ -193,6 +193,10 @@ specifically stalls this Node process's socket handling (see "Local processes" a
 message storage or the feed-mapping logic; a slow baseline too means look at the box first. This is the
 diagnosis that took four hand-written throwaway WS probe scripts to reach on 2026-09-11 (a 94-96%-loaded
 box made every task's WS take ~15s just to open) — use this instead of rebuilding one.
+For **"GGO takes long to load"**, read the `event loop stall profile` lines in `server/data/crash.log` first
+(`grep -a "stall profile" server/data/crash.log | tail`). The server profiles itself after a stall, and
+the first frame each line names is usually the blocker. On 2026-09-26 it was `listThreads -> all`,
+which led straight to `db/memoryMirrors.ts` (`.claude/rules/hot-path-query-performance.md`).
 
 **"Why is this taking so long?" is not the same question as "what failed?", and the answer is usually not the
 agents.** `npm run probe:elapsed --prefix server [-- <hours>] [--task <id|title>] [--json]` subtracts: how
