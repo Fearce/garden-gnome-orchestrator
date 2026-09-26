@@ -140,22 +140,32 @@ function roleProp(role: GnomeRole) {
 }
 
 // Skins. A gnome rolls once on mount, like its vibrance: RARE_SKIN_CHANCE of the time it wears one
-// of the rare skins, and the rest of the time it wears no skin. A skin only decorates the hat, the
+// of the rare skins, with an additional 1% chance of a super rare skin. A skin only decorates the hat, the
 // pom and the air around the figure; the hat and robe keep the role color and the tool stays in the
 // mitt, so a skinned gnome is still unmistakably its role. December is different: every gnome that
-// misses the rare roll wears a little Santa hat instead of none, and half of the rare rolls go to the
-// festive skins, which never appear in any other month.
+// misses both rolls wears a Santa hat instead of none, and half of the rare rolls go to the festive
+// skins, which never appear in any other month. Two skins replace the hat itself (the owner's call):
+// the Santa hat turns it red, and the crown swaps it for a crown over a role-colored cap. In both the
+// robe and tool keep the role color.
 export const EVERYDAY_SKINS = ["starry", "toadstool", "striped", "winter", "golden", "patched", "daisy", "hearts"] as const;
 export const FESTIVE_SKINS = ["lights", "holly", "antlers", "snowcap"] as const;
-export type RareSkin = (typeof EVERYDAY_SKINS)[number] | (typeof FESTIVE_SKINS)[number] | "santa";
+export const SUPER_RARE_SKINS = ["aurora", "crystal", "eclipse", "crown", "phoenix", "cloud"] as const;
+export type RareSkin = (typeof EVERYDAY_SKINS)[number] | (typeof FESTIVE_SKINS)[number] | (typeof SUPER_RARE_SKINS)[number] | "santa";
 const RARE_SKIN_CHANCE = 0.1;
+const SUPER_RARE_SKIN_CHANCE = 0.01;
 const FESTIVE_SHARE = 0.5;
 const HAT = "M21 5C15 11 10 21 8 31c6-1.5 16-1.5 22 0C28 21 26 11 21 5Z";
 const GOLD = "oklch(0.86 0.14 88)"; // golden pom + twinkles, starry stars, daisy heart, a light bulb
 const BERRY = "oklch(0.6 0.2 25)"; //  holly berries, a light bulb
 const HOLLY = "oklch(0.5 0.12 150)"; // holly leaves, a light bulb
 const BULB_BLUE = "oklch(0.7 0.14 240)";
-const SANTA_RED = "oklch(0.56 0.2 27)"; // the little Santa hat; deeper than the berries so it reads as felt
+const SANTA_RED = "oklch(0.56 0.2 27)"; // the Santa hat; deeper than the berries so it reads as felt
+const AURORA = "oklch(0.79 0.17 185)";
+const CRYSTAL = "oklch(0.84 0.13 225)";
+const ECLIPSE = "oklch(0.88 0.16 80)";
+const CLOUD = "oklch(0.97 0.01 240)"; //  the floating cloud, a touch bluer than the beard
+const CLOUD_SHADE = "oklch(0.84 0.03 240)";
+const EMBER = "oklch(0.68 0.2 42)"; //  the phoenix flame's outer fire and its sparks
 
 function pick<T>(list: readonly T[]): T | null {
   return list[Math.floor(Math.random() * list.length)] ?? null;
@@ -163,14 +173,29 @@ function pick<T>(list: readonly T[]): T | null {
 
 export function rollRareSkin(now = new Date()): RareSkin | null {
   const december = now.getMonth() === 11;
-  if (Math.random() >= RARE_SKIN_CHANCE) return december ? "santa" : null;
+  const roll = Math.random();
+  if (roll < SUPER_RARE_SKIN_CHANCE) return pick(SUPER_RARE_SKINS);
+  if (roll >= SUPER_RARE_SKIN_CHANCE + RARE_SKIN_CHANCE) return december ? "santa" : null;
   const festive = december && Math.random() < FESTIVE_SHARE;
   return festive ? pick(FESTIVE_SKINS) : pick(EVERYDAY_SKINS);
 }
 
 /** A four-point twinkle centred on (cx, cy), `r` from centre to tip. */
-function sparkle(cx: number, cy: number, r: number, fill: string) {
-  return <path d={`M${cx} ${cy - r}Q${cx} ${cy} ${cx + r} ${cy}Q${cx} ${cy} ${cx} ${cy + r}Q${cx} ${cy} ${cx - r} ${cy}Q${cx} ${cy} ${cx} ${cy - r}Z`} fill={fill} />;
+function sparkle(cx: number, cy: number, r: number, fill: string, className?: string) {
+  return <path className={className} d={`M${cx} ${cy - r}Q${cx} ${cy} ${cx + r} ${cy}Q${cx} ${cy} ${cx} ${cy + r}Q${cx} ${cy} ${cx - r} ${cy}Q${cx} ${cy} ${cx} ${cy - r}Z`} fill={fill} />;
+}
+
+/** The glow each super rare skin casts, in its own signature color (see .gnome-super in styles.css). */
+function superRareGlow(skin: RareSkin | null): string | null {
+  switch (skin) {
+    case "aurora": return AURORA;
+    case "crystal": return CRYSTAL;
+    case "eclipse": return ECLIPSE;
+    case "crown": return GOLD;
+    case "phoenix": return EMBER;
+    case "cloud": return CLOUD;
+    default: return null;
+  }
 }
 
 /** A small heart whose point sits at (x, y). */
@@ -191,6 +216,95 @@ const LIGHT_BULBS: [number, number, string][] = [
  *  the hat through `hatClip`, so they follow its outline at any size. */
 function skinOverlay(skin: RareSkin, hatClip: string) {
   switch (skin) {
+    case "aurora": // shifting northern lights wrap the hat, with bright wisps above it
+      return (
+        <g>
+          <g clipPath={`url(#${hatClip})`} fill="none" strokeLinecap="round">
+            <g className="gnome-shimmer">
+              <path d="M7 27q7-8 15-5t12-8M9 31q9-8 16-5t9-5" stroke={AURORA} strokeWidth="2.4" />
+              <path d="M9 25q8-7 16-5t9-7" stroke={GOLD} strokeWidth="1" />
+            </g>
+          </g>
+          {sparkle(5.5, 16, 2, AURORA, "gnome-twinkle")}
+          {sparkle(31.4, 9, 1.6, GOLD, "gnome-twinkle gnome-late")}
+        </g>
+      );
+    case "crystal": // three faceted icy gems set into the cap and a diamond at its tip
+      return (
+        <g>
+          <g clipPath={`url(#${hatClip})`} fill={CRYSTAL} stroke={BEARD} strokeWidth="0.6">
+            <path className="gnome-glint" d="m16 16 2.2-2.4 2.2 2.4-2.2 4Z" />
+            <path className="gnome-glint gnome-late" d="m23 22 2.4-2.6 2.4 2.6-2.4 4.2Z" />
+            <path className="gnome-glint" d="m11 26 1.8-2 1.8 2-1.8 3Z" />
+          </g>
+          <path className="gnome-glint gnome-late" d="m22 1.2 2.2 3.8-2.2 3.8L19.8 5Z" fill={CRYSTAL} stroke={BEARD} strokeWidth="0.6" />
+          {sparkle(31, 17, 1.6, CRYSTAL, "gnome-twinkle")}
+        </g>
+      );
+    case "eclipse": // a luminous ring and tiny orbiting stars around the pointed cap
+      return (
+        <g>
+          <g className="gnome-orbit">
+            <ellipse cx="20.5" cy="14" rx="12" ry="5" transform="rotate(-28 20.5 14)" fill="none" stroke={ECLIPSE} strokeWidth="1.5" />
+          </g>
+          <g clipPath={`url(#${hatClip})`}>
+            <path d="M7 28q10-4 22 0" fill="none" stroke={ECLIPSE} strokeWidth="2.2" />
+            {sparkle(19, 18, 1.6, GOLD, "gnome-twinkle gnome-late")}
+          </g>
+          {sparkle(5.8, 8.5, 2, ECLIPSE, "gnome-twinkle")}
+          {sparkle(32, 22, 1.5, ECLIPSE, "gnome-twinkle gnome-late")}
+        </g>
+      );
+    case "crown": // royalty: a gold crown replaces the hat outright (the owner's call). A velvet cap
+      // in the role color domes up between its points, so the gnome still reads as its role
+      return (
+        <g strokeLinejoin="round">
+          <path d="M9 30.6C9 22.4 13.4 17.4 19 17.4s10 5 10 13.2c-6-1.4-14-1.4-20 0Z" fill="currentColor" />
+          <path d="M8.4 31 7.6 21.4l4.4 4.2 3-6.8 4 5.6 4-5.6 3 6.8 4.4-4.2-.8 9.6c-6.2-1.5-15.4-1.5-21.6 0Z" fill={GOLD} />
+          <path d="M8.3 29.4c6.2-1.5 15.4-1.5 21.6 0" fill="none" stroke={ECLIPSE} strokeWidth="0.8" opacity="0.8" />
+          <g fill={BEARD}>
+            <circle cx="7.6" cy="21.4" r="0.9" />
+            <circle cx="15" cy="18.8" r="0.9" />
+            <circle cx="23" cy="18.8" r="0.9" />
+            <circle cx="30.4" cy="21.4" r="0.9" />
+          </g>
+          <circle className="gnome-glint" cx="12.6" cy="27.4" r="0.9" fill={BULB_BLUE} />
+          <circle className="gnome-glint gnome-late" cx="19" cy="27" r="1.1" fill={BERRY} />
+          <circle className="gnome-glint" cx="25.4" cy="27.4" r="0.9" fill={HOLLY} />
+          {sparkle(4.6, 14, 2, GOLD, "gnome-twinkle")}
+          {sparkle(32, 15, 1.5, GOLD, "gnome-twinkle gnome-late")}
+        </g>
+      );
+    case "phoenix": // the pom has caught fire: a flame at the tip, a gold heart and embers drifting off
+      return (
+        <g>
+          <g className="gnome-flicker">
+            <path d="M22 .6c1.9 2.1 3.6 3.6 3.2 6a3.2 3.2 0 0 1-6.4 0c-.2-1.5.6-2.4 1.3-3.2 0 1.1.6 1.7 1.3 1.7-.4-1.7 0-3 .6-4.5Z" fill={EMBER} />
+            <path d="M22 4.2c.9 1 1.7 1.8 1.5 3a1.5 1.5 0 0 1-3 0c0-.9.6-1.4 1-1.9.1.6.4.9.7.9-.2-.8-.1-1.4-.2-2Z" fill={GOLD} />
+          </g>
+          <g fill={EMBER}>
+            <circle className="gnome-twinkle" cx="27.4" cy="3.2" r="0.6" />
+            <circle className="gnome-twinkle gnome-late" cx="16.4" cy="4.4" r="0.5" />
+            <circle className="gnome-twinkle" cx="29" cy="8.6" r="0.45" />
+          </g>
+          <g clipPath={`url(#${hatClip})`}>
+            <path d="M9.4 27.6q10-3.4 20 0" fill="none" stroke={EMBER} strokeWidth="1.6" />
+          </g>
+        </g>
+      );
+    case "cloud": // the gnome floats on a little cloud: its boots sink into the puff, and the whole
+      // figure bobs slowly (.gnome-floating in styles.css) so it reads as drifting, not standing
+      return (
+        <g>
+          <path d="M7 53.4h23.4a2.5 2.5 0 0 0 .6-4.9 3.1 3.1 0 0 0-5-2.3 3.4 3.4 0 0 0-6.6-.8 3.2 3.2 0 0 0-5.9 1 2.6 2.6 0 0 0-4.6 2.2A2.5 2.5 0 0 0 7 53.4Z" fill={CLOUD} />
+          <path d="M7.8 53.4h21.8" stroke={CLOUD_SHADE} strokeWidth="1.2" strokeLinecap="round" />
+          <g stroke={CLOUD} strokeWidth="0.9" strokeLinecap="round" opacity="0.7">
+            <path className="gnome-twinkle" d="M3.4 47.4h2.4" />
+            <path className="gnome-twinkle gnome-late" d="M31.6 45.6h2" />
+            <path className="gnome-twinkle" d="M2.6 43.8h1.6" />
+          </g>
+        </g>
+      );
     case "starry": // a wizard's hat: gold stars and a pale crescent moon
       return (
         <g clipPath={`url(#${hatClip})`}>
@@ -292,15 +406,9 @@ function skinOverlay(skin: RareSkin, hatClip: string) {
           <path d="M25.4 17.6q3-2 3.4-6M27.6 15l2.4-.8M28.4 12.8l1.4-1.8" />
         </g>
       );
-    case "santa": // December: a little red Santa hat perched on the tip, flopping right to its own pom;
-      // it stands in for the gnome's pom, which is not drawn under it
-      return (
-        <g>
-          <path d="M16.6 11.8C17.4 6.8 20.2 3.4 23.8 2.6c2.4-.4 4.2.8 4.8 2.8-1.8-.8-3.4 0-3.4 6.4Z" fill={SANTA_RED} />
-          <path d="M16.2 12.2q4.8-1.6 9.8 0" fill="none" stroke={BEARD} strokeWidth="2.6" strokeLinecap="round" />
-          <circle cx="28.8" cy="6.2" r="1.9" fill={BEARD} />
-        </g>
-      );
+    case "santa": // December: the gnome's own hat has turned Santa red (see the hat fill in Gnome);
+      // this adds the white fur trim along its brim, and the pom grows fluffier
+      return <path d={FUR_BRIM} fill="none" stroke={BEARD} strokeWidth="3.4" strokeLinecap="round" />;
     case "snowcap": // December: fresh snow settled on the hat's tip, and a few flakes still falling
       return (
         <g>
@@ -342,11 +450,15 @@ export function Gnome({ role, size = 30, active = true, className, skin: pinnedS
   const skin = pinnedSkin === undefined ? rolledSkin : pinnedSkin;
   // Every gnome on the page needs its own clip id; useId's colons are not valid inside url(#...).
   const hatClip = "gnome-hat-" + useId().replace(/[^\w-]/g, "");
+  // A super rare gnome glows in its skin's color and its skin moves a little, but only while active:
+  // a greyed-out gnome stays still, so the effects never draw the eye to an idle role.
+  const glow = active ? superRareGlow(skin) : null;
   const style: CSSProperties = active
-    ? { color: gnomeRoleColor(role, chromaFactor), flex: "0 0 auto", lineHeight: 0 }
+    ? { color: gnomeRoleColor(role, chromaFactor), flex: "0 0 auto", lineHeight: 0, ...(glow ? ({ "--gnome-glow": glow } as CSSProperties) : {}) }
     : { color: "var(--text-faint)", flex: "0 0 auto", lineHeight: 0, filter: "grayscale(1)", opacity: 0.5 };
+  const classes = ["gnome", skin === "cloud" && "gnome-floating", glow && "gnome-super", className].filter(Boolean).join(" ");
   return (
-    <span className={"gnome" + (className ? " " + className : "")} style={style} aria-hidden="true">
+    <span className={classes} style={style} aria-hidden="true">
       {/* Tall viewBox (36×54) — the long hat makes it read as a gnome, never a bottle. */}
       <svg width={size} height={size * (54 / 36)} viewBox="0 0 36 54" fill="none" role="img">
         {/* body — small round role-colored robe, mostly hidden behind the beard */}
@@ -355,7 +467,7 @@ export function Gnome({ role, size = 30, active = true, className, skin: pinnedS
         <ellipse cx="13.5" cy="49" rx="3.7" ry="2.6" fill={BOOTS} />
         <ellipse cx="22.5" cy="49" rx="3.7" ry="2.6" fill={BOOTS} />
         {/* hat — tall slender pointed cap, tip leaning right, brim flaring over the beard */}
-        <path d={HAT} fill="currentColor" />
+        {skin !== "crown" && <path d={HAT} fill={skin === "santa" ? SANTA_RED : "currentColor"} />}
         {skin && (
           <>
             <clipPath id={hatClip}>
@@ -374,8 +486,8 @@ export function Gnome({ role, size = 30, active = true, className, skin: pinnedS
         {/* nose — bulbous tan nose peeking out from under the hat brim */}
         <circle cx="18" cy="32.4" r="3" fill={SKIN} />
         {/* pom — the soft off-white bobble at the hat's tip; gold on a golden gnome, fluffier in winter,
-            and hidden under a Santa hat, which brings its own */}
-        {skin !== "santa" && <circle cx="22" cy="5" r={skin === "winter" ? 3.6 : 3} fill={skin === "golden" ? GOLD : BEARD} />}
+            and on a Santa hat, and hidden under a crown or a phoenix flame, which take its place */}
+        {skin !== "crown" && skin !== "phoenix" && <circle cx="22" cy="5" r={skin === "winter" || skin === "santa" ? 3.6 : 3} fill={skin === "golden" ? GOLD : skin === "crystal" ? CRYSTAL : BEARD} />}
       </svg>
     </span>
   );

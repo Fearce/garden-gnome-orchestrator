@@ -1927,6 +1927,29 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
    director avatar, and the ACTIVE role pip on a board card — idle/done card pips stay a .pip-dot). */
 .gnome { display: inline-flex; vertical-align: middle; transform: translateY(-0.5px); }
 .gnome svg { display: block; }
+/* The super rare cloud gnome drifts: the svg bobs inside .gnome, so no rule that moves .gnome itself
+   (the pip pulse, the office pacer) is overridden. */
+.gnome-floating svg { animation: gnome-float 3.2s ease-in-out infinite; }
+@keyframes gnome-float { 50% { transform: translateY(-6%); } }
+@media (prefers-reduced-motion: reduce) { .gnome-floating svg { animation: none; } }
+/* Super rare gnomes (1%), while active: a soft glow in the skin's own color (--gnome-glow, set by
+   Gnome.tsx) and one small motion on the skin itself. The motions key off .gnome-super, so the same
+   skin on a greyed-out gnome stays still. */
+.gnome-super svg { filter: drop-shadow(0 0 1px var(--gnome-glow)) drop-shadow(0 0 3px color-mix(in oklch, var(--gnome-glow) 40%, transparent)); }
+.gnome-super .gnome-twinkle { transform-box: fill-box; transform-origin: center; animation: gnome-twinkle 2.6s ease-in-out infinite; }
+.gnome-super .gnome-glint { animation: gnome-glint 3.4s ease-in-out infinite; }
+.gnome-super .gnome-late { animation-delay: -1.3s; }
+.gnome-super .gnome-shimmer { animation: gnome-shimmer 7s ease-in-out infinite; }
+.gnome-super .gnome-orbit { transform-box: fill-box; transform-origin: center; animation: gnome-orbit 8s ease-in-out infinite; }
+.gnome-super .gnome-flicker { transform-box: fill-box; transform-origin: 50% 100%; animation: gnome-flicker 0.9s ease-in-out infinite alternate; }
+@keyframes gnome-twinkle { 50% { opacity: 0.35; transform: scale(0.6); } }
+@keyframes gnome-glint { 0%, 70%, 100% { filter: none; } 82% { filter: brightness(1.7); } }
+@keyframes gnome-shimmer { 50% { filter: hue-rotate(55deg) brightness(1.12); } }
+@keyframes gnome-orbit { 50% { transform: rotate(7deg); } }
+@keyframes gnome-flicker { to { transform: scale(0.93, 1.08); } }
+@media (prefers-reduced-motion: reduce) {
+  .gnome-super .gnome-twinkle, .gnome-super .gnome-glint, .gnome-super .gnome-shimmer, .gnome-super .gnome-orbit, .gnome-super .gnome-flicker { animation: none; }
+}
 
 .findcount { font-family: var(--font-mono); font-size: 10.5px; color: var(--warn); }
 
