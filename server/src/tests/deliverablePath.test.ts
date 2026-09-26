@@ -7,6 +7,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MAX_DELIVERABLE_BYTES, deliverableRefusal, resolveDeliverable } from "../orchestrator/deliverablePath.js";
+import { detectUnsurfacedArtifacts } from "../orchestrator/deliverableCheck.js";
+import type { Db } from "../db/db.js";
+import type { Thread } from "../types.js";
 
 const root = mkdtempSync(join(tmpdir(), "deliverable-path-"));
 const workspace = join(root, "ws");
@@ -41,6 +44,20 @@ try {
     assert.match(text, /temp\/scratch folder/);
     assert.match(text, /Copy the file into the workspace/);
   }
+
+  // Legacy findings may still contain paths the route refuses. They must not hide artifacts from QA.
+  const thread = { id: "task", workspace } as Thread;
+  function qaCandidates(writtenPath: string, findingPath: string): string[] {
+    const db = {
+      listFindings: () => [{ kind: "deliverable", path: findingPath }],
+      listMessages: () => [{ role: "implementor", kind: "tool", content: `Write ${JSON.stringify({ file_path: writtenPath })}` }],
+    } as unknown as Db;
+    return detectUnsurfacedArtifacts(db, thread);
+  }
+  const served = join(workspace, "docs", "report.md");
+  const refusedPath = join(outside, "shot.png");
+  assert.deepEqual(qaCandidates(served, served), [], "a usable card covers its artifact");
+  assert.deepEqual(qaCandidates(refusedPath, refusedPath), [refusedPath], "an old outside-workspace card reaches QA");
 
   // `..` cannot climb out.
   assert.equal(refused("../elsewhere/shot.png").res.status, 403);
