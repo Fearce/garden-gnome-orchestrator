@@ -331,7 +331,7 @@ function taskFacts(db: Db, thread: Thread, detailed: boolean): string {
 
   const findings = db.listFindings(thread.id).slice(-3);
   const runs = db.listRuns(thread.id).slice(-3);
-  const messages = db.listMessages(thread.id).slice(-4);
+  const messages = db.listMessagePage(thread.id, 4).messages;
   base.push(`Brief: ${clip(thread.brief || thread.rawPrompt, 600) || "(empty)"}`);
   base.push("Recent findings:");
   base.push(...(findings.length ? findings.map((finding) => `- [${finding.severity}] ${clip(finding.summary, 240)}`) : ["- (none)"]));

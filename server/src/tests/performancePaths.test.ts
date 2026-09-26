@@ -229,6 +229,25 @@ try {
     .all() as Array<{ name: string }>;
   assert.deepEqual(retired, [], `superseded indexes were not retired: ${JSON.stringify(retired)}`);
 
+  // The hello snapshot's chat-room roll-up must be answered from its covering index. Without it each
+  // rebuild fetched every chat row (bodies included) from the table, twice.
+  const roomSql: string[] = [];
+  const prepare = db.raw.prepare.bind(db.raw);
+  db.raw.prepare = ((sql: string) => {
+    if (/FROM chat_messages/.test(sql)) roomSql.push(sql);
+    return prepare(sql);
+  }) as typeof db.raw.prepare;
+  try {
+    db.listProjectRooms();
+  } finally {
+    db.raw.prepare = prepare;
+  }
+  assert.equal(roomSql.length, 2, "the roll-up is two queries");
+  for (const sql of roomSql) {
+    const detail = (db.raw.prepare("EXPLAIN QUERY PLAN " + sql).all() as Array<{ detail: string }>).map((row) => row.detail).join(" | ");
+    assert.ok(detail.includes("COVERING INDEX idx_chat_project_rollup"), `chat-room roll-up reads the table: ${detail}`);
+  }
+
   // ---- the connect snapshot is not rebuilt per reconnect ----
   //
   // 2026-09-16: the console's watchdog force-closes a socket after 35s of server silence, so a stall

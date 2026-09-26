@@ -284,7 +284,7 @@ export interface Digest {
 export function buildDigest(db: Db, thread: Thread, assessment: Assessment): Digest {
   const findings = db.listFindings(thread.id).slice(-DIGEST_FINDINGS);
   const runs = db.listRuns(thread.id).slice(-DIGEST_RUNS);
-  const messages = db.listMessages(thread.id).slice(-DIGEST_MESSAGES);
+  const messages = db.listMessagePage(thread.id, DIGEST_MESSAGES).messages;
   return {
     thread,
     assessment,

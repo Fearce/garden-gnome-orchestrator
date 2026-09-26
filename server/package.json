@@ -70,6 +70,7 @@
     "test:notes": "tsx src/tests/operatorNotes.test.ts",
     "test:task-search": "tsx src/tests/taskSearch.test.ts",
     "test:performance-paths": "tsx src/tests/performancePaths.test.ts",
+    "test:memory-mirrors": "tsx src/tests/memoryMirrors.test.ts",
     "test:search-index": "tsx src/tests/searchIndex.test.ts",
     "test:probe-text": "tsx src/tests/probeText.test.ts",
     "test:deploy-plan": "node scripts/deploy-plan.test.cjs",

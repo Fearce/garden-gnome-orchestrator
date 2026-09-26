@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
+import { KvMirror, type ListedThread, ThreadListingMirror } from "./memoryMirrors.js";
 import { config } from "../config.js";
 import { manualDeploymentSummary, parseManualDeployment, parseManualDeploymentClaim } from "../orchestrator/manualDeployment.js";
 import {
@@ -173,7 +174,11 @@ function rowToThreadFromListing(r: Row): Thread {
  * (`brief_preview`, clipped in SQL) instead of the whole thing. The latest readable message is another
  * bounded card field; the correlated indexed lookup avoids loading every task history at connect. */
 function rowToThreadSummaryFromListing(r: Row): ThreadSummary {
-  const { brief: _brief, rawPrompt: _rawPrompt, ...summary } = rowToThreadFromListing(r);
+  return summaryOfThread(rowToThreadFromListing(r), r);
+}
+
+function summaryOfThread(thread: Thread, r: Row): ThreadSummary {
+  const { brief: _brief, rawPrompt: _rawPrompt, ...summary } = thread;
   const preview = typeof r.brief_preview === "string" ? r.brief_preview : "";
   const latestMessagePreview = typeof r.latest_message_preview === "string" ? r.latest_message_preview : "";
   return { ...summary, briefPreview: preview.split(/[\r\n]/)[0]!.trim(), latestMessagePreview };
@@ -186,6 +191,24 @@ const THREAD_LISTING_COLUMNS = `id, title, state, workspace, brief, raw_prompt, 
   model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
   active_deadline_at, agent_count, parent_id, assignment, sub_task, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
+
+/** Both listing shapes at once, for `ThreadListingMirror`. */
+const THREAD_MIRROR_COLUMNS = `rowid AS seq, ${THREAD_LISTING_COLUMNS},
+  substr(brief, 1, ${BRIEF_PREVIEW_CHARS}) AS brief_preview, latest_message_preview`;
+
+/** Nested fields stay shared between callers after the per-call shallow copy, so they are frozen: a
+ *  caller that edits one throws instead of silently changing every later listing. */
+function rowToListedThread(r: Row): ListedThread {
+  const thread = rowToThreadFromListing(r);
+  for (const nested of [thread.assignment, thread.modelRequest, thread.subTask, thread.manualDeployment]) deepFreeze(nested);
+  return { seq: r.seq as number, thread, summary: summaryOfThread(thread, r) };
+}
+
+function deepFreeze(value: unknown): void {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return;
+  Object.freeze(value);
+  for (const child of Object.values(value)) deepFreeze(child);
+}
 
 /** The message kinds a board card can quote back as "what this task last said" — the two the feed
  *  renders as prose. Tool calls, tool results and reasoning are not readable lines. Shared by the
@@ -757,6 +780,10 @@ export class Db {
   /** Latched once the trigram index covers every message; only ever flips false->true. */
   private ftsReady = false;
 
+  /** Null until migrate() finishes, so a migration always reads the file as it is at that moment. */
+  private threadListing: ThreadListingMirror | null = null;
+  private kv: KvMirror | null = null;
+
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true });
     this.raw = new Database(path);
@@ -766,6 +793,14 @@ export class Db {
     this.raw.pragma("foreign_keys = ON");
     this.raw.exec(SCHEMA);
     this.migrate();
+    this.threadListing = new ThreadListingMirror(this.raw, {
+      all: () => (this.raw.prepare(`SELECT ${THREAD_MIRROR_COLUMNS} FROM threads`).all() as Row[]).map(rowToListedThread),
+      one: (id) => {
+        const r = this.raw.prepare(`SELECT ${THREAD_MIRROR_COLUMNS} FROM threads WHERE id = ?`).get(id) as Row | undefined;
+        return r ? rowToListedThread(r) : null;
+      },
+    });
+    this.kv = new KvMirror(this.raw, (key) => this.readKv(key));
   }
 
   private migrate(): void {
@@ -835,6 +870,12 @@ export class Db {
     // After the ALTER, never in SCHEMA: on a pre-sha256 DB the column doesn't exist yet when
     // SCHEMA runs, and exec(SCHEMA) is unguarded — the failed index would abort boot.
     this.raw.exec("CREATE INDEX IF NOT EXISTS idx_attachments_content ON attachments(sha256, name, media_type)");
+    // listProjectRooms runs on every hello rebuild. Without a covering index it fetched every chat row
+    // from the table (bodies included) twice; with it neither query touches the table. After the ALTER
+    // that adds remote_instance, for the same reason as the index above.
+    this.raw.exec(
+      "CREATE INDEX IF NOT EXISTS idx_chat_project_rollup ON chat_messages(scope, room, remote_instance, workspace, thread_id, created_at)",
+    );
     // A parent's collaborators and sub-tasks are looked up on every sub-task state change and by the
     // sub-task barrier's poll; without this each lookup walks every thread row.
     this.raw.exec("CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_id) WHERE parent_id IS NOT NULL");
@@ -1163,6 +1204,9 @@ export class Db {
 
   // ---- kv ----
   kvGet(key: string): string | null {
+    return this.kv ? this.kv.get(key) : this.readKv(key);
+  }
+  private readKv(key: string): string | null {
     const r = this.raw.prepare("SELECT value FROM kv WHERE key = ?").get(key) as Row | undefined;
     return r ? (r.value as string) : null;
   }
@@ -1710,17 +1754,22 @@ export class Db {
     return r ? rowToThread(r) : null;
   }
 
+  /** Each row is a shallow copy, so callers may reassign its fields; nested objects are frozen and shared. */
   listThreads(): Thread[] {
+    const mirrored = this.threadListing?.list();
+    if (mirrored) return mirrored.map((row) => ({ ...row.thread }));
     return (
-      this.raw.prepare(`SELECT ${THREAD_LISTING_COLUMNS} FROM threads ORDER BY created_at DESC`).all() as Row[]
+      this.raw.prepare(`SELECT ${THREAD_LISTING_COLUMNS} FROM threads ORDER BY created_at DESC, rowid DESC`).all() as Row[]
     ).map(rowToThreadFromListing);
   }
 
   /** Lightweight board snapshot. In particular, this does not pull the per-task brief/raw prompt over
    * the SQLite and WebSocket boundaries 800 times just to paint cards that never render either field. */
   listThreadSummaries(): ThreadSummary[] {
+    const mirrored = this.threadListing?.list();
+    if (mirrored) return mirrored.map((row) => ({ ...row.summary }));
     return (
-      this.raw.prepare(`SELECT ${THREAD_SUMMARY_COLUMNS} FROM threads ORDER BY created_at DESC`).all() as Row[]
+      this.raw.prepare(`SELECT ${THREAD_SUMMARY_COLUMNS} FROM threads ORDER BY created_at DESC, rowid DESC`).all() as Row[]
     ).map(rowToThreadSummaryFromListing);
   }
 
@@ -1729,10 +1778,15 @@ export class Db {
    *  pay to hydrate + JSON-parse every task on the board just to filter almost all of them back out in JS. */
   listThreadsByStates(states: readonly ThreadState[]): Thread[] {
     if (!states.length) return [];
+    const mirrored = this.threadListing?.list();
+    if (mirrored) {
+      const wanted = new Set<ThreadState>(states);
+      return mirrored.filter((row) => wanted.has(row.thread.state)).map((row) => ({ ...row.thread }));
+    }
     const holes = states.map(() => "?").join(",");
     return (
       this.raw
-        .prepare(`SELECT ${THREAD_LISTING_COLUMNS} FROM threads WHERE state IN (${holes}) ORDER BY created_at DESC`)
+        .prepare(`SELECT ${THREAD_LISTING_COLUMNS} FROM threads WHERE state IN (${holes}) ORDER BY created_at DESC, rowid DESC`)
         .all(...states) as Row[]
     ).map(rowToThreadFromListing);
   }

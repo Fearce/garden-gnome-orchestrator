@@ -36,6 +36,17 @@ key automatically. A two-column index `(thread_id, created_at)` is therefore phy
 
 **Measure read COUNT, not milliseconds.** Time here is whatever the page cache happened to hold — the same query measured 45.8s and 174ms an hour apart. Windows counts a read op served from cache too, so `Win32_Process.ReadOperationCount` around a query is the cache-independent number (it read 3,312 both times). A plan check catches this class where a timing never will: `planVerdict(..., {forbidTable})` fails a snapshot that touches `messages` at all, since an indexed seek is still a random read.
 
+## `threads` listings and `kv` are served from memory (`db/memoryMirrors.ts`)
+`threads` is ~1k rows but ~900 pages: each row's brief and `stage_outputs` sit on overflow pages, and a listing walks them to reach later columns. `listThreads` ran on every hello rebuild, every supervisor sweep, and every per-minute `crash.log` stall line (via the `active-work` context provider). Under memory pressure the page cache loses those pages, so each call became hundreds of random reads on the event loop. Stall profiles from 2026-09-24 to 09-26 named `listThreads -> all` / `listThreadSummaries -> all` first, alongside 1-9s blocks every minute. `kv` had the same problem on a smaller scale, with 50-130KB values such as `office_names` and provider model lists re-read on hot paths.
+
+`ThreadListingMirror` and `KvMirror` keep both tables in memory. `listThreads`, `listThreadSummaries`, `listThreadsByStates`, and `kvGet` read the mirror. An unchanged table costs zero reads, and one changed task costs one single-row read. Invalidation is not the caller's job:
+- **Per-connection TEMP triggers** call a JS function for every insert, update, or delete on this connection, including raw statements, cascades, and the `latest_message_preview` trigger.
+- **`PRAGMA data_version`** detects another connection's commit and forces a full reload.
+- **Inside a transaction a mirror returns null**, and the method reads SQLite directly. The mirror never caches a row that can still roll back.
+- **Mirrors are created after `migrate()`**, so migrations always read the file directly.
+
+Do not add a `threads`/`kv` read that bypasses these methods on a hot path. Do not return mirror objects without copying them: each listing shallow-copies every row, and the nested objects (`assignment`, `modelRequest`, `subTask`, `manualDeployment`) are deep-frozen, so editing one throws. Gate: `test:memory-mirrors` compares each listing with SQLite's own answer (read inside a transaction) and counts reads. It fails if the trigger, foreign-commit, or transaction guard is removed.
+
 ## Verify against the LIVE database, not just a synthetic gate
 `test:performance-paths` gates these query SHAPES on every `test:gates` run (fast, free, synthetic —
 proves the code is structurally correct). It cannot expose a subtly-wrong composite index (right

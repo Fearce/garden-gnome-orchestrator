@@ -66,6 +66,7 @@ const GATES = [
   "test:notes",
   "test:task-search",
   "test:performance-paths",
+  "test:memory-mirrors",
   "test:search-index",
   "test:probe-text",
   "test:deploy-plan",
