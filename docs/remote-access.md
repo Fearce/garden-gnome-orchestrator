@@ -61,6 +61,10 @@ npm run remote-access --prefix server -- on      # open the link
 npm run remote-access --prefix server -- off     # close it
 ```
 
+`.env` is read at startup, so after editing it the running GGO needs a restart before the link
+can open. `on --when-live` waits (up to 24 hours, polling the local `/api/me`) until the running
+GGO reports Google sign-in, then opens the link; run it in the background after a staged deploy.
+
 `on` refuses until Google sign-in and `ALLOWED_EMAIL` are set. After opening, it probes the public
 URL while signed out. It closes the link again unless the probe finds sign-in required, Google
 offered, no password field, and `/api/deploy/status` and `/api/health` refused. `status` runs the

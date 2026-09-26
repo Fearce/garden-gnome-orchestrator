@@ -118,6 +118,34 @@ function harness({ env = READY_ENV, state = "Running", funnel = "{}", probe = "l
     assert.ok(h.calls.includes(FUNNEL_OFF_ARGS.join(" ")));
   }
   {
+    // --when-live waits for the RUNNING server to have Google sign-in (a restart onto the new .env),
+    // polling the direct local /api/me, and only then opens the link.
+    const h = harness();
+    const localAnswers = [false, false, true];
+    const publicFetch = h.deps.fetchImpl;
+    h.deps.fetchImpl = async (url, init) =>
+      url.startsWith("http://127.0.0.1:4317/")
+        ? { status: 200, json: async () => ({ google: localAnswers.shift() ?? true }) }
+        : publicFetch(url, init);
+    let slept = 0;
+    h.deps.sleep = async () => { slept += 1; };
+    h.deps.waitDeadlineMs = 60_000;
+    assert.equal(await runCommand("on", { ...h.deps, whenLive: true }), 0);
+    assert.equal(slept, 2, "polled until the running server loaded Google sign-in");
+    assert.ok(h.calls.includes("funnel --bg http://127.0.0.1:4317"));
+  }
+  {
+    const h = harness();
+    h.deps.fetchImpl = async () => ({ status: 200, json: async () => ({ google: false }) });
+    let now = 0;
+    h.deps.now = () => now;
+    h.deps.sleep = async (ms) => { now += ms; };
+    h.deps.waitDeadlineMs = 90_000;
+    assert.equal(await runCommand("on", { ...h.deps, whenLive: true }), 1, "gave up waiting");
+    assert.ok(!h.calls.some((c) => c.includes("--bg")), "never opens against a server without Google sign-in");
+    assert.match(h.lines.join("\n"), /never/);
+  }
+  {
     const h = harness();
     h.deps.tailscale = null;
     assert.equal(await runCommand("status", h.deps), 2);

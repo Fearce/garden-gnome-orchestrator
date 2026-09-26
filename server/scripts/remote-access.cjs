@@ -4,6 +4,9 @@
 //   npm run remote-access --prefix server            status: is the link open, and is it locked?
 //   npm run remote-access --prefix server -- on      open it (refuses until Google sign-in is set up)
 //   npm run remote-access --prefix server -- off     close it
+//   npm run remote-access --prefix server -- on --when-live
+//                                                    first wait (up to 24h) for the running GGO to
+//                                                    have Google sign-in, i.e. a restart after .env
 //
 // The lock lives in the server (src/remoteAccess.ts): a tunnelled request gets Google sign-in only and
 // every API route behind the session. This script only opens the tunnel when that lock can hold, then
@@ -21,6 +24,8 @@ const DEFAULT_TAILSCALE = "C:\\Program Files\\Tailscale\\tailscale.exe";
 const PLACEHOLDER_OWNER = "you@example.com";
 const FUNNEL_OFF_ARGS = ["funnel", "--https=443", "off"];
 const PROBE_TIMEOUT_MS = 10_000;
+const WAIT_POLL_MS = 30_000;
+const WAIT_DEADLINE_MS = 24 * 60 * 60 * 1000;
 
 /** What must be configured in server/.env before the link may open (blockers) or should be (warnings). */
 function readiness(env, publicUrl) {
@@ -91,6 +96,27 @@ async function probeLock(fetchImpl, url) {
   }
 }
 
+/** `on --when-live`: .env is read at startup, so wait until the RUNNING server reports Google sign-in
+ *  (the staged restart has happened) before opening anything. Asked directly, never through the tunnel. */
+async function waitForGoogleSignIn({ port, fetchImpl, log, sleep = defaultSleep, now = Date.now, waitDeadlineMs = WAIT_DEADLINE_MS }) {
+  const deadline = now() + waitDeadlineMs;
+  log(`Waiting for GGO on port ${port} to restart with Google sign-in before opening the link…`);
+  for (;;) {
+    try {
+      const res = await fetchImpl(`http://127.0.0.1:${port}/api/me`, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+      if (res.status === 200 && (await res.json()).google === true) return true;
+    } catch {
+      /* restarting: not listening yet */
+    }
+    if (now() + WAIT_POLL_MS > deadline) return false;
+    await sleep(WAIT_POLL_MS);
+  }
+}
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function tailscaleState(tailscale) {
   const res = tailscale(["status", "--json"]);
   return parseTailscaleStatus(res.stdout || "");
@@ -158,6 +184,10 @@ async function runCommand(command, deps) {
     return 2;
   }
   for (const warning of ready.warnings) log(`note: ${warning}`);
+  if (deps.whenLive && !(await waitForGoogleSignIn(deps))) {
+    log("The running GGO never loaded Google sign-in, so the remote link stays closed. Restart GGO and retry.");
+    return 1;
+  }
 
   // Interactive: on a tailnet where Funnel is not yet allowed, the CLI prints an approval link and waits.
   const opened = tailscale(["funnel", "--bg", `http://127.0.0.1:${port}`], { interactive: true });
@@ -196,6 +226,7 @@ function loadServerEnv() {
 if (require.main === module) {
   const env = loadServerEnv();
   runCommand(process.argv[2] || "status", {
+    whenLive: process.argv.includes("--when-live"),
     env,
     port: Number(env.PORT || 4317),
     tailscale: findTailscale(),
