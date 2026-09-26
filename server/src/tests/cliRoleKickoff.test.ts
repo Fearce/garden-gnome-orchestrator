@@ -4,7 +4,7 @@
  * ordinary-QA "do not edit" rule, or those providers leave fixes behind despite QA_FIX_PROMPT.
  */
 import assert from "node:assert/strict";
-import { QA_FIX_PROMPT, QA_PROMPT } from "../agents/prompts.js";
+import { CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE, IMPLEMENTOR_APPEND, QA_FIX_PROMPT, QA_PROMPT } from "../agents/prompts.js";
 import type { AgentRunConfig } from "../agents/runner.js";
 import { cliRoleKickoff } from "../orchestrator/threadManager.js";
 
@@ -24,12 +24,19 @@ const readOnly = qaKickoff(QA_PROMPT, ["Write", "Edit", "NotebookEdit", "AskUser
 assert.match(readOnly, /inspect and run checks, but do not edit the implementation/i);
 assert.match(readOnly, /Do not emit a kickoff or progress preamble/i, "QA starts with tools instead of narrating routine setup");
 assert.match(readOnly, /no candidate list means only that the detector found none and never waives this check/i, "the cache-stable QA prompt owns the complete deliverables invariant");
+assert.match(readOnly, /For each card, verify its path still resolves to the intended file inside this task's workspace/, "QA checks that recorded cards are servable");
+assert.match(readOnly, /Check for refused-deliverable warnings too/, "QA catches refused CLI bridge posts");
 assert.match(readOnly, /OPERATOR_NOTE: short action \| https:\/\//, "CLI fallback roles must retain the owner-note bridge");
 assert.match(
   readOnly,
   /DELIVERABLE: Short label \| C:\/absolute\/path\/to\/file\.ext/,
   "CLI fallback roles must retain the deliverable bridge",
 );
+
+for (const prompt of [IMPLEMENTOR_APPEND, CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE]) {
+  assert.match(prompt, /copy (?:the finished file|it) into the task workspace/i, "every implementor backend copies outside artifacts before posting");
+  assert.match(prompt, /copy's absolute path/, "every implementor backend posts the workspace copy");
+}
 assert.match(
   readOnly,
   /never use it to hide an implementor's missing deliverable/i,
