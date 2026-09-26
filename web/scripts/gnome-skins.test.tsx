@@ -84,6 +84,7 @@ for (const skin of ["crown", "phoenix"] as RareSkin[]) {
 
 // Only the cloud gnome floats; the bob lives on its own class so no other gnome moves.
 assert.ok(renderToStaticMarkup(<Gnome role="planner" skin="cloud" />).includes("gnome-floating"), "the cloud gnome does not float");
+assert.ok(!renderToStaticMarkup(<Gnome role="planner" skin="cloud" active={false} />).includes("gnome-floating"), "an idle cloud gnome still floats");
 for (const skin of [...EVERYDAY_SKINS, ...FESTIVE_SKINS, ...SUPER_RARE_SKINS, "santa", null] as (RareSkin | null)[]) {
   if (skin === "cloud") continue;
   assert.ok(!renderToStaticMarkup(<Gnome role="planner" skin={skin} />).includes("gnome-floating"), `${skin ?? "plain"} floats`);

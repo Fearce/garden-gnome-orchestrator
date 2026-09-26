@@ -456,7 +456,7 @@ export function Gnome({ role, size = 30, active = true, className, skin: pinnedS
   const style: CSSProperties = active
     ? { color: gnomeRoleColor(role, chromaFactor), flex: "0 0 auto", lineHeight: 0, ...(glow ? ({ "--gnome-glow": glow } as CSSProperties) : {}) }
     : { color: "var(--text-faint)", flex: "0 0 auto", lineHeight: 0, filter: "grayscale(1)", opacity: 0.5 };
-  const classes = ["gnome", skin === "cloud" && "gnome-floating", glow && "gnome-super", className].filter(Boolean).join(" ");
+  const classes = ["gnome", skin === "cloud" && active && "gnome-floating", glow && "gnome-super", className].filter(Boolean).join(" ");
   return (
     <span className={classes} style={style} aria-hidden="true">
       {/* Tall viewBox (36×54) — the long hat makes it read as a gnome, never a bottle. */}
