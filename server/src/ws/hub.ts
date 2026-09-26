@@ -93,6 +93,7 @@ function buildHello(ctx: WsContext): ServerEvent {
   return {
     type: "hello",
     startQaSupported: true,
+    coworkCloseSupported: true,
     threads: ctx.db.listThreadSummaries(),
     runs: ctx.db.listAllRuns(SNAPSHOT_RUNS),
     findings: ctx.db.listFindings(undefined, SNAPSHOT_FINDINGS),
@@ -160,6 +161,15 @@ export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs:
     if (!armed) {
       armed = true;
       hub.subscribe((event) => {
+        // A reload within the cache window must not resurrect a session the owner just closed.
+        // Patch this small collection from the authoritative event; keep the expensive task snapshot
+        // rate-limited, and leave snapshots already handed to other callers untouched.
+        if (cached?.event.type === "hello" && event.type === "cowork.session") {
+          const sessions = cached.event.coworkSessions ?? [];
+          cached.event = { ...cached.event, coworkSessions: [event.session, ...sessions.filter((session) => session.id !== event.session.id)] };
+        } else if (cached?.event.type === "hello" && event.type === "cowork.removed") {
+          cached.event = { ...cached.event, coworkSessions: (cached.event.coworkSessions ?? []).filter((session) => session.id !== event.sessionId) };
+        }
         // A streaming delta is not durable board state — it cannot change any field of the snapshot,
         // and it is by far the most frequent event, so letting it dirty the snapshot would mean an
         // active server never reuses one.

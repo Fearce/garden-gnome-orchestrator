@@ -84,6 +84,7 @@ export type ServerEvent =
   | {
       type: "hello";
       startQaSupported: true;
+      coworkCloseSupported?: true;
       threads: ThreadSummary[];
       runs: AgentRun[];
       findings: Finding[];

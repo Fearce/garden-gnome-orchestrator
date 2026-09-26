@@ -122,6 +122,7 @@ export function CoworkCard({ session, innerRef, style, dragging, draggableCard, 
       ) : session.error ? (
         <div className="cowork-card-error" title={session.error}>{session.error}</div>
       ) : null}
+      <CoworkCloseError sessionId={session.id} />
     </article>
   );
 }
@@ -158,8 +159,16 @@ export function ClosedCoworkCard({ session }: { session: CoworkSession }) {
           </button>
         </span>
       </div>
+      <CoworkCloseError sessionId={session.id} />
     </div>
   );
+}
+
+/** Close errors must be visible where the owner clicked, even with the conversation popup shut. */
+function CoworkCloseError({ sessionId }: { sessionId: string }) {
+  const error = useStore((state) => state.coworkCloseError);
+  if (error?.sessionId !== sessionId) return null;
+  return <p className="cowork-card-error" style={{ whiteSpace: "normal" }} role="alert">{error.message}</p>;
 }
 
 /** The task card's quiet 6-dot grip, so a draggable Co-work card reads exactly like a draggable task. */

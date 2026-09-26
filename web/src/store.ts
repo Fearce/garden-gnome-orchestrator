@@ -197,6 +197,8 @@ interface State {
   selectedCoworkId: string | null;
   coworkCreating: boolean;
   coworkActionError: string | null;
+  coworkCloseSupported: boolean;
+  coworkCloseError: { sessionId: string; message: string } | null;
   // Where the owner had scrolled each transcript, and whether they were pinned to the bottom. Kept in
   // the STORE rather than the component: closing a Co-work popup mid-turn must cost nothing, and the
   // transcript is remounted (keyed by session) every time a popup opens.
@@ -1222,6 +1224,8 @@ export const useStore = create<State>((set) => ({
   selectedCoworkId: null,
   coworkCreating: false,
   coworkActionError: null,
+  coworkCloseSupported: false,
+  coworkCloseError: null,
   coworkScroll: {},
   coworkOpenTools: {},
   coworkSummaries: {},
@@ -1376,7 +1380,18 @@ export const useStore = create<State>((set) => ({
     sendCommand({ type: "cowork.stop", sessionId });
   },
   renameCowork: (sessionId, name) => sendCommand({ type: "cowork.rename", sessionId, name: name.trim() }),
-  setCoworkClosed: (sessionId, closed) => sendCommand({ type: closed ? "cowork.close" : "cowork.restore", sessionId }),
+  setCoworkClosed: (sessionId, closed) => {
+    set({ coworkCloseError: null });
+    // The static web bundle can ship before the drain-safe server restart. Older servers silently
+    // discard unknown commands, so never send an unsupported close and leave the owner guessing.
+    if (!useStore.getState().coworkCloseSupported) {
+      set({ coworkCloseError: { sessionId, message: "Closing and restoring Co-work sessions is waiting for the server update. GGO will restart after active agent work finishes. Your conversation is saved; try again after the restart." } });
+      return;
+    }
+    if (!sendCommand({ type: closed ? "cowork.close" : "cowork.restore", sessionId })) {
+      set({ coworkCloseError: { sessionId, message: "The console is reconnecting. Try again when it is connected." } });
+    }
+  },
   deleteCowork: (sessionId) => sendCommand({ type: "cowork.delete", sessionId }),
   clearCoworkError: () => set({ coworkActionError: null }),
   rememberCoworkScroll: (sessionId, at) => set((s) => ({ coworkScroll: { ...s.coworkScroll, [sessionId]: at } })),
@@ -1994,6 +2009,7 @@ function applyEvent(ev: ServerEvent): void {
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
       useStore.setState((s) => ({
         startQaSupported: ev.startQaSupported === true,
+        coworkCloseSupported: ev.coworkCloseSupported === true,
         threads,
         // Hello carries a bounded fleet-wide slice of runs, so it must not replace the ones an open
         // task loaded from its own history — the feed needs a message's own run to name the model that
@@ -2148,6 +2164,9 @@ function applyEvent(ev: ServerEvent): void {
         coworkCreating: ev.action === "create" ? false : s.coworkCreating,
         coworkPromoting: ev.action === "promote" ? false : s.coworkPromoting,
         coworkActionError: worktreeIgnored ?? (ev.ok ? null : ev.error ?? "The Co-worker command failed."),
+        ...((ev.action === "close" || ev.action === "restore") && ev.sessionId
+          ? { coworkCloseError: ev.ok ? null : { sessionId: ev.sessionId, message: ev.error ?? "The Co-worker command failed." } }
+          : {}),
         ...(ev.result.session ? { coworkSessions: { ...s.coworkSessions, [ev.result.session.id]: ev.result.session } } : {}),
         ...(ev.ok && ev.action === "create" && ev.result.session ? { selectedCoworkId: ev.result.session.id } : {}),
         // The board is where a task lives, so a successful promotion offers the jump rather than

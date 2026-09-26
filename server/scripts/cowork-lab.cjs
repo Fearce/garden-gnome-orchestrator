@@ -139,6 +139,29 @@ async function directorBox(page) {
     browser = await chromium.launch();
     const ctx = await browser.newContext({ viewport: { width: 1560, height: 960 } });
     const page = await ctx.newPage();
+    // Reproduce a new web bundle talking to the old process while deployment waits for agents.
+    let closeMode = "supported";
+    let closeCommands = 0;
+    await page.routeWebSocket("**/ws", (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((raw) => {
+        const event = JSON.parse(raw.toString());
+        if (event.type === "hello" && closeMode === "unsupported") delete event.coworkCloseSupported;
+        ws.send(JSON.stringify(event));
+      });
+      ws.onMessage((raw) => {
+        const command = JSON.parse(raw.toString());
+        if (command.type === "cowork.close" || command.type === "cowork.restore") {
+          closeCommands++;
+          if (closeMode === "rejected") {
+            ws.send(JSON.stringify({ type: "cowork.action", action: command.type.split(".")[1], sessionId: command.sessionId,
+              ok: false, error: "Stop the running turn before closing this session.", result: { ok: false } }));
+            return;
+          }
+        }
+        server.send(raw);
+      });
+    });
     const errors = [];
     page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
     await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
@@ -358,6 +381,43 @@ async function directorBox(page) {
     const reloaded = await order();
     check("the order survives a reload", reloaded.join() === after.join(), JSON.stringify(reloaded));
     await page.screenshot({ path: path.join(shots, "13-dragged.png") });
+
+    const idleCard = '.lanes .cowork-card:has-text("Earlier exploration")';
+    const closedCard = '.closed-list .closed-card:has-text("Earlier exploration")';
+    closeMode = "unsupported";
+    await page.reload();
+    await page.waitForSelector(`${idleCard}.draggable`);
+    const commandsBefore = closeCommands;
+    await page.click(`${idleCard} .card-dismiss`);
+    await page.waitForSelector(`${idleCard} [role="alert"]`);
+    check("an older server explains why close is unavailable on the card", (await page.textContent(`${idleCard} [role="alert"]`)).includes("waiting for the server update"));
+    check("an unsupported close is not silently sent or hidden locally", closeCommands === commandsBefore && await page.isVisible(idleCard));
+    check("the close error does not require opening the popup", await popupClosed(page));
+
+    closeMode = "rejected";
+    await page.reload();
+    await page.waitForSelector(`${idleCard}.draggable`);
+    await page.click(`${idleCard} .card-dismiss`);
+    await page.waitForSelector(`${idleCard} [role="alert"]`);
+    check("a server refusal appears on the card with drag enabled", (await page.textContent(`${idleCard} [role="alert"]`)).includes("Stop the running turn"));
+
+    closeMode = "supported";
+    await page.click(`${idleCard} .card-dismiss`);
+    await page.waitForSelector(idleCard, { state: "detached" });
+    check("close works with drag enabled after retry", await popupClosed(page));
+    await page.reload();
+    await page.waitForSelector(".lanes .cowork-card");
+    if (!(await page.isVisible(".closed-list"))) await page.click(".closed-toggle");
+    await page.waitForSelector(closedCard);
+    check("the closed session stays closed after reload", (await page.locator(idleCard).count()) === 0);
+    closeMode = "rejected";
+    await page.click(`${closedCard} button:text-is("Restore")`);
+    await page.waitForSelector(`${closedCard} [role="alert"]`);
+    check("restore failures are visible in the Closed list", await page.isVisible(`${closedCard} [role="alert"]`));
+    closeMode = "supported";
+    await page.click(`${closedCard} button:text-is("Restore")`);
+    await page.waitForSelector(`${idleCard}.draggable`);
+    check("restore succeeds on retry without losing the conversation", !(await page.isVisible(`${idleCard} [role="alert"]`)));
 
     check("no console errors anywhere in the run", errors.length === 0, errors.slice(0, 3).join(" | "));
     console.log(`\nscreenshots: ${shots}`);
