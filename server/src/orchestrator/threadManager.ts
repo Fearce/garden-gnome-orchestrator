@@ -114,6 +114,7 @@ import {
   type CapacityWindow,
 } from "./capacityRouting.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
+import { deliverableRefusal, resolveDeliverable } from "./deliverablePath.js";
 import { buildGitProgressBlock, workspaceGitFingerprint } from "./gitProgress.js";
 import { ROUTE_POLICY_VERSION, selectRoute } from "./routeSelection.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, runGit, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
@@ -13993,8 +13994,22 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   /** CLI runners turn `DELIVERABLE: label | path` into the same authoritative finding write as the
    * MCP `post_deliverable` tool. Carry the real run id so the QA backstop can prove this task surfaced
-   * the file, and publish through postFinding so an already-open console receives the card immediately. */
+   * the file, and publish through postFinding so an already-open console receives the card immediately.
+   * A path the route could never serve gets no card; a warning finding carries the reason instead, so
+   * QA sees what to fix rather than the owner meeting a broken image. */
   private postCliDeliverable(thread: Thread, role: Role, runId: string, label: string, path: string): void {
+    const resolved = resolveDeliverable(thread.workspace, path);
+    if (!resolved.ok) {
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: role,
+        fromRunId: runId,
+        summary: `Deliverable "${label}" was refused`,
+        detail: deliverableRefusal(thread.workspace, path, resolved),
+        severity: "warning",
+      });
+      return;
+    }
     this.postFinding({
       threadId: thread.id,
       fromRole: role,

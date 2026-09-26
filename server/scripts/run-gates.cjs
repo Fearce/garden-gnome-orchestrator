@@ -109,6 +109,7 @@ const GATES = [
   "test:archive-thread",
   "test:restore-archived-deliverables",
   "test:deliverable-dedup",
+  "test:deliverable-path",
   "test:dedupe-deliverable-findings",
   "test:recovery-features",
   "test:office-bridge",

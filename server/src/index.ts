@@ -12,8 +12,8 @@ import {
 import type { FastifyInstance, FastifyServerOptions } from "fastify";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, dirname, basename, extname, relative } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { isAbsolute, join, dirname, basename, extname } from "node:path";
 import { config } from "./config.js";
 import { buildInfo } from "./buildInfo.js";
 import { providerRuntimeVersions } from "./providerRuntime.js";
@@ -31,6 +31,7 @@ import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
 import { startGrokUsageMonitor } from "./agents/grokUsagePing.js";
 import { startZaiUsageMonitor } from "./agents/zaiUsagePing.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
+import { resolveDeliverable } from "./orchestrator/deliverablePath.js";
 import { CoworkManager } from "./orchestrator/cowork.js";
 import { Director } from "./orchestrator/director.js";
 import { RepoConsole } from "./orchestrator/repoConsole.js";
@@ -549,10 +550,9 @@ async function main(): Promise<void> {
     }
 
     // Serve a deliverable file (a finding of kind 'deliverable') for inline preview or download.
-    // Security-critical: the path is agent-provided, so the resolved real path is confined to the
-    // owning task's workspace — symlinks are resolved (realpathSync) and any escape via '..' / an
-    // absolute path / a different drive is rejected. Auth-gated, files-only, size-capped.
-    const MAX_DELIVERABLE_BYTES = 25 * 1024 * 1024;
+    // Security-critical: the path is agent-provided, so resolveDeliverable confines the real path to
+    // the owning task's workspace (symlinks resolved, '..' / absolute / cross-drive escapes rejected).
+    // Auth-gated, files-only, size-capped.
     const DELIVERABLE_TYPES: Record<string, string> = {
       ".md": "text/markdown; charset=utf-8",
       ".markdown": "text/markdown; charset=utf-8",
@@ -580,30 +580,9 @@ async function main(): Promise<void> {
       const thread = db.getThread(finding.threadId);
       if (!thread) return reply.code(404).send({ error: "not found" });
 
-      const candidate = isAbsolute(finding.path) ? finding.path : join(thread.workspace, finding.path);
-      // Resolve symlinks on BOTH sides so the containment check can't be fooled by a link inside the
-      // workspace pointing out of it, and so the comparison uses canonical, same-cased paths.
-      let realWs: string;
-      let realFile: string;
-      try {
-        realWs = realpathSync(thread.workspace);
-        realFile = realpathSync(candidate);
-      } catch {
-        return reply.code(404).send({ error: "file not found" });
-      }
-      const rel = relative(realWs, realFile);
-      if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
-        return reply.code(403).send({ error: "path escapes the task workspace" });
-      }
-
-      let st;
-      try {
-        st = statSync(realFile);
-      } catch {
-        return reply.code(404).send({ error: "file not found" });
-      }
-      if (!st.isFile()) return reply.code(404).send({ error: "not a file" });
-      if (st.size > MAX_DELIVERABLE_BYTES) return reply.code(413).send({ error: "file too large to serve" });
+      const resolved = resolveDeliverable(thread.workspace, finding.path);
+      if (!resolved.ok) return reply.code(resolved.status).send({ error: resolved.error });
+      const realFile = resolved.realFile;
 
       const type = DELIVERABLE_TYPES[extname(realFile).toLowerCase()] ?? "application/octet-stream";
       reply

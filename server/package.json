@@ -112,6 +112,7 @@
     "test:archive-thread": "node scripts/archive-thread.test.cjs",
     "test:restore-archived-deliverables": "node scripts/restore-archived-deliverables.test.cjs",
     "test:deliverable-dedup": "tsx src/tests/deliverableDedup.itest.ts",
+    "test:deliverable-path": "tsx src/tests/deliverablePath.test.ts",
     "test:dedupe-deliverable-findings": "node scripts/dedupe-deliverable-findings.test.cjs",
     "test:recovery-features": "node scripts/recovery-features.test.cjs",
     "test:office-health": "node scripts/office-health.test.cjs",
