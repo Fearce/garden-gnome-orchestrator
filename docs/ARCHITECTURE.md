@@ -44,6 +44,26 @@ the director.
 
 Ports are in the script-hub integer-port convention; both registered there.
 
+**Console delivery.** The same authenticated HTTP and WebSocket handlers are available at the root
+and at `/orchestrator/` (`webMount.ts`); `/orchestrator` redirects to the trailing slash. A Cloudflare
+Tunnel ingress rule for that path can target `http://127.0.0.1:4317` directly, ahead of the dashboard's
+catch-all rule, so a busy Script Hub cannot stall remote GGO. Cloudflare Access still protects the
+hostname and GGO still checks its session. The tunnel must preserve `Accept-Encoding` and WebSocket
+extension negotiation. Do not send the whole hostname to GGO: the other dashboard paths belong to
+Script Hub.
+
+Vite writes Brotli/gzip variants at build time and Fastify serves them with `Vary: Accept-Encoding`.
+Only hashed assets are immutable; the HTML shell revalidates. WebSocket messages over 4 KB negotiate
+compression without retained context; small streaming deltas avoid compression work. Every connection
+receives one unsolicited `hello`, and the client applies its receipts before replaying unconfirmed
+messages. Settings, Co-work, schedules, notes, Supervisor, Git and the IDE load on demand. The phone
+defers its hidden Director until first use, then retains it to preserve drafts.
+
+`npm run probe:startup` measures cold/warm desktop and throttled-phone startup without interacting
+with live tasks. `ORCH_URL` accepts a mounted URL; `PERF_OUT` selects the JSON report.
+`npm run startup-lab --prefix server` verifies compression, both mounts, reconnects and retained
+panels on an isolated instance; use `GGO_LAB_ENTRY`/`GGO_LAB_WEB_DIST` for isolated builds.
+
 **Restarting the process (`orchestrator/restartCoordinator.ts` + `selfRestart.ts`).** Who owns this
 process differs per deployment — the script-hub's atomic `/api/restart` under keepAlive on
 Windows, `scripts/supervise.cjs` and a clean exit with code 75 under `npm run serve` — so

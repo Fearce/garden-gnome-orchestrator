@@ -120,7 +120,7 @@ const cssSource = read("src/styles.css");
 
 assert.match(
   boardSource,
-  /\(coworkOpened \|\| boardView === "cowork"\) && <CoWork hidden=\{boardView !== "cowork"\} \/>/,
+  /\(coworkOpened \|\| boardView === "cowork"\) && <LazyChunkBoundary label="Co-work">[^\n]*<CoWork hidden=\{boardView !== "cowork"\} \/>/,
   "the Co-work desk stays mounted behind `hidden` instead of being unmounted on every view switch",
 );
 assert.match(cssSource, /\.cowork-shell\[hidden\] \{ display: none; \}/,
@@ -184,9 +184,8 @@ assert.equal(renderToStaticMarkup(React.createElement(CoworkBoardCards)), "", "n
 // ---- 4. the director is never blocked ----------------------------------------------------------
 // The rail is a SIBLING of the board and is rendered unconditionally, which is what makes a live
 // Co-work turn non-modal: whatever the board is showing, the director is still there to talk to.
-assert.match(appSource, /\n\s*<Director \/>\n\s*<Board \/>/, "the director rail is a sibling of the board, not something a board view can replace");
-const directorLine = appSource.split("\n").find((line) => line.includes("<Director />"))!;
-assert.equal(directorLine.trim(), "<Director />", "the director rail is rendered unconditionally - no view, state or session may gate it");
+assert.match(appSource, /\n\s*<DirectorGate mobilePane=\{mobilePane\} railHidden=\{railHidden\} \/>\n\s*<Board \/>/, "the director rail stays a sibling of the board, independent of the selected board area");
+assert.match(appSource, /return opened \|\| visible \? <Director \/> : null/, "once used, the Director stays mounted across pane changes");
 assert.match(appSource, /className=\{"mnav-btn" \+ \(pane === "director" \? " on" : ""\)\}/,
   "the phone nav always offers the director pane, including while a Co-work turn streams");
 

@@ -480,7 +480,7 @@ export function MessageThumbs({ refs }: { refs?: AttachmentRef[] }) {
           // Position-qualified: attachments are content-addressed server-side, so the same picture sent
           // twice in one message is the same id twice.
           <button className="msg-thumb" key={`${r.id}:${i}`} type="button" onClick={() => setOpen(i)} title={r.name} aria-label={`View ${r.name}`}>
-            <img src={attachmentUrl(r)} alt={r.name} />
+            <img src={attachmentUrl(r)} alt={r.name} loading="lazy" decoding="async" />
           </button>
         ))}
       </div>

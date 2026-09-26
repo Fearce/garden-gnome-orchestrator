@@ -21,15 +21,15 @@ import { Countdown, Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
 import { splitWorkspace, WorkspacePath } from "./WorkspacePath.js";
-import { ScheduledTasks } from "./ScheduledTasks.js";
-import { OperatorNotes } from "./OperatorNotes.js";
-import { SupervisorPanel } from "./SupervisorPanel.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
-import { CoWork } from "./CoWork.js";
 import { CoworkBoardCards } from "./CoworkCards.js";
 import { ManualDeploymentBadge } from "./ManualDeploymentStatus.js";
 import { LazyChunkBoundary } from "./LazyChunkBoundary.js";
 const Ide = lazy(() => import("./ide/Ide.js").then(m => ({ default: m.Ide })));
+const CoWork = lazy(() => import("./CoWork.js").then(m => ({ default: m.CoWork })));
+const ScheduledTasks = lazy(() => import("./ScheduledTasks.js").then(m => ({ default: m.ScheduledTasks })));
+const OperatorNotes = lazy(() => import("./OperatorNotes.js").then(m => ({ default: m.OperatorNotes })));
+const SupervisorPanel = lazy(() => import("./SupervisorPanel.js").then(m => ({ default: m.SupervisorPanel })));
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -128,7 +128,7 @@ export function Board() {
   useEffect(() => { if (boardView === "cowork") setCoworkOpened(true); }, [boardView]);
   const setTaskOrder = useStore((s) => s.setTaskOrder);
   const setTaskSort = useStore((s) => s.setTaskSort);
-  const all = Object.values(threads);
+  const all = useMemo(() => Object.values(threads), [threads]);
   // Token freeze: any task cap-parked (every account rate-limited) frosts the tasks pane. Derived from the
   // threads we already subscribe to — no extra store read — and mirrors the server's cap-park scan.
   const frozen = all.some((t) => isCapParked(t));
@@ -138,7 +138,7 @@ export function Board() {
   // A shotgun COLLABORATOR is part of another task, not a task of its own: showing N of them beside
   // their lead is exactly the card clutter the compact-UX brief rules out, and the lead's own card
   // already reports their progress. They stay fully selectable — the lead's detail panel links to them.
-  const active = all.filter((t) => !t.parentId && t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)));
+  const active = useMemo(() => all.filter((t) => !t.parentId && t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state))), [all, showCompleted]);
   // The id of the card currently being dragged (null when idle); declared here so `list` can freeze its
   // order mid-drag.
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -162,9 +162,9 @@ export function Board() {
     setTaskSort(sort);
     if (dndEnabled) setTaskOrder([...active].sort(sortComparator(sort)).map((t) => t.id));
   };
-  const closed = all
+  const closed = useMemo(() => all
     .filter((t) => t.state === "closed")
-    .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0));
+    .sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0)), [all]);
   const [page, setPage] = useState(0);
 
   const pageCount = Math.max(1, Math.ceil(list.length / PER_PAGE));
@@ -243,13 +243,13 @@ export function Board() {
           "leaving the tab mid-turn loses your place" complaint: the session data lives in the store and
           keeps streaming either way, but the transcript's scroll position, expanded tool bursts, draft
           and staged attachments are component state, and they died on every switch to the task board. */}
-      {(coworkOpened || boardView === "cowork") && <CoWork hidden={boardView !== "cowork"} />}
+      {(coworkOpened || boardView === "cowork") && <LazyChunkBoundary label="Co-work"><Suspense fallback={boardView === "cowork" ? <p>Opening Co-work…</p> : null}><CoWork hidden={boardView !== "cowork"} /></Suspense></LazyChunkBoundary>}
       {boardView === "ide" || boardView === "cowork" ? null : boardView === "schedules" ? (
-        <ScheduledTasks />
+        <LazyChunkBoundary label="Schedules"><Suspense fallback={<p>Opening schedules…</p>}><ScheduledTasks /></Suspense></LazyChunkBoundary>
       ) : boardView === "notes" ? (
-        <OperatorNotes />
+        <LazyChunkBoundary label="Notes"><Suspense fallback={<p>Opening notes…</p>}><OperatorNotes /></Suspense></LazyChunkBoundary>
       ) : boardView === "supervisor" ? (
-        <SupervisorPanel />
+        <LazyChunkBoundary label="Supervisor"><Suspense fallback={<p>Opening supervisor…</p>}><SupervisorPanel /></Suspense></LazyChunkBoundary>
       ) : (
         <>
           {list.length === 0 ? (
