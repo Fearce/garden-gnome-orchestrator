@@ -176,6 +176,7 @@ const GATES = [
   "test:review-model-floor",
   "test:director-provider",
   "test:director-directives",
+  "test:recent-repos",
   "test:model-request",
   "test:model-request-ui",
   "test:token-conservation",

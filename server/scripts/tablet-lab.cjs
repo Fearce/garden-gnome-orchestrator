@@ -45,11 +45,11 @@ const TAP_EXCEPTIONS = [
   { sel: ".board-tab", min: 34, why: "a text heading that doubles as the view switcher" },
   { sel: ".card-chatroom", min: 34, why: "inline in a card's meta row" },
   { sel: ".closed-toggle", min: 34, why: "a quiet disclosure line under the board's lanes" },
-  // These two only render with 2+ remembered repos, which this lab's fresh DB never has — they were
-  // found by `~/.claude/scripts/tablet-audit.cjs` against prod, not here. Keep the entries anyway so
-  // the two tools agree the day a seeded run does produce them.
+  // The chips exist because this lab seeds nine remembered repos (see seed()). They were first found
+  // by `~/.claude/scripts/tablet-audit.cjs` against prod.
   { sel: ".repo-chip-pick", min: 34, why: "one chip per remembered repo; 44 would double the composer" },
   { sel: ".repo-chip-x", min: 34, why: "the forget-this-repo ✕ welded to its chip" },
+  { sel: ".repo-add", min: 34, why: "the add-a-repo + closing the chip row" },
   { sel: ".changes-chip", min: 34, why: "inline on a card whose whole face is already the tap target" },
   { sel: ".mode-toggle", min: 34, why: "113px wide; a 44px row would push the composer down again" },
   { sel: ".card-dismiss", min: 32, why: "corner glyph on a card that is itself the tap target" },
@@ -101,8 +101,7 @@ function seed(dataDir) {
   // timestamps would make `.dl-chip:nth-child(2)` land on either file at random.
   finding.run("tablet-lab-dl-md", TASK_ID, "Sweep report", "The nightly report", path.join(SERVER_ROOT, "data", "report.md"), "Sweep report", now);
   finding.run("tablet-lab-dl-bin", TASK_ID, "Trace capture", "An opaque capture", path.join(SERVER_ROOT, "data", "trace.bin"), "Trace capture", now + 1);
-  // NINE remembered repos, because the recent-repo control only renders at all with 2+ and the
-  // failure it caused needed a LIST: as chips they wrap to four rows and take 162px of a 679px rail.
+  // NINE remembered repos, because the failure the recent-repo row caused needed a LIST: as chips they wrap to four rows and take 162px of a 679px rail.
   // Seeding one (or none) is how a lab reports green over a director pane with no visible chat.
   db.prepare("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(
     "setting_recent_repos",

@@ -734,6 +734,13 @@ button { font-family: inherit; cursor: pointer; }
   padding: 3px 7px 3px 4px; font-size: 13px; line-height: 1; transition: color 0.12s;
 }
 .repo-chip-x:hover { color: var(--text); }
+/* Dashed like an empty slot, so it reads as "add one" next to the solid chips it creates. */
+.repo-add {
+  flex: 0 0 auto; cursor: pointer; min-width: 24px; padding: 3px 7px;
+  border: 1px dashed var(--line); border-radius: var(--r-sm); background: none;
+  color: var(--text-faint); font-size: 13px; line-height: 1; transition: color 0.12s, border-color 0.12s;
+}
+.repo-add:hover { color: var(--text); border-color: var(--line-strong); }
 
 /* ---- workspace path autocomplete ---- */
 .ws-wrap { position: relative; flex: 1; display: flex; }
@@ -3420,10 +3427,11 @@ button.note-from:hover { color: var(--text-dim); }
   .inject-bar .row .inject-row-spacer, .inject-bar .row .inject-id { display: none; }
   .board-tab { min-height: var(--tap-sm); }
   .title-edit { min-height: var(--tap-sm); }
-  /* The recent-repo chips only render with 2+ repos remembered, and the ✕ that forgets one was a
-     19px target beside a 20px name. The board's Closed disclosure was 22px. */
+  /* The ✕ that forgets a recent repo was a 19px target beside a 20px name. The board's Closed
+     disclosure was 22px. */
   .repo-chip-pick { min-height: var(--tap-sm); padding: 0 4px 0 10px; }
   .repo-chip-x { min-height: var(--tap-sm); min-width: var(--tap-sm); padding: 0 8px; }
+  .repo-add { min-height: var(--tap-sm); min-width: var(--tap-sm); }
   .closed-toggle { min-height: var(--tap-sm); padding: 4px 8px; }
   /* The workspace chip became a button (it opens the folder), so it needs a finger-sized box too. */
   .ws-path { min-height: var(--tap-sm); }

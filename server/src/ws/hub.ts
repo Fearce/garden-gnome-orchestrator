@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
 import type { AccountManager } from "../accounts/accountManager.js";
@@ -20,7 +21,7 @@ import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./pro
 import { isAuthed } from "../auth.js";
 import { logCrash } from "../crashLog.js";
 import { CHAT_PAGE_SIZE, THREAD_HISTORY_PAGE_SIZE } from "../types.js";
-import type { Message } from "../types.js";
+import type { Message, OrchestratorSettings } from "../types.js";
 import { injectThreadWithReceipt } from "./threadInjectionReceipt.js";
 
 /** Owner-facing rewrite for CLI structured-role walls (Grok multi-turn QA especially). Idempotent
@@ -170,8 +171,19 @@ export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs:
   };
 }
 
+/** A cached connect snapshot with the settings read fresh. The console adopts `hello.settings` wholesale,
+ *  so a snapshot built before a settings write, served inside the cache window, rolled back what the
+ *  owner had just changed (a toggle, a newly remembered repo). Settings come from kv in memory, so reading
+ *  them on each serve costs nothing next to the board the cache exists to protect. */
+export function withLiveSettings(snapshot: () => ServerEvent, settings: () => OrchestratorSettings): () => ServerEvent {
+  return () => {
+    const event = snapshot();
+    return event.type === "hello" ? { ...event, settings: settings() } : event;
+  };
+}
+
 export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
-  const helloSnapshot = createHelloCache(() => buildHello(ctx), ctx.hub);
+  const helloSnapshot = withLiveSettings(createHelloCache(() => buildHello(ctx), ctx.hub), () => ctx.manager.settings());
 
   fastify.get("/ws", { websocket: true }, (socket, request) => {
     if (!isAuthed(request.headers.cookie)) {
@@ -362,6 +374,18 @@ export async function handleCommand(
       break;
     case "settings.set":
       ctx.manager.setSettings(cmd.settings);
+      break;
+    case "recentRepos.remember":
+      if (existsSync(cmd.path)) {
+        ctx.manager.rememberRecentRepo(cmd.path);
+      } else {
+        // The chip went up optimistically; hand this console the real list back along with the reason.
+        send(socket, { type: "settings", settings: ctx.manager.settings() });
+        send(socket, { type: "notice", level: "warn", title: "Repo not added", message: `"${cmd.path}" doesn't exist on this machine.` });
+      }
+      break;
+    case "recentRepos.forget":
+      ctx.manager.forgetRecentRepo(cmd.path);
       break;
     case "codex.test": {
       const result = await ctx.manager.testCodexConnection(cmd.apiKey);

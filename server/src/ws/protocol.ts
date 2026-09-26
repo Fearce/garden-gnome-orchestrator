@@ -618,6 +618,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // One-shot owner override of the CURRENT Token Safety freeze: releases it and resumes the work it held
   // through the ordinary capacity-resume path. Not a setting; the next genuine crossing trips normally.
   z.object({ type: z.literal("tokenSafety.bypass") }),
+  // The composer's recent-repo chips. The server edits the stored list itself, so a console holding a
+  // stale copy can never write it back over a repo another dispatch just added.
+  z.object({ type: z.literal("recentRepos.remember"), path: z.string().trim().min(1).max(600) }),
+  z.object({ type: z.literal("recentRepos.forget"), path: z.string().trim().min(1).max(600) }),
   z.object({ type: z.literal("snapshot.request") }),
   // The cheap heartbeat. `snapshot.request` still exists and is still what a reconnect, a re-shown tab
   // and the slow periodic resync use — this is only for keeping the tunnel warm.

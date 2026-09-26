@@ -1380,6 +1380,8 @@ export type ClientCommand =
   | { type: "supervisor.message"; content: string; targetIds: string[]; clientId?: string }
   | { type: "supervisor.runNow" }
   | { type: "tokenSafety.bypass" }
+  | { type: "recentRepos.remember"; path: string }
+  | { type: "recentRepos.forget"; path: string }
   | { type: "snapshot.request" }
   // The cheap keep-alive; `snapshot.request` stays for reconnect, tab re-show and the slow resync.
   | { type: "ping" };

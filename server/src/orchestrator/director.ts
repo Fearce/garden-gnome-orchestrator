@@ -142,6 +142,7 @@ export class Director {
       );
       return;
     }
+    if (workspace?.trim() && existsSync(workspace.trim())) this.api.rememberRecentRepo(workspace);
     // A new user turn opens a fresh segment; a dispatch during it links back to this prompt (+ the
     // director's replies, appended as they stream) so the task is reachable from a search hit.
     this.currentTurnMsgIds = [msg.id];
@@ -223,6 +224,7 @@ export class Director {
       );
       return;
     }
+    this.api.rememberRecentRepo(ws);
 
     const title = directTitle(text);
     // The composer's effort pick rides along: with no planner-adjacent director in the loop, the owner
@@ -286,6 +288,7 @@ export class Director {
       this.postDirectorNote(`Can't dispatch directly: "${ws}" doesn't exist on disk. Fix the workspace path and send again.`);
       return;
     }
+    this.api.rememberRecentRepo(ws);
 
     const title = directTitle(text);
     const id = await this.api.dispatch({

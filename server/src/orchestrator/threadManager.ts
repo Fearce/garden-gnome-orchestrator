@@ -239,6 +239,14 @@ function planDigest(plan?: PlanOutput): string | undefined {
 /** Validate an incoming model-overrides map: keep only known roles, trim + length-cap the model ids,
  *  drop blanks, drop subscriptions left with no entries, and cap the number of subscriptions. Bounds a
  *  client-supplied blob before it's persisted (subscription ids and model ids both originate from the client). */
+/** One spelling per recent repo: trimmed and without a trailing separator, so `C:\x\` and `C:\x` are one
+ *  chip. A bare root such as `/` or `C:\` keeps its separator, because there it is the path. */
+export function normalizeRecentRepo(path: string): string {
+  const p = path.trim();
+  const stripped = p.replace(/[/\\]+$/, "");
+  return !stripped || /^[A-Za-z]:$/.test(stripped) ? p : stripped;
+}
+
 function sanitizeModelOverrides(input: ModelOverrides): ModelOverrides {
   const out: ModelOverrides = {};
   for (const [subId, roles] of Object.entries(input ?? {})) {
@@ -4194,6 +4202,30 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
   }
 
+  /** Move a repo the owner just dispatched to (or added from the composer) to the front of the recent
+   *  list and broadcast it. The server owns this edit. The console used to send the whole list back
+   *  after each dispatch, which a dropped socket lost while the dispatch itself was replayed, and the next
+   *  `hello` then overwrote the list without the new repo. */
+  rememberRecentRepo(path: string): void {
+    const p = normalizeRecentRepo(path);
+    if (!p) return;
+    this.writeRecentRepos([p, ...this.recentRepos()]);
+    this.hub.publish({ type: "settings", settings: this.settings() });
+  }
+
+  forgetRecentRepo(path: string): void {
+    const p = normalizeRecentRepo(path);
+    this.writeRecentRepos(this.recentRepos().filter((x) => normalizeRecentRepo(x) !== p));
+    this.hub.publish({ type: "settings", settings: this.settings() });
+  }
+
+  /** Persist the recent-repo list most-recent first: trailing separators dropped, blanks and duplicates
+   *  removed, capped at the display max so the stored list can never outgrow what a client sends. */
+  private writeRecentRepos(list: readonly string[], max = this.settingNum("setting_max_recent_repos", 5, 1, 20)): void {
+    const cleaned = list.map(normalizeRecentRepo).filter(Boolean);
+    this.db.kvSet("setting_recent_repos", JSON.stringify([...new Set(cleaned)].slice(0, Math.min(max, 20))));
+  }
+
   /** The director persona's operator-chosen display name. Defaults to a conspicuous placeholder so a
    *  fresh install visibly prompts the operator to set their own in Settings. Unlike the gnome-pool
    *  agents, the director is a singleton persona, so its name is one global setting — not a per-task
@@ -4625,14 +4657,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.defaultModeEffort !== undefined && (patch.defaultModeEffort === "auto" || CLAUDE_EFFORTS.includes(patch.defaultModeEffort)))
       this.db.kvSet("setting_default_mode_effort", patch.defaultModeEffort);
     if (patch.maxRecentRepos !== undefined) this.db.kvSet("setting_max_recent_repos", String(patch.maxRecentRepos));
-    // Recent repos: de-dupe (most-recent first), drop blanks, and cap at the current max before persisting
-    // so the stored list can never outgrow the display cap regardless of what a client sends.
-    if (patch.recentRepos !== undefined) {
-      const max = patch.maxRecentRepos ?? this.settingNum("setting_max_recent_repos", 5, 1, 20);
-      const cleaned = patch.recentRepos.map((p) => p.trim()).filter(Boolean);
-      const deduped = [...new Set(cleaned)].slice(0, Math.min(max, 20));
-      this.db.kvSet("setting_recent_repos", JSON.stringify(deduped));
-    }
+    // A console from before recentRepos.remember/forget still sends the whole list.
+    if (patch.recentRepos !== undefined) this.writeRecentRepos(patch.recentRepos, patch.maxRecentRepos);
     const settings = this.settings();
     this.hub.publish({ type: "settings", settings });
     this.pumpQueue();

@@ -411,6 +411,10 @@ interface State {
   dismiss: (threadId: string) => void;
   setApproval: (on: boolean) => void;
   setSettings: (patch: SettingsPatch) => void;
+  /** Add a repo to the composer's recent-repo chips (front of the list) or drop one. The server edits the
+   *  stored list and broadcasts it; the local change is only the optimistic preview of that broadcast. */
+  rememberRepo: (path: string) => void;
+  forgetRepo: (path: string) => void;
   /** Save the Director's standing directives. Returns false when the socket could not carry the write,
    *  so the dialog keeps the owner's text instead of closing over a lost save. */
   setDirectorDirectives: (text: string) => boolean;
@@ -1471,6 +1475,22 @@ export const useStore = create<State>((set) => ({
     const { openaiApiKey: _key, discordBotToken: _bot, ...local } = patch;
     set((s) => ({ settings: { ...s.settings, ...local } }));
     sendCommand({ type: "settings.set", settings: patch });
+  },
+  // Projected only once the command is on the wire: a chip shown for a write the socket dropped would
+  // sit there until the next hello silently took it away again, which is the bug this replaced.
+  rememberRepo: (path) => {
+    const p = path.trim();
+    if (!p || !sendCommand({ type: "recentRepos.remember", path: p })) return;
+    set((s) => ({
+      settings: {
+        ...s.settings,
+        recentRepos: [p, ...s.settings.recentRepos.filter((x) => x !== p)].slice(0, s.settings.maxRecentRepos),
+      },
+    }));
+  },
+  forgetRepo: (path) => {
+    if (!sendCommand({ type: "recentRepos.forget", path })) return;
+    set((s) => ({ settings: { ...s.settings, recentRepos: s.settings.recentRepos.filter((x) => x !== path) } }));
   },
   setDirectorDirectives: (text) => {
     const sent = sendCommand({ type: "settings.set", settings: { directorDirectives: text } });
