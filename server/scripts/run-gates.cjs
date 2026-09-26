@@ -186,6 +186,7 @@ const GATES = [
   "test:usage-saving-resume-drift",
   "test:themes",
   "test:fonts",
+  "test:gnome-skins",
   "test:screensaver",
   "test:git-console-ui",
   "test:lazy-chunks-ui",
