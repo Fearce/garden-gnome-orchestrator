@@ -248,6 +248,7 @@ async function main(): Promise<void> {
     check("but a stally hour does not fill the console with the same line", refusalLogs === 0, String(refusalLogs));
     await sleep(20);
     check("and still nothing is staged or fired", restarts === 0 && !db.kvGet(PENDING_KEY));
+    coordinator.stop();
     db.raw.close();
   }
 
@@ -271,6 +272,7 @@ async function main(): Promise<void> {
     check("the request is not refused", result.outcome !== "refused", result.outcome);
     await sleep(60);
     check("and the recovery restart actually fires", restarts === 1, String(restarts));
+    coordinator.stop();
     db.raw.close();
   }
 
@@ -289,6 +291,7 @@ async function main(): Promise<void> {
     const result = coordinator.request({ label: "deploy abc1234", commit: "abc1234", stampedAt: Date.now() });
     check("a deploy still defers behind active work", result.outcome === "deferred", result.outcome);
     check("and is staged durably", !!db.kvGet(PENDING_KEY));
+    coordinator.stop();
     db.raw.close();
   }
 
@@ -323,6 +326,7 @@ async function main(): Promise<void> {
     await sleep(60);
     check("the stale recovery is dropped, not fired", restarts === 0, String(restarts));
     check("and the durable row is cleared so it cannot fire later either", !db.kvGet(PENDING_KEY), String(db.kvGet(PENDING_KEY)));
+    coordinator.stop();
     db.raw.close();
   }
 
@@ -356,6 +360,7 @@ async function main(): Promise<void> {
     check("and it is the deploy, not the recovery", status.pending?.requesters[0]?.commit === "abc1234");
     check("the durable row still holds it", (db.kvGet(PENDING_KEY) ?? "").includes("abc1234"));
     check("and the recovery requester is gone from it", !(db.kvGet(PENDING_KEY) ?? "").includes("health recovery"));
+    coordinator.stop();
     db.raw.close();
   }
 
