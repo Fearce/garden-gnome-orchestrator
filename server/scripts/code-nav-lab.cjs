@@ -74,12 +74,18 @@ function buildFixture(base) {
   // The dispatch baseline: everything after it is the task's own work, which is what makes its History
   // tab attributable and its commits routable into the repo console.
   const baseline = git(work, "rev-parse", "HEAD");
+  // The origin holds only the baseline, so the task's commit below is the one unpushed commit the
+  // row's ↑1 count reports, and pushes when clicked.
+  const origin = path.join(base, "origin.git");
+  git(base, "init", "--quiet", "--bare", "-b", "master", origin);
+  git(work, "remote", "add", "origin", origin);
+  git(work, "push", "--quiet", "-u", "origin", "master");
   fs.writeFileSync(path.join(work, "app.js"), "console.log('one');\nconsole.log('two');\n");
   git(work, "add", "-A");
   git(work, "commit", "--quiet", "-m", TASK_COMMIT_SUBJECT);
   // And an edit the task hasn't committed, so the Changes tab has a file to route from too.
   fs.writeFileSync(path.join(work, "app.js"), "console.log('one');\nconsole.log('two');\nconsole.log('three');\n");
-  return { parent, work, baseline };
+  return { parent, work, baseline, origin };
 }
 
 /**
@@ -139,7 +145,34 @@ async function openTask(page, title) {
   await page.waitForSelector(".detail-head", { timeout: 15_000 });
 }
 
-async function drive(page, shots) {
+/** The ↑N count pushes, and only after a confirm: a dismissed prompt leaves the remote untouched, an
+ *  accepted one lands the commit there and the count clears. Leaves the task panel closed. */
+async function pushFromCount(page, shots, fixture) {
+  console.log("\nPUSH: the unpushed count pushes, but only after a confirm");
+  const revParse = (cwd, ref) => execFileSync("git", ["rev-parse", ref], { cwd, encoding: "utf8", windowsHide: true }).trim();
+  await openTask(page, "Repo task");
+  await page.waitForSelector(".detail .codectx-push", { timeout: 60_000 });
+  check("the unpushed count is a push button", (await page.textContent(".detail .codectx-push"))?.trim() === "↑1");
+
+  let asked = "";
+  page.once("dialog", (d) => { asked = d.message(); void d.dismiss(); });
+  await page.click(".detail .codectx-push");
+  await page.waitForTimeout(1_500);
+  check("clicking asks first", asked.startsWith("Push 1 commit on master"), asked);
+  check("and cancelling pushes nothing", revParse(fixture.origin, "master") === fixture.baseline && (await page.isVisible(".detail .codectx-push")));
+
+  page.once("dialog", (d) => void d.accept());
+  await page.click(".detail .codectx-push");
+  await page.waitForSelector(".detail .codectx-push", { state: "detached", timeout: 60_000 }).catch(() => {});
+  check("confirming pushes the commit to the remote", revParse(fixture.origin, "master") === revParse(fixture.work, "HEAD"));
+  check("and the count clears once the remote has it", (await page.$(".detail .codectx-push")) === null);
+  check("with no push error shown", (await page.$(".detail .codectx-push-err")) === null);
+  await page.screenshot({ path: path.join(shots, "code-nav-pushed.png") });
+  await page.click('.detail-title-actions .close-x[aria-label="Close"]');
+  await page.waitForSelector(".detail", { state: "detached", timeout: 10_000 });
+}
+
+async function drive(page, shots, fixture) {
   const errors = [];
   page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -322,8 +355,10 @@ async function drive(page, shots) {
   await page.waitForSelector(".gc-window", { state: "detached", timeout: 15_000 });
   check("and returns to the Supervisor view, not the task board", await page.isVisible(".supervisor-view"));
 
-  console.log("\nPHONE — the row survives a narrow viewport without new header chrome");
   await openArea(page, "tasks");
+  await pushFromCount(page, shots, fixture);
+
+  console.log("\nPHONE — the row survives a narrow viewport without new header chrome");
   await page.setViewportSize({ width: 390, height: 844 });
   await openTask(page, "Repo task");
   // A phone opens the panel with its header collapsed (an existing reading-mode default), so the row
@@ -335,7 +370,9 @@ async function drive(page, shots) {
   const row = await page.$(".detail .codectx");
   const box = await row.boundingBox();
   check("the context row stays inside the viewport", !!box && box.x >= 0 && box.x + box.width <= 390 + 1, JSON.stringify(box));
-  check("both routes stay reachable on a phone", (await page.$$(".detail .codectx-actions .codectx-btn")).length === 2);
+  // The push above re-asked this context, so its Git half (and the Git route) may still be loading.
+  await branchText(page, ".detail");
+  check("both routes stay reachable on a phone", (await page.$$(".detail .codectx-actions .codectx-btn")).length === 2, (await page.textContent(".detail .codectx")) ?? "");
   const overflow = await page.$eval(".detail .codectx", (el) => el.scrollWidth - el.clientWidth);
   check("the row does not scroll sideways", overflow <= 1, String(overflow));
   await page.screenshot({ path: path.join(shots, "code-nav-phone.png") });
@@ -363,7 +400,7 @@ async function drive(page, shots) {
     seed(dataDir, fixture);
     browser = await loadChromium().launch();
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
-    await drive(page, shots);
+    await drive(page, shots, fixture);
   } finally {
     if (browser) await browser.close().catch(() => {});
     if (!keep) {
