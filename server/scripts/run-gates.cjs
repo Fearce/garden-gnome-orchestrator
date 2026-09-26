@@ -105,6 +105,7 @@ const GATES = [
   "test:provider-fallback",
   "test:park-classify",
   "test:portal-link",
+  "test:remote-access",
   "test:archive-thread",
   "test:restore-archived-deliverables",
   "test:deliverable-dedup",

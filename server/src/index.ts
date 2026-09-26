@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { registerPortalLink } from "./portalLink.js";
+import { isDirectLocal, isTunneled, loginOptions, registerRemoteGate, remoteCookieAttributes } from "./remoteAccess.js";
 import type { FastifyInstance, FastifyServerOptions } from "fastify";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
@@ -27,7 +28,7 @@ import { Director } from "./orchestrator/director.js";
 import { RepoConsole } from "./orchestrator/repoConsole.js";
 import { CodeContextService } from "./orchestrator/codeContext.js";
 import { OperatorNotes } from "./orchestrator/notes.js";
-import { RestartCoordinator, isLoopbackAddress } from "./orchestrator/restartCoordinator.js";
+import { RestartCoordinator } from "./orchestrator/restartCoordinator.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
 import { OnlineOffice } from "./office/onlineOffice.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
@@ -261,6 +262,8 @@ async function main(): Promise<void> {
   type ListenerOptions = FastifyServerOptions & { https?: { pfx: Buffer; passphrase: string } };
   async function buildApp(serverOpts: ListenerOptions): Promise<FastifyInstance> {
     const app = Fastify(serverOpts);
+    // First, so it covers every route below: a request relayed by a local tunnel is internet traffic.
+    registerRemoteGate(app, { googleEnabled, isAuthed });
 
     // Pasted images travel inline (base64) in a single prompt.new frame; lift the
     // default ws payload cap so a few screenshots don't get dropped on send.
@@ -335,9 +338,10 @@ async function main(): Promise<void> {
     //
     // Loopback-or-authed rather than cookie-only: the caller is a local child process with no session,
     // and any local process could already POST the script-hub's own restart — so this is a coordination
-    // point, not a privilege boundary. What it must exclude is the LAN, which this console is on.
-    const restartCoordinatorReachable = (req: { ip: string; headers: { cookie?: string } }): boolean =>
-      isLoopbackAddress(req.ip) || isAuthed(req.headers.cookie);
+    // point, not a privilege boundary. What it must exclude is the LAN, which this console is on, and a
+    // tunnel, whose relayed requests arrive from loopback too.
+    const restartCoordinatorReachable = (req: Parameters<typeof isDirectLocal>[0]): boolean =>
+      isDirectLocal(req) || isAuthed(req.headers.cookie);
 
     app.post<{ Body: { label?: string; commit?: string; stampedAt?: number } }>("/api/deploy/restart", async (req, reply) => {
       if (!restartCoordinatorReachable(req)) return reply.code(401).send({ error: "unauthorized" });
@@ -419,23 +423,29 @@ async function main(): Promise<void> {
     });
 
     // ---- access auth: Google sign-in AND/OR a password (both valid) → signed session cookie ----
-    const cookie30d = (name: string, value: string) =>
-      `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`;
+    // Secure is added only for HTTPS through a tunnel: the local HTTP and HTTPS listeners share one
+    // cookie jar, and a Secure cookie minted on :4319 would silently sign the owner out of :4317.
+    const cookie30d = (req: Parameters<typeof remoteCookieAttributes>[0], name: string, value: string) =>
+      `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}${remoteCookieAttributes(req)}`;
 
     app.get("/api/me", async (req) => ({
       authed: isAuthed(req.headers.cookie),
-      required: authRequired(),
-      google: googleEnabled(),
-      password: passwordEnabled(),
+      ...loginOptions(req, { google: googleEnabled(), password: passwordEnabled() }),
     }));
 
-    const callbackUri = (req: { headers: { host?: string; "x-forwarded-proto"?: string | string[] } }) =>
-      `${config.publicOrigin || `${(req.headers["x-forwarded-proto"] as string) || "http"}://${req.headers.host}`}/api/auth/callback`;
+    // A direct local sign-in returns to the address it started from, so setting PUBLIC_ORIGIN for the
+    // remote link cannot strand the local console's Google button on the public URL.
+    const callbackUri = (req: Parameters<typeof isDirectLocal>[0] & { protocol: string }) => {
+      const origin = isDirectLocal(req)
+        ? `${req.protocol}://${req.headers.host}`
+        : config.publicOrigin || `${(req.headers["x-forwarded-proto"] as string) || "http"}://${req.headers.host}`;
+      return `${origin}/api/auth/callback`;
+    };
 
     app.get<{ Querystring: { select?: string } }>("/api/auth/google", async (req, reply) => {
       if (!googleEnabled()) return reply.code(404).send({ error: "google auth not configured" });
       const nonce = randomUUID();
-      reply.header("set-cookie", `${OAUTH_STATE_COOKIE}=${nonce}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600`);
+      reply.header("set-cookie", `${OAUTH_STATE_COOKIE}=${nonce}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${remoteCookieAttributes(req)}`);
       return reply.redirect(googleAuthUrl(callbackUri(req), signState(nonce), req.query.select ? "select_account" : undefined));
     });
 
@@ -453,7 +463,7 @@ async function main(): Promise<void> {
       const email = await exchangeCodeForEmail(req.query.code, callbackUri(req));
       if (!email) return fail("auth");
       if (email.toLowerCase() !== config.allowedEmail) return fail("forbidden");
-      reply.header("set-cookie", [clearState, cookie30d(SESSION_COOKIE, makeSession(email))]);
+      reply.header("set-cookie", [clearState, cookie30d(req, SESSION_COOKIE, makeSession(email))]);
       return reply.redirect("/");
     });
 
@@ -461,6 +471,8 @@ async function main(): Promise<void> {
     // the same signed session cookie as Google — the password itself is never stored in any cookie.
     app.post<{ Body: { password?: string; token?: string } }>("/api/login", async (req, reply) => {
       if (!passwordEnabled()) return { ok: !authRequired() };
+      // Remote access is Google-only; the remote gate already refuses this, but never let a tunnel guess.
+      if (isTunneled(req)) return reply.code(403).send({ ok: false, error: "password sign-in is local only" });
       const ip = req.ip || "?";
       const now = Date.now();
       if (loginCooldown.size > 256) for (const [k, v] of loginCooldown) if (v <= now) loginCooldown.delete(k);
@@ -471,7 +483,7 @@ async function main(): Promise<void> {
       if (now < until) return reply.code(429).send({ ok: false, error: "too many attempts", retryMs: until - now });
       if (checkPassword(req.body?.password ?? req.body?.token)) {
         loginCooldown.delete(ip);
-        reply.header("set-cookie", cookie30d(SESSION_COOKIE, makeSession(config.allowedEmail)));
+        reply.header("set-cookie", cookie30d(req, SESSION_COOKIE, makeSession(config.allowedEmail)));
         return { ok: true };
       }
       loginCooldown.set(ip, now + config.loginCooldownMs);

@@ -193,7 +193,9 @@ documented inline there. The ones worth knowing about:
 
 **On exposure:** this is built for localhost and your own LAN. If `HOST` is set to anything
 non-local without a password or Google sign-in configured, the server refuses and binds back
-to `127.0.0.1`. Do not put it on the public internet.
+to `127.0.0.1`. Do not put it on the public internet directly. For access from anywhere, use
+the Google-locked Tailscale Funnel link in [docs/remote-access.md](docs/remote-access.md)
+(`npm run remote-access --prefix server -- on`), which keeps the listener on `127.0.0.1`.
 
 ### Run modes
 

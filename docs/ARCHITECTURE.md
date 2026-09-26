@@ -892,6 +892,14 @@ Three controls that make the console a hands-off, anywhere replacement for the C
     the tablet falls back to the password. Wrong account → `/?e=forbidden` (with a `select_account` escape).
   The login screen shows whichever methods are enabled (Google button + password field). Safety: the
   server **refuses to bind a non-localhost `HOST` without auth configured**, falling back to 127.0.0.1.
+  A direct local sign-in returns to the address it started from; `PUBLIC_ORIGIN` pins the rest.
+- **Remote access gate** (`server/src/remoteAccess.ts`). A local tunnel (Tailscale Funnel,
+  `npm run remote-access --prefix server -- on`) relays from loopback, so a request is classed as
+  tunnelled by loopback source plus a forwarding header. Tunnelled requests get Google sign-in only
+  (`/api/me` hides the password, `/api/login` refuses), every route except the static bundle and the
+  four sign-in routes needs the session (an `onRequest` hook registered before all routes), the
+  loopback exemption on `/api/deploy/*` does not apply, cookies gain `Secure`, and without Google
+  configured every tunnelled request is 403. Setup and the owner steps: `docs/remote-access.md`.
 - **Plan-approval gate** (global toggle, persisted in `kv:require_plan_approval`).
   When on, `runPipeline` pauses after the plan (and any research) into
   `awaiting_approval`, emits `plan.ready` (the composed kickoff), and `await`s a
