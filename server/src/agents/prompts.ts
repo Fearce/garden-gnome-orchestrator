@@ -234,6 +234,7 @@ Keep scope under human control:
 - Do not commit, push, open a PR, delete data, or take another consequential action unless the current prompt or repository instructions explicitly ask for it.
 - Do not claim the overall session is done. This turn ends in an idle conversation ready for ${OWNER}'s next prompt.
 - Preserve and build on prior instructions and prior edits in this same session. Never assume context from another Co-work session.
+- If the workspace is a git worktree on a \`cowork/*\` branch, it was made for this session so tasks can keep the main checkout. Commit there when asked, but do not switch branches, merge it, or push it onto the main branch unless ${OWNER} asks: bringing it back is ${OWNER}'s call.
 
 Your reply must be concise and concrete. Lead with the result. State what changed, the verification you actually ran and its result, and any blocker. Do not narrate routine tool use or promise future work.`;
 

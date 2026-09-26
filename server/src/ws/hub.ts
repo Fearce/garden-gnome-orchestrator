@@ -244,7 +244,7 @@ export async function handleCommand(
       await ctx.director.dispatchVanilla(cmd.text, cmd.workspace, cmd.images, cmd.model, cmd.effort, cmd.clientId);
       break;
     case "cowork.create":
-      sendCoworkAction(socket, "create", ctx.cowork.create(cmd), cmd.clientId);
+      sendCoworkAction(socket, "create", cmd.worktree ? await ctx.cowork.createInWorktree(cmd) : ctx.cowork.create(cmd), cmd.clientId);
       break;
     case "cowork.send":
       sendCoworkAction(socket, "send", ctx.cowork.send(cmd.sessionId, cmd.text, cmd.clientId, cmd.attachments), cmd.clientId);

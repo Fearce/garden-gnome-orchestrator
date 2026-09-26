@@ -367,7 +367,7 @@ interface State {
   // their feeds missed whatever streamed while the socket was gone. The selected task is never asked.
   prefetchThreadHistory: (threadIds: string[], refresh?: boolean) => void;
   selectCowork: (id: string | null) => void;
-  createCowork: (input: { name?: string; workspace: string; provider?: CoworkSession["requestedProvider"]; model?: string | null }) => boolean;
+  createCowork: (input: { name?: string; workspace: string; provider?: CoworkSession["requestedProvider"]; model?: string | null; worktree?: boolean }) => boolean;
   sendCowork: (sessionId: string, text: string, mode?: "turn" | CoworkSteeringMode, attachments?: FileAttachment[]) => boolean;
   stopCowork: (sessionId: string) => void;
   renameCowork: (sessionId: string, name: string) => void;
@@ -1304,7 +1304,7 @@ export const useStore = create<State>((set) => ({
     set({ selectedCoworkId: id, coworkActionError: null });
     if (id) sendCommand({ type: "cowork.history", sessionId: id });
   },
-  createCowork: ({ name, workspace, provider, model }) => {
+  createCowork: ({ name, workspace, provider, model, worktree }) => {
     const path = workspace.trim();
     if (!path) return false;
     const clientId = newOutboundId();
@@ -1314,6 +1314,7 @@ export const useStore = create<State>((set) => ({
       workspace: path,
       ...(name?.trim() ? { name: name.trim() } : {}),
       ...(provider && model ? { provider, model } : {}),
+      ...(worktree ? { worktree: true } : {}),
       clientId,
     });
     if (!sent) set({ coworkCreating: false, coworkActionError: "Not delivered — the console is reconnecting." });

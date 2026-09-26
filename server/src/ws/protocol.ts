@@ -279,6 +279,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     workspace: z.string().min(1).max(600),
     provider: z.enum(["claude", "codex", "grok", "zai"]).optional(),
     model: z.string().min(1).max(100).optional(),
+    /** Pair in a fresh git worktree of the workspace's repo instead of the folder itself. */
+    worktree: z.boolean().optional(),
     clientId: z.string().uuid().optional(),
   }),
   z.object({

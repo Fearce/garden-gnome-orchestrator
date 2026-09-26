@@ -32,6 +32,7 @@ import type {
   RateLimitInfo,
 } from "../types.js";
 import { normalizeWorkspace } from "../types.js";
+import { createCoworkWorktree } from "./coworkWorktree.js";
 
 export interface CoworkTarget {
   provider: ImplementorProvider;
@@ -272,6 +273,26 @@ export class CoworkManager {
     });
     this.publishSession(session);
     return { ok: true, session };
+  }
+
+  /** `create`, but in a fresh git worktree of the chosen repository, so the session can pair while tasks
+   *  keep the main checkout. The transcript opens with where it is and how the work gets back. */
+  async createInWorktree(input: Parameters<CoworkManager["create"]>[0]): Promise<CoworkActionResult> {
+    const workspace = input.workspace.trim();
+    if (!workspace || !isAbsolute(workspace) || !existsSync(workspace)) return this.create(input);
+    const tree = await createCoworkWorktree(workspace, cleanName(input.name ?? "") || workspaceName(workspace));
+    if (!tree.ok) return { ok: false, error: tree.error };
+    const created = this.create({ ...input, workspace: tree.workspace });
+    if (!created.ok || !created.session) return created;
+    const message = this.db.upsertCoworkMessage({
+      sessionId: created.session.id,
+      role: "system",
+      kind: "system",
+      content: `Working in a separate worktree, ${tree.worktree}, on branch ${tree.branch} (from ${tree.base}). Tasks in the main checkout are not blocked by this session. To bring the work back, merge ${tree.branch} in the main checkout.`,
+      meta: { event: "cowork_worktree", worktree: tree.worktree, branch: tree.branch, base: tree.base },
+    });
+    this.hub.publish({ type: "cowork.message", message });
+    return created;
   }
 
   rename(sessionId: string, name: string): CoworkActionResult {

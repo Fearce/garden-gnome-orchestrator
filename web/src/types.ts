@@ -1326,7 +1326,7 @@ export type ClientCommand =
   | { type: "prompt.new"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
   | { type: "prompt.direct"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
   | { type: "prompt.vanilla"; text: string; workspace?: string; images?: ImageAttachment[]; model?: string; effort?: Effort; clientId?: string }
-  | { type: "cowork.create"; name?: string; workspace: string; provider?: ImplementorProvider; model?: string; clientId?: string }
+  | { type: "cowork.create"; name?: string; workspace: string; provider?: ImplementorProvider; model?: string; worktree?: boolean; clientId?: string }
   | { type: "cowork.send"; sessionId: string; text: string; attachments?: FileAttachment[]; clientId?: string }
   | { type: "cowork.steer"; sessionId: string; text: string; mode: CoworkSteeringMode; attachments?: FileAttachment[]; clientId?: string }
   | { type: "cowork.stop"; sessionId: string }

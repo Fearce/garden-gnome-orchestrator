@@ -27,6 +27,12 @@ function statusText(session: CoworkSession): string {
   }
 }
 
+/** The refusal a turn gets while a task agent owns the workspace (server `coworkTaskConflict`). That is
+ *  the one error a worktree resolves, so it is the one that offers one. */
+function isWorkspaceBusy(error: string | null): boolean {
+  return !!error && /is already using this workspace/.test(error);
+}
+
 /** Esc peels the TOP dialog only. The popup's own hand-off dialogs close first; an image lightbox handles
  *  Esc itself; and a key a field already consumed (the rename box's cancel) never reaches the popup. */
 function useEscapeToClose(open: boolean, closeTop: () => void): void {
@@ -64,16 +70,18 @@ export function CoworkPopup() {
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
   const [promoteOpen, setPromoteOpen] = useState(false);
+  const [worktreeOpen, setWorktreeOpen] = useState(false);
   const openSummary = useStore((state) => state.openCoworkSummary);
   const summaryFor = useStore((state) => state.coworkSummaryFor);
   const attachmentSession = useRef(selectedId);
 
   const selected = selectedId ? sessionsById[selectedId] : undefined;
   const closeTop = useCallback(() => {
-    if (summaryFor) openSummary(null);
+    if (worktreeOpen) setWorktreeOpen(false);
+    else if (summaryFor) openSummary(null);
     else if (promoteOpen) setPromoteOpen(false);
     else select(null);
-  }, [summaryFor, openSummary, promoteOpen, select]);
+  }, [worktreeOpen, summaryFor, openSummary, promoteOpen, select]);
   useEscapeToClose(!!selected, closeTop);
   const pending = selectedId
     ? outbound.filter((message): message is Extract<typeof message, { surface: "cowork" }> =>
@@ -195,6 +203,11 @@ export function CoworkPopup() {
               <small>{selected.error
                 ? "The conversation is intact. Send a new instruction when you’re ready."
                 : "Nothing was discarded. You can adjust the action or keep working in this session."}</small>
+              {isWorkspaceBusy(actionError) ? (
+                <button className="btn ghost sm cowork-worktree-offer" onClick={() => setWorktreeOpen(true)}>
+                  Start a new session in a worktree
+                </button>
+              ) : null}
             </div>
           ) : null}
 
@@ -302,6 +315,12 @@ export function CoworkPopup() {
         </div>
         {promoteOpen ? <PromoteCoworkModal session={selected} onClose={() => setPromoteOpen(false)} /> : null}
         {summaryFor ? <CoworkSummaryModal sessionId={summaryFor} onClose={() => openSummary(null)} /> : null}
+        {worktreeOpen ? (
+          <NewCoworkModal
+            onClose={() => setWorktreeOpen(false)}
+            seed={{ workspace: selected.workspace, name: `${selected.name} (worktree)`, worktree: true }}
+          />
+        ) : null}
       </section>
     </div>
   );
@@ -328,15 +347,23 @@ interface ModelOption {
   label: string;
 }
 
-export function NewCoworkModal({ onClose }: { onClose: () => void }) {
+/** What a new session starts from when it is opened from somewhere other than the board button. */
+interface NewCoworkSeed {
+  workspace: string;
+  name?: string;
+  worktree?: boolean;
+}
+
+export function NewCoworkModal({ onClose, seed }: { onClose: () => void; seed?: NewCoworkSeed }) {
   const settings = useStore((state) => state.settings);
   const create = useStore((state) => state.createCowork);
   const creating = useStore((state) => state.coworkCreating);
   const error = useStore((state) => state.coworkActionError);
   const clearError = useStore((state) => state.clearCoworkError);
   const selectedId = useStore((state) => state.selectedCoworkId);
-  const [name, setName] = useState("");
-  const [workspace, setWorkspace] = useState(settings.recentRepos[0] ?? "");
+  const [name, setName] = useState(seed?.name ?? "");
+  const [workspace, setWorkspace] = useState(seed?.workspace ?? settings.recentRepos[0] ?? "");
+  const [worktree, setWorktree] = useState(seed?.worktree ?? false);
   const [target, setTarget] = useState("auto");
   const [picker, setPicker] = useState(false);
   const [submitted, setSubmitted] = useState(false);
@@ -370,6 +397,7 @@ export function NewCoworkModal({ onClose }: { onClose: () => void }) {
       workspace,
       provider: chosen?.provider ?? null,
       model: chosen?.model ?? null,
+      worktree,
     });
     if (sent) setSubmitted(true);
   };
@@ -390,6 +418,11 @@ export function NewCoworkModal({ onClose }: { onClose: () => void }) {
               <button className="btn ghost" onClick={() => setPicker(true)} title="Browse folders"><FolderIcon /></button>
             </div>
             <small>The Co-worker runs with this folder as its working directory.</small>
+          </label>
+          <label className="cowork-worktree-toggle">
+            <input type="checkbox" checked={worktree} onChange={(event) => setWorktree(event.target.checked)} />
+            <span>Work in a separate git worktree</span>
+            <small>A second checkout of this repo on its own <span className="mono">cowork/…</span> branch, next to it. Running tasks never block it; merge the branch when you’re done.</small>
           </label>
           <label>
             <span>Session name <em>optional</em></span>

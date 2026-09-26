@@ -150,6 +150,7 @@
     "test:cowork": "tsx src/tests/cowork.itest.ts",
     "cowork-lab": "node scripts/cowork-lab.cjs",
     "test:cowork-summary": "tsx src/tests/coworkSummary.test.ts",
+    "test:cowork-worktree": "tsx src/tests/coworkWorktree.test.ts",
     "test:cowork-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/cowork-ui.test.tsx && tsx --tsconfig ../web/tsconfig.json ../web/scripts/cowork-transcript.test.tsx",
     "test:cowork-health": "node scripts/cowork-health.test.cjs",
     "test:auto-review": "tsx src/tests/autoReview.itest.ts",

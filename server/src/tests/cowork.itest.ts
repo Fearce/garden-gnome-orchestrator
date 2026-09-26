@@ -11,6 +11,7 @@ process.env.CAP_RETRY_MS = "0";
 process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
 
+import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -288,6 +289,19 @@ async function main(): Promise<void> {
         !clientCommandSchema.safeParse({ type: "cowork.send", sessionId: created.session!.id, text: "Bad name", attachments: [{ ...sourceFile, name: "../outside.txt" }] }).success,
     );
     check("unknown providers are rejected at the WebSocket boundary", !clientCommandSchema.safeParse({ type: "cowork.create", workspace, provider: "other", model: "x" }).success);
+    check("the worktree option parses at the WebSocket boundary", clientCommandSchema.safeParse({ type: "cowork.create", workspace, worktree: true }).success);
+    const notARepo = await cowork.createInWorktree({ workspace });
+    check("a worktree outside git is refused before any session exists", !notARepo.ok && notARepo.error?.includes("git repository") && !notARepo.session);
+    const repo = join(root, "repo");
+    mkdirSync(repo);
+    for (const args of [["init", "--quiet", "-b", "master"], ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "--quiet", "--allow-empty", "-m", "init"]]) {
+      execFileSync("git", args, { cwd: repo, windowsHide: true });
+    }
+    const paired = await cowork.createInWorktree({ name: "Pair beside tasks", workspace: repo });
+    const note = paired.session ? db.listCoworkMessages(paired.session.id).find((message) => (message.meta as { event?: string } | null)?.event === "cowork_worktree") : undefined;
+    check("a worktree session works in its own checkout, not the repo it came from", paired.ok && !!paired.session && paired.session.workspace !== realpathSync(repo) && existsSync(paired.session.workspace));
+    check("the transcript opens with the branch and how to bring it back", !!note && /cowork\/pair-beside-tasks/.test(note.content) && /merge/.test(note.content));
+    if (paired.session) cowork.remove(paired.session.id);
 
     const sessionId = created.session!.id;
     const rejectedAttachment = cowork.send(sessionId, "Do not persist this", undefined, [{ ...sourceFile, dataBase64: "%%%" }]);

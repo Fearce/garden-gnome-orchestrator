@@ -81,6 +81,10 @@ the disposable file cache, which the next turn rehydrates. Gate `test:cowork-hea
   promote first, a `.lightbox` handles its own, a field's `preventDefault` wins). `openInIde` and
   `openGitConsole` clear it; `returnToOrigin` re-opens it for a `cowork` origin. Do not bring back a
   `"cowork"` BoardView.
+- **A worktree is the way past the workspace guard, not a hole in it.** `cowork.create` with
+  `worktree: true` (`createInWorktree` → `coworkWorktree.ts`) makes a sibling `<repo>-cowork-<slug>` checkout
+  on a fresh `cowork/<slug>` branch; its path differs, so `coworkTaskConflict` (exact path match) never
+  fires. Nothing deletes a worktree automatically: an unmerged branch there is the owner's work.
 - **The popup is MOUNTED, not re-rendered.** `Board.tsx` renders `<CoworkPopup />` unconditionally and it
   returns null while closed. Turning that into `{open && <CoworkPopup/>}` silently drops the unsent draft
   and staged attachments on every close; they are component state.
@@ -115,7 +119,7 @@ the disposable file cache, which the next turn rehydrates. Gate `test:cowork-hea
   lab's environment, or every lab stalls on the sign-in page waiting for `.accounts .acct`.
 
 ## Verify
-`npm run test:cowork && npm run test:cowork-summary && npm run test:cowork-ui && npm run test:cowork-health --prefix server` (all
+`npm run test:cowork && npm run test:cowork-summary && npm run test:cowork-worktree && npm run test:cowork-ui && npm run test:cowork-health --prefix server` (all
 free, no agent, no quota), then `npm run typecheck && npm run build`. `cowork.itest.ts` stubs only the
 agent-spawning leaf (`CoworkRuntime`), so every decision above runs for real — extend it rather than
 writing a new harness, and do the revert-check (`threadmanager-itest.md`): the pre-start race and the

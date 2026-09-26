@@ -4001,6 +4001,11 @@ button.note-from:hover { color: var(--text-dim); }
 .cowork-workspace-field { display: flex; align-items: stretch; gap: 7px; }
 .cowork-workspace-field > :first-child { min-width: 0; flex: 1; }
 .cowork-workspace-field .btn { flex: 0 0 auto; }
+/* The worktree option: a checkbox row, its explanation hanging under the label rather than the box. */
+.cowork-create-body .cowork-worktree-toggle { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px 8px; cursor: pointer; }
+.cowork-create-body .cowork-worktree-toggle input { width: auto; margin: 0; padding: 0; accent-color: var(--role-coworker); }
+.cowork-create-body .cowork-worktree-toggle small { grid-column: 2; }
+.cowork-worktree-offer { grid-column: 2; justify-self: start; margin-top: 6px; }
 .cowork-create-error { padding: 8px 10px; color: var(--danger); border: 1px solid color-mix(in oklch, var(--danger) 42%, var(--line)); border-radius: var(--r-sm); background: color-mix(in oklch, var(--danger) 8%, var(--bg)); font-size: 11.5px; }
 
 /* ---- Co-work QoL: the folded transcript, the board cards, and the two hand-off dialogs ---- */
