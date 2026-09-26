@@ -56,12 +56,6 @@ knows an enrichment is outstanding.
   `gitConsoleCommit` at mount; `HistoryPane` then matches by PREFIX (the two surfaces abbreviate hashes
   independently) and says so when the commit is outside the window it shows. Setting one without the
   other lands on Changes with the request silently spent. Revert-checked — the lab goes red.
-- **After any git action the row passes through the quick frame again.** `repo.result` triggers
-  `refreshCodeContexts`, and the server answers first with `gitPending: true` (Code route only, no Git
-  route, "loading Git details…"). A lab that counts routes right after a push/pull/checkout reads that
-  frame and fails; wait on `branchText(...)` first. The ↑N count is itself a push button
-  (`UnpushedCount`: confirm, then `repoAction` push, blocked result offers push-anyway), so
-  `code-nav-lab`'s push section is the one that hits this.
 - **A tsx SSR gate cannot load a component stylesheet.** `CodeContextBar` reaching `codeContext.css`
   broke `test:cowork-ui` with `ERR_UNKNOWN_FILE_EXTENSION`, nothing to do with what that gate asserts.
   Fix is `web/scripts/ssrCssStub.mjs`, imported before the dynamic component import — not relocating
