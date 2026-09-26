@@ -899,7 +899,9 @@ Three controls that make the console a hands-off, anywhere replacement for the C
   (`/api/me` hides the password, `/api/login` refuses), every route except the static bundle and the
   four sign-in routes needs the session (an `onRequest` hook registered before all routes), the
   loopback exemption on `/api/deploy/*` does not apply, cookies gain `Secure`, and without Google
-  configured every tunnelled request is 403. Setup and the owner steps: `docs/remote-access.md`.
+  configured every tunnelled request is 403. All of it is inert unless `REMOTE_ACCESS=1`; when on,
+  a direct loopback request whose Host names this machine is signed in automatically, so localhost
+  never prompts. Setup and the owner steps: `docs/remote-access.md`.
 - **Plan-approval gate** (global toggle, persisted in `kv:require_plan_approval`).
   When on, `runPipeline` pauses after the plan (and any research) into
   `awaiting_approval`, emits `plan.ready` (the composed kickoff), and `await`s a

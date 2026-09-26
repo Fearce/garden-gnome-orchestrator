@@ -72,6 +72,7 @@ async function sessionCookie(base, password) {
       PUBLIC_ORIGIN,
       SESSION_SECRET: "remote-access-lab-session-secret",
       AUTH_PASSWORD: password,
+      REMOTE_ACCESS: "1",
     },
   });
   const proxy = await startTunnel();
@@ -96,6 +97,8 @@ async function sessionCookie(base, password) {
     check("password login still works locally", local.status === 200 && !!local.value, `status ${local.status}`);
     check("the local session cookie is not Secure (shared by :4317 and :4319)", !local.secure);
     check("the local deploy script still reaches /api/deploy/status", (await fetch(`${direct}/api/deploy/status`)).status === 200);
+    const localMe = await (await fetch(`${direct}/api/me`, { headers: { host: `localhost:${PORT}` } })).json();
+    check("localhost never asks for sign-in while the remote link is on", localMe.authed === true, JSON.stringify(localMe));
     const localGoogle = (await fetch(`${direct}/api/auth/google`, { redirect: "manual" })).headers.get("location") || "";
     check("local Google sign-in returns to the local address", localGoogle.includes(encodeURIComponent(`${direct}/api/auth/callback`)), localGoogle);
 

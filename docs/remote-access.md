@@ -20,9 +20,14 @@ those requests apart by the forwarding headers the tunnel adds (`X-Forwarded-For
 - **Fails closed.** If Google sign-in is not configured, every tunnelled request gets 403.
 - **Secure cookies.** Session and sign-in cookies set over the HTTPS tunnel carry `Secure`.
 
-Direct local use is unchanged, with one consequence to know: once Google sign-in is configured,
-the local console asks for sign-in too. Use the Google button (it returns to the local address)
-or set `AUTH_PASSWORD` for a local password.
+**Off unless you switch it on.** Every rule above is inert until `REMOTE_ACCESS=1` is in
+`server/.env`, so other installs, including ones behind their own reverse proxy, behave exactly
+as before.
+
+**Localhost never asks for sign-in while it is on.** A direct visit to `localhost:4317` or
+`127.0.0.1:4317` is signed in automatically. That covers only a direct connection from this PC
+whose Host names this PC: a tunnel, a proxy, another machine on the LAN, or a web page on another
+domain that resolves to 127.0.0.1 gets nothing.
 
 ## One-time setup
 
@@ -43,6 +48,7 @@ or set `AUTH_PASSWORD` for a local password.
    ```
    GOOGLE_CLIENT_ID=<client id>
    GOOGLE_CLIENT_SECRET=<client secret>
+   REMOTE_ACCESS=1
    ALLOWED_EMAIL=<your gmail address>
    PUBLIC_ORIGIN=https://<your DNSName>
    SESSION_SECRET=<a long random string>

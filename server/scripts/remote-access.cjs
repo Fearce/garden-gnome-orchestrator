@@ -34,6 +34,9 @@ function readiness(env, publicUrl) {
   if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
     blockers.push("Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in server/.env (Google sign-in is the only way in remotely).");
   }
+  if (env.REMOTE_ACCESS !== "1") {
+    blockers.push("Set REMOTE_ACCESS=1 in server/.env (switches on the remote lock; off by default for every install).");
+  }
   const owner = (env.ALLOWED_EMAIL || "").trim().toLowerCase();
   if (!owner || owner === PLACEHOLDER_OWNER) {
     blockers.push("Set ALLOWED_EMAIL in server/.env to the one Google address allowed in.");

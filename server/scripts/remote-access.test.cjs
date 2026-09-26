@@ -9,6 +9,7 @@ const {
 } = require("./remote-access.cjs");
 
 const READY_ENV = {
+  REMOTE_ACCESS: "1",
   GOOGLE_CLIENT_ID: "id.apps.googleusercontent.com",
   GOOGLE_CLIENT_SECRET: "secret",
   ALLOWED_EMAIL: "owner@gmail.com",
@@ -26,6 +27,7 @@ const URL_ = `https://${DNS}`;
   assert.match(r.blockers.join("\n"), /ALLOWED_EMAIL/);
 }
 assert.equal(readiness({ ...READY_ENV, ALLOWED_EMAIL: "you@example.com" }, URL_).ready, false, "the placeholder owner is not an owner");
+assert.equal(readiness({ ...READY_ENV, REMOTE_ACCESS: "" }, URL_).ready, false, "the server lock must be switched on first");
 assert.deepEqual(readiness(READY_ENV, URL_), { ready: true, blockers: [], warnings: [] });
 {
   const r = readiness({ ...READY_ENV, PUBLIC_ORIGIN: "", SESSION_SECRET: "" }, URL_);

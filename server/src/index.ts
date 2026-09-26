@@ -1,6 +1,14 @@
 import Fastify from "fastify";
 import { registerPortalLink } from "./portalLink.js";
-import { isDirectLocal, isTunneled, loginOptions, registerRemoteGate, remoteCookieAttributes } from "./remoteAccess.js";
+import {
+  isDirectLocal,
+  isTunneled,
+  loginOptions,
+  registerLocalAutoSignIn,
+  registerRemoteGate,
+  remoteAccessEnabled,
+  remoteCookieAttributes,
+} from "./remoteAccess.js";
 import type { FastifyInstance, FastifyServerOptions } from "fastify";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
@@ -264,6 +272,13 @@ async function main(): Promise<void> {
     const app = Fastify(serverOpts);
     // First, so it covers every route below: a request relayed by a local tunnel is internet traffic.
     registerRemoteGate(app, { googleEnabled, isAuthed });
+    // With the remote link on, localhost never asks for sign-in; only the public link does.
+    registerLocalAutoSignIn(app, {
+      enabled: remoteAccessEnabled,
+      isAuthed,
+      sessionCookie: () =>
+        `${SESSION_COOKIE}=${encodeURIComponent(makeSession(config.allowedEmail))}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`,
+    });
 
     // Pasted images travel inline (base64) in a single prompt.new frame; lift the
     // default ws payload cap so a few screenshots don't get dropped on send.
@@ -436,7 +451,7 @@ async function main(): Promise<void> {
     // A direct local sign-in returns to the address it started from, so setting PUBLIC_ORIGIN for the
     // remote link cannot strand the local console's Google button on the public URL.
     const callbackUri = (req: Parameters<typeof isDirectLocal>[0] & { protocol: string }) => {
-      const origin = isDirectLocal(req)
+      const origin = remoteAccessEnabled() && isDirectLocal(req)
         ? `${req.protocol}://${req.headers.host}`
         : config.publicOrigin || `${(req.headers["x-forwarded-proto"] as string) || "http"}://${req.headers.host}`;
       return `${origin}/api/auth/callback`;
