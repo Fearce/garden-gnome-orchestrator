@@ -12,6 +12,7 @@ import {
 import type { FastifyInstance, FastifyServerOptions } from "fastify";
 import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
+import { registerConsoleMount, rewriteConsoleUrl } from "./webMount.js";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, basename, extname } from "node:path";
 import { config } from "./config.js";
@@ -270,20 +271,31 @@ async function main(): Promise<void> {
   // typed shape on the http server so both instances share one FastifyInstance type.
   type ListenerOptions = FastifyServerOptions & { https?: { pfx: Buffer; passphrase: string } };
   async function buildApp(serverOpts: ListenerOptions): Promise<FastifyInstance> {
-    const app = Fastify(serverOpts);
-    // First, so it covers every route below: a request relayed by a local tunnel is internet traffic.
+    const app = Fastify({ ...serverOpts, rewriteUrl: rewriteConsoleUrl });
+    // Install the existing auth hooks before registering either root or mounted routes.
     registerRemoteGate(app, { googleEnabled, isAuthed });
-    // With the remote link on, localhost never asks for sign-in; only the public link does.
     registerLocalAutoSignIn(app, {
       enabled: remoteAccessEnabled,
       isAuthed,
       sessionCookie: () =>
         `${SESSION_COOKIE}=${encodeURIComponent(makeSession(config.allowedEmail))}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${60 * 60 * 24 * 30}`,
     });
+    registerConsoleMount(app);
 
     // Pasted images travel inline (base64) in a single prompt.new frame; lift the
     // default ws payload cap so a few screenshots don't get dropped on send.
-    await app.register(websocket, { options: { maxPayload: 64 * 1024 * 1024 } });
+    await app.register(websocket, { options: {
+      maxPayload: 64 * 1024 * 1024,
+      // Snapshots/history compress well; tiny streaming deltas should avoid zlib work. No retained
+      // context keeps each connection's memory bounded and never mixes data across messages.
+      perMessageDeflate: {
+        serverNoContextTakeover: true,
+        clientNoContextTakeover: true,
+        threshold: 4096,
+        concurrencyLimit: 4,
+        zlibDeflateOptions: { level: 3 },
+      },
+    } });
     registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos, onlineOffice, cowork, codeContext });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
     registerIdeRoutes(app, ide, isAuthed);
@@ -699,6 +711,7 @@ async function main(): Promise<void> {
       await app.register(fastifyStatic, {
         root: config.webDist,
         prefix: "/",
+        preCompressed: true,
         // A dotfile in a built web root is bookkeeping, never an asset — web/dist carries the build
         // stamp health and `deploy --verify` read. The plugin's own default is `allow`, which would
         // publish it unauthenticated on the LAN; `ignore` falls through to the SPA shell instead.

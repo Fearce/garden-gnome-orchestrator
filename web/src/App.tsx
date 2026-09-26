@@ -13,7 +13,7 @@ import { LazyChunkBoundary } from "./components/LazyChunkBoundary.js";
 import { useIdle } from "./components/screensaver/useIdle.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
-import ggLogo from "./assets/gg-logo.png";
+import ggLogo from "./assets/gg-logo.webp";
 import type { BoardView } from "./types.js";
 
 // Settings and Git are opt-in and code-heavy. Task detail stays eager: an already-open pre-deploy tab
@@ -108,7 +108,7 @@ export function App() {
         className={"workbench pane-" + mobilePane + (selected ? " detail-open" : "") + (railHidden ? " rail-hidden" : "")}
         style={{ "--detail-w": detailWidth + "px", "--rail-w": directorWidth + "px" } as CSSProperties}
       >
-        <Director />
+        <DirectorGate mobilePane={mobilePane} railHidden={railHidden} />
         <Board />
         {selected ? <ThreadDetail key={selected} /> : null}
       </div>
@@ -120,6 +120,24 @@ export function App() {
       <ScreensaverGate />
     </div>
   );
+}
+
+/** A phone initially shows only the board. Defer the hidden transcript's render until it is used;
+ *  after that keep it mounted so changing panes never loses a draft, attachments or scroll state. */
+function DirectorGate({ mobilePane, railHidden }: { mobilePane: MobilePane; railHidden: boolean }) {
+  const [wide, setWide] = useState(() => window.matchMedia("(min-width: 900px)").matches);
+  // The persisted rail switch only applies at desktop widths (mirrors styles.css).
+  const visible = wide ? !railHidden : mobilePane === "director";
+  const [opened, setOpened] = useState(visible);
+  useEffect(() => {
+    const query = window.matchMedia("(min-width: 900px)");
+    const changed = () => setWide(query.matches);
+    changed();
+    query.addEventListener("change", changed);
+    return () => query.removeEventListener("change", changed);
+  }, []);
+  useEffect(() => { if (visible) setOpened(true); }, [visible]);
+  return opened || visible ? <Director /> : null;
 }
 
 /** Decides whether the AFK scene is on screen. Kept to its own component so the idle clock's one

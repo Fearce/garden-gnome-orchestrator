@@ -2751,19 +2751,18 @@ export async function login(password: string): Promise<{ ok: boolean; retryMs?: 
 export function connect(): void {
   clearTimers(); // never let a prior socket's intervals outlive it and stack
   const ws = new WebSocket(wsUrl());
+  let receivedHello = false;
   socket = ws;
   ws.onopen = () => {
     useStore.setState({ connected: true });
     lastRecvAt = Date.now();
-    // Ask for the authoritative snapshot first: it may already contain the receipt from a message
-    // that reached the server just before the old tunnel died. Then replay anything still missing.
-    sendCommand({ type: "snapshot.request" });
+    // The server sends hello on every connection. Asking again here downloaded and rendered the
+    // entire board twice. Wait for that first frame's receipts before replaying queued messages.
     lastResyncAt = Date.now();
     // A server can be upgraded between reconnects. Re-probe rather than making a stale compatibility
     // verdict permanent for the lifetime of this browser tab.
     pingSupported = true;
     unansweredPings = 0;
-    replaySendingOutbound();
     heartbeat = setInterval(beat, HEARTBEAT_MS);
     watchdog = setInterval(() => {
       if (ws.readyState === WebSocket.OPEN && Date.now() - lastRecvAt > STALE_MS) ws.close();
@@ -2783,7 +2782,12 @@ export function connect(): void {
   ws.onmessage = (e) => {
     lastRecvAt = Date.now();
     try {
-      applyEvent(JSON.parse(e.data) as ServerEvent);
+      const event = JSON.parse(e.data) as ServerEvent;
+      applyEvent(event);
+      if (event.type === "hello" && !receivedHello) {
+        receivedHello = true;
+        replaySendingOutbound();
+      }
     } catch {
       /* ignore malformed */
     }

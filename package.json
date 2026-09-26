@@ -18,6 +18,7 @@
     "remote-access": "node server/scripts/remote-access.cjs",
     "quality": "node scripts/quality-sweep.cjs",
     "probe:console": "node web/scripts/console-smoke.cjs",
+    "probe:startup": "node web/scripts/startup-performance.cjs",
     "preprobe:providers": "npm run test:console-probe",
     "probe:providers": "node web/scripts/console-smoke.cjs --providers --expect-local-bundle --expect-small-task-policy",
     "test:console-probe": "node web/scripts/console-smoke.test.cjs",
