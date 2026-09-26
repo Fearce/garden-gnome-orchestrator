@@ -145,7 +145,11 @@ function authPassword() {
     .readFileSync(path.join(SERVER_ROOT, ".env"), "utf8")
     .split(/\r?\n/)
     .find((l) => /^AUTH_PASSWORD=/.test(l));
-  return line ? line.slice("AUTH_PASSWORD=".length).trim() : "";
+  const password = line ? line.slice("AUTH_PASSWORD=".length).trim() : "";
+  // Without this the lab's first wait times out 30s later on `.accounts .acct` behind a sign-in page,
+  // which reads as a broken console rather than a missing password.
+  if (!password) console.error("[lab] AUTH_PASSWORD is blank in server/.env, so the lab cannot sign in: rerun with AUTH_PASSWORD=<any throwaway> in the environment.");
+  return password;
 }
 
 /** Resolve relative entries from the same cwd used by the child process. */
