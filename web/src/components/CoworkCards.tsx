@@ -2,14 +2,17 @@ import { useMemo, useState } from "react";
 import { useStore } from "../store.js";
 import type { CoworkSession, CoworkSteeringMode } from "../types.js";
 import { Elapsed } from "../lib/timing.js";
+import { Gnome } from "./Gnome.js";
 
 /** Co-work sessions on the task board.
  *
- *  A live pairing session is the one kind of active work the board could not see: it owns no thread, so
- *  the owner had to switch views to find out whether their Co-worker was still going. These cards fix
- *  exactly that and nothing else. They are DISPLAY-ONLY plus the steering the conversation already
- *  offers (queue / inject / interrupt / stop): no pipeline state, no QA, no done, no findings. A click
- *  opens the conversation, which is still where the work happens. */
+ *  A Co-work session sits in the task lanes as its own KIND of card: the Co-worker gnome, the Co-work
+ *  chip and the chartreuse stripe say "a conversation you lead", not "a pipeline task". Clicking one opens
+ *  the conversation as a popup over the board, so pairing never hides the rest of the work.
+ *
+ *  They are still DISPLAY-ONLY plus the steering the conversation already offers (queue / inject /
+ *  interrupt / stop): a session owns no thread, so there is no pipeline state, no QA, no done and no
+ *  findings to show or settle here. */
 
 /** The repo folder a session works in: the last path segment, which is what the owner scans by. Kept
  *  local for the same reason the conversation header keeps its own copy: this is a label, not the
@@ -35,63 +38,48 @@ const STATE_TEXT: Record<CoworkSession["state"], string> = {
   idle: "idle",
 };
 
-/** The cards worth board space: everything live, plus anything touched recently enough to still be the
- *  thing the owner is doing. A months-old session belongs in the Co-work list, not on the board. */
+/** The sessions worth a card in the lanes: everything live or in error, plus anything touched recently
+ *  enough to still be the thing the owner is doing. The rest are one click away under "Earlier". */
 const RECENT_MS = 6 * 60 * 60_000;
 
 function isLive(session: CoworkSession): boolean {
   return session.state === "running" || session.state === "stopping";
 }
 
-export function CoworkBoardCards() {
+/** Splits every session into the ones that get a card in the lanes (live first, then newest) and the
+ *  older ones folded below the board. The Co-work tab is gone, so nothing may fall off the board. */
+export function useBoardCoworkSessions(): { current: CoworkSession[]; earlier: CoworkSession[] } {
   const sessions = useStore((state) => state.coworkSessions);
-  const setBoardView = useStore((state) => state.setBoardView);
-  const selectCowork = useStore((state) => state.selectCowork);
-
-  const shown = useMemo(() => {
+  return useMemo(() => {
     const cutoff = Date.now() - RECENT_MS;
-    return Object.values(sessions)
-      .filter((session) => isLive(session) || session.state === "error" || session.updatedAt >= cutoff)
+    const byRecency = Object.values(sessions)
       .sort((a, b) => Number(isLive(b)) - Number(isLive(a)) || b.updatedAt - a.updatedAt);
+    const isCurrent = (session: CoworkSession) => isLive(session) || session.state === "error" || session.updatedAt >= cutoff;
+    return { current: byRecency.filter(isCurrent), earlier: byRecency.filter((session) => !isCurrent(session)) };
   }, [sessions]);
-
-  if (!shown.length) return null;
-  const live = shown.filter(isLive).length;
-  const open = (session: CoworkSession): void => {
-    selectCowork(session.id);
-    setBoardView("cowork");
-  };
-
-  return (
-    <section className="cowork-board" aria-label="Co-work sessions">
-      <div className="cowork-board-head">
-        <h3>Co-work</h3>
-        <span className="faint mono">{live ? `${live} live · ` : ""}{shown.length} session{shown.length === 1 ? "" : "s"}</span>
-      </div>
-      <div className="cowork-board-lanes">
-        {shown.map((session) => <CoworkCard key={session.id} session={session} onOpen={() => open(session)} />)}
-      </div>
-    </section>
-  );
 }
 
-function CoworkCard({ session, onOpen }: { session: CoworkSession; onOpen: () => void }) {
+export function CoworkCard({ session }: { session: CoworkSession }) {
+  const open = useStore((state) => state.selectCowork);
+  const selected = useStore((state) => state.selectedCoworkId === session.id);
   const live = isLive(session);
   const [steering, setSteering] = useState(false);
   const clock = live && session.activeTurnStartedAt ? session.activeTurnStartedAt : session.updatedAt;
   return (
-    <article className={`cowork-card state-${session.state}`}>
-      <button className="cowork-card-open" onClick={onOpen} title="Open this conversation">
+    <article className={`cowork-card state-${session.state}${selected ? " sel" : ""}`}>
+      <button className="cowork-card-open" onClick={() => open(session.id)} title="Open this conversation">
         <div className="cowork-card-top">
-          <span className={`cowork-state-dot ${session.state}`} aria-hidden="true" />
+          <Gnome role="coworker" size={15} active={live || session.state === "error"} />
           <strong className="cowork-card-name">{session.name}</strong>
           {live
             ? <Elapsed className="cowork-card-clock mono" startMs={clock} running title="How long this turn has been running" />
             : <span className="cowork-card-clock mono" title="Last activity">{lastTouched(clock)}</span>}
         </div>
         <div className="cowork-card-meta mono" title={session.workspace}>
+          <span className="cowork-chip">Co-work</span>
           {repoLabel(session.workspace)}
           <span className="cowork-card-sep">·</span>
+          <span className={`cowork-state-dot ${session.state}`} aria-hidden="true" />
           {STATE_TEXT[session.state]}
           {session.model ? <><span className="cowork-card-sep">·</span>{session.model}</> : null}
         </div>
@@ -117,13 +105,42 @@ function CoworkCard({ session, onOpen }: { session: CoworkSession; onOpen: () =>
   );
 }
 
+/** Older sessions, folded under the board the way closed tasks are. Nothing here is live; a row opens the
+ *  same popup a card does. */
+export function EarlierCoworkSection({ sessions }: { sessions: CoworkSession[] }) {
+  const open = useStore((state) => state.selectCowork);
+  const [expanded, setExpanded] = useState(false);
+  if (!sessions.length) return null;
+  return (
+    <section className="closed-section cowork-earlier">
+      <button className="closed-toggle" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
+        <span className={"closed-caret" + (expanded ? " open" : "")} aria-hidden="true">›</span>
+        Earlier Co-work · {sessions.length}
+      </button>
+      {expanded ? (
+        <div className="closed-list">
+          {sessions.map((session) => (
+            <button key={session.id} className="closed-card cowork-earlier-row" onClick={() => open(session.id)} title="Open this conversation">
+              <span className="closed-card-main">
+                <Gnome role="coworker" size={13} active={false} />
+                <span className="closed-card-title">{session.name}</span>
+              </span>
+              <span className="closed-expiry">{repoLabel(session.workspace)} · {lastTouched(session.updatedAt)}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function StopButton({ sessionId }: { sessionId: string }) {
   const stop = useStore((state) => state.stopCowork);
   return <button className="btn ghost sm" onClick={() => stop(sessionId)} title="Stop this work slice">Stop</button>;
 }
 
-/** The same three steering modes the conversation offers, so a direction never requires leaving the
- *  board. It goes through `sendCowork`, exactly as the composer does: one path, one delivery ledger. */
+/** The same three steering modes the conversation offers, so a direction never requires opening it. It
+ *  goes through `sendCowork`, exactly as the composer does: one path, one delivery ledger. */
 function CoworkCardSteer({ session, onDone }: { session: CoworkSession; onDone: () => void }) {
   const send = useStore((state) => state.sendCowork);
   const [text, setText] = useState("");

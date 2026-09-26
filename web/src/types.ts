@@ -6,6 +6,11 @@ export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" 
  *  process (the Online Office carries another machine's role names). Mirrored in server/src/types.ts. */
 export const ROLES = ["director", "planner", "researcher", "implementor", "qa", "reader", "reviewer"] as const;
 
+/** Every character a gnome can be drawn as: the pipeline roles, plus the Co-worker. The Co-worker is
+ *  deliberately NOT a `Role`: a Co-work session owns no thread and no agent run, so it must never be
+ *  assignable where the pipeline expects one. It only needs a face and a colour on the board. */
+export type GnomeRole = Role | "coworker";
+
 /** Dispatch lane: undefined/null = the normal pipeline, 'read' = the read-only reader lane (dispatch_read),
  *  'vanilla' = Default mode's single stock session (server/src/types.ts has the full doc comment). */
 export type ThreadLane = "read" | "vanilla";
@@ -189,7 +194,9 @@ export interface ScheduledTask {
 }
 
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
-export type BoardView = "tasks" | "cowork" | "notes" | "schedules" | "supervisor" | "ide";
+/** Co-work is not a pane: its sessions are cards on the task board, and a conversation opens as a popup
+ *  over whatever pane is showing so the rest of the work stays in sight. */
+export type BoardView = "tasks" | "notes" | "schedules" | "supervisor" | "ide";
 
 /** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
 export const NOTE_MAX_CHARS = 255;

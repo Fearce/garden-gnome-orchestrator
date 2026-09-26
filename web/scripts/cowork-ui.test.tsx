@@ -16,7 +16,8 @@ Object.assign(globalThis, {
   document: { baseURI: "http://localhost/", visibilityState: "visible", addEventListener: () => {} },
 });
 const { useStore } = await import("../src/store.js");
-const { CoWork, NewCoworkModal } = await import("../src/components/CoWork.js");
+const { CoworkPopup, NewCoworkButton, NewCoworkModal } = await import("../src/components/CoWork.js");
+const { CoworkCard, EarlierCoworkSection } = await import("../src/components/CoworkCards.js");
 
 const at = Date.now();
 const session: CoworkSession = {
@@ -93,7 +94,7 @@ const messages: CoworkMessage[] = [
 ];
 
 function render(): string {
-  return renderToStaticMarkup(React.createElement(CoWork));
+  return renderToStaticMarkup(React.createElement(CoworkPopup));
 }
 
 const ssrState = useStore.getInitialState();
@@ -107,7 +108,10 @@ Object.assign(ssrState, {
 });
 
 const ready = render();
-assert.match(ready, /cowork-shell has-session/, "selected session must open the conversation desk");
+assert.match(ready, /class="scrim cowork-popup-scrim"/, "a selected session opens as a popup over the board");
+assert.match(ready, /role="dialog" aria-modal="true" aria-label="Co-work: Polish persistent chat"/, "the popup is a named modal dialog");
+assert.match(ready, /title="Close \(Esc\)" aria-label="Close conversation"/, "the popup has a visible close control");
+assert.match(ready, /class="gnome cowork-chat-gnome"/, "the popup header carries the Co-worker gnome");
 assert.match(ready, /Polish persistent chat/, "session name remains visible");
 assert.match(ready, /garden/, "workspace identity remains visible");
 assert.match(ready, /codex.*gpt-5\.6-sol/s, "resolved provider/model remains visible");
@@ -163,9 +167,20 @@ assert.match(failed, /conversation is intact/i, "recovery semantics are explicit
 assert.match(failed, /What should we work on next\?/, "the next instruction stays available after failure");
 
 Object.assign(ssrState, { selectedCoworkId: null });
-const list = render();
-assert.match(list, /Choose a Co-work session/, "session history has a deliberate unselected state");
-assert.match(list, /New Co-work session/, "a new-session action is always reachable");
+assert.equal(render(), "", "with no session open the popup renders nothing and the board stays in view");
+const newButton = renderToStaticMarkup(React.createElement(NewCoworkButton));
+assert.match(newButton, /New Co-work/, "a new-session action is reachable from the board");
+
+// A session is a card IN the task lanes, and reads as its own kind of work.
+const card = renderToStaticMarkup(React.createElement(CoworkCard, { session: { ...session, lastSnippet: "Changed the responsive shell.", lastSnippetRole: "coworker" } }));
+assert.match(card, /class="cowork-card state-idle"/, "a session renders as a Co-work card");
+assert.match(card, /class="gnome"/, "the card carries the Co-worker gnome");
+assert.match(card, /class="cowork-chip">Co-work</, "the card is labelled as Co-work, not as a task");
+assert.match(card, /Co-worker:<\/span> Changed the responsive shell/, "the card shows the latest conversational line");
+assert.doesNotMatch(card, /Promote|QA|Mark done/i, "the card owns no pipeline semantics");
+const earlier = renderToStaticMarkup(React.createElement(EarlierCoworkSection, { sessions: [session] }));
+assert.match(earlier, /Earlier Co-work · 1/, "older sessions stay reachable from the board");
+assert.equal(renderToStaticMarkup(React.createElement(EarlierCoworkSection, { sessions: [] })), "", "no earlier sessions, no section");
 
 const modal = renderToStaticMarkup(React.createElement(NewCoworkModal, { onClose: () => {} }));
 assert.match(modal, /New Co-work session/, "creation flow is fully rendered");
@@ -191,9 +206,14 @@ for (const mode of ["queue", "append", "interrupt"]) {
 }
 assert.match(storeSource, /type: "cowork\.steer"/, "live Co-work directions use the typed steering command instead of opening another turn");
 assert.match(storeSource, /attachments: attachments\.length \? attachments : undefined/, "initial and live Co-work commands carry their selected files");
-assert.match(appSource, /openBoardView\("cowork"\)/, "mobile navigation links directly to Co-work");
-assert.match(boardSource, /view: "cowork", label: "Co-work"/, "desktop board navigation includes Co-work");
-assert.match(cssSource, /\.cowork-shell\.has-session \.cowork-session-list \{ display: none; \}/, "mobile selected-session layout swaps the rail for the conversation");
-assert.match(cssSource, /\.cowork-back/, "mobile conversation has an in-view back control");
+// Co-work is not a tab any more: a tab hid every task while the owner paired.
+assert.doesNotMatch(appSource, /openBoardView\("cowork"\)|value="cowork"/, "mobile navigation has no separate Co-work area");
+assert.doesNotMatch(boardSource, /view: "cowork"/, "the board has no separate Co-work tab");
+assert.match(boardSource, /<CoworkPopup \/>/, "the popup is mounted unconditionally, so a draft survives close and reopen");
+assert.match(boardSource, /cowork\.current\.map\(\(session\) => <CoworkCard/, "Co-work cards sit in the task lanes");
+assert.match(coworkSource, /window\.addEventListener\("keydown"/, "Esc closes the popup");
+assert.match(coworkSource, /event\.defaultPrevented/, "an Esc a field already consumed does not also close the popup");
+assert.match(cssSource, /--role-coworker:/, "the Co-worker has its own identity colour");
+assert.match(cssSource, /\.cowork-popup \{ width: 100%; height: 100%; border: 0; border-radius: 0; \}/, "on a phone the popup takes the whole screen");
 
-console.log("Co-work UI gate passed - session creation, durable transcript, live steering, attachments, navigation, desktop, and mobile states are covered.");
+console.log("Co-work UI gate passed - popup conversation, board cards, session creation, durable transcript, live steering, attachments, and mobile states are covered.");

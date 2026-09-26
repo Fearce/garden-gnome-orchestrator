@@ -368,23 +368,11 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
         </svg>
         Tasks
       </button>
-      <button
-        className={"mnav-btn" + (pane === "board" && boardView === "cowork" ? " on" : "")}
-        aria-current={pane === "board" && boardView === "cowork" ? "page" : undefined}
-        onClick={() => openBoardView("cowork")}
-      >
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M8 11a4 4 0 1 1 8 0v1" />
-          <path d="M5 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2" />
-          <path d="m18 6 .8 2.2L21 9l-2.2.8L18 12l-.8-2.2L15 9l2.2-.8Z" />
-        </svg>
-        Co-work
-      </button>
-      <label className={"mnav-btn mnav-area" + (pane === "board" && !["tasks", "cowork"].includes(boardView) ? " on" : "")}>
+      <label className={"mnav-btn mnav-area" + (pane === "board" && boardView !== "tasks" ? " on" : "")}>
         <span>All areas</span>
         <select aria-label="All areas" value={pane === "director" ? "" : boardView} onChange={e => openBoardView(e.target.value as BoardView)}>
           <option value="" disabled>Choose…</option>
-          <option value="tasks">Tasks</option><option value="cowork">Co-work</option><option value="ide">IDE</option><option value="notes">Notes</option><option value="schedules">Scheduled Tasks</option><option value="supervisor">Supervisor</option>
+          <option value="tasks">Tasks</option><option value="ide">IDE</option><option value="notes">Notes</option><option value="schedules">Scheduled Tasks</option><option value="supervisor">Supervisor</option>
         </select>
       </label>
     </nav>

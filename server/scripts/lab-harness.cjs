@@ -136,8 +136,11 @@ function loadChromium() {
 }
 
 /** The real console password, so a lab can log its browser in. The throwaway instance inherits
- *  `server/.env`, so this is the password it will actually accept. */
+ *  `server/.env`, so this is the password it will actually accept. An AUTH_PASSWORD in the lab's own
+ *  environment wins: the instance inherits that too (dotenv never overrides a set variable), and it is
+ *  the only way in on a Google-only install whose `.env` leaves the password blank. */
 function authPassword() {
+  if (process.env.AUTH_PASSWORD) return process.env.AUTH_PASSWORD;
   const line = fs
     .readFileSync(path.join(SERVER_ROOT, ".env"), "utf8")
     .split(/\r?\n/)

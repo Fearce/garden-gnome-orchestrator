@@ -1,5 +1,5 @@
 import { useState, type CSSProperties } from "react";
-import type { Role } from "../types.js";
+import type { GnomeRole } from "../types.js";
 import { gnomeRoleColor } from "../lib/format.js";
 
 // Per-gnome vibrance jitter. Each gnome is minted once (on mount) with a chroma multiplier drawn
@@ -31,8 +31,9 @@ const INK = "oklch(0.42 0.02 250)"; // ruled lines on the clipboard's pale paper
  *  planner=clipboard · implementor=open-end wrench · researcher=magnifying glass · qa=bug net ·
  *  director=a furled plan-scroll (the one who only delegates carries the master plan) ·
  *  reader=an open book (the read-only lookup lane) · reviewer=a gavel (the one trusted to make the
- *  owner's own accept-or-hand-back call). */
-function roleProp(role: Role) {
+ *  owner's own accept-or-hand-back call) · coworker=a coffee mug (the one who sits at the owner's desk
+ *  and works alongside them, turn by turn). */
+function roleProp(role: GnomeRole) {
   switch (role) {
     case "planner": // clipboard — pale board with a steel clip, a ticked top line, two ruled rows
       return (
@@ -97,6 +98,16 @@ function roleProp(role: Role) {
           </g>
         </g>
       );
+    case "coworker": // coffee mug: a pale mug with a role-colored band, a steel handle and two wisps of
+      // steam; the mitt closes under its base, so it reads as held at the desk
+      return (
+        <g strokeLinecap="round" strokeLinejoin="round">
+          <path d="M33.2 30.2h1a2.1 2.1 0 0 1 0 4.2h-1" fill="none" stroke={METAL} strokeWidth="1.4" />
+          <rect x="26.8" y="28.8" width="6.6" height="8" rx="1.3" fill={BEARD} stroke={METAL} strokeWidth="1.2" />
+          <rect x="26.8" y="31.2" width="6.6" height="2" fill="currentColor" />
+          <path d="M28.8 27.2q-.9-1.3 0-2.6M31.3 27.2q-.9-1.3 0-2.6" fill="none" stroke={BEARD} strokeWidth="1" opacity="0.75" />
+        </g>
+      );
     default:
       return null;
   }
@@ -117,7 +128,7 @@ function roleProp(role: Role) {
  *
  *  `active` (default true) keeps the full role color; pass `active={false}` to grey the whole
  *  gnome out — used where several roles sit side-by-side and only one is currently working. */
-export function Gnome({ role, size = 30, active = true, className }: { role: Role; size?: number; active?: boolean; className?: string }) {
+export function Gnome({ role, size = 30, active = true, className }: { role: GnomeRole; size?: number; active?: boolean; className?: string }) {
   // Minted once per mount — random on creation but stable across re-renders, so the gnome's vibrance
   // never flickers mid-session. Only the active (coloured) branch uses it; greyed-out gnomes are neutral.
   const [chromaFactor] = useState(() => VIBRANCE_MIN + Math.random() * VIBRANCE_SPAN);

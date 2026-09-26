@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "../store.js";
 import type { CoworkMessage, CoworkSession, CoworkSteeringMode, ImplementorProvider } from "../types.js";
 import {
@@ -12,19 +12,11 @@ import { PathInput } from "./PathInput.js";
 import { CodeContextBar } from "./CodeContextBar.js";
 import { CoworkTranscript } from "./CoworkTranscript.js";
 import { coworkOrigin } from "../lib/codeNav.js";
+import { Gnome } from "./Gnome.js";
 
 const EMPTY_COWORK_MESSAGES: CoworkMessage[] = [];
 
 const repoLabel = (path: string): string => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
-
-function relativeTime(at: number): string {
-  const minutes = Math.max(0, Math.round((Date.now() - at) / 60_000));
-  if (minutes < 1) return "now";
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
-}
 
 function statusText(session: CoworkSession): string {
   switch (session.state) {
@@ -35,10 +27,28 @@ function statusText(session: CoworkSession): string {
   }
 }
 
-/** `hidden` keeps this whole desk mounted while the owner is looking at another board area. The
- *  attribute (not a conditional render) is what preserves the transcript scroll position, expanded tool
- *  bursts, the draft and any staged attachments across a trip to the task board mid-turn. */
-export function CoWork({ hidden = false }: { hidden?: boolean } = {}) {
+/** Esc peels the TOP dialog only. The popup's own hand-off dialogs close first; an image lightbox handles
+ *  Esc itself; and a key a field already consumed (the rename box's cancel) never reaches the popup. */
+function useEscapeToClose(open: boolean, closeTop: () => void): void {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || document.querySelector(".lightbox")) return;
+      closeTop();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, closeTop]);
+}
+
+/** A Co-work conversation, as a popup over the board. It replaced a Co-work TAB, which hid every task
+ *  while the owner paired, so working alongside the pipeline meant tabbing back and forth all day. A card
+ *  on the board opens it; Esc, the ✕ or a click on the backdrop puts it away.
+ *
+ *  The component stays MOUNTED for the life of the board and renders nothing while no session is open.
+ *  That is what keeps an unsent draft and staged attachments across a close and reopen mid-turn; the
+ *  transcript's scroll position and expanded bursts live in the store, keyed by session. */
+export function CoworkPopup() {
   const sessionsById = useStore((state) => state.coworkSessions);
   const selectedId = useStore((state) => state.selectedCoworkId);
   const select = useStore((state) => state.selectCowork);
@@ -50,7 +60,6 @@ export function CoWork({ hidden = false }: { hidden?: boolean } = {}) {
   const remove = useStore((state) => state.deleteCowork);
   const actionError = useStore((state) => state.coworkActionError);
   const attachments = useCoworkAttachments();
-  const [newOpen, setNewOpen] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState("");
@@ -59,11 +68,13 @@ export function CoWork({ hidden = false }: { hidden?: boolean } = {}) {
   const summaryFor = useStore((state) => state.coworkSummaryFor);
   const attachmentSession = useRef(selectedId);
 
-  const sessions = useMemo(
-    () => Object.values(sessionsById).sort((a, b) => b.updatedAt - a.updatedAt || b.createdAt - a.createdAt),
-    [sessionsById],
-  );
   const selected = selectedId ? sessionsById[selectedId] : undefined;
+  const closeTop = useCallback(() => {
+    if (summaryFor) openSummary(null);
+    else if (promoteOpen) setPromoteOpen(false);
+    else select(null);
+  }, [summaryFor, openSummary, promoteOpen, select]);
+  useEscapeToClose(!!selected, closeTop);
   const pending = selectedId
     ? outbound.filter((message): message is Extract<typeof message, { surface: "cowork" }> =>
       message.surface === "cowork" && message.sessionId === selectedId)
@@ -91,244 +102,222 @@ export function CoWork({ hidden = false }: { hidden?: boolean } = {}) {
     }
   };
 
+  if (!selected) return null;
   return (
-    <section className={`cowork-shell${selected ? " has-session" : ""}`} hidden={hidden}>
-      <aside className="cowork-session-list" aria-label="Co-work sessions">
-        <div className="cowork-list-head">
-          <div>
-            <strong>Sessions</strong>
-            <span>{sessions.length} saved</span>
-          </div>
-          <button className="btn primary sm cowork-new" onClick={() => setNewOpen(true)}>
-            <PlusIcon /> New
-          </button>
-        </div>
-        <div className="cowork-list-scroll">
-          {sessions.map((session) => (
+    // mousedown, not click: a text selection dragged out of the transcript ends in a click on the
+    // backdrop, and that must not throw the conversation away.
+    <div className="scrim cowork-popup-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) select(null); }}>
+      <section className="cowork-popup" role="dialog" aria-modal="true" aria-label={`Co-work: ${selected.name}`}>
+        <div className="cowork-conversation">
+          <header className="cowork-chat-head">
+            <Gnome role="coworker" size={24} className="cowork-chat-gnome" />
+            <div className="cowork-chat-identity">
+              {renaming ? (
+                <input
+                  className="cowork-rename-input"
+                  value={renameValue}
+                  autoFocus
+                  onChange={(event) => setRenameValue(event.target.value)}
+                  onBlur={() => {
+                    if (renameValue.trim() && renameValue.trim() !== selected.name) rename(selected.id, renameValue);
+                    setRenaming(false);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                    if (event.key === "Escape") {
+                      // Cancels the rename only; the popup's Esc listener skips a prevented key.
+                      event.preventDefault();
+                      setRenaming(false);
+                    }
+                  }}
+                />
+              ) : (
+                <button
+                  className="cowork-title-button"
+                  title="Rename session"
+                  onClick={() => { setRenameValue(selected.name); setRenaming(true); }}
+                >
+                  {selected.name}
+                </button>
+              )}
+              <div className="cowork-chat-meta">
+                <span title={selected.workspace}>{repoLabel(selected.workspace)}</span>
+                <span className="cowork-meta-sep">/</span>
+                <span>{selected.provider
+                  ? `${selected.provider} · ${selected.model}`
+                  : selected.requestedProvider
+                    ? `${selected.requestedProvider} · ${selected.requestedModel} · pinned`
+                    : "Auto · resolves on first turn"}</span>
+              </div>
+              <CodeContextBar
+                subject={{ kind: "cowork", id: selected.id }}
+                origin={coworkOrigin(selected.id, selected.name)}
+              />
+            </div>
+            <span className={`cowork-status ${selected.state}`}>
+              <span className={`cowork-state-dot ${selected.state}`} />{statusText(selected)}
+            </span>
             <button
-              key={session.id}
-              className={`cowork-session-row${session.id === selectedId ? " active" : ""}`}
-              onClick={() => select(session.id)}
+              className="btn ghost sm cowork-head-action"
+              title="What this conversation changed: files, commits and what was asked"
+              onClick={() => openSummary(selected.id)}
             >
-              <span className={`cowork-state-dot ${session.state}`} aria-hidden="true" />
-              <span className="cowork-session-copy">
-                <strong>{session.name}</strong>
-                <span>{repoLabel(session.workspace)} · {session.model ?? session.requestedModel ?? "Auto model"}</span>
-              </span>
-              <span className="cowork-session-age mono">{relativeTime(session.updatedAt)}</span>
+              <TrailIcon /> Summary
             </button>
-          ))}
-          {!sessions.length ? (
-            <div className="cowork-list-empty">
-              <div className="cowork-empty-mark"><SparkIcon /></div>
-              <strong>No sessions yet</strong>
-              <span>Start a direct coding conversation in any workspace.</span>
-              <button className="btn primary" onClick={() => setNewOpen(true)}>Start Co-working</button>
+            <button
+              className="btn ghost sm cowork-head-action"
+              title="Hand this exploration to the pipeline as a proper task"
+              disabled={selected.state === "running" || selected.state === "stopping"}
+              onClick={() => setPromoteOpen(true)}
+            >
+              <PromoteIcon /> Promote to task
+            </button>
+            <button
+              className="cowork-delete"
+              title="Delete session and conversation"
+              aria-label="Delete session"
+              disabled={selected.state === "running" || selected.state === "stopping"}
+              onClick={() => {
+                if (confirm(`Delete “${selected.name}” and its conversation?`)) remove(selected.id);
+              }}
+            >
+              <TrashIcon />
+            </button>
+            <button className="cowork-close" onClick={() => select(null)} title="Close (Esc)" aria-label="Close conversation">
+              <CloseIcon />
+            </button>
+          </header>
+
+          {selected.error || actionError ? (
+            <div className="cowork-error-banner" role="status">
+              <strong>{selected.error ? "Turn stopped" : "Action not completed"}</strong>
+              <span>{selected.error ?? actionError}</span>
+              <small>{selected.error
+                ? "The conversation is intact. Send a new instruction when you’re ready."
+                : "Nothing was discarded. You can adjust the action or keep working in this session."}</small>
             </div>
           ) : null}
-        </div>
-      </aside>
 
-      <div className="cowork-conversation">
-        {selected ? (
-          <>
-            <header className="cowork-chat-head">
-              <button className="cowork-back" onClick={() => select(null)} aria-label="Back to sessions">‹</button>
-              <div className="cowork-chat-identity">
-                {renaming ? (
-                  <input
-                    className="cowork-rename-input"
-                    value={renameValue}
-                    autoFocus
-                    onChange={(event) => setRenameValue(event.target.value)}
-                    onBlur={() => {
-                      if (renameValue.trim() && renameValue.trim() !== selected.name) rename(selected.id, renameValue);
-                      setRenaming(false);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") event.currentTarget.blur();
-                      if (event.key === "Escape") setRenaming(false);
-                    }}
-                  />
-                ) : (
-                  <button
-                    className="cowork-title-button"
-                    title="Rename session"
-                    onClick={() => { setRenameValue(selected.name); setRenaming(true); }}
-                  >
-                    {selected.name}
-                  </button>
-                )}
-                <div className="cowork-chat-meta">
-                  <span title={selected.workspace}>{repoLabel(selected.workspace)}</span>
-                  <span className="cowork-meta-sep">/</span>
-                  <span>{selected.provider
-                    ? `${selected.provider} · ${selected.model}`
-                    : selected.requestedProvider
-                      ? `${selected.requestedProvider} · ${selected.requestedModel} · pinned`
-                      : "Auto · resolves on first turn"}</span>
+          <CoworkTranscript
+            key={selected.id}
+            sessionId={selected.id}
+            messages={messages}
+            pending={pending}
+            empty={(
+              <div className="cowork-chat-empty">
+                <div className="cowork-empty-mark"><SparkIcon /></div>
+                <h3>Work directly with your Co-worker</h3>
+                <p>Work in small, useful increments. Your Co-worker acts, verifies, and hands control back instead of disappearing into a solo project.</p>
+                <div className="cowork-start-facts">
+                  <span><CheckIcon /> Persistent context</span>
+                  <span><CheckIcon /> One bounded turn</span>
+                  <span><CheckIcon /> You decide what’s next</span>
                 </div>
-                <CodeContextBar
-                  subject={{ kind: "cowork", id: selected.id }}
-                  origin={coworkOrigin(selected.id, selected.name)}
-                />
               </div>
-              <span className={`cowork-status ${selected.state}`}>
-                <span className={`cowork-state-dot ${selected.state}`} />{statusText(selected)}
-              </span>
-              <button
-                className="btn ghost sm cowork-head-action"
-                title="What this conversation changed: files, commits and what was asked"
-                onClick={() => openSummary(selected.id)}
-              >
-                <TrailIcon /> Summary
-              </button>
-              <button
-                className="btn ghost sm cowork-head-action"
-                title="Hand this exploration to the pipeline as a proper task"
-                disabled={selected.state === "running" || selected.state === "stopping"}
-                onClick={() => setPromoteOpen(true)}
-              >
-                <PromoteIcon /> Promote to task
-              </button>
-              <button
-                className="cowork-delete"
-                title="Delete session and conversation"
-                aria-label="Delete session"
-                disabled={selected.state === "running" || selected.state === "stopping"}
-                onClick={() => {
-                  if (confirm(`Delete “${selected.name}” and its conversation?`)) remove(selected.id);
-                }}
-              >
-                <TrashIcon />
-              </button>
-            </header>
+            )}
+            footer={selected.state === "running" && !messages.some((message) => message.turnId === selected.activeTurnId && message.role === "coworker") ? (
+              <div className="cowork-working"><span /><span /><span /> Co-worker is working — steer it any time</div>
+            ) : null}
+          />
 
-            {selected.error || actionError ? (
-              <div className="cowork-error-banner" role="status">
-                <strong>{selected.error ? "Turn stopped" : "Action not completed"}</strong>
-                <span>{selected.error ?? actionError}</span>
-                <small>{selected.error
-                  ? "The conversation is intact. Send a new instruction when you’re ready."
-                  : "Nothing was discarded. You can adjust the action or keep working in this session."}</small>
+          <footer className="cowork-composer-wrap">
+            <div
+              className={`cowork-composer${selected.state === "running" ? " active" : ""}${attachments.dragging ? " dragging" : ""}`}
+              {...attachments.dropHandlers}
+            >
+              <CoworkComposerAttachments files={attachments.files} onRemove={attachments.remove} />
+              <div className="cowork-composer-main">
+                <CoworkAttachButton onPick={attachments.addFiles} disabled={selected.state === "stopping"} />
+                <textarea
+                  value={drafts[selected.id] ?? ""}
+                  placeholder={selected.state === "running" ? "Add direction or attach a file…" : "What should we work on next?"}
+                  disabled={selected.state === "stopping"}
+                  rows={1}
+                  onPaste={attachments.onPaste}
+                  onChange={(event) => {
+                    setDrafts((all) => ({ ...all, [selected.id]: event.target.value }));
+                    event.currentTarget.style.height = "auto";
+                    event.currentTarget.style.height = `${Math.min(180, event.currentTarget.scrollHeight)}px`;
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      submit(selected.state === "running" ? "append" : "turn");
+                    }
+                  }}
+                />
+                {selected.state === "stopping" ? (
+                  <button className="cowork-stop" disabled>
+                    <StopIcon /> Stopping
+                  </button>
+                ) : selected.state !== "running" ? (
+                  <button
+                    className="cowork-send"
+                    disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
+                    onClick={() => submit("turn")}
+                    aria-label="Send instruction"
+                  >
+                    <SendIcon />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            {selected.state === "running" ? (
+              <div className="cowork-steer-row" aria-label="Steer active Co-worker turn">
+                <span className="cowork-steer-label">Active direction</span>
+                <button
+                  className="btn ghost sm cowork-steer queue"
+                  disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
+                  onClick={() => submit("queue")}
+                  title="Finish the current safe unit, then apply this before handing control back"
+                >
+                  Queue
+                </button>
+                <button
+                  className="btn primary sm cowork-steer inject"
+                  disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
+                  onClick={() => submit("append")}
+                  title="Apply this at the next safe point while preserving compatible progress"
+                >
+                  Inject
+                </button>
+                <button
+                  className="btn ghost sm cowork-steer interrupt"
+                  disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
+                  onClick={() => submit("interrupt")}
+                  title="Stop the current approach and apply this direction immediately"
+                >
+                  Interrupt &amp; inject
+                </button>
+                <button className="cowork-stop" onClick={() => stop(selected.id)} title="Stop this work slice without another instruction">
+                  <StopIcon /> Stop
+                </button>
               </div>
             ) : null}
+            <div className="cowork-composer-note">
+              <span>{selected.state === "running" ? "Enter injects · paste or drop files" : "Enter to send · paste or drop files"}</span>
+              {selected.agentSessionId ? <span className="mono">context linked</span> : <span>new context</span>}
+            </div>
+          </footer>
+        </div>
+        {promoteOpen ? <PromoteCoworkModal session={selected} onClose={() => setPromoteOpen(false)} /> : null}
+        {summaryFor ? <CoworkSummaryModal sessionId={summaryFor} onClose={() => openSummary(null)} /> : null}
+      </section>
+    </div>
+  );
+}
 
-            <CoworkTranscript
-              key={selected.id}
-              sessionId={selected.id}
-              messages={messages}
-              pending={pending}
-              empty={(
-                <div className="cowork-chat-empty">
-                  <div className="cowork-empty-mark"><SparkIcon /></div>
-                  <h3>Work directly with your Co-worker</h3>
-                  <p>Work in small, useful increments. Your Co-worker acts, verifies, and hands control back instead of disappearing into a solo project.</p>
-                  <div className="cowork-start-facts">
-                    <span><CheckIcon /> Persistent context</span>
-                    <span><CheckIcon /> One bounded turn</span>
-                    <span><CheckIcon /> You decide what’s next</span>
-                  </div>
-                </div>
-              )}
-              footer={selected.state === "running" && !messages.some((message) => message.turnId === selected.activeTurnId && message.role === "coworker") ? (
-                <div className="cowork-working"><span /><span /><span /> Co-worker is working — steer it any time</div>
-              ) : null}
-            />
-
-            <footer className="cowork-composer-wrap">
-              <div
-                className={`cowork-composer${selected.state === "running" ? " active" : ""}${attachments.dragging ? " dragging" : ""}`}
-                {...attachments.dropHandlers}
-              >
-                <CoworkComposerAttachments files={attachments.files} onRemove={attachments.remove} />
-                <div className="cowork-composer-main">
-                  <CoworkAttachButton onPick={attachments.addFiles} disabled={selected.state === "stopping"} />
-                  <textarea
-                    value={drafts[selected.id] ?? ""}
-                    placeholder={selected.state === "running" ? "Add direction or attach a file…" : "What should we work on next?"}
-                    disabled={selected.state === "stopping"}
-                    rows={1}
-                    onPaste={attachments.onPaste}
-                    onChange={(event) => {
-                      setDrafts((all) => ({ ...all, [selected.id]: event.target.value }));
-                      event.currentTarget.style.height = "auto";
-                      event.currentTarget.style.height = `${Math.min(180, event.currentTarget.scrollHeight)}px`;
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && !event.shiftKey) {
-                        event.preventDefault();
-                        submit(selected.state === "running" ? "append" : "turn");
-                      }
-                    }}
-                  />
-                  {selected.state === "stopping" ? (
-                    <button className="cowork-stop" disabled>
-                      <StopIcon /> Stopping
-                    </button>
-                  ) : selected.state !== "running" ? (
-                    <button
-                      className="cowork-send"
-                      disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
-                      onClick={() => submit("turn")}
-                      aria-label="Send instruction"
-                    >
-                      <SendIcon />
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-              {selected.state === "running" ? (
-                <div className="cowork-steer-row" aria-label="Steer active Co-worker turn">
-                  <span className="cowork-steer-label">Active direction</span>
-                  <button
-                    className="btn ghost sm cowork-steer queue"
-                    disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
-                    onClick={() => submit("queue")}
-                    title="Finish the current safe unit, then apply this before handing control back"
-                  >
-                    Queue
-                  </button>
-                  <button
-                    className="btn primary sm cowork-steer inject"
-                    disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
-                    onClick={() => submit("append")}
-                    title="Apply this at the next safe point while preserving compatible progress"
-                  >
-                    Inject
-                  </button>
-                  <button
-                    className="btn ghost sm cowork-steer interrupt"
-                    disabled={!drafts[selected.id]?.trim() && !attachments.files.length}
-                    onClick={() => submit("interrupt")}
-                    title="Stop the current approach and apply this direction immediately"
-                  >
-                    Interrupt &amp; inject
-                  </button>
-                  <button className="cowork-stop" onClick={() => stop(selected.id)} title="Stop this work slice without another instruction">
-                    <StopIcon /> Stop
-                  </button>
-                </div>
-              ) : null}
-              <div className="cowork-composer-note">
-                <span>{selected.state === "running" ? "Enter injects · paste or drop files" : "Enter to send · paste or drop files"}</span>
-                {selected.agentSessionId ? <span className="mono">context linked</span> : <span>new context</span>}
-              </div>
-            </footer>
-          </>
-        ) : (
-          <div className="cowork-no-selection">
-            <div className="cowork-empty-mark"><SparkIcon /></div>
-            <h3>{sessions.length ? "Choose a Co-work session" : "Build together, one turn at a time"}</h3>
-            <p>{sessions.length ? "Open a conversation from the left, or begin a new one." : "Direct coding sessions with durable context and no autonomous pipeline."}</p>
-            <button className="btn primary" onClick={() => setNewOpen(true)}><PlusIcon /> New Co-work session</button>
-          </div>
-        )}
-      </div>
-      {newOpen ? <NewCoworkModal onClose={() => setNewOpen(false)} /> : null}
-      {promoteOpen && selected ? <PromoteCoworkModal session={selected} onClose={() => setPromoteOpen(false)} /> : null}
-      {summaryFor ? <CoworkSummaryModal sessionId={summaryFor} onClose={() => openSummary(null)} /> : null}
-    </section>
+/** The board's way into a new session. Creation opens the new session's popup (the store selects it on
+ *  the server's receipt), so the owner lands straight in the conversation they just asked for. */
+export function NewCoworkButton({ className = "btn ghost sm" }: { className?: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button className={`${className} cowork-new`} onClick={() => setOpen(true)} title="Start a Co-work session: a conversation you lead turn by turn">
+        <PlusIcon /> New Co-work
+      </button>
+      {open ? <NewCoworkModal onClose={() => setOpen(false)} /> : null}
+    </>
   );
 }
 
@@ -439,6 +428,7 @@ function PromoteCoworkModal({ session, onClose }: { session: CoworkSession; onCl
   const promoted = useStore((state) => state.coworkPromoted);
   const clearPromotion = useStore((state) => state.clearCoworkPromotion);
   const selectThread = useStore((state) => state.select);
+  const selectCowork = useStore((state) => state.selectCowork);
   const setBoardView = useStore((state) => state.setBoardView);
   const lastOwnerLine = useStore((state) => {
     const messages = state.coworkMessages[session.id] ?? [];
@@ -454,9 +444,11 @@ function PromoteCoworkModal({ session, onClose }: { session: CoworkSession; onCl
   const open = (): void => {
     if (!landed) return;
     clearPromotion();
+    onClose();
+    // The new task is a card under this popup, so going to it means putting the conversation away.
+    selectCowork(null);
     setBoardView("tasks");
     selectThread(landed.threadId);
-    onClose();
   };
 
   return (
@@ -530,6 +522,7 @@ function CoworkSummaryModal({ sessionId, onClose }: { sessionId: string; onClose
   );
 }
 
+function CloseIcon() { return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>; }
 function PlusIcon() { return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M12 5v14M5 12h14" /></svg>; }
 function SendIcon() { return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m22 2-7 20-4-9-9-4Z" /><path d="M22 2 11 13" /></svg>; }
 function StopIcon() { return <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>; }

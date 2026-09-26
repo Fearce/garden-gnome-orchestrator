@@ -188,12 +188,13 @@ interface State {
   coworkSessions: Record<string, CoworkSession>;
   coworkMessages: Record<string, CoworkMessage[]>;
   coworkTurns: Record<string, CoworkTurn[]>;
+  // The Co-work session whose popup is open over the board; null means no popup.
   selectedCoworkId: string | null;
   coworkCreating: boolean;
   coworkActionError: string | null;
   // Where the owner had scrolled each transcript, and whether they were pinned to the bottom. Kept in
-  // the STORE rather than the component: leaving the Co-work tab mid-turn must cost nothing, and the
-  // panel unmounts when the board switches views.
+  // the STORE rather than the component: closing a Co-work popup mid-turn must cost nothing, and the
+  // transcript is remounted (keyed by session) every time a popup opens.
   coworkScroll: Record<string, { top: number; stuck: boolean }>;
   // Tool bursts and individual calls the owner opened. Same reasoning: an expansion is a reading
   // position, and losing it on every tab switch is the scroll pain this remembers.
@@ -1644,6 +1645,8 @@ export const useStore = create<State>((set) => ({
       // The Git console is a full-screen modal; leaving it open over the editor we just navigated to
       // would hide the destination behind the surface the operator left.
       gitConsoleOpen: false,
+      // Same for an open Co-work popup: the conversation is kept by `codeOrigin` and re-opened on return.
+      selectedCoworkId: null,
       ideTarget: { ...target, nonce: s.ideTarget ? s.ideTarget.nonce + 1 : 1 },
       ...(origin === undefined ? {} : { codeOrigin: origin }),
     }));
@@ -1652,6 +1655,8 @@ export const useStore = create<State>((set) => ({
   openGitConsole: (opts = {}) =>
     set(() => ({
       gitConsoleOpen: true,
+      // The console is its own full-screen surface; a Co-work popup left under it would be two dialogs deep.
+      selectedCoworkId: null,
       gitConsoleFor: opts.forThread ?? null,
       gitConsoleRepo: opts.repoPath ?? null,
       gitConsoleCommit: opts.commit ?? null,
@@ -1663,8 +1668,9 @@ export const useStore = create<State>((set) => ({
     const origin = useStore.getState().codeOrigin;
     if (!origin) return;
     set({ boardView: origin.view, gitConsoleOpen: false, codeOrigin: null, ideTarget: null });
-    // Only a task has a card to re-open; a co-work session or a Supervisor row is its own board area.
+    // A task re-opens its card and a Co-work session its popup; a Supervisor row is its own board area.
     if (origin.kind === "thread") useStore.getState().select(origin.id);
+    if (origin.kind === "cowork" && useStore.getState().coworkSessions[origin.id]) useStore.getState().selectCowork(origin.id);
   },
   clearCodeOrigin: () => set({ codeOrigin: null }),
   toggleRail: () =>

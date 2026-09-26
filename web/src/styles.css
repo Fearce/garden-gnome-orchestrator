@@ -20,6 +20,7 @@
   --role-implementor: oklch(0.8 0.14 72);
   --role-qa: oklch(0.79 0.15 150);
   --role-reader: oklch(0.77 0.13 350); /* soft rose — the read-only reader lane; fills the warm gap between director-violet (300) and implementor-amber (72), distinct from every role and from the darker, far-more-saturated danger/crit red alerts */
+  --role-coworker: oklch(0.84 0.15 118); /* chartreuse: the Co-worker, who pairs with the owner outside the pipeline; the gap between implementor-amber (72) and qa-green (150), far enough from both that a Co-work card never reads as a task stage */
   --role-reviewer: oklch(0.78 0.12 31); /* warm coral — the on-demand auto-reviewer that signs a task off in the owner's place; the last free hue family (between reader-rose 350 and implementor-amber 72), and lighter + far less saturated than the danger red (0.68 0.2 25) so a reviewer never reads as an alert */
 
   --ok: oklch(0.77 0.15 152);
@@ -3779,50 +3780,25 @@ button.note-from:hover { color: var(--text-dim); }
 }
 
 /* ============================== Co-work ============================== */
-/* Co-work is a desk, not another task lane: the session rail and conversation own the remaining
-   board height and keep their scrolling local so a long transcript never moves the global chrome. */
-.cowork-shell {
-  flex: 1 1 0; min-height: 440px; overflow: hidden;
-  display: grid; grid-template-columns: minmax(240px, 292px) minmax(0, 1fr);
-  border: 1px solid var(--line); border-radius: var(--r-lg);
-  background: var(--bg-1); box-shadow: var(--shadow-1);
+/* Co-work is a popup over the board, not a pane of its own: a card in the task lanes opens the
+   conversation here, and the tasks stay visible (dimmed) behind it. The conversation keeps its scrolling
+   local so a long transcript never moves the board underneath. */
+.cowork-popup-scrim { padding: clamp(10px, 3vh, 32px) clamp(10px, 3vw, 40px); }
+.cowork-popup {
+  width: min(1120px, 100%); height: min(920px, 100%); min-height: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  border: 1px solid color-mix(in oklch, var(--role-coworker) 32%, var(--line-strong)); border-radius: var(--r-lg);
+  background: var(--bg-1); box-shadow: var(--shadow-2);
 }
-.cowork-session-list {
-  min-width: 0; min-height: 0; display: flex; flex-direction: column;
-  border-right: 1px solid var(--line);
-  background:
-    radial-gradient(circle at 10% 0%, color-mix(in oklch, var(--accent) 7%, transparent), transparent 42%),
-    var(--bg-1);
+.cowork-popup > .cowork-conversation { flex: 1; }
+.cowork-chat-gnome { align-self: center; }
+.cowork-close {
+  width: 32px; height: 32px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-dim); border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
 }
-.cowork-list-head {
-  min-height: 67px; padding: 12px 13px 11px 16px; flex: 0 0 auto;
-  display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  border-bottom: 1px solid var(--line);
-}
-.cowork-list-head > div { display: flex; flex-direction: column; min-width: 0; }
-.cowork-list-head strong { font-size: 13px; letter-spacing: 0.01em; }
-.cowork-list-head span { color: var(--text-faint); font: 10px var(--font-mono); }
+.cowork-close:hover { color: var(--text); border-color: var(--line-strong); background: var(--bg-3); }
 .cowork-new { flex: 0 0 auto; }
-.cowork-list-scroll {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 8px;
-  display: flex; flex-direction: column; gap: 4px;
-}
-.cowork-session-row {
-  width: 100%; min-width: 0; display: grid;
-  grid-template-columns: 8px minmax(0, 1fr) auto; align-items: center; gap: 9px;
-  padding: 10px 8px; border: 1px solid transparent; border-radius: var(--r-md);
-  color: var(--text-dim); background: transparent; text-align: left;
-  transition: color 0.12s, border-color 0.12s, background 0.12s;
-}
-.cowork-session-row:hover { color: var(--text); background: var(--bg-2); }
-.cowork-session-row.active {
-  color: var(--text); border-color: color-mix(in oklch, var(--accent) 34%, var(--line));
-  background: color-mix(in oklch, var(--accent) 8%, var(--bg-2));
-}
-.cowork-session-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.cowork-session-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
-.cowork-session-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 10.5px; }
-.cowork-session-age { align-self: start; padding-top: 2px; color: var(--text-faint); font-size: 9px; }
+.cowork-new svg { margin-right: 5px; vertical-align: -2px; }
 .cowork-state-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--text-faint); }
 .cowork-state-dot.running { background: var(--accent); box-shadow: 0 0 8px color-mix(in oklch, var(--accent) 70%, transparent); animation: cowork-pulse 1.5s ease-in-out infinite; }
 .cowork-state-dot.stopping { background: var(--warn); }
@@ -3830,25 +3806,18 @@ button.note-from:hover { color: var(--text-dim); }
 .cowork-state-dot.idle { background: var(--ok); }
 @keyframes cowork-pulse { 50% { opacity: 0.45; } }
 
-.cowork-list-empty,
-.cowork-no-selection,
 .cowork-chat-empty {
   margin: auto; max-width: 420px; padding: 30px 22px;
   display: flex; flex-direction: column; align-items: center; gap: 10px;
   color: var(--text-faint); text-align: center;
 }
-.cowork-list-empty { padding: 28px 12px; font-size: 12px; }
-.cowork-list-empty strong { color: var(--text-dim); }
-.cowork-list-empty .btn { margin-top: 4px; }
 .cowork-empty-mark {
   width: 42px; height: 42px; display: inline-flex; align-items: center; justify-content: center;
   color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent) 34%, var(--line));
   border-radius: 13px; background: color-mix(in oklch, var(--accent) 9%, var(--bg-2));
   box-shadow: inset 0 1px color-mix(in oklch, white 7%, transparent);
 }
-.cowork-no-selection h3,
 .cowork-chat-empty h3 { margin: 4px 0 0; color: var(--text); font-family: var(--font-serif); font-size: 24px; font-weight: 400; letter-spacing: 0; }
-.cowork-no-selection p,
 .cowork-chat-empty p { margin: 0; color: var(--text-dim); line-height: 1.55; }
 
 .cowork-conversation { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); }
@@ -3857,7 +3826,6 @@ button.note-from:hover { color: var(--text-dim); }
   display: flex; align-items: center; gap: 11px; border-bottom: 1px solid var(--line);
   background: color-mix(in oklch, var(--bg-1) 92%, transparent);
 }
-.cowork-back { display: none; }
 .cowork-chat-identity { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 3px; }
 .cowork-title-button {
   width: fit-content; max-width: 100%; padding: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -4037,11 +4005,6 @@ button.note-from:hover { color: var(--text-dim); }
 
 /* ---- Co-work QoL: the folded transcript, the board cards, and the two hand-off dialogs ---- */
 
-/* The desk stays MOUNTED while another board area is on screen, so a trip to the task board mid-turn
-   costs no scroll position, no expanded tool burst and no draft. `.cowork-shell` sets `display: grid`,
-   which overrides the UA rule behind the `hidden` attribute, so it must be turned off explicitly. */
-.cowork-shell[hidden] { display: none; }
-
 /* The positioning context for the jump pill that floats over the bottom edge of the transcript. */
 .cowork-transcript-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .cowork-jump {
@@ -4124,23 +4087,27 @@ button.note-from:hover { color: var(--text-dim); }
 .cowork-summary-body ul { margin: 5px 0; padding-left: 18px; }
 .cowork-summary-body code { font-size: 11px; }
 
-/* Co-work sessions ON the task board. Display-only, plus the steering the conversation already offers:
-   there is no thread behind these cards, and nothing here can settle one. */
-.cowork-board { margin-top: 22px; padding-top: 12px; border-top: 1px solid var(--line); }
-.cowork-board-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 11px; }
-.cowork-board-head h3 { margin: 0; color: var(--text-faint); font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; }
-.cowork-board-lanes { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 13px; align-content: start; }
+/* Co-work sessions IN the task lanes, as their own kind of card. The chartreuse stripe, the Co-worker
+   gnome and the chip carry the identity; the state dot in the meta line carries the state. Display-only,
+   plus the steering the conversation already offers: there is no thread behind these cards, and nothing
+   here can settle one. */
 .cowork-card {
   display: flex; flex-direction: column; overflow: hidden; position: relative;
-  border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-1);
+  border: 1px solid color-mix(in oklch, var(--role-coworker) 22%, var(--line)); border-radius: var(--r-lg);
+  background: color-mix(in oklch, var(--role-coworker) 3%, var(--bg-1));
   transition: border-color 0.14s, background 0.14s;
 }
-.cowork-card:hover { border-color: var(--line-strong); }
-.cowork-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--text-faint); }
-.cowork-card.state-running::before { background: var(--accent); }
-.cowork-card.state-stopping::before { background: var(--warn); }
+.cowork-card:hover { border-color: color-mix(in oklch, var(--role-coworker) 40%, var(--line-strong)); }
+.cowork-card.sel { border-color: var(--role-coworker); box-shadow: 0 0 0 2px color-mix(in oklch, var(--role-coworker) 60%, transparent); }
+.cowork-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--role-coworker); }
 .cowork-card.state-error::before { background: var(--danger); }
-.cowork-card.state-idle::before { background: var(--ok); }
+.cowork-chip {
+  padding: 1px 6px; border-radius: 100px; color: var(--role-coworker);
+  background: color-mix(in oklch, var(--role-coworker) 14%, transparent);
+  font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+}
+.cowork-card-meta .cowork-state-dot { width: 6px; height: 6px; }
+.cowork-earlier-row { width: 100%; font: inherit; color: inherit; text-align: left; cursor: pointer; }
 .cowork-card-open { padding: 13px 14px 11px 16px; display: flex; flex-direction: column; gap: 7px; cursor: pointer; background: transparent; border: 0; text-align: left; }
 .cowork-card-open:hover { background: var(--bg-2); }
 .cowork-card-top { display: flex; align-items: center; gap: 8px; }
@@ -4173,22 +4140,16 @@ button.note-from:hover { color: var(--text-dim); }
 }
 
 @media (max-width: 899.98px) {
-  /* Co-work has its own in-view back control; the bottom bar already provides the top-level switch. */
-  .board-cowork { padding: 0; }
-  .board-cowork .board-head { display: none; }
-  .cowork-shell { width: 100%; min-width: 0; min-height: 0; border: 0; border-radius: 0; grid-template-columns: minmax(0, 1fr); }
-  .cowork-session-list { border-right: 0; }
-  .cowork-shell.has-session .cowork-session-list { display: none; }
-  .cowork-shell:not(.has-session) .cowork-conversation { display: none; }
-  .cowork-list-head { min-height: 58px; padding: 8px 12px 8px 15px; }
-  .cowork-list-scroll { padding: 6px 8px; }
-  .cowork-session-row { min-height: var(--tap); padding: 10px 8px; }
+  /* On a phone there is no board worth keeping in view beside a conversation, so the popup takes the
+     whole screen and the ✕ is the way back. */
+  .cowork-popup-scrim { padding: 0; }
+  .cowork-popup { width: 100%; height: 100%; border: 0; border-radius: 0; }
   .cowork-chat-head { min-height: 58px; padding: 7px 8px; gap: 7px; }
-  .cowork-back {
-    width: var(--tap); height: var(--tap); flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-    color: var(--text-dim); border: 0; border-radius: var(--r-sm); background: transparent; font-size: 28px; line-height: 1;
-  }
-  .cowork-back:active { color: var(--text); background: var(--bg-3); }
+  .cowork-chat-gnome { display: none; }
+  .cowork-close { width: var(--tap); height: var(--tap); }
+  /* Icon-only on a phone: with their labels, Summary and Promote squeezed the session's name to nothing. */
+  .cowork-chat-head .btn.cowork-head-action { min-width: var(--tap); height: var(--tap); padding: 0; font-size: 0; justify-content: center; }
+  .cowork-chat-head .cowork-head-action svg { margin-right: 0; }
   .cowork-chat-meta { max-width: calc(100vw - 164px); }
   .cowork-chat-meta span:last-child { display: none; }
   .cowork-meta-sep { display: none; }
@@ -4211,7 +4172,7 @@ button.note-from:hover { color: var(--text-dim); }
   .cowork-steer-row .cowork-steer, .cowork-steer-row .cowork-stop { width: 100%; min-height: var(--tap); height: var(--tap); }
   .cowork-composer-note span:first-child { display: none; }
   .cowork-composer-note { justify-content: flex-end; padding-right: 4px; }
-  .cowork-no-selection h3, .cowork-chat-empty h3 { font-size: 22px; }
+  .cowork-chat-empty h3 { font-size: 22px; }
   .cowork-create-modal { max-height: calc(100dvh - 24px); }
   .cowork-create-body input, .cowork-create-body select { min-height: var(--tap); font-size: 16px; }
   .cowork-create-modal .m-foot .btn { min-height: var(--tap); }

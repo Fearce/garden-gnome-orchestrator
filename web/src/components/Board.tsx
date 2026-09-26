@@ -25,8 +25,8 @@ import { ScheduledTasks } from "./ScheduledTasks.js";
 import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
-import { CoWork } from "./CoWork.js";
-import { CoworkBoardCards } from "./CoworkCards.js";
+import { CoworkPopup, NewCoworkButton } from "./CoWork.js";
+import { CoworkCard, EarlierCoworkSection, useBoardCoworkSessions } from "./CoworkCards.js";
 import { ManualDeploymentBadge } from "./ManualDeploymentStatus.js";
 import { LazyChunkBoundary } from "./LazyChunkBoundary.js";
 const Ide = lazy(() => import("./ide/Ide.js").then(m => ({ default: m.Ide })));
@@ -124,8 +124,7 @@ export function Board() {
   const taskOrder = useStore((s) => s.taskOrder);
   const [ideOpened, setIdeOpened] = useState(false);
   useEffect(() => { if (boardView === "ide") setIdeOpened(true); }, [boardView]);
-  const [coworkOpened, setCoworkOpened] = useState(false);
-  useEffect(() => { if (boardView === "cowork") setCoworkOpened(true); }, [boardView]);
+  const cowork = useBoardCoworkSessions();
   const setTaskOrder = useStore((s) => s.setTaskOrder);
   const setTaskSort = useStore((s) => s.setTaskSort);
   const all = Object.values(threads);
@@ -216,8 +215,11 @@ export function Board() {
     setTaskOrder(arrayMove(ids, from, to));
   };
 
+  // Co-work sessions lead the lanes on the first page: they are the work the owner is doing by hand right
+  // now. They sit outside the sort, the drag order and the pager because they are not tasks.
   const lanes = (
     <div className="lanes">
+      {cur === 0 ? cowork.current.map((session) => <CoworkCard key={session.id} session={session} />) : null}
       {pageItems.map((t) => (dndEnabled ? <SortableCard key={t.id} thread={t} /> : <Card key={t.id} thread={t} />))}
     </div>
   );
@@ -235,16 +237,15 @@ export function Board() {
             </span>
             {/* Always available — under DnD a pick re-seeds the manual order (applySort) instead of being hidden. */}
             <SortMenu onPick={applySort} />
+            <NewCoworkButton />
           </div>
         ) : null}
       </div>
       {(ideOpened || boardView === "ide") && <div className="ide-mount" hidden={boardView !== "ide"}><LazyChunkBoundary label="IDE" className="ide-load-error"><Suspense fallback={<p>Opening IDE…</p>}><Ide /></Suspense></LazyChunkBoundary></div>}
-      {/* Co-work stays MOUNTED once opened, hidden the way the IDE is. Unmounting it was the whole
-          "leaving the tab mid-turn loses your place" complaint: the session data lives in the store and
-          keeps streaming either way, but the transcript's scroll position, expanded tool bursts, draft
-          and staged attachments are component state, and they died on every switch to the task board. */}
-      {(coworkOpened || boardView === "cowork") && <CoWork hidden={boardView !== "cowork"} />}
-      {boardView === "ide" || boardView === "cowork" ? null : boardView === "schedules" ? (
+      {/* The Co-work popup is ALWAYS mounted and renders nothing until a card opens it. Unmounting it would
+          drop the unsent draft and staged attachments on every close; see CoworkPopup. */}
+      <CoworkPopup />
+      {boardView === "ide" ? null : boardView === "schedules" ? (
         <ScheduledTasks />
       ) : boardView === "notes" ? (
         <OperatorNotes />
@@ -252,10 +253,10 @@ export function Board() {
         <SupervisorPanel />
       ) : (
         <>
-          {list.length === 0 ? (
+          {list.length === 0 && cowork.current.length === 0 ? (
             <div className="empty">
               <div className="big">No tasks running</div>
-              <div className="faint">Dispatch one from the Director on the left.</div>
+              <div className="faint">Dispatch one from the Director on the left, or start a Co-work session above.</div>
             </div>
           ) : (
             <>
@@ -284,7 +285,7 @@ export function Board() {
               ) : null}
             </>
           )}
-          <CoworkBoardCards />
+          <EarlierCoworkSection sessions={cowork.earlier} />
           <ClosedSection threads={closed} />
         </>
       )}
@@ -301,7 +302,6 @@ function BoardTabs() {
   const counts = {
     tasks: null,
     ide: null,
-    cowork: useStore((s) => Object.keys(s.coworkSessions).length),
     notes: useStore((s) => s.notes.length),
     schedules: useStore((s) => s.schedules.length),
     supervisor: useStore((s) => (s.supervisor.enabled ? s.supervisor.watching : null)),
@@ -324,7 +324,6 @@ function BoardTabs() {
 
 const BOARD_TABS: { view: BoardView; label: string; title: string }[] = [
   { view: "tasks", label: "Tasks", title: "Back to the task board" },
-  { view: "cowork", label: "Co-work", title: "Human-led coding sessions with persistent context" },
   { view: "ide", label: "IDE", title: "Edit workspace files and manage Git" },
   { view: "notes", label: "Notes", title: "Branches, PRs and reminders waiting on you" },
   { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },

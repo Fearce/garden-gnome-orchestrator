@@ -7,9 +7,10 @@
 //      layout, so no SSR gate can see it.
 //   2. TOOL NOISE IS ACTUALLY FOLDED. The grouping has a unit gate, but "the transcript reads as
 //      conversation" is a claim about what is ON SCREEN. This counts the visible rows.
-//   3. LEAVING THE TAB MID-TURN COSTS NOTHING. Switch to the task board, type to the director, come
-//      back: same scroll position, same expanded burst, same draft. That round trip IS the workstream.
-//   4. THE BOARD CARD IS REAL AND STEERS. It appears on the task board, opens the conversation, and its
+//   3. CLOSING THE POPUP MID-TURN COSTS NOTHING. Esc out, type to the director, reopen the card: same
+//      scroll position, same expanded burst, same draft. That round trip IS the workstream.
+//   4. THE BOARD CARD IS REAL AND STEERS. It sits in the task lanes as a Co-work card, opens the
+//      conversation as a popup over the board (Esc, ✕ or the backdrop close it), and its
 //      queue/inject/interrupt controls reach the same command path the composer uses.
 //
 // The instance is isolated (own PORT + DATA_DIR, bogus account tokens), so nothing here touches the
@@ -85,9 +86,15 @@ function seed(dataDir, workspace) {
   db.close();
 }
 
-async function openCowork(page) {
-  await page.click('.board-tab:has-text("Co-work")');
-  await page.waitForSelector(".cowork-shell:not([hidden])", { timeout: 15000 });
+/** Opens a session the way the owner does: its card in the task lanes. */
+async function openCowork(page, name) {
+  await page.click(`.lanes .cowork-card:has-text("${name}") .cowork-card-open`);
+  await page.waitForSelector(".cowork-popup .cowork-transcript", { timeout: 15000 });
+}
+
+async function popupClosed(page) {
+  await page.waitForSelector(".cowork-popup", { state: "detached", timeout: 10000 });
+  return (await page.locator(".cowork-popup").count()) === 0;
 }
 
 async function transcriptState(page) {
@@ -138,23 +145,37 @@ async function directorBox(page) {
     await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
     await page.waitForSelector(".accounts .acct", { timeout: 30000 });
 
-    // ---- 4a. the card is on the TASK board, before Co-work has ever been opened -------------------
-    await page.waitForSelector(".cowork-board .cowork-card", { timeout: 15000 });
-    const cardText = (await page.textContent(".cowork-board .cowork-card")) ?? "";
-    check("a live session gets a card on the task board", cardText.includes("Pair on the responsive shell"), cardText.slice(0, 120));
+    // ---- 4a. the card is IN the task lanes, as its own kind of card -------------------------------
+    await page.waitForSelector(".lanes .cowork-card", { timeout: 15000 });
+    check("there is no separate Co-work tab to switch to", (await page.locator('.board-tab:has-text("Co-work")').count()) === 0);
+    const cardText = (await page.textContent(".lanes .cowork-card")) ?? "";
+    check("a live session gets a card in the task lanes", cardText.includes("Pair on the responsive shell"), cardText.slice(0, 120));
+    check("the card is labelled Co-work", cardText.includes("Co-work"), cardText.slice(0, 160));
+    check("the card carries the Co-worker gnome", (await page.locator(".lanes .cowork-card .gnome").count()) === 2);
+    const stripe = await page.evaluate(() => {
+      const card = document.querySelector(".lanes .cowork-card");
+      const probe = document.createElement("span");
+      probe.style.color = "var(--role-coworker)";
+      document.body.appendChild(probe);
+      const want = getComputedStyle(probe).color;
+      probe.remove();
+      return { got: getComputedStyle(card, "::before").backgroundColor, want };
+    });
+    check("the card's stripe is the Co-worker's own colour", stripe.got === stripe.want, JSON.stringify(stripe));
     check("the card names its repo", cardText.includes("garden-gnome-orchestrator"), cardText.slice(0, 160));
     check("the card shows the live state", cardText.includes("working"), cardText.slice(0, 160));
-    const clock = (await page.textContent(".cowork-board .cowork-card .cowork-card-clock")) ?? "";
+    check("a new session can be started from the board", await page.isVisible('.board-head button:has-text("New Co-work")'));
+    const clock = (await page.textContent(".lanes .cowork-card .cowork-card-clock")) ?? "";
     check("the card runs an elapsed clock off the live turn", /\d/.test(clock), clock);
     // The newest CONVERSATIONAL line, not the newest row: six tool calls followed the last reply, and
     // "ran Bash" is not what the owner left the session doing.
     check("the card carries the last conversational line", cardText.includes("Reply 8"), cardText.slice(0, 220));
     check("tool traffic never becomes the card snippet", !cardText.includes("npm run check"), cardText.slice(0, 220));
-    check("an idle session from today is on the board too", (await page.locator(".cowork-board .cowork-card").count()) === 2);
+    check("an idle session from today is on the board too", (await page.locator(".lanes .cowork-card").count()) === 2);
     await page.screenshot({ path: path.join(shots, "01-board-cards.png") });
 
     // ---- 4b. steering straight from the card ------------------------------------------------------
-    await page.click('.cowork-board .cowork-card:has-text("Pair on the responsive shell") button:text-is("Steer")');
+    await page.click('.lanes .cowork-card:has-text("Pair on the responsive shell") button:text-is("Steer")');
     await page.waitForSelector(".cowork-card-steer textarea", { timeout: 10000 });
     const modes = await page.locator(".cowork-card-steer .cowork-card-actions button").allTextContents();
     check("the card offers queue / inject / interrupt", ["Queue", "Inject", "Interrupt"].every((m) => modes.includes(m)), modes.join(","));
@@ -167,11 +188,28 @@ async function directorBox(page) {
     // is that the card reaches the SAME command path the composer uses, not that a phantom agent
     // accepted the direction.
     await page.waitForSelector(".cowork-card-steer", { state: "detached", timeout: 10000 });
-    check("the card returns to its resting controls after sending", await page.isVisible('.cowork-board .cowork-card button:text-is("Steer")'));
+    check("the card returns to its resting controls after sending", await page.isVisible('.lanes .cowork-card button:text-is("Steer")'));
+
+    // ---- 4c. the popup opens OVER the board and closes three ways ---------------------------------
+    await openCowork(page, "Pair on the responsive shell");
+    check("the conversation opens as a popup dialog", await page.isVisible('.cowork-popup[role="dialog"]'));
+    check("the task board is still there behind it", await page.isVisible(".lanes"));
+    await page.keyboard.press("Escape");
+    check("Esc closes the popup", await popupClosed(page));
+    await openCowork(page, "Pair on the responsive shell");
+    await page.click(".cowork-close");
+    check("the ✕ closes the popup", await popupClosed(page));
+    await openCowork(page, "Pair on the responsive shell");
+    await page.mouse.click(8, 480);
+    check("a click on the backdrop closes the popup", await popupClosed(page));
+    await openCowork(page, "Pair on the responsive shell");
+    await page.click(".cowork-title-button");
+    await page.waitForSelector(".cowork-rename-input", { timeout: 5000 });
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(300);
+    check("Esc in the rename box cancels the rename, not the conversation", await page.isVisible(".cowork-popup") && !(await page.isVisible(".cowork-rename-input")));
 
     // ---- 1 + 2. the folded, sticky transcript -----------------------------------------------------
-    await page.click('.cowork-board .cowork-card:has-text("Pair on the responsive shell") .cowork-card-open');
-    await page.waitForSelector(".cowork-shell:not([hidden]) .cowork-transcript", { timeout: 15000 });
     await page.waitForTimeout(900);
     const opened = await transcriptState(page);
     check("opening a session lands at the live end of the conversation", !!opened?.atBottom, JSON.stringify(opened));
@@ -208,20 +246,18 @@ async function directorBox(page) {
     check("and the view stays where the owner put it", scrolled?.top === 200 && !scrolled.atBottom, JSON.stringify(scrolled));
     await page.screenshot({ path: path.join(shots, "05-jump-pill.png") });
 
-    // ---- 3. leave mid-turn, use the rest of the console, come back --------------------------------
+    // ---- 3. close mid-turn, use the rest of the console, come back --------------------------------
     await page.fill(".cowork-composer textarea", "Draft that must survive a trip to the board.");
-    await page.click('.board-tab:has-text("Tasks")');
-    // `attached`, not the default `visible`: the whole point is that the desk is still in the DOM.
-    await page.waitForSelector(".cowork-shell[hidden]", { state: "attached", timeout: 10000 });
-    check("leaving Co-work hides the desk instead of destroying it", (await page.locator(".cowork-shell").count()) === 1);
-    check("the hidden desk does not cover the task board", !(await page.isVisible(".cowork-shell")));
+    await page.keyboard.press("Escape");
+    check("closing mid-turn puts the popup away", await popupClosed(page));
+    check("the task board is fully usable again", await page.isVisible(".lanes .cowork-card"));
     const box = await directorBox(page);
     check("the director rail is reachable while the turn runs", await page.isVisible(box));
     await page.fill(box, "Director stays reachable mid-turn.");
     check("and the director composer accepts typing", ((await page.inputValue(box)) ?? "").includes("Director stays reachable"));
     await page.screenshot({ path: path.join(shots, "06-board-while-live.png") });
 
-    await openCowork(page);
+    await openCowork(page, "Pair on the responsive shell");
     await page.waitForTimeout(700);
     const returned = await transcriptState(page);
     check("returning keeps the scroll position the owner chose", returned?.top === 200 && !returned.atBottom, JSON.stringify(returned));
@@ -252,7 +288,9 @@ async function directorBox(page) {
       "a running session cannot be promoted",
       await page.isDisabled('.cowork-chat-head button:has-text("Promote to task")'),
     );
-    await page.click('.cowork-session-row:has-text("Earlier exploration")');
+    await page.keyboard.press("Escape");
+    await popupClosed(page);
+    await openCowork(page, "Earlier exploration");
     await page.waitForTimeout(600);
     await page.click('.cowork-chat-head button:has-text("Promote to task")');
     await page.waitForSelector(".cowork-promote-modal", { timeout: 10000 });
@@ -271,7 +309,8 @@ async function directorBox(page) {
     await page.waitForSelector(".detail", { timeout: 25000 });
     const detail = (await page.textContent(".detail")) ?? "";
     check("the promoted task opens as an ordinary task", detail.includes("Ship the responsive Co-work shell"), detail.slice(0, 200));
-    check("the conversation itself is untouched by the promotion", (await page.locator(".cowork-shell").count()) === 1);
+    check("opening the task put the conversation away", (await page.locator(".cowork-popup").count()) === 0);
+    check("the conversation itself is untouched by the promotion", await page.isVisible('.lanes .cowork-card:has-text("Earlier exploration")'));
     await page.screenshot({ path: path.join(shots, "11-promoted-task.png") });
 
     check("no console errors anywhere in the run", errors.length === 0, errors.slice(0, 3).join(" | "));

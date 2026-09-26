@@ -10,10 +10,9 @@
  *    by the provider's tool id and NOT by adjacency (parallel tool use returns out of order, and an
  *    early result can arrive before its own call row), and a burst is closed by PROSE, because that is
  *    where the agent stopped working and started talking.
- * 2. LEAVING THE TAB COSTS NOTHING. The desk stays mounted behind a `hidden` attribute, and the scroll
- *    position / expanded bursts live in the STORE. `.cowork-shell` sets `display: grid`, which beats
- *    the UA rule behind `hidden`, so the explicit `[hidden]` rule is load-bearing: without it the
- *    hidden desk renders on top of the task board.
+ * 2. CLOSING THE POPUP COSTS NOTHING. The popup component stays mounted for the life of the board and
+ *    renders nothing while closed, so the unsent draft and staged attachments survive; the scroll
+ *    position / expanded bursts live in the STORE, because the transcript remounts on every open.
  * 3. THE BOARD CARDS ARE DISPLAY-ONLY. A Co-work session owns no thread. A card that grew a "mark
  *    done", a QA pip or a findings list would be the exact defect the lane exists to prevent.
  * 4. THE DIRECTOR IS NEVER BLOCKED. The rail is a sibling of the board and is not gated on Co-work
@@ -37,7 +36,13 @@ Object.assign(globalThis, {
 const { groupCoworkTranscript, toolBurstLabel, toolBurstTools, toolCallSummary, toolResultSummary } =
   await import("../src/lib/coworkTranscript.js");
 const { useStore } = await import("../src/store.js");
-const { CoworkBoardCards } = await import("../src/components/CoworkCards.js");
+const { CoworkCard, useBoardCoworkSessions } = await import("../src/components/CoworkCards.js");
+
+/** Renders what the board would put in its lanes: the cards the hook picks as current, in its order. */
+function BoardLanes() {
+  const { current } = useBoardCoworkSessions();
+  return React.createElement(React.Fragment, null, current.map((session) => React.createElement(CoworkCard, { key: session.id, session })));
+}
 
 const at = Date.now();
 let seq = 0;
@@ -106,7 +111,7 @@ assert.equal(
   "a call still in flight says so instead of reading as empty output",
 );
 
-// ---- 2. leaving the tab costs nothing ---------------------------------------------------------
+// ---- 2. closing the popup costs nothing -------------------------------------------------------
 const here = dirname(fileURLToPath(import.meta.url));
 // Normalize line endings: this repo holds a mix of CRLF and LF sources, and a `\n`-anchored source
 // assertion that silently only ever matches one of them is not a gate.
@@ -116,15 +121,10 @@ const coworkSource = read("src/components/CoWork.tsx");
 const transcriptSource = read("src/components/CoworkTranscript.tsx");
 const storeSource = read("src/store.ts");
 const appSource = read("src/App.tsx");
-const cssSource = read("src/styles.css");
 
-assert.match(
-  boardSource,
-  /\(coworkOpened \|\| boardView === "cowork"\) && <CoWork hidden=\{boardView !== "cowork"\} \/>/,
-  "the Co-work desk stays mounted behind `hidden` instead of being unmounted on every view switch",
-);
-assert.match(cssSource, /\.cowork-shell\[hidden\] \{ display: none; \}/,
-  ".cowork-shell sets display:grid, so the hidden desk needs an explicit rule or it covers the task board");
+assert.match(boardSource, /\n\s*<CoworkPopup \/>\n/,
+  "the Co-work popup is mounted unconditionally instead of being unmounted on every close");
+assert.match(coworkSource, /if \(!selected\) return null;/, "and a closed popup renders nothing over the board");
 assert.match(storeSource, /coworkScroll: Record<string, \{ top: number; stuck: boolean \}>/,
   "scroll position is per session and lives in the store, which outlives the component");
 assert.match(storeSource, /coworkOpenTools: Record<string, true>/, "expanded tool bursts survive the same trip");
@@ -157,7 +157,7 @@ const session: CoworkSession = {
 };
 const ssr = useStore.getInitialState();
 Object.assign(ssr, { coworkSessions: { [session.id]: session } });
-const cards = renderToStaticMarkup(React.createElement(CoworkBoardCards));
+const cards = renderToStaticMarkup(React.createElement(BoardLanes));
 
 assert.match(cards, /Pair on the shell/, "a live session gets a card on the board");
 assert.match(cards, /garden-gnome-orchestrator/, "the card names its repo");
@@ -174,12 +174,15 @@ assert.ok(!/threads|markDone|retryThread|cancelThread/.test(cardSource), "the ca
 assert.match(cardSource, /sendCowork/, "card steering goes through the same command path as the composer");
 
 Object.assign(ssr, { coworkSessions: { [session.id]: { ...session, state: "idle" as const, activeTurnId: null, activeTurnStartedAt: null } } });
-const idleCards = renderToStaticMarkup(React.createElement(CoworkBoardCards));
+const idleCards = renderToStaticMarkup(React.createElement(BoardLanes));
 assert.match(idleCards, /idle/, "a recently-used idle session still shows, so returning to it is one click");
 assert.ok(!idleCards.includes(">Stop<"), "an idle session offers no stop control");
 
+Object.assign(ssr, { coworkSessions: { [session.id]: { ...session, state: "idle" as const, activeTurnId: null, activeTurnStartedAt: null, updatedAt: at - 3 * 86_400_000 } } });
+assert.equal(renderToStaticMarkup(React.createElement(BoardLanes)), "", "a days-old idle session leaves the lanes for the Earlier fold");
+
 Object.assign(ssr, { coworkSessions: {} });
-assert.equal(renderToStaticMarkup(React.createElement(CoworkBoardCards)), "", "no sessions means no section, not an empty heading");
+assert.equal(renderToStaticMarkup(React.createElement(BoardLanes)), "", "no sessions means no cards");
 
 // ---- 4. the director is never blocked ----------------------------------------------------------
 // The rail is a SIBLING of the board and is rendered unconditionally, which is what makes a live

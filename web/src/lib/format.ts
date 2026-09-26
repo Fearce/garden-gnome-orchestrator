@@ -1,4 +1,4 @@
-import type { AccountDTO, AgentRunState, Effort, Role, Thread, ThreadState } from "../types.js";
+import type { AccountDTO, AgentRunState, Effort, GnomeRole, Role, Thread, ThreadState } from "../types.js";
 
 export function roleColor(role: Role): string {
   return `var(--role-${role})`;
@@ -10,7 +10,7 @@ export function roleColor(role: Role): string {
  *  that role's identity colour yet look individually distinct — never shifting the hue or lightness,
  *  so planner stays blue and implementor stays amber. styles.css:17-21 remains the single source of
  *  the base OKLCH triples; this only rescales their chroma. */
-export function gnomeRoleColor(role: Role, chromaFactor: number): string {
+export function gnomeRoleColor(role: GnomeRole, chromaFactor: number): string {
   return `oklch(from var(--role-${role}) l calc(c * ${chromaFactor}) h)`;
 }
 
