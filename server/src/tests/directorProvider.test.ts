@@ -71,7 +71,7 @@ try {
   internals.codexProviderCandidate = () => ({ provider: "codex", hasHeadroom: true, fiveHour: 20, sevenDay: 30, sevenDayReset: Date.now() + 86_400_000, weeklySafetyPct: 100 });
   internals.codexRosterModels = (): string[] => ["gpt-smart-a", "gpt-smart-b"];
 
-  const configured = mgr.directorTargets(false);
+  const configured = mgr.directorTargets();
   check("capped Claude is excluded", configured.every((t) => t.provider !== "claude"), JSON.stringify(configured));
   check("Codex remains a director target", configured.length === 1 && configured[0]?.model === "gpt-director", JSON.stringify(configured));
   check("usage-aware fallback chooses Codex", mgr.preferredDirectorTarget(configured)?.provider === "codex");
@@ -99,10 +99,20 @@ try {
   check("supervisor judgement uses its bounded eight-turn ceiling", supervisorTurns === SUPERVISOR_JUDGE_MAX_TURNS, String(supervisorTurns));
   check("generic director JSON calls keep the cheaper two-turn ceiling", genericTurns === 2, String(genericTurns));
 
-  const autoTargets = mgr.directorTargets(true);
-  internals.askDirectorJson = async (): Promise<unknown> => ({ key: autoTargets.find((t: { model: string }) => t.model === "gpt-smart-b")?.key });
-  const smart = await mgr.autoSelectDirectorTarget();
-  check("smart selection can choose a non-Claude director model", smart?.provider === "codex" && smart.model === "gpt-smart-b", JSON.stringify(smart));
+  // Auto model selection is implementor-only. It once also let a judge pick the director from the
+  // whole roster ("the least expensive model you trust"), which put the director on Sonnet 5 while the
+  // owner had set Opus 5.5, and the pick was sticky across restarts.
+  mgr.setSettings({ autoModelSelection: true });
+  const withAuto = mgr.directorTargets();
+  check("auto model selection keeps the director on its configured model", withAuto.length === 1 && withAuto[0]?.model === "gpt-director", JSON.stringify(withAuto));
+  const bootDirector = () => new Director(mgr, db, hub, {} as Scheduler, {} as OperatorNotes);
+  db.kvSet("director_target_key", "codex|openai-codex|gpt-smart-b");
+  db.kvSet("director_target_auto", "1");
+  check("a director model an earlier build auto-picked is not restored on boot", bootDirector().status() === null);
+  check("the retired auto-pick marker is cleared on boot", db.kvGet("director_target_auto") === null);
+  db.kvSet("director_target_key", withAuto[0]!.key);
+  check("the configured director model is restored on boot", bootDirector().status()?.model === "gpt-director");
+  mgr.setSettings({ autoModelSelection: false });
 
   let dispatched: Record<string, unknown> | undefined;
   const fakeApi = {

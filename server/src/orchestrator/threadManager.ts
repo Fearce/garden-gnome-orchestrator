@@ -220,13 +220,6 @@ export interface DirectorTarget {
   capacity?: string;
 }
 
-const DIRECTOR_PICK_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["key"],
-  properties: { key: { type: "string" } },
-};
-
 /** The planner's own findings, flattened for the model selector: what the task turned out to involve,
  *  which files it touches, what's risky, and how hard the planner judged it. This is the only view of the
  *  REPO the selector gets — the planner already read the code, so re-reading it would be a second cost
@@ -3298,10 +3291,11 @@ export class ThreadManager implements OrchestratorApi {
     return ov[ZAI_SUB_ID]?.[role]?.trim() || this.zaiModel();
   }
 
-  /** Every backend/model the director may actually start on now. With `allModels`, expose the same
-   *  capability roster as implementor auto-selection; otherwise return each provider's configured
-   *  director model. A provider is present only when enabled, authenticated and under its live caps. */
-  directorTargets(allModels = false): DirectorTarget[] {
+  /** Every backend/model the director may actually start on now: each provider's configured director
+   *  model, or its usage-saving model. Auto model selection is implementor-only and never widens this;
+   *  it used to hand the director a judge-picked "least expensive" model over the owner's own setting.
+   *  A provider is present only when enabled, authenticated and under its live caps. */
+  directorTargets(): DirectorTarget[] {
     const out: DirectorTarget[] = [];
     const demand = demandForRole("director");
     const add = (provider: ImplementorProvider, accountId: string, accountLabel: string, models: string[], capacity: string): void => {
@@ -3312,11 +3306,7 @@ export class ThreadManager implements OrchestratorApi {
     const claude = this.accounts.dispatchPreview(demand);
     if (claude.hasHeadroom) {
       const saving = this.usageSavingTarget(claude.account.id);
-      const models = saving
-        ? [saving.model]
-        : allModels
-        ? this.claudeRosterModels().map((m) => this.poolResolved(claude.account.id, this.claudeOpusFloored(m).model))
-        : [this.providerRoleModel("claude", "director", claude.account.id)];
+      const models = saving ? [saving.model] : [this.providerRoleModel("claude", "director", claude.account.id)];
       const candidate = providerCandidateFromClaude(claude);
       for (const model of uniq(models)) {
         add("claude", claude.account.id, claude.account.label, [model], modelCapacityNote("claude", model, candidate, demand));
@@ -3324,13 +3314,8 @@ export class ThreadManager implements OrchestratorApi {
     }
     const codexKey = this.openaiApiKey();
     if (this.settings().codexEnabled && codexAuthAvailable(!!codexKey && /^sk-/.test(codexKey))) {
-      const pools = this.codexPoolSnapshot();
       const saving = this.usageSavingTarget(CODEX_SUB_ID);
-      const models = saving
-        ? [saving.model]
-        : allModels
-        ? this.codexRosterModels().filter((model) => !poolForModel(pools ?? [], model)?.modelSlug)
-        : [this.providerRoleModel("codex", "director")];
+      const models = saving ? [saving.model] : [this.providerRoleModel("codex", "director")];
       for (const model of uniq(models)) {
         const candidate = this.codexProviderCandidate("director", demand, model);
         if (candidate.hasHeadroom) {
@@ -3341,11 +3326,7 @@ export class ThreadManager implements OrchestratorApi {
     if (this.grokProviderReady()) {
       const live = this.modelCatalog.grokModels();
       const saving = this.usageSavingTarget(GROK_SUB_ID);
-      const models = saving
-        ? [saving.model]
-        : allModels
-        ? (live.length ? live : this.pickableGrokModels())
-        : [this.providerRoleModel("grok", "director")];
+      const models = saving ? [saving.model] : [this.providerRoleModel("grok", "director")];
       const available = live.length ? models.filter((m) => live.includes(m)) : models;
       if (available.length) {
         const candidate = this.grokProviderCandidate(demand);
@@ -3355,7 +3336,7 @@ export class ThreadManager implements OrchestratorApi {
     if (this.zaiImplementorReady()) {
       const candidate = this.zaiProviderCandidate(demand);
       const saving = this.usageSavingTarget(ZAI_SUB_ID);
-      add("zai", "zai", "z.ai", saving ? [saving.model] : allModels ? this.pickableZaiModels() : [this.providerRoleModel("zai", "director")], describeProviderCapacity(candidate, demand));
+      add("zai", "zai", "z.ai", saving ? [saving.model] : [this.providerRoleModel("zai", "director")], describeProviderCapacity(candidate, demand));
     }
     return out;
   }
@@ -3376,7 +3357,7 @@ export class ThreadManager implements OrchestratorApi {
     if (assessCapacity(candidateCapacityWindows(candidate), demand).status !== "at-risk") return true;
     // A sticky target may keep a tight pool only when there is genuinely nowhere safer to move. This
     // preserves the long-lived director session while still shedding it before a viable alternative.
-    return !this.directorTargets(true).some((alternative) => {
+    return !this.directorTargets().some((alternative) => {
       if (alternative.key === target.key) return false;
       const other = this.directorCandidateForTarget(alternative, demand);
       return other.hasHeadroom && assessCapacity(candidateCapacityWindows(other), demand).status !== "at-risk";
@@ -3418,8 +3399,8 @@ export class ThreadManager implements OrchestratorApi {
     return { ...candidate, hasHeadroom: this.settings().zaiEnabled && !!this.zaiApiKey() && candidate.hasHeadroom };
   }
 
-  /** Usage-aware deterministic fallback for the director and for bootstrapping the smart selector. */
-  preferredDirectorTarget(targets = this.directorTargets(false)): DirectorTarget | undefined {
+  /** Usage-aware choice among the director's configured targets, and the judge for director JSON calls. */
+  preferredDirectorTarget(targets = this.directorTargets()): DirectorTarget | undefined {
     if (!targets.length) return undefined;
     const demand = demandForRole("director");
     const pairs = targets.map((target) => ({ target, candidate: this.directorCandidateForTarget(target, demand) }));
@@ -3749,30 +3730,6 @@ export class ThreadManager implements OrchestratorApi {
       model: target.model,
       provider: target.provider,
     };
-  }
-
-  /** Smart director choice: one judgement for the stable director job, then Director persists the key
-   *  and reuses it until that target caps. A malformed/failed judgement falls back to usage-aware routing. */
-  async autoSelectDirectorTarget(excludeKeys: ReadonlySet<string> = new Set()): Promise<DirectorTarget | undefined> {
-    await this.liveBench.prepareForSelection();
-    const targets = this.directorTargets(true).filter((t) => !excludeKeys.has(t.key));
-    if (targets.length <= 1) return targets[0];
-    const judge = this.preferredDirectorTarget(targets);
-    const prompt = [
-      `Choose the best model to be ${config.ownerName}'s long-lived orchestrator director.`,
-      "The director must understand rough requests, interpret screenshots, ask only useful questions, enrich precise coding briefs, and reliably dispatch/steer tasks. Pick the least expensive model you trust to do that unattended. This is one sticky choice, not a per-task choice.",
-      "Available targets:",
-      ...targets.map((t) => {
-        const benchmark = this.liveBench.note(t.model);
-        return `- key=${t.key} — ${providerLabel(t.provider)} ${t.model}${t.provider === "codex" || t.provider === "grok" ? " (structured command bridge)" : " (native director tools)"}${t.capacity ? `\n  ${t.capacity}` : ""}${benchmark ? `\n  ${benchmark}` : ""}`;
-      }),
-      "LiveBench is a secondary capability prior, not an availability signal. Prefer exact-model evidence over an older family prior; local task outcomes and native-tool fit beat a small benchmark gap.",
-      "Reply with the exact key.",
-    ].join("\n");
-    const picked = await this.askDirectorJson(prompt, DIRECTOR_PICK_SCHEMA, judge) as { key?: unknown } | null;
-    const stillReady = targets.filter((t) => this.directorTargetReady(t));
-    const target = typeof picked?.key === "string" ? stillReady.find((t) => t.key === picked.key) : undefined;
-    return target ?? this.preferredDirectorTarget(stillReady);
   }
 
   /** Every (provider, model) pair a task could ACTUALLY be dispatched to right now — each backend that is
@@ -5592,7 +5549,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         const configured = reviewFloor.model;
         const models = new Set<string>([configured]);
         const explicitRoleModel = !!this.modelOverrides()[CODEX_SUB_ID]?.[role]?.trim();
-        if (!saving && this.settings().autoModelSelection && (role === "director" || role === "implementor")) {
+        if (!saving && this.settings().autoModelSelection && role === "implementor") {
           for (const model of this.codexRosterModels()) {
             if (!poolForModel(pools ?? [], model)?.modelSlug) models.add(model);
           }

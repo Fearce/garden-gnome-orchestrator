@@ -995,6 +995,7 @@ try {
   const originalGrokCandidate = internals.grokProviderCandidate;
   const originalGrokModelAvailable = internals.grokModelAvailable;
   const originalCatalogGrokModels = internals.modelCatalog.grokModels;
+  const originalOverrides = internals.modelOverrides();
   try {
     process.env.XAI_API_KEY = "test-grok-routing-key";
     db.kvSet("setting_grok_enabled", "1");
@@ -1011,7 +1012,8 @@ try {
     internals.grokProviderCandidate = () => ({ provider: "grok", hasHeadroom: true });
     internals.grokModelAvailable = () => false;
     internals.modelCatalog.grokModels = () => ["director-model"];
-    check("a stale Grok implementor model does not hide available director models", internals.directorTargets(true).some((target: { provider: string; model: string }) => target.provider === "grok" && target.model === "director-model"));
+    internals.setSettings({ modelOverrides: { ...originalOverrides, grok: { ...originalOverrides.grok, director: "director-model" } } });
+    check("a stale Grok implementor model does not hide the configured director model", internals.directorTargets().some((target: { provider: string; model: string }) => target.provider === "grok" && target.model === "director-model"));
     check(
       "a sticky available Grok director target ignores an unrelated stale implementor model",
       internals.directorTargetReady({ key: "grok|xai-grok|director-model", provider: "grok", accountId: "xai-grok", accountLabel: "Grok", model: "director-model" }),
@@ -1020,6 +1022,7 @@ try {
     internals.grokProviderCandidate = originalGrokCandidate;
     internals.grokModelAvailable = originalGrokModelAvailable;
     internals.modelCatalog.grokModels = originalCatalogGrokModels;
+    internals.setSettings({ modelOverrides: originalOverrides });
     if (originalXaiApiKey === undefined) delete process.env.XAI_API_KEY;
     else process.env.XAI_API_KEY = originalXaiApiKey;
     db.kvSet("setting_grok_enabled", "0");

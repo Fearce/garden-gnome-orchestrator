@@ -1004,7 +1004,7 @@ export interface OrchestratorSettings {
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
   maxReviewFixRounds: number; // implementor fix-rounds the auto-reviewer may trigger when it hands a task back (default 1; 0 = hand straight back to the owner, the pre-fix-round behavior)
   selfImproveEnabled: boolean; // off (default) → opt-in; on → after a task completes, the implementor runs one extra round building the tools/skills/memories that would have made the task easier
-  autoModelSelection: boolean; // off (default) → configured models + usage-aware provider routing. on → one smart call picks a sticky director model (re-picked on cap), and before each implementor starts a provider-neutral judge picks its model AND effort from every backend dispatchable right now. Implementor picks are graded for the next choice.
+  autoModelSelection: boolean; // off (default) → configured models + usage-aware provider routing. on → before each implementor starts a provider-neutral judge picks its model AND effort from every backend dispatchable right now. Implementor picks are graded for the next choice. Implementor-only: the director always runs on its configured model.
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
   maxConcurrentPerRepo: number; // max pipelines running at once for a SINGLE repo (normalized workspace); 0 (default) = unlimited. Additional tasks for a repo already at its per-repo cap wait in 'queued' until one of that repo's tasks finishes — tasks in OTHER repos are unaffected (they still run up to maxConcurrent).
   // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----

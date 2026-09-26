@@ -21,7 +21,8 @@ import { normalizeDirectorDirectives, withDirectorDirectivesUpdate } from "../ag
 const MAX_DIRECTOR_FAILOVERS = 6;
 const MAX_CLI_ACTIONS = 20;
 const DIRECTOR_TARGET_KV = "director_target_key";
-const DIRECTOR_TARGET_AUTO_KV = "director_target_auto";
+/** Written while auto model selection also picked the director; read by nothing now, cleared on boot. */
+const RETIRED_DIRECTOR_TARGET_AUTO_KV = "director_target_auto";
 
 /**
  * The single long-lived director the owner chats with. Claude/z.ai use native MCP tools; Codex/Grok
@@ -35,7 +36,6 @@ export class Director {
   /** The standing-directives text each provider session last received, so an owner edit reaches a
    *  session that will not see a rebuilt system prompt (a live Claude query, a resumed CLI session). */
   private readonly directivesSeen = new Map<string, string>();
-  private targetWasAuto = false;
   private busy = false;
   /** Planned restarts admit steering into this already-live turn, but never start a fresh Director
    *  process underneath a committed process-tree bounce. Attached after the coordinator exists. */
@@ -75,9 +75,11 @@ export class Director {
     private readonly notes: OperatorNotes,
   ) {
     const key = db.kvGet(DIRECTOR_TARGET_KV);
-    this.targetWasAuto = db.kvGet(DIRECTOR_TARGET_AUTO_KV) === "1";
+    db.kvDelete(RETIRED_DIRECTOR_TARGET_AUTO_KV);
     if (key) {
-      const saved = api.directorTargets(this.targetWasAuto).find((t) => t.key === key);
+      // Only a key that is still the configured director model is restored, so a model an older build
+      // auto-picked (or a setting changed while GGO was down) is dropped rather than resumed.
+      const saved = api.directorTargets().find((t) => t.key === key);
       if (saved && api.directorTargetReady(saved)) this.target = saved;
     }
   }
@@ -165,8 +167,7 @@ export class Director {
     // or dispatch — the director appears to have ignored it.
     const previousRun = this.run;
     const live = previousRun && !previousRun.finished;
-    const auto = this.api.settings().autoModelSelection;
-    const mustReselect = !this.target || !this.api.directorTargetReady(this.target) || auto !== this.targetWasAuto;
+    const mustReselect = !this.target || !this.api.directorTargetReady(this.target) || !this.stillConfigured(this.target);
     if (live && mustReselect) {
       const old = this.run!;
       this.run = undefined; // neutralize the old onEnd before stop() emits it
@@ -379,7 +380,6 @@ export class Director {
     this.target = chosen;
     this.activeSessionKey = sessionKey;
     this.db.kvSet(DIRECTOR_TARGET_KV, chosen.key);
-    this.db.kvSet(DIRECTOR_TARGET_AUTO_KV, this.targetWasAuto ? "1" : "0");
     this.run = run;
     this.publishStatus();
     this.wire(run, chosen);
@@ -398,15 +398,20 @@ export class Director {
     return withDirectorDirectivesUpdate(content, current);
   }
 
+  /** The director runs on the model configured for it; auto model selection only picks implementors.
+   *  A target stops being configured when the owner changes the director model (or usage saving
+   *  starts/stops), and the next message then moves to the new one instead of staying sticky. */
+  private stillConfigured(target: DirectorTarget): boolean {
+    return this.api.directorTargets().some((t) => t.key === target.key);
+  }
+
   private async chooseTarget(excludeKeys: ReadonlySet<string> = new Set()): Promise<DirectorTarget | undefined> {
-    const auto = this.api.settings().autoModelSelection;
-    const available = this.api.directorTargets(auto).filter((t) => !excludeKeys.has(t.key));
+    const available = this.api.directorTargets().filter((t) => !excludeKeys.has(t.key));
     const priority = this.api.temporaryAccountPriority();
     const priorityTargets = priority
       ? available.filter((target) => target.provider === "claude" && target.accountId === priority.accountId && this.api.directorTargetReady(target))
       : [];
     if (priorityTargets.length) {
-      this.targetWasAuto = auto;
       this.db.kvSet("director_temporary_priority_until", String(priority!.until));
       return priorityTargets.find((target) => target.key === this.target?.key)
         ?? this.api.preferredDirectorTarget(priorityTargets);
@@ -414,15 +419,10 @@ export class Director {
     const priorityUntil = Number(this.db.kvGet("director_temporary_priority_until"));
     const priorityExpired = priorityUntil > 0 && priorityUntil <= Date.now();
     if (priorityExpired) this.db.kvDelete("director_temporary_priority_until");
-    const sticky = !priorityExpired && this.target && auto === this.targetWasAuto && !excludeKeys.has(this.target.key) && this.api.directorTargetReady(this.target)
+    const sticky = !priorityExpired && this.target && !excludeKeys.has(this.target.key) && this.api.directorTargetReady(this.target)
       ? available.find((t) => t.key === this.target!.key)
       : undefined;
-    if (sticky) return sticky;
-    let target: DirectorTarget | undefined;
-    if (auto) target = await this.api.autoSelectDirectorTarget(excludeKeys);
-    else target = this.api.preferredDirectorTarget(available);
-    this.targetWasAuto = auto;
-    return target;
+    return sticky ?? this.api.preferredDirectorTarget(available);
   }
 
   private sessionKey(target: DirectorTarget): string {
