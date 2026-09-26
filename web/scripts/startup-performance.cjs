@@ -1,6 +1,7 @@
 // Read-only live startup measurements. Never clicks or sends a user/agent command.
 // npm run probe:startup
 // ORCH_URL can include a proxy mount; PERF_OUT overrides the JSON report path.
+// PERF_ALLOW_LOCAL_CERT=1 permits the local dashboard's development TLS certificate.
 // Phone emulation: 390x844 touch, 4x CPU slowdown, 80ms latency, 10 Mbps download.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -11,7 +12,7 @@ const password = process.env.ORCH_PASSWORD || authPassword();
   const results = [];
   try {
     for (const mobile of [false, true]) {
-      const context = await browser.newContext({ viewport: mobile ? {width:390,height:844} : {width:1600,height:1000}, isMobile: mobile, hasTouch: mobile });
+      const context = await browser.newContext({ viewport: mobile ? {width:390,height:844} : {width:1600,height:1000}, isMobile: mobile, hasTouch: mobile, ignoreHTTPSErrors:process.env.PERF_ALLOW_LOCAL_CERT === '1' });
       const base = (process.env.ORCH_URL || 'http://127.0.0.1:4317').replace(/\/$/, '');
       const login = await context.request.post(base + '/api/login', { data: { password } });
       if (!login.ok()) throw new Error('Login failed ' + login.status());
