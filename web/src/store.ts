@@ -115,6 +115,11 @@ export function codeKey(kind: CodeSubjectKind, id: string): string {
   return `${kind}:${id}`;
 }
 
+/** The key the server echoes on `resetCredit.result` for one redeem target. */
+export function resetCreditKey(target: { provider: "codex" } | { provider: "claude"; accountId: string }): string {
+  return target.provider === "codex" ? "codex" : `claude:${target.accountId}`;
+}
+
 /** Remove one key from a record, returning the record itself when there is nothing to remove (so an
  *  unrelated event can't invalidate every subscriber by handing back a new object). */
 function dropKey<V>(record: Record<string, V>, key: string): Record<string, V> {
@@ -332,6 +337,9 @@ interface State {
   // A bypass click is in flight: the button stays disabled until the server's broadcast (or refusal)
   // answers, so an impatient second click never races the first.
   tokenSafetyBypassing: boolean;
+  // Banked-reset redeems this console has in flight, by target key ("codex", "claude:<id>"): the chip's
+  // button stays disabled until the server's `resetCredit.result` for that key lands.
+  resetRedeeming: Record<string, true>;
   // The Token Safety box the owner dismissed (`tokenSafetyBoxKey`), so it stays hidden for THAT freeze or
   // bypass only: a new freeze or a new bypass has a new key and shows again.
   tokenSafetyDismissed: string | null;
@@ -482,6 +490,8 @@ interface State {
   clearNotice: () => void;
   // One-shot override of the current Token Safety freeze (returns whether the command reached the socket).
   bypassTokenSafety: () => boolean;
+  /** Spend one banked limit reset. The caller has already asked the owner to confirm. */
+  redeemResetCredit: (target: { provider: "codex" } | { provider: "claude"; accountId: string }) => void;
   dismissTokenSafety: () => void;
   // Scheduled tasks: switch the center pane, and CRUD the recurring dispatches. Mutations return whether
   // they reached the socket so forms never close on a command that was silently dropped while reconnecting.
@@ -1276,6 +1286,7 @@ export const useStore = create<State>((set) => ({
   notice: null,
   tokenSafety: null,
   tokenSafetyBypassing: false,
+  resetRedeeming: {},
   tokenSafetyDismissed: null,
   schedules: [],
   notes: [],
@@ -1747,6 +1758,15 @@ export const useStore = create<State>((set) => ({
     set({ tokenSafetyBypassing: true });
     return true;
   },
+  redeemResetCredit: (target) => {
+    const key = resetCreditKey(target);
+    if (useStore.getState().resetRedeeming[key]) return;
+    if (!sendCommand({ type: "resetCredit.redeem", ...target })) {
+      set({ notice: { level: "warn", title: "Reset not used", message: "The console is reconnecting. Try again when it is connected." } });
+      return;
+    }
+    set((s) => ({ resetRedeeming: { ...s.resetRedeeming, [key]: true } }));
+  },
   dismissTokenSafety: () => set((s) => ({ tokenSafetyDismissed: s.tokenSafety ? tokenSafetyBoxKey(s.tokenSafety) : null })),
   setBoardView: (v) => set({ boardView: v }),
   createSchedule: (input) => sendScheduleMutation({ type: "schedule.create", ...input }),
@@ -2005,6 +2025,8 @@ function applyEvent(ev: ServerEvent): void {
         ...(ev.supervisor ? { supervisor: ev.supervisor } : {}),
         // A reconnect never delivers the reply to a bypass sent on the dead socket, so release the button.
         ...(ev.tokenSafety ? { tokenSafety: ev.tokenSafety, tokenSafetyBypassing: false } : {}),
+        // Likewise a redeem's `resetCredit.result`: without this its badge stayed disabled until a reload.
+        resetRedeeming: {},
       }));
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
@@ -2607,6 +2629,16 @@ function applyEvent(ev: ServerEvent): void {
         // Drop a reply for a query the operator has since retyped or cleared.
         if (!s.directorSearch || s.directorSearch.query !== ev.query) return {};
         return { directorSearch: { query: ev.query, results: ev.messages, tasks: ev.tasks ?? [], searching: false } };
+      });
+      break;
+    case "resetCredit.result":
+      // The outcome rides the ordinary notice banner, where a refusal stays readable until dismissed.
+      useStore.setState((s) => {
+        const { [ev.key]: _settled, ...resetRedeeming } = s.resetRedeeming;
+        return {
+          resetRedeeming,
+          notice: { level: ev.ok ? "info" : "warn", title: ev.ok ? "Banked reset used" : "Reset not used", message: ev.message },
+        };
       });
       break;
     case "notice":

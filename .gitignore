@@ -11,6 +11,7 @@ server/dist/
 server/.ide-lab-dist/
 server/.task-model-lab-dist/
 server/.code-nav-lab-dist/
+server/.reset-redeem-lab-dist/
 server/.cowork-lab-dist/
 server/.chip-lab-dist/
 server/.directives-lab-dist/

@@ -273,6 +273,7 @@
     "test:code-context": "tsx src/tests/codeContext.itest.ts && tsx ../web/scripts/code-nav.test.ts && node scripts/probe-code-context-latency.test.cjs",
     "ide-lab": "node scripts/ide-lab.cjs",
     "code-nav-lab": "node scripts/code-nav-lab.cjs",
+    "reset-redeem-lab": "node scripts/reset-redeem-lab.cjs",
     "smoke:deliverables": "node scripts/deliverables-smoke.cjs"
   },
   "dependencies": {

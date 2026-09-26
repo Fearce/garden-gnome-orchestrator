@@ -181,7 +181,7 @@ try {
       sevenDayReset: creditAt + 3 * 24 * 3_600_000,
       planType: "pro",
       updatedAt: creditAt,
-      resetCredits: { available: 1, pending: 0, expiresAt: creditAt + 30 * 86_400_000, title: "Full reset", readAt: creditAt },
+      resetCredits: { available: 1, pending: 0, expiresAt: creditAt + 30 * 86_400_000, title: "Full reset", readAt: creditAt, redeemId: "RateLimitResetCredit_1" },
     });
     check("a ping carrying banked resets reports them", readCodexUsage()?.resetCredits?.available === 1, JSON.stringify(readCodexUsage()?.resetCredits));
     // A real turn lands afterwards: newer, and carrying only the plan-wide windows.

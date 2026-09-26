@@ -14,6 +14,7 @@ import type { ThreadManager } from "../orchestrator/threadManager.js";
 import type { OnlineOffice } from "../office/onlineOffice.js";
 import type { CoworkManager } from "../orchestrator/cowork.js";
 import { readCodexUsageForSnapshot } from "../agents/codexUsage.js";
+import { redeemCodexResetCredit } from "../agents/codexUsagePing.js";
 import { readGrokUsage } from "../agents/grokUsage.js";
 import { readZaiUsage } from "../agents/zaiUsage.js";
 import { formatStructuredRoleFeed } from "../agents/structuredText.js";
@@ -47,6 +48,9 @@ export interface WsContext {
   onlineOffice: OnlineOffice;
   cowork: CoworkManager;
 }
+
+/** Banked-reset redeems in flight, by target key — see the `resetCredit.redeem` case. */
+const redeeming = new Set<string>();
 
 const STREAMING_EVENTS = new Set(["agent.delta", "agent.thinking", "director.delta", "cowork.delta", "cowork.thinking"]);
 
@@ -565,6 +569,33 @@ export async function handleCommand(
       // the socket that asked.
       const result = await ctx.manager.bypassTokenSafety();
       if (!result.ok) send(socket, { type: "notice", level: "warn", title: "Token safety not bypassed", message: result.error });
+      break;
+    }
+    case "resetCredit.redeem": {
+      // One attempt per target at a time, across every console: a double click, or two tabs, must not
+      // spend two resets. The answer goes only to the asking socket; the refreshed chip reaches every
+      // console through the ordinary accounts / codex.usage broadcasts.
+      const key = cmd.provider === "codex" ? "codex" : `claude:${cmd.accountId ?? ""}`;
+      if (cmd.provider === "claude" && !cmd.accountId) {
+        send(socket, { type: "resetCredit.result", key, ok: false, message: "No subscription was named." });
+        break;
+      }
+      if (redeeming.has(key)) {
+        send(socket, { type: "resetCredit.result", key, ok: false, message: "A redeem for this is already in progress." });
+        break;
+      }
+      redeeming.add(key);
+      try {
+        const outcome = cmd.provider === "codex"
+          ? await redeemCodexResetCredit(ctx.manager.openaiApiKey(), readCodexUsageForSnapshot()?.resetCredits?.redeemId ?? null)
+          : await ctx.accounts.redeemResetCredit(cmd.accountId!);
+        send(socket, { type: "resetCredit.result", key, ...outcome });
+      } catch (err) {
+        logCrash("resetCredit.redeem", err);
+        send(socket, { type: "resetCredit.result", key, ok: false, message: "The redeem failed unexpectedly; check the count after the next read." });
+      } finally {
+        redeeming.delete(key);
+      }
       break;
     }
     case "snapshot.request":

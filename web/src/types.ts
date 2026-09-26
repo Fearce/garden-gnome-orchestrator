@@ -515,6 +515,7 @@ export interface ResetCreditsDTO {
   expiresAt: number | null;
   title: string | null;
   readAt: number;
+  redeemId: string | null;
 }
 
 /** Codex (ChatGPT-plan) usage windows — mirrors the server's CodexUsageDTO. `fiveHour` is the rolling
@@ -1317,6 +1318,9 @@ export type ServerEvent =
   // dismissible banner + desktop notify.
   // `kind: "tokenSafety"` marks the freeze's own notice, which the durable Token Safety box replaces.
   | { type: "notice"; level: "info" | "warn"; title: string; message: string; kind?: "tokenSafety" }
+  // The answer to one `resetCredit.redeem`, only to the socket that asked. `key` echoes the target
+  // ("codex", or "claude:<account id>") so the console knows which chip to settle.
+  | { type: "resetCredit.result"; key: string; ok: boolean; message: string }
   // Voice mode: spoken completion line for a finished task — consumed by the voice-gateway, ignored here.
   | { type: "voice.announce"; threadId: string; text: string }
   // The heartbeat's answer. Re-requesting the whole `hello` every 20s to keep the tunnel warm cost
@@ -1391,6 +1395,7 @@ export type ClientCommand =
   | { type: "supervisor.message"; content: string; targetIds: string[]; clientId?: string }
   | { type: "supervisor.runNow" }
   | { type: "tokenSafety.bypass" }
+  | { type: "resetCredit.redeem"; provider: "claude" | "codex"; accountId?: string }
   | { type: "recentRepos.remember"; path: string }
   | { type: "recentRepos.forget"; path: string }
   | { type: "snapshot.request" }

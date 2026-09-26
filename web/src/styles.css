@@ -240,6 +240,22 @@ button { font-family: inherit; cursor: pointer; }
    Amber rather than the "ok" green: green here would read as the chip's health, and this is a separate
    fact about the subscription that happens to be positive. */
 .acct-tag.reset-credit { color: var(--accent); letter-spacing: 0.02em; }
+/* The badge is also the redeem control (confirm first). It keeps the tag's look and only shows it is
+   clickable on hover, so the strip's width and rhythm do not change. */
+button.acct-tag.reset-credit {
+  background: none; border: 0; border-radius: 3px; padding: 0;
+  font: inherit; font-family: var(--font-mono); font-size: 8.5px; line-height: inherit; cursor: pointer;
+}
+/* A ring drawn outside the box, not padding: the strip's wrap bound is measured in pixels. */
+button.acct-tag.reset-credit:hover:not(:disabled), button.acct-tag.reset-credit:focus-visible {
+  outline: none;
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 14%, transparent), 0 0 0 4px color-mix(in oklch, var(--accent) 45%, transparent);
+}
+button.acct-tag.reset-credit:disabled { cursor: default; }
+button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease-in-out infinite; }
+@keyframes reset-credit-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { button.acct-tag.reset-credit.redeeming { animation: none; opacity: 0.55; } }
 .acct.errored { border-color: oklch(0.68 0.2 25 / 0.55); }
 .acct-err { font-family: var(--font-mono); font-size: 9px; line-height: 1.3; color: var(--danger); max-width: 168px; }
 /* Codex status chip — a presence/status chip (OpenAI has no rolling headroom % to meter), narrower
