@@ -53,7 +53,7 @@ import type {
   Thread,
   TokenSafetyState,
 } from "./types.js";
-import { agentKey, GENERAL_ROOM, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
+import { agentKey, GENERAL_ROOM, normalizeWorkspace, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
 import { notify } from "./lib/notify.js";
 import { applyTheme, DEFAULT_THEME, isThemeId, type ThemeId } from "./lib/theme.js";
 import {
@@ -811,6 +811,18 @@ const outboundTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // clientId, so replaying it after a reconnect is safe: the server returns the original receipt
 // instead of performing the owner action twice.
 const outboundCommands = new Map<string, ClientCommand>();
+// Co-work creates that asked for a separate worktree, by clientId, with the folder they named. A server
+// that predates the option strips the flag and creates the session in that folder itself, which reads as
+// success; comparing the answer with the request is the only way the console can tell and say so.
+const worktreeRequests = new Map<string, string>();
+
+/** The refusal to show when a worktree was asked for and the session came back in the original folder. */
+function ignoredWorktree(clientId: string | undefined, session: CoworkSession | undefined): string | null {
+  const requested = clientId ? worktreeRequests.get(clientId) : undefined;
+  if (clientId) worktreeRequests.delete(clientId);
+  if (!requested || !session || normalizeWorkspace(session.workspace) !== normalizeWorkspace(requested)) return null;
+  return "The session was created, but NOT in a separate worktree: the GGO server is still running a build from before that option and ignored it. It works once GGO restarts. Until then, delete this session, or pick a worktree folder you made yourself as the workspace.";
+}
 const OUTBOUND_OUTBOX_KEY = "orch-outbound-outbox-v1";
 
 type PersistedOutbound = {
@@ -1320,6 +1332,7 @@ export const useStore = create<State>((set) => ({
       clientId,
     });
     if (!sent) set({ coworkCreating: false, coworkActionError: "Not delivered — the console is reconnecting." });
+    else if (worktree) worktreeRequests.set(clientId, path);
     return sent;
   },
   sendCowork: (sessionId, text, mode = "turn", attachments = []) => {
@@ -2106,12 +2119,13 @@ function applyEvent(ev: ServerEvent): void {
         },
       }));
       break;
-    case "cowork.action":
+    case "cowork.action": {
       if (ev.clientId && !ev.ok) failOutbound(ev.clientId, ev.error ?? "The Co-worker command failed.");
+      const worktreeIgnored = ev.action === "create" && ev.ok ? ignoredWorktree(ev.clientId, ev.result.session) : null;
       useStore.setState((s) => ({
         coworkCreating: ev.action === "create" ? false : s.coworkCreating,
         coworkPromoting: ev.action === "promote" ? false : s.coworkPromoting,
-        coworkActionError: ev.ok ? null : ev.error ?? "The Co-worker command failed.",
+        coworkActionError: worktreeIgnored ?? (ev.ok ? null : ev.error ?? "The Co-worker command failed."),
         ...(ev.result.session ? { coworkSessions: { ...s.coworkSessions, [ev.result.session.id]: ev.result.session } } : {}),
         ...(ev.ok && ev.action === "create" && ev.result.session ? { selectedCoworkId: ev.result.session.id } : {}),
         // The board is where a task lives, so a successful promotion offers the jump rather than
@@ -2122,6 +2136,7 @@ function applyEvent(ev: ServerEvent): void {
       }));
       if (ev.ok && ev.action === "create" && ev.result.session) sendCommand({ type: "cowork.history", sessionId: ev.result.session.id });
       break;
+    }
     case "grok.usage":
       useStore.setState({ grokUsage: ev.usage });
       break;

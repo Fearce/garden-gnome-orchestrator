@@ -212,6 +212,9 @@ for (const mode of ["queue", "append", "interrupt"]) {
   assert.match(coworkSource, new RegExp(`submit\\(\\"${mode}\\"\\)`), `${mode} control dispatches its distinct steering mode`);
 }
 assert.match(storeSource, /type: "cowork\.steer"/, "live Co-work directions use the typed steering command instead of opening another turn");
+// A server that predates the worktree option strips the flag and answers with an ordinary session in the
+// chosen folder. The console compares the answer with the request so that can never read as success.
+assert.match(storeSource, /coworkActionError: worktreeIgnored \?\?/, "an ignored worktree request surfaces as an error, not a silent plain session");
 assert.match(storeSource, /attachments: attachments\.length \? attachments : undefined/, "initial and live Co-work commands carry their selected files");
 // Co-work is not a tab any more: a tab hid every task while the owner paired.
 assert.doesNotMatch(appSource, /openBoardView\("cowork"\)|value="cowork"/, "mobile navigation has no separate Co-work area");
