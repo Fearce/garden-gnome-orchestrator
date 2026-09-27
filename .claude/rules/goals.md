@@ -23,7 +23,9 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   only where a later part depends on judging an earlier result; the step brief tells the agent to keep going
   past its step into the rest of the objective. Each step is a fresh session that re-reads the repo plus a
   director call, so many small steps burn tokens on overhead. Do not reintroduce "one slice per step"
-  wording; `test:goals` pins both texts.
+  wording; `test:goals` pins both texts. A goal with `maxConcurrent > 1` asks instead for a long share that
+  can run beside the other steps, and its brief tells the agent to stay in its lane (`nextInstruction`,
+  `scopeParagraph`).
 - **Ending takes two voices.** The step's implementor must write a standalone `GOAL STATUS: COMPLETE` line
   (`detectGoalComplete`: the last status line wins, and it must stand alone because the brief quotes the
   marker mid-sentence), AND the director's verdict must be `complete`. A lone director verdict dispatches a
@@ -44,10 +46,25 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
 - **Guards fire at SETTLE time, not on every evaluation.** A cancelled step pauses the goal, and so do 3
   consecutive failed steps. If those checks ran on every evaluation, Resume would re-pause at once on the
   same old step (`test:goals` covers "resume judges again"). Only the step budget and a missing workspace
-  are re-checked on every pass. A `review` outcome is NOT a failure: QA was unsatisfied, but the work exists.
+  are re-checked on every pass; a spent budget waits for the running steps before it pauses. A `review`
+  outcome is NOT a failure: QA was unsatisfied, but the work exists.
 - **The step row is written BEFORE the dispatch.** A crash in between leaves a step with no `thread_id`;
   `adoptOrphan` finds its task by the exact `stepTitle` in that workspace, and while that is unresolved
   the goal dispatches nothing. That early return is load-bearing: without it a restart doubles the step.
+- **Parallel steps are slots, not a different loop.** `advance` settles every open step (`listOpenGoalSteps`),
+  counts the ones still running, and judges only while fewer than `maxConcurrent` run. The last-settled
+  step, not the highest `seq`, is "the last step" (its claim is the agent's voice), and the failed-streak
+  guard reads the last 3 SETTLED steps. A running step has `outcome` null, which `stepFailed` counts as a
+  failure. A dispatch that leaves a slot free re-runs the evaluation loop to fill it.
+- **A `wait` must cost nothing until a step settles.** The hold is the `wait` verdict plus its `settledSteps`
+  count, NOT a timestamp: the gate's clock is frozen, and a same-millisecond settle would lift a
+  timestamp hold and re-judge every tick. `complete` while steps run is stored as the same hold.
+  Revert-checked: dropping `heldForRunningSteps` turns `test:goals` red.
+- **The burn-rate hold is a `wait`, not a `paused` status.** It must lift by itself when the pace catches
+  up, so it sets `nextCheckAt` (≥ the retry backoff, ≤ 30 min) and keeps the goal `active`. It runs BEFORE
+  the director call, so a held goal spends nothing. An unpinned goal holds only when every pool is over
+  pace; `pinWithinBurnRate` keeps an unplaceable pick off automatic routing, which could pick an
+  over-pace pool. Changing `maxConcurrent`/`burnConservation`/`burnRatePct` clears `nextCheckAt` and evaluates at once.
 - **Re-read the goal after the judge returns.** The owner may pause, end or delete it while the director
   is thinking; a judgement that lands afterwards must dispatch nothing.
 - Pausing/ending never touches the running step task: it finishes, and no step follows.

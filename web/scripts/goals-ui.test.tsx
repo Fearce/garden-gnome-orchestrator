@@ -62,6 +62,9 @@ const goal: Goal = {
   effort: null,
   provider: null,
   model: null,
+  maxConcurrent: 1,
+  burnConservation: true,
+  burnRatePct: 100,
   currentThreadId: "thread-2",
   nextCheckAt: null,
   stepCount: 2,
@@ -87,6 +90,14 @@ assert.deepEqual(
   { effort: socket.sent[0]?.effort, provider: socket.sent[0]?.provider, model: socket.sent[0]?.model },
   { effort: "high", provider: "codex", model: "gpt-5.6" },
   "the owner's effort and model ride on the create",
+);
+
+socket.sent.length = 0;
+assert.equal(useStore.getState().createGoal({ title: "t", objective: "o", workspace: "C:\\repo", maxConcurrent: 3, burnConservation: false, burnRatePct: 150 }), true);
+assert.deepEqual(
+  { maxConcurrent: socket.sent[0]?.maxConcurrent, burnConservation: socket.sent[0]?.burnConservation, burnRatePct: socket.sent[0]?.burnRatePct },
+  { maxConcurrent: 3, burnConservation: false, burnRatePct: 150 },
+  "parallel steps and the burn-rate guard ride on the create",
 );
 
 socket.sent.length = 0;
@@ -138,6 +149,30 @@ assert.match(active, /Director&#x27;s model/, "an unpinned goal says the directo
 assert.match(active, /low–medium/, "an unpinned goal shows its low-or-medium effort default");
 assert.match(active, />Pause</);
 assert.doesNotMatch(active, />Resume</);
+assert.match(active, /1 at a time/, "a sequential goal says so");
+assert.match(active, /burn ≤ 100%/, "the burn-rate guard is on by default and shows its rate");
+
+const wide = render([
+  {
+    ...goal,
+    maxConcurrent: 3,
+    burnConservation: false,
+    lastVerdict: { verdict: "wait", reason: "Docs depend on the API.", agentClaimedComplete: false, at: Date.now() - 1_000, settledSteps: 1 },
+    steps: [
+      ...goal.steps,
+      { id: "s3", goalId: "goal-1", seq: 3, threadId: "thread-3", title: "Conflict UI", provider: "claude", model: "claude-opus-5-5", effort: "low", rationale: "Independent of sync.", outcome: null, agentClaimedComplete: null, createdAt: 4, settledAt: null },
+    ],
+  },
+]);
+assert.match(wide, /3 at once/, "the parallel slot count is on the card");
+assert.match(wide, /Running · 2 of 3/, "every running step is listed with the slot use");
+assert.match(wide, /Sync queue/);
+assert.match(wide, /Conflict UI/);
+assert.match(wide, /burn guard off/, "a goal without the guard says so");
+assert.match(wide, /Director: waiting on running steps/, "a wait verdict reads as waiting");
+
+const holding = render([{ ...goal, statusReason: "Paused for burn rate: Claude has used 70% of its weekly window, 55% allowed by now at 100% pace." }]);
+assert.match(holding, /Paused for burn rate/, "a burn-rate hold says why on the card");
 
 const paused = render([{ ...goal, status: "paused", statusReason: "The last 3 steps failed. Check the latest step's task, then resume the goal." }]);
 assert.match(paused, />Resume</);

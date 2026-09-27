@@ -3023,6 +3023,19 @@ body.dl-resizing { user-select: none; }
 .goal-objective-input { min-height: 120px; }
 .goal-budget { width: 96px; }
 
+.goal-running { display: flex; flex-direction: column; gap: 6px; }
+/* The burn-rate guard is a spending policy, so it carries the goal's own hue while on and goes quiet when off. */
+.goal-burn {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.02em; white-space: nowrap;
+  padding: 2px 7px; border-radius: 100px; color: var(--goal);
+  background: color-mix(in oklch, var(--goal) 10%, transparent);
+  border: 1px solid color-mix(in oklch, var(--goal) 32%, transparent);
+}
+.goal-burn.off { color: var(--text-faint); background: transparent; border-color: var(--line); }
+.goal-pace-row { flex-wrap: wrap; row-gap: 10px; }
+.goal-concurrency, .goal-burn-rate { width: 72px; }
+.goal-burn-rate:disabled { opacity: 0.5; }
+
 /* ---- create/edit modal ---- */
 .modal.sched-modal { width: min(560px, 94vw); max-height: 90vh; display: flex; flex-direction: column; }
 .modal.sched-modal .m-body { overflow-y: auto; }

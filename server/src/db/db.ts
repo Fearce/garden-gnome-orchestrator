@@ -14,7 +14,14 @@ import {
   trigramMatchExpr,
   type BackfillStep,
 } from "./searchIndex.js";
-import { BRIEF_PREVIEW_CHARS, COWORK_SNIPPET_CHARS, GOAL_STEPS_SHOWN, SUB_AGENT_PROVIDERS } from "../types.js";
+import {
+  BRIEF_PREVIEW_CHARS,
+  COWORK_SNIPPET_CHARS,
+  DEFAULT_GOAL_BURN_RATE_PCT,
+  DEFAULT_GOAL_MAX_CONCURRENT,
+  GOAL_STEPS_SHOWN,
+  SUB_AGENT_PROVIDERS,
+} from "../types.js";
 import type {
   AgentRun,
   AgentRunState,
@@ -537,8 +544,14 @@ function parseGoalVerdict(raw: unknown): GoalVerdict | null {
   if (typeof raw !== "string" || !raw) return null;
   try {
     const v = JSON.parse(raw) as Partial<GoalVerdict>;
-    if ((v.verdict !== "complete" && v.verdict !== "continue") || typeof v.reason !== "string" || typeof v.at !== "number") return null;
-    return { verdict: v.verdict, reason: v.reason, agentClaimedComplete: v.agentClaimedComplete === true, at: v.at };
+    if ((v.verdict !== "complete" && v.verdict !== "continue" && v.verdict !== "wait") || typeof v.reason !== "string" || typeof v.at !== "number") return null;
+    return {
+      verdict: v.verdict,
+      reason: v.reason,
+      agentClaimedComplete: v.agentClaimedComplete === true,
+      at: v.at,
+      ...(typeof v.settledSteps === "number" ? { settledSteps: v.settledSteps } : {}),
+    };
   } catch {
     return null;
   }
@@ -918,6 +931,10 @@ export class Db {
       "ALTER TABLE goals ADD COLUMN effort TEXT",
       "ALTER TABLE goals ADD COLUMN provider TEXT",
       "ALTER TABLE goals ADD COLUMN model TEXT",
+      "ALTER TABLE goals ADD COLUMN max_concurrent INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE goals ADD COLUMN burn_conservation INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE goals ADD COLUMN burn_rate_pct INTEGER NOT NULL DEFAULT 100",
+      "ALTER TABLE goal_steps ADD COLUMN brief TEXT NOT NULL DEFAULT ''",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -3614,15 +3631,20 @@ export class Db {
     effort: Effort | null;
     provider: ImplementorProvider | null;
     model: string | null;
+    maxConcurrent: number;
+    burnConservation: boolean;
+    burnRatePct: number;
   }): Goal {
     const at = now();
     const id = newId();
     this.raw
       .prepare(
-        `INSERT INTO goals(id, title, objective, workspace, status, max_steps, effort, provider, model, created_at, updated_at)
-         VALUES(@id, @title, @objective, @workspace, 'active', @maxSteps, @effort, @provider, @model, @at, @at)`,
+        `INSERT INTO goals(id, title, objective, workspace, status, max_steps, effort, provider, model,
+                           max_concurrent, burn_conservation, burn_rate_pct, created_at, updated_at)
+         VALUES(@id, @title, @objective, @workspace, 'active', @maxSteps, @effort, @provider, @model,
+                @maxConcurrent, @burnConservation, @burnRatePct, @at, @at)`,
       )
-      .run({ id, ...input, at });
+      .run({ id, ...input, burnConservation: input.burnConservation ? 1 : 0, at });
     return this.getGoal(id)!;
   }
 
@@ -3649,6 +3671,9 @@ export class Db {
       effort: Effort | null;
       provider: ImplementorProvider | null;
       model: string | null;
+      maxConcurrent: number;
+      burnConservation: boolean;
+      burnRatePct: number;
       currentThreadId: string | null;
       nextCheckAt: number | null;
       endedAt: number | null;
@@ -3666,6 +3691,9 @@ export class Db {
       effort: "effort",
       provider: "provider",
       model: "model",
+      maxConcurrent: "max_concurrent",
+      burnConservation: "burn_conservation",
+      burnRatePct: "burn_rate_pct",
       currentThreadId: "current_thread_id",
       nextCheckAt: "next_check_at",
       endedAt: "ended_at",
@@ -3676,7 +3704,7 @@ export class Db {
       if (!(k in patch)) continue;
       sets.push(`${col} = @${k}`);
       const v = (patch as Row)[k];
-      params[k] = k === "lastVerdict" ? (v ? JSON.stringify(v) : null) : (v ?? null);
+      params[k] = k === "lastVerdict" ? (v ? JSON.stringify(v) : null) : k === "burnConservation" ? (v ? 1 : 0) : (v ?? null);
     }
     sets.push("updated_at = @updatedAt");
     this.raw.prepare(`UPDATE goals SET ${sets.join(", ")} WHERE id = @id`).run(params);
@@ -3699,13 +3727,14 @@ export class Db {
     model: string | null;
     effort: Effort | null;
     rationale: string;
+    brief: string;
   }): GoalStep {
     const id = newId();
     this.raw
       .prepare(
-        `INSERT INTO goal_steps(id, goal_id, seq, title, provider, model, effort, rationale, created_at)
+        `INSERT INTO goal_steps(id, goal_id, seq, title, provider, model, effort, rationale, brief, created_at)
          VALUES(@id, @goalId, (SELECT IFNULL(MAX(seq), 0) + 1 FROM goal_steps WHERE goal_id = @goalId),
-                @title, @provider, @model, @effort, @rationale, @createdAt)`,
+                @title, @provider, @model, @effort, @rationale, @brief, @createdAt)`,
       )
       .run({ id, ...input, createdAt: now() });
     return rowToGoalStep(this.raw.prepare("SELECT * FROM goal_steps WHERE id = ?").get(id) as Row);
@@ -3749,6 +3778,21 @@ export class Db {
     return rows.map(rowToGoalStep);
   }
 
+  /** Steps not yet settled (running, or recorded but not yet linked to a task), oldest first. Without a
+   *  goal id: every goal's, for the thread → goal wake-up map. */
+  listOpenGoalSteps(goalId?: string): GoalStep[] {
+    const rows = goalId
+      ? (this.raw.prepare("SELECT * FROM goal_steps WHERE goal_id = ? AND settled_at IS NULL ORDER BY seq ASC").all(goalId) as Row[])
+      : (this.raw.prepare("SELECT * FROM goal_steps WHERE settled_at IS NULL ORDER BY goal_id, seq ASC").all() as Row[]);
+    return rows.map(rowToGoalStep);
+  }
+
+  /** The director's brief for one step. Kept off `GoalStep` so the goals broadcast stays small. */
+  goalStepBrief(stepId: string): string {
+    const r = this.raw.prepare("SELECT brief FROM goal_steps WHERE id = ?").get(stepId) as { brief: string | null } | undefined;
+    return r?.brief ?? "";
+  }
+
   private rowToGoal(r: Row): Goal {
     const id = r.id as string;
     const stepCount = (this.raw.prepare("SELECT COUNT(*) AS n FROM goal_steps WHERE goal_id = ?").get(id) as { n: number }).n;
@@ -3765,6 +3809,9 @@ export class Db {
       effort: (r.effort as Effort | null) ?? null,
       provider: (r.provider as ImplementorProvider | null) ?? null,
       model: (r.model as string | null) ?? null,
+      maxConcurrent: (r.max_concurrent as number | null) ?? DEFAULT_GOAL_MAX_CONCURRENT,
+      burnConservation: r.burn_conservation == null ? true : Boolean(r.burn_conservation),
+      burnRatePct: (r.burn_rate_pct as number | null) ?? DEFAULT_GOAL_BURN_RATE_PCT,
       currentThreadId: (r.current_thread_id as string | null) ?? null,
       nextCheckAt: (r.next_check_at as number | null) ?? null,
       stepCount,

@@ -1,5 +1,15 @@
 import { z } from "zod";
-import { CODEX_EFFORTS, GOAL_STATUSES, GROK_EFFORTS, MAX_DIRECTOR_DIRECTIVES_CHARS, MAX_GOAL_MAX_STEPS, ZAI_EFFORTS } from "../types.js";
+import {
+  CODEX_EFFORTS,
+  GOAL_STATUSES,
+  GROK_EFFORTS,
+  MAX_DIRECTOR_DIRECTIVES_CHARS,
+  MAX_GOAL_BURN_RATE_PCT,
+  MAX_GOAL_MAX_CONCURRENT,
+  MAX_GOAL_MAX_STEPS,
+  MIN_GOAL_BURN_RATE_PCT,
+  ZAI_EFFORTS,
+} from "../types.js";
 import type { CodexUsageDTO } from "../agents/codexUsage.js";
 import type { GrokUsageDTO } from "../agents/grokUsage.js";
 import type { ZaiUsageDTO } from "../agents/zaiUsage.js";
@@ -250,6 +260,13 @@ const GOAL_PIN_FIELDS = {
   effort: z.enum(["low", "medium", "high", "max"]).nullable().optional(),
   provider: z.enum(["claude", "codex", "grok", "zai"]).nullable().optional(),
   model: z.string().trim().max(100).nullable().optional(),
+};
+
+// Parallel steps and the weekly burn-rate guard; the service clamps and applies them.
+const GOAL_PACE_FIELDS = {
+  maxConcurrent: z.number().int().min(1).max(MAX_GOAL_MAX_CONCURRENT).optional(),
+  burnConservation: z.boolean().optional(),
+  burnRatePct: z.number().int().min(MIN_GOAL_BURN_RATE_PCT).max(MAX_GOAL_BURN_RATE_PCT).optional(),
 };
 
 const imageAttachmentSchema = z.object({
@@ -618,6 +635,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     workspace: z.string().trim().min(1).max(600),
     maxSteps: z.number().int().min(1).max(MAX_GOAL_MAX_STEPS).optional(),
     ...GOAL_PIN_FIELDS,
+    ...GOAL_PACE_FIELDS,
   }),
   z.object({
     type: z.literal("goal.update"),
@@ -627,6 +645,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       objective: z.string().trim().min(1).max(20000).optional(),
       maxSteps: z.number().int().min(1).max(MAX_GOAL_MAX_STEPS).optional(),
       ...GOAL_PIN_FIELDS,
+      ...GOAL_PACE_FIELDS,
     }),
   }),
   z.object({ type: z.literal("goal.status"), id: z.string(), status: z.enum(GOAL_STATUSES as [GoalStatus, ...GoalStatus[]]) }),

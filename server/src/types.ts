@@ -265,12 +265,14 @@ export interface GoalStep {
   settledAt: number | null;
 }
 
-/** The director's latest judgement of a goal, kept so the console can say why it continued or ended. */
+/** The director's latest judgement of a goal, kept so the console can say why it continued or ended.
+ *  `wait` = steps are still running and the director holds the next one until one of them settles. */
 export interface GoalVerdict {
-  verdict: "complete" | "continue";
+  verdict: "complete" | "continue" | "wait";
   reason: string;
   agentClaimedComplete: boolean;
   at: number;
+  settledSteps?: number; // how many steps had settled when this verdict was made; a `wait` holds until that grows
 }
 
 /**
@@ -292,8 +294,11 @@ export interface Goal {
   effort: Effort | null; // the owner's effort for every step; null = the director picks, low or medium only
   provider: ImplementorProvider | null; // with `model`, the owner's exact pin for every step; null = the director picks
   model: string | null;
-  currentThreadId: string | null; // the step task in flight (or last dispatched)
-  nextCheckAt: number | null; // backoff: when the director could not be reached, the next attempt
+  maxConcurrent: number; // how many step tasks may run at once; 1 = strictly one after another
+  burnConservation: boolean; // hold new steps while every pool the goal could use is ahead of its weekly pace
+  burnRatePct: number; // the pace allowed under burnConservation: 100 = the even pace that spends a weekly window exactly by its reset
+  currentThreadId: string | null; // the step task dispatched most recently
+  nextCheckAt: number | null; // backoff: when the director could not be reached or the burn rate holds, the next attempt
   stepCount: number;
   steps: GoalStep[]; // the newest GOAL_STEPS_SHOWN steps, oldest first
   createdAt: number;
@@ -309,6 +314,11 @@ export const MAX_GOAL_MAX_STEPS = 1000;
 export const GOAL_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
 /** A goal runs around the clock, so with no owner effort the director chooses only among these. */
 export const GOAL_AUTO_EFFORTS: Effort[] = ["low", "medium"];
+export const DEFAULT_GOAL_MAX_CONCURRENT = 1;
+export const MAX_GOAL_MAX_CONCURRENT = 8;
+export const DEFAULT_GOAL_BURN_RATE_PCT = 100;
+export const MIN_GOAL_BURN_RATE_PCT = 10;
+export const MAX_GOAL_BURN_RATE_PCT = 500;
 
 /** The hard ceiling on a note's body, in characters. The whole point of the note list is that it can be
  *  skimmed in seconds, so this is enforced by TRUNCATION at the write boundary (never a rejection — a

@@ -5,12 +5,18 @@ import type { JsonSchemaLike } from "../agents/structuredText.js";
 import type { DispatchInput } from "./api.js";
 import type { ModelCandidate } from "./modelSelector.js";
 import { UNFINISHED_STATES } from "./scheduler.js";
+import { formatUntil } from "./capacityRouting.js";
 import {
+  DEFAULT_GOAL_BURN_RATE_PCT,
+  DEFAULT_GOAL_MAX_CONCURRENT,
   DEFAULT_GOAL_MAX_STEPS,
   EFFORTS,
   GOAL_AUTO_EFFORTS,
   GOAL_EFFORTS,
+  MAX_GOAL_BURN_RATE_PCT,
+  MAX_GOAL_MAX_CONCURRENT,
   MAX_GOAL_MAX_STEPS,
+  MIN_GOAL_BURN_RATE_PCT,
   type Effort,
   type Goal,
   type GoalStatus,
@@ -39,6 +45,12 @@ import {
  *
  * The owner may pin a goal's effort and/or model; the director then plans steps within that pin. With no
  * effort pinned the director may only choose low or medium, because a goal spends capacity around the clock.
+ *
+ * A goal may run up to `maxConcurrent` step tasks at once; the director fills each free slot with work
+ * that can proceed beside the running steps, or answers `wait` until one of them ends. With
+ * `burnConservation` on (the default), no new step starts while every pool the goal could use has spent
+ * more of its weekly window than `burnRatePct` of an even pace allows; the goal holds until the pace
+ * catches up or the window resets.
  */
 
 export const GOAL_TICK_MS = 60_000;
@@ -51,8 +63,17 @@ const ORPHAN_WINDOW_MS = 5 * 60_000;
 const REPORT_EXCERPT_CHARS = 6_000;
 const QA_EXCERPT_CHARS = 2_500;
 const HISTORY_SHOWN = 12;
+/** At most this many reports of steps that ended since the last judgement go into one judge prompt. */
+const SETTLED_SHOWN = 4;
+const RUNNING_BRIEF_CHARS = 1_200;
+const WEEK_MS = 7 * 24 * 60 * 60_000;
+/** Percentage points a pool may run ahead of its pace, so a fresh weekly window is not held on its first step. */
+export const GOAL_BURN_GRACE_PCT = 5;
+/** A burn-rate hold re-checks at least this often: another pool may free up before the pace catches up. */
+const BURN_RECHECK_MAX_MS = 30 * 60_000;
 
 export const GOAL_PROVIDERS: ImplementorProvider[] = ["claude", "codex", "grok", "zai"];
+const POOL_LABEL: Record<ImplementorProvider, string> = { claude: "Claude", codex: "Codex", grok: "Grok", zai: "z.ai" };
 
 /** What the runner needs from the rest of GGO. ThreadManager provides all of it; tests fake it. */
 export interface GoalHost {
@@ -71,20 +92,28 @@ export interface GoalPinInput {
   model?: string | null;
 }
 
-export interface GoalInput extends GoalPinInput {
+/** How hard a goal may run: parallel steps and the weekly burn-rate guard. `undefined` leaves a field unchanged. */
+export interface GoalPaceInput {
+  maxConcurrent?: number;
+  burnConservation?: boolean;
+  burnRatePct?: number;
+}
+
+export interface GoalInput extends GoalPinInput, GoalPaceInput {
   title: string;
   objective: string;
   workspace: string;
   maxSteps?: number;
 }
 
-export interface GoalPatch extends GoalPinInput {
+export interface GoalPatch extends GoalPinInput, GoalPaceInput {
   title?: string;
   objective?: string;
   maxSteps?: number;
 }
 
 type GoalPin = Pick<Goal, "effort" | "provider" | "model">;
+type GoalPace = Pick<Goal, "burnConservation" | "burnRatePct">;
 
 export interface GoalResult {
   ok: boolean;
@@ -92,9 +121,9 @@ export interface GoalResult {
   goal?: Goal;
 }
 
-/** The director's structured answer for one evaluation. */
+/** The director's structured answer for one evaluation. `wait` is only offered while steps are running. */
 export interface GoalJudgement {
-  verdict: "complete" | "continue";
+  verdict: "complete" | "continue" | "wait";
   reason: string;
   progress: string;
   next: {
@@ -136,8 +165,87 @@ export function detectGoalComplete(report: string | null | undefined): boolean {
 }
 
 export function clampMaxSteps(value: number | undefined): number {
-  if (value == null || !Number.isFinite(value)) return DEFAULT_GOAL_MAX_STEPS;
-  return Math.min(MAX_GOAL_MAX_STEPS, Math.max(1, Math.round(value)));
+  return clampInt(value, 1, MAX_GOAL_MAX_STEPS, DEFAULT_GOAL_MAX_STEPS);
+}
+
+export function clampMaxConcurrent(value: number | undefined): number {
+  return clampInt(value, 1, MAX_GOAL_MAX_CONCURRENT, DEFAULT_GOAL_MAX_CONCURRENT);
+}
+
+export function clampBurnRate(value: number | undefined): number {
+  return clampInt(value, MIN_GOAL_BURN_RATE_PCT, MAX_GOAL_BURN_RATE_PCT, DEFAULT_GOAL_BURN_RATE_PCT);
+}
+
+function clampInt(value: number | undefined, min: number, max: number, fallback: number): number {
+  if (value == null || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+// ---- burn rate ----
+
+/** One pool spending its weekly window faster than the goal's burn rate allows. */
+export interface PoolOverPace {
+  pool: string;
+  usedPct: number;
+  budgetPct: number;
+  /** When the pace line catches up with what the pool has used, or its reset if that comes first. */
+  clearsAt: number;
+}
+
+/**
+ * The share of a weekly window a pool may have used by `now` at this burn rate: the even pace (the
+ * fraction of the week gone) scaled by the rate, plus a small grace so a fresh window is not held at once.
+ */
+export function burnBudgetPct(resetAt: number, burnRatePct: number, now: number): number {
+  const elapsed = Math.min(1, Math.max(0, 1 - (resetAt - now) / WEEK_MS));
+  return Math.min(100, burnRatePct * elapsed + GOAL_BURN_GRACE_PCT);
+}
+
+/** Null when the candidate's pool is within the burn rate, or has no fresh weekly reading to pace against. */
+export function poolOverPace(candidate: ModelCandidate, burnRatePct: number, now: number): PoolOverPace | null {
+  const weekly = candidate.weekly;
+  if (!weekly || weekly.resetAt <= now) return null;
+  const budgetPct = burnBudgetPct(weekly.resetAt, burnRatePct, now);
+  if (weekly.usedPct <= budgetPct) return null;
+  const elapsedNeeded = Math.max(0, (weekly.usedPct - GOAL_BURN_GRACE_PCT) / burnRatePct);
+  const clearsAt = elapsedNeeded >= 1 ? weekly.resetAt : weekly.resetAt - WEEK_MS * (1 - elapsedNeeded);
+  return { pool: POOL_LABEL[candidate.provider], usedPct: weekly.usedPct, budgetPct, clearsAt };
+}
+
+export interface BurnCheck {
+  /** The candidates the director may pick from: those within the burn rate. */
+  roster: ModelCandidate[];
+  /** The pools left out for spending too fast, one entry per pool. */
+  over: PoolOverPace[];
+  /** Set when no new step may start: why, and when to look again. */
+  hold: { reason: string; until: number } | null;
+}
+
+/**
+ * Applies a goal's burn-rate conservation to the dispatchable roster. An unpinned goal holds only when
+ * EVERY pool is ahead of its pace (one with room left keeps it going); a goal pinned to one model holds
+ * whenever that model's pool is. Off, it passes the roster through untouched.
+ */
+export function checkBurnRate(goal: GoalPin & GoalPace, roster: ModelCandidate[], now: number): BurnCheck {
+  if (!goal.burnConservation) return { roster, over: [], hold: null };
+  const pinned = goal.provider && goal.model ? { provider: goal.provider, model: goal.model.toLowerCase() } : null;
+  const considered = pinned ? roster.filter((c) => c.provider === pinned.provider && c.model.toLowerCase() === pinned.model) : roster;
+  const over = new Map<string, PoolOverPace>();
+  const within = considered.filter((c) => {
+    const pace = poolOverPace(c, goal.burnRatePct, now);
+    if (pace) over.set(pace.pool, pace);
+    return !pace;
+  });
+  const pools = [...over.values()];
+  const held = pinned ? pools.length > 0 : pools.length > 0 && within.length === 0;
+  return { roster: pinned ? roster : within, over: pools, hold: held ? burnHold(goal.burnRatePct, pools, !pinned, now) : null };
+}
+
+function burnHold(burnRatePct: number, pools: PoolOverPace[], anyPoolFrees: boolean, now: number): { reason: string; until: number } {
+  const clearsAt = Math.min(...pools.map((p) => p.clearsAt));
+  const detail = pools.map((p) => `${p.pool} has used ${Math.round(p.usedPct)}% of its weekly window, ${Math.round(p.budgetPct)}% allowed by now`).join("; ");
+  const reason = `Paused for burn rate: ${detail} at ${burnRatePct}% pace. New steps resume ${formatUntil(clearsAt, now)} as the pace catches up${anyPoolFrees ? ", or sooner if another pool frees up" : ""}.`;
+  return { reason, until: Math.min(clearsAt, now + BURN_RECHECK_MAX_MS) };
 }
 
 /**
@@ -156,8 +264,9 @@ function allowedEfforts(goal: GoalPin): Effort[] {
   return goal.effort ? [goal.effort] : GOAL_AUTO_EFFORTS;
 }
 
-/** The JSON schema of the director's answer, narrowed to the owner's pin and to what can dispatch now. */
-export function goalJudgeSchema(goal: GoalPin, roster: ModelCandidate[]): JsonSchemaLike {
+/** The JSON schema of the director's answer, narrowed to the owner's pin and to what can dispatch now.
+ *  `wait` is on offer only while steps are running: with none, there is nothing to wait for. */
+export function goalJudgeSchema(goal: GoalPin, roster: ModelCandidate[], running = 0): JsonSchemaLike {
   const pinned = goal.provider && goal.model ? { provider: goal.provider, model: goal.model } : null;
   const providers = pinned ? [pinned.provider] : GOAL_PROVIDERS.filter((p) => roster.some((c) => c.provider === p));
   return {
@@ -165,7 +274,7 @@ export function goalJudgeSchema(goal: GoalPin, roster: ModelCandidate[]): JsonSc
     additionalProperties: false,
     required: ["verdict", "reason", "progress", "next"],
     properties: {
-      verdict: { type: "string", enum: ["complete", "continue"] },
+      verdict: { type: "string", enum: running > 0 ? ["complete", "continue", "wait"] : ["complete", "continue"] },
       reason: { type: "string" },
       progress: { type: "string" },
       next: {
@@ -193,7 +302,7 @@ export function parseGoalJudgement(raw: unknown): GoalJudgement | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   const next = r.next as Record<string, unknown> | undefined;
-  if (r.verdict !== "complete" && r.verdict !== "continue") return null;
+  if (r.verdict !== "complete" && r.verdict !== "continue" && r.verdict !== "wait") return null;
   if (!next || typeof next !== "object") return null;
   const str = (v: unknown): string => (typeof v === "string" ? v.trim() : "");
   const title = str(next.title);
@@ -278,36 +387,101 @@ function pickInstruction(goal: GoalPin, ownerName: string): string {
   return `- ${model} ${effort} Say why in \`rationale\`.`;
 }
 
+/** A step that ended since the director's last judgement, with what its task left behind. */
+export interface SettledStepReport {
+  step: GoalStep;
+  report: string | null;
+  qa: string | null;
+  error: string | null;
+}
+
+/** A step still running, with the brief the director gave it. */
+export interface RunningGoalStep {
+  step: GoalStep;
+  brief: string;
+}
+
 export interface GoalJudgeContext {
   goal: Goal;
   steps: GoalStep[];
-  lastReport: string | null;
-  lastQa: string | null;
-  lastError: string | null;
+  /** Steps that ended since the last judgement, oldest first; empty before the first step ends. */
+  settled: SettledStepReport[];
+  running: RunningGoalStep[];
   roster: ModelCandidate[];
+  /** Pools left off the roster because they are spending faster than the goal's burn rate. */
+  overPace?: PoolOverPace[];
   ownerName: string;
 }
 
-export function buildGoalJudgePrompt(ctx: GoalJudgeContext): string {
-  const { goal, steps, roster } = ctx;
-  const last = steps.at(-1);
-  const history = steps.slice(-HISTORY_SHOWN).map((s) =>
-    `- Step ${s.seq} "${s.title}" — ${[s.provider, s.model, s.effort].filter(Boolean).join(" / ") || "auto routing"} — ended ${s.outcome ?? "unknown"}${s.agentClaimedComplete ? ", agent claimed the objective complete" : ""}`,
+const pickLabel = (s: GoalStep): string => [s.provider, s.model, s.effort].filter(Boolean).join(" / ") || "auto routing";
+
+function historyLine(s: GoalStep): string {
+  const ending = s.settledAt == null ? "still running" : `ended ${s.outcome ?? "unknown"}`;
+  return `- Step ${s.seq} "${s.title}" — ${pickLabel(s)} — ${ending}${s.agentClaimedComplete ? ", agent claimed the objective complete" : ""}`;
+}
+
+function settledBlock(settled: SettledStepReport[], anyStep: boolean, running: number): string {
+  if (!settled.length) {
+    if (!anyStep) return "No step has run yet. Plan the first one.";
+    return running ? "No step has ended since your last decision." : "";
+  }
+  const reportChars = Math.max(1_500, Math.floor(REPORT_EXCERPT_CHARS / settled.length));
+  const blocks = settled.map(({ step, report, qa, error }) =>
+    [
+      `THE STEP THAT JUST ENDED (step ${step.seq}, "${step.title}") settled as: ${step.outcome ?? "unknown"}.`,
+      `Its agent ${step.agentClaimedComplete ? "DECLARED the whole objective complete" : "did NOT declare the objective complete"}.`,
+      error ? `Task error: ${clip(error, 800)}` : "",
+      `Its final report:\n${report ? tail(report, reportChars) : "(no report was written)"}`,
+      qa ? `QA's last word on it:\n${tail(qa, QA_EXCERPT_CHARS)}` : "",
+    ].filter(Boolean).join("\n"),
   );
-  const rosterLines = roster.map((c) =>
+  return settled.length === 1 ? blocks[0]! : `${settled.length} STEPS ENDED SINCE YOUR LAST DECISION (oldest first):\n\n${blocks.join("\n\n")}`;
+}
+
+function runningBlock(goal: Goal, running: RunningGoalStep[]): string {
+  if (!running.length) return "";
+  const lines = running.map(({ step, brief }) => `- Step ${step.seq} "${step.title}" — ${pickLabel(step)}${brief ? `\n  Its brief: ${clip(brief.replace(/\s+/g, " "), RUNNING_BRIEF_CHARS)}` : ""}`);
+  return `STEPS STILL RUNNING (${running.length} of up to ${goal.maxConcurrent} at once), in this same repository:\n${lines.join("\n")}`;
+}
+
+/** The `next` instruction: one long step for a sequential goal, a disjoint long share for a parallel one. */
+function nextInstruction(goal: Goal): string {
+  const tail = "Every step is a fresh agent session that re-reads the repository before it can work, plus another judgement from you, so many small steps waste tokens that one long step spends on the work itself. Build on what earlier steps did; if a step failed or QA rejected it, address why. The brief goes to the implementor as-is, together with the objective.";
+  if (goal.maxConcurrent <= 1) {
+    return `- \`next\`: the next step, as a concrete, self-contained brief. Make it one LONG-RUNNING task covering ALL the remaining work of the objective, ordered so the most valuable part comes first. Split the remaining work only where a later part truly depends on your judging an earlier result, never just to keep a step small. ${tail}`;
+  }
+  return `- \`next\`: the next step, as a concrete, self-contained brief. This goal runs up to ${goal.maxConcurrent} step tasks at once in the same repository, so make \`next\` a LONG-RUNNING task over a large share of the remaining work that can proceed IN PARALLEL with the running steps: different files and concerns, no dependency on their unfinished results. Still prefer a few long steps to many short ones. ${tail}`;
+}
+
+function verdictInstructions(ownerName: string, running: number): string[] {
+  const lines = [
+    `- verdict "complete" ONLY if the objective as ${ownerName} wrote it is fully met and the evidence shows it (not merely that a step finished). Otherwise "continue".`,
+    "- The goal ends only when you say complete AND the last step's agent declared it complete. If you believe it is complete but the agent did not declare it, still return \"complete\" and make `next` a VERIFICATION step: independently check every part of the objective, fix any gap, and declare the result.",
+  ];
+  if (running) {
+    lines.push(
+      "- Steps are still running. Return \"wait\" when the next useful step depends on their results or would collide with their work; GGO then starts nothing more until one of them ends, and asks you again. While any step runs, \"complete\" is held the same way, and `next` is ignored on either.",
+    );
+  }
+  return lines;
+}
+
+function rosterBlock(roster: ModelCandidate[], overPace: PoolOverPace[] | undefined): string {
+  const lines = roster.map((c) =>
     `- provider "${c.provider}", model "${c.model}", efforts [${c.efforts.join(", ")}]${c.note ? ` — ${c.note}` : ""}${c.capacity ? ` Capacity: ${c.capacity}` : ""}`,
   );
-  const lastBlock = last
-    ? [
-        `THE STEP THAT JUST ENDED (step ${last.seq}, "${last.title}") settled as: ${last.outcome ?? "unknown"}.`,
-        `Its agent ${last.agentClaimedComplete ? "DECLARED the whole objective complete" : "did NOT declare the objective complete"}.`,
-        ctx.lastError ? `Task error: ${clip(ctx.lastError, 800)}` : "",
-        `Its final report:\n${ctx.lastReport ? tail(ctx.lastReport, REPORT_EXCERPT_CHARS) : "(no report was written)"}`,
-        ctx.lastQa ? `QA's last word on it:\n${tail(ctx.lastQa, QA_EXCERPT_CHARS)}` : "",
-      ].filter(Boolean).join("\n")
-    : "No step has run yet. Plan the first one.";
+  const held = overPace?.length
+    ? `\nLeft out for spending faster than this goal's burn rate allows: ${overPace.map((p) => `${p.pool} (${Math.round(p.usedPct)}% of its weekly window used, ${Math.round(p.budgetPct)}% allowed by now)`).join(", ")}.`
+    : "";
+  return (lines.length ? `DISPATCHABLE MODELS RIGHT NOW:\n${lines.join("\n")}` : "No model reports headroom right now; pick the one you would want when capacity returns.") + held;
+}
+
+export function buildGoalJudgePrompt(ctx: GoalJudgeContext): string {
+  const { goal, steps, running } = ctx;
+  const history = steps.slice(-HISTORY_SHOWN).map(historyLine);
+  const keeps = goal.maxConcurrent > 1 ? `up to ${goal.maxConcurrent} step tasks at once` : "one step task";
   return [
-    `You are GGO's director, steering a GOAL-DIRECTED TASK for ${ctx.ownerName}. GGO keeps one step task working on this goal around the clock until the step's agent AND you agree the objective is fully achieved. You decide each step, and the backend, model and effort it runs on.`,
+    `You are GGO's director, steering a GOAL-DIRECTED TASK for ${ctx.ownerName}. GGO keeps ${keeps} working on this goal around the clock until the step's agent AND you agree the objective is fully achieved. You decide each step, and the backend, model and effort it runs on.`,
     "",
     `GOAL: ${goal.title}`,
     `OBJECTIVE (${ctx.ownerName}'s words, the fixed yardstick):\n${goal.objective}`,
@@ -316,21 +490,32 @@ export function buildGoalJudgePrompt(ctx: GoalJudgeContext): string {
     `Progress so far (your own earlier summary): ${goal.progress || "none yet"}`,
     history.length ? `Step history (oldest first):\n${history.join("\n")}` : "",
     "",
-    lastBlock,
+    settledBlock(ctx.settled, steps.length > 0, running.length),
+    "",
+    runningBlock(goal, running),
     "",
     "DECIDE:",
-    `- verdict "complete" ONLY if the objective as ${ctx.ownerName} wrote it is fully met and the evidence shows it (not merely that a step finished). Otherwise "continue".`,
-    "- The goal ends only when you say complete AND the last step's agent declared it complete. If you believe it is complete but the agent did not declare it, still return \"complete\" and make `next` a VERIFICATION step: independently check every part of the objective, fix any gap, and declare the result.",
+    ...verdictInstructions(ctx.ownerName, running.length),
     "- `progress`: a short running summary of what is done and what remains, replacing the earlier one.",
-    "- `next`: the next step, as a concrete, self-contained brief. Make it one LONG-RUNNING task covering ALL the remaining work of the objective, ordered so the most valuable part comes first. Every step is a fresh agent session that re-reads the repository before it can work, plus another judgement from you, so many small steps waste tokens that one long step spends on the work itself. Split the remaining work only where a later part truly depends on your judging an earlier result, never just to keep a step small. Build on what earlier steps did; if a step failed or QA rejected it, address why. The brief goes to the implementor as-is, together with the objective.",
+    nextInstruction(goal),
     pickInstruction(goal, ctx.ownerName),
     "",
-    rosterLines.length ? `DISPATCHABLE MODELS RIGHT NOW:\n${rosterLines.join("\n")}` : "No model reports headroom right now; pick the one you would want when capacity returns.",
+    rosterBlock(ctx.roster, ctx.overPace),
   ].filter((line) => line !== "").join("\n");
 }
 
+/** How the step should pace itself: keep going through the objective alone, or stay in its lane beside
+ *  the other steps a parallel goal runs. */
+function scopeParagraph(goal: Goal, siblings: GoalStep[]): string {
+  if (goal.maxConcurrent <= 1) {
+    return "This is a long-running task: finish this step completely, then keep going into the rest of the objective in this same task, committing at each coherent point. Stop only when the ENTIRE objective is achieved or you are blocked on something only the owner can resolve. Each new step starts a fresh session that must re-learn the repository, so one long task costs far fewer tokens than many short ones. Then report what you did.";
+  }
+  const beside = siblings.length ? ` Running beside you right now: ${siblings.map((s) => `step ${s.seq} "${s.title}"`).join(", ")}.` : "";
+  return `This is a long-running task: finish this step completely, committing at each coherent point. Up to ${goal.maxConcurrent} step tasks of this goal run at once in this same repository.${beside} Stay within this step's scope rather than taking on work another step owns, commit only your own changes, and coordinate through the office when your work touches theirs. Stop when this step is done or you are blocked on something only the owner can resolve. Then report what you did.`;
+}
+
 /** The brief a step task receives: the director's step brief, framed by the goal and its ending rule. */
-export function goalStepBrief(goal: Goal, seq: number, judgement: GoalJudgement, verification: boolean): string {
+export function goalStepBrief(goal: Goal, seq: number, judgement: GoalJudgement, verification: boolean, siblings: GoalStep[] = []): string {
   return [
     `GOAL-DIRECTED TASK — step ${seq} of the goal "${goal.title}".`,
     `The overall objective (the owner's words):\n${goal.objective}`,
@@ -338,7 +523,7 @@ export function goalStepBrief(goal: Goal, seq: number, judgement: GoalJudgement,
     verification
       ? `THIS STEP IS A VERIFICATION: the director believes the objective is already met. Check every part of it against the repository and running behaviour, fix any gap you find, then report honestly.\n\n${judgement.next.brief}`
       : `THIS STEP:\n${judgement.next.brief}`,
-    "This is a long-running task: finish this step completely, then keep going into the rest of the objective in this same task, committing at each coherent point. Stop only when the ENTIRE objective is achieved or you are blocked on something only the owner can resolve. Each new step starts a fresh session that must re-learn the repository, so one long task costs far fewer tokens than many short ones. Then report what you did.",
+    scopeParagraph(goal, siblings),
     "End your final report with one status line on its own. Write `GOAL STATUS: COMPLETE` only if the ENTIRE objective, not just this step, is now fully achieved and verified. Otherwise write `GOAL STATUS: CONTINUE — <what still remains>`. The director checks your claim against the evidence; claiming complete early only earns a verification step.",
   ].filter(Boolean).join("\n\n");
 }
@@ -416,6 +601,9 @@ export class GoalRunner {
       effort: pin.effort ?? null,
       provider: pin.provider ?? null,
       model: pin.model ?? null,
+      maxConcurrent: clampMaxConcurrent(input.maxConcurrent),
+      burnConservation: input.burnConservation ?? true,
+      burnRatePct: clampBurnRate(input.burnRatePct),
     });
     this.hub.log("info", `Goal "${title}" created in ${workspace}.`);
     this.broadcast();
@@ -433,14 +621,18 @@ export class GoalRunner {
     const pin = trimPinModel({ effort: patch.effort, provider: patch.provider, model: patch.model });
     const pinError = validateGoalPin(pin);
     if (pinError) return { ok: false, error: pinError };
+    const pace = paceChanges(current, patch);
     const goal = this.db.updateGoal(id, {
       ...(title ? { title } : {}),
       ...(objective ? { objective } : {}),
       ...(patch.maxSteps !== undefined ? { maxSteps: clampMaxSteps(patch.maxSteps) } : {}),
       ...(pin.effort !== undefined ? { effort: pin.effort } : {}),
       ...(pin.model !== undefined ? { provider: pin.provider ?? null, model: pin.model } : {}),
+      // A burn-rate hold or a full slot may no longer apply, so look again now instead of at the next check.
+      ...(pace ? { ...pace, nextCheckAt: null } : {}),
     });
     this.broadcast();
+    if (pace && goal?.status === "active") this.evaluate(id);
     return { ok: true, goal: goal ?? undefined };
   }
 
@@ -514,27 +706,57 @@ export class GoalRunner {
   private async advance(goalId: string): Promise<void> {
     const goal = this.db.getGoal(goalId);
     if (!goal || goal.status !== "active") return;
+
+    const open = this.settleOpenSteps(goal);
+    if (open === "paused" || open === "orphan") return;
+    const running = open;
+
     if (goal.nextCheckAt && goal.nextCheckAt > this.now()) return;
-
-    const last = this.adoptOrphan(goal, this.db.listGoalSteps(goalId, 1)[0]);
-    if (last && !last.threadId && last.settledAt == null) return;
-    const thread = last?.threadId ? this.db.getThread(last.threadId) : null;
-    if (thread && UNFINISHED_STATES.has(thread.state)) return;
-    if (last && last.settledAt == null && this.settleStep(goal, last, thread)) return;
-
+    if (running.length >= goal.maxConcurrent) return;
+    if (running.length && this.heldForRunningSteps(goal)) return;
     if (!existsSync(goal.workspace)) return this.pause(goal, `Workspace ${goal.workspace} no longer exists.`);
     if (goal.stepCount >= goal.maxSteps) {
+      if (running.length) return;
       return this.pause(goal, `Reached its budget of ${goal.maxSteps} steps. Raise the step budget and resume to continue.`);
     }
-    await this.judgeAndAct(goalId);
+    await this.judgeAndAct(goalId, running);
+  }
+
+  /**
+   * Records every open step whose task has ended and returns the ones still running. "orphan" means a step
+   * is recorded but its task not yet found, so nothing may dispatch; "paused" means a settle paused the goal.
+   */
+  private settleOpenSteps(goal: Goal): GoalStep[] | "orphan" | "paused" {
+    const running: GoalStep[] = [];
+    for (const open of this.db.listOpenGoalSteps(goal.id)) {
+      const step = this.adoptOrphan(goal, open);
+      if (step.settledAt != null) continue;
+      if (!step.threadId) return "orphan";
+      const thread = this.db.getThread(step.threadId);
+      if (thread && UNFINISHED_STATES.has(thread.state)) running.push(step);
+      else if (this.settleStep(goal, step, thread)) return "paused";
+    }
+    return running;
+  }
+
+  /** The director answered `wait` (or `complete`) while steps ran: plan nothing until one of them ends. */
+  private heldForRunningSteps(goal: Goal): boolean {
+    const verdict = goal.lastVerdict;
+    if (verdict?.verdict !== "wait" || verdict.settledSteps == null) return false;
+    return this.settledSteps(goal.id).length <= verdict.settledSteps;
+  }
+
+  /** A goal's settled steps in the order they ended. */
+  private settledSteps(goalId: string, all: GoalStep[] = this.db.listGoalSteps(goalId)): GoalStep[] {
+    return all.filter((s) => s.settledAt != null).sort((a, b) => a.settledAt! - b.settledAt! || a.seq - b.seq);
   }
 
   /**
    * A step recorded but never linked to its task: the process died between recording the step and the
    * dispatch returning. Adopt the task it created if one exists, else close the step as lost.
    */
-  private adoptOrphan(goal: Goal, step: GoalStep | undefined): GoalStep | undefined {
-    if (!step || step.threadId || step.settledAt != null) return step;
+  private adoptOrphan(goal: Goal, step: GoalStep): GoalStep {
+    if (step.threadId || step.settledAt != null) return step;
     const threadId = this.db.findGoalStepThread(goal.workspace, stepTitle(goal, step.seq, step.title), step.createdAt);
     if (threadId) {
       this.db.updateGoalStep(step.id, { threadId });
@@ -559,7 +781,7 @@ export class GoalRunner {
       this.pause(goal, `Step ${step.seq}'s task was cancelled. Resume the goal to keep going.`);
       return true;
     }
-    const recent = this.db.listGoalSteps(goal.id, GOAL_MAX_FAILED_STEPS);
+    const recent = this.settledSteps(goal.id).slice(-GOAL_MAX_FAILED_STEPS);
     if (recent.length >= GOAL_MAX_FAILED_STEPS && recent.every(stepFailed)) {
       this.pause(goal, `The last ${GOAL_MAX_FAILED_STEPS} steps failed. Check the latest step's task, then resume the goal.`);
       return true;
@@ -568,39 +790,77 @@ export class GoalRunner {
     return false;
   }
 
-  private async judgeAndAct(goalId: string): Promise<void> {
+  private async judgeAndAct(goalId: string, running: GoalStep[]): Promise<void> {
     const goal = this.db.getGoal(goalId)!;
-    const steps = this.db.listGoalSteps(goalId, HISTORY_SHOWN);
-    const last = steps.at(-1);
-    const roster = this.host.roster();
-    if (!roster.length) return this.wait(goal, "Waiting for model capacity: no backend can take a task right now.");
-    const lastThreadId = last?.threadId ?? null;
+    const all = this.db.listGoalSteps(goalId);
+    const settled = this.settledSteps(goalId, all);
+    const available = this.host.roster();
+    if (!available.length) return this.wait(goal, "Waiting for model capacity: no backend can take a task right now.");
+    const burn = checkBurnRate(goal, available, this.now());
+    if (burn.hold) return this.wait(goal, burn.hold.reason, burn.hold.until);
+
     const prompt = buildGoalJudgePrompt({
       goal,
-      steps,
-      lastReport: lastThreadId ? this.db.lastMessageOf(lastThreadId, "implementor", "text")?.content ?? null : null,
-      lastQa: lastThreadId ? this.db.lastMessageOf(lastThreadId, "qa", "text")?.content ?? null : null,
-      lastError: lastThreadId ? this.db.getThread(lastThreadId)?.error ?? null : null,
-      roster,
+      steps: all.slice(-HISTORY_SHOWN),
+      settled: this.justSettled(goal, settled).map((step) => this.settledReport(step)),
+      running: running.map((step) => ({ step, brief: this.db.goalStepBrief(step.id) })),
+      roster: burn.roster,
+      overPace: burn.over,
       ownerName: this.options.ownerName,
     });
-    const answer = await this.host.judge(prompt, goalJudgeSchema(goal, roster)).catch(() => null);
+    const answer = await this.host.judge(prompt, goalJudgeSchema(goal, burn.roster, running.length)).catch(() => null);
     const judgement = answer ? parseGoalJudgement(answer.output) : null;
     // The owner may have paused, ended or deleted the goal while the director was thinking.
     const fresh = this.db.getGoal(goalId);
     if (!fresh || fresh.status !== "active") return;
     if (!judgement) return this.wait(fresh, "Waiting for the director: no director model returned a usable decision.");
 
-    const agentClaimed = last?.agentClaimedComplete === true;
-    const verdict: GoalVerdict = { verdict: judgement.verdict, reason: judgement.reason, agentClaimedComplete: agentClaimed, at: this.now() };
-    this.db.updateGoal(goalId, { lastVerdict: verdict, progress: judgement.progress || fresh.progress, statusReason: null, nextCheckAt: null });
+    const agentClaimed = settled.at(-1)?.agentClaimedComplete === true;
+    const held = running.length > 0 && judgement.verdict !== "continue";
+    this.recordVerdict(fresh, judgement, agentClaimed, held, settled.length, running.length);
+    if (held) return this.broadcast();
 
     if (judgement.verdict === "complete" && agentClaimed) return this.achieve(fresh, judgement.reason);
-    await this.dispatchStep(this.db.getGoal(goalId)!, judgement, judgement.verdict === "complete", roster);
+    await this.dispatchStep(this.db.getGoal(goalId)!, judgement, judgement.verdict === "complete", burn, running);
   }
 
-  private async dispatchStep(goal: Goal, judgement: GoalJudgement, verification: boolean, roster: ModelCandidate[]): Promise<void> {
-    const pin = goalStepPin(goal, judgement.next, roster);
+  /** The steps that ended since the director last judged, so parallel endings are all reported once. */
+  private justSettled(goal: Goal, settled: GoalStep[]): GoalStep[] {
+    const since = goal.lastVerdict?.settledSteps;
+    return (since == null ? settled.slice(-1) : settled.slice(since)).slice(-SETTLED_SHOWN);
+  }
+
+  private settledReport(step: GoalStep): SettledStepReport {
+    const id = step.threadId;
+    return {
+      step,
+      report: id ? this.db.lastMessageOf(id, "implementor", "text")?.content ?? null : null,
+      qa: id ? this.db.lastMessageOf(id, "qa", "text")?.content ?? null : null,
+      error: id ? this.db.getThread(id)?.error ?? null : null,
+    };
+  }
+
+  /** Stores the judgement. A `wait`, or a `complete` while steps still run, becomes a hold that lasts
+   *  until another step settles; a `wait` with nothing running cannot hold anything and reads as continue. */
+  private recordVerdict(goal: Goal, judgement: GoalJudgement, agentClaimed: boolean, held: boolean, settledCount: number, running: number): void {
+    const plural = running === 1 ? "the running step ends" : `one of the ${running} running steps ends`;
+    const verdict: GoalVerdict = {
+      verdict: held ? "wait" : judgement.verdict === "wait" ? "continue" : judgement.verdict,
+      reason: held && judgement.verdict === "complete" ? `Looks complete; deciding once ${plural}. ${judgement.reason}` : judgement.reason,
+      agentClaimedComplete: agentClaimed,
+      at: this.now(),
+      settledSteps: settledCount,
+    };
+    this.db.updateGoal(goal.id, {
+      lastVerdict: verdict,
+      progress: judgement.progress || goal.progress,
+      statusReason: held ? `Holding the next step until ${plural}.` : null,
+      nextCheckAt: null,
+    });
+  }
+
+  private async dispatchStep(goal: Goal, judgement: GoalJudgement, verification: boolean, burn: BurnCheck, running: GoalStep[]): Promise<void> {
+    const pin = this.pinWithinBurnRate(goal, judgement.next, burn);
     const rationale = [judgement.next.rationale, pin.note].filter(Boolean).join(" ");
     const step = this.db.createGoalStep({
       goalId: goal.id,
@@ -609,12 +869,13 @@ export class GoalRunner {
       model: pin.model,
       effort: pin.effort,
       rationale,
+      brief: judgement.next.brief,
     });
     try {
       const threadId = await this.host.dispatch({
         title: stepTitle(goal, step.seq, step.title),
         workspace: goal.workspace,
-        brief: goalStepBrief(goal, step.seq, judgement, verification),
+        brief: goalStepBrief(goal, step.seq, judgement, verification, running),
         effort: pin.effort ?? undefined,
         requestedModel: pin.model,
         requestedProvider: pin.provider,
@@ -626,6 +887,8 @@ export class GoalRunner {
         "info",
         `Goal "${goal.title}" step ${step.seq} dispatched → task ${threadId.slice(0, 8)} (${[pin.provider, pin.model, pin.effort].filter(Boolean).join(" / ") || "auto routing"}).`,
       );
+      // Another slot is free: evaluate again once this pass ends, so the director fills it with the new step in view.
+      if (running.length + 1 < goal.maxConcurrent && this.running.has(goal.id)) this.running.set(goal.id, true);
     } catch (e) {
       this.db.updateGoalStep(step.id, { outcome: "failed", agentClaimedComplete: false, settledAt: this.now() });
       this.hub.log("error", `Goal "${goal.title}" step ${step.seq} failed to dispatch: ${String(e)}`);
@@ -648,10 +911,24 @@ export class GoalRunner {
     this.broadcast();
   }
 
+  /**
+   * The step's pin, kept on a pool within the burn rate. A pick the roster cannot place would otherwise
+   * route automatically, and automatic routing may choose the very pool the burn rate left out.
+   */
+  private pinWithinBurnRate(goal: Goal, pick: GoalJudgement["next"], burn: BurnCheck): StepPin {
+    const pin = goalStepPin(goal, pick, burn.roster);
+    const fallback = burn.roster[0];
+    if (pin.provider || !burn.over.length || !fallback) return pin;
+    const moved = goalStepPin(goal, { ...pick, provider: fallback.provider, model: fallback.model }, burn.roster);
+    const why = `${pick.model || "The director's pick"} could not be placed, and automatic routing could land on a pool over this goal's burn rate, so this step runs on ${fallback.model}.`;
+    return { ...moved, note: [why, moved.note].filter(Boolean).join(" ") };
+  }
+
   /** Stays active but backs off; the reason is shown on the goal so the wait is never silent. */
-  private wait(goal: Goal, reason: string): void {
-    this.db.updateGoal(goal.id, { statusReason: reason, nextCheckAt: this.now() + this.retryMs() });
-    this.hub.log("info", `Goal "${goal.title}": ${reason} Retrying in ${Math.round(this.retryMs() / 60_000)} min.`);
+  private wait(goal: Goal, reason: string, until = this.now() + this.retryMs()): void {
+    const at = Math.max(until, this.now() + Math.min(this.retryMs(), BURN_RECHECK_MAX_MS));
+    this.db.updateGoal(goal.id, { statusReason: reason, nextCheckAt: at });
+    this.hub.log("info", `Goal "${goal.title}": ${reason} Checking again in ${Math.max(1, Math.round((at - this.now()) / 60_000))} min.`);
     this.broadcast();
   }
 
@@ -659,8 +936,11 @@ export class GoalRunner {
     return this.options.retryMs ?? GOAL_RETRY_MS;
   }
 
+  /** Every open step's task and every goal's latest task, so any of them settling wakes its goal at once. */
   private refreshCurrentThreads(goals: Goal[] = this.db.listGoals()): void {
-    this.currentThreads = new Map(goals.filter((g) => g.currentThreadId).map((g) => [g.currentThreadId!, g.id]));
+    const entries: [string, string][] = goals.filter((g) => g.currentThreadId).map((g) => [g.currentThreadId!, g.id]);
+    for (const step of this.db.listOpenGoalSteps()) if (step.threadId) entries.push([step.threadId, step.goalId]);
+    this.currentThreads = new Map(entries);
   }
 
   private broadcast(): void {
@@ -668,6 +948,17 @@ export class GoalRunner {
     this.refreshCurrentThreads(goals);
     this.hub.publish({ type: "goals", goals });
   }
+}
+
+/** The concurrency and burn-rate fields a patch actually changes, clamped; null when it changes none. */
+function paceChanges(current: Goal, patch: GoalPaceInput): Partial<Pick<Goal, "maxConcurrent" | "burnConservation" | "burnRatePct">> | null {
+  const next = {
+    ...(patch.maxConcurrent !== undefined ? { maxConcurrent: clampMaxConcurrent(patch.maxConcurrent) } : {}),
+    ...(patch.burnConservation !== undefined ? { burnConservation: patch.burnConservation } : {}),
+    ...(patch.burnRatePct !== undefined ? { burnRatePct: clampBurnRate(patch.burnRatePct) } : {}),
+  };
+  const changed = (Object.keys(next) as (keyof typeof next)[]).some((k) => current[k] !== next[k]);
+  return changed ? next : null;
 }
 
 /** A blank model is no pin. Undefined fields stay undefined so a patch leaves them unchanged. */
@@ -681,19 +972,28 @@ export function describeGoalPin(g: GoalPin): string {
   return `${model}, ${g.effort ? `${g.effort} effort` : "low–medium effort"}`;
 }
 
+/** How hard the goal may run, as the director reads it, e.g. "up to 3 steps at once, burn rate 100%". */
+export function describeGoalPace(g: Pick<Goal, "maxConcurrent" | "burnConservation" | "burnRatePct">): string {
+  const slots = g.maxConcurrent > 1 ? `up to ${g.maxConcurrent} steps at once` : "one step at a time";
+  return `${slots}, ${g.burnConservation ? `burn rate ${g.burnRatePct}%` : "burn-rate conservation off"}`;
+}
+
 /** One line per goal for the director's list tool and its CLI bridge. */
 export function describeGoal(g: Goal): string {
-  const current = g.currentThreadId ? `, current task ${g.currentThreadId.slice(0, 8)}` : "";
+  const running = g.steps.filter((s) => s.settledAt == null && s.threadId).map((s) => s.threadId!.slice(0, 8));
+  const current = running.length
+    ? `, running task${running.length === 1 ? "" : "s"} ${running.join(", ")}`
+    : g.currentThreadId ? `, last task ${g.currentThreadId.slice(0, 8)}` : "";
   const reason = g.statusReason ? ` (${g.statusReason})` : "";
   const progress = g.progress ? ` Progress: ${clip(g.progress, 300)}` : "";
-  return `- ${g.id} [${g.status}]${reason} "${g.title}" @ ${g.workspace} — ${g.stepCount}/${g.maxSteps} steps, ${describeGoalPin(g)}${current}.${progress}`;
+  return `- ${g.id} [${g.status}]${reason} "${g.title}" @ ${g.workspace} — ${g.stepCount}/${g.maxSteps} steps, ${describeGoalPin(g)}, ${describeGoalPace(g)}${current}.${progress}`;
 }
 
 /** The director's update_goal, shared by the MCP tool and the CLI bridge. Returns the reply text; a
  *  failure starts with "Could not". */
 export function applyGoalChange(
   goals: GoalRunner,
-  change: { id: string; title?: string; objective?: string; maxSteps?: number; status?: GoalStatus } & GoalPinInput,
+  change: { id: string; title?: string; objective?: string; maxSteps?: number; status?: GoalStatus } & GoalPinInput & GoalPaceInput,
   statusReason: string,
 ): string {
   const { id, status, ...patch } = change;

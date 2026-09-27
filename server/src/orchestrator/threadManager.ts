@@ -111,6 +111,7 @@ import {
   nextViableAt,
   preferCapacity,
   standardCapacityWindows,
+  weeklyReading,
   type CapacityDemand,
   type CapacityWindow,
 } from "./capacityRouting.js";
@@ -3991,6 +3992,7 @@ export class ThreadManager implements OrchestratorApi {
         efforts: autoSelectableEffortsForCandidate(entry, entry.efforts),
         note: [modelNote(entry.provider, entry.model), benchmark].filter(Boolean).join(". "),
         capacity: modelCapacityNote(entry.provider, entry.model, entry.candidate, demand),
+        weekly: weeklyReading(candidateCapacityWindows(entry.candidate)),
       };
     });
   }

@@ -556,6 +556,9 @@ export async function handleCommand(
         effort: cmd.effort,
         provider: cmd.provider,
         model: cmd.model,
+        maxConcurrent: cmd.maxConcurrent,
+        burnConservation: cmd.burnConservation,
+        burnRatePct: cmd.burnRatePct,
       });
       if (!r.ok) send(socket, { type: "notice", level: "warn", title: "Goal not created", message: r.error ?? "Unknown error." });
       break;

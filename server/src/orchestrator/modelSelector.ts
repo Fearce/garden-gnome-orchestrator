@@ -52,6 +52,8 @@ export interface ModelCandidate {
   efforts: Effort[];
   /** Live quota/runway facts for the pool this exact model would consume. */
   capacity?: string;
+  /** That pool's weekly meter, when fresh; what a goal's burn-rate conservation paces against. */
+  weekly?: { usedPct: number; resetAt: number } | null;
 }
 
 export interface SelectionContext {

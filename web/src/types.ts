@@ -221,10 +221,11 @@ export interface GoalStep {
 
 /** Mirrors the server's GoalVerdict. */
 export interface GoalVerdict {
-  verdict: "complete" | "continue";
+  verdict: "complete" | "continue" | "wait";
   reason: string;
   agentClaimedComplete: boolean;
   at: number;
+  settledSteps?: number;
 }
 
 /** A goal-directed task: a standing objective the director keeps a task working on until the step's
@@ -242,6 +243,9 @@ export interface Goal {
   effort: Effort | null; // the owner's effort for every step; null = the director picks, low or medium only
   provider: ImplementorProvider | null; // with `model`, the owner's exact pin for every step
   model: string | null;
+  maxConcurrent: number; // how many step tasks may run at once
+  burnConservation: boolean; // hold new steps while every usable pool is ahead of its weekly pace
+  burnRatePct: number; // the pace allowed: 100 = spend a weekly window exactly by its reset
   currentThreadId: string | null;
   nextCheckAt: number | null;
   stepCount: number;
@@ -255,6 +259,21 @@ export interface Goal {
 export const DEFAULT_GOAL_MAX_STEPS = 100;
 export const MAX_GOAL_MAX_STEPS = 1000;
 export const GOAL_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
+/** The owner's per-goal settings a goal.create / goal.update may carry; null hands a pin back to the director. */
+export interface GoalOptions {
+  maxSteps?: number;
+  effort?: Effort | null;
+  provider?: ImplementorProvider | null;
+  model?: string | null;
+  maxConcurrent?: number;
+  burnConservation?: boolean;
+  burnRatePct?: number;
+}
+export const DEFAULT_GOAL_MAX_CONCURRENT = 1;
+export const MAX_GOAL_MAX_CONCURRENT = 8;
+export const DEFAULT_GOAL_BURN_RATE_PCT = 100;
+export const MIN_GOAL_BURN_RATE_PCT = 10;
+export const MAX_GOAL_BURN_RATE_PCT = 500;
 
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
 /** Co-work is not a pane: its sessions are cards on the task board, and a conversation opens as a popup
@@ -1446,8 +1465,8 @@ export type ClientCommand =
   | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null; model?: string | null; provider?: ImplementorProvider | null } }
   | { type: "schedule.delete"; id: string }
   | { type: "schedule.run"; id: string }
-  | { type: "goal.create"; title: string; objective: string; workspace: string; maxSteps?: number }
-  | { type: "goal.update"; id: string; patch: { title?: string; objective?: string; maxSteps?: number } }
+  | ({ type: "goal.create"; title: string; objective: string; workspace: string } & GoalOptions)
+  | { type: "goal.update"; id: string; patch: { title?: string; objective?: string } & GoalOptions }
   | { type: "goal.status"; id: string; status: GoalStatus }
   | { type: "goal.delete"; id: string }
   | { type: "office.join"; url: string; code: string; instanceName: string }

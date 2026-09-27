@@ -1,13 +1,19 @@
 import { useMemo, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
 import {
+  DEFAULT_GOAL_BURN_RATE_PCT,
+  DEFAULT_GOAL_MAX_CONCURRENT,
   DEFAULT_GOAL_MAX_STEPS,
   GOAL_EFFORTS,
+  MAX_GOAL_BURN_RATE_PCT,
+  MAX_GOAL_MAX_CONCURRENT,
   MAX_GOAL_MAX_STEPS,
+  MIN_GOAL_BURN_RATE_PCT,
   type Effort,
   type Goal,
   type GoalStatus,
   type GoalStep,
+  type GoalVerdict,
   type ImplementorProvider,
   type ThreadState,
 } from "../types.js";
@@ -32,6 +38,12 @@ export function goalStepOf(goals: Goal[], threadId: string): { goal: Goal; step:
   }
   return null;
 }
+
+const VERDICT_LABEL: Record<GoalVerdict["verdict"], string> = {
+  complete: "looks complete",
+  continue: "continue",
+  wait: "waiting on running steps",
+};
 
 /** Active goals first, then paused, then the ended ones; newest first within each. */
 const STATUS_ORDER: Record<GoalStatus, number> = { active: 0, paused: 1, achieved: 2, abandoned: 3 };
@@ -81,10 +93,10 @@ function GoalCard({ goal, onEdit }: { goal: Goal; onEdit: () => void }) {
   const now = useCoarseNow();
   const setGoalStatus = useStore((s) => s.setGoalStatus);
   const deleteGoal = useStore((s) => s.deleteGoal);
-  const current = useStore((s) => (goal.currentThreadId ? s.threads[goal.currentThreadId] : undefined));
   const [showSteps, setShowSteps] = useState(false);
   const ended = goal.status === "achieved" || goal.status === "abandoned";
-  const currentStep = goal.steps.at(-1);
+  const running = goal.steps.filter((s) => s.settledAt == null);
+  const lastStep = goal.steps.at(-1);
 
   return (
     <div className={`goal-card gs-${goal.status}`}>
@@ -112,17 +124,26 @@ function GoalCard({ goal, onEdit }: { goal: Goal; onEdit: () => void }) {
 
       <div className="sched-meta">
         <GoalPinChip goal={goal} />
+        <GoalPaceChips goal={goal} />
         <span className="goal-steps-count" title={`The goal pauses after ${goal.maxSteps} step tasks`}>
           Step {goal.stepCount} of {goal.maxSteps}
         </span>
         {goal.lastVerdict ? (
           <span className="goal-verdict" title={goal.lastVerdict.reason}>
-            Director: {goal.lastVerdict.verdict === "complete" ? "looks complete" : "continue"} · {since(now, goal.lastVerdict.at)} ago
+            Director: {VERDICT_LABEL[goal.lastVerdict.verdict]} · {since(now, goal.lastVerdict.at)} ago
           </span>
         ) : null}
       </div>
 
-      {currentStep && !ended ? <CurrentStep step={currentStep} state={current?.state} /> : null}
+      {!ended && running.length ? (
+        <div className="goal-running">
+          {running.map((s) => (
+            <CurrentStep key={s.id} step={s} label={goal.maxConcurrent > 1 ? `Running · ${running.length} of ${goal.maxConcurrent}` : "Current step"} />
+          ))}
+        </div>
+      ) : lastStep && !ended ? (
+        <CurrentStep step={lastStep} label="Last step" />
+      ) : null}
 
       {goal.steps.length ? (
         <div className="goal-history">
@@ -190,13 +211,13 @@ function GoalCard({ goal, onEdit }: { goal: Goal; onEdit: () => void }) {
   );
 }
 
-/** The step in flight: what it is, what it runs on, and a jump to its task. */
-function CurrentStep({ step, state }: { step: GoalStep; state: ThreadState | undefined }) {
+/** A step in flight (or the last one): what it is, what it runs on, and a jump to its task. */
+function CurrentStep({ step, label }: { step: GoalStep; label: string }) {
   const openTask = useOpenTask();
-  const live = step.outcome == null;
+  const state = useStore((s): ThreadState | undefined => (step.threadId ? s.threads[step.threadId]?.state : undefined));
   return (
     <div className="goal-current">
-      <span className="sched-label">{live ? "Current step" : "Last step"}</span>
+      <span className="sched-label">{label}</span>
       <button className="goal-step-link" disabled={!step.threadId} onClick={() => step.threadId && openTask(step.threadId)} title="Open this step's task">
         <span className="goal-step-seq">#{step.seq}</span> {step.title}
       </button>
@@ -259,6 +280,27 @@ function GoalPinChip({ goal }: { goal: Goal }) {
   );
 }
 
+/** How hard the goal may run: its parallel steps and its weekly burn-rate guard. */
+function GoalPaceChips({ goal }: { goal: Goal }) {
+  return (
+    <>
+      <span className="sched-model" title="How many step tasks this goal may run at once">
+        {goal.maxConcurrent > 1 ? `${goal.maxConcurrent} at once` : "1 at a time"}
+      </span>
+      <span
+        className={"goal-burn" + (goal.burnConservation ? "" : " off")}
+        title={
+          goal.burnConservation
+            ? `No new step starts while every usable pool has spent more of its weekly window than ${goal.burnRatePct}% of an even pace allows`
+            : "Burn-rate conservation is off: steps start whenever a model has capacity"
+        }
+      >
+        {goal.burnConservation ? `burn ≤ ${goal.burnRatePct}%` : "burn guard off"}
+      </span>
+    </>
+  );
+}
+
 /** The model and effort the director chose for a step ("auto routing" when its pick could not run). */
 function PickChip({ step }: { step: GoalStep }) {
   return (
@@ -288,16 +330,18 @@ function GoalEditor({ initial, onClose }: { initial: Goal | null; onClose: () =>
   const [maxSteps, setMaxSteps] = useState(String(initial?.maxSteps ?? DEFAULT_GOAL_MAX_STEPS));
   const [effort, setEffort] = useState<Effort | "">(initial?.effort ?? "");
   const model = useGoalModelPin(initial);
+  const pace = useGoalPace(initial);
   const budget = Number(maxSteps);
   const budgetValid = Number.isInteger(budget) && budget >= 1 && budget <= MAX_GOAL_MAX_STEPS;
-  const canSave = !!title.trim() && !!objective.trim() && !!workspace.trim() && budgetValid && model.valid;
+  const canSave = !!title.trim() && !!objective.trim() && !!workspace.trim() && budgetValid && model.valid && pace.valid;
 
   const save = () => {
     if (!canSave) return;
     const pin = { effort: effort || null, provider: model.pinned ? model.provider || null : null, model: model.pinned ? model.model : null };
+    const options = { maxSteps: budget, ...pin, ...pace.values };
     const saved = initial
-      ? updateGoal(initial.id, { title: title.trim(), objective: objective.trim(), maxSteps: budget, ...pin })
-      : createGoal({ title: title.trim(), objective: objective.trim(), workspace: workspace.trim(), maxSteps: budget, ...pin });
+      ? updateGoal(initial.id, { title: title.trim(), objective: objective.trim(), ...options })
+      : createGoal({ title: title.trim(), objective: objective.trim(), workspace: workspace.trim(), ...options });
     if (saved) onClose();
   };
 
@@ -398,6 +442,49 @@ function GoalEditor({ initial, onClose }: { initial: Goal | null; onClose: () =>
             The goal ends when a step's agent and the director both judge the objective complete, and pauses if it uses its step budget, three
             steps in a row fail, or you cancel a step.
           </div>
+          <div className="sched-row goal-pace-row">
+            <label className="sched-field sched-field-inline">
+              <span className="sched-label">Parallel steps</span>
+              <input
+                type="number"
+                className="sched-num goal-concurrency"
+                min={1}
+                max={MAX_GOAL_MAX_CONCURRENT}
+                value={pace.maxConcurrent}
+                onChange={(e) => pace.setMaxConcurrent(e.target.value)}
+                title="How many step tasks may run at once"
+              />
+            </label>
+            <label className="sched-field sched-enable goal-burn-toggle">
+              <input type="checkbox" checked={pace.burnConservation} onChange={(e) => pace.setBurnConservation(e.target.checked)} />
+              <span>Burn-rate conservation</span>
+            </label>
+            <label className="sched-field sched-field-inline">
+              <span className="sched-label">Burn rate</span>
+              <span className="sched-inline">
+                <input
+                  type="number"
+                  className="sched-num goal-burn-rate"
+                  min={MIN_GOAL_BURN_RATE_PCT}
+                  max={MAX_GOAL_BURN_RATE_PCT}
+                  step={10}
+                  value={pace.burnRatePct}
+                  disabled={!pace.burnConservation}
+                  onChange={(e) => pace.setBurnRatePct(e.target.value)}
+                  title="The weekly pace allowed, in percent of the even pace that spends a window exactly by its reset"
+                />
+                %
+              </span>
+            </label>
+          </div>
+          <div className="sched-hint">
+            {pace.values.maxConcurrent > 1
+              ? `Up to ${pace.values.maxConcurrent} step tasks run at once in this repo; the director gives each its own share of the work, or waits for a running step.`
+              : "One step task at a time."}{" "}
+            {pace.burnConservation
+              ? `No new step starts while every model the goal could use is spending its weekly window faster than ${pace.values.burnRatePct}% of an even pace; the goal resumes by itself as the pace catches up.`
+              : "Burn-rate conservation is off: steps start whenever a model has capacity."}
+          </div>
         </div>
         <div className="m-foot sched-foot">
           <button className="btn ghost" onClick={onClose}>
@@ -432,6 +519,32 @@ function useGoalModelPin(initial: Goal | null) {
   };
 
   return { targets, target, provider, model, setModel, chooseProvider, pinned: !!provider && !!model, valid: !provider || !!model };
+}
+
+/** The editor's parallel-steps and burn-rate fields, kept as typed text until they are valid numbers. */
+function useGoalPace(initial: Goal | null) {
+  const [maxConcurrent, setMaxConcurrent] = useState(String(initial?.maxConcurrent ?? DEFAULT_GOAL_MAX_CONCURRENT));
+  const [burnConservation, setBurnConservation] = useState(initial?.burnConservation ?? true);
+  const [burnRatePct, setBurnRatePct] = useState(String(initial?.burnRatePct ?? DEFAULT_GOAL_BURN_RATE_PCT));
+  const slots = Number(maxConcurrent);
+  const rate = Number(burnRatePct);
+  const slotsValid = Number.isInteger(slots) && slots >= 1 && slots <= MAX_GOAL_MAX_CONCURRENT;
+  const rateValid = Number.isInteger(rate) && rate >= MIN_GOAL_BURN_RATE_PCT && rate <= MAX_GOAL_BURN_RATE_PCT;
+  return {
+    maxConcurrent,
+    setMaxConcurrent,
+    burnConservation,
+    setBurnConservation,
+    burnRatePct,
+    setBurnRatePct,
+    // An off guard keeps its last valid rate, so a half-typed number there cannot block saving.
+    valid: slotsValid && (rateValid || !burnConservation),
+    values: {
+      maxConcurrent: slotsValid ? slots : DEFAULT_GOAL_MAX_CONCURRENT,
+      burnConservation,
+      burnRatePct: rateValid ? rate : (initial?.burnRatePct ?? DEFAULT_GOAL_BURN_RATE_PCT),
+    },
+  };
 }
 
 function PlusIcon() {

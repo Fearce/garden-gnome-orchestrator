@@ -139,6 +139,13 @@ export function standardCapacityWindows(
   ];
 }
 
+/** A pool's live weekly meter, or null when it has no fresh reading with a known reset. Stale readings
+ *  arrive here already nulled by `capacityWindowsWithFreshness`. */
+export function weeklyReading(windows: readonly CapacityWindow[]): { usedPct: number; resetAt: number } | null {
+  const weekly = windows.find((window) => window.label === "weekly");
+  return weekly?.usedPct != null && weekly.resetAt != null ? { usedPct: weekly.usedPct, resetAt: weekly.resetAt } : null;
+}
+
 /** Represent a dispatch hard ceiling as an explicit gating window. The raw meter may still have a few
  * percent free (98% used at a 98% ceiling), which can look sufficient for a tiny turn; routing policy
  * nevertheless holds it until reset. Making that hold a window lets reset simulation wake at the right

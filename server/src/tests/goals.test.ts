@@ -5,7 +5,8 @@
 // What it pins: the two-voice ending (agent claim AND director verdict), the verification step when only
 // the director thinks it is done, the step-in-flight gate, the backoff when no director answers, the three
 // runaway guards (cancel, failed streak, step budget), orphan adoption after a crash, the owner pausing
-// mid-judgement, and the hub wake-up when a step task settles.
+// mid-judgement, the hub wake-up when a step task settles, the weekly burn-rate hold, and parallel steps
+// (slots, the director's `wait`, and reports of several steps that ended together).
 
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,9 +14,13 @@ import { join } from "node:path";
 import { Db } from "../db/db.js";
 import { EventHub } from "../events.js";
 import {
+  GOAL_BURN_GRACE_PCT,
   GoalRunner,
+  burnBudgetPct,
+  checkBurnRate,
   detectGoalComplete,
   goalJudgeSchema,
+  poolOverPace,
   goalStepPin,
   parseGoalJudgement,
   resolveStepPin,
@@ -98,6 +103,45 @@ function pure(): void {
   check("the director may only pick low or medium by default", effortsOf(goalJudgeSchema(auto, ROSTER)) === "low,medium");
   check("an owner effort is the only effort offered", effortsOf(goalJudgeSchema({ ...auto, effort: "high" }, ROSTER)) === "high");
   check("an owner model is the only model offered", modelsOf(goalJudgeSchema({ effort: null, provider: "codex", model: "gpt-5.6" }, ROSTER)) === "gpt-5.6");
+  const verdictsOf = (schema: ReturnType<typeof goalJudgeSchema>) => ((schema.properties as { verdict: { enum: string[] } }).verdict.enum ?? []).join(",");
+  check("wait is not offered with nothing running", verdictsOf(goalJudgeSchema(auto, ROSTER)) === "complete,continue");
+  check("wait is offered while steps run", verdictsOf(goalJudgeSchema(auto, ROSTER, 2)) === "complete,continue,wait");
+}
+
+const DAY = 24 * 60 * 60_000;
+/** A roster candidate whose pool has used `usedPct` of a weekly window that resets in `resetInDays`. */
+function paced(base: ModelCandidate, usedPct: number, now: number, resetInDays = 3.5): ModelCandidate {
+  return { ...base, weekly: { usedPct, resetAt: now + resetInDays * DAY } };
+}
+
+function burnRate(): void {
+  const now = Date.now();
+  console.log("goals: burn-rate pace");
+  check("half-way through the week, 100% allows half the window plus the grace", Math.abs(burnBudgetPct(now + 3.5 * DAY, 100, now) - (50 + GOAL_BURN_GRACE_PCT)) < 1e-9);
+  check("50% allows half of that pace", Math.abs(burnBudgetPct(now + 3.5 * DAY, 50, now) - (25 + GOAL_BURN_GRACE_PCT)) < 1e-9);
+  check("the allowance never passes 100%", burnBudgetPct(now + DAY, 500, now) === 100);
+  const over = poolOverPace(paced(ROSTER[0]!, 60, now), 100, now);
+  check("60% used half-way through is ahead of a 100% pace", over?.pool === "Claude" && Math.round(over.budgetPct) === 55);
+  check("it clears when the pace line reaches 60%", over != null && Math.abs(over.clearsAt - (now + 0.05 * 7 * DAY)) < 1_000);
+  check("a 200% burn rate lets the same pool run", poolOverPace(paced(ROSTER[0]!, 60, now), 200, now) === null);
+  check("a pool with no weekly reading is never held", poolOverPace(ROSTER[0]!, 100, now) === null);
+  check("a window that already reset is never held", poolOverPace({ ...ROSTER[0]!, weekly: { usedPct: 99, resetAt: now - 1 } }, 100, now) === null);
+  const nearReset = poolOverPace(paced(ROSTER[0]!, 99, now, 0.1), 50, now);
+  check("a pool that cannot catch up clears at its reset", nearReset?.clearsAt === now + 0.1 * DAY);
+
+  console.log("goals: burn-rate conservation");
+  const auto = { effort: null, provider: null, model: null, burnConservation: true, burnRatePct: 100 };
+  const claudeOver = [paced(ROSTER[0]!, 70, now), paced(ROSTER[1]!, 20, now)];
+  const oneOver = checkBurnRate(auto, claudeOver, now);
+  check("a pool over its pace leaves the roster", oneOver.roster.map((c) => c.provider).join(",") === "codex" && oneOver.over.length === 1);
+  check("one pool with room keeps the goal going", oneOver.hold === null);
+  const allOver = checkBurnRate(auto, [paced(ROSTER[0]!, 70, now), paced(ROSTER[1]!, 80, now)], now);
+  check("every pool over its pace holds the goal", /Paused for burn rate/.test(allOver.hold?.reason ?? "") && allOver.roster.length === 0);
+  check("the hold re-checks within 30 minutes", allOver.hold != null && allOver.hold.until <= now + 30 * 60_000);
+  check("conservation off passes everything through", checkBurnRate({ ...auto, burnConservation: false }, claudeOver, now).hold === null);
+  const pinnedOver = checkBurnRate({ ...auto, provider: "claude", model: "claude-opus-5-5" }, claudeOver, now);
+  check("a goal pinned to an over-pace pool holds even when another pool has room", pinnedOver.hold !== null);
+  check("a goal pinned to a pool within pace runs", checkBurnRate({ ...auto, provider: "codex", model: "gpt-5.6" }, claudeOver, now).hold === null);
 }
 
 interface Harness {
@@ -109,13 +153,15 @@ interface Harness {
   judged: string[];
   notices: string[];
   clock: { t: number };
+  roster: ModelCandidate[];
+  schemas: unknown[];
   onJudge?: () => void;
 }
 
 function harness(): Harness {
   const db = new Db(join(mkdtempSync(join(tmpdir(), "goals-test-")), "t.sqlite"));
   const hub = new EventHub();
-  const h = { db, hub, dispatched: [], answers: [], judged: [], notices: [], clock: { t: Date.now() } } as unknown as Harness;
+  const h = { db, hub, dispatched: [], answers: [], judged: [], schemas: [], notices: [], clock: { t: Date.now() }, roster: ROSTER } as unknown as Harness;
   const host: GoalHost = {
     dispatch: async (input) => {
       h.dispatched.push(input);
@@ -123,13 +169,14 @@ function harness(): Harness {
       db.updateThread(t.id, { state: "implementing" });
       return t.id;
     },
-    judge: async (prompt) => {
+    judge: async (prompt, schema) => {
       h.judged.push(prompt);
+      h.schemas.push(schema);
       h.onJudge?.();
       const next = h.answers.shift();
       return next === undefined || next === null ? null : { output: next, model: "claude-opus-5-5", provider: "claude" };
     },
-    roster: () => ROSTER,
+    roster: () => h.roster,
     notify: (kind, title) => h.notices.push(`${kind}:${title}`),
   };
   h.runner = new GoalRunner(db, hub, host, { ownerName: "Kevin", now: () => h.clock.t, tickMs: 3_600_000, retryMs: 300_000 });
@@ -271,7 +318,7 @@ async function guards(): Promise<void> {
   h = harness();
   const e = h.runner.create({ title: "Orphan", objective: "o", workspace: ws }).goal!;
   await h.runner.idle();
-  const step = h.db.createGoalStep({ goalId: e.id, title: "lost link", provider: null, model: null, effort: null, rationale: "" });
+  const step = h.db.createGoalStep({ goalId: e.id, title: "lost link", provider: null, model: null, effort: null, rationale: "", brief: "b" });
   const orphan = h.db.createThread({ title: stepTitle(e, step.seq, "lost link"), workspace: ws, rawPrompt: "", brief: "b" });
   h.db.updateThread(orphan.id, { state: "implementing" });
   h.clock.t += 300_001;
@@ -315,10 +362,136 @@ async function guards(): Promise<void> {
   check("an ended goal cannot be paused", !h.runner.setStatus(h.runner.setStatus(f.id, "abandoned").goal!.id, "paused").ok);
 }
 
+async function burnHoldLoop(): Promise<void> {
+  const ws = process.cwd();
+  console.log("goals: the runner holds for burn rate");
+  let h = harness();
+  h.roster = [paced(ROSTER[0]!, 70, h.clock.t), paced(ROSTER[1]!, 80, h.clock.t)];
+  const a = h.runner.create({ title: "Burning", objective: "o", workspace: ws }).goal!;
+  check("burn-rate conservation defaults on at 100%", a.burnConservation === true && a.burnRatePct === 100);
+  await h.runner.idle();
+  let goal = h.db.getGoal(a.id)!;
+  check("every pool over pace: no director call, no step", h.judged.length === 0 && h.dispatched.length === 0);
+  check("the hold is shown on the goal and timed", goal.status === "active" && /Paused for burn rate/.test(goal.statusReason ?? "") && (goal.nextCheckAt ?? 0) > h.clock.t);
+  await h.runner.evaluate(a.id);
+  check("no judgement before the hold's re-check", h.judged.length === 0);
+
+  h.roster = [paced(ROSTER[0]!, 70, h.clock.t), paced(ROSTER[1]!, 20, h.clock.t)];
+  h.clock.t = goal.nextCheckAt! + 1;
+  h.answers.push(answer("continue", "on codex", { provider: "claude", model: "claude-opus-5-5", effort: "medium" }));
+  await h.runner.evaluate(a.id);
+  goal = h.db.getGoal(a.id)!;
+  check("a pool back within pace lets the goal run", h.dispatched.length === 1 && goal.statusReason === null);
+  check("the director is told which pool was left out", h.judged[0]!.includes("Left out for spending faster") && !h.judged[0]!.includes('model "claude-opus-5-5"'));
+  const providers = (h.schemas[0] as { properties: { next: { properties: { provider: { enum: string[] } } } } }).properties.next.properties.provider.enum;
+  check("the over-pace backend is not on offer", providers.join(",") === "codex");
+  const d = h.dispatched[0]!;
+  check("a pick on the over-pace pool is moved to a pool within pace, not auto-routed", d.requestedProvider === "codex" && d.requestedModel === "gpt-5.6");
+
+  console.log("goals: burn-rate conservation off, and switching it off mid-hold");
+  h = harness();
+  h.roster = [paced(ROSTER[0]!, 70, h.clock.t), paced(ROSTER[1]!, 80, h.clock.t)];
+  h.answers.push(answer("continue", "anyway"));
+  h.runner.create({ title: "Unguarded", objective: "o", workspace: ws, burnConservation: false });
+  await h.runner.idle();
+  check("with conservation off the goal runs over pace", h.dispatched.length === 1);
+  const held = h.runner.create({ title: "Held", objective: "o", workspace: ws }).goal!;
+  await h.runner.idle();
+  check("the guarded goal holds", h.dispatched.length === 1 && /burn rate/.test(h.db.getGoal(held.id)!.statusReason ?? ""));
+  h.answers.push(answer("continue", "released"));
+  h.runner.update(held.id, { burnConservation: false });
+  await h.runner.idle();
+  check("switching conservation off dispatches at once", h.dispatched.length === 2 && h.db.getGoal(held.id)!.burnConservation === false);
+  const raised = h.runner.update(held.id, { burnRatePct: 9999 });
+  check("the burn rate is clamped", raised.goal?.burnRatePct === 500);
+}
+
+async function parallel(): Promise<void> {
+  const ws = process.cwd();
+  console.log("goals: parallel steps fill every slot");
+  let h = harness();
+  h.answers.push(answer("continue", "api"), answer("continue", "ui"), answer("continue", "docs"));
+  const g = h.runner.create({ title: "Wide", objective: "o", workspace: ws, maxConcurrent: 3 }).goal!;
+  check("max concurrent is stored", g.maxConcurrent === 3);
+  await h.runner.idle();
+  check("three slots, three steps", h.dispatched.length === 3 && h.judged.length === 3);
+  check("the second judgement sees the running step", h.judged[1]!.includes('STEPS STILL RUNNING (1 of up to 3 at once)') && h.judged[1]!.includes("Do api."));
+  check("a parallel goal asks for work beside the running steps", h.judged[1]!.includes("IN PARALLEL"));
+  check("the step brief names its siblings", h.dispatched[2]!.brief.includes('step 1 "api"') && h.dispatched[2]!.brief.includes('step 2 "ui"'));
+  check("a parallel step stays in its lane", !h.dispatched[2]!.brief.includes("keep going into the rest of the objective"));
+  await h.runner.evaluate(g.id);
+  check("full slots: no judgement", h.judged.length === 3);
+
+  console.log("goals: several steps end together");
+  const ids = h.db.listOpenGoalSteps(g.id).map((s) => s.threadId!);
+  h.answers.push(answer("continue", "tests"), answer("continue", "bench"));
+  settle(h, ids[0]!, "done", "API report.");
+  settle(h, ids[1]!, "done", "UI report.");
+  await h.runner.evaluate(g.id);
+  check("both endings are reported once", h.judged[3]!.includes("2 STEPS ENDED") && h.judged[3]!.includes("API report.") && h.judged[3]!.includes("UI report."));
+  await h.runner.idle();
+  check("the two free slots are filled", h.dispatched.length === 5);
+  check("a step already reported is not reported again", !h.judged[4]!.includes("API report."));
+
+  console.log("goals: the director waits for running steps");
+  h = harness();
+  h.answers.push(answer("continue", "first"), { ...answer("continue", "ignored"), verdict: "wait" });
+  const w = h.runner.create({ title: "Waiting", objective: "o", workspace: ws, maxConcurrent: 2 }).goal!;
+  await h.runner.idle();
+  let goal = h.db.getGoal(w.id)!;
+  check("wait dispatches nothing", h.dispatched.length === 1 && goal.lastVerdict?.verdict === "wait" && /Holding the next step/.test(goal.statusReason ?? ""));
+  await h.runner.evaluate(w.id);
+  check("the hold spends no director call on the next tick", h.judged.length === 2);
+  h.answers.push(answer("complete", "unused"));
+  settle(h, goal.currentThreadId!, "done", "First done.\nGOAL STATUS: COMPLETE");
+  await h.runner.evaluate(w.id);
+  goal = h.db.getGoal(w.id)!;
+  check("a step ending lifts the hold, and both voices end the goal", h.judged.length === 3 && goal.status === "achieved");
+
+  console.log("goals: complete is held while a step still runs");
+  h = harness();
+  h.answers.push(answer("continue", "a"), answer("continue", "b"));
+  const c = h.runner.create({ title: "Early", objective: "o", workspace: ws, maxConcurrent: 2 }).goal!;
+  await h.runner.idle();
+  const [ta] = h.db.listOpenGoalSteps(c.id).map((s) => s.threadId!);
+  h.answers.push(answer("complete", "unused"));
+  settle(h, ta!, "done", "A done.\nGOAL STATUS: COMPLETE");
+  await h.runner.evaluate(c.id);
+  goal = h.db.getGoal(c.id)!;
+  check("complete with a step running neither ends the goal nor dispatches", goal.status === "active" && h.dispatched.length === 2 && goal.lastVerdict?.verdict === "wait" && /Looks complete/.test(goal.lastVerdict.reason));
+
+  console.log("goals: raising max concurrent fills the new slot at once");
+  h = harness();
+  h.answers.push(answer("continue", "solo"));
+  const r = h.runner.create({ title: "Grow", objective: "o", workspace: ws }).goal!;
+  await h.runner.idle();
+  check("one slot, one step", h.dispatched.length === 1);
+  h.answers.push(answer("continue", "second"));
+  h.runner.update(r.id, { maxConcurrent: 2 });
+  await h.runner.idle();
+  check("the new slot is filled without waiting for the step to end", h.dispatched.length === 2);
+
+  console.log("goals: the step budget waits for running steps");
+  h = harness();
+  h.answers.push(answer("continue", "x"), answer("continue", "y"));
+  const b = h.runner.create({ title: "Budget2", objective: "o", workspace: ws, maxSteps: 2, maxConcurrent: 2 }).goal!;
+  await h.runner.idle();
+  const [bx, by] = h.db.listOpenGoalSteps(b.id).map((s) => s.threadId!);
+  settle(h, bx!, "done", "x done");
+  await h.runner.evaluate(b.id);
+  check("budget reached with a step running: not paused yet", h.db.getGoal(b.id)!.status === "active" && h.judged.length === 2);
+  settle(h, by!, "done", "y done");
+  await h.runner.evaluate(b.id);
+  check("once every step ended, the budget pauses", h.db.getGoal(b.id)!.status === "paused");
+}
+
 async function main(): Promise<void> {
   pure();
+  burnRate();
   await lifecycle();
   await guards();
+  await burnHoldLoop();
+  await parallel();
   if (failures) {
     console.error(`\n${failures} check(s) failed`);
     process.exit(1);

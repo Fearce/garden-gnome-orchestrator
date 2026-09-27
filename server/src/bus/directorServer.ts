@@ -5,7 +5,7 @@ import type { OrchestratorApi } from "../orchestrator/api.js";
 import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
 import { applyGoalChange, describeGoal, type GoalRunner } from "../orchestrator/goals.js";
-import { NOTE_MAX_CHARS, type ImageAttachment } from "../types.js";
+import { MAX_GOAL_BURN_RATE_PCT, MAX_GOAL_MAX_CONCURRENT, MIN_GOAL_BURN_RATE_PCT, NOTE_MAX_CHARS, type ImageAttachment } from "../types.js";
 import { DIRECTOR_SERVER } from "../agents/toolNames.js";
 import { existsSync } from "node:fs";
 import { config } from "../config.js";
@@ -429,6 +429,9 @@ export function createDirectorServer(
       effort: z.enum(["low", "medium", "high", "max"]).optional().describe(`Effort for EVERY step, only when ${config.ownerName} named one. Omit it and the director picks low or medium per step.`),
       provider: z.enum(["claude", "codex", "grok", "zai"]).optional().describe("The backend of `model`."),
       model: z.string().optional().describe(`Exact model id for EVERY step, only when ${config.ownerName} named one; always with its provider. Omit both and the director picks per step.`),
+      maxConcurrent: z.number().int().min(1).max(MAX_GOAL_MAX_CONCURRENT).optional().describe(`How many step tasks may run at once (default 1, one after another). Set it only when ${config.ownerName} asked for several agents on the goal.`),
+      burnConservation: z.boolean().optional().describe(`Hold new steps while every usable pool spends its weekly window faster than the burn rate allows (default on). Turn it off only when ${config.ownerName} asked.`),
+      burnRatePct: z.number().int().min(MIN_GOAL_BURN_RATE_PCT).max(MAX_GOAL_BURN_RATE_PCT).optional().describe("The pace the burn-rate guard allows, in percent of the even pace that spends a weekly window exactly by its reset (default 100)."),
     },
     async (args) => {
       if (!goals) return goalsUnavailable;
@@ -451,7 +454,7 @@ export function createDirectorServer(
 
   const updateGoal = tool(
     "update_goal",
-    `Change a goal (id from list_goals): edit its title, objective, step budget, effort or model pin, and/or set its status — "paused" stops new steps (the running one finishes), "active" resumes, "abandoned" ends it, "achieved" marks it done on ${config.ownerName}'s say-so. Only change status when ${config.ownerName} asked for it.`,
+    `Change a goal (id from list_goals): edit its title, objective, step budget, effort or model pin, parallel steps or burn-rate guard, and/or set its status — "paused" stops new steps (the running one finishes), "active" resumes, "abandoned" ends it, "achieved" marks it done on ${config.ownerName}'s say-so. Only change status when ${config.ownerName} asked for it.`,
     {
       id: z.string().describe("The goal id (from list_goals)."),
       title: z.string().optional(),
@@ -460,6 +463,9 @@ export function createDirectorServer(
       effort: z.enum(["low", "medium", "high", "max"]).nullable().optional().describe("Effort for every step from now on; null hands it back to the director (low or medium)."),
       provider: z.enum(["claude", "codex", "grok", "zai"]).nullable().optional().describe("The backend of `model`; null together with model hands the pick back to the director."),
       model: z.string().nullable().optional().describe("Exact model for every step from now on, always with its provider; null clears the pin."),
+      maxConcurrent: z.number().int().min(1).max(MAX_GOAL_MAX_CONCURRENT).optional().describe("How many step tasks may run at once from now on."),
+      burnConservation: z.boolean().optional().describe("Burn-rate conservation on or off."),
+      burnRatePct: z.number().int().min(MIN_GOAL_BURN_RATE_PCT).max(MAX_GOAL_BURN_RATE_PCT).optional().describe("The pace the burn-rate guard allows, in percent of the even weekly pace."),
       status: z.enum(["active", "paused", "abandoned", "achieved"]).optional(),
     },
     async (args) => {
