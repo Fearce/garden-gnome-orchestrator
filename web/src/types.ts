@@ -1276,7 +1276,7 @@ export interface SharedRepo {
 export type ServerEvent =
   | {
       type: "hello";
-      /** Missing on an older server while a staged deployment waits to restart. */
+      /** Missing on an older server that has not yet restarted onto the new build. */
       startQaSupported?: boolean;
       coworkCloseSupported?: boolean;
       threads: Thread[];

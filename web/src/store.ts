@@ -1417,10 +1417,10 @@ export const useStore = create<State>((set) => ({
   renameCowork: (sessionId, name) => sendCommand({ type: "cowork.rename", sessionId, name: name.trim() }),
   setCoworkClosed: (sessionId, closed) => {
     set({ coworkCloseError: null });
-    // The static web bundle can ship before the drain-safe server restart. Older servers silently
+    // The static web bundle can ship before the server restart lands. Older servers silently
     // discard unknown commands, so never send an unsupported close and leave the owner guessing.
     if (!useStore.getState().coworkCloseSupported) {
-      set({ coworkCloseError: { sessionId, message: "Closing and restoring Co-work sessions is waiting for the server update. GGO will restart after active agent work finishes. Your conversation is saved; try again after the restart." } });
+      set({ coworkCloseError: { sessionId, message: "Closing and restoring Co-work sessions is waiting for the server update. Your conversation is saved; try again once GGO has restarted onto the new build." } });
       return;
     }
     if (!sendCommand({ type: closed ? "cowork.close" : "cowork.restore", sessionId })) {

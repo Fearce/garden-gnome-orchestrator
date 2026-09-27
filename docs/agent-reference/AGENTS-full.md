@@ -60,9 +60,10 @@ posts one handoff and leaves later revisions with the owner instead of restartin
 ## Deploying a change — DO IT YOURSELF, don't defer
 **If you changed server code, you deploy it before handing off — by restarting the orchestrator
 yourself, in the same turn. Do NOT end a turn with "needs a restart to go live" or ask the owner
-to restart.** `npm run deploy --prefix server` stages the build with GGO's restart coordinator. Active
-agents finish normally and fresh work remains available; the server restarts when all work is idle.
-A waiting restart is a completed deploy handoff, not permission to call the hub directly.
+to restart.** `npm run deploy --prefix server` builds, then has GGO's restart coordinator restart the
+server immediately — even with agents running. The bounce kills their CLI children and boot auto-resumes
+them on the new build, so there is nothing to wait for and no reason to hold a deploy back for a busy
+board (owner decision, 2026-09-27; deploys used to wait for idle, which on a busy board meant hours).
 
 How to restart depends on how it's running:
 
@@ -76,21 +77,23 @@ How to restart depends on how it's running:
 keepAlive armed. Implementor workers are **child processes of this server** (the Agent SDK spawns the
 `Codex` CLI — `server/src/agents/runner.ts`), so:
 - **Server change? `npm run deploy --prefix server`** - it selects the safe build path, stamps the
-  artifact, asks the live restart coordinator to restart after active agents finish, and either verifies
-  a NEW process is running HEAD or reports the durable drain that will do so. **Use it instead
+  artifact, asks the live restart coordinator to bounce onto HEAD now, then verifies a NEW process is
+  running HEAD (as a child of :4317 the shell usually dies with the bounce). **Use it instead
   of building by hand:** a plain build compiles the shared working tree and can ship another agent's
   uncommitted server code. `npm run deploy --prefix server -- --plan` is read-only; after the restart
   auto-resumes this worker, `npm run deploy --prefix server -- --verify` confirms the live artifact without
   bouncing the server again. The script uses the atomic hub restart internally, so it survives the caller
   being killed mid-restart and re-arms keepAlive.
-- **`restart WAITING` is a successful deploy; never bypass it.** Every planned restart waits while any
-  task, Co-worker, Director, or Supervisor work is active. Fresh agent starts remain available, existing
-  agents finish normally, and the server bounces immediately at zero active work. Only the actual bounce
-  briefly pauses starts; a pending build or refused restart must never freeze GGO. There is no hourly restart
-  limit. The committed build is staged, the server owns the bounce, and other staged patches ride it.
-  Waiting and `--verify` exit 0.
-  A direct script-hub restart bypasses the drain and can kill active agents; reserve it for recovery when
-  :4317 is down.
+- **The restart never waits for agents.** `deploy` asks the running server (`POST
+  :4317/api/deploy/restart`); `orchestrator/restartCoordinator.ts` commits the bounce at once, closing
+  admission only for its ~800ms settle so nothing new starts on the dying process. Owner update-badge
+  restarts take the same path. A refused hub/supervisor call keeps the staged builds and retries on a
+  backoff; re-running `deploy` retries at once, and `--verify` reports such a build as `BUILT and STAGED,
+  but its restart was refused` (exit 1). Anything short of a committed restart — :4317 down, wedged,
+  erroring, or an older build still answering `deferred` — makes `deploy` fall back to the hub. Runs a
+  coordinated bounce kills are stamped `interrupted by a server restart (a planned deploy)` at the next
+  boot and never count toward the auto-resume crash-loop guard. Gates: `test:restart-drain`,
+  `test:deploy-plan`, `test:restart-revival`.
 - **Never use stop+start** (`script-hub stop` / the launcher's `stop`): it disarms keepAlive AND
   tree-kills the whole process — including the worker issuing it — so the follow-up `start` never
   runs and nothing resurrects it. Use the atomic `/api/restart` above, which is exactly why it exists.
