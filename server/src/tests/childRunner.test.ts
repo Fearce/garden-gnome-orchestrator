@@ -170,32 +170,36 @@ async function worstLoopLag(fn: () => Promise<unknown>): Promise<number> {
 {
   const POOL = 2; // CHILD_WORKER_POOL is unset in the gate, so the pool is the default two workers
   const slow = (tag: string, ms: number) => runChild(NODE, ["-e", `setTimeout(() => process.stdout.write('${tag}'), ${ms})`]);
-  const finished: string[] = [];
-  const track = (p: Promise<{ stdout: string }>) => p.then((r) => { finished.push(r.stdout); return r; });
+  // Assert on when each child STARTED or ENDED as the child itself saw it, never on when runChild resolved.
+  // On Windows a child spawned at the same instant on another worker thread inherits this one's pipe, so a
+  // finished child's result can be held until that neighbour exits. That is spawn jitter, not scheduling:
+  // on a loaded box it once reported an urgent job that had started at 0.3s as done at 5.4s.
+  const startedAt = (tag: string, opts: { urgent?: boolean } = {}) =>
+    runChild(NODE, ["-e", "process.stdout.write(String(Date.now()))"], opts).then((r) => ({ tag, at: Number(r.stdout) }));
+  const endedAt = (tag: string, ms: number) =>
+    runChild(NODE, ["-e", `setTimeout(() => process.stdout.write(String(Date.now())), ${ms})`]).then((r) => ({ tag, at: Number(r.stdout) }));
 
-  const blockers = Array.from({ length: POOL }, (_, i) => track(slow(`block${i}`, 5000)));
-  const queuedFirst = track(slow("ordinary", 10));
+  const blockers = Array.from({ length: POOL }, (_, i) => endedAt(`block${i}`, 5000));
+  const queuedFirst = startedAt("ordinary");
   await new Promise((r) => setTimeout(r, 50));
   assert.ok(childRunnerState().busy <= POOL, `ordinary work must stay within the pool, saw ${childRunnerState().busy} busy`);
 
-  const urgent = await track(runChild(NODE, ["-e", "process.stdout.write('urgent')"], { urgent: true }));
-  assert.equal(urgent.stdout, "urgent");
-  await Promise.all([...blockers, queuedFirst]);
+  const urgent = await startedAt("urgent", { urgent: true });
+  const [ordinary, ...blocked] = await Promise.all([queuedFirst, ...blockers]);
+  const firstFree = Math.min(...blocked.map((x) => x.at));
   assert.ok(
-    finished.indexOf("urgent") < finished.indexOf("block0") && finished.indexOf("urgent") < finished.indexOf("ordinary"),
-    `an urgent job must run while ordinary work fills the pool: ${finished.join(", ")}`,
+    urgent.at < firstFree && urgent.at < ordinary.at,
+    `an urgent job must run while ordinary work fills the pool: urgent started ${urgent.at}, ordinary started ` +
+      `${ordinary.at}, first blocker ended ${firstFree}`,
   );
 
   // With the reserve also taken, an urgent job must not wait behind ordinary jobs queued before it. The
   // urgent holder frees first; only the queued urgent job may take that worker, while the ordinary ones
-  // wait for the long holders. Each child prints when it STARTED, since completion order is spawn jitter.
-  const startedAt = (tag: string, opts: { urgent?: boolean } = {}) =>
-    runChild(NODE, ["-e", "process.stdout.write(String(Date.now()))"], opts).then((r) => ({ tag, at: Number(r.stdout) }));
-  const held = [
-    slow("hold0", 6000),
-    slow("hold1", 6000),
-    runChild(NODE, ["-e", "setTimeout(() => {}, 1000)"], { urgent: true }),
-  ];
+  // wait for the long holders. The holder is started only once the long holders have had time to spawn,
+  // so neither of them inherits its pipe and keeps it "running" until they exit (see above).
+  const held: Promise<unknown>[] = [slow("hold0", 6000), slow("hold1", 6000)];
+  await new Promise((r) => setTimeout(r, 1500));
+  held.push(runChild(NODE, ["-e", "setTimeout(() => {}, 1000)"], { urgent: true }));
   await new Promise((r) => setTimeout(r, 50));
   const plainA = startedAt("plainA");
   const plainB = startedAt("plainB");
