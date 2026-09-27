@@ -223,10 +223,7 @@ async function main(): Promise<void> {
     });
     const result = coordinator.request({ label: HUB_LABEL });
     check("the outcome is a refusal", result.outcome === "refused", result.outcome);
-    check(
-      "which script-hub reads as NOT accepted (it counts only restarting/deferred)",
-      result.outcome !== "restarting" && result.outcome !== "deferred",
-    );
+    check("which script-hub reads as NOT accepted (it counts only restarting/deferred)", result.outcome !== "restarting");
     check("nothing is staged", result.staged === 0, String(result.staged));
     check("the durable pending row stays empty", !db.kvGet(PENDING_KEY), String(db.kvGet(PENDING_KEY)));
     await sleep(30);
@@ -280,17 +277,22 @@ async function main(): Promise<void> {
   {
     const db = new Db(join(dir, "deploy.sqlite"));
     const hub = new EventHub();
+    let restarts = 0;
     const coordinator = new RestartCoordinator({
       db,
       hub,
-      activeWork: () => 2, // busy, so a real deploy must stage and wait rather than restart
+      activeWork: () => 2, // busy, and a responsive loop: only the health-recovery label is refused
       settleMs: 0,
       loopResponsive: () => true,
-      restart: async (): Promise<RestartAttempt> => ({ route: "hub", ok: true, detail: "stub" }),
+      restart: async (): Promise<RestartAttempt> => {
+        restarts++;
+        return { route: "hub", ok: true, detail: "stub" };
+      },
     });
     const result = coordinator.request({ label: "deploy abc1234", commit: "abc1234", stampedAt: Date.now() });
-    check("a deploy still defers behind active work", result.outcome === "deferred", result.outcome);
-    check("and is staged durably", !!db.kvGet(PENDING_KEY));
+    check("a deploy restarts at once, busy or not", result.outcome === "restarting", result.outcome);
+    await sleep(30);
+    check("and the restart fires", restarts === 1, String(restarts));
     coordinator.stop();
     db.raw.close();
   }

@@ -68,20 +68,24 @@ panels on an isolated instance; use `GGO_LAB_ENTRY`/`GGO_LAB_WEB_DIST` for isola
 process differs per deployment — the script-hub's atomic `/api/restart` under keepAlive on
 Windows, `scripts/supervise.cjs` and a clean exit with code 75 under `npm run serve` — so
 `selfRestart.ts` is the single place that knows which, shared by the update badge and the
-restart coordinator. The supervisor still tree-kills the server and its CLI children, so every
-**planned** restart (agent deploy or owner update) waits for idle task pipelines, Co-worker turns,
-Director turns, and Supervisor work. Pending builds never block fresh dispatch, resume, Auto-review,
-capacity wakeups, Co-worker turns, or Director/Supervisor chats. When active work reaches zero, the
-coordinator synchronously closes admission and fires the restart. Only that brief actual bounce queues
-fresh task dispatches and refuses other fresh starts. Newly admitted work is counted too, so finishing
-the original QA cannot interrupt a newer task. There is no time-based escape hatch or hourly restart
-limit. Even the first refused restart releases admission while its retry waits.
-The pending build list lives in kv so several staged builds ride the same restart and a failed hub call
-can retry without losing them. A pending restart whose build some other bounce already loaded is
-dropped at boot and queued work is released. `/api/version` exposes both the admission latch and whether
-any restart remains pending, so open tabs do not reload a newly rebuilt web client against the old
-in-memory server API. Direct script-hub calls
-remain an emergency recovery path when :4317 is down; they bypass coordination and can interrupt work.
+restart coordinator. Every **planned** restart (agent deploy or owner update) fires immediately,
+whatever task, Co-worker, Director or Supervisor work is running: the supervisor tree-kills the server
+and its CLI children, and boot auto-resumes the interrupted tasks onto the new build. The owner chose
+that on 2026-09-27 over the earlier policy of holding every deploy until the board went idle, which on
+a busy board meant hours. The coordinator closes admission only for the short settle before the bounce
+(so its HTTP reply flushes), queueing fresh task dispatches and refusing other fresh starts meanwhile.
+A build that arrives during that window rides the same bounce. A refused hub/supervisor call keeps its
+staged builds in kv and retries them on a growing backoff, reopening admission meanwhile; a fresh deploy
+never waits on that backoff and carries the held builds with it. Committing a bounce also stamps kv
+`restart_coordinator_planned_at`; the next boot consumes it and marks the runs that bounce killed
+`interrupted by a server restart (a planned deploy)`, which the auto-resume crash-loop guard (three
+sub-minute implementor deaths in 15 minutes) ignores — otherwise a few back-to-back deploys landing while
+a resumed CLI is still booting would hand the task back as a "crash loop" (gate `test:restart-revival`).
+A pending restart whose build some
+other bounce already loaded is dropped at boot and queued work is released. `/api/version` exposes both
+the admission latch and whether any restart remains pending, so open tabs do not reload a newly rebuilt
+web client against the old in-memory server API. Direct script-hub calls are the fallback `deploy` uses
+when :4317 is down, wedged, or too old to restart immediately.
 The compatibility routes remain
 `POST /api/deploy/restart` + `GET /api/deploy/status` (with `/gate` as a rolling-upgrade alias),
 loopback-or-authed because a local deploy child has no session. Gate: `test:restart-drain`.

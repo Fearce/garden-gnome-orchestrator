@@ -1,7 +1,7 @@
 /**
- * Planned-restart drain integration gate.
+ * Planned-restart integration gate: a deploy restarts immediately, whatever agent work is running.
  *
- * Real: durable restart coordination, active-work admission lock, task queue release, Co-worker start
+ * Real: restart coordination, the settle-window admission lock, task queue release, Co-worker start
  * refusal, legacy pending-row migration, failed-fire retry, and loopback boundary.
  * Stubbed: only the fatal supervisor restart itself.
  */
@@ -68,46 +68,44 @@ const PENDING_KEY = "restart_coordinator_pending";
 const LEGACY_PENDING_KEY = "deploy_gate_pending";
 
 async function main(): Promise<void> {
-  console.log("\npolicy: active work has no elapsed-time escape hatch");
+  console.log("\npolicy: active work never holds a deploy");
   const now = Date.now();
   check("idle permits a restart", decideRestart({ activeWork: 0, now }).allow);
-  check("one active item holds it", !decideRestart({ activeWork: 1, now }).allow);
-  check("many active items hold it", !decideRestart({ activeWork: 9, now: now + 24 * 60 * 60_000 }).allow);
+  const busy = decideRestart({ activeWork: 1, now });
+  check("one active item does not hold it", busy.allow && /auto-resume/.test(busy.reason));
+  check("many active items do not hold it", decideRestart({ activeWork: 9, now }).allow);
   const retry = decideRestart({ activeWork: 0, now, retryAt: now + 60_000 });
   check("time gates only a failed-fire retry", !retry.allow && retry.retryAt === now + 60_000);
 
-  console.log("\ncoordinator: a live agent drains, and every staged build rides its restart");
+  console.log("\ncoordinator: a deploy restarts at once, even with agents working");
   db.kvSet(PENDING_KEY, "");
   db.kvSet(LEGACY_PENDING_KEY, "");
-  let active = 1;
   let restarts = 0;
   const coordinator = new RestartCoordinator({
     db,
     hub,
-    activeWork: () => active,
-    pollMs: 25,
-    settleMs: 0,
+    activeWork: () => 3,
+    pollMs: 60_000,
+    settleMs: 30,
     restart: async () => {
       restarts++;
       return { route: "hub", ok: true, detail: "accepted" } satisfies RestartAttempt;
     },
   });
   const first = coordinator.request({ label: "task A", commit: "aaaaaaa", stampedAt: now });
-  check("one active task is enough to defer", first.outcome === "deferred" && first.activeWork === 1);
-  check("a normal drain has no fake clock deadline", first.readyAt === null && /active work/.test(first.waitLabel));
-  check("a pending deploy leaves fresh work available", !coordinator.isDraining() && !coordinator.status().draining);
-  check("the pending build remains visible to clients", coordinator.hasPendingRestart());
+  check("three active agents still restart now", first.outcome === "restarting" && first.activeWork === 3);
+  check("the reply promises no wait", first.readyAt === null && first.waitLabel === "now");
+  check("admission closes for the bounce", coordinator.isDraining() && coordinator.hasPendingRestart());
   const second = coordinator.request({ label: "task B", commit: "bbbbbbb", stampedAt: now + 1 });
-  check("a second build joins the same durable restart", second.outcome === "deferred" && second.staged === 2);
-  await sleep(80);
-  check("elapsed time never kills the active agent", restarts === 0);
-  active = 0;
-  coordinator.workChanged();
-  check("the restart fires as soon as work settles", await waitFor(() => restarts === 1));
+  check("a build arriving during the bounce rides it", second.outcome === "restarting" && second.staged === 2);
+  check("the restart fires without any work settling", await waitFor(() => restarts === 1));
+  await sleep(60);
+  check("one bounce pays both builds", restarts === 1);
   check("the firing latch stays closed until the process dies", coordinator.isDraining());
+  check("no durable row is left to re-fire on boot", db.kvGet(PENDING_KEY) === "");
   coordinator.stop();
 
-  console.log("\ndurability: a pending drain survives the process and ignores the removed hourly window");
+  console.log("\ndurability: a row an older build left waiting for idle fires on boot, busy or not");
   db.kvSet(PENDING_KEY, "");
   db.kvSet(LEGACY_PENDING_KEY, JSON.stringify({
     readyAt: now + 60 * 60_000,
@@ -115,13 +113,12 @@ async function main(): Promise<void> {
     requesters: [{ at: now, label: "legacy hold", commit: "ccccccc", stampedAt: now + 2 }],
     failures: 0,
   }));
-  let legacyActive = 1;
   let legacyRestarts = 0;
   const legacy = new RestartCoordinator({
     db,
     hub,
-    activeWork: () => legacyActive,
-    pollMs: 25,
+    activeWork: () => 1,
+    pollMs: 60_000,
     settleMs: 0,
     restart: async () => {
       legacyRestarts++;
@@ -133,9 +130,7 @@ async function main(): Promise<void> {
     "the legacy row migrates to restart-coordinator storage",
     db.kvGet(LEGACY_PENDING_KEY) === "" && !!db.kvGet(PENDING_KEY),
   );
-  legacyActive = 0;
-  legacy.workChanged();
-  check("a legacy one-hour readyAt is discarded", await waitFor(() => legacyRestarts === 1));
+  check("a legacy one-hour readyAt is discarded, and the active agent does not hold it", await waitFor(() => legacyRestarts === 1));
   legacy.stop();
 
   console.log("\ndurability: another bounce can satisfy a staged restart without double-bouncing");
@@ -198,9 +193,12 @@ async function main(): Promise<void> {
   check("the third refused attempt ran", await waitFor(() => attempts === 3));
   check("fresh work is released during repeated-refusal backoff", !refusing.isDraining() && !refusing.status().draining && refusalReleases === 3);
   check("the pending restart remains visible while admission is released", refusing.hasPendingRestart() && refusing.status().pending !== null);
-  retryNow();
-  check("a due retry leaves admission open until the idle restart is committed", !refusing.isDraining());
-  check("the committed retry closes admission and completes", await waitFor(() => attempts === 4) && refusing.isDraining());
+  const fresh = refusing.request({ label: "task D", commit: "fffffff", stampedAt: stamp + 2 });
+  check(
+    "a fresh deploy skips the retry backoff and carries the held build",
+    fresh.outcome === "restarting" && fresh.staged === 2 && refusing.isDraining(),
+  );
+  check("the fresh attempt completes", await waitFor(() => attempts === 4) && refusing.isDraining());
   refusing.stop();
 
   console.log("\nadmission: fresh task and Co-worker starts pause, existing cohorts remain countable");
@@ -297,49 +295,28 @@ async function main(): Promise<void> {
   const coworkStart = cowork.send(created.session!.id, "new turn");
   check("fresh Co-worker turn is refused before provider preparation", !coworkStart.ok && /restarting/.test(coworkStart.error ?? ""));
 
-  console.log("\nregression: a long QA and pending deployment do not freeze unrelated owner work");
+  console.log("\nregression: a deploy during a long QA restarts now instead of waiting on it");
   db.kvSet(PENDING_KEY, "");
   const qaTask = db.createThread({ title: "long QA", workspace, rawPrompt: "verify" });
   const qaRun = db.createRun({ threadId: qaTask.id, role: "qa", model: "test-model" });
-  let idleRestarts = 0;
-  const available = new RestartCoordinator({
+  let busyRestarts = 0;
+  const immediate = new RestartCoordinator({
     db, hub,
     activeWork: () => manager.activeWorkCount() + director.activeWorkCount(),
-    pollMs: 60_000, // workChanged must wake it; a fast poll cannot hide a missed idle transition.
+    pollMs: 60_000,
     settleMs: 30,
-    restart: async () => { idleRestarts++; return { route: "hub", ok: true, detail: "accepted" }; },
+    restart: async () => { busyRestarts++; return { route: "hub", ok: true, detail: "accepted" }; },
   });
-  manager.attachRestartDrain(() => available.isDraining(), () => available.workChanged());
-  director.attachRestartDrain(() => available.isDraining(), () => available.workChanged());
-  available.request({ label: "deploy during QA", stampedAt: Date.now() });
-  const ownerTask = db.createThread({ title: "owner needs work now", workspace, rawPrompt: "work" });
-  manager.enqueueOrRun(ownerTask.id);
-  check("fresh dispatch reaches the pipeline while QA keeps the restart pending", started.includes(ownerTask.id));
-  const resumed: string[] = [];
-  manager.resumeImplementorOnly = async (thread: { id: string }): Promise<void> => { resumed.push(thread.id); };
-  const ownerResume = await manager.resumeThread(parked.id, "finish my saved work", true);
-  check("manual resume is accepted while the same restart is pending", ownerResume.ok && resumed.includes(parked.id));
-  manager.resuming.delete(parked.id);
-  let directorStarted = false;
-  directorInternals.start = async (): Promise<void> => { directorStarted = true; };
-  director.handleUserMessage("Start another task while QA works", workspace);
-  check("Director prompts reach the runner during the pending deployment", directorStarted);
-  const ownerRun = db.createRun({ threadId: ownerTask.id, role: "implementor", model: "test-model" });
-  db.updateRun(qaRun.id, { state: "done", endedAt: Date.now() });
-  available.workChanged();
-  await sleep(50);
-  check("finishing the original QA cannot kill newly admitted work", idleRestarts === 0 && !available.isDraining());
-  db.updateRun(ownerRun.id, { state: "done", endedAt: Date.now() });
-  available.workChanged();
-  await sleep(50);
-  check("the accepted Director turn is also protected until it finishes", idleRestarts === 0 && !available.isDraining());
-  directorInternals.setBusy(false);
-  check("the eventual idle boundary starts the staged restart without waiting for the poll", await waitFor(() => available.isDraining()));
+  manager.attachRestartDrain(() => immediate.isDraining(), () => immediate.workChanged());
+  director.attachRestartDrain(() => immediate.isDraining(), () => immediate.workChanged());
+  check("the QA run is live work", manager.activeWorkCount() === 1);
+  const duringQa = immediate.request({ label: "deploy during QA", stampedAt: Date.now() });
+  check("the deploy does not wait for QA", duringQa.outcome === "restarting" && duringQa.activeWork === 1);
   const duringRestart = db.createThread({ title: "arrived during bounce", workspace, rawPrompt: "work" });
   manager.enqueueOrRun(duringRestart.id);
-  check("only the actual bounce queues fresh work", db.getThread(duringRestart.id)?.state === "queued" && !started.includes(duringRestart.id));
-  check("one restart pays the staged deployment", await waitFor(() => idleRestarts === 1));
-  available.stop();
+  check("a dispatch inside the settle window queues for the new process", db.getThread(duringRestart.id)?.state === "queued" && !started.includes(duringRestart.id));
+  check("the restart fires while QA is still running", await waitFor(() => busyRestarts === 1) && db.getRun(qaRun.id)?.state !== "done");
+  immediate.stop();
 
   console.log("\nboundary: local deploy callers are accepted, LAN callers are not");
   check("IPv4 loopback", isLoopbackAddress("127.0.0.1"));

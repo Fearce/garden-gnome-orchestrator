@@ -203,6 +203,7 @@ import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_S
 import type { LocalAgentSnapshot, OnlineOffice } from "../office/onlineOffice.js";
 import { OFFICE_ROOM as ONLINE_OFFICE_ROOM } from "../office/onlineProtocol.js";
 import type { RelayChat, RelayPresentAgent } from "../office/onlineProtocol.js";
+import { consumePlannedRestart } from "./restartCoordinator.js";
 
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
@@ -768,6 +769,8 @@ const DEADLINE_TERMINAL_STATES: ReadonlySet<Thread["state"]> = new Set(["done", 
 // Shared prefix for every "a server restart killed this thread" error, so startResumedImplementor can
 // recognise a restart-triggered resume from the thread's persisted error alone.
 const RESTART_ERROR_PREFIX = "interrupted by a server restart";
+// Stamped on the runs a planned deploy restart killed, so the boot crash-loop guard does not count them.
+const PLANNED_RESTART_RUN_REASON = `${RESTART_ERROR_PREFIX} (a planned deploy)`;
 const RESTART_FAILED_MSG = `${RESTART_ERROR_PREFIX} — click Resume to continue from where it left off (finished stages are reused)`;
 const RESTART_AUTO_RESUME_MSG = `${RESTART_ERROR_PREFIX} — auto-resuming…`;
 const RESTART_REVIVAL_SPENT_MSG =
@@ -2182,8 +2185,13 @@ export class ThreadManager implements OrchestratorApi {
     // Tallied so the boot leaves one greppable line saying what it did to the previous process's work —
     // see logRestartReconcile. Without it, "did that bounce eat something?" is a cross-table reconstruction.
     const tally = { runs: 0, resumed: 0, revived: 0, gaveUp: 0, reParked: 0, handedBack: 0, settled: 0, requeued: 0 };
+    const plannedRestart = consumePlannedRestart(this.db, at);
     for (const r of this.db.listActiveRuns()) {
-      this.db.updateRun(r.id, { state: "interrupted", endedAt: r.endedAt ?? at });
+      this.db.updateRun(r.id, {
+        state: "interrupted",
+        endedAt: r.endedAt ?? at,
+        ...(plannedRestart ? { error: PLANNED_RESTART_RUN_REASON } : {}),
+      });
       if (r.role === "implementor") this.recordImplementationMemo(r.id, undefined);
       tally.runs++;
     }
@@ -2387,7 +2395,8 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Implementor runs this task lost within seconds of starting, recently: a resume-then-die crash loop
-   *  rather than progress. Long-lived interrupted runs got somewhere and don't count. */
+   *  rather than progress. Long-lived interrupted runs got somewhere and don't count, nor do runs a
+   *  planned deploy restart killed. */
   private fastInterruptCount(threadId: string, at: number): number {
     return this.db
       .listRuns(threadId)
@@ -2395,6 +2404,7 @@ export class ThreadManager implements OrchestratorApi {
         (r) =>
           r.role === "implementor" &&
           r.state === "interrupted" &&
+          r.error !== PLANNED_RESTART_RUN_REASON &&
           r.endedAt != null &&
           at - r.endedAt < RESTART_LOOP_WINDOW_MS &&
           r.endedAt - r.startedAt < CRASH_FAST_MS,

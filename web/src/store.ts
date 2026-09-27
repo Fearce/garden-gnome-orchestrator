@@ -1868,8 +1868,6 @@ export const useStore = create<State>((set) => ({
         ok?: boolean;
         error?: string;
         needsManualRestart?: boolean;
-        restartDeferred?: boolean;
-        restartReason?: string;
         blockedBy?: string[];
       };
       if (!res.ok || !j.ok) {
@@ -1877,21 +1875,6 @@ export const useStore = create<State>((set) => ({
         // The badge tooltip alone hid this: a click just stopped spinning. Say it where it is seen.
         const title = j.blockedBy ? "Update blocked" : "Update failed";
         set({ updateApplying: false, updateError: message, notice: { level: "warn", title, message } });
-        return;
-      }
-      // A drain-waiting backend update deliberately leaves this page on the matching old bundle until
-      // the current agents finish and the restart lands. Reloading now could pair the new web bundle
-      // with the old server API. The version watcher reloads after the coordinated bounce.
-      if (j.restartDeferred) {
-        set({
-          updateApplying: false,
-          gitUpdate: null,
-          notice: {
-            level: "info",
-            title: "Update staged — active agents finish first",
-            message: j.restartReason || "GGO will restart as soon as its current agent work finishes. New work waits until it comes back.",
-          },
-        });
         return;
       }
       // Success: the server rebuilt (and may be restarting). Wait for it to answer again, then reload

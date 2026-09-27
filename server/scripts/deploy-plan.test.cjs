@@ -16,7 +16,7 @@ const HUB_PORT = 4398;
 process.env.DEPLOY_BASE = `http://127.0.0.1:${COORDINATOR_PORT}`;
 process.env.SCRIPT_HUB_URL = `http://127.0.0.1:${HUB_PORT}`;
 
-const { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, coordinatorStatus, printWaiting } = require("./deploy.cjs");
+const { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, coordinatorStatus } = require("./deploy.cjs");
 
 let checks = 0;
 const check = (name, cond) => {
@@ -121,34 +121,25 @@ function serve(port, handler) {
 
 const close = (server) => new Promise((resolve) => (server ? server.close(resolve) : resolve()));
 
+// `connection: close`, or fetch reuses a pooled socket from the previous fake server and fails.
 const json = (res, code, body) => {
-  res.writeHead(code, { "content-type": "application/json" });
+  res.writeHead(code, { "content-type": "application/json", connection: "close" });
   res.end(JSON.stringify(body));
 };
 
-const WAITING = {
-  outcome: "deferred",
-  reason: "3 active work items remain — restart after they finish",
+const RESTARTING = {
+  outcome: "restarting",
+  reason: "3 active work items auto-resume on the new build",
   readyAt: null,
   waitMs: 0,
   readyAtLabel: null,
-  waitLabel: "until active work finishes",
+  waitLabel: "now",
   activeWork: 3,
-  staged: 2,
+  staged: 1,
 };
 
-/** Everything printWaiting wrote, so the wording can be asserted instead of eyeballed. */
-function capture(fn) {
-  const real = console.log;
-  const lines = [];
-  console.log = (m) => lines.push(String(m));
-  try {
-    fn();
-  } finally {
-    console.log = real;
-  }
-  return lines.join("\n");
-}
+/** What a server from before immediate restarts answers while agents are busy. */
+const LEGACY_DEFERRED = { ...RESTARTING, outcome: "deferred", reason: "3 active work items remain", staged: 2 };
 
 async function restartRouting() {
   console.log("deploy: the restart is REQUESTED from the orchestrator, not issued to the hub");
@@ -158,39 +149,41 @@ async function restartRouting() {
     json(res, 200, { ok: true, stop: { killed: [4242] } });
   });
 
-  // The normal path: the running server owns the bounce and may hold it.
+  // The normal path: the running server commits the restart itself, with agents still working.
   let coordinator = await serve(COORDINATOR_PORT, (req, res) => {
-    if (req.url === "/api/deploy/restart") return json(res, 200, WAITING);
+    if (req.url === "/api/deploy/restart") return json(res, 200, RESTARTING);
     json(res, 404, { error: "not found" });
   });
-  const held = await requestRestart({ label: "implementor · a fix", commit: "abc1234", stampedAt: Date.now() });
-  check("the coordinator answers, so the hub is never touched", held.via === "coordinator" && hubCalls === 0);
-  check("a waiting deploy is reported as deferred, not failed", held.coordinator.outcome === "deferred" && held.coordinator.staged === 2);
+  const now = await requestRestart({ label: "implementor · a fix", commit: "abc1234", stampedAt: Date.now() });
+  check("the coordinator restarts now, so the hub is never touched", now.via === "coordinator" && hubCalls === 0);
+  check("...even with active agents", now.coordinator.outcome === "restarting" && now.coordinator.activeWork === 3);
   await close(coordinator);
 
-  // A live-but-broken coordinator must not become an escape hatch around the active-agent drain. Leave
-  // the build staged and fail loudly; only the route-absent bootstrap may use the hub while :4317 lives.
+  // A server from before immediate restarts would hold the build until its agents finish. Deploys no
+  // longer wait for anything, so that answer is routed around once through the hub.
+  coordinator = await serve(COORDINATOR_PORT, (req, res) => json(res, 200, LEGACY_DEFERRED));
+  const legacy = await capturedAsync(() => requestRestart({ label: "implementor · a fix", commit: "abc1234" }));
+  check("a legacy deferred answer restarts through the hub instead of waiting", legacy.value.via === "hub" && hubCalls === 1);
+  check("...and says why", /predates immediate restarts/.test(legacy.output));
+  await close(coordinator);
+
+  // A live-but-broken coordinator is no reason to leave the box on stale code.
   coordinator = await serve(COORDINATOR_PORT, (req, res) => json(res, 503, { error: "busy" }));
-  let refused = "";
-  try {
-    await requestRestart({ label: "implementor · a fix", commit: "abc1234" });
-  } catch (e) {
-    refused = String(e);
-  }
-  check("a live coordinator error never falls through to an uncoordinated hub restart", /refusing to bypass/.test(refused) && hubCalls === 0);
+  const broken = await capturedAsync(() => requestRestart({ label: "implementor · a fix", commit: "abc1234" }));
+  check("a coordinator error falls back to the hub", broken.value.via === "hub" && hubCalls === 2);
+  check("...and names the status it got", /answered 503/.test(broken.output));
   await close(coordinator);
 
-  // A running build OLDER than this feature has no such route. Refusing to deploy there would leave the
-  // box on stale code with nothing able to fix it, which is strictly worse than one extra restart.
+  // A running build OLDER than restart coordination has no such route.
   coordinator = await serve(COORDINATOR_PORT, (req, res) => json(res, 404, { error: "not found" }));
   const viaHub = await capturedAsync(() => requestRestart({ label: "implementor · a fix", commit: "abc1234" }));
-  check("a coordinator route that 404s falls back to the hub", viaHub.value.via === "hub" && hubCalls === 1);
-  check("...and names the one-time bootstrap rather than failing silently", /script-hub once/.test(viaHub.output));
+  check("a coordinator route that 404s falls back to the hub", viaHub.value.via === "hub" && hubCalls === 3);
+  check("...and names the bootstrap rather than failing silently", /predates restart coordination/.test(viaHub.output));
   await close(coordinator);
 
-  // A server that is DOWN has nobody to interrupt, and must still be deployable.
+  // A server that is DOWN must still be deployable.
   const down = await capturedAsync(() => requestRestart({ label: "implementor · a fix", commit: "abc1234" }));
-  check("an unreachable coordinator falls back to the hub", down.value.via === "hub" && hubCalls === 2);
+  check("an unreachable coordinator falls back to the hub", down.value.via === "hub" && hubCalls === 4);
   check("...and the hub's own no-op detection still applies", !restartLookedLikeANoop(down.value.reply));
   await close(hub);
 
@@ -205,19 +198,6 @@ async function restartRouting() {
   );
   check("the removed gate route is read only as an upgrade fallback", (await coordinatorStatus())?.route === "legacy");
   await close(coordinator);
-
-  console.log("deploy: a drain-waiting restart has to READ as finished work");
-  {
-    // The reflex on "not restarted" is to go restart it by hand through the hub — which puts the
-    // interruption straight back. The output has to leave no room for that reading.
-    const out = capture(() => printWaiting(WAITING));
-    check("it says WAITING, not failed", /restart WAITING/.test(out) && !/✗/.test(out));
-    check("it says active agents finish first", /current agent work finishes/.test(out));
-    check("it says fresh work continues until the idle restart", /fresh work continues until the idle restart begins/.test(out));
-    check("it says how many builds ride the restart", /2 staged build\(s\)/.test(out));
-    check("it forbids the by-hand restart explicitly", /Do NOT restart through the hub/.test(out));
-    check("it points at --verify for confirmation", /--verify/.test(out));
-  }
 }
 
 /** `capture` for an async call — the fallback path prints its warning while awaiting. */

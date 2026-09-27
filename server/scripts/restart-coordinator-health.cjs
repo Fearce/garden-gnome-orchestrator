@@ -38,11 +38,9 @@ function inspectRestartCoordinator(status) {
     if (typeof decision.reason !== "string" || !decision.reason.trim()) {
       issues.push("decision.reason must be a non-empty string");
     }
-    if (decision.allow === false && decision.retryAt !== null && !Number.isFinite(decision.retryAt)) {
-      issues.push("a deferred decision.retryAt must be null or finite");
-    }
-    if (Number.isInteger(status.activeWork) && status.activeWork > 0 && decision.allow !== false) {
-      issues.push("decision cannot allow a restart while work is active");
+    // Active work never holds a restart, so the only legitimate hold is a refused restart's retry.
+    if (decision.allow === false && !Number.isFinite(decision.retryAt)) {
+      issues.push("a held decision must carry a finite retryAt; active work never holds a restart");
     }
   }
 

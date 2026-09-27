@@ -70,7 +70,7 @@ The **Co-work** tab is pair development: an owner prompt claims one owner-scoped
   LAN access is auth-gated via `server/.env` (`AUTH_PASSWORD` / Google). Local/LAN only.
 
 ## Deploying a change — DO IT YOURSELF, don't defer
-**If you changed server code, you deploy it before handing off — by restarting the orchestrator yourself, in the same turn. Do NOT end a turn with "needs a restart to go live" or ask the owner to restart.** `npm run deploy --prefix server` stages the build with GGO's restart coordinator. If agents are active, they finish normally and fresh work remains available; the server restarts when all work is idle. A waiting restart is a completed deploy handoff, not permission to call the hub directly.
+**If you changed server code, you deploy it before handing off — by restarting the orchestrator yourself, in the same turn. Do NOT end a turn with "needs a restart to go live" or ask the owner to restart.** `npm run deploy --prefix server` builds, then has GGO's restart coordinator restart the server immediately — even with agents running. The bounce kills their CLI children and boot auto-resumes them on the new build, so there is nothing to wait for and no reason to hold a deploy back for a busy board (owner decision, 2026-09-27; deploys used to wait for idle, which on a busy board meant hours).
 
 How to restart depends on how it's running:
 
@@ -86,9 +86,8 @@ How to restart depends on how it's running:
 keepAlive armed. Implementor workers are **child processes of this server** (the Agent SDK spawns the
 `claude` CLI — `server/src/agents/runner.ts`), so:
 - **Server change? `npm run deploy --prefix server`** — it builds, stamps, and asks the running restart
-  coordinator to bounce onto HEAD after active agents finish. On an idle server it verifies the new pid
-  immediately; during a drain it exits successfully and the server owns the pending bounce. **Use it
-  instead of building by hand**, because the right build
+  coordinator to bounce onto HEAD now, then verifies the new pid (as a child of :4317 the shell usually
+  dies with the bounce — confirm with `-- --verify`). **Use it instead of building by hand**, because the right build
   depends on `git status` and gets it wrong in both directions: a plain `npm run build` compiles the DIRTY
   tree, so it ships a sibling's uncommitted, un-QA'd server code live under your deploy; the HEAD-only
   archive recipe avoids that but is ten calls and a junction that deletes `server/node_modules` if removed
@@ -97,16 +96,19 @@ keepAlive armed. Implementor workers are **child processes of this server** (the
   `-- --plan` prints the decision and touches nothing; `-- --verify` (no build, no bounce) answers "is my
   change live?" after the coordinated bounce. Gate:
   `test:deploy-plan`.
-- **`restart WAITING` is a FINISHED deploy — never route around it.** `deploy` asks the running server
-  (`POST :4317/api/deploy/restart`), not the hub. `orchestrator/restartCoordinator.ts` holds every planned
-  restart while any task, Co-worker, Director, or Supervisor work is active, allows fresh agent starts,
-  then closes admission only for the actual bounce at zero active work. Pending builds and refused
-  restarts must never freeze GGO. There is no hourly restart limit or elapsed-time override.
-  Owner update-badge restarts use the same drain. Waiting exits 0; `--verify` reports `BUILT and STAGED`,
-  also 0. Gate: `test:restart-drain`.
+- **The restart never waits for agents.** `deploy` asks the running server (`POST
+  :4317/api/deploy/restart`); `orchestrator/restartCoordinator.ts` commits the bounce at once, closing
+  admission only for its ~800ms settle so nothing new starts on the dying process. Owner update-badge
+  restarts take the same path. A refused hub/supervisor call keeps the staged builds and retries on a
+  backoff; re-running `deploy` retries at once, and `--verify` reports such a build as `BUILT and STAGED,
+  but its restart was refused` (exit 1). Anything short of a committed restart — :4317 down, wedged,
+  erroring, or an older build still answering `deferred` — makes `deploy` fall back to the hub. Runs a
+  coordinated bounce kills are stamped `interrupted by a server restart (a planned deploy)` at the next
+  boot and never count toward the auto-resume crash-loop guard, so frequent deploys cannot strand a task.
+  Gates: `test:restart-drain`, `test:deploy-plan`, `test:restart-revival`.
   By hand it is `POST http://127.0.0.1:3939/api/restart {"id":"claude-orchestrator"}` (atomic: runs in the
-  hub, outside this server's tree, survives the caller, re-arms keepAlive) — it **bypasses the drain and
-  can kill active agents**, so keep it for emergency recovery when :4317 itself is down.
+  hub, outside this server's tree, survives the caller, re-arms keepAlive); prefer `deploy`, which builds
+  the right tree first.
 - **"GGO keeps restarting and no task of mine is on it" is a health-probe false positive, not a crash.**
   Repeated `boot` lines in `crash.log` with no `uncaughtException`/`process exit` between them means
   nothing faulted. keepAlive probes `/api/health` (10s, 2 strikes) then POSTs `/api/deploy/restart` as

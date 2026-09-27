@@ -152,12 +152,11 @@ function processVsDist(runningBuild) {
 }
 
 /**
- * A staged build the restart coordinator is already holding is NOT an operator action item.
+ * A staged build the restart coordinator is already holding is NOT a forgotten deploy.
  *
- * `classifyProcessBuild` only compares the running build to `dist`, so a drain-waiting deploy looks
- * identical to a forgotten one. A stale-build warning must not send an operator around the coordinator:
- * that bypass tree-kills every live agent — the exact interruption the coordinator exists to prevent, and
- * the reflex `deploy.cjs`/AGENTS.md warn against. So ask the coordinator before advising.
+ * `classifyProcessBuild` only compares the running build to `dist`, so a build whose restart was refused
+ * and is waiting for its retry looks identical to one nobody deployed. Ask the coordinator before
+ * advising, so the warning names the refusal instead of just saying "deploy".
  *
  * Returns the public status response, or an error string. Callers must never treat an unreadable
  * coordinator as proof that no restart is staged.
@@ -306,9 +305,7 @@ async function main() {
       // process too old to carry that stamp falls back to the mtimes below.
       const vsDist = processVsDist(runningBuild);
       if (vsDist.state === "stale") {
-        // A coordinated bounce is already owed for this dist. Report it as the finished state `deploy
-        // --verify` reports (it exits 0 here), not as "go restart it by hand" — see above.
-        // Re-read only when the first snapshot had no pending restart: a deploy may have staged one
+        // Ask whether a coordinated bounce is already owed for this dist — see above. Re-read only when the first snapshot had no pending restart: a deploy may have staged one
         // while this probe was comparing the process and dist.
         let staged = restartStatus && restartStatus.pending ? restartStatus : null;
         if (!staged) {
@@ -320,8 +317,7 @@ async function main() {
         if (staged && failures === 0) {
           ok(
             `process vs dist: the built change is not live yet, but the restart coordinator owns the bounce ` +
-              `(${staged.pendingLabel}; ${staged.pending.requesters.length} staged build(s)) — it fires at zero ` +
-              `active work. Do NOT restart by hand; that would tree-kill the active agents`,
+              `(${staged.pendingLabel}; ${staged.pending.requesters.length} staged build(s)) — it fires immediately`,
           );
         } else if (staged) {
           // Pending but the restart mechanism keeps refusing — that IS an operator action item.

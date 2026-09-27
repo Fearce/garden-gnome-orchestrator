@@ -184,9 +184,8 @@ async function main(): Promise<void> {
   const repos = new RepoConsole(db, config.serverRoot);
   const ide = new IdeService(db, dirname(config.serverRoot));
   const codeContext = new CodeContextService(db, ide);
-  // A process bounce tree-kills every CLI child. The restart coordinator therefore makes all planned
-  // deploy/update restarts wait for idle task, Co-work, Director, and Supervisor work. Fresh work stays
-  // available while a build waits; admission closes only when the actual idle restart begins.
+  // A planned deploy/update restart fires immediately. The bounce tree-kills every CLI child and boot
+  // auto-resumes the interrupted work; admission closes only for the few hundred ms the restart takes.
   const restartCoordinator = new RestartCoordinator({
     db,
     hub,
@@ -197,7 +196,7 @@ async function main(): Promise<void> {
   manager.attachRestartDrain(() => restartCoordinator.isDraining(), () => restartCoordinator.workChanged());
   cowork.attachRestartDrain(() => restartCoordinator.isDraining());
   director.attachRestartDrain(() => restartCoordinator.isDraining(), () => restartCoordinator.workChanged());
-  hub.log("info", "restart coordinator: planned restarts wait for active task, Co-worker, Director, and Supervisor work to finish");
+  hub.log("info", "restart coordinator: planned restarts fire immediately; interrupted work auto-resumes on the new build");
   // The Online Office: this instance's link to the shared relay, where agents on OTHER machines working
   // the same repository show up as coworkers. Standalone over (db, hub) + three callbacks into the
   // manager — off entirely until the operator joins one in Settings.

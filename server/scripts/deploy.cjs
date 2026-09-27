@@ -17,10 +17,8 @@
 // That predicate is `server/src` + `tsconfig.json`, deliberately the same one `stamp-build.cjs` records
 // as `dirty`, so the stamp and this decision can never disagree.
 //
-// You are usually a child process of :4317, so an immediate restart kills this shell. The normal path is
-// drain-safe: GGO lets every current task/Co-work pipeline finish and pauses fresh starts before it
-// bounces. Several staged builds ride that restart. A waiting deploy exits 0 because the coordinator
-// owns the remaining operation durably.
+// You are usually a child process of :4317, so the restart kills this shell. It is immediate: GGO bounces
+// whatever agents are running and auto-resumes them on the new build. Confirm with --verify afterwards.
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -210,13 +208,10 @@ async function restartViaHub() {
 /**
  * Ask the running orchestrator's restart coordinator to bounce, rather than calling the hub directly.
  *
- * The coordinator never interrupts active agents. It drains the current cohort, pauses fresh starts,
- * then fires the restart itself. A staged build is never refused; only a failed hub/supervisor call can
- * add a retry delay.
- *
- * Falls back to the hub only when the server is DOWN (there is nobody to interrupt) or a running build
- * is OLDER than this feature and returns 404 (the one-time bootstrap). A live coordinator timeout/error
- * is a failure, never permission to route around the active-agent drain.
+ * The coordinator restarts at once — it only adds a short settle so its HTTP reply flushes and nothing
+ * new starts on the dying process. Anything short of a committed restart falls back to the hub, which
+ * costs nothing now that deploys do not wait for agents: a server that is down, wedged, erroring, too
+ * old to have the route, or old enough to still hold deploys for active work (answers `deferred`).
  */
 async function requestRestart(payload) {
   let response;
@@ -228,31 +223,27 @@ async function requestRestart(payload) {
       signal: AbortSignal.timeout(10_000),
     });
   } catch (e) {
-    // Connection refused means the server is down: there is nobody to interrupt and the hub is the
-    // recovery path. A timeout while a listener still exists is different — bypassing coordination could
-    // tree-kill active agents, which is exactly what this route prevents.
     const pid = listenerPid(PORT);
-    if (pid != null) {
-      throw new Error(`${BASE} did not answer its restart coordinator while pid ${pid} is still listening; refusing to bypass the active-agent drain (${String(e)})`);
-    }
-    warn(`${BASE} has no listener — restarting through the script-hub recovery path`);
+    warn(pid == null
+      ? `${BASE} has no listener — restarting through the script-hub recovery path`
+      : `${BASE} did not answer its restart coordinator (pid ${pid}; ${String(e)}) — restarting through the script-hub`);
     return { via: "hub", reply: await restartViaHub() };
   }
-  if (response.ok) {
-    const coordinator = await response.json();
-    if (!coordinator || (coordinator.outcome !== "restarting" && coordinator.outcome !== "deferred")) {
-      throw new Error(`the restart coordinator returned an invalid response; refusing to bypass the active-agent drain`);
-    }
-    return { via: "coordinator", coordinator };
-  }
-  // The only live-server bypass is bootstrap: a build older than the coordinator has no route to it.
-  // Authentication failures and server errors prove a listener is present, so routing around them would
-  // make the no-interruption guarantee best-effort precisely when the server is unhealthy.
-  if (response.status !== 404) {
-    throw new Error(`the restart coordinator answered ${response.status}; refusing to bypass the active-agent drain`);
-  }
-  warn(`the running server predates restart coordination — using the script-hub once to install it`);
+  const coordinator = response.ok ? await response.json().catch(() => null) : null;
+  if (coordinator && coordinator.outcome === "restarting") return { via: "coordinator", coordinator };
+  warn(`${coordinatorShortfall(response.status, coordinator)} — using the script-hub to restart now`);
   return { via: "hub", reply: await restartViaHub() };
+}
+
+/** Why the coordinator did not commit a restart, for the one-line warning before the hub fallback. */
+function coordinatorShortfall(status, coordinator) {
+  if (status === 404) return "the running server predates restart coordination";
+  if (coordinator && coordinator.outcome === "deferred") {
+    return "the running server predates immediate restarts and would hold this deploy for active agents";
+  }
+  return status >= 200 && status < 300
+    ? `the restart coordinator did not commit a restart (${coordinator ? coordinator.outcome : "unreadable reply"})`
+    : `the restart coordinator answered ${status}`;
 }
 
 /** What the coordinator is holding, if anything. Null when it cannot be read; unreachable coordination
@@ -319,18 +310,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (m) => console.log(m);
 const warn = (m) => console.log(`  ⚠ ${m}`);
 
-/** The other half of `--plan`: would this deploy bounce now, or wait for active work? Read-only. */
+/** The other half of `--plan`: what the immediate restart would interrupt. Read-only. */
 async function printRestartPlan() {
   const status = await coordinatorStatus();
   if (!status) {
     log(`  restart     : coordinator unreachable — the script-hub would be asked directly`);
     return;
   }
-  if (status.pending) {
-    log(`  restart     : already waiting (${status.pendingLabel}; ${status.pending.requesters.length} staged) — this build would ride it`);
-    return;
-  }
-  log(`  restart     : ${status.decision.allow ? "immediate" : "WAITING"} — ${status.decision.reason}`);
+  const active = status.activeWork > 0 ? `${status.activeWork} active work item(s) auto-resume on the new build` : "no active agent work";
+  log(`  restart     : immediate — ${active}`);
 }
 
 function printPlan(plan, commit) {
@@ -341,32 +329,11 @@ function printPlan(plan, commit) {
   for (const p of plan.webBlockers) log(`      blocking: ${p}`);
 }
 
-/** Who is deploying, for the coordinator log and waiting banner. `--label "…"`, else DEPLOY_LABEL. */
+/** Who is deploying, for the coordinator log. `--label "…"`, else DEPLOY_LABEL. */
 function deployLabel(args) {
   const i = args.indexOf("--label");
   const flag = i >= 0 ? args[i + 1] : null;
   return (flag || process.env.DEPLOY_LABEL || "").trim() || null;
-}
-
-/**
- * The restart is WAITING, and that is a success: `dist` is built and GGO owns the bounce.
- *
- * Said plainly and at length on purpose. The reflex on "not restarted" is to go restart it by hand
- * through the hub, which puts the interruption straight back — so the output has to leave no doubt that
- * waiting IS the finished state.
- */
-function printWaiting(coordinator) {
-  log(`\n⏸ restart WAITING — ${coordinator.reason}`);
-  if (coordinator.activeWork != null) {
-    log(`  dist is built and stamped; GGO restarts itself as soon as its current agent work finishes.`);
-    log(`  on the current coordinator, fresh work continues until the idle restart begins; ${coordinator.staged} staged build(s) ride the restart.`);
-  } else {
-    // One-release compatibility: the old live server may answer while this coordinator is installed.
-    log(`  dist is built and stamped; the older server scheduled its restart for ${coordinator.readyAtLabel} (in ${coordinator.waitLabel}).`);
-    log(`  ${coordinator.staged} staged build(s) ride that restart.`);
-  }
-  log(`  ✓ nothing further to do. Do NOT restart through the hub by hand; that would kill active agents.`);
-  log(`  confirm any time with:  npm run deploy --prefix server -- --verify`);
 }
 
 /**
@@ -437,16 +404,14 @@ async function verifyOnly(commit) {
     log(`✗ live: build ${live}, HEAD is ${head8} — git cannot compare them (rebased away?), so this cannot prove your change is running.`);
     return 1;
   }
-  // Waiting in the coordinator is a THIRD answer, distinct from "running" and "not running": the build
-  // is done and GGO owns the drain-safe bounce, so there is nothing for the caller to do.
+  // A held restart now only means a restart mechanism REFUSED; the build is not live, so this stays red.
   const held = await heldRestart(commit);
   if (held) {
-    log(`⏸ live: build ${live}, HEAD is ${head8} — your change is BUILT and STAGED, not yet running.`);
-    log(`  the restart coordinator is waiting (${held.pendingLabel}); ${held.pending.requesters.length} staged build(s) ride it.`);
-    log(`  ${held.decision.allow ? "active work has drained; it fires on the next tick" : held.decision.reason}`);
-    log(`  nothing to do: the orchestrator bounces itself onto this dist then. Do NOT restart it by hand.`);
+    log(`✗ live: build ${live}, HEAD is ${head8} — your change is BUILT and STAGED, but its restart was refused.`);
+    log(`  the restart coordinator retries it (${held.pendingLabel}); ${held.pending.requesters.length} staged build(s) ride it.`);
+    log(`  re-run \`npm run deploy --prefix server\` to try again now; a deploy never waits on that backoff.`);
     if (web) log(web);
-    return 0;
+    return 1;
   }
 
   const files = v.serverChanged ?? [];
@@ -456,7 +421,7 @@ async function verifyOnly(commit) {
   return 1;
 }
 
-/** A held restart that would deploy THIS commit — both halves matter. A pending bounce for someone
+/** A refused restart that would deploy THIS commit — both halves matter. A pending bounce for someone
  *  else's build says nothing about yours unless your code is already in the dist it will load. */
 async function heldRestart(commit) {
   if (!stagedInDist(commit)) return null;
@@ -493,14 +458,10 @@ async function main() {
   }
 
   const oldPid = listenerPid(PORT);
-  log(`\nasking GGO's restart coordinator to restart ${HUB_ID} (parent pid ${oldPid ?? "?"})`);
-  log(`active agents finish first; if this shell ends on an immediate idle restart, verify with:  npm run deploy --prefix server -- --verify`);
+  log(`\nasking GGO's restart coordinator to restart ${HUB_ID} now (parent pid ${oldPid ?? "?"})`);
+  log(`running agents auto-resume on the new build; if this shell ends with the restart, verify with:  npm run deploy --prefix server -- --verify`);
   const outcome = await requestRestart({ label: deployLabel(args), commit, stampedAt: stamp.at ?? null });
 
-  if (outcome.via === "coordinator" && outcome.coordinator.outcome === "deferred") {
-    printWaiting(outcome.coordinator);
-    process.exit(0);
-  }
   if (outcome.via === "hub" && restartLookedLikeANoop(outcome.reply)) {
     warn("the hub reported a restart that killed nothing — the listener is probably elevated.");
     warn("self-elevate the kill, then let keepAlive respawn: Start-Process powershell -Verb RunAs -File <kill.ps1>");
@@ -516,7 +477,7 @@ async function main() {
   process.exit(0);
 }
 
-module.exports = { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, coordinatorStatus, printWaiting };
+module.exports = { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, coordinatorStatus };
 
 if (require.main === module) {
   main().catch((e) => {

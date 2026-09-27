@@ -6,15 +6,15 @@ import { eventLoopHealth, eventLoopIsResponsive } from "../eventLoopMonitor.js";
 /**
  * Coordinates planned server restarts with the agents that server owns.
  *
- * The process supervisor tree-kills the server and its CLI children. A restart is therefore safe only
- * when task, Co-work, Director, and Supervisor work is idle. A pending deployment does NOT block new
- * work: an hours-long QA run must not freeze the entire console. `isDraining()` closes admission only
- * after an idle restart is committed, through its settle delay and supervisor call. There is no
- * elapsed-time escape hatch. An active agent is never traded for a faster deploy.
+ * A deploy restarts GGO immediately, whatever agent work is running. The supervisor tree-kills the
+ * server and its CLI children, and boot auto-resumes every task the bounce interrupted onto the new
+ * build — the owner chose that over deploys that waited hours for a busy board to go idle (2026-09-27).
+ * `isDraining()` closes admission only through the settle delay and the supervisor call, so nothing new
+ * starts on a process that is about to die.
  *
- * The pending record is durable because the operation it represents destroys the in-memory timer that
- * owns it. Multiple builds staged during one drain ride the same restart. The existing `/api/deploy/*`
- * route names remain a compatibility surface for deploy scripts; this class is not a rate-limit gate.
+ * The pending record exists only for a restart mechanism that refused: it outlives the process that
+ * owned it and paces automatic retries. A fresh deploy request never waits on that backoff. The
+ * `/api/deploy/*` route names remain a compatibility surface for deploy scripts.
  */
 
 export interface RestartDecisionInput {
@@ -42,27 +42,19 @@ export function isHealthRecoveryRequest(label: string | null | undefined): boole
   return typeof label === "string" && label.trim().toLowerCase().startsWith("script-hub health recovery");
 }
 
-/** Pure policy: active work always wins; time only controls retries after a failed restart attempt. */
+/** Pure policy: active work never holds a restart; time only paces retries after a failed attempt. */
 export function decideRestart(input: RestartDecisionInput): RestartDecision {
-  const activeWork = Math.max(0, Math.floor(input.activeWork));
-  if (activeWork > 0) {
-    return {
-      allow: false,
-      retryAt: null,
-      reason: activeWork === 1
-        ? "1 active work item remains — restart after it finishes"
-        : `${countWork(activeWork)} remain — restart after they finish`,
-    };
-  }
   const retryAt = Number.isFinite(input.retryAt) ? Number(input.retryAt) : null;
   if (retryAt != null && retryAt > input.now) {
-    return {
-      allow: false,
-      retryAt,
-      reason: `no active agent work, but the failed restart retries in ${duration(retryAt - input.now)}`,
-    };
+    return { allow: false, retryAt, reason: `the failed restart retries in ${duration(retryAt - input.now)}` };
   }
-  return { allow: true, reason: "no active agent work remains" };
+  const activeWork = Math.max(0, Math.floor(input.activeWork));
+  return {
+    allow: true,
+    reason: activeWork > 0
+      ? `${countWork(activeWork)} ${activeWork === 1 ? "auto-resumes" : "auto-resume"} on the new build`
+      : "no active agent work",
+  };
 }
 
 export interface RestartRequester {
@@ -75,13 +67,13 @@ export interface RestartRequester {
   stampedAt: number | null;
 }
 
-/** One restart owed after the current work cohort drains. */
+/** One restart still owed because a restart mechanism refused it. */
 export interface PendingRestart {
   createdAt: number;
   requesters: RestartRequester[];
   /** Consecutive restart attempts that returned without bouncing the process. */
   failures: number;
-  /** Null during a normal agent drain; populated only for a refused-attempt backoff. */
+  /** When the automatic retry of the refused attempt is due; null means due now. */
   retryAt: number | null;
 }
 
@@ -96,14 +88,15 @@ export interface RestartCoordinatorStatus {
 }
 
 export interface RestartRequestResult {
-  /** `restarting` means the bounce is committed; `deferred` means current agents finish first; `refused`
-   *  means the request was declined outright and nothing is staged. script-hub's keepAlive already reads
-   *  exactly this field and counts only `restarting`/`deferred` as accepted, so a refusal needs no change
-   *  on its side: it logs that recovery was not accepted and leaves the process alone. */
-  outcome: "restarting" | "deferred" | "refused";
+  /** `restarting` means the bounce is committed; `refused` means the request was declined outright and
+   *  nothing is staged. script-hub's keepAlive reads exactly this field and counts only `restarting` (and
+   *  the retired `deferred`) as accepted, so a refusal needs no change on its side: it logs that recovery
+   *  was not accepted and leaves the process alone. */
+  outcome: "restarting" | "refused";
   reason: string;
+  /** Agent work the bounce interrupts; boot auto-resumes it. */
   activeWork: number;
-  /** Non-null only for a retry backoff. A normal drain has no guessed completion time. */
+  /** Always null since requests stopped waiting; kept because deploy scripts read the field. */
   readyAt: number | null;
   readyAtLabel: string | null;
   waitMs: number;
@@ -115,9 +108,9 @@ export interface RestartRequestResult {
 export interface RestartCoordinatorDeps {
   db: Db;
   hub: EventHub;
-  /** Current top-level task, Co-worker, Director, and Supervisor work. */
+  /** Current top-level task, Co-worker, Director, and Supervisor work — reported, never waited for. */
   activeWork: () => number;
-  /** Poll is a crash/race backstop; release paths can also call `workChanged()` for an immediate check. */
+  /** Upper bound on how long a due retry of a refused restart can go unnoticed. */
   pollMs?: number;
   /** Lets the HTTP response flush before a process supervisor kills the tree. */
   settleMs?: number;
@@ -133,6 +126,10 @@ export interface RestartCoordinatorDeps {
 }
 
 const PENDING_KEY = "restart_coordinator_pending";
+/** Stamped when a planned restart is committed, so the next boot can tell the runs it killed from a crash. */
+export const PLANNED_RESTART_KEY = "restart_coordinator_planned_at";
+/** An older marker belongs to a restart that never landed, not to the boot reading it. */
+const PLANNED_RESTART_FRESH_MS = 10 * 60_000;
 /** Read once during upgrade so a build staged by the removed rate limiter is not lost. */
 const LEGACY_PENDING_KEY = "deploy_gate_pending";
 const MAX_REQUESTERS = 20;
@@ -173,7 +170,7 @@ export class RestartCoordinator {
     this.loopResponsive = deps.loopResponsive ?? eventLoopIsResponsive;
   }
 
-  /** Re-arm a drain/retry the previous process recorded. */
+  /** Re-arm a retry the previous process recorded. */
   start(): void {
     const pending = this.pending();
     if (!pending) return;
@@ -183,16 +180,12 @@ export class RestartCoordinator {
       this.onDrainReleased();
       return;
     }
-    const now = Date.now();
-    const active = this.countActive();
-    const decision = decideRestart({ activeWork: active, now, retryAt: pending.retryAt });
+    const decision = decideRestart({ activeWork: this.countActive(), now: Date.now(), retryAt: pending.retryAt });
     this.hub.log(
       "info",
-      active > 0
-        ? `restart coordinator: ${pending.requesters.length} staged build(s) waiting for idle; fresh work may start meanwhile`
-        : decision.allow
-          ? `restart coordinator: ${pending.requesters.length} staged build(s) are ready to restart`
-          : `restart coordinator: ${pending.requesters.length} staged build(s) retry at ${clock(decision.retryAt!)}`,
+      decision.allow
+        ? `restart coordinator: ${pending.requesters.length} staged build(s) are ready to restart`
+        : `restart coordinator: ${pending.requesters.length} staged build(s) retry at ${clock(decision.retryAt!)}`,
     );
     this.onDrainReleased();
     this.arm();
@@ -208,9 +201,9 @@ export class RestartCoordinator {
   }
 
   /**
-   * True while any coordinated restart is owed, including while fresh work continues. UI clients use
-   * this to avoid loading a staged web bundle against
-   * the old in-memory server API before the pending bounce has landed.
+   * True while any coordinated restart is owed, including a refused one waiting for its retry. UI clients
+   * use this to avoid loading a staged web bundle against the old in-memory server API before the bounce
+   * has landed.
    */
   hasPendingRestart(): boolean {
     if (this.firing) return true;
@@ -222,7 +215,7 @@ export class RestartCoordinator {
     }
   }
 
-  /** Release paths call this to avoid waiting for the fallback poll interval. */
+  /** Release paths call this, so a due retry fires without waiting for the poll interval. */
   workChanged(): void {
     if (!this.hasPendingRestart() || this.firing) return;
     this.clearTimer();
@@ -243,12 +236,12 @@ export class RestartCoordinator {
       activeWork,
       decision,
       pending,
-      pendingLabel: pending ? pendingStatus(decision, activeWork, now) : null,
+      pendingLabel: pending ? pendingStatus(decision, now) : null,
       draining: this.firing,
     };
   }
 
-  /** Stage one build and either restart now or own the durable wait until current agents finish. */
+  /** Restart onto a staged build now; the agents it interrupts auto-resume on the new build. */
   request(input: { label?: string | null; commit?: string | null; stampedAt?: number | null } = {}): RestartRequestResult {
     const now = Date.now();
     const requester: RestartRequester = {
@@ -289,26 +282,13 @@ export class RestartCoordinator {
       return this.result("restarting", "a restart is already in flight", null, this.countActive(), this.inFlight.requesters.length);
     }
 
-    const existing = this.pending();
-    const carrying = appendRequester(existing ?? emptyPending(now), requester);
+    // A fresh request is a fresh attempt: it never sits out a refused restart's retry backoff, and the
+    // builds that backoff was holding ride along.
+    const carrying = appendRequester(this.pending() ?? emptyPending(now), requester);
     const activeWork = this.countActive();
-    const decision = decideRestart({ activeWork, now, retryAt: carrying.retryAt });
-    if (decision.allow) {
-      this.beginRestart(`${describe(requester)} — ${decision.reason}`, carrying);
-      return this.result("restarting", decision.reason, null, activeWork, carrying.requesters.length);
-    }
-
-    this.savePending(carrying);
-    if (existing) {
-      this.hub.log(
-        "info",
-        `restart coordinator: ${describe(requester)} staged — it rides the existing drain (${carrying.requesters.length} staged)`,
-      );
-    } else {
-      this.announceDrain(carrying, requester, activeWork, decision);
-    }
-    this.arm();
-    return this.result("deferred", decision.reason, decision.retryAt, activeWork, carrying.requesters.length);
+    const { reason } = decideRestart({ activeWork, now });
+    this.beginRestart(`${describe(requester)} — ${reason}`, carrying);
+    return this.result("restarting", reason, null, activeWork, carrying.requesters.length);
   }
 
   /** A newer/equal loaded dist proves some other bounce already deployed the newest staged build. */
@@ -385,35 +365,12 @@ export class RestartCoordinator {
     this.db.kvSet(LEGACY_PENDING_KEY, "");
   }
 
-  private announceDrain(
-    pending: PendingRestart,
-    requester: RestartRequester,
-    activeWork: number,
-    decision: Extract<RestartDecision, { allow: false }>,
-  ): void {
-    this.hub.log("info", `restart coordinator: holding ${describe(requester)} — ${decision.reason}`);
-    const message = activeWork > 0
-      ? `GGO will restart when idle. You can continue starting and resuming work; ${pending.requesters.length} staged build(s) will ride the restart.`
-      : `The prior restart was refused. GGO will retry at ${clock(decision.retryAt!)} when idle; you can continue working meanwhile.`;
-    this.hub.publish({
-      type: "notice",
-      level: "info",
-      title: activeWork > 0 ? "Restart waiting for active agents" : "Restart retry scheduled",
-      message,
-    });
-  }
-
   private arm(): void {
     this.clearTimer();
     const pending = this.pending();
     if (!pending || this.firing) return;
-    const activeWork = this.countActive();
-    const decision = decideRestart({ activeWork, now: Date.now(), retryAt: pending.retryAt });
-    const wait = decision.allow
-      ? 0
-      : decision.retryAt == null
-        ? this.pollMs
-        : Math.min(this.pollMs, Math.max(0, decision.retryAt - Date.now()));
+    const decision = decideRestart({ activeWork: this.countActive(), now: Date.now(), retryAt: pending.retryAt });
+    const wait = decision.allow ? 0 : Math.min(this.pollMs, Math.max(0, decision.retryAt! - Date.now()));
     this.timer = setTimeout(() => {
       this.timer = null;
       void this.tick();
@@ -430,8 +387,7 @@ export class RestartCoordinator {
   private async tick(): Promise<void> {
     const pending = this.pending();
     if (!pending || this.firing) return;
-    const activeWork = this.countActive();
-    const decision = decideRestart({ activeWork, now: Date.now(), retryAt: pending.retryAt });
+    const decision = decideRestart({ activeWork: this.countActive(), now: Date.now(), retryAt: pending.retryAt });
     if (!decision.allow) {
       this.arm();
       return;
@@ -448,11 +404,12 @@ export class RestartCoordinator {
     this.firing = true;
     this.inFlight = carrying;
     this.clearPending();
+    this.db.kvSet(PLANNED_RESTART_KEY, String(Date.now()));
     this.hub.log("warn", `restart coordinator: restarting GGO — ${why}`);
     setTimeout(() => void this.fire(), this.settleMs).unref?.();
   }
 
-  /** A refused supervisor/hub call restores the drain and retries later; no staged build is lost. */
+  /** A refused supervisor/hub call keeps the staged builds durable and retries later; none is lost. */
   private async fire(): Promise<void> {
     const attemptedAt = Date.now();
     let attempt: RestartAttempt;
@@ -477,6 +434,7 @@ export class RestartCoordinator {
     };
     // Preserve the staged builds before reopening admission after the refused attempt.
     this.savePending(pending);
+    this.db.kvSet(PLANNED_RESTART_KEY, "");
     this.inFlight = null;
     this.firing = false;
     this.hub.log("error", `restart coordinator: restart did not happen — ${attempt.detail}. Retrying in ${duration(retryIn)}.`);
@@ -485,16 +443,16 @@ export class RestartCoordinator {
         type: "notice",
         level: "warn",
         title: "Restart refused",
-        message: `GGO has ${requesters.length} staged build(s) it cannot deploy: ${attempt.detail}. New agent work runs again meanwhile; the restart retries on its own.`,
+        message: `GGO has ${requesters.length} staged build(s) it cannot deploy: ${attempt.detail}. New agent work runs again meanwhile; the restart retries on its own, and the next deploy tries again at once.`,
       });
     }
-    this.hub.log("warn", `restart coordinator: restart refused — fresh work may start while the idle retry waits`);
+    this.hub.log("warn", `restart coordinator: restart refused — fresh work may start while the retry waits`);
     this.onDrainReleased();
     this.arm();
   }
 
   private result(
-    outcome: "restarting" | "deferred" | "refused",
+    outcome: RestartRequestResult["outcome"],
     reason: string,
     readyAt: number | null,
     activeWork: number,
@@ -508,10 +466,25 @@ export class RestartCoordinator {
       readyAt,
       readyAtLabel: readyAt == null ? null : clock(readyAt),
       waitMs,
-      waitLabel: readyAt == null ? (activeWork > 0 ? "until active work finishes" : "now") : duration(waitMs),
+      waitLabel: readyAt == null ? "now" : duration(waitMs),
       staged,
     };
   }
+}
+
+/**
+ * Read and clear the planned-restart marker: true when this boot follows a restart GGO committed itself.
+ *
+ * Deploys restart immediately, so a busy repo can bounce one task several times inside the boot
+ * crash-loop guard's window while its resumed CLI is still starting. Those deaths are deploy traffic;
+ * the marker lets boot stamp them so the guard counts only real crashes.
+ */
+export function consumePlannedRestart(db: Db, now = Date.now()): boolean {
+  const raw = db.kvGet(PLANNED_RESTART_KEY);
+  if (!raw) return false;
+  db.kvSet(PLANNED_RESTART_KEY, "");
+  const at = Number(raw);
+  return Number.isFinite(at) && at <= now && now - at < PLANNED_RESTART_FRESH_MS;
 }
 
 function emptyPending(now: number): PendingRestart {
@@ -546,8 +519,7 @@ function validRequester(value: unknown): value is RestartRequester {
   return Number.isFinite(requester.at);
 }
 
-function pendingStatus(decision: RestartDecision, activeWork: number, now: number): string {
-  if (activeWork > 0) return `waiting for ${countWork(activeWork)} to finish`;
+function pendingStatus(decision: RestartDecision, now: number): string {
   if (!decision.allow && decision.retryAt != null) {
     return `${clock(decision.retryAt)} (retry in ${duration(decision.retryAt - now)})`;
   }

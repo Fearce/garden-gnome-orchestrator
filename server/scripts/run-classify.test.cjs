@@ -25,6 +25,7 @@ const is = (expected, over, why) => assert.equal(classifyRun(run(over)), expecte
 is("restart", { state: "interrupted" });
 is("restart", { state: "interrupted", error: "Run failed." }, "opaque text is no reason at all");
 is("restart", { error: "interrupted by a server restart" });
+is("restart", { state: "interrupted", error: "interrupted by a server restart (a planned deploy)" }, "a deploy's bounce is a restart too");
 is(
   "real",
   { state: "interrupted", error: "Claude Code native binary at C:\\…\\claude.exe exists but failed to launch." },

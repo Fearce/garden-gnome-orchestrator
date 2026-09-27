@@ -47,8 +47,6 @@ export interface ApplyResult {
   blockedBy?: string[];
   /** The process supervisor has accepted an immediate restart; the client should wait, then reload. */
   restarting: boolean;
-  /** The build is staged; current agents finish before the restart is fired. */
-  restartDeferred: boolean;
   restartReason?: string;
   /** Server code changed but no hub was reachable to restart it — the owner must restart manually. */
   needsManualRestart: boolean;
@@ -293,7 +291,6 @@ export async function applyUpdate(requestRestart: PlannedRestart): Promise<Apply
   const res: ApplyResult = {
     ok: false,
     restarting: false,
-    restartDeferred: false,
     needsManualRestart: false,
     serverChanged: false,
     webChanged: false,
@@ -360,16 +357,15 @@ export async function applyUpdate(requestRestart: PlannedRestart): Promise<Apply
     res.ok = true;
     cache = await gitStatusAt(); // behind should now be 0
 
-    // Backend code changed → stage one planned restart. Owner updates use the same drain as agent
-    // deploys: the current cohort finishes and fresh work pauses, so clicking Update cannot kill an
-    // active agent. If no process owner exists, report the one unavoidable manual step instead.
+    // Backend code changed → restart now through the same coordinator agent deploys use; interrupted
+    // agents auto-resume on the new build. If no process owner exists, report the one unavoidable
+    // manual step instead.
     if (res.serverChanged) {
       if ((await restartRoute()) === "none") {
         res.needsManualRestart = true;
       } else {
         const restart = requestRestart({ label: "owner update", ...stagedBuildStamp() });
         res.restarting = restart.outcome === "restarting";
-        res.restartDeferred = restart.outcome === "deferred";
         res.restartReason = restart.reason;
       }
     }

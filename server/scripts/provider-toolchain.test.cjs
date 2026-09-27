@@ -107,19 +107,18 @@ const coordinator = (overrides = {}) => ({
   body: {
     now: 1_235_000,
     activeWork: 1,
-    decision: { allow: false, retryAt: null, reason: "1 active work item remains" },
+    // Active work never holds a restart, so an unrefused pending row always reads "ready to restart".
+    decision: { allow: true, reason: "1 active work item auto-resumes on the new build" },
     pending: {
       createdAt: 1_234_000,
       requesters: [{ at: 1_234_600, commit: distBuild.commit, stampedAt: distBuild.at, label: null }],
       failures: 0,
       retryAt: null,
     },
-    pendingLabel: "waiting for 1 active work item to finish",
-    // `false` is what a WAITING deploy really reports: `isDraining()` is `this.firing` alone, so a
-    // pending restart leaves fresh work available and only closes admission for the bounce itself
-    // (restartDrain.itest.ts, "a pending deploy leaves fresh work available"). The fixture used to say
-    // `true` beside this same waiting label — a state the coordinator cannot produce — which is why a
-    // green gate sat on top of a STAGED verdict that was unreachable in production.
+    pendingLabel: "ready to restart",
+    // `isDraining()` is `this.firing` alone, so a pending row the coordinator has not claimed yet reads
+    // `false`. The fixture once said `true` beside a label the coordinator could not produce with it,
+    // which is why a green gate sat on top of a STAGED verdict that was unreachable in production.
     draining: false,
     ...overrides,
   },

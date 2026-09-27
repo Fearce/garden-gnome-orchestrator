@@ -6,7 +6,7 @@ Node/Fastify API in `server/`, React/Vite console in `web/`, one origin. The imp
 - Respect the owner's brief, current steering, and existing work in the shared tree. Implement completely; avoid placeholders and unrelated refactors.
 - `npm run typecheck` checks types. `npm run test:gates` runs the free gate suite and records `server/data/gates-last.log`. Run focused gates for changed behavior. Browser-test a changed UI in Playwright.
 - `npm run dev` runs hot reload. The app serves HTTP on `127.0.0.1:4317` and HTTPS on `127.0.0.1:4319`. For headless browser tests, read `AUTH_PASSWORD` from `server/.env`, POST `{password}` to `/api/login`, then reuse the session cookie. Do not print the password.
-- A server change must be deployed before handoff: `npm run deploy --prefix server`. A reported waiting restart is a completed deploy handoff. Do not use a direct script-hub restart while agents are active. For a web-only change, run `npm run build --prefix web`; no server restart. Read the archived deployment section for recovery cases.
+- A server change must be deployed before handoff: `npm run deploy --prefix server`. It restarts GGO immediately, even with agents running; they auto-resume on the new build, so never hold a deploy back for them. Confirm with `npm run deploy --prefix server -- --verify`. For a web-only change, run `npm run build --prefix web`; no server restart. Read the archived deployment section for recovery cases.
 - A task run's state and diagnostic trail can be read with `npm run probe:task-runs --prefix server -- <thread-id|title>`. More specific probes and gates are indexed in the archived debugging section.
 
 ## Shared worktree

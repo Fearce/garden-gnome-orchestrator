@@ -8,7 +8,7 @@ The durable cross-project memory bank is `C:/Users/theke/.claude/memory/`. Hook-
 ## Run and verify
 - `npm run typecheck` checks types. `npm run test:gates` runs free gates and writes `server/data/gates-last.log`. Run focused gates for changed behavior. Browser-test changed UI in Playwright.
 - `npm run dev` starts hot reload. HTTP is `127.0.0.1:4317`; HTTPS is `127.0.0.1:4319`. For a headless browser, read `AUTH_PASSWORD` from `server/.env`, POST `{password}` to `/api/login`, and reuse the cookie. Do not print the password.
-- Deploy server changes in the same turn with `npm run deploy --prefix server`. A waiting restart is a successful staged deploy. Do not directly restart script-hub while agents are active. For web-only edits, run `npm run build --prefix web` and reload. Read the archived deployment section for recovery cases.
+- Deploy server changes in the same turn with `npm run deploy --prefix server`. It restarts GGO immediately, even with agents running; they auto-resume on the new build. Confirm with `npm run deploy --prefix server -- --verify`. For web-only edits, run `npm run build --prefix web` and reload. Read the archived deployment section for recovery cases.
 - For a failed task, run `npm run probe:task-runs --prefix server -- <thread-id|title>`; the archived debugging section lists narrower probes.
 
 ## Shared checkout and outputs

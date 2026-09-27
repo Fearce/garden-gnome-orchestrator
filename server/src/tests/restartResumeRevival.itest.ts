@@ -40,6 +40,8 @@ const AUTO_RESUME_MSG = "interrupted by a server restart — auto-resuming…";
 const MANUAL_RESUME_MSG = "interrupted by a server restart — click Resume to continue from where it left off (finished stages are reused)";
 const AUTO_RESUME_DELAY_MS = 4_000;
 const MAX_STRANDED_REVIVALS = 3;
+const PLANNED_RESTART_KEY = "restart_coordinator_planned_at";
+const PLANNED_RESTART_RUN_REASON = "interrupted by a server restart (a planned deploy)";
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
 let passed = 0;
@@ -293,12 +295,48 @@ async function testQaRestartRetriesOnlyQa(): Promise<void> {
   bed.dispose();
 }
 
+async function testPlannedDeploysAreNotACrashLoop(): Promise<void> {
+  console.log("\nTest E — back-to-back planned deploys never trip the crash-loop guard\n");
+  // Deploys restart GGO immediately, so a busy repo can bounce a task three times inside the guard's
+  // window, each time while its resumed CLI is still booting. That is deploy traffic, not a crash loop.
+  const bed = makeBed("restart-planned-");
+  const id = seedLiveTask(bed);
+  const earlier = Date.now() - 1_000;
+  for (let i = 0; i < 2; i++) {
+    const r = bed.db.createRun({ threadId: id, role: "implementor", model: "claude-opus-5-5" });
+    bed.db.updateRun(r.id, { state: "interrupted", endedAt: earlier, error: PLANNED_RESTART_RUN_REASON });
+  }
+  bed.db.kvSet(PLANNED_RESTART_KEY, String(Date.now() - 5_000));
+  const b = boot(bed);
+  const killed = bed.db.listRuns(id).filter((r) => r.error === PLANNED_RESTART_RUN_REASON);
+  check("the run this deploy killed is stamped as a planned restart", killed.length === 3, String(killed.length));
+  check("the marker is consumed, so a later crash is judged on its own", !bed.db.kvGet(PLANNED_RESTART_KEY));
+  check("the task still gets its auto-resume promise", bed.db.getThread(id)?.error === AUTO_RESUME_MSG, bed.db.getThread(id)?.error ?? "");
+  await sleep(AUTO_RESUME_DELAY_MS + 800);
+  check("…and is resumed onto the new build", b.resumed.includes(id), `resumed=[${b.resumed.join(",")}]`);
+  b.stop();
+  bed.dispose();
+
+  // Control: without a fresh marker the same shape is a genuine crash loop and must still be caught.
+  const crashBed = makeBed("restart-crash-");
+  const crashing = seedLiveTask(crashBed);
+  seedFastInterrupts(crashBed, crashing, 2);
+  crashBed.db.kvSet(PLANNED_RESTART_KEY, String(Date.now() - 60 * 60_000));
+  const c = boot(crashBed);
+  await sleep(AUTO_RESUME_DELAY_MS + 800);
+  check("a stale marker does not excuse a crash", !c.resumed.includes(crashing), `resumed=[${c.resumed.join(",")}]`);
+  check("…so the crash loop is still handed to a person", /crash loop/.test(crashBed.db.getThread(crashing)?.error ?? ""), crashBed.db.getThread(crashing)?.error ?? "");
+  c.stop();
+  crashBed.dispose();
+}
+
 async function main(): Promise<void> {
   console.log("\n=== A restart's auto-resume promise survives a second restart — integration test ===");
   await testStrandedPromiseIsRevived();
   await testOnlyTheOwedOnesAreRevived();
   await testRevivalIsBoundedThenReleased();
   await testQaRestartRetriesOnlyQa();
+  await testPlannedDeploysAreNotACrashLoop();
 
   console.log(`\n${failed === 0 ? "✅ ALL PASSED" : "❌ FAILURES"} — ${passed} passed, ${failed} failed`);
   if (failed) {
