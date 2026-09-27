@@ -16,7 +16,9 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   `manager.dispatch` like a hand-dispatched task, with a strict model pin (`requestedProvider` +
   `requestedModel`) and an effort. Do not add goal-specific branches to `runPipeline`. The goal learns a
   step ended from the hub's `thread.upsert` (fast path) and the 60s tick (safety net), and reads the
-  outcome from durable rows.
+  outcome from durable rows. Steps dispatch with `skipQa: true`, which `resolveRoute` turns into a
+  route with `useQa: false` (`withoutQaWhenSkipped`); the director's step judgement is the review.
+  Gates: `test:goals` (the flag is sent) and `test:route-pipeline` §2b (QA never runs, Retry keeps it).
 - **Ending takes two voices.** The step's implementor must write a standalone `GOAL STATUS: COMPLETE` line
   (`detectGoalComplete`: the last status line wins, and it must stand alone because the brief quotes the
   marker mid-sentence), AND the director's verdict must be `complete`. A lone director verdict dispatches a

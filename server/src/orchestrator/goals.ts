@@ -538,6 +538,7 @@ export class GoalRunner {
         effort: pin.effort ?? undefined,
         requestedModel: pin.model,
         requestedProvider: pin.provider,
+        skipQa: true,
       });
       this.db.updateGoalStep(step.id, { threadId });
       this.db.updateGoal(goal.id, { currentThreadId: threadId });

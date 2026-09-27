@@ -12,6 +12,9 @@ export interface DispatchInput {
   images?: ImageAttachment[];
   /** An external approved brief may prohibit the optional post-task self-improvement round. */
   skipSelfImprovement?: true;
+  /** The task never gets a QA round, whatever its route classifies (goal steps: the goal's director
+   *  judges each step's outcome itself). Retries retain it. */
+  skipQa?: true;
   effort?: Effort; // pins the implementor effort for this task (skip-director composer pick) — beats the planner's
   /** Exact owner wording for an explicit model/capacity request (for example "GPT Spark"). The server
    * resolves it against the real provider catalog and persists a strict task-local pin. */

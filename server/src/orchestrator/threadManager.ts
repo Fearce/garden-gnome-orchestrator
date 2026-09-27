@@ -237,6 +237,13 @@ function planDigest(plan?: PlanOutput): string | undefined {
   return parts.join("\n");
 }
 
+/** A dispatch-level QA opt-out beats the classifier. Only `useQa` moves: planning and model/effort
+ *  routing still follow the work's actual scope. */
+function withoutQaWhenSkipped(stage: StageOutputs, decision: RouteDecision): RouteDecision {
+  if (stage.skipQa !== true || !decision.useQa) return decision;
+  return { ...decision, useQa: false, reason: `${decision.reason}; QA skipped for a goal step (the goal's director judges each step)`, signals: [...decision.signals, "goal step"] };
+}
+
 /** Validate an incoming model-overrides map: keep only known roles, trim + length-cap the model ids,
  *  drop blanks, drop subscriptions left with no entries, and cap the number of subscriptions. Bounds a
  *  client-supplied blob before it's persisted (subscription ids and model ids both originate from the client). */
@@ -2686,6 +2693,7 @@ export class ThreadManager implements OrchestratorApi {
     });
     // Before the first await: the pipeline reads these the moment enqueueOrRun starts it.
     if (input.skipSelfImprovement === true) this.db.updateThreadStageOutputs(thread.id, { skipSelfImprovement: true });
+    if (input.skipQa === true) this.db.updateThreadStageOutputs(thread.id, { skipQa: true });
     if (input.jev) this.db.updateThreadStageOutputs(thread.id, { jevState: input.jev.state, jevQuestions: input.jev.questions });
     // The card appears before the git read below: that read can still wait behind a busy machine.
     this.hub.publish({ type: "thread.upsert", thread });
@@ -7104,14 +7112,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // reader's conclusion is still part of the same user task and must not be mistaken for broad work
     // merely because its handoff prose was appended to the brief.
     const readerEscalation = stage.readerEscalation;
-    const classified = selectRoute({
+    const classified = withoutQaWhenSkipped(stage, selectRoute({
       title: thread.title,
       brief: readerEscalation?.originalBrief ?? thread.brief,
       shotgun: (thread.agentCount ?? 1) > 1,
       timedHours: thread.durationMs ? thread.durationMs / 3_600_000 : undefined,
       effortOverride: thread.effortOverride,
       readerEscalation: readerEscalation ?? undefined,
-    });
+    }));
 
     if (existing?.policyVersion === ROUTE_POLICY_VERSION && existing.modelPolicy && existing.evidence) {
       return existing.implementorEffort ? existing : this.backfillRouteEffort(thread.id, existing, classified);

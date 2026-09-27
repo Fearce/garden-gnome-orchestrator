@@ -177,6 +177,28 @@ async function main(): Promise<void> {
     }
   }
 
+  // ---- 2b. A dispatch-level QA opt-out (goal steps) drops QA but keeps the rest of the route ---------
+  console.log("\n2b. skipQa on broad work → planner kept, QA never runs, even after a retry");
+  {
+    const h = makeHarness();
+    try {
+      const id = await h.manager.dispatch({ title: "2fa", workspace: process.cwd(), brief: BROAD_BRIEF, skipQa: true });
+      const state = await h.pollTerminal(id);
+      await h.waitIdle(id);
+      check("QA-less broad task reaches 'done'", state === "done", `got ${state}`);
+      check("planner still ran for broad work", h.roleCalls.includes("planner"), h.roleCalls.join(","));
+      check("qa never ran", !h.roleCalls.includes("qa"), h.roleCalls.join(","));
+      const decision = h.db.getThreadStageOutputs(id).routeDecision;
+      check("route persisted as broad without QA", decision?.scope === "broad" && decision.usePlanner === true && decision.useQa === false, JSON.stringify(decision));
+      const announcement = h.db.listMessages(id).find((m: { content: string }) => /Route selected/.test(m.content))?.content ?? "";
+      check("the route announcement names the opt-out", /no QA \(implementor output is final\)/.test(announcement) && /goal step/i.test(announcement), announcement);
+      h.db.resetThreadForRetry(id);
+      check("a retry keeps the opt-out", h.db.getThreadStageOutputs(id).skipQa === true, JSON.stringify(h.db.getThreadStageOutputs(id)));
+    } finally {
+      h.dispose();
+    }
+  }
+
   // ---- 3. Global settings remain a hard ceiling — route can never override an operator's OFF -------
   console.log("\n3. plannerEnabled/qaEnabled OFF stay a hard ceiling even when the route wants both");
   {

@@ -2306,12 +2306,13 @@ export class Db {
         .run({
           id: tid,
           stageOutputs:
-            preservedReaderEscalation || preservedDirectives?.length || preservedJev || preservedStage.skipSelfImprovement === true
+            preservedReaderEscalation || preservedDirectives?.length || preservedJev || preservedStage.skipSelfImprovement === true || preservedStage.skipQa === true
               ? JSON.stringify({
                   ...(preservedReaderEscalation ? { readerEscalation: preservedReaderEscalation } : {}),
                   ...(preservedDirectives?.length ? { standingDirectives: preservedDirectives } : {}),
                   ...(preservedJev ?? {}),
                   ...(preservedStage.skipSelfImprovement === true ? { skipSelfImprovement: true } : {}),
+                  ...(preservedStage.skipQa === true ? { skipQa: true } : {}),
                 })
               : null,
         });

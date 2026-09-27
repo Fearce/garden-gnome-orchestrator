@@ -900,6 +900,8 @@ export interface ModelEffortStat extends ModelStat {
 export interface StageOutputs {
   /** Durable task-local restriction; retries retain it and other tasks keep their settings. */
   skipSelfImprovement?: true;
+  /** Durable task-local QA opt-out set at dispatch (goal steps); forces the route's `useQa` off. */
+  skipQa?: true;
   manualProceed?: { to: string; granted: boolean } | null;
   manualPlannerRan?: boolean;
   manualResearcherRan?: boolean;

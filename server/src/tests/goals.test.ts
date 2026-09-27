@@ -130,6 +130,7 @@ async function lifecycle(): Promise<void> {
   const first = h.dispatched[0]!;
   check("the step is pinned to the director's pick", first.requestedProvider === "claude" && first.requestedModel === "claude-opus-5-5" && first.effort === "high");
   check("the brief carries the objective and the status-line rule", first.brief.includes("Parser, docs and tests all done.") && first.brief.includes("GOAL STATUS: COMPLETE"));
+  check("a goal step is dispatched without QA", first.skipQa === true);
   check("the board title names goal and step", first.title === stepTitle(goal, 1, "Build the parser"));
   check("the goal tracks its current task", goal.currentThreadId !== null && goal.steps[0]?.threadId === goal.currentThreadId);
   check("the director's progress summary is stored", goal.progress === "progress after Build the parser");
