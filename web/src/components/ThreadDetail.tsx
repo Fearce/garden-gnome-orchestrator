@@ -6,6 +6,7 @@ import { canAutoReview, clock, formatDuration, FROZEN_CONTROL_TOOLTIP, isCapPark
 import { Countdown, Elapsed, RoleElapsed } from "../lib/timing.js";
 import { canOpenIde, ideWorkspaceTarget, threadOrigin } from "../lib/codeNav.js";
 import { roleModelSummary } from "../lib/runAttribution.js";
+import { silentLiveRun, type SilentRun } from "../lib/runStartup.js";
 import { collaboratorIdsOf, historyFloor, mergeCollaboratorFeeds } from "../lib/collaboratorFeed.js";
 import { useShallow } from "zustand/react/shallow";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
@@ -794,6 +795,9 @@ export function ThreadDetail() {
   const recipientLabel = qaStage ? "QA reviewer" : autoReviewStage ? "auto-reviewer" : "implementor";
   const impl = threadRuns.filter((r) => r.role === "implementor").sort((a, b) => b.startedAt - a.startedAt)[0];
   const totalCost = threadRuns.reduce((a, r) => a + (r.costUsd ?? 0), 0);
+  const streamingRunIds = new Set([draft?.runId, showTools ? thinkingDraft?.runId : undefined].filter((runId): runId is string => !!runId));
+  // An unloaded history is an empty feed, not a silent run.
+  const silentRun = historyLoaded ? silentLiveRun(threadRuns, feedItems, streamingRunIds) : undefined;
   const path = pipelinePath(threadRuns);
   // A role is "live" only while its latest run is still going; finished roles grey out so the
   // currently-working gnome is the one that stands out (matches the board cards).
@@ -1179,7 +1183,7 @@ export function ThreadDetail() {
         )}
 
         <div className="feed">
-          {visible.length === 0 && !draft && !(showTools && thinkingDraft) && (
+          {visible.length === 0 && !draft && !(showTools && thinkingDraft) && !silentRun && (
             <div className="faint" style={{ fontSize: 13 }}>
               {feedItems.length === 0
                 ? // "Warming up" is a claim about the SERVER's state, so only make it once the server has
@@ -1269,6 +1273,9 @@ export function ThreadDetail() {
               </div>
               <Markdown className="body" text={draft.text} />
             </div>
+          )}
+          {silentRun && (roleFilter === "all" || silentRun.run.role === roleFilter) && (
+            <RunStartupRow startup={silentRun} name={nameFor(silentRun.run.role)} />
           )}
           {collabIds.map((c) => {
             const d = drafts[c];
@@ -1433,6 +1440,31 @@ export function ThreadDetail() {
         </div>
       )}
     </section>
+  );
+}
+
+/** Stands in for a launched run's first output, which a CLI start on a busy machine can take minutes to
+ *  produce. Always names the run's model, whatever "Show agent model" says: that is the question it answers. */
+function RunStartupRow({ startup, name }: { startup: SilentRun; name: string }) {
+  const { run, phase } = startup;
+  const model = modelEffortLabel(run.model, run.effort) || run.model;
+  const status = phase === "launching" ? `Starting a new ${model} session` : `${model} session is up, waiting for its first output`;
+  return (
+    <div
+      className="fi system run-startup"
+      role="status"
+      style={roleVar(run.role)}
+      title={`Run ${run.id.slice(0, 8)} was launched on ${run.model}. Nothing has reached the feed from it yet.`}
+    >
+      <div className="head">
+        <span className="role-tag dim">
+          <RoleLabel role={run.role} name={name} />
+        </span>
+      </div>
+      <div className="body">
+        <span className="delivery-spinner" aria-hidden="true" /> {status} · <Elapsed startMs={run.startedAt} running />
+      </div>
+    </div>
   );
 }
 

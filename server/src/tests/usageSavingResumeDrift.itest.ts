@@ -156,6 +156,14 @@ function makeHarness(): {
   };
 }
 
+/** The task-feed lines a model-change reseed posts. The fresh session can take minutes to say anything
+ *  on a busy machine, so this line is the owner's only immediate evidence of which model is starting. */
+function modelChangeNotes(db: InstanceType<typeof Db>, threadId: string): string[] {
+  return db.listMessagePage(threadId, 50).messages
+    .filter((m) => m.kind === "system" && m.content.startsWith("↻ Model change"))
+    .map((m) => m.content);
+}
+
 console.log("\n=== A. usage saving still active: the warm session is preserved (unchanged behavior) ===");
 {
   const h = makeHarness();
@@ -247,6 +255,15 @@ console.log("\n=== B2. a strict owner pin outranks active saving: the sonnet ses
     JSON.stringify(h.asks.map((a) => a.resume)),
   );
   check("the resume dispatches the pinned model, not the saving model", h.asks[0]?.model === "claude-opus-5-5", h.asks[0]?.model);
+  // Reported 2026-09-27: after pin + resume two tasks sat silent ~5 minutes and the owner could not tell
+  // whether the new model had started at all. The feed must say so the moment the reseed begins.
+  const notes = modelChangeNotes(h.db, h.thread.id);
+  check(
+    "the task feed announces the model change, naming both models",
+    notes.length === 1 && notes[0]!.includes("claude-sonnet-5") && notes[0]!.includes("claude-opus-5-5"),
+    JSON.stringify(notes),
+  );
+  check("the announcement says why the model changed", notes[0]?.includes("strictly pinned") === true, notes[0]);
   h.dispose();
 }
 
@@ -336,6 +353,7 @@ console.log("\n=== E. a pin for ANOTHER backend is not drift on this one ===");
     h.asks.length === 1 && h.asks[0]?.resume === "codex-session",
     JSON.stringify(h.asks.map((a) => a.resume)),
   );
+  check("an in-place resume announces no model change", modelChangeNotes(h.db, h.thread.id).length === 0, JSON.stringify(modelChangeNotes(h.db, h.thread.id)));
   h.dispose();
 }
 

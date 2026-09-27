@@ -164,6 +164,7 @@ const GATES = [
   "test:implementation-memos",
   "test:deliverables",
   "test:run-attribution",
+  "test:run-startup",
   "test:collaborator-feed",
   "test:collapse-shotgun-task",
   "test:deliverables-probe",
