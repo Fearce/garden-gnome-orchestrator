@@ -2687,13 +2687,17 @@ export class ThreadManager implements OrchestratorApi {
     // Before the first await: the pipeline reads these the moment enqueueOrRun starts it.
     if (input.skipSelfImprovement === true) this.db.updateThreadStageOutputs(thread.id, { skipSelfImprovement: true });
     if (input.jev) this.db.updateThreadStageOutputs(thread.id, { jevState: input.jev.state, jevQuestions: input.jev.questions });
+    // The card appears before the git read below: that read can still wait behind a busy machine.
+    this.hub.publish({ type: "thread.upsert", thread });
     // Stamp the repo's HEAD NOW, before any agent runs — the "before" point for scoping this task's
     // Changes chip to its own diff. Captured pre-enqueue so a foreign commit that lands between here and
     // the implementor starting is still excluded (its files aren't in the task's written-file set). Null
     // when the workspace isn't a git repo; getTaskGitSummary then degrades to a HEAD-relative diff.
-    this.db.setBaselineHead(thread.id, await getHeadSha(input.workspace).catch(() => null));
+    this.db.setBaselineHead(thread.id, await getHeadSha(input.workspace, { urgent: true }).catch(() => null));
+    const current = this.db.getThread(thread.id);
+    // Cancelled, closed or deleted while the baseline was read. Enqueueing now would revive it.
+    if (!current || current.state !== thread.state || current.closedAt) return thread.id;
     if (input.images?.length) this.dispatchImages.set(thread.id, input.images.map(toImageBlock));
-    this.hub.publish({ type: "thread.upsert", thread });
     if (modelRequest) this.announceModelRequest(thread, modelRequest);
     // Screenshots attached to the dispatching message reach the implementor model via dispatchImages
     // (transient blocks), but the feed only renders images it can find as attachment rows. Persist

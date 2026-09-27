@@ -164,6 +164,50 @@ async function worstLoopLag(fn: () => Promise<unknown>): Promise<number> {
 
 // ---- a worker that stops answering must not take the pool with it ----------------------------------
 
+// 2026-09-27: dispatches took 52-272s to appear. Their one `git rev-parse` queued at the back of a FIFO
+// behind the board's chip reads. An urgent job must start while ordinary work fills the pool, and must be
+// served before ordinary jobs that were queued first.
+{
+  const POOL = 2; // CHILD_WORKER_POOL is unset in the gate, so the pool is the default two workers
+  const slow = (tag: string, ms: number) => runChild(NODE, ["-e", `setTimeout(() => process.stdout.write('${tag}'), ${ms})`]);
+  const finished: string[] = [];
+  const track = (p: Promise<{ stdout: string }>) => p.then((r) => { finished.push(r.stdout); return r; });
+
+  const blockers = Array.from({ length: POOL }, (_, i) => track(slow(`block${i}`, 5000)));
+  const queuedFirst = track(slow("ordinary", 10));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(childRunnerState().busy <= POOL, `ordinary work must stay within the pool, saw ${childRunnerState().busy} busy`);
+
+  const urgent = await track(runChild(NODE, ["-e", "process.stdout.write('urgent')"], { urgent: true }));
+  assert.equal(urgent.stdout, "urgent");
+  await Promise.all([...blockers, queuedFirst]);
+  assert.ok(
+    finished.indexOf("urgent") < finished.indexOf("block0") && finished.indexOf("urgent") < finished.indexOf("ordinary"),
+    `an urgent job must run while ordinary work fills the pool: ${finished.join(", ")}`,
+  );
+
+  // With the reserve also taken, an urgent job must not wait behind ordinary jobs queued before it. The
+  // urgent holder frees first; only the queued urgent job may take that worker, while the ordinary ones
+  // wait for the long holders. Each child prints when it STARTED, since completion order is spawn jitter.
+  const startedAt = (tag: string, opts: { urgent?: boolean } = {}) =>
+    runChild(NODE, ["-e", "process.stdout.write(String(Date.now()))"], opts).then((r) => ({ tag, at: Number(r.stdout) }));
+  const held = [
+    slow("hold0", 6000),
+    slow("hold1", 6000),
+    runChild(NODE, ["-e", "setTimeout(() => {}, 1000)"], { urgent: true }),
+  ];
+  await new Promise((r) => setTimeout(r, 50));
+  const plainA = startedAt("plainA");
+  const plainB = startedAt("plainB");
+  const jumper = startedAt("jumper", { urgent: true });
+  const [a, b, j] = await Promise.all([plainA, plainB, jumper, ...held]);
+  assert.ok(
+    j.at < a.at && j.at < b.at,
+    `an urgent job must start ahead of ordinary jobs already queued: jumper ${j.at}, plainA ${a.at}, plainB ${b.at}`,
+  );
+  assert.equal(childRunnerState().queued, 0);
+}
+
 // The 2026-09-14 outage: every git surface in the app went silent at once while SQLite commands answered
 // in 7ms. Nothing had crashed and no git.exe was running. The command timeout is enforced INSIDE the
 // worker, so a worker that never replies leaves its slot busy forever, and once POOL_SIZE slots are lost

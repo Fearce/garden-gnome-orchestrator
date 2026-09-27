@@ -34,8 +34,15 @@ derives the chip's counts from a scoped numstat. Both are cached per-threadId fo
 `SUMMARY_TTL_MS` (4s) in `taskStatusCache` / `taskSummaryCache` so a board of cards +
 each prefetch collapse to one git run — bust them together via the exported
 `bustGitCaches()` (what every write in `git/repoOps.ts` calls). Whole-repo
-branch/push/behind metadata comes from the uncached repo-wide `getGitStatus`; the
-separate repo-wide `getGitSummary` has its own `summaryCache` keyed by repoRoot.
+branch/push/behind metadata for those two comes from `cachedRepoStatus` (the repo-wide
+`getGitStatus`, cached per repo root in `repoStatusCache`); the separate repo-wide
+`getGitSummary` has its own `summaryCache` keyed by repoRoot. Every one of these is a
+`GitReadCache`: a 4s TTL **plus a shared in-flight read**. The TTL alone was not
+enough. A board mounts every chip at once, so all the requests missed together and
+each card ran its own ~11-spawn repo walk twice (summary + drawer prefetch). One
+board load put ~350 git spawns in front of the pool, and a dispatch's baseline
+`rev-parse` waited 52-272s behind them (2026-09-27). The Git console (`repoOps`) still
+calls `getGitStatus` directly, because a discard must see the live file list.
 **Want only branch + push standing? Use `getRepoHeadState`** — same `readRepoHead` ref
 reads, no branch list / numstat / commit log, cached per repo root (`headStateCache`,
 also bust by `bustGitCaches`). `orchestrator/codeContext.ts` reads it for the contextual
@@ -71,7 +78,17 @@ Diagnosis, in this order, so you do not re-derive it:
 2. A leg that never returns while `thread.history` is instant means the git pool, not the console.
    Confirm by running the same read in a FRESH process (`getRepoState` directly): healthy there and
    hung in the server is the pool wedged, and a restart clears it.
-3. `childRunnerState()` reports `{ workers, queued }` for a process you can get a handle on.
+3. `childRunnerState()` reports `{ workers, busy, queued, started }` for a process you can get a handle on.
+
+**Slow rather than silent is the other pool failure: a FLOODED queue.** The pool is FIFO for ordinary
+jobs, so a burst of display reads delays anything queued behind it. A caller that someone is waiting on
+passes `{ urgent: true }` (`runGit`'s 4th argument, `resolveRepoRoot`/`getHeadSha` options). Urgent jobs
+go ahead of every queued ordinary job and may use one reserved worker above `POOL_SIZE`. Today the urgent
+callers are the dispatch baseline (`ThreadManager.dispatch`) and the resume kickoff's progress block
+(`gitProgress.buildGitProgressBlock`). Keep chip, drawer and poller reads ordinary. If everything is
+urgent, nothing is. A job that waited over 5s is summarised once a minute in the hub log and `crash.log`
+(`child command pool: N command(s) waited …`). Gates: `test:child-runner`, `test:dispatch-latency` and
+`test:git` section J.
 
 Four traps the console hit, all in the reply path:
 - `repo.list` echoes `forThread`; a reply not matching the request in flight is DISCARDED. The

@@ -26,18 +26,21 @@ const MAX_DIFF_CHARS = 6000;
 // a pointer for the agent, not an inventory.
 const MAX_CHILD_REPOS_LISTED = 20;
 
+// A resume's kickoff waits on this block, so it must not queue behind the board's chip reads.
+const urgentGit = (cwd: string, args: string[]) => runGit(cwd, args, undefined, { urgent: true });
+
 /** The git-progress block for a resume kickoff: recent commits, `git diff --stat`, and a capped `git diff`
  *  for a real repo; one short "not a repo, here is where to look" line otherwise. `runGit` (gitService.ts)
  *  is the same hardened, worker-thread-backed spawn every other git surface in the app uses: it resolves
  *  with an exit code, so a caller (this one included) never has to guess success from text. */
 export async function buildGitProgressBlock(workspace: string): Promise<string> {
-  const probe = await runGit(workspace, ["rev-parse", "--is-inside-work-tree"]);
+  const probe = await urgentGit(workspace, ["rev-parse", "--is-inside-work-tree"]);
   if (probe.code !== 0) return nonRepoProgress(workspace);
 
   const [log, stat, diff] = await Promise.all([
-    runGit(workspace, ["log", "--oneline", "-8"]),
-    runGit(workspace, ["diff", "--stat"]),
-    runGit(workspace, ["diff"]),
+    urgentGit(workspace, ["log", "--oneline", "-8"]),
+    urgentGit(workspace, ["diff", "--stat"]),
+    urgentGit(workspace, ["diff"]),
   ]);
   // Only a SUCCESSFUL command's stdout is real output, never a fallback to stderr on failure, which is
   // the exact defect this replaces. A failed read (rare once we know it is a repo: a mid-run index lock,

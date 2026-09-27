@@ -29,7 +29,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 process.env.NO_PUSH_REPO_PATTERN = "commit-only-origin";
-const { resolveRepoRoot, getGitStatus, getGitSummary, getTaskGitSummary, getTaskGitStatus, getHeadSha, getFileDiff } = await import("../gitService.js");
+const { resolveRepoRoot, getGitStatus, getGitSummary, getTaskGitSummary, getTaskGitStatus, getHeadSha, getFileDiff, bustGitCaches } = await import("../gitService.js");
+const { childRunnerState } = await import("../childRunner.js");
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
 let passed = 0;
@@ -423,6 +424,38 @@ try {
     check("baseline-scoped diff of a committed task file shows its net addition", aDiff.patch.includes("+export const a = 1;"), aDiff.patch.slice(0, 120));
     const headDiff = await getFileDiff(work, "a-feature.ts", null);
     check("HEAD-relative diff of the same committed file is empty (proves the baseline scoping matters)", headDiff.patch.trim() === "", headDiff.patch.slice(0, 80));
+  }
+
+  // ---- J. a board load — many cards on one repo cost ONE repo walk, not one per card ------------------
+  // 2026-09-27: dispatches waited 52-272s behind the board's chip reads. Every card ran its own repo-wide
+  // status walk (~10 git spawns) for its summary AND again for the drawer prefetch, so one board load put
+  // a few hundred spawns in front of the two-worker pool. Identical in-flight reads must be shared.
+  console.log("\nJ. board burst — concurrent chip + drawer reads on one repo share the repo walk");
+  {
+    const { work } = setupClone(root, "burst");
+    writeFileSync(join(work, "wip.txt"), "wip\n");
+    bustGitCaches();
+    await resolveRepoRoot(work); // resolution has its own longer-lived cache; keep it out of the count
+    const before = childRunnerState().started;
+    const cards = Array.from({ length: 12 }, (_, i) => ({ threadId: `burst-${i}`, baselineHead: null, taskFiles: [join(work, "wip.txt")] }));
+    const [summaries, drawers] = await Promise.all([
+      Promise.all(cards.map((c) => getTaskGitSummary(work, c))),
+      Promise.all(cards.map((c) => getTaskGitStatus(work, c))),
+    ]);
+    const spawned = childRunnerState().started - before;
+    const oneWalk = (await (async () => {
+      bustGitCaches();
+      const s = childRunnerState().started;
+      await getGitStatus(work);
+      return childRunnerState().started - s;
+    })());
+    check("every card still sees its own untracked task file", summaries.every((s) => s.fileCount === 1) && drawers.every((d) => d.files.length === 1));
+    // Per card the scoped reads remain (rev-parse, numstat, ...); what must not repeat is the repo walk.
+    check(
+      `12 cards spawn well under 12 repo walks (${spawned} git spawns, one walk is ${oneWalk})`,
+      spawned < oneWalk * 3 + cards.length * 8,
+      `spawned ${spawned}`,
+    );
   }
 
   console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} checks passed, ${failed} failed`);

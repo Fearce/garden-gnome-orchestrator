@@ -37,7 +37,7 @@ export interface GitResult {
  *  credential prompt, GIT_OPTIONAL_LOCKS=0 so a read never races an index lock a concurrent agent holds.
  *  Exported for `git/repoOps.ts` (the write-side repo console), so every git surface in the app goes
  *  through this one hardened, shell-free spawn. */
-export async function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
+export async function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS, opts: GitCallOptions = {}): Promise<GitResult> {
   // Runs on a worker thread (see childRunner.ts). This is the busiest git surface in the app — a board
   // of cards, the Changes drawer and the Git console all land here — and on Windows an in-process spawn
   // blocks the whole server for the duration of CreateProcess.
@@ -46,11 +46,49 @@ export async function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOU
     env: { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
     timeoutMs,
     maxStdoutBytes: DIFF_MAX_BYTES * 2,
+    urgent: opts.urgent === true,
   });
+}
+
+/** `urgent`: a task dispatch or resume is blocked on this read. It skips ahead of queued display reads. */
+export interface GitCallOptions {
+  urgent?: boolean;
 }
 
 const out = (r: GitResult): string => r.stdout.trim();
 const okOut = (r: GitResult): string | null => (r.code === 0 ? r.stdout.trim() : null);
+
+/** A short-TTL cache that also shares an IN-FLIGHT read. A board mounts every card's chip at once, so
+ *  dozens of identical requests arrive before the first answer can be cached. A TTL alone let each of
+ *  them start its own ~10-spawn status walk, a few hundred git processes through the two-worker pool.
+ *  A read started before a `bustGitCaches` is neither shared nor stored, because it may predate a write. */
+class GitReadCache<T> {
+  private readonly entries = new Map<string, { at: number; value: T }>();
+  private readonly inflight = new Map<string, { gen: number; promise: Promise<T> }>();
+
+  read(key: string, load: () => Promise<T>): Promise<T> {
+    const hit = this.entries.get(key);
+    if (hit && Date.now() - hit.at < SUMMARY_TTL_MS) return Promise.resolve(hit.value);
+    const pending = this.inflight.get(key);
+    if (pending && pending.gen === generation) return pending.promise;
+    const gen = generation;
+    const promise = load().then((value) => {
+      if (gen === generation) this.entries.set(key, { at: Date.now(), value });
+      return value;
+    });
+    const settle = (): void => {
+      if (this.inflight.get(key)?.promise === promise) this.inflight.delete(key);
+    };
+    promise.then(settle, settle);
+    this.inflight.set(key, { gen, promise });
+    return promise;
+  }
+
+  clear(): void {
+    this.entries.clear();
+    this.inflight.clear();
+  }
+}
 
 // ---- repo resolution --------------------------------------------------------------------------------
 
@@ -66,18 +104,18 @@ const REPO_ROOT_TTL_MS = 15_000;
  *  Resolution: (1) use the containing repo's top level; (2) else pick the best nested checkout one
  *  level down; (3) else null
  *  (not a repo — the caller surfaces a graceful "no git" state). */
-export async function resolveRepoRoot(workspace: string): Promise<string | null> {
+export async function resolveRepoRoot(workspace: string, opts: GitCallOptions = {}): Promise<string | null> {
   if (!workspace) return null;
   const cached = repoRootCache.get(workspace);
   if (cached && Date.now() - cached.at < REPO_ROOT_TTL_MS) return cached.root;
-  const root = await resolveRepoRootUncached(workspace);
+  const root = await resolveRepoRootUncached(workspace, opts);
   repoRootCache.set(workspace, { at: Date.now(), root });
   return root;
 }
 
-async function resolveRepoRootUncached(workspace: string): Promise<string | null> {
+async function resolveRepoRootUncached(workspace: string, opts: GitCallOptions): Promise<string | null> {
   if (!existsSync(workspace)) return null;
-  const top = await runGit(workspace, ["rev-parse", "--show-toplevel"]);
+  const top = await runGit(workspace, ["rev-parse", "--show-toplevel"], GIT_TIMEOUT_MS, opts);
   if (top.code === 0 && top.stdout.trim()) return top.stdout.trim();
 
   // Workspace isn't itself in a repo — look one level down for nested checkouts. A parent that holds
@@ -115,7 +153,7 @@ async function resolveRepoRootUncached(workspace: string): Promise<string | null
     return a.name.length - b.name.length;
   });
 
-  const t = await runGit(candidates[0]!.dir, ["rev-parse", "--show-toplevel"]);
+  const t = await runGit(candidates[0]!.dir, ["rev-parse", "--show-toplevel"], GIT_TIMEOUT_MS, opts);
   return t.code === 0 && t.stdout.trim() ? t.stdout.trim() : null;
 }
 
@@ -424,7 +462,7 @@ export interface RepoHeadState {
   error: string | null;
 }
 
-const headStateCache = new Map<string, { at: number; value: RepoHeadState }>();
+const headStateCache = new GitReadCache<RepoHeadState>();
 
 export async function getRepoHeadState(workspace: string): Promise<RepoHeadState> {
   const empty: RepoHeadState = {
@@ -433,9 +471,10 @@ export async function getRepoHeadState(workspace: string): Promise<RepoHeadState
   };
   const repoRoot = await resolveRepoRoot(workspace);
   if (!repoRoot) return { ...empty, error: "Not a git repository." };
-  const cached = headStateCache.get(repoRoot);
-  if (cached && Date.now() - cached.at < SUMMARY_TTL_MS) return cached.value;
+  return headStateCache.read(repoRoot, () => readRepoHeadState(repoRoot));
+}
 
+async function readRepoHeadState(repoRoot: string): Promise<RepoHeadState> {
   // Dirty state is independent of the ref reads. Start it beside them so a context row does not pay one
   // final process-launch delay after every other piece of Git metadata has already arrived.
   const [head, dirty] = await Promise.all([
@@ -456,7 +495,6 @@ export async function getRepoHeadState(workspace: string): Promise<RepoHeadState
     hasUncommitted: dirty.stdout.length > 0,
     error: null,
   };
-  headStateCache.set(repoRoot, { at: Date.now(), value });
   return value;
 }
 
@@ -525,18 +563,30 @@ async function collectCommits(repoRoot: string, hasHead: boolean, unpushedShas: 
 
 // ---- summary (cached per-repo) ----------------------------------------------------------------------
 
-const summaryCache = new Map<string, { at: number; value: GitSummary }>();
+const summaryCache = new GitReadCache<GitSummary>();
 const SUMMARY_TTL_MS = 4_000;
+
+/** The repo-wide status the task-scoped chip and drawer build on, cached per repo root on the same TTL.
+ *  Every card on a board shares a handful of repos, and each of them used to walk the whole repo again.
+ *  The Git console keeps calling `getGitStatus` directly, because a discard must see the live file list. */
+const repoStatusCache = new GitReadCache<GitStatus>();
+
+async function cachedRepoStatus(workspace: string): Promise<GitStatus> {
+  const repoRoot = await resolveRepoRoot(workspace);
+  if (!repoRoot) return getGitStatus(workspace);
+  return repoStatusCache.read(repoRoot, () => getGitStatus(repoRoot));
+}
 
 /** The compact chip header. Cached per resolved repo root for a few seconds so a board full of tasks
  *  that share one workspace triggers a single git run rather than one per card. */
 export async function getGitSummary(workspace: string): Promise<GitSummary> {
   const repoRoot = await resolveRepoRoot(workspace);
   if (!repoRoot) return EMPTY_SUMMARY;
-  const cached = summaryCache.get(repoRoot);
-  if (cached && Date.now() - cached.at < SUMMARY_TTL_MS) return cached.value;
+  return summaryCache.read(repoRoot, () => readGitSummary(workspace));
+}
 
-  const status = await getGitStatus(workspace);
+async function readGitSummary(workspace: string): Promise<GitSummary> {
+  const status = await cachedRepoStatus(workspace);
   let added = 0;
   let removed = 0;
   for (const f of status.files) {
@@ -554,7 +604,6 @@ export async function getGitSummary(workspace: string): Promise<GitSummary> {
     isCommitOnly: status.isCommitOnly,
     pushState: status.pushState,
   };
-  summaryCache.set(repoRoot, { at: Date.now(), value });
   return value;
 }
 
@@ -567,8 +616,8 @@ export async function getGitSummary(workspace: string): Promise<GitSummary> {
 // excluded even when it landed after the baseline. The one leaky edge is two tasks editing the SAME file:
 // that file's delta leaks into both. We attribute conservatively there — prefer under- to over-reporting.
 
-const taskSummaryCache = new Map<string, { at: number; value: GitSummary }>();
-const taskStatusCache = new Map<string, { at: number; value: GitStatus }>();
+const taskSummaryCache = new GitReadCache<GitSummary>();
+const taskStatusCache = new GitReadCache<GitStatus>();
 
 export interface TaskGitScope {
   /** Cache identity — the thread whose chip this is. */
@@ -586,14 +635,15 @@ export interface TaskGitScope {
  *  task files when no usable baseline exists — still task-scoped, just unable to attribute past commits.
  *  Never throws. Cached per threadId for a few seconds so a board of cards collapses to one git run each. */
 export async function getTaskGitSummary(workspace: string, scope: TaskGitScope): Promise<GitSummary> {
-  const cached = taskSummaryCache.get(scope.threadId);
-  if (cached && Date.now() - cached.at < SUMMARY_TTL_MS) return cached.value;
+  return taskSummaryCache.read(scope.threadId, () => readTaskGitSummary(workspace, scope));
+}
 
+async function readTaskGitSummary(workspace: string, scope: TaskGitScope): Promise<GitSummary> {
   const repoRoot = await resolveRepoRoot(workspace);
   if (!repoRoot) return EMPTY_SUMMARY;
 
   // Repo-wide branch / push metadata (correct at repo granularity — a push target is not per-task).
-  const status = await getGitStatus(workspace);
+  const status = await cachedRepoStatus(workspace);
   const rels = toRepoRelative(repoRoot, scope.taskFiles);
 
   let added = 0;
@@ -640,7 +690,6 @@ export async function getTaskGitSummary(workspace: string, scope: TaskGitScope):
     isCommitOnly: status.isCommitOnly,
     pushState: status.pushState,
   };
-  taskSummaryCache.set(scope.threadId, { at: Date.now(), value });
   return value;
 }
 
@@ -739,10 +788,11 @@ async function collectTaskCommits(repoRoot: string, baseline: string, rels: stri
  *  getTaskGitSummary's scoping so the drawer and the card chip tell the same story. Never throws — a
  *  non-repo / git failure returns the repo-wide empty status with hasDiffAnchor:false. */
 export async function getTaskGitStatus(workspace: string, scope: TaskGitScope): Promise<GitStatus> {
-  const cached = taskStatusCache.get(scope.threadId);
-  if (cached && Date.now() - cached.at < SUMMARY_TTL_MS) return cached.value;
+  return taskStatusCache.read(scope.threadId, () => readTaskGitStatus(workspace, scope));
+}
 
-  const status = await getGitStatus(workspace);
+async function readTaskGitStatus(workspace: string, scope: TaskGitScope): Promise<GitStatus> {
+  const status = await cachedRepoStatus(workspace);
   if (!status.isRepo || !status.repoRoot) return status; // already hasDiffAnchor:false + error set
   const repoRoot = status.repoRoot;
   const rels = toRepoRelative(repoRoot, scope.taskFiles);
@@ -767,7 +817,6 @@ export async function getTaskGitStatus(workspace: string, scope: TaskGitScope): 
     commits,
     hasDiffAnchor: baseline !== null,
   };
-  taskStatusCache.set(scope.threadId, { at: Date.now(), value });
   return value;
 }
 
@@ -793,10 +842,10 @@ function toRepoRelative(repoRoot: string, absFiles: string[]): string[] {
 
 /** The current HEAD sha of a workspace's repo, or null when it isn't a repo / has no commit yet. Used at
  *  dispatch to stamp the task's baseline. */
-export async function getHeadSha(workspace: string): Promise<string | null> {
-  const repoRoot = await resolveRepoRoot(workspace);
+export async function getHeadSha(workspace: string, opts: GitCallOptions = {}): Promise<string | null> {
+  const repoRoot = await resolveRepoRoot(workspace, opts);
   if (!repoRoot) return null;
-  return okOut(await runGit(repoRoot, ["rev-parse", "HEAD"]));
+  return okOut(await runGit(repoRoot, ["rev-parse", "HEAD"], GIT_TIMEOUT_MS, opts));
 }
 
 // ---- per-file diff (lazy) ---------------------------------------------------------------------------
@@ -905,6 +954,7 @@ export async function runReadonlyGit(workspace: string, subcommand: string, args
  *  shared by many tasks — so they're cleared whole rather than per-repo. */
 export function bustGitCaches(): void {
   summaryCache.clear();
+  repoStatusCache.clear();
   taskSummaryCache.clear();
   taskStatusCache.clear();
   headStateCache.clear();

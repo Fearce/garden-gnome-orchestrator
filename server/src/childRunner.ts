@@ -47,6 +47,10 @@ export interface RunChildOptions {
   timeoutMs?: number;
   /** Stop accumulating stdout past this many characters. The child still runs to completion. */
   maxStdoutBytes?: number;
+  /** Someone is waiting on this command right now (a task dispatch or resume). Urgent jobs are served ahead
+   *  of every queued ordinary job and may use one reserved worker. Without that, a board load's few hundred
+   *  chip reads queued in front of a dispatch's single `rev-parse`, and a new task took minutes to appear. */
+  urgent?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -56,6 +60,10 @@ const MAX_STDERR = 64_000;
 // a burst of git reads doesn't itself become the thing loading the machine. Tunable for a box where
 // process creation is slower still.
 const POOL_SIZE = Math.max(1, Math.min(8, Number(process.env.CHILD_WORKER_POOL ?? 2) || 2));
+/** Extra workers only urgent jobs may occupy, so one still starts when slow ordinary reads fill the pool. */
+const URGENT_RESERVE = 1;
+/** A job that waited this long for a worker is logged, so a flooded pool is visible instead of silent. */
+const SLOW_WAIT_MS = 5_000;
 /** How long past a job's own timeout the main thread waits before declaring the WORKER lost. Generous,
  *  because a healthy worker that killed its child at the deadline still has to drain the child's pipes
  *  and post its reply, and a false positive costs a rebuilt worker. Read per dispatch rather than frozen
@@ -133,7 +141,56 @@ interface Job {
   env?: Record<string, string>;
   timeoutMs: number;
   maxStdoutBytes: number;
+  urgent: boolean;
+  queuedAt: number;
   resolve: (r: ChildResult) => void;
+}
+
+/** What a slow-wait report carries: the command that waited, for how long, and the queue behind it. */
+export interface SlowChildWait {
+  cmd: string;
+  args: string[];
+  urgent: boolean;
+  waitedMs: number;
+  queuedBehind: number;
+}
+
+let slowWaitListener: ((w: SlowChildWait) => void) | null = null;
+
+/** Receive a report whenever a job waited more than SLOW_WAIT_MS for a worker. One listener; the server
+ *  wires it to its log at boot. */
+export function onSlowChildWait(listener: ((w: SlowChildWait) => void) | null): void {
+  slowWaitListener = listener;
+}
+
+/** Summarise slow waits as at most one line per `intervalMs`, since one board load can delay hundreds of
+ *  reads at once. Returns a stop function. */
+export function reportSlowChildWaits(log: (line: string) => void, intervalMs = 60_000): () => void {
+  let count = 0;
+  let urgent = 0;
+  let worst: SlowChildWait | null = null;
+  onSlowChildWait((w) => {
+    count++;
+    if (w.urgent) urgent++;
+    if (!worst || w.waitedMs > worst.waitedMs) worst = w;
+  });
+  const timer = setInterval(() => {
+    if (!worst) return;
+    const cmd = [worst.cmd, ...worst.args.filter((a) => a !== "--no-pager").slice(0, 3)].join(" ");
+    log(
+      `child command pool: ${count} command(s) waited over ${SLOW_WAIT_MS / 1000}s for a worker in the last ` +
+        `${Math.round(intervalMs / 1000)}s (${urgent} urgent); worst ${(worst.waitedMs / 1000).toFixed(1)}s ` +
+        `for "${cmd}" with ${worst.queuedBehind} still queued`,
+    );
+    count = 0;
+    urgent = 0;
+    worst = null;
+  }, intervalMs);
+  timer.unref();
+  return () => {
+    clearInterval(timer);
+    onSlowChildWait(null);
+  };
 }
 
 interface Slot {
@@ -220,12 +277,37 @@ function spawnSlot(): Slot | null {
   return slot;
 }
 
+/** The next job to start: the oldest urgent one, else the oldest overall. -1 when the pool cannot take
+ *  it yet: ordinary jobs stop at POOL_SIZE busy workers, and urgent jobs may use URGENT_RESERVE more. */
+function nextJobIndex(): number {
+  if (!waiting.length) return -1;
+  const urgentAt = waiting.findIndex((j) => j.urgent);
+  const index = urgentAt >= 0 ? urgentAt : 0;
+  const busy = slots.filter((s) => s.busy).length;
+  return busy < capacityFor(waiting[index]!) ? index : -1;
+}
+
+const capacityFor = (job: Job): number => POOL_SIZE + (job.urgent ? URGENT_RESERVE : 0);
+
+function reportSlowWait(job: Job): void {
+  const waitedMs = Date.now() - job.queuedAt;
+  if (waitedMs < SLOW_WAIT_MS || !slowWaitListener) return;
+  try {
+    slowWaitListener({ cmd: job.cmd, args: job.args, urgent: job.urgent, waitedMs, queuedBehind: waiting.length });
+  } catch {
+    /* a logging failure must never cost the job its worker */
+  }
+}
+
 function pump(): void {
-  while (waiting.length) {
+  for (;;) {
+    const index = nextJobIndex();
+    if (index < 0) return;
     let slot = slots.find((s) => !s.busy);
-    if (!slot && slots.length < POOL_SIZE) slot = spawnSlot() ?? undefined;
+    if (!slot && slots.length < capacityFor(waiting[index]!)) slot = spawnSlot() ?? undefined;
     if (!slot) return;
-    const job = waiting.shift()!;
+    const job = waiting.splice(index, 1)[0]!;
+    reportSlowWait(job);
     slot.busy = job;
     // A command in flight keeps the process alive, exactly as an in-process spawn would — otherwise a
     // short-lived script (a probe, a gate) whose only pending work is a git read exits before the answer
@@ -274,7 +356,17 @@ export function runChild(cmd: string, args: string[], options: RunChildOptions =
   const maxStdoutBytes = options.maxStdoutBytes ?? DEFAULT_MAX_STDOUT;
   if (poolBroken) return runChildInProcess(cmd, args, { ...options, timeoutMs, maxStdoutBytes });
   return new Promise<ChildResult>((resolve) => {
-    waiting.push({ cmd, args, cwd: options.cwd, env: options.env, timeoutMs, maxStdoutBytes, resolve });
+    waiting.push({
+      cmd,
+      args,
+      cwd: options.cwd,
+      env: options.env,
+      timeoutMs,
+      maxStdoutBytes,
+      urgent: options.urgent === true,
+      queuedAt: Date.now(),
+      resolve,
+    });
     pump();
     // pump() sets poolBroken when the very first worker fails to start; nothing consumed the job, so run
     // it here rather than leaving the caller hanging on a pool that will never exist.
@@ -342,8 +434,14 @@ export function runChildInProcess(cmd: string, args: string[], options: RunChild
 }
 
 /** Test/diagnostic hook: how many worker threads the pool has built, and whether it fell back. */
-export function childRunnerState(): { workers: number; queued: number; fellBack: boolean } {
-  return { workers: slots.length, queued: waiting.length, fellBack: poolBroken };
+export function childRunnerState(): { workers: number; busy: number; queued: number; started: number; fellBack: boolean } {
+  return {
+    workers: slots.length,
+    busy: slots.filter((s) => s.busy).length,
+    queued: waiting.length,
+    started: nextJobId - 1,
+    fellBack: poolBroken,
+  };
 }
 
 /** Test hook: make the worker running a job go SILENT, the way the wedged production pool had. Its

@@ -202,6 +202,7 @@ const GATES = [
   "test:implementor-handover",
   "test:cli-role-kickoff",
   "test:per-repo",
+  "test:dispatch-latency",
   "test:slots",
   "test:crashlog",
   "test:leak-bookkeeping",
