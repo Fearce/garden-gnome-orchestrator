@@ -24,11 +24,21 @@ export interface ResetCreditsDTO {
   title: string | null;
   /** Epoch ms this reading was taken, so a consumer can judge staleness the way it does for meters. */
   readAt: number;
+  /** The provider's id for the credit a redeem spends next: Claude's grant id (required by its claim
+   *  call), Codex's credit id (optional there, the backend picks the next one without it). Null when
+   *  nothing is available or the provider did not name one. */
+  redeemId: string | null;
 }
 
 /** Nothing banked — distinct from "we could not read", which is `null` at every call site. */
 export function noResetCredits(readAt: number): ResetCreditsDTO {
-  return { available: 0, pending: 0, expiresAt: null, title: null, readAt };
+  return { available: 0, pending: 0, expiresAt: null, title: null, readAt, redeemId: null };
+}
+
+/** Both providers' ids are short opaque tokens; anything else is not sent back to them. */
+const REDEEM_ID = /^[A-Za-z0-9_-]{1,80}$/;
+function redeemIdOf(value: unknown): string | null {
+  return typeof value === "string" && REDEEM_ID.test(value) ? value : null;
 }
 
 function positiveInt(value: unknown): number {
@@ -78,6 +88,7 @@ export function parseCodexResetCredits(raw: unknown, readAt: number): ResetCredi
     expiresAt: expiries.length ? Math.min(...expiries) : null,
     title: trimmedTitle(usable[0]?.title),
     readAt,
+    redeemId: redeemIdOf(usable[0]?.id),
   };
 }
 
@@ -129,6 +140,7 @@ export function parseClaudeResetCredits(raw: unknown, readAt: number): ResetCred
   let pending = 0;
   const expiries: number[] = [];
   let title: string | null = null;
+  const usableIds: string[] = [];
   for (const grant of grants) {
     if (!grant || typeof grant !== "object") continue;
     const left = positiveInt(grant.resets_left);
@@ -141,6 +153,21 @@ export function parseClaudeResetCredits(raw: unknown, readAt: number): ResetCred
     const endsAt = isoToMs(grant.ends_at);
     if (endsAt !== null) expiries.push(endsAt);
     title ??= trimmedTitle(grant.label);
+    const id = redeemIdOf(grant.id);
+    if (id) usableIds.push(id);
   }
-  return { available, pending, expiresAt: expiries.length ? Math.min(...expiries) : null, title, readAt };
+  // The claim call refuses any grant but the provider's `next_grant_id` ("not_next_grant"), so that one
+  // is spent when it is among the usable grants; the first usable grant is only the fallback.
+  const next = redeemIdOf(wire.next_grant_id);
+  const redeemId = next && usableIds.includes(next) ? next : (usableIds[0] ?? null);
+  return { available, pending, expiresAt: expiries.length ? Math.min(...expiries) : null, title, readAt, redeemId };
+}
+
+// ---- redeeming --------------------------------------------------------------------------------------
+
+/** What a redeem attempt came to, in words the owner can act on. `ok` only when a reset was actually
+ *  spent (or the provider confirms this same attempt already spent one). */
+export interface RedeemOutcome {
+  ok: boolean;
+  message: string;
 }

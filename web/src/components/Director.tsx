@@ -16,7 +16,8 @@ import { columnDragMax, useColumnResize } from "./useColumnResize.js";
 // The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
 // not localStorage — the console is served on both an HTTP and an HTTPS origin (the tablet Deck iframes
 // the HTTPS port) and those origins don't share localStorage, so a client-only store wouldn't carry
-// across surfaces. The list is capped at settings.maxRecentRepos. Trailing-separator-tolerant basename,
+// across surfaces. The list is capped at settings.maxRecentRepos. The server adds a repo itself when a
+// dispatch carries a path, and the row's + adds one from the folder picker. Trailing-separator-tolerant basename,
 // cross-platform (handles / and \ paths):
 const repoLabel = (p: string): string => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
 
@@ -77,10 +78,13 @@ export function Director() {
   const showPickers = useStore((s) => s.settings.showComposerPickers);
   const recentRepos = useStore((s) => s.settings.recentRepos);
   const maxRecentRepos = useStore((s) => s.settings.maxRecentRepos);
+  const rememberRepo = useStore((s) => s.rememberRepo);
+  const forgetRepo = useStore((s) => s.forgetRepo);
   const isCompact = useIsCompact();
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
-  const [pickerOpen, setPickerOpen] = useState(false);
+  // "path" fills the path field; "add" also remembers the picked folder as a recent-repo chip.
+  const [picker, setPicker] = useState<"path" | "add" | null>(null);
   const [searchText, setSearchText] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const searchExpanded = searchOpen || !!searchText;
@@ -206,15 +210,6 @@ export function Director() {
 
   const directNeedsWs = (skip || vanillaMode) && !ws.trim();
 
-  // Promote a just-dispatched repo to the front (deduped, capped) and persist server-side; remove drops
-  // one chip. Both send the whole new list — setSettings is optimistic and the server re-caps/dedupes.
-  const pushRepo = (path: string) => {
-    const p = path.trim();
-    if (!p) return;
-    setSettings({ recentRepos: [p, ...recentRepos.filter((x) => x !== p)].slice(0, maxRecentRepos) });
-  };
-  const removeRepo = (path: string) => setSettings({ recentRepos: recentRepos.filter((x) => x !== path) });
-
   const submit = () => {
     const t = text.trim();
     if (!t || directNeedsWs) return;
@@ -226,7 +221,6 @@ export function Director() {
         ? sendDirect(t, w || undefined, att.images)
         : sendPrompt(t, w || undefined, att.images);
     if (!sent) return;
-    if (w) pushRepo(w);
     setText("");
     att.clear();
   };
@@ -357,8 +351,8 @@ export function Director() {
       )}
 
       <div className={"composer-options" + (att.dragging ? " dragging" : "")} {...att.dropHandlers}>
-        {recentRepos.length > 1 && (
-          <div className={"recent-repos" + (isCompact ? " compact" : "")} role="group" aria-label="Recent repositories">
+        {/* Always rendered, even with no chips: the + is how a repo gets here without dispatching to it. */}
+        <div className={"recent-repos" + (isCompact ? " compact" : "")} role="group" aria-label="Recent repositories">
               <span className="recent-repos-label mono">repos</span>
               {recentRepos.slice(0, maxRecentRepos).map((p) => {
                 const active = p === ws.trim();
@@ -377,15 +371,23 @@ export function Director() {
                       className="repo-chip-x"
                       aria-label={`Remove ${p} from recent repos`}
                       title="Remove from recents"
-                      onClick={() => removeRepo(p)}
+                      onClick={() => forgetRepo(p)}
                     >
                       ×
                     </button>
                   </span>
                 );
               })}
-          </div>
-        )}
+              <button
+                type="button"
+                className="repo-add"
+                aria-label="Add a repository"
+                title="Add a repository to this list"
+                onClick={() => setPicker("add")}
+              >
+                +
+              </button>
+        </div>
         <div className="composer-mode">
           <button
             type="button"
@@ -478,7 +480,7 @@ export function Director() {
             type="button"
             title="Browse for a folder"
             aria-label="Browse for a folder"
-            onClick={() => setPickerOpen(true)}
+            onClick={() => setPicker("path")}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
@@ -495,8 +497,15 @@ export function Director() {
         </div>
       </div>
     </aside>
-    {pickerOpen && (
-      <FolderPicker initialPath={ws} onSelect={setWs} onClose={() => setPickerOpen(false)} />
+    {picker && (
+      <FolderPicker
+        initialPath={ws}
+        onSelect={(p) => {
+          setWs(p);
+          if (picker === "add") rememberRepo(p);
+        }}
+        onClose={() => setPicker(null)}
+      />
     )}
     </>
   );

@@ -15,6 +15,8 @@ export default function DeliverableModal({ d, onClose }: { d: Finding; onClose: 
   const name = basenameOf(path);
   const kind = fileKindOf(name);
   const { ref, style, startResize, reset } = useResizableModal();
+  // Set once the server refuses the file: a Download would only save the refusal, so it is withdrawn.
+  const [failure, setFailure] = useState<string | null>(null);
   return (
     <div className="scrim" onClick={onClose}>
       <div className="modal deliverable" ref={ref} style={style} onClick={(e) => e.stopPropagation()}>
@@ -29,16 +31,25 @@ export default function DeliverableModal({ d, onClose }: { d: Finding; onClose: 
             </div>
           </div>
           <div className="dl-modal-actions">
-            <a className="btn ghost sm" href={apiUrl(`/api/deliverable/${d.id}?download=1`)} download={name}>
-              Download
-            </a>
+            {failure ? null : (
+              <a className="btn ghost sm" href={apiUrl(`/api/deliverable/${d.id}?download=1`)} download={name}>
+                Download
+              </a>
+            )}
             <button className="btn ghost sm" onClick={onClose} aria-label="Close">
               ✕
             </button>
           </div>
         </div>
         <div className="deliverable-body">
-          <DeliverablePreview id={d.id} name={name} kind={kind} />
+          {failure ? (
+            <div className="dl-status err">
+              Couldn’t load this file. {failure}
+              <div className="faint">{path}</div>
+            </div>
+          ) : (
+            <DeliverablePreview id={d.id} name={name} kind={kind} onFailure={setFailure} />
+          )}
         </div>
         <div className="dl-resize dl-resize-r" onPointerDown={(e) => startResize(e, 1, 0)} title="Drag to resize" />
         <div className="dl-resize dl-resize-b" onPointerDown={(e) => startResize(e, 0, 1)} title="Drag to resize" />
@@ -53,24 +64,44 @@ export default function DeliverableModal({ d, onClose }: { d: Finding; onClose: 
   );
 }
 
-function DeliverablePreview({ id, name, kind }: { id: string; name: string; kind: FileKind }) {
+type OnFailure = (reason: string) => void;
+
+/** The route's refusal, in the owner's terms: what went wrong with the file, not an HTTP code. */
+function describeFailure(status: number): string {
+  if (status === 403) {
+    return "It was saved outside this task’s workspace, so the console will not serve it. The agent needed to copy it into the workspace before posting it.";
+  }
+  if (status === 404) return "The file is no longer on disk.";
+  if (status === 413) return "It is over the 25 MB limit for viewing and downloading here.";
+  if (status === 401) return "Your session has expired. Sign in again.";
+  return `The server responded ${status}.`;
+}
+
+/** An <img> only reports that it failed, not why. Ask the route once more to learn the reason. */
+function explainImageFailure(url: string, onFailure: OnFailure): void {
+  fetch(url)
+    .then((r) => onFailure(r.ok ? "The file is not a readable image." : describeFailure(r.status)))
+    .catch(() => onFailure("The console could not be reached."));
+}
+
+function DeliverablePreview({ id, name, kind, onFailure }: { id: string; name: string; kind: FileKind; onFailure: OnFailure }) {
   const url = apiUrl(`/api/deliverable/${id}`);
 
   // Images and PDFs render straight from the URL — no text fetch needed.
   if (kind === "image") {
     return (
       <div className="dl-image-wrap">
-        <img className="dl-image" src={url} alt={name} />
+        <img className="dl-image" src={url} alt={name} onError={() => explainImageFailure(url, onFailure)} />
       </div>
     );
   }
   if (kind === "pdf") {
     return <iframe className="dl-pdf" src={url} title={name} />;
   }
-  return <TextPreview url={url} name={name} kind={kind} />;
+  return <TextPreview url={url} name={name} kind={kind} onFailure={onFailure} />;
 }
 
-function TextPreview({ url, name, kind }: { url: string; name: string; kind: FileKind }) {
+function TextPreview({ url, name, kind, onFailure }: { url: string; name: string; kind: FileKind; onFailure: OnFailure }) {
   const [state, setState] = useState<{ text: string | null; error: string | null; loading: boolean }>({
     text: null,
     error: null,
@@ -82,11 +113,14 @@ function TextPreview({ url, name, kind }: { url: string; name: string; kind: Fil
     setState({ text: null, error: null, loading: true });
     fetch(url)
       .then(async (r) => {
-        if (!r.ok) throw new Error(`server responded ${r.status}`);
+        if (!r.ok) {
+          if (alive) onFailure(describeFailure(r.status));
+          return null;
+        }
         return r.text();
       })
       .then((text) => {
-        if (alive) setState({ text, error: null, loading: false });
+        if (alive && text !== null) setState({ text, error: null, loading: false });
       })
       .catch((e: unknown) => {
         if (alive) setState({ text: null, error: e instanceof Error ? e.message : "failed to load", loading: false });
@@ -94,7 +128,7 @@ function TextPreview({ url, name, kind }: { url: string; name: string; kind: Fil
     return () => {
       alive = false;
     };
-  }, [url]);
+  }, [url, onFailure]);
 
   if (state.loading) return <div className="dl-status faint">loading…</div>;
   if (state.error) return <div className="dl-status err">Couldn’t load this file: {state.error}</div>;

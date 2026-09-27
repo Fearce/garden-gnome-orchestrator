@@ -6,6 +6,11 @@ export type Role = "director" | "planner" | "researcher" | "implementor" | "qa" 
  *  process (the Online Office carries another machine's role names). Mirrored in server/src/types.ts. */
 export const ROLES = ["director", "planner", "researcher", "implementor", "qa", "reader", "reviewer"] as const;
 
+/** Every character a gnome can be drawn as: the pipeline roles, plus the Co-worker. The Co-worker is
+ *  deliberately NOT a `Role`: a Co-work session owns no thread and no agent run, so it must never be
+ *  assignable where the pipeline expects one. It only needs a face and a colour on the board. */
+export type GnomeRole = Role | "coworker";
+
 /** Dispatch lane: undefined/null = the normal pipeline, 'read' = the read-only reader lane (dispatch_read),
  *  'vanilla' = Default mode's single stock session (server/src/types.ts has the full doc comment). */
 export type ThreadLane = "read" | "vanilla";
@@ -189,7 +194,9 @@ export interface ScheduledTask {
 }
 
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
-export type BoardView = "tasks" | "cowork" | "notes" | "schedules" | "supervisor" | "ide";
+/** Co-work is not a pane: its sessions are cards on the task board, and a conversation opens as a popup
+ *  over whatever pane is showing so the rest of the work stays in sight. */
+export type BoardView = "tasks" | "notes" | "schedules" | "supervisor" | "ide";
 
 /** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
 export const NOTE_MAX_CHARS = 255;
@@ -508,6 +515,7 @@ export interface ResetCreditsDTO {
   expiresAt: number | null;
   title: string | null;
   readAt: number;
+  redeemId: string | null;
 }
 
 /** Codex (ChatGPT-plan) usage windows — mirrors the server's CodexUsageDTO. `fiveHour` is the rolling
@@ -602,7 +610,7 @@ export interface OrchestratorSettings {
   maxConcurrent: number;
   maxConcurrentPerRepo: number; // max pipelines running at once for a single repo; 0 (default) = unlimited (only the global maxConcurrent applies)
   selfImproveEnabled: boolean; // opt-in (off by default): completed tasks get one extra implementor round that builds the tools/skills/memories the session showed were missing
-  autoModelSelection: boolean; // opt-in: smart-pick one sticky director target (re-pick on cap), plus each implementor's model/effort from every dispatchable backend; implementor outcomes feed later picks.
+  autoModelSelection: boolean; // opt-in: smart-pick each implementor's model/effort from every dispatchable backend; implementor outcomes feed later picks. The director always runs on its configured model.
   // Token-usage safety limit: opt-in auto-stop when live utilization reaches the threshold. Disabled by
   // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.
   tokenLimitEnabled: boolean;
@@ -769,6 +777,8 @@ export interface CoworkSession {
   error: string | null;
   createdAt: number;
   updatedAt: number;
+  /** When the owner closed it off the board (restorable), or null while it is on the board. */
+  closedAt?: number | null;
   /** Derived, never a column: the live turn's start, so a board card can run an elapsed clock without
    *  fetching that session's history. Null whenever no turn is claimed. */
   activeTurnStartedAt: number | null;
@@ -1193,6 +1203,7 @@ export type ServerEvent =
       type: "hello";
       /** Missing on an older server while a staged deployment waits to restart. */
       startQaSupported?: boolean;
+      coworkCloseSupported?: boolean;
       threads: Thread[];
       runs: AgentRun[];
       findings: Finding[];
@@ -1308,6 +1319,9 @@ export type ServerEvent =
   // dismissible banner + desktop notify.
   // `kind: "tokenSafety"` marks the freeze's own notice, which the durable Token Safety box replaces.
   | { type: "notice"; level: "info" | "warn"; title: string; message: string; kind?: "tokenSafety" }
+  // The answer to one `resetCredit.redeem`, only to the socket that asked. `key` echoes the target
+  // ("codex", or "claude:<account id>") so the console knows which chip to settle.
+  | { type: "resetCredit.result"; key: string; ok: boolean; message: string }
   // Voice mode: spoken completion line for a finished task — consumed by the voice-gateway, ignored here.
   | { type: "voice.announce"; threadId: string; text: string }
   // The heartbeat's answer. Re-requesting the whole `hello` every 20s to keep the tunnel warm cost
@@ -1319,11 +1333,13 @@ export type ClientCommand =
   | { type: "prompt.new"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
   | { type: "prompt.direct"; text: string; workspace?: string; images?: ImageAttachment[]; clientId?: string }
   | { type: "prompt.vanilla"; text: string; workspace?: string; images?: ImageAttachment[]; model?: string; effort?: Effort; clientId?: string }
-  | { type: "cowork.create"; name?: string; workspace: string; provider?: ImplementorProvider; model?: string; clientId?: string }
+  | { type: "cowork.create"; name?: string; workspace: string; provider?: ImplementorProvider; model?: string; worktree?: boolean; clientId?: string }
   | { type: "cowork.send"; sessionId: string; text: string; attachments?: FileAttachment[]; clientId?: string }
   | { type: "cowork.steer"; sessionId: string; text: string; mode: CoworkSteeringMode; attachments?: FileAttachment[]; clientId?: string }
   | { type: "cowork.stop"; sessionId: string }
   | { type: "cowork.rename"; sessionId: string; name: string }
+  | { type: "cowork.close"; sessionId: string }
+  | { type: "cowork.restore"; sessionId: string }
   | { type: "cowork.delete"; sessionId: string }
   | { type: "cowork.history"; sessionId: string }
   | { type: "cowork.summary"; sessionId: string }
@@ -1380,6 +1396,9 @@ export type ClientCommand =
   | { type: "supervisor.message"; content: string; targetIds: string[]; clientId?: string }
   | { type: "supervisor.runNow" }
   | { type: "tokenSafety.bypass" }
+  | { type: "resetCredit.redeem"; provider: "claude" | "codex"; accountId?: string }
+  | { type: "recentRepos.remember"; path: string }
+  | { type: "recentRepos.forget"; path: string }
   | { type: "snapshot.request" }
   // The cheap keep-alive; `snapshot.request` stays for reconnect, tab re-show and the slow resync.
   | { type: "ping" };

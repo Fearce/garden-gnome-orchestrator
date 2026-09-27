@@ -317,6 +317,7 @@ function restoreResetCredits(value: unknown): { resetCredits?: ResetCreditsDTO }
       expiresAt: typeof v.expiresAt === "number" && Number.isFinite(v.expiresAt) ? v.expiresAt : null,
       title: typeof v.title === "string" && v.title.trim() ? v.title.trim().slice(0, 80) : null,
       readAt: v.readAt,
+      redeemId: typeof v.redeemId === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(v.redeemId) ? v.redeemId : null,
     },
   };
 }

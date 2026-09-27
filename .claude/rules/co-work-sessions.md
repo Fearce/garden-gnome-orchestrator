@@ -74,15 +74,26 @@ the disposable file cache, which the next turn rehydrates. Gate `test:cowork-hea
   the built-in tool would bypass the durable transcript and park the session in an unrepresented state.
 
 ## Console traps (the QoL layer)
-- **The desk is MOUNTED, not re-rendered.** `Board.tsx` keeps `<CoWork hidden={...} />` alive the way it
-  keeps the IDE alive. Turning that back into a conditional render silently restores the whole "leaving
-  the tab mid-turn loses your place" complaint: the session DATA is in the store either way, but the
-  scroll position, expanded bursts, draft and staged attachments are component state.
-  `.cowork-shell` is `display: grid`, which overrides the UA rule behind `hidden` — `.cowork-shell[hidden]
-  { display: none; }` is what actually hides it, and without it the desk covers the task board.
-- **Scroll position and expansion belong to the STORE, keyed by session.** `display: none` resets
-  `scrollTop`, and the component is remounted by a key change on session switch. Both are also what the
-  owner means by "where I was", so they are per session, never global.
+- **Co-work is a card and a POPUP, never a tab.** The owner's rule: a separate Co-work tab hid every task
+  while they paired, and tabbing back and forth was the complaint. Sessions are `CoworkCard`s leading the
+  task lanes (older ones fold under "Earlier Co-work"), and `selectedCoworkId` IS "the popup is open":
+  a card sets it, Esc / ✕ / a backdrop mousedown clear it. Esc peels the top dialog only (summary or
+  promote first, a `.lightbox` handles its own, a field's `preventDefault` wins). `openInIde` and
+  `openGitConsole` clear it; `returnToOrigin` re-opens it for a `cowork` origin. Do not bring back a
+  `"cowork"` BoardView.
+- **A worktree is the way past the workspace guard, not a hole in it.** `cowork.create` with
+  `worktree: true` (`createInWorktree` → `coworkWorktree.ts`) makes a sibling `<repo>-cowork-<slug>` checkout
+  on a fresh `cowork/<slug>` branch; its path differs, so `coworkTaskConflict` (exact path match) never
+  fires. Nothing deletes a worktree automatically: an unmerged branch there is the owner's work.
+- **The popup is MOUNTED, not re-rendered.** `Board.tsx` renders `<CoworkPopup />` unconditionally and it
+  returns null while closed. Turning that into `{open && <CoworkPopup/>}` silently drops the unsent draft
+  and staged attachments on every close; they are component state.
+- **Scroll position and expansion belong to the STORE, keyed by session.** The transcript remounts on
+  every open (and on a key change per session). Both are also what the owner means by "where I was", so
+  they are per session, never global.
+- **The Co-worker is a `GnomeRole`, not a `Role`.** It has a face (a coffee mug) and a colour
+  (`--role-coworker`, chartreuse) so its cards read as their own kind of work, but widening `Role` would
+  make it assignable wherever the pipeline expects a role, which is the lane invariant broken in the types.
 - **A tool result pairs by `meta.id`, never by adjacency.** Parallel tool use returns out of order, and a
   result can arrive before its own call row. Pairing on position looks right in every hand-written
   fixture and mismatches under real load, which shows the owner one call's output under another's name.
@@ -93,6 +104,13 @@ the disposable file cache, which the next turn rehydrates. Gate `test:cowork-hea
 - **The board card owns nothing.** `CoworkCards.tsx` may read session state and send the steering
   commands the composer already sends. A "mark done", a QA pip or a findings list on that card is the
   exact defect this lane exists to prevent.
+- **But it follows the board's rules like a task card.** Open sessions are `BoardItem`s in the SAME list
+  as tasks (`Board.tsx`: one sort, one persisted drag order with `cowork:<id>` keys, one pager); ✕ sets
+  `closed_at` (`cowork.close`, refused mid-turn, like a running task's hidden ✕) and the session waits in
+  the shared Closed list until Restore, Delete, or a new message (which reopens it). Closing only moves the
+  card; it is not settling. A closed session is never auto-purged, unlike a task: nothing else holds that
+  context. Under drag the board still regroups by the sort's primary key, so a "Newest first" sort never
+  ties and a drag cannot override it; the lab drags under "Project".
 - **The summary is deterministic on purpose.** `coworkSummary.ts` never calls a model: the owner reads it
   when a session was timeboxed or abandoned, which is when capacity is least likely to be there. A commit
   is only reported when git printed its `[branch sha] subject` receipt in a SUCCESSFUL tool RESULT — the
@@ -102,10 +120,13 @@ the disposable file cache, which the next turn rehydrates. Gate `test:cowork-hea
   brief can never describe unsettled work.
 - **Browser: `npm run cowork-lab --prefix server`** drives all of the above against its own instance on
   :5417 (`-- --shots data/cowork-lab-shots` to keep the pictures). Uncommitted server work needs an
-  isolated build: `npx tsc -p tsconfig.json --outDir .cowork-lab-dist` then `GGO_LAB_ENTRY=.cowork-lab-dist/index.js`.
+  isolated build: `npx tsc -p tsconfig.json --outDir .cowork-lab-dist` then `GGO_LAB_ENTRY=.cowork-lab-dist/index.js`;
+  uncommitted web work, `npm run build:lab --prefix web` then `GGO_LAB_WEB_DIST=.lab-web-dist`. On a
+  Google-only install (`AUTH_PASSWORD=` blank in `server/.env`) pass any `AUTH_PASSWORD=<throwaway>` in the
+  lab's environment, or every lab stalls on the sign-in page waiting for `.accounts .acct`.
 
 ## Verify
-`npm run test:cowork && npm run test:cowork-summary && npm run test:cowork-ui && npm run test:cowork-health --prefix server` (all
+`npm run test:cowork && npm run test:cowork-summary && npm run test:cowork-worktree && npm run test:cowork-ui && npm run test:cowork-health --prefix server` (all
 free, no agent, no quota), then `npm run typecheck && npm run build`. `cowork.itest.ts` stubs only the
 agent-spawning leaf (`CoworkRuntime`), so every decision above runs for real — extend it rather than
 writing a new harness, and do the revert-check (`threadmanager-itest.md`): the pre-start race and the

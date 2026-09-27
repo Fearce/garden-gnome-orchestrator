@@ -392,7 +392,6 @@ const TIER = [
   [".rail-head h2", "the rail's section heading"],
   [".board-head h2", "the board's section heading"],
   [".board-tab", "the board's view switcher, which reads as a heading beside it"],
-  [".cowork-board-head h3", "the Co-work board's section heading"],
   [".card .title", "a task card's header"],
   [".cowork-card-name", "a Co-work card's header"],
   [".detail-head h2", "the task panel's title"],

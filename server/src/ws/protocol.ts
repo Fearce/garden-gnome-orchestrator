@@ -85,6 +85,7 @@ export type ServerEvent =
       type: "hello";
       startQaSupported: true;
       skipSelfImprovementSupported?: true;
+      coworkCloseSupported?: true;
       threads: ThreadSummary[];
       runs: AgentRun[];
       findings: Finding[];
@@ -222,6 +223,9 @@ export type ServerEvent =
   // `kind: "tokenSafety"` marks the freeze's own notice, which the console's durable Token Safety box
   // (driven by `token.safety`) replaces, so the owner never sees the same alert twice.
   | { type: "notice"; level: "info" | "warn"; title: string; message: string; kind?: "tokenSafety" }
+  // The answer to one `resetCredit.redeem`, only to the socket that asked. `key` echoes the target
+  // ("codex", or "claude:<account id>") so the console knows which chip to settle.
+  | { type: "resetCredit.result"; key: string; ok: boolean; message: string }
   // Voice mode: a task-tailored spoken line for a just-completed task. Only published while voice
   // mode is on (gateway up AND wake/mic enabled); the gateway speaks it, the web console ignores it.
   | { type: "voice.announce"; threadId: string; text: string }
@@ -280,6 +284,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     workspace: z.string().min(1).max(600),
     provider: z.enum(["claude", "codex", "grok", "zai"]).optional(),
     model: z.string().min(1).max(100).optional(),
+    /** Pair in a fresh git worktree of the workspace's repo instead of the folder itself. */
+    worktree: z.boolean().optional(),
     clientId: z.string().uuid().optional(),
   }),
   z.object({
@@ -299,6 +305,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("cowork.stop"), sessionId: z.string() }),
   z.object({ type: z.literal("cowork.rename"), sessionId: z.string(), name: z.string().trim().min(1).max(120) }),
+  z.object({ type: z.literal("cowork.close"), sessionId: z.string() }),
+  z.object({ type: z.literal("cowork.restore"), sessionId: z.string() }),
   z.object({ type: z.literal("cowork.delete"), sessionId: z.string() }),
   z.object({ type: z.literal("cowork.history"), sessionId: z.string() }),
   z.object({ type: z.literal("cowork.summary"), sessionId: z.string() }),
@@ -619,6 +627,13 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // One-shot owner override of the CURRENT Token Safety freeze: releases it and resumes the work it held
   // through the ordinary capacity-resume path. Not a setting; the next genuine crossing trips normally.
   z.object({ type: z.literal("tokenSafety.bypass") }),
+  // Spend one banked limit reset, after the console's confirm. Claude names the subscription; Codex has
+  // one plan per install, so it names nothing.
+  z.object({ type: z.literal("resetCredit.redeem"), provider: z.enum(["claude", "codex"]), accountId: z.string().min(1).max(100).optional() }),
+  // The composer's recent-repo chips. The server edits the stored list itself, so a console holding a
+  // stale copy can never write it back over a repo another dispatch just added.
+  z.object({ type: z.literal("recentRepos.remember"), path: z.string().trim().min(1).max(600) }),
+  z.object({ type: z.literal("recentRepos.forget"), path: z.string().trim().min(1).max(600) }),
   z.object({ type: z.literal("snapshot.request") }),
   // The cheap heartbeat. `snapshot.request` still exists and is still what a reconnect, a re-shown tab
   // and the slow periodic resync use — this is only for keeping the tunnel warm.

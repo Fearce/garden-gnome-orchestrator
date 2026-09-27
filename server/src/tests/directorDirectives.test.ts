@@ -108,6 +108,7 @@ try {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = mgr as any;
   const target = { key: "claude:test", provider: "claude", model: "test-model", accountId: "a", accountLabel: "a" };
+  internals.directorTargets = () => [target];
   internals.directorTargetReady = () => true;
   const runs: Array<{ cfg: AgentRunConfig; resume?: string; started?: UserContent; sent: UserContent[] }> = [];
   internals.createDirectorAgent = (_t: unknown, cfg: AgentRunConfig, opts: { resume?: string }) => {

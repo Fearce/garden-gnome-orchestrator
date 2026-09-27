@@ -62,6 +62,11 @@ comes back for it days later. That single difference is the source of both class
   entry in the initial state, exactly like the feed slices next to it.
 
 ## Emission side (where cards are born broken)
+**Since 2026-09-26 (`3fcfa1c`) emission is fenced by the route's own check.** `post_deliverable` and the
+CLI `DELIVERABLE:` bridge both call `resolveDeliverable` in `server/src/orchestrator/deliverablePath.ts`,
+the same function `GET /api/deliverable/:id` uses. A path that would 403/404/413 gets no card: the MCP
+tool returns the reason with the fix, and the CLI bridge posts a warning finding instead. Change the
+fence in that ONE module, never beside it. Cards born broken before that date still sit in the store.
 The route re-derives the path from `findings.path` plus the owning task's workspace on EVERY click, so
 a card that renders proves nothing about whether it serves. Three ways agents get this wrong, all three
 measured in the live store on 2026-09-14 (32 of 268 cards already dead):

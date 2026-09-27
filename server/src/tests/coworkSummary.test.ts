@@ -66,6 +66,7 @@ const session: CoworkSession = {
   error: null,
   createdAt: at,
   updatedAt: at + 600_000,
+  closedAt: null,
   activeTurnStartedAt: null,
   lastActivityAt: at + 600_000,
   lastSnippet: "Done.",

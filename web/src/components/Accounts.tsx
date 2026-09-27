@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useStore } from "../store.js";
+import { resetCreditKey, useStore } from "../store.js";
 import { effortLabel, isCapParked, modelLabel } from "../lib/format.js";
 import type { AccountDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO, ResetCreditsDTO, ZaiEffort, ZaiUsageDTO } from "../types.js";
 
@@ -289,7 +289,7 @@ function CodexChip({
         <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
         <span className="acct-label">Codex</span>
         <span className={tagCls}>{tag}</span>
-        <ResetCreditBadge credits={usage?.resetCredits} provider="Codex" now={now} />
+        <ResetCreditBadge credits={usage?.resetCredits} provider="Codex" target={{ provider: "codex" }} now={now} />
         {errored ? <span className="acct-tag">no usage</span> : null}
       </div>
       {showMeters ? (
@@ -330,19 +330,48 @@ function CodexChip({
  * wrap bound), and the owner's whole ask was to notice a reset without opening the native app — which
  * is a question only worth answering when the answer is yes. `pending` and the expiry ride the hover
  * text, where they cost no width.
+ *
+ * The badge is also where the reset is SPENT: a click asks for confirmation (a redeem cannot be undone)
+ * and then sends `resetCredit.redeem`; the outcome, including a provider's refusal, lands in the notice
+ * banner. It stays disabled while its own redeem is in flight so a double click cannot spend two.
  */
-function ResetCreditBadge({ credits, provider, now }: { credits: ResetCreditsDTO | undefined; provider: string; now: number }) {
+function ResetCreditBadge({
+  credits,
+  provider,
+  target,
+  now,
+}: {
+  credits: ResetCreditsDTO | undefined;
+  provider: string;
+  target: { provider: "codex" } | { provider: "claude"; accountId: string };
+  now: number;
+}) {
+  const redeem = useStore((s) => s.redeemResetCredit);
+  const redeeming = useStore((s) => !!s.resetRedeeming[resetCreditKey(target)]);
   if (!credits || credits.available <= 0) return null;
-  const what = credits.title ?? "limit reset";
+  const what = (credits.title ?? "limit reset").toLowerCase();
   const expiry = credits.expiresAt != null ? ` · expires in ${countdown(credits.expiresAt, now)}` : "";
   const waiting = credits.pending > 0 ? ` · ${credits.pending} more granted but not usable yet` : "";
+  const standing = `${credits.available} banked ${what}${credits.available === 1 ? "" : "s"} on ${provider}${expiry}${waiting}`;
+  const use = () => {
+    const expires = credits.expiresAt != null ? `\nIt expires in ${countdown(credits.expiresAt, now)} if unused.` : "";
+    const ok = window.confirm(
+      `Redeem your banked ${what} on ${provider} now?\n\nThis refills ${provider}'s usage limits right away and uses up ` +
+        `${credits.available === 1 ? "your only banked reset" : `one of your ${credits.available} banked resets`}. It cannot be undone.${expires}`,
+    );
+    if (ok) redeem(target);
+  };
   return (
-    <span
-      className="acct-tag reset-credit"
-      title={`${credits.available} banked ${what.toLowerCase()}${credits.available === 1 ? "" : "s"} on ${provider}${expiry}${waiting} — spend it from the provider's own app when you hit a limit.`}
+    <button
+      type="button"
+      className={"acct-tag reset-credit" + (redeeming ? " redeeming" : "")}
+      disabled={redeeming}
+      title={redeeming ? `Redeeming the ${what} on ${provider}…` : `${standing}. Click to redeem it now.`}
+      aria-label={`Redeem banked ${what} on ${provider}`}
+      onClick={use}
     >
       ↻{credits.available}
-    </span>
+    </button>
   );
 }
 
@@ -540,7 +569,7 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
         ) : stale ? (
           <span className="acct-tag dim">stale</span>
         ) : null}
-        <ResetCreditBadge credits={a.resetCredits} provider={a.label} now={now} />
+        <ResetCreditBadge credits={a.resetCredits} provider={a.label} target={{ provider: "claude", accountId: a.id }} now={now} />
         {(a.modelLimits ?? [])
           .filter((ml) => ml.resetsAt > now)
           .map((ml) => (

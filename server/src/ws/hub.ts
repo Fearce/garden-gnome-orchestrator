@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
 import type { AccountManager } from "../accounts/accountManager.js";
@@ -13,6 +14,7 @@ import type { ThreadManager } from "../orchestrator/threadManager.js";
 import type { OnlineOffice } from "../office/onlineOffice.js";
 import type { CoworkManager } from "../orchestrator/cowork.js";
 import { readCodexUsageForSnapshot } from "../agents/codexUsage.js";
+import { redeemCodexResetCredit } from "../agents/codexUsagePing.js";
 import { readGrokUsage } from "../agents/grokUsage.js";
 import { readZaiUsage } from "../agents/zaiUsage.js";
 import { formatStructuredRoleFeed } from "../agents/structuredText.js";
@@ -20,7 +22,7 @@ import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./pro
 import { isAuthed } from "../auth.js";
 import { logCrash } from "../crashLog.js";
 import { CHAT_PAGE_SIZE, THREAD_HISTORY_PAGE_SIZE } from "../types.js";
-import type { Message } from "../types.js";
+import type { Message, OrchestratorSettings } from "../types.js";
 import { injectThreadWithReceipt } from "./threadInjectionReceipt.js";
 
 /** Owner-facing rewrite for CLI structured-role walls (Grok multi-turn QA especially). Idempotent
@@ -46,6 +48,9 @@ export interface WsContext {
   onlineOffice: OnlineOffice;
   cowork: CoworkManager;
 }
+
+/** Banked-reset redeems in flight, by target key — see the `resetCredit.redeem` case. */
+const redeeming = new Set<string>();
 
 const STREAMING_EVENTS = new Set(["agent.delta", "agent.thinking", "director.delta", "cowork.delta", "cowork.thinking"]);
 
@@ -89,6 +94,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     type: "hello",
     startQaSupported: true,
     skipSelfImprovementSupported: true,
+    coworkCloseSupported: true,
     threads: ctx.db.listThreadSummaries(),
     runs: ctx.db.listAllRuns(SNAPSHOT_RUNS),
     findings: ctx.db.listFindings(undefined, SNAPSHOT_FINDINGS),
@@ -156,6 +162,15 @@ export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs:
     if (!armed) {
       armed = true;
       hub.subscribe((event) => {
+        // A reload within the cache window must not resurrect a session the owner just closed.
+        // Patch this small collection from the authoritative event; keep the expensive task snapshot
+        // rate-limited, and leave snapshots already handed to other callers untouched.
+        if (cached?.event.type === "hello" && event.type === "cowork.session") {
+          const sessions = cached.event.coworkSessions ?? [];
+          cached.event = { ...cached.event, coworkSessions: [event.session, ...sessions.filter((session) => session.id !== event.session.id)] };
+        } else if (cached?.event.type === "hello" && event.type === "cowork.removed") {
+          cached.event = { ...cached.event, coworkSessions: (cached.event.coworkSessions ?? []).filter((session) => session.id !== event.sessionId) };
+        }
         // A streaming delta is not durable board state — it cannot change any field of the snapshot,
         // and it is by far the most frequent event, so letting it dirty the snapshot would mean an
         // active server never reuses one.
@@ -171,8 +186,19 @@ export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs:
   };
 }
 
+/** A cached connect snapshot with the settings read fresh. The console adopts `hello.settings` wholesale,
+ *  so a snapshot built before a settings write, served inside the cache window, rolled back what the
+ *  owner had just changed (a toggle, a newly remembered repo). Settings come from kv in memory, so reading
+ *  them on each serve costs nothing next to the board the cache exists to protect. */
+export function withLiveSettings(snapshot: () => ServerEvent, settings: () => OrchestratorSettings): () => ServerEvent {
+  return () => {
+    const event = snapshot();
+    return event.type === "hello" ? { ...event, settings: settings() } : event;
+  };
+}
+
 export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
-  const helloSnapshot = createHelloCache(() => buildHello(ctx), ctx.hub);
+  const helloSnapshot = withLiveSettings(createHelloCache(() => buildHello(ctx), ctx.hub), () => ctx.manager.settings());
 
   fastify.get("/ws", { websocket: true }, (socket, request) => {
     if (!isAuthed(request.headers.cookie)) {
@@ -233,7 +259,7 @@ export async function handleCommand(
       await ctx.director.dispatchVanilla(cmd.text, cmd.workspace, cmd.images, cmd.model, cmd.effort, cmd.clientId);
       break;
     case "cowork.create":
-      sendCoworkAction(socket, "create", ctx.cowork.create(cmd), cmd.clientId);
+      sendCoworkAction(socket, "create", cmd.worktree ? await ctx.cowork.createInWorktree(cmd) : ctx.cowork.create(cmd), cmd.clientId);
       break;
     case "cowork.send":
       sendCoworkAction(socket, "send", ctx.cowork.send(cmd.sessionId, cmd.text, cmd.clientId, cmd.attachments), cmd.clientId);
@@ -246,6 +272,10 @@ export async function handleCommand(
       break;
     case "cowork.rename":
       sendCoworkAction(socket, "rename", ctx.cowork.rename(cmd.sessionId, cmd.name));
+      break;
+    case "cowork.close":
+    case "cowork.restore":
+      sendCoworkAction(socket, cmd.type === "cowork.close" ? "close" : "restore", ctx.cowork.setClosed(cmd.sessionId, cmd.type === "cowork.close"));
       break;
     case "cowork.delete":
       sendCoworkAction(socket, "delete", ctx.cowork.remove(cmd.sessionId));
@@ -363,6 +393,18 @@ export async function handleCommand(
       break;
     case "settings.set":
       ctx.manager.setSettings(cmd.settings);
+      break;
+    case "recentRepos.remember":
+      if (existsSync(cmd.path)) {
+        ctx.manager.rememberRecentRepo(cmd.path);
+      } else {
+        // The chip went up optimistically; hand this console the real list back along with the reason.
+        send(socket, { type: "settings", settings: ctx.manager.settings() });
+        send(socket, { type: "notice", level: "warn", title: "Repo not added", message: `"${cmd.path}" doesn't exist on this machine.` });
+      }
+      break;
+    case "recentRepos.forget":
+      ctx.manager.forgetRecentRepo(cmd.path);
       break;
     case "codex.test": {
       const result = await ctx.manager.testCodexConnection(cmd.apiKey);
@@ -538,6 +580,33 @@ export async function handleCommand(
       // the socket that asked.
       const result = await ctx.manager.bypassTokenSafety();
       if (!result.ok) send(socket, { type: "notice", level: "warn", title: "Token safety not bypassed", message: result.error });
+      break;
+    }
+    case "resetCredit.redeem": {
+      // One attempt per target at a time, across every console: a double click, or two tabs, must not
+      // spend two resets. The answer goes only to the asking socket; the refreshed chip reaches every
+      // console through the ordinary accounts / codex.usage broadcasts.
+      const key = cmd.provider === "codex" ? "codex" : `claude:${cmd.accountId ?? ""}`;
+      if (cmd.provider === "claude" && !cmd.accountId) {
+        send(socket, { type: "resetCredit.result", key, ok: false, message: "No subscription was named." });
+        break;
+      }
+      if (redeeming.has(key)) {
+        send(socket, { type: "resetCredit.result", key, ok: false, message: "A redeem for this is already in progress." });
+        break;
+      }
+      redeeming.add(key);
+      try {
+        const outcome = cmd.provider === "codex"
+          ? await redeemCodexResetCredit(ctx.manager.openaiApiKey(), readCodexUsageForSnapshot()?.resetCredits?.redeemId ?? null)
+          : await ctx.accounts.redeemResetCredit(cmd.accountId!);
+        send(socket, { type: "resetCredit.result", key, ...outcome });
+      } catch (err) {
+        logCrash("resetCredit.redeem", err);
+        send(socket, { type: "resetCredit.result", key, ok: false, message: "The redeem failed unexpectedly; check the count after the next read." });
+      } finally {
+        redeeming.delete(key);
+      }
       break;
     }
     case "snapshot.request":

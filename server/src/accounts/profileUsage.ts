@@ -14,7 +14,8 @@
 // It is never used to run a model. Keeping it strictly to this one GET is what makes adding a
 // broader-scoped token to the configuration a small, auditable decision.
 
-import { parseClaudeResetCredits, type ResetCreditsDTO } from "./resetCredits.js";
+import { randomUUID } from "node:crypto";
+import { parseClaudeResetCredits, type RedeemOutcome, type ResetCreditsDTO } from "./resetCredits.js";
 
 /** `skip_spend=1` keeps the response to the usage/grant blocks — we want neither the spend figures nor
  *  the cost of computing them. `cedar_ember=1` is what asks for the grant block at all.
@@ -99,4 +100,73 @@ function classifyRejection(status: number, body: string): ProfileFailReason {
  *  arrives as a TypeError. Mirrors `usagePing.timedOut` — keep the two in step. */
 function timedOut(err: unknown): boolean {
   return err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+}
+
+// ---- spending one ---------------------------------------------------------------------------------
+
+/** Where a claim goes. Env-overridable for the same reason as `USAGE_URL`: a lab has no other way to
+ *  drive the real request and response handling without spending the owner's reset. */
+const CLAIM_BASE = process.env.PROFILE_CLAIM_BASE_URL?.trim() || "https://api.anthropic.com";
+
+/** The claim response, as Claude Code's own `/limit-reset` validates it (bundle 2.1.280). */
+interface ClaimBody {
+  result?: unknown;
+  reason?: unknown;
+  resets_left?: unknown;
+}
+
+/**
+ * Spend one banked Claude reset: `POST /api/organizations/{org}/reset_rate_limits`, exactly the call
+ * Claude Code's `/limit-reset` makes. `grantId` must be the grant the usage read named next; the
+ * backend refuses any other. `request_id` is fresh per attempt, which is what makes a retried click a
+ * second attempt rather than a replay.
+ */
+export async function claimClaudeReset(token: string, organizationId: string, grantId: string, timeoutMs = 25_000): Promise<RedeemOutcome> {
+  if (!/^[0-9a-fA-F-]{36}$/.test(organizationId)) return { ok: false, message: "The subscription's organization is not known yet, so there is nothing to claim against. Try again after the next usage read." };
+  let res: Response;
+  try {
+    res = await fetch(`${CLAIM_BASE}/api/organizations/${organizationId}/reset_rate_limits`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token.trim()}`,
+        "anthropic-beta": "oauth-2025-04-20",
+        "user-agent": "claude-cli/2.0.0",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ program: "cedar_ember", grant_id: grantId, request_id: randomUUID() }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    return { ok: false, message: timedOut(err) ? "Claude did not answer in time. The reset may or may not have been used; the count updates on the next read." : "Could not reach Claude to claim the reset." };
+  }
+  const text = await res.text().catch(() => "");
+  if (res.status === 429) return { ok: false, message: "Claude is rate-limiting claims right now. Try again in a minute." };
+  if (res.status === 401 || res.status === 403) return { ok: false, message: "Claude refused the profile token for this subscription. Paste a fresh one in Settings > Subscriptions." };
+  if (!res.ok) return { ok: false, message: `Claude answered HTTP ${res.status}; the reset was not used.` };
+  let body: ClaimBody;
+  try {
+    body = JSON.parse(text) as ClaimBody;
+  } catch {
+    return { ok: false, message: "Claude sent a reply that could not be read. Check the count after the next read." };
+  }
+  return claimOutcome(body);
+}
+
+/** Claude's claim verdicts in owner words. The reason codes are the ones the bundle enumerates. */
+function claimOutcome(body: ClaimBody): RedeemOutcome {
+  const left = typeof body.resets_left === "number" ? ` ${body.resets_left} left.` : "";
+  switch (body.result) {
+    case "reset":
+      return { ok: true, message: `Limits refilled.${left}` };
+    case "already_used":
+      return { ok: false, message: "That reset was already used." };
+    case "not_limited":
+      return { ok: false, message: "Claude only lets you use this reset once you have hit a limit. It is still banked." };
+    case "cooldown":
+      return { ok: false, message: "A reset was used recently; Claude has a cooldown before the next one. It is still banked." };
+    case "ineligible":
+      return { ok: false, message: `This subscription is not eligible to use the reset${typeof body.reason === "string" ? ` (${body.reason})` : ""}.` };
+    default:
+      return { ok: false, message: `Claude could not use the reset right now${typeof body.reason === "string" ? ` (${body.reason})` : ""}. It is still banked.` };
+  }
 }

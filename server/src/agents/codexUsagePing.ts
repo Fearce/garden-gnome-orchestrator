@@ -11,7 +11,8 @@ import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
 import { classifyRateWindows, noteCodexPing, noteCodexUsageError, noteCodexWake, readCodexUsageForSnapshot, type CodexLimitState, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 import { GENERAL_LIMIT_ID, normalizeLimitName, type CodexPool } from "./codexPools.js";
-import { parseCodexResetCredits } from "../accounts/resetCredits.js";
+import { parseCodexResetCredits, type RedeemOutcome } from "../accounts/resetCredits.js";
+import { randomUUID } from "node:crypto";
 
 /**
  * A live Codex usage read — the ChatGPT-plan counterpart of the Claude Haiku ping. The rollout-file
@@ -87,30 +88,9 @@ interface RpcRateLimitsResult {
  *  Returns null on any failure — no auth, spawn error, RPC error, timeout — callers keep the last
  *  snapshot in that case rather than blanking the meters. */
 export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PING_TIMEOUT_MS): Promise<CodexUsageDTO | null> {
-  const launcher = config.codex.launcher();
-  if (!existsSync(launcher.path)) {
-    noteCodexUsageError(`Codex CLI not found at ${launcher.path} (install Codex Desktop or run: npm install -g @openai/codex)`);
-    return null;
-  }
-  await mkdir(config.codex.home, { recursive: true }).catch(() => {});
-  const authMode = await seedCodexAuth(apiKey).catch(() => "none" as const);
-  if (authMode === "none") {
-    noteCodexUsageError("Codex has no usable auth (sign in with `codex login`, or add an API key in Settings > Subscriptions)");
-    return null;
-  }
-  // Mirror runTurn's env rules: point the CLI at the seeded isolated home, and carry OPENAI_API_KEY
-  // only in apikey mode (an inherited key under a ChatGPT login could nudge the CLI to the API path).
-  const env: NodeJS.ProcessEnv = withAgentToolPath({ ...process.env, CODEX_HOME: config.codex.home });
-  const key = apiKey?.trim();
-  if (authMode === "apikey" && key) env.OPENAI_API_KEY = key;
-  else delete env.OPENAI_API_KEY;
-
-  let child: ChildProcess;
-  try {
-    child = trackBlockingSync("codex usage ping (spawn app-server)", () =>
-      spawn(launcher.command, [...launcher.args, "app-server"], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true }));
-  } catch {
-    noteCodexUsageError("failed to start the Codex CLI process");
+  const child = await spawnAppServer(apiKey, "codex usage ping (spawn app-server)");
+  if (typeof child === "string") {
+    noteCodexUsageError(child);
     return null;
   }
   try {
@@ -120,7 +100,7 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
     // freshness veto codexAllowanceReopened depends on. Strictly conservative for the age/staleness
     // checks too.
     const readAt = Date.now();
-    const result = await appServerRateLimits(child, timeoutMs);
+    const result = (await appServerRequest(child, "account/rateLimits/read", {}, timeoutMs))?.result as RpcRateLimitsResult | undefined;
     const rl = result?.rateLimits;
     if (!rl) {
       noteCodexUsageError("the Codex app-server returned no rate-limit data (RPC failed or timed out)");
@@ -203,13 +183,97 @@ function withLimitState(rl: RpcRateLimits): { limitState?: CodexLimitState } {
   return state ? { limitState: state } : {};
 }
 
-/** Drive the minimal JSON-RPC exchange: initialize → initialized → account/rateLimits/read. */
-function appServerRateLimits(child: ChildProcess, timeoutMs: number): Promise<RpcRateLimitsResult | null> {
+/** Start `codex app-server` under the same auth an implementor turn uses (ChatGPT login preferred, API
+ *  key fallback). Returns the child, or why it could not start in words fit for the usage chip. */
+async function spawnAppServer(apiKey: string | undefined, blockingLabel: string): Promise<ChildProcess | string> {
+  const launcher = config.codex.launcher();
+  if (!existsSync(launcher.path)) return `Codex CLI not found at ${launcher.path} (install Codex Desktop or run: npm install -g @openai/codex)`;
+  await mkdir(config.codex.home, { recursive: true }).catch(() => {});
+  const authMode = await seedCodexAuth(apiKey).catch(() => "none" as const);
+  if (authMode === "none") return "Codex has no usable auth (sign in with `codex login`, or add an API key in Settings > Subscriptions)";
+  // Mirror runTurn's env rules: point the CLI at the seeded isolated home, and carry OPENAI_API_KEY
+  // only in apikey mode (an inherited key under a ChatGPT login could nudge the CLI to the API path).
+  const env: NodeJS.ProcessEnv = withAgentToolPath({ ...process.env, CODEX_HOME: config.codex.home });
+  const key = apiKey?.trim();
+  if (authMode === "apikey" && key) env.OPENAI_API_KEY = key;
+  else delete env.OPENAI_API_KEY;
+  try {
+    return trackBlockingSync(blockingLabel, () =>
+      spawn(launcher.command, [...launcher.args, "app-server"], { env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true }));
+  } catch {
+    return "failed to start the Codex CLI process";
+  }
+}
+
+// ---- redeeming a banked reset ----------------------------------------------------------------------
+
+/** How long a consume may take. It is a write the backend has to confirm, so it gets the same budget
+ *  Claude Code gives its own claim, not the read's. */
+const CONSUME_TIMEOUT_MS = 30_000;
+
+/** Pokes the running monitor for a fresh read, so the chip drops the spent credit and shows the refilled
+ *  meters right away instead of on the next ten-minute ping. Set by `startCodexUsageMonitor`. */
+let refreshUsageNow: (() => Promise<void>) | null = null;
+
+/**
+ * Spend one banked Codex reset: `account/rateLimitResetCredit/consume`, the app-server method the Codex
+ * TUI's own reset confirmation calls (schema from `codex app-server generate-json-schema`, 0.156.1).
+ * `creditId` is passed when the read named one; without it the backend picks the next available credit.
+ * The idempotency key is fresh per click, so a second click is a second attempt, never a replay.
+ */
+export async function redeemCodexResetCredit(apiKey: string | undefined, creditId: string | null): Promise<RedeemOutcome> {
+  const child = await spawnAppServer(apiKey, "codex reset redeem (spawn app-server)");
+  if (typeof child === "string") return { ok: false, message: child };
+  let outcome: RedeemOutcome;
+  try {
+    const reply = await appServerRequest(
+      child,
+      "account/rateLimitResetCredit/consume",
+      { idempotencyKey: randomUUID(), ...(creditId ? { creditId } : {}) },
+      CONSUME_TIMEOUT_MS,
+    );
+    outcome = consumeOutcome(reply);
+  } finally {
+    child.kill();
+  }
+  await refreshUsageNow?.().catch((e) => logCrash("codexPing.afterRedeem", e));
+  return outcome;
+}
+
+/** The consume verdicts in owner words. The four outcomes are the schema's whole enum. */
+function consumeOutcome(reply: RpcReply | null): RedeemOutcome {
+  if (!reply) return { ok: false, message: "Codex did not answer in time. The reset may or may not have been used; the count updates on the next read." };
+  if (reply.error) {
+    const detail = typeof (reply.error as { message?: unknown }).message === "string" ? `: ${(reply.error as { message: string }).message}` : "";
+    return { ok: false, message: `Codex refused the reset${detail}. It is still banked.` };
+  }
+  switch ((reply.result as { outcome?: unknown } | undefined)?.outcome) {
+    case "reset":
+      return { ok: true, message: "Codex limits refilled." };
+    case "alreadyRedeemed":
+      return { ok: true, message: "That reset had already gone through." };
+    case "nothingToReset":
+      return { ok: false, message: "None of Codex's limits can be reset right now, so the credit was kept. Use it once you hit a limit." };
+    case "noCredit":
+      return { ok: false, message: "Codex says there is no banked reset on this account any more." };
+    default:
+      return { ok: false, message: "Codex sent a reply that could not be read. Check the count after the next read." };
+  }
+}
+
+interface RpcReply {
+  result?: unknown;
+  error?: unknown;
+}
+
+/** Drive the minimal JSON-RPC exchange: initialize → initialized → one request. Null on timeout, a
+ *  failed initialize, or the process going away; otherwise the request's reply, error included. */
+function appServerRequest(child: ChildProcess, method: string, params: object, timeoutMs: number): Promise<RpcReply | null> {
   return new Promise((resolve) => {
     let buf = "";
     let step: "init" | "read" = "init";
     const timer = setTimeout(() => resolve(null), timeoutMs);
-    const finish = (v: RpcRateLimitsResult | null): void => {
+    const finish = (v: RpcReply | null): void => {
       clearTimeout(timer);
       resolve(v);
     };
@@ -232,7 +296,7 @@ function appServerRateLimits(child: ChildProcess, timeoutMs: number): Promise<Rp
         const line = buf.slice(0, i).trim();
         buf = buf.slice(i + 1);
         if (!line) continue;
-        let msg: { id?: number; result?: RpcRateLimitsResult; error?: unknown };
+        let msg: { id?: number; result?: unknown; error?: unknown };
         try {
           msg = JSON.parse(line) as typeof msg;
         } catch {
@@ -242,9 +306,9 @@ function appServerRateLimits(child: ChildProcess, timeoutMs: number): Promise<Rp
           if (msg.error) return finish(null);
           step = "read";
           send({ jsonrpc: "2.0", method: "initialized", params: {} });
-          send({ jsonrpc: "2.0", id: 2, method: "account/rateLimits/read", params: {} });
+          send({ jsonrpc: "2.0", id: 2, method, params });
         } else if (msg.id === 2) {
-          finish(msg.error ? null : (msg.result ?? null));
+          finish({ result: msg.result, error: msg.error });
         }
         // Anything else (notifications) is ignored.
       }
@@ -518,6 +582,7 @@ export function startCodexUsageMonitor(
     resetTimer.unref?.();
   };
 
+  refreshUsageNow = ping;
   push(); // rollout snapshot first, so the strip fills instantly on boot
   void ping().catch((e) => logCrash("codexPing.initial", e));
   setInterval(() => void ping().catch((e) => logCrash("codexPing.periodic", e)), CODEX_PING_MS).unref();

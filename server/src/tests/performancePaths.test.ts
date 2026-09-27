@@ -296,6 +296,25 @@ try {
   }
   assert.equal(builds, afterFirst, "a dirty snapshot is rebuilt at most once per interval, however many events and sockets arrive");
 
+  // Co-work board writes must survive an immediate reload inside that same cache window.
+  const session = db.createCoworkSession({ name: "Close and reload", autoNamed: false, workspace: dir });
+  const beforeClose = busy();
+  const closed = { ...session, closedAt: Date.now() };
+  hub.publish({ type: "cowork.session", session: closed });
+  const afterClose = busy();
+  assert.ok(afterClose.type === "hello");
+  assert.deepEqual(afterClose.coworkSessions, [closed], "a reconnect sees the closed card immediately");
+  assert.notEqual(afterClose, beforeClose, "an already served snapshot is not mutated");
+  hub.publish({ type: "cowork.session", session });
+  const afterRestore = busy();
+  assert.ok(afterRestore.type === "hello");
+  assert.deepEqual(afterRestore.coworkSessions, [session], "restore replaces the cached session without duplicates");
+  hub.publish({ type: "cowork.removed", sessionId: session.id });
+  const afterDelete = busy();
+  assert.ok(afterDelete.type === "hello");
+  assert.deepEqual(afterDelete.coworkSessions, [], "deleting a closed conversation also survives reconnect");
+  assert.equal(builds, afterFirst, "Co-work writes preserve the expensive snapshot rate limit");
+
   finished = true;
   console.log("Performance paths OK — board summary is slim, task history keyset-pages through its composite index, and the connect snapshot survives a reconnect storm.");
 } finally {

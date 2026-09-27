@@ -4,8 +4,8 @@ import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
 import type { Account } from "./account.js";
 import { pingUsage, type PingFailReason, type PingUsage } from "./usagePing.js";
-import { fetchProfileUsage, type ProfileFailReason } from "./profileUsage.js";
-import type { ResetCreditsDTO } from "./resetCredits.js";
+import { claimClaudeReset, fetchProfileUsage, type ProfileFailReason } from "./profileUsage.js";
+import type { RedeemOutcome, ResetCreditsDTO } from "./resetCredits.js";
 import type { AccountUsageEntry } from "./usageSnapshot.js";
 import { ResetStagger, WINDOW_MS } from "./resetStagger.js";
 import { logCrash } from "../crashLog.js";
@@ -496,7 +496,10 @@ export class AccountManager {
         toPing.push(a);
       }
     }
-    await Promise.all(toPing.map((a) => this.pingOne(a)));
+    // Banked resets are read for every account at boot too, held ones included (see `readResetCredits`
+    // for why that cannot disturb the stagger). Without this a restart hid every Claude reset badge,
+    // and the only way to redeem one, until the first periodic ping minutes later.
+    await Promise.all([...toPing.map((a) => this.pingOne(a)), ...[...this.states.values()].map((st) => this.readResetCredits(st))]);
     for (const { a, p } of toHold) {
       const at = Date.now();
       // Re-decide against the clock the pings above advanced: a weekly reset that elapsed while they
@@ -584,6 +587,39 @@ export class AccountManager {
       return;
     }
     this.applyResetCredits(st, result.credits, null);
+  }
+
+  /**
+   * Spend one of this subscription's banked resets, on the owner's explicit say-so.
+   *
+   * Re-reads the grants first rather than trusting the chip's copy: the claim must name the grant the
+   * provider lists NEXT, and the owner may have spent one from the native app since the last read. The
+   * same org check as `readResetCredits` applies, so a mis-filed profile token can never spend another
+   * subscription's reset. Afterwards the credits are re-read and the account pinged (unless it is held
+   * idle for the stagger), so the chip shows the refilled meters without waiting for the next cycle.
+   */
+  async redeemResetCredit(id: string): Promise<RedeemOutcome> {
+    const st = this.states.get(id);
+    if (!st) return { ok: false, message: "That subscription is not configured any more." };
+    const token = st.account.profileToken?.trim();
+    if (!token) return { ok: false, message: `${st.account.label} has no profile token, so GGO cannot reach its banked resets. Add one in Settings > Subscriptions.` };
+    const read = await fetchProfileUsage(token);
+    if (!read.ok) return { ok: false, message: `Could not read ${st.account.label}'s banked resets: ${profileErrorMessage(read.reason)}.` };
+    if (st.organizationId && read.organizationId && st.organizationId !== read.organizationId) {
+      return { ok: false, message: `The profile token filed under ${st.account.label} belongs to a different subscription, so nothing was spent.` };
+    }
+    const orgId = read.organizationId ?? st.organizationId;
+    if (read.credits.available <= 0 || !read.credits.redeemId || !orgId) {
+      this.applyResetCredits(st, read.credits, null);
+      this.publish();
+      return { ok: false, message: `${st.account.label} has no banked reset available to use right now.` };
+    }
+    const outcome = await claimClaudeReset(token, orgId, read.credits.redeemId);
+    await this.readResetCredits(st);
+    if (outcome.ok && !this.inHold(st, Date.now())) await this.pingOne(st.account);
+    this.publish();
+    this.onUsage?.();
+    return { ok: outcome.ok, message: `${st.account.label}: ${outcome.message}` };
   }
 
   /** One writer for the pair, so `resetCredits` and its error can never both be set — a chip showing a

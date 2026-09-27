@@ -136,13 +136,20 @@ function loadChromium() {
 }
 
 /** The real console password, so a lab can log its browser in. The throwaway instance inherits
- *  `server/.env`, so this is the password it will actually accept. */
+ *  `server/.env`, so this is the password it will actually accept. An AUTH_PASSWORD in the lab's own
+ *  environment wins: the instance inherits that too (dotenv never overrides a set variable), and it is
+ *  the only way in on a Google-only install whose `.env` leaves the password blank. */
 function authPassword() {
+  if (process.env.AUTH_PASSWORD) return process.env.AUTH_PASSWORD;
   const line = fs
     .readFileSync(path.join(SERVER_ROOT, ".env"), "utf8")
     .split(/\r?\n/)
     .find((l) => /^AUTH_PASSWORD=/.test(l));
-  return line ? line.slice("AUTH_PASSWORD=".length).trim() : "";
+  const password = line ? line.slice("AUTH_PASSWORD=".length).trim() : "";
+  // Without this the lab's first wait times out 30s later on `.accounts .acct` behind a sign-in page,
+  // which reads as a broken console rather than a missing password.
+  if (!password) console.error("[lab] AUTH_PASSWORD is blank in server/.env, so the lab cannot sign in: rerun with AUTH_PASSWORD=<any throwaway> in the environment.");
+  return password;
 }
 
 /** Resolve relative entries from the same cwd used by the child process. */

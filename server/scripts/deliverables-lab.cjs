@@ -47,6 +47,9 @@ const MD_TEXT = "# Deliverables Lab Report\n\nReal file content the **View** act
 const PNG_LABEL = "Lab Screenshot";
 const PNG_NAME = "shot.png";
 
+const STRAY_LABEL = "Lab Stray Screenshot";
+const STRAY_NAME = "stray.png";
+
 /** Write the two real files into a real workspace directory, seed the thread + findings that point at
  *  them, and return each deliverable's absolute on-disk path: what the route must serve byte-for-byte
  *  and what "Copy path" must reproduce exactly. */
@@ -75,6 +78,11 @@ function seed(dataDir) {
   );
   finding.run("dl-lab-f-md", TASK_ID, MD_LABEL, "A markdown deliverable seeded for the lab.", mdPath, MD_LABEL, now - 30_000);
   finding.run("dl-lab-f-png", TASK_ID, PNG_LABEL, "A PNG deliverable seeded for the lab.", pngPath, PNG_LABEL, now - 20_000);
+  // A card born broken, the way agents made them before post_deliverable refused it: a real image
+  // saved beside the workspace instead of in it, so the route answers 403.
+  const strayPath = path.join(dataDir, STRAY_NAME);
+  fs.writeFileSync(strayPath, Buffer.from(PNG_B64, "base64"));
+  finding.run("dl-lab-f-stray", TASK_ID, STRAY_LABEL, "A PNG posted from outside the workspace.", strayPath, STRAY_LABEL, now - 15_000);
   db.prepare("INSERT INTO messages (id, thread_id, role, kind, content, created_at) VALUES (?, ?, 'implementor', 'tool', ?, ?)")
     .run("dl-lab-edit-md", TASK_ID, `Edit ${JSON.stringify({ file_path: mdPath })}`, now - 10_000);
   db.close();
@@ -141,7 +149,8 @@ async function main() {
     const page = await ctx.newPage();
     const errors = [];
     page.on("console", (m) => {
-      if (m.type() === "error") errors.push(m.text());
+      // The stray card's 403 is the refusal under test; Chromium logs every non-2xx resource load.
+      if (m.type() === "error" && !/Failed to load resource: .*status of 403/.test(m.text())) errors.push(m.text());
     });
     page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
 
@@ -155,8 +164,8 @@ async function main() {
     // ---- the strip itself ----
     await page.waitForSelector(".deliverable-strip .dl-chip", { timeout: 15_000 });
     const count = (await page.textContent(".deliverables-label .n")) ?? "";
-    check("the deliverables chip shows the right count", count.trim() === "2", count);
-    check("both chips render", (await page.locator(".deliverable-strip .dl-chip").count()) === 2);
+    check("the deliverables chip shows the right count", count.trim() === "3", count);
+    check("all three chips render", (await page.locator(".deliverable-strip .dl-chip").count()) === 3);
 
     // Drive each deliverable's FULL round (popover, View, Download, GET, Copy path) before moving to
     // the next one. Clicking a Download anchor focuses it, and CSS shows `.dl-pop` on `:hover` OR
@@ -274,6 +283,25 @@ async function main() {
       const copied = await page.evaluate(() => window.__copied);
       check(`${item.name}: Copy path wrote the exact absolute path`, copyConfirmed && copied === item.realPath, `${copied} !== ${item.realPath}`);
     }
+
+    // ---- a refused card: the preview says why instead of showing a broken <img> + a dead Download ----
+    await page.mouse.move(0, 0);
+    await page.locator(":focus").evaluate((el) => el.blur()).catch(() => {});
+    await chip(page, STRAY_LABEL).hover();
+    await page.click(`.dl-chip-btn[aria-label="${STRAY_LABEL}"]`);
+    await page.waitForSelector(".modal.deliverable .dl-status.err", { timeout: 10_000 }).catch(() => {});
+    const strayText = (await page.textContent(".modal.deliverable .deliverable-body").catch(() => "")) ?? "";
+    check(`${STRAY_NAME}: preview explains the file is outside the workspace`, strayText.includes("outside this task’s workspace"), strayText);
+    check(`${STRAY_NAME}: ...instead of rendering a broken image`, (await page.locator(".modal.deliverable img.dl-image").count()) === 0);
+    check(`${STRAY_NAME}: ...and withdraws the Download that could only fail`, (await page.locator('.dl-modal-actions a:has-text("Download")').count()) === 0);
+    await page.mouse.move(0, 0);
+    // Let the modal's fade-in settle; looping animations (the live dot) never finish, so skip those.
+    await page.evaluate(() => Promise.all(
+      document.getAnimations().filter((a) => a.effect?.getTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {})),
+    ));
+    await page.screenshot({ path: path.join(shotDir(dataDir), "nocturne-refused-deliverable.png") });
+    await page.click(".dl-modal-actions button[aria-label='Close']");
+    await page.waitForSelector(".modal.deliverable", { state: "detached", timeout: 5_000 });
 
     // The owner described the companion failure as "checking changes": exercise the task's real
     // Diff action against this checkout's real working-tree changes under the same Nocturne session.

@@ -294,21 +294,22 @@ async function drive(page, shots) {
   // conversation header its real width instead of a column squeezed by an open detail panel.
   await page.click('.detail-title-actions .close-x[aria-label="Close"]');
   await page.waitForSelector(".detail", { state: "detached", timeout: 10_000 });
-  await openArea(page, "cowork");
-  await page.waitForSelector(".cowork-session-row", { timeout: 20_000 });
-  await page.click('.cowork-session-row:has-text("Pairing session")');
-  await page.waitForSelector(".cowork-chat-identity .codectx", { timeout: 20_000 });
+  // A Co-work session is a card in the task lanes, and its conversation a popup over the board.
+  await page.click('.lanes .cowork-card:has-text("Pairing session") .cowork-card-open');
+  await page.waitForSelector(".cowork-popup .cowork-chat-identity .codectx", { timeout: 20_000 });
   check("the co-work header states the branch", (await branchText(page, ".cowork-chat-identity")) === "master");
   check("and offers a route into the code", await page.isVisible('.cowork-chat-identity .codectx-btn:has-text("Code")'));
   await page.click('.cowork-chat-identity .codectx-btn:has-text("Code")');
   await page.waitForSelector(".ide-mount:not([hidden]) .ide", { timeout: 20_000 });
   check("a co-work session opens the editor", await page.isVisible(".ide-mount:not([hidden]) .ide"));
+  check("and the popup steps aside for it", (await page.locator(".cowork-popup").count()) === 0);
   await page.click(".ide-return .codectx-btn");
-  // Co-work is its own board area, so the return must land THERE — not on the task board, which is
-  // where a `thread`-shaped origin goes.
-  await page.waitForSelector(".board-cowork", { timeout: 15_000 }).catch(() => {});
-  check("and returning lands back in Co-work, not on the task board", await page.isVisible(".board-cowork"));
-  check("with the conversation still open", await page.isVisible(".cowork-chat-identity"));
+  // The return lands on the task board with the SAME conversation re-opened over it.
+  await page.waitForSelector(".cowork-popup .cowork-chat-identity", { timeout: 15_000 }).catch(() => {});
+  check("returning lands back on the task board", await page.isVisible(".board-tasks"));
+  check("with the conversation re-opened over it", await page.isVisible('.cowork-popup .cowork-title-button:has-text("Pairing session")'));
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".cowork-popup", { state: "detached", timeout: 10_000 });
 
   console.log("\nSUPERVISOR — an audit row routes into its workspace");
   await openArea(page, "supervisor");

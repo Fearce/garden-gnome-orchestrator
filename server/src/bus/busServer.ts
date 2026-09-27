@@ -7,6 +7,7 @@ import { NOTE_MAX_CHARS, type Role } from "../types.js";
 import { BUS_SERVER } from "../agents/toolNames.js";
 import { config } from "../config.js";
 import { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS, spawnSubAgentShape } from "../orchestrator/subTasks.js";
+import { deliverableRefusal, resolveDeliverable } from "../orchestrator/deliverablePath.js";
 
 export interface BusContext {
   threadId: string;
@@ -48,7 +49,7 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
 
   const postDeliverable = tool(
     "post_deliverable",
-    `Surface a file you produced as a DELIVERABLE in ${config.ownerName}'s console — it appears in the right-panel "Deliverables" section as a card ${config.ownerName} can View (inline preview), Download, or copy the path of. Use this when your output is a concrete file ${config.ownerName} should be able to open or retrieve directly (a report, a generated document, a CSV, a diagram, exported data), not just prose in the feed. Format: \`path\` is the file (absolute, or relative to this task's workspace, e.g. "docs/report.md") and MUST resolve inside the workspace; \`label\` is a short human title (e.g. "Design comparison report"); \`description\` is an optional one-line note about the contents.`,
+    `Surface a file you produced as a DELIVERABLE in ${config.ownerName}'s console — it appears in the right-panel "Deliverables" section as a card ${config.ownerName} can View (inline preview), Download, or copy the path of. Use this when your output is a concrete file ${config.ownerName} should be able to open or retrieve directly (a report, a generated document, a CSV, a diagram, exported data), not just prose in the feed. Format: \`path\` is the file (absolute, or relative to this task's workspace, e.g. "docs/report.md"), MUST already exist inside the workspace, and must be at most 25 MB. A file in your scratch/temp folder is outside the workspace: copy it in first. A path the console cannot serve is refused with the reason; \`label\` is a short human title (e.g. "Design comparison report"); \`description\` is an optional one-line note about the contents.`,
     {
       path: z
         .string()
@@ -57,6 +58,12 @@ export function createBusServer(api: OrchestratorApi, ctx: BusContext): McpServe
       description: z.string().optional().describe("Optional one-line note about what the file contains."),
     },
     async (args) => {
+      const thread = api.getThread(ctx.threadId);
+      if (!thread) return { content: [{ type: "text", text: "Deliverable not recorded: this task no longer exists." }], isError: true };
+      const resolved = resolveDeliverable(thread.workspace, args.path);
+      if (!resolved.ok) {
+        return { content: [{ type: "text", text: deliverableRefusal(thread.workspace, args.path, resolved) }], isError: true };
+      }
       const f = api.postFinding({
         threadId: ctx.threadId,
         fromRole: ctx.role,

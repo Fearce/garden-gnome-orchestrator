@@ -374,7 +374,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               <Group label="Auto model selection">
                 <ToggleRow
                   label="Auto-select the implementor model"
-                  hint="Off (default): the implementor runs on the model configured for its subscription, at the planner's effort. On: a smart judgement picks the director once (sticky until its provider caps), and the director picks each implementor's model + effort from every backend available right now. Both use a daily cached LiveBench category/effort prior; local outcomes and live availability remain stronger signals. Implementor picks are scored for the next decision."
+                  hint="Off (default): the implementor runs on the model configured for its subscription, at the planner's effort. On: the director picks each implementor's model + effort from every backend available right now. The director itself always runs on the model configured for it. Picks use a daily cached LiveBench category/effort prior; local outcomes and live availability remain stronger signals. Implementor picks are scored for the next decision."
                   on={settings.autoModelSelection}
                   onChange={(v) => setSettings({ autoModelSelection: v })}
                 />

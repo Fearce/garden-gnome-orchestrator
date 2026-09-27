@@ -50,7 +50,9 @@ export const threadOrigin = (thread: Pick<Thread, "id" | "title">): CodeOrigin =
   view: "tasks",
 });
 
-export const coworkOrigin = (id: string, name: string): CodeOrigin => ({ kind: "cowork", id, label: name, view: "cowork" });
+/** A Co-work conversation is a popup over the task board, so the return trip lands on the board and
+ *  `returnToOrigin` re-opens the popup. */
+export const coworkOrigin = (id: string, name: string): CodeOrigin => ({ kind: "cowork", id, label: name, view: "tasks" });
 
 export const supervisorOrigin = (workspace: string, label: string): CodeOrigin => ({
   kind: "workspace",

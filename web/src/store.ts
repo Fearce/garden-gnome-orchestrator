@@ -53,7 +53,7 @@ import type {
   Thread,
   TokenSafetyState,
 } from "./types.js";
-import { agentKey, GENERAL_ROOM, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
+import { agentKey, GENERAL_ROOM, normalizeWorkspace, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
 import { notify } from "./lib/notify.js";
 import { applyTheme, DEFAULT_THEME, isThemeId, type ThemeId } from "./lib/theme.js";
 import {
@@ -113,6 +113,11 @@ const CODE_CONTEXT_MAX_AGE_MS = 30_000;
  *  `code.context`, so a reply files itself without the caller tracking its own request. */
 export function codeKey(kind: CodeSubjectKind, id: string): string {
   return `${kind}:${id}`;
+}
+
+/** The key the server echoes on `resetCredit.result` for one redeem target. */
+export function resetCreditKey(target: { provider: "codex" } | { provider: "claude"; accountId: string }): string {
+  return target.provider === "codex" ? "codex" : `claude:${target.accountId}`;
 }
 
 /** Remove one key from a record, returning the record itself when there is nothing to remove (so an
@@ -188,12 +193,15 @@ interface State {
   coworkSessions: Record<string, CoworkSession>;
   coworkMessages: Record<string, CoworkMessage[]>;
   coworkTurns: Record<string, CoworkTurn[]>;
+  // The Co-work session whose popup is open over the board; null means no popup.
   selectedCoworkId: string | null;
   coworkCreating: boolean;
   coworkActionError: string | null;
+  coworkCloseSupported: boolean;
+  coworkCloseError: { sessionId: string; message: string } | null;
   // Where the owner had scrolled each transcript, and whether they were pinned to the bottom. Kept in
-  // the STORE rather than the component: leaving the Co-work tab mid-turn must cost nothing, and the
-  // panel unmounts when the board switches views.
+  // the STORE rather than the component: closing a Co-work popup mid-turn must cost nothing, and the
+  // transcript is remounted (keyed by session) every time a popup opens.
   coworkScroll: Record<string, { top: number; stuck: boolean }>;
   // Tool bursts and individual calls the owner opened. Same reasoning: an expansion is a reading
   // position, and losing it on every tab switch is the scroll pain this remembers.
@@ -331,6 +339,9 @@ interface State {
   // A bypass click is in flight: the button stays disabled until the server's broadcast (or refusal)
   // answers, so an impatient second click never races the first.
   tokenSafetyBypassing: boolean;
+  // Banked-reset redeems this console has in flight, by target key ("codex", "claude:<id>"): the chip's
+  // button stays disabled until the server's `resetCredit.result` for that key lands.
+  resetRedeeming: Record<string, true>;
   // The Token Safety box the owner dismissed (`tokenSafetyBoxKey`), so it stays hidden for THAT freeze or
   // bypass only: a new freeze or a new bypass has a new key and shows again.
   tokenSafetyDismissed: string | null;
@@ -366,10 +377,12 @@ interface State {
   // their feeds missed whatever streamed while the socket was gone. The selected task is never asked.
   prefetchThreadHistory: (threadIds: string[], refresh?: boolean) => void;
   selectCowork: (id: string | null) => void;
-  createCowork: (input: { name?: string; workspace: string; provider?: CoworkSession["requestedProvider"]; model?: string | null }) => boolean;
+  createCowork: (input: { name?: string; workspace: string; provider?: CoworkSession["requestedProvider"]; model?: string | null; worktree?: boolean }) => boolean;
   sendCowork: (sessionId: string, text: string, mode?: "turn" | CoworkSteeringMode, attachments?: FileAttachment[]) => boolean;
   stopCowork: (sessionId: string) => void;
   renameCowork: (sessionId: string, name: string) => void;
+  /** Close a session off the board into the Closed list (restorable), or bring it back. */
+  setCoworkClosed: (sessionId: string, closed: boolean) => void;
   deleteCowork: (sessionId: string) => void;
   clearCoworkError: () => void;
   rememberCoworkScroll: (sessionId: string, at: { top: number; stuck: boolean }) => void;
@@ -411,6 +424,10 @@ interface State {
   dismiss: (threadId: string) => void;
   setApproval: (on: boolean) => void;
   setSettings: (patch: SettingsPatch) => void;
+  /** Add a repo to the composer's recent-repo chips (front of the list) or drop one. The server edits the
+   *  stored list and broadcasts it; the local change is only the optimistic preview of that broadcast. */
+  rememberRepo: (path: string) => void;
+  forgetRepo: (path: string) => void;
   /** Save the Director's standing directives. Returns false when the socket could not carry the write,
    *  so the dialog keeps the owner's text instead of closing over a lost save. */
   setDirectorDirectives: (text: string) => boolean;
@@ -475,6 +492,8 @@ interface State {
   clearNotice: () => void;
   // One-shot override of the current Token Safety freeze (returns whether the command reached the socket).
   bypassTokenSafety: () => boolean;
+  /** Spend one banked limit reset. The caller has already asked the owner to confirm. */
+  redeemResetCredit: (target: { provider: "codex" } | { provider: "claude"; accountId: string }) => void;
   dismissTokenSafety: () => void;
   // Scheduled tasks: switch the center pane, and CRUD the recurring dispatches. Mutations return whether
   // they reached the socket so forms never close on a command that was silently dropped while reconnecting.
@@ -804,6 +823,18 @@ const outboundTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // clientId, so replaying it after a reconnect is safe: the server returns the original receipt
 // instead of performing the owner action twice.
 const outboundCommands = new Map<string, ClientCommand>();
+// Co-work creates that asked for a separate worktree, by clientId, with the folder they named. A server
+// that predates the option strips the flag and creates the session in that folder itself, which reads as
+// success; comparing the answer with the request is the only way the console can tell and say so.
+const worktreeRequests = new Map<string, string>();
+
+/** The refusal to show when a worktree was asked for and the session came back in the original folder. */
+function ignoredWorktree(clientId: string | undefined, session: CoworkSession | undefined): string | null {
+  const requested = clientId ? worktreeRequests.get(clientId) : undefined;
+  if (clientId) worktreeRequests.delete(clientId);
+  if (!requested || !session || normalizeWorkspace(session.workspace) !== normalizeWorkspace(requested)) return null;
+  return "The session was created, but NOT in a separate worktree: the GGO server is still running a build from before that option and ignored it. It works once GGO restarts. Until then, delete this session, or pick a worktree folder you made yourself as the workspace.";
+}
 const OUTBOUND_OUTBOX_KEY = "orch-outbound-outbox-v1";
 
 type PersistedOutbound = {
@@ -1193,6 +1224,8 @@ export const useStore = create<State>((set) => ({
   selectedCoworkId: null,
   coworkCreating: false,
   coworkActionError: null,
+  coworkCloseSupported: false,
+  coworkCloseError: null,
   coworkScroll: {},
   coworkOpenTools: {},
   coworkSummaries: {},
@@ -1257,6 +1290,7 @@ export const useStore = create<State>((set) => ({
   notice: null,
   tokenSafety: null,
   tokenSafetyBypassing: false,
+  resetRedeeming: {},
   tokenSafetyDismissed: null,
   schedules: [],
   notes: [],
@@ -1299,7 +1333,7 @@ export const useStore = create<State>((set) => ({
     set({ selectedCoworkId: id, coworkActionError: null });
     if (id) sendCommand({ type: "cowork.history", sessionId: id });
   },
-  createCowork: ({ name, workspace, provider, model }) => {
+  createCowork: ({ name, workspace, provider, model, worktree }) => {
     const path = workspace.trim();
     if (!path) return false;
     const clientId = newOutboundId();
@@ -1309,9 +1343,11 @@ export const useStore = create<State>((set) => ({
       workspace: path,
       ...(name?.trim() ? { name: name.trim() } : {}),
       ...(provider && model ? { provider, model } : {}),
+      ...(worktree ? { worktree: true } : {}),
       clientId,
     });
     if (!sent) set({ coworkCreating: false, coworkActionError: "Not delivered — the console is reconnecting." });
+    else if (worktree) worktreeRequests.set(clientId, path);
     return sent;
   },
   sendCowork: (sessionId, text, mode = "turn", attachments = []) => {
@@ -1344,6 +1380,18 @@ export const useStore = create<State>((set) => ({
     sendCommand({ type: "cowork.stop", sessionId });
   },
   renameCowork: (sessionId, name) => sendCommand({ type: "cowork.rename", sessionId, name: name.trim() }),
+  setCoworkClosed: (sessionId, closed) => {
+    set({ coworkCloseError: null });
+    // The static web bundle can ship before the drain-safe server restart. Older servers silently
+    // discard unknown commands, so never send an unsupported close and leave the owner guessing.
+    if (!useStore.getState().coworkCloseSupported) {
+      set({ coworkCloseError: { sessionId, message: "Closing and restoring Co-work sessions is waiting for the server update. GGO will restart after active agent work finishes. Your conversation is saved; try again after the restart." } });
+      return;
+    }
+    if (!sendCommand({ type: closed ? "cowork.close" : "cowork.restore", sessionId })) {
+      set({ coworkCloseError: { sessionId, message: "The console is reconnecting. Try again when it is connected." } });
+    }
+  },
   deleteCowork: (sessionId) => sendCommand({ type: "cowork.delete", sessionId }),
   clearCoworkError: () => set({ coworkActionError: null }),
   rememberCoworkScroll: (sessionId, at) => set((s) => ({ coworkScroll: { ...s.coworkScroll, [sessionId]: at } })),
@@ -1471,6 +1519,22 @@ export const useStore = create<State>((set) => ({
     const { openaiApiKey: _key, discordBotToken: _bot, ...local } = patch;
     set((s) => ({ settings: { ...s.settings, ...local } }));
     sendCommand({ type: "settings.set", settings: patch });
+  },
+  // Projected only once the command is on the wire: a chip shown for a write the socket dropped would
+  // sit there until the next hello silently took it away again, which is the bug this replaced.
+  rememberRepo: (path) => {
+    const p = path.trim();
+    if (!p || !sendCommand({ type: "recentRepos.remember", path: p })) return;
+    set((s) => ({
+      settings: {
+        ...s.settings,
+        recentRepos: [p, ...s.settings.recentRepos.filter((x) => x !== p)].slice(0, s.settings.maxRecentRepos),
+      },
+    }));
+  },
+  forgetRepo: (path) => {
+    if (!sendCommand({ type: "recentRepos.forget", path })) return;
+    set((s) => ({ settings: { ...s.settings, recentRepos: s.settings.recentRepos.filter((x) => x !== path) } }));
   },
   setDirectorDirectives: (text) => {
     const sent = sendCommand({ type: "settings.set", settings: { directorDirectives: text } });
@@ -1624,6 +1688,8 @@ export const useStore = create<State>((set) => ({
       // The Git console is a full-screen modal; leaving it open over the editor we just navigated to
       // would hide the destination behind the surface the operator left.
       gitConsoleOpen: false,
+      // Same for an open Co-work popup: the conversation is kept by `codeOrigin` and re-opened on return.
+      selectedCoworkId: null,
       ideTarget: { ...target, nonce: s.ideTarget ? s.ideTarget.nonce + 1 : 1 },
       ...(origin === undefined ? {} : { codeOrigin: origin }),
     }));
@@ -1632,6 +1698,8 @@ export const useStore = create<State>((set) => ({
   openGitConsole: (opts = {}) =>
     set(() => ({
       gitConsoleOpen: true,
+      // The console is its own full-screen surface; a Co-work popup left under it would be two dialogs deep.
+      selectedCoworkId: null,
       gitConsoleFor: opts.forThread ?? null,
       gitConsoleRepo: opts.repoPath ?? null,
       gitConsoleCommit: opts.commit ?? null,
@@ -1643,8 +1711,9 @@ export const useStore = create<State>((set) => ({
     const origin = useStore.getState().codeOrigin;
     if (!origin) return;
     set({ boardView: origin.view, gitConsoleOpen: false, codeOrigin: null, ideTarget: null });
-    // Only a task has a card to re-open; a co-work session or a Supervisor row is its own board area.
+    // A task re-opens its card and a Co-work session its popup; a Supervisor row is its own board area.
     if (origin.kind === "thread") useStore.getState().select(origin.id);
+    if (origin.kind === "cowork" && useStore.getState().coworkSessions[origin.id]) useStore.getState().selectCowork(origin.id);
   },
   clearCodeOrigin: () => set({ codeOrigin: null }),
   toggleRail: () =>
@@ -1703,6 +1772,15 @@ export const useStore = create<State>((set) => ({
     }
     set({ tokenSafetyBypassing: true });
     return true;
+  },
+  redeemResetCredit: (target) => {
+    const key = resetCreditKey(target);
+    if (useStore.getState().resetRedeeming[key]) return;
+    if (!sendCommand({ type: "resetCredit.redeem", ...target })) {
+      set({ notice: { level: "warn", title: "Reset not used", message: "The console is reconnecting. Try again when it is connected." } });
+      return;
+    }
+    set((s) => ({ resetRedeeming: { ...s.resetRedeeming, [key]: true } }));
   },
   dismissTokenSafety: () => set((s) => ({ tokenSafetyDismissed: s.tokenSafety ? tokenSafetyBoxKey(s.tokenSafety) : null })),
   setBoardView: (v) => set({ boardView: v }),
@@ -1931,6 +2009,7 @@ function applyEvent(ev: ServerEvent): void {
       // on every heartbeat — keep the live values until a frame that truly has settings arrives.
       useStore.setState((s) => ({
         startQaSupported: ev.startQaSupported === true,
+        coworkCloseSupported: ev.coworkCloseSupported === true,
         threads,
         // Hello carries a bounded fleet-wide slice of runs, so it must not replace the ones an open
         // task loaded from its own history — the feed needs a message's own run to name the model that
@@ -1962,6 +2041,8 @@ function applyEvent(ev: ServerEvent): void {
         ...(ev.supervisor ? { supervisor: ev.supervisor } : {}),
         // A reconnect never delivers the reply to a bypass sent on the dead socket, so release the button.
         ...(ev.tokenSafety ? { tokenSafety: ev.tokenSafety, tokenSafetyBypassing: false } : {}),
+        // Likewise a redeem's `resetCredit.result`: without this its badge stayed disabled until a reload.
+        resetRedeeming: {},
       }));
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
@@ -2076,12 +2157,16 @@ function applyEvent(ev: ServerEvent): void {
         },
       }));
       break;
-    case "cowork.action":
+    case "cowork.action": {
       if (ev.clientId && !ev.ok) failOutbound(ev.clientId, ev.error ?? "The Co-worker command failed.");
+      const worktreeIgnored = ev.action === "create" && ev.ok ? ignoredWorktree(ev.clientId, ev.result.session) : null;
       useStore.setState((s) => ({
         coworkCreating: ev.action === "create" ? false : s.coworkCreating,
         coworkPromoting: ev.action === "promote" ? false : s.coworkPromoting,
-        coworkActionError: ev.ok ? null : ev.error ?? "The Co-worker command failed.",
+        coworkActionError: worktreeIgnored ?? (ev.ok ? null : ev.error ?? "The Co-worker command failed."),
+        ...((ev.action === "close" || ev.action === "restore") && ev.sessionId
+          ? { coworkCloseError: ev.ok ? null : { sessionId: ev.sessionId, message: ev.error ?? "The Co-worker command failed." } }
+          : {}),
         ...(ev.result.session ? { coworkSessions: { ...s.coworkSessions, [ev.result.session.id]: ev.result.session } } : {}),
         ...(ev.ok && ev.action === "create" && ev.result.session ? { selectedCoworkId: ev.result.session.id } : {}),
         // The board is where a task lives, so a successful promotion offers the jump rather than
@@ -2092,6 +2177,7 @@ function applyEvent(ev: ServerEvent): void {
       }));
       if (ev.ok && ev.action === "create" && ev.result.session) sendCommand({ type: "cowork.history", sessionId: ev.result.session.id });
       break;
+    }
     case "grok.usage":
       useStore.setState({ grokUsage: ev.usage });
       break;
@@ -2562,6 +2648,16 @@ function applyEvent(ev: ServerEvent): void {
         // Drop a reply for a query the operator has since retyped or cleared.
         if (!s.directorSearch || s.directorSearch.query !== ev.query) return {};
         return { directorSearch: { query: ev.query, results: ev.messages, tasks: ev.tasks ?? [], searching: false } };
+      });
+      break;
+    case "resetCredit.result":
+      // The outcome rides the ordinary notice banner, where a refusal stays readable until dismissed.
+      useStore.setState((s) => {
+        const { [ev.key]: _settled, ...resetRedeeming } = s.resetRedeeming;
+        return {
+          resetRedeeming,
+          notice: { level: ev.ok ? "info" : "warn", title: ev.ok ? "Banked reset used" : "Reset not used", message: ev.message },
+        };
       });
       break;
     case "notice":

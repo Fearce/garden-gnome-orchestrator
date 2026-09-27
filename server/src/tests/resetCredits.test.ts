@@ -194,9 +194,72 @@ console.log("\n=== banked resets — the shared zero ===\n");
   check("the explicit zero is a real reading, fully populated", none.available === 0 && none.pending === 0 && none.expiresAt === null && none.readAt === READ_AT, JSON.stringify(none));
 }
 
-console.log(`\n${failed ? "❌" : "✅"} ${passed} passed, ${failed} failed`);
-if (failed) {
-  console.log(failures.map((f) => `  - ${f}`).join("\n"));
-  process.exit(1);
+// ---- redeeming ---------------------------------------------------------------------------------------
+console.log("\n=== banked resets — what a redeem spends, and the Claude claim itself ===\n");
+
+check("Codex names the available credit a redeem should spend", parseCodexResetCredits(CODEX_LIVE, READ_AT)?.redeemId === "RateLimitResetCredit_9741ffd4dbac8191ae3ed4a39665085d");
+check("Claude names the grant the provider lists next", parseClaudeResetCredits(CLAUDE_GRANTED, READ_AT)?.redeemId === "01JQ8ZC2Q9");
+{
+  const c = parseClaudeResetCredits(
+    { eligible: true, next_grant_id: "g_second", grants: [{ id: "g_first", resets_left: 1, usable_now: true }, { id: "g_second", resets_left: 1, usable_now: true }] },
+    READ_AT,
+  );
+  check("`next_grant_id` wins over list order — the claim refuses any other grant", c?.redeemId === "g_second", JSON.stringify(c));
 }
-process.exit(0);
+{
+  const c = parseClaudeResetCredits({ eligible: true, next_grant_id: "g_paused", grants: [{ id: "g_paused", resets_left: 1, paused: true }, { id: "g_ok", resets_left: 1, usable_now: true }] }, READ_AT);
+  check("a paused next grant is not spent; a usable one is", c?.redeemId === "g_ok", JSON.stringify(c));
+}
+check("nothing available means nothing to spend", parseClaudeResetCredits({ eligible: true, grants: [{ id: "g", resets_left: 0 }] }, READ_AT)?.redeemId === null);
+check("an id that is not a plain token is never sent back to the provider", parseCodexResetCredits({ availableCount: 1, credits: [{ id: "../x?y", status: "available" }] }, READ_AT)?.redeemId === null);
+
+{
+  // The real request and response handling, against a local stand-in for Claude's claim endpoint. The
+  // override is read at import, so it is set before `profileUsage` loads.
+  const { createServer } = await import("node:http");
+  const seen: Array<{ url: string; auth: string; body: Record<string, unknown> }> = [];
+  let answer: { status: number; body: unknown } = { status: 200, body: { result: "reset", resets_left: 0 } };
+  const server = createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      seen.push({ url: req.url ?? "", auth: String(req.headers.authorization), body: JSON.parse(raw || "{}") });
+      // No keep-alive: a pooled fetch socket still open at `process.exit` trips a libuv assertion on Windows.
+      res.writeHead(answer.status, { "content-type": "application/json", connection: "close" });
+      res.end(JSON.stringify(answer.body));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
+  process.env.PROFILE_CLAIM_BASE_URL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const { claimClaudeReset } = await import("../accounts/profileUsage.js");
+  const ORG = "0b7f3c1e-5a2d-4e8f-9c61-2d4b8a9e7f10";
+
+  const ok = await claimClaudeReset("tok-1", ORG, "01JQ8ZC2Q9");
+  check("a `reset` answer is a success", ok.ok && /Limits refilled/.test(ok.message), JSON.stringify(ok));
+  check("the claim goes to the organization's reset endpoint", seen[0]?.url === `/api/organizations/${ORG}/reset_rate_limits`, seen[0]?.url);
+  check("with the profile token", seen[0]?.auth === "Bearer tok-1", seen[0]?.auth);
+  check(
+    "naming the programme, the grant, and a fresh request id",
+    seen[0]?.body.program === "cedar_ember" && seen[0]?.body.grant_id === "01JQ8ZC2Q9" && /^[0-9a-f-]{36}$/.test(String(seen[0]?.body.request_id)),
+    JSON.stringify(seen[0]?.body),
+  );
+  await claimClaudeReset("tok-1", ORG, "01JQ8ZC2Q9");
+  check("a second click is a second attempt, not a replay of the first", seen[1]?.body.request_id !== seen[0]?.body.request_id);
+
+  answer = { status: 200, body: { result: "not_limited", reason: "not_limited" } };
+  const early = await claimClaudeReset("tok-1", ORG, "01JQ8ZC2Q9");
+  check("`not_limited` is a refusal that says the reset is still banked", !early.ok && /hit a limit/.test(early.message) && /still banked/.test(early.message), JSON.stringify(early));
+  answer = { status: 403, body: { error: "forbidden" } };
+  const denied = await claimClaudeReset("tok-1", ORG, "01JQ8ZC2Q9");
+  check("a rejected token says to replace it", !denied.ok && /profile token/.test(denied.message), JSON.stringify(denied));
+  const before = seen.length;
+  const noOrg = await claimClaudeReset("tok-1", "not-an-org", "01JQ8ZC2Q9");
+  check("an unknown organization sends nothing at all", !noOrg.ok && seen.length === before, JSON.stringify(noOrg));
+  await new Promise<void>((r) => server.close(() => r()));
+}
+
+console.log(`\n${failed ? "❌" : "✅"} ${passed} passed, ${failed} failed`);
+if (failed) console.log(failures.map((f) => `  - ${f}`).join("\n"));
+// exitCode, not exit(): a forced exit while the claim's fetch is still tearing down its handles aborts
+// Node on Windows with a libuv assertion, which turns a green run into a crash.
+process.exitCode = failed ? 1 : 0;

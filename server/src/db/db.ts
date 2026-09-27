@@ -333,6 +333,7 @@ function rowToCoworkSession(r: Row): CoworkSession {
     error: (r.error as string | null) ?? null,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
+    closedAt: (r.closed_at as number | null) ?? null,
     activeTurnStartedAt: (r.active_turn_started_at as number | null) ?? null,
     lastActivityAt: (r.last_activity_at as number | null) ?? null,
     lastSnippet: (r.last_snippet as string | null) ?? null,
@@ -821,6 +822,7 @@ export class Db {
       "ALTER TABLE director_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
       "ALTER TABLE cowork_messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
+      "ALTER TABLE cowork_sessions ADD COLUMN closed_at INTEGER",
       "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
       "ALTER TABLE threads ADD COLUMN effort_override TEXT",
       "ALTER TABLE threads ADD COLUMN model_request TEXT",
@@ -1246,6 +1248,7 @@ export class Db {
       error: null,
       createdAt: at,
       updatedAt: at,
+      closedAt: null,
       activeTurnStartedAt: null,
       lastActivityAt: null,
       lastSnippet: null,
@@ -1561,6 +1564,16 @@ export class Db {
 
   renameCoworkSession(id: string, name: string): CoworkSession | null {
     const result = this.raw.prepare("UPDATE cowork_sessions SET name=?, auto_named=0, updated_at=? WHERE id=?").run(name, now(), id);
+    return result.changes ? this.getCoworkSession(id) : null;
+  }
+
+  /** Takes a session off the board into the Closed list, the way a task closes, or brings it back. The
+   *  conversation is untouched; a live turn cannot be closed, the same rule a running task follows. */
+  setCoworkSessionClosed(id: string, closed: boolean): CoworkSession | null {
+    const at = now();
+    const result = closed
+      ? this.raw.prepare("UPDATE cowork_sessions SET closed_at=?, updated_at=? WHERE id=? AND active_turn_id IS NULL AND closed_at IS NULL").run(at, at, id)
+      : this.raw.prepare("UPDATE cowork_sessions SET closed_at=NULL, updated_at=? WHERE id=? AND closed_at IS NOT NULL").run(at, id);
     return result.changes ? this.getCoworkSession(id) : null;
   }
 
