@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
 import type { ChatMessage, ChatRoomSummary, RelayDirector, RelayPresentAgent, Role, SharedRepo } from "../types.js";
@@ -166,6 +166,63 @@ function useNow(active: boolean, ms: number): number {
   return now;
 }
 
+/** One clickable cluster in the strip after the director: a huddle, a lone walker, a remote machine. */
+interface StripItem {
+  key: string;
+  label: string; // one line in the overflow pill's hover list
+  node: ReactNode;
+}
+
+// Room kept for the "+N" pill (its fixed CSS width plus the strip gap).
+const OVERFLOW_PILL_W = 44;
+
+/** How many strip items fit beside the director before the rest fold into "+N". The office box is sized
+ *  by the top bar, not by its gnomes, so it never grows to fit them — without this the strip ran on
+ *  under the account chips. Every change first renders everything (fit = all), the layout effect
+ *  measures that, then trims, all before paint. */
+function useStripFit(count: number, layoutKey: string) {
+  const officeRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  const [fit, setFit] = useState<number | null>(null);
+
+  useLayoutEffect(() => {
+    const el = officeRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useLayoutEffect(() => setFit(null), [layoutKey, width]);
+
+  useLayoutEffect(() => {
+    if (fit !== null || !officeRef.current || !stripRef.current) return;
+    setFit(fittingItems(officeRef.current.clientWidth, stripRef.current));
+  }, [fit]);
+
+  return { officeRef, stripRef, fit: fit ?? count };
+}
+
+/** Counts the strip's children (director first) that fit in `available`, reserving the "+N" pill's
+ *  room whenever something has to fold. The director itself never folds. */
+function fittingItems(available: number, strip: HTMLElement): number {
+  const style = getComputedStyle(strip);
+  const gap = parseFloat(style.columnGap) || 0;
+  const widths = [...strip.children].map((c) => c.getBoundingClientRect().width);
+  let used = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0) + (widths[0] ?? 0);
+  const items = widths.slice(1);
+  const total = items.reduce((sum, w) => sum + gap + w, used);
+  if (total <= available) return items.length;
+  let n = 0;
+  for (const w of items) {
+    if (used + gap + w + gap + OVERFLOW_PILL_W > available) break;
+    used += gap + w;
+    n++;
+  }
+  return n;
+}
+
 /** The office: the strip of working gnomes in the top bar, plus the expandable chatroom panel. One
  *  gnome per active task paces the strip; 2+ tasks in the same repo huddle together. Every local
  *  worker click opens its repository room directly, including a lone worker — the director remains
@@ -259,91 +316,116 @@ export function Office() {
   const bubbleFor = (m: ChatMessage | undefined): string | null =>
     m && now - m.createdAt < BUBBLE_MS ? trim(m.body, 64) : null;
 
+  // The other people get no pill of their own: while someone else is at a console, the director gnome
+  // is the door to the Online Office, which keeps this bar's room for the agents actually working.
+  const othersOnline = onlineOffice.state === "online" && onlineOffice.directors.length > 0;
+  const directorRoom = othersOnline ? DIRECTORS_ROOM : GENERAL_ROOM;
+  const directorBubble = bubbleFor(byRoom.get(DIRECTORS_ROOM));
+
+  const items: StripItem[] = [];
+  for (const g of liveCount > 0 ? groups : []) {
+    if (g.room) {
+      const size = g.workers.length + g.remotes.length;
+      items.push({
+        key: g.key,
+        label: `${leaf(g.workspace)} — ${size} agents`,
+        node: (
+          <button
+            key={g.key}
+            className={"office-huddle" + (g.remotes.length ? " cross-machine" : "")}
+            onClick={() => openOffice(g.room!)}
+            data-office-room={g.room}
+            title={huddleTitle(g, (w) => nameOf(w.threadId, w.role))}
+          >
+            <HuddleGnomes group={g} />
+            <span className="office-huddle-tag">{leaf(g.workspace)}</span>
+            {bubbleFor(byRoom.get(g.room)) ? <span className="office-bubble team">{bubbleFor(byRoom.get(g.room))}</span> : null}
+          </button>
+        ),
+      });
+      continue;
+    }
+    g.workers.forEach((w, i) =>
+      items.push({
+        key: w.threadId,
+        label: `${nameOf(w.threadId, w.role)} (${w.role}) in ${leaf(w.workspace)}`,
+        node: (
+          <button
+            key={w.threadId}
+            className="office-walker"
+            style={{ "--pace-dur": `${pacePeriodForModel(w.model)}s`, "--pace-delay": `${(i % 4) * 0.6}s` } as CSSProperties}
+            onClick={() => openOffice(repoRoom(w.workspace))}
+            data-office-room={repoRoom(w.workspace)}
+            title={`${nameOf(w.threadId, w.role)} (${w.role}) on "${w.title}" — click to open this agent's project chat`}
+          >
+            <Pacer role={w.role} active={true} />
+            {bubbleFor(byRun.get(w.runId)) ? <span className="office-bubble">{bubbleFor(byRun.get(w.runId))}</span> : null}
+          </button>
+        ),
+      }),
+    );
+  }
+  for (const m of remoteMachines) {
+    items.push({
+      key: `remote:${m.name}`,
+      label: `${m.name} — ${m.agents.length} agent${m.agents.length === 1 ? "" : "s"} (online office)`,
+      node: (
+        <button
+          key={`remote:${m.name}`}
+          className="office-remote"
+          onClick={() => openOffice(GENERAL_ROOM)}
+          title={
+            `${m.name} — another machine in the online office, working repos you aren't:\n` +
+            m.agents.map((a) => `${a.name} (${a.role}) on "${a.title}" in ${a.repoLabel}`).join("\n")
+          }
+        >
+          <span className="office-remote-gnomes">
+            {m.agents.slice(0, crowd(m.agents.length).shown).map((a) => (
+              <Gnome key={`${a.instanceId}:${a.key}`} role={roleOf(a.role)} size={18} />
+            ))}
+            <CrowdMore more={crowd(m.agents.length).more} />
+          </span>
+          <span className="office-remote-tag">{m.name}</span>
+        </button>
+      ),
+    });
+  }
+
+  // A pill's width follows its crowd, so the crowd sizes are part of what forces a re-measure.
+  const layoutKey = items.map((item) => item.key).join("|") + "#" + groups.map((g) => g.workers.length + g.remotes.length).join(",") +
+    "#" + remoteMachines.map((m) => m.agents.length).join(",");
+  const { officeRef, stripRef, fit } = useStripFit(items.length, layoutKey);
+  const hidden = items.slice(fit);
+
   // The director is always "in the office": it gets a persistent walker at the head of the strip even
   // when no task agents are live, so the strip never collapses (which used to let the usage chips slide
   // to the left) and the director is always one click from its chat.
   return (
-    <div className="office">
-      <div className="office-strip" title="The office — the director and any agents working right now. Click to open the chat.">
+    <div className="office" ref={officeRef}>
+      <div className="office-strip" ref={stripRef} title="The office — the director and any agents working right now. Click to open the chat.">
         <button
           className={"office-walker office-director" + (directorBusy ? " working" : "")}
           // Pace the gnome from the runtime model; cap failover can move the director between providers.
           style={{ "--pace-dur": `${pacePeriodForModel(directorStatus?.model ?? "claude-sonnet")}s`, "--pace-delay": "0s" } as CSSProperties}
-          onClick={() => openOffice(GENERAL_ROOM)}
-          data-office-room={GENERAL_ROOM}
-          title={directorBusy ? "The director is working — click to open the office chat" : "The director — click to open the office chat"}
+          onClick={() => openOffice(directorRoom)}
+          data-office-room={directorRoom}
+          title={othersOnline ? onlineOfficeTitle(onlineOffice.directors) : directorBusy ? "The director is working — click to open the office chat" : "The director — click to open the office chat"}
         >
           <Pacer role="director" active={directorBusy} />
+          {othersOnline ? <span className="office-director-online">{onlineOffice.directors.length}</span> : null}
+          {othersOnline && directorBubble ? <span className="office-bubble team">{directorBubble}</span> : null}
         </button>
-        {/* The other people. It appears only when someone else is actually at a console — an empty
-            "Online Office" pill would just be furniture, and this bar is where the account chips live. */}
-        {onlineOffice.state === "online" && onlineOffice.directors.length > 0 ? (
+        {items.slice(0, fit).map((item) => item.node)}
+        {hidden.length ? (
           <button
-            className="office-online"
-            onClick={() => openOffice(DIRECTORS_ROOM)}
-            data-office-room={DIRECTORS_ROOM}
-            title={onlineOfficeTitle(onlineOffice.directors)}
+            className="office-overflow"
+            onClick={() => openOffice(GENERAL_ROOM)}
+            data-office-room={GENERAL_ROOM}
+            title={`Also in the office, out of room in the top bar:\n${hidden.map((item) => item.label).join("\n")}\nClick to open the office chat.`}
           >
-            <span className="office-online-gnomes">
-              {onlineOffice.directors.slice(0, crowd(onlineOffice.directors.length).shown).map((d) => (
-                <Gnome key={d.instanceId} role="director" size={20} />
-              ))}
-              <CrowdMore more={crowd(onlineOffice.directors.length).more} />
-            </span>
-            <span className="office-online-tag">Online Office</span>
-            {bubbleFor(byRoom.get(DIRECTORS_ROOM)) ? <span className="office-bubble team">{bubbleFor(byRoom.get(DIRECTORS_ROOM))}</span> : null}
+            +{hidden.length}
           </button>
         ) : null}
-        {liveCount > 0
-          ? groups.map((g) =>
-            g.room ? (
-              <button
-                key={g.key}
-                className={"office-huddle" + (g.remotes.length ? " cross-machine" : "")}
-                onClick={() => openOffice(g.room!)}
-                data-office-room={g.room}
-                title={huddleTitle(g, (w) => nameOf(w.threadId, w.role))}
-              >
-                <HuddleGnomes group={g} />
-                <span className="office-huddle-tag">{leaf(g.workspace)}</span>
-                {bubbleFor(byRoom.get(g.room)) ? <span className="office-bubble team">{bubbleFor(byRoom.get(g.room))}</span> : null}
-              </button>
-            ) : (
-              g.workers.map((w, i) => (
-                <button
-                  key={w.threadId}
-                  className="office-walker"
-                  style={{ "--pace-dur": `${pacePeriodForModel(w.model)}s`, "--pace-delay": `${(i % 4) * 0.6}s` } as CSSProperties}
-                  onClick={() => openOffice(repoRoom(w.workspace))}
-                  data-office-room={repoRoom(w.workspace)}
-                  title={`${nameOf(w.threadId, w.role)} (${w.role}) on "${w.title}" — click to open this agent's project chat`}
-                >
-                  <Pacer role={w.role} active={true} />
-                  {bubbleFor(byRun.get(w.runId)) ? <span className="office-bubble">{bubbleFor(byRun.get(w.runId))}</span> : null}
-                </button>
-              ))
-            ),
-          )
-          : null}
-        {remoteMachines.map((m) => (
-          <button
-            key={m.name}
-            className="office-remote"
-            onClick={() => openOffice(GENERAL_ROOM)}
-            title={
-              `${m.name} — another machine in the online office, working repos you aren't:\n` +
-              m.agents.map((a) => `${a.name} (${a.role}) on "${a.title}" in ${a.repoLabel}`).join("\n")
-            }
-          >
-            <span className="office-remote-gnomes">
-              {m.agents.slice(0, crowd(m.agents.length).shown).map((a) => (
-                <Gnome key={`${a.instanceId}:${a.key}`} role={roleOf(a.role)} size={18} />
-              ))}
-              <CrowdMore more={crowd(m.agents.length).more} />
-            </span>
-            <span className="office-remote-tag">{m.name}</span>
-          </button>
-        ))}
       </div>
       {officeRoom != null ? <OfficePanel /> : null}
     </div>

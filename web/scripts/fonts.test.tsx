@@ -65,8 +65,8 @@ const html = read("index.html");
  *
  *  `defaultToken` is where the "Theme default" row's specimen comes from. For the first two that is
  *  the token they drive, because the default IS that token. The heading tier has no single default
- *  face, since the masthead is mono chrome and each theme sets its own heading scale and weights, so
- *  its default row advertises --font-sans, the token every theme now faces the tier with. The row's
+ *  face, since each theme sets its own heading scale and weights, so its default row advertises
+ *  --font-sans, the token every theme now faces the tier with. The row's
  *  note carries the rest; see DISPLAY_FONTS. */
 const GROUPS = [
   { label: "interface", fonts: UI_FONTS, fallback: DEFAULT_FONT, attr: "data-font", token: "--font-sans", defaultToken: "--font-sans" },
@@ -388,7 +388,6 @@ assert.match(
 
 /** The elements the heading face must reach, and the reason each belongs to the tier. */
 const TIER = [
-  [".wordmark .sub", "the masthead in the top bar"],
   [".rail-head h2", "the rail's section heading"],
   [".board-head h2", "the board's section heading"],
   [".board-tab", "the board's view switcher, which reads as a heading beside it"],
@@ -635,8 +634,8 @@ assert.match(
 const drawn = tierFamilies.map(expand).join(" | ");
 assert.match(
   drawn,
-  /JetBrains Mono/,
-  "styles.css faces the masthead with the mono token, so a haystack without JetBrains Mono in it is not " +
+  /Inter Tight/,
+  "styles.css faces the board tabs with the interface token, so a haystack without Inter Tight in it is not " +
     "reading the families the themes really declare, and every name in the copy would read as undrawn",
 );
 const headingDefault = DISPLAY_FONTS.find((f) => f.id === DEFAULT_DISPLAY_FONT)!;

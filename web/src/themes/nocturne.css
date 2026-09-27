@@ -150,14 +150,6 @@
   text-transform: none;
 }
 [data-theme="nocturne"] .board-tab:hover { color: var(--text-dim); }
-[data-theme="nocturne"] .wordmark .sub {
-  font-family: var(--font-sans);
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  text-transform: none;
-  padding-bottom: 3px;
-}
 [data-theme="nocturne"] .card .title {
   font-family: var(--font-sans);
   font-size: 16.5px;

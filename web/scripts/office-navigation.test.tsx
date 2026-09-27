@@ -103,14 +103,19 @@ Object.assign(state, { chat: [] });
 
 // ---- the Online Office section: the people, not their agents ---------------------------------------
 
-// Nobody else is at a console, so there is nothing to draw. An empty "Online Office" pill in the top
-// bar would be furniture in the one row the account chips have to fit into.
+// The Online Office has no pill of its own: the top bar's room belongs to the agents working. While
+// nobody else is at a console, the director gnome is the door to the general office chat.
 Object.assign(state, { officeRoom: null });
 const aloneStrip = renderToStaticMarkup(React.createElement(Office));
-assert.doesNotMatch(aloneStrip, /office-online/, "no Online Office section while this machine is the only one");
+assert.doesNotMatch(aloneStrip, /office-online|office-director-online/, "no Online Office marker while this machine is the only one");
+assert.match(
+  aloneStrip,
+  /class="office-walker office-director[^"]*"[^>]*data-office-room="general"/,
+  "alone, the director gnome opens the general office",
+);
 
-// Two other directors show up. The section is a click straight into the directors' room — the whole
-// point is that it is reachable without first having a task or a shared repository.
+// Two other directors show up. The director gnome becomes a click straight into the directors'
+// room — reachable without first having a task or a shared repository.
 Object.assign(state, {
   onlineOffice: {
     ...state.onlineOffice,
@@ -127,10 +132,11 @@ Object.assign(state, {
 const peopleStrip = renderToStaticMarkup(React.createElement(Office));
 assert.match(
   peopleStrip,
-  /class="office-online"[^>]*data-office-room="directors"/,
-  "the Online Office section opens the directors' room",
+  /class="office-walker office-director[^"]*"[^>]*data-office-room="directors"/,
+  "with other directors online, the director gnome opens the directors' room",
 );
-assert.match(peopleStrip, /Online Office/, "…and is labelled as such in the strip");
+assert.doesNotMatch(peopleStrip, /class="office-online"/, "…instead of a separate Online Office pill");
+assert.match(peopleStrip, /<span class="office-director-online">2<\/span>/, "…and carries a count of who else is on");
 assert.match(peopleStrip, /Mikkel on Mikkel&#x27;s laptop — 2 agents working/, "…naming each person, their machine and what they have running");
 assert.match(peopleStrip, /Ada on Ada&#x27;s box — nothing running/, "…including a director with nothing started");
 
@@ -191,4 +197,4 @@ assert.deepEqual(huddleWith(9), { gnomes: 5, more: "4" }, "past six, five gnomes
 assert.deepEqual(huddleWith(3, 2), { gnomes: 5, more: null }, "local and remote agents share the crowd budget");
 assert.deepEqual(huddleWith(4, 4), { gnomes: 5, more: "3" }, "a mixed crowd past six folds its tail into +N");
 
-console.log("Office navigation UI gate passed - lone gnomes open their own visible project chat directly, the Online Office section opens the directors' room, and a busy huddle accounts for every agent.");
+console.log("Office navigation UI gate passed - lone gnomes open their own visible project chat directly, the director gnome opens the directors' room while others are online, and a busy huddle accounts for every agent.");

@@ -55,7 +55,8 @@ async function bootRelay(dataDir) {
   const log = fs.createWriteStream(path.join(dataDir, "relay.log"));
   child.stdout.pipe(log);
   child.stderr.pipe(log);
-  for (let i = 0; i < 60; i++) {
+  // Two minutes, not thirty seconds: a cold `npx tsx` boot overran 30s at 100% CPU (2026-09-28).
+  for (let i = 0; i < 240; i++) {
     await new Promise((r) => setTimeout(r, 500));
     try {
       if ((await fetch(`${RELAY}/api/health`)).ok) return child;
@@ -194,6 +195,7 @@ async function main() {
   const shots = shotDir(dataDir);
   let relayProc = null;
   let peer = null;
+  const crowd = [];
   try {
     relayProc = await bootRelay(relayDir);
     await boot({ dataDir, port: PORT });
@@ -246,19 +248,19 @@ async function main() {
       check("…tagged with the machine's name", (await page.locator(".office-remote-tag").innerText()) === "Mikkel's laptop");
 
       // ---- the directors' room: the people, across machines ----------------------------------------
-      // Declaring a director is what puts a machine in the room, so the section appears only once
-      // somebody else is actually at a console.
+      // Declaring a director is what puts a machine in the room. There is no pill for it: once
+      // somebody else is at a console, the director gnome carries a count and opens their room.
       peer.send(JSON.stringify({ t: "presence", agents: [peer.agent], director: { name: "Mikkel" } }));
-      await page.waitForSelector(".office-online", { timeout: 20_000 });
-      check("the top bar grows an Online Office section once another director is on", (await page.locator(".office-online").count()) === 1);
-      check("…labelled for what it is", (await page.locator(".office-online-tag").innerText()) === "Online Office");
-      const peopleTitle = (await page.locator(".office-online").getAttribute("title")) ?? "";
+      await page.waitForSelector(".office-director-online", { timeout: 20_000 });
+      check("the director gnome shows who else is on once another director is", (await page.locator(".office-director-online").innerText()) === "1");
+      check("…without a separate Online Office pill eating the strip", (await page.locator(".office-online").count()) === 0);
+      const peopleTitle = (await page.locator(".office-director").getAttribute("title")) ?? "";
       check("…naming the person and their machine", peopleTitle.includes("Mikkel on Mikkel's laptop"), peopleTitle);
 
       peer.send(JSON.stringify({ t: "chat", room: "directors", body: "I'm deploying the relay in 5 — hold off pushing", senderName: "Mikkel", role: "director" }));
-      await page.click(".office-online");
+      await page.click(".office-director");
       await page.waitForSelector(".office-panel", { timeout: 20_000 });
-      check("…and clicking it opens the Directors room", (await page.locator(".office-tab.directors.on").count()) === 1);
+      check("…and clicking the director gnome opens the Directors room", (await page.locator(".office-tab.directors.on").count()) === 1);
       await page.waitForSelector(".office-msgs .office-msg", { timeout: 20_000 });
       const directorsText = await page.locator(".office-msgs").innerText();
       check("the other director's line arrives", directorsText.includes("hold off pushing"), directorsText);
@@ -351,6 +353,52 @@ async function main() {
       await page.click(".office-panel .close-x");
       await page.waitForSelector(".office-panel", { state: "detached", timeout: 10_000 });
 
+      // ---- a crowded strip folds instead of running under the account chips --------------------------
+      // The office box is sized by the top bar, not by its gnomes, so a busy office used to overflow it
+      // and paint its pills over the usage chips. Ten machines on ten repos is ten remote pills.
+      for (let i = 0; i < 9; i++) {
+        crowd.push(await joinAsPeer(`Crowd box ${i + 1}`, {
+          key: `t-crowd-${i}::implementor`,
+          name: `Crowd ${i + 1}`,
+          role: "implementor",
+          title: "Crowd work",
+          repoKey: `github.com/lab/crowd-${i}`,
+          repoLabel: `lab/crowd-${i}`,
+        }));
+      }
+      for (const width of [1500, 1920, 1100]) {
+        await page.setViewportSize({ width, height: 950 });
+        await page.waitForSelector(".office-overflow", { timeout: 20_000 });
+        await page.waitForFunction(() => document.querySelectorAll(".office-remote").length + Number((document.querySelector(".office-overflow")?.textContent ?? "+0").slice(1)) === 10, null, { timeout: 20_000 }).catch(() => {});
+        const fold = await page.evaluate(() => {
+          const box = document.querySelector(".office").getBoundingClientRect();
+          const chips = [...document.querySelectorAll(".accounts .acct")].map((c) => c.getBoundingClientRect());
+          const pills = [...document.querySelectorAll(".office-strip > *")].map((c) => c.getBoundingClientRect());
+          const hits = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+          return {
+            shown: document.querySelectorAll(".office-remote").length,
+            folded: Number((document.querySelector(".office-overflow")?.textContent ?? "+0").slice(1)),
+            overhang: Math.max(...pills.map((p) => p.right)) - box.right,
+            overChips: pills.filter((p) => chips.some((c) => hits(p, c))).length,
+          };
+        });
+        check(`${width}px: every machine is either drawn or counted in "+N"`, fold.shown + fold.folded === 10, JSON.stringify(fold));
+        check(`${width}px: nothing in the strip runs past the office box`, fold.overhang <= 0.5, JSON.stringify(fold));
+        check(`${width}px: no pill paints over an account chip`, fold.overChips === 0, JSON.stringify(fold));
+        await page.screenshot({ path: path.join(shots, `crowded-strip-${width}.png`) });
+      }
+      const foldTitle = (await page.locator(".office-overflow").getAttribute("title")) ?? "";
+      check('the "+N" pill names what it folded', /Crowd box \d/.test(foldTitle), foldTitle);
+      await page.click(".office-overflow");
+      await page.waitForSelector(".office-panel", { timeout: 20_000 });
+      check("…and opens the office chat", (await page.locator(".office-panel").count()) === 1);
+      await page.click(".office-panel .close-x");
+      await page.waitForSelector(".office-panel", { state: "detached", timeout: 10_000 });
+      for (const p of crowd.splice(0)) p.terminate();
+      await page.setViewportSize({ width: 1500, height: 950 });
+      await page.waitForSelector(".office-overflow", { state: "detached", timeout: 20_000 }).catch(() => {});
+      check('the "+N" pill goes away once the crowd leaves', (await page.locator(".office-overflow").count()) === 0);
+
       // Leaving must forget the token — otherwise "Leave" is cosmetic.
       await page.click('[aria-label="Open settings"]');
       await page.waitForSelector('[role="dialog"][aria-label="Settings"]', { timeout: 20_000 });
@@ -368,6 +416,7 @@ async function main() {
   } finally {
     try {
       peer?.terminate();
+      for (const p of crowd) p.terminate();
     } catch {
       /* already gone */
     }

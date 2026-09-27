@@ -79,7 +79,7 @@ Touch map, all five or the face half-ships:
 
 The heading channel has rules of its own, because unlike the other two it does not merely swap a
 token that rules already read. Nothing faces the heading tier AS a tier, so `fonts.css` applies
-`--font-display` to an explicit selector list (masthead, card headers, section and lane headings,
+`--font-display` to an explicit selector list (card headers, section and lane headings,
 the panel title and its rename input, dialog titles), and that list is the feature:
 - **Every tier selector starts `:root[data-font-display] `.** `[data-theme="nocturne"] .card
   .title` faces the same element, and `fonts.css` is imported BEFORE the theme, so the bare

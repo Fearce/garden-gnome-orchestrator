@@ -36,11 +36,10 @@ const NOISE = {
   "the office gnomes": ".office",
   "the task counters": ".stat",
   "the plan-approval gate": ".gate",
-  "the notification bell": ".bell",
+  "the notification bell": ".bell:not(.accounts-toggle)", // the phone usage toggle shares the .bell shape
   "the Git button": ".git-btn",
   "the settings gear": ".settings-btn",
   "the build/sha tag": ".build-tag",
-  "the wordmark subtitle": ".wordmark .sub",
 };
 
 /** Everything it keeps: the two panel toggles, the socket, and the brand mark. */

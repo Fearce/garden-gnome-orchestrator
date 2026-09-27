@@ -66,7 +66,6 @@ const SNAPSHOT = [
   { name: "task card", selector: ".card", props: ["backgroundColor", "borderRadius", "boxShadow", "padding"] },
   { name: "task card title", selector: ".card .title", props: ["fontFamily", "fontSize", "fontWeight"] },
   { name: "board tab", selector: ".board-tab", props: ["fontFamily", "fontSize", "textTransform"] },
-  { name: "masthead", selector: ".wordmark .sub", props: ["fontFamily", "fontSize", "letterSpacing"] },
 ];
 
 /** getComputedStyle for each watched surface — the state a theme is allowed to change, and Classic
@@ -168,16 +167,14 @@ const activeFonts = (page) =>
 /** The families actually in use, which is the only thing a font choice is allowed to change here.
  *  `.conn` is a top-bar readout set in --font-mono, so the tokens are read from live elements rather
  *  than from the token block: an option that changes the variable but reaches nothing looks identical
- *  in :root. The masthead and a task card's header are the heading channel's own two surfaces, and
- *  the reason it exists: the first is hard-set in mono as chrome and the second is re-faced by a
- *  theme, so neither of the other pickers could ever reach them. */
+ *  in :root. A task card's header is the heading channel's own surface, and the reason it exists: a
+ *  theme re-faces it, so neither of the other pickers could ever reach it. */
 const usedFaces = (page) =>
   page.evaluate(() => {
     const family = (selector) => getComputedStyle(document.querySelector(selector)).fontFamily;
     return {
       body: family("body"),
       mono: family(".conn"),
-      masthead: family(".wordmark .sub"),
       title: family(".card .title"),
     };
   });
@@ -254,7 +251,6 @@ async function main() {
 
       const classicFaces = await usedFaces(page);
       for (const [surface, family] of [
-        ["masthead", classicFaces.masthead],
         ["task card header", classicFaces.title],
       ]) {
         check(`a fresh console's ${surface} is not a serif`, !isSerif(family), family);
@@ -325,7 +321,6 @@ async function main() {
       // the cascade finally resolved to.
       const themedDefault = await usedFaces(page);
       for (const [surface, family] of [
-        ["masthead", themedDefault.masthead],
         ["task card header", themedDefault.title],
       ]) {
         check(
@@ -427,18 +422,11 @@ async function main() {
       check("without disturbing the interface face", both.body === serif.body, `${serif.body} -> ${both.body}`);
 
       // ---- the heading face ------------------------------------------------------------------
-      // The channel the owner asked for, and the two surfaces that named the bug: the masthead is
-      // mono chrome, so the interface picker never reached it, and a task card's header is re-faced
-      // by Nocturne, so under that theme the interface picker did not reach it either.
-      check(
-        "the masthead is mono CHROME, so until now only the monospace picker could move it",
-        defaultFaces.masthead === defaultFaces.mono && both.masthead === both.mono,
-        `${defaultFaces.masthead} / ${both.masthead} vs ${both.mono}`,
-      );
+      // The channel the owner asked for, and the surface that named the bug: a task card's header is
+      // re-faced by Nocturne, so under that theme the interface picker did not reach it.
       await chooseFont(reloaded, "heading", "bricolage");
       const headed = await usedFaces(reloaded);
-      check("choosing a heading face repaints the masthead", /Bricolage/.test(headed.masthead), headed.masthead);
-      check("and a task card's header with it", /Bricolage/.test(headed.title), headed.title);
+      check("choosing a heading face repaints a task card's header", /Bricolage/.test(headed.title), headed.title);
       check(
         "while the interface and monospace faces stay exactly where they were",
         headed.body === both.body && headed.mono === both.mono,
@@ -454,15 +442,15 @@ async function main() {
       const nocturneHeaded = await usedFaces(reloaded);
       check(
         "a chosen heading face survives switching to a theme that faces the same tier",
-        /Bricolage/.test(nocturneHeaded.title) && /Bricolage/.test(nocturneHeaded.masthead),
-        `${nocturneHeaded.masthead} / ${nocturneHeaded.title}`,
+        /Bricolage/.test(nocturneHeaded.title),
+        nocturneHeaded.title,
       );
       await chooseFont(reloaded, "heading", "space-grotesk");
       const grotesque = await usedFaces(reloaded);
       check(
-        "and switching faces under that theme repaints both surfaces again",
-        /Space Grotesk/.test(grotesque.masthead) && /Space Grotesk/.test(grotesque.title),
-        `${grotesque.masthead} / ${grotesque.title}`,
+        "and switching faces under that theme repaints it again",
+        /Space Grotesk/.test(grotesque.title),
+        grotesque.title,
       );
       await reloaded.locator(".settings-pop").screenshot({ path: path.join(shots, "appearance-heading-picker.png") });
       await closeSettings(reloaded);
@@ -476,8 +464,8 @@ async function main() {
       await chooseFont(reloaded, "heading", "default");
       const unheaded = await usedFaces(reloaded);
       check(
-        "choosing the heading default hands both surfaces straight back to the console's own faces",
-        unheaded.masthead === both.masthead && unheaded.title === both.title,
+        "choosing the heading default hands the card header straight back to the console's own face",
+        unheaded.title === both.title,
         `${JSON.stringify(both)} -> ${JSON.stringify(unheaded)}`,
       );
 
@@ -523,9 +511,9 @@ async function main() {
       await closeSettings(refonted);
       const serifHeadings = await usedFaces(refonted);
       check(
-        "a display serif reaches the masthead and the card headers on Classic too",
-        /Instrument Serif/.test(serifHeadings.masthead) && /Instrument Serif/.test(serifHeadings.title),
-        `${serifHeadings.masthead} / ${serifHeadings.title}`,
+        "a display serif reaches the card headers on Classic too",
+        /Instrument Serif/.test(serifHeadings.title),
+        serifHeadings.title,
       );
       // Instrument Serif has ONE weight, so Classic's 600 would be drawn as a synthetic bold, and it
       // sets small for its em. The face carries its own weight and size for the title tier; without

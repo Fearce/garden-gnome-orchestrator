@@ -90,7 +90,7 @@
 
 /* ---- the heading face (--font-display) -----------------------------------------------------------
  *
- * The tier is the elements that NAME something: the masthead, a card's header, the section and lane
+ * The tier is the elements that NAME something: a card's header, the section and lane
  * headings, the detail panel's title (and the input that replaces it on a rename), the dialog
  * titles. It is the same tier Nocturne already restates with its own scale, which is why it is defined
  * here rather than invented, because "heading-level chrome" is a decision this console already made.
@@ -107,7 +107,6 @@
  * serif on every heading, which is the bug this channel exists to fix.
  */
 
-:root[data-font-display] .wordmark .sub,
 :root[data-font-display] .rail-head h2,
 :root[data-font-display] .board-head h2,
 :root[data-font-display] .board-tab,

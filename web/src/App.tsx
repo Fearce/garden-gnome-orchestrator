@@ -73,7 +73,6 @@ export function App() {
           {focusMode ? null : <BuildTag />}
           <div className="wordmark">
             <img className="brand-logo" src={ggLogo} alt="GG Orchestrator" />
-            {focusMode ? null : <span className="sub">director&nbsp;console</span>}
           </div>
         </div>
         <PortalLink />

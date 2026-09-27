@@ -239,8 +239,8 @@ interface State {
   // Text in the director conversation only; leaves the rest of the console at its theme size.
   directorChatFontSize: number;
   // Which typefaces the console is set in (Settings → Appearance). `uiFont` drives --font-sans,
-  // `monoFont` drives --font-mono and `displayFont` drives --font-display (the masthead, the card
-  // headers, the section titles). All three are independent, so a serif interface never turns a
+  // `monoFont` drives --font-mono and `displayFont` drives --font-display (the card headers, the
+  // section titles, the dialog titles). All three are independent, so a serif interface never turns a
   // transcript proportional and a heading face never reaches a diff. "default" is the absence of an
   // attribute, exactly like Classic.
   uiFont: FontId;
