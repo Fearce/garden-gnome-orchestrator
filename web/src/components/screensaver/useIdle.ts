@@ -3,8 +3,9 @@
  * Two rules the screensaver depends on, and both are easy to get wrong:
  *
  *   · Coming back is INSTANT. While the scene is up, the very first activity event dismisses it, on
- *     the capture phase and before anything else can consume it. The overlay never sees the click
- *     that dismissed it, so the board underneath keeps whatever state it had.
+ *     the capture phase and before anything else can consume it. Neither the overlay nor the board
+ *     sees the click that dismissed it (the waking press's click is swallowed), so the board
+ *     underneath keeps whatever state it had.
  *   · Going idle is CHEAP. `mousemove` fires hundreds of times a second, so re-arming a timer on
  *     every one of them would be the most expensive thing on the page while somebody is working.
  *     Activity only writes a timestamp; one interval decides whether that timestamp has gone stale.
@@ -27,6 +28,11 @@ const TICK_MS = 1000;
  *  deliberate human input takes, so a real return still reads as instant. */
 const ARM_MS = 350;
 
+/** The events that press on something. Waking the console with one of these must not ALSO press
+ *  whatever the overlay was covering: on a phone a tap is the only way back, and its click would
+ *  otherwise land on the board the instant the overlay unmounts. */
+const PRESS_EVENTS = new Set(["pointerdown", "mousedown", "touchstart"]);
+
 /**
  * `true` once nothing has happened for `idleMs`. Any activity clears it immediately.
  *
@@ -38,6 +44,7 @@ export function useIdle(idleMs: number, enabled: boolean): boolean {
   // Refs, not state: activity must not re-render the app while somebody is working.
   const lastActivity = useRef(Date.now());
   const shownAt = useRef(0);
+  const idleRef = useRef(false);
 
   useEffect(() => {
     if (!enabled) {
@@ -45,29 +52,48 @@ export function useIdle(idleMs: number, enabled: boolean): boolean {
       return;
     }
     lastActivity.current = Date.now();
+    // Set by a waking press, spent by its click. Keyed on the gesture rather than a clock: under load
+    // a tap's click can trail its touch by over a second, and a press that never becomes a click (a
+    // scroll) must not eat the next real tap, which is why every new pointerdown clears it.
+    let swallowClick = false;
 
-    const onActivity = (): void => {
-      lastActivity.current = Date.now();
-      // Reading state through the setter keeps this handler free of a dependency on `idle`, so the
-      // listeners are attached once for the life of the setting rather than on every wake.
-      setIdle((wasIdle) => (wasIdle && Date.now() - shownAt.current >= ARM_MS ? false : wasIdle));
+    const onActivity = (e: Event): void => {
+      const now = Date.now();
+      lastActivity.current = now;
+      if (e.type === "pointerdown") swallowClick = false;
+      // A ref rather than `idle`, so the listeners are attached once for the life of the setting
+      // rather than on every wake.
+      if (!idleRef.current || now - shownAt.current < ARM_MS) return;
+      idleRef.current = false;
+      setIdle(false);
+      if (PRESS_EVENTS.has(e.type)) swallowClick = true;
+    };
+
+    const onClick = (e: MouseEvent): void => {
+      if (!swallowClick) return;
+      swallowClick = false;
+      e.preventDefault();
+      e.stopPropagation();
     };
 
     // Capture phase: the wake must not depend on the event reaching a particular element, and the
     // overlay must never be the thing that handles it.
     for (const type of ACTIVITY_EVENTS) window.addEventListener(type, onActivity, { capture: true, passive: true });
+    window.addEventListener("click", onClick, { capture: true });
 
     const timer = window.setInterval(() => {
-      setIdle((wasIdle) => {
-        const nowIdle = Date.now() - lastActivity.current >= idleMs;
-        if (nowIdle && !wasIdle) shownAt.current = Date.now();
-        return nowIdle;
-      });
+      const nowIdle = Date.now() - lastActivity.current >= idleMs;
+      if (nowIdle === idleRef.current) return;
+      if (nowIdle) shownAt.current = Date.now();
+      idleRef.current = nowIdle;
+      setIdle(nowIdle);
     }, TICK_MS);
 
     return () => {
       for (const type of ACTIVITY_EVENTS) window.removeEventListener(type, onActivity, { capture: true });
+      window.removeEventListener("click", onClick, { capture: true });
       window.clearInterval(timer);
+      idleRef.current = false;
     };
   }, [enabled, idleMs]);
 

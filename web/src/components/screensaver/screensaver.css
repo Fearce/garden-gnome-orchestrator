@@ -677,13 +677,119 @@
   .gs-root .gs-cards { gap: 24px; padding: 0 20px; }
   .gs-root .gs-card { min-width: 168px; }
 }
-@media (max-width: 760px) {
-  /* No message column here, so the cards go back to their own height rather than stretching into
-     empty panels. */
-  .gs-root .gs-cards { gap: 14px; padding: 0 12px; bottom: auto; }
-  .gs-root .gs-card { min-width: 128px; padding: 9px 10px 8px; }
-  .gs-root .gs-ws, .gs-root .gs-activity, .gs-root .gs-history { display: none; }
+
+/* ------------------------------------------------------------------ the phone tower ---- */
+
+/* A phone cannot hang six ropes off one beam, so the lanes stack as storeys of a scaffold tower:
+   each card gets its own ledge, its gnome (scaled down about his hook) sits on or hangs from that
+   ledge over the house, and the words run beside the house instead of under it. The row height,
+   gaps, column count and rig scale arrive as variables from Screensaver.tsx (`PHONE` in scene.ts),
+   which counts storeys with the same numbers, so what is counted is what is drawn. */
+.gs-root .gs-ledge { display: none; }
+
+.gs-root.gs-phone .gs-beam { display: none; }
+.gs-root.gs-phone .gs-cards {
+  top: max(16px, calc(env(safe-area-inset-top) + 10px));
+  bottom: calc(78px + env(safe-area-inset-bottom));
+  left: calc(12px + env(safe-area-inset-left));
+  right: calc(12px + env(safe-area-inset-right));
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--gs-cols, 1), minmax(0, 1fr));
+  grid-auto-rows: var(--gs-row-h);
+  gap: var(--gs-row-gap) var(--gs-col-gap);
+  align-content: center;
 }
+.gs-root.gs-phone .gs-worker {
+  transform: scale(var(--gs-rig-scale));
+  transform-origin: 0 0;
+}
+
+/* Headroom for the title (and for a gnome sitting on the ledge), the ledge, then the house with its
+   status and headline beside it. 44 + 9 + 6 + the 112px plot's 80.6 is the 140px row. */
+.gs-root.gs-phone .gs-card {
+  min-width: 0;
+  max-width: none;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  grid-template-rows: 44px 9px auto 1fr;
+  gap: 0 14px;
+  padding: 0 8px 0 38px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.gs-root.gs-phone .gs-card::before { display: none; }
+.gs-root.gs-phone .gs-title {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: end;
+  padding-bottom: 5px;
+  font-size: 13.5px;
+}
+.gs-root.gs-phone .gs-ledge {
+  display: block;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  position: relative;
+  margin: 0 -8px 0 -38px;
+  background: linear-gradient(180deg, oklch(0.52 0.055 60) 0%, oklch(0.44 0.05 58) 46%, oklch(0.33 0.04 54) 100%);
+  border-top: 1px solid oklch(0.6 0.06 62);
+  box-shadow: 0 6px 14px oklch(0 0 0 / 0.38);
+}
+/* The tower's standards: a post at each end of every ledge, running from the top of its storey down
+   through the gap to the next, so a stack of storeys reads as one scaffold. */
+.gs-root.gs-phone .gs-ledge::before,
+.gs-root.gs-phone .gs-ledge::after {
+  content: "";
+  position: absolute;
+  top: -44px;
+  height: calc(var(--gs-row-h) + var(--gs-row-gap));
+  width: 5px;
+  background: linear-gradient(90deg, var(--gs-timber-dark), oklch(0.48 0.05 60) 55%, var(--gs-timber-dark));
+  opacity: 0.7;
+}
+.gs-root.gs-phone .gs-ledge::before { left: 2px; }
+.gs-root.gs-phone .gs-ledge::after { right: 2px; }
+.gs-root.gs-phone .gs-plot {
+  grid-column: 1;
+  grid-row: 3 / 5;
+  align-self: start;
+  margin-top: 6px;
+}
+.gs-root.gs-phone .gs-foot {
+  grid-column: 2;
+  grid-row: 3;
+  justify-content: flex-start;
+  gap: 9px;
+  padding-top: 8px;
+}
+.gs-root.gs-phone .gs-elapsed { margin-left: auto; }
+.gs-root.gs-phone .gs-activity {
+  grid-column: 2;
+  grid-row: 4;
+  margin-top: 6px;
+  min-height: 0;
+  -webkit-line-clamp: 3;
+}
+.gs-root.gs-phone .gs-ws,
+.gs-root.gs-phone .gs-history { display: none; }
+
+/* The lanes a short tower had no storey for, so a missing task does not read as a stopped one. */
+.gs-root .gs-more {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(52px + env(safe-area-inset-bottom));
+  margin: 0;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.gs-root.gs-phone .gs-hint { bottom: calc(24px + env(safe-area-inset-bottom)); }
 
 /* Motion is the whole point here, so reduced motion keeps the staging and the poses (the gnome
    still hangs at the right depth on the right rope, and the right timbers are up) and drops only

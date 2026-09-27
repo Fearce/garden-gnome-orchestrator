@@ -154,9 +154,11 @@ export function targetFor(geo: CardGeometry, progress: number): { x: number; y: 
  *  other way round. Reversed, the sign error hides while the build is low (a small target offset is
  *  a small angle either way) and only shows once a gnome should be traversing out along his rafter,
  *  at which point he walks off the far side of the board instead of up his own frame. */
-export function rigFor(geo: CardGeometry, anchorY: number, target: { x: number; y: number }): { len: number; deg: number } {
-  const dx = target.x - geo.anchorX;
-  const dy = target.y - anchorY;
+export function rigFor(geo: CardGeometry, anchorY: number, target: { x: number; y: number }, scale = 1): { len: number; deg: number } {
+  // A scaled rig (the phone storeys) is solved in its own unscaled frame: a uniform scale about the
+  // hook leaves every angle alone and divides every length, so the rope comes back in rig pixels.
+  const dx = (target.x - geo.anchorX) / scale;
+  const dy = (target.y - anchorY) / scale;
   const dist = Math.hypot(dx, dy);
   const b = Math.sqrt(Math.max(1, dist * dist - IMPACT_DX * IMPACT_DX));
   return {
@@ -172,4 +174,39 @@ export function swayFor(len: number): { dur: number; amp: number } {
     dur: Math.min(3.6, Math.max(1.6, 1.4 + len / 200)),
     amp: Math.min(1.8, Math.max(0.8, 0.7 + len / 500)),
   };
+}
+
+// ---- the phone tower ---------------------------------------------------------------------------------
+
+/** The phone layout. One long beam cannot carry six ropes across 390px, so a phone stacks the lanes
+ *  as storeys of a scaffold tower instead: each lane gets its own ledge, its gnome hangs from that
+ *  ledge over the house, and the task's words sit beside it. These numbers are the single source for
+ *  that layout. The scene writes them onto the root as CSS variables, and `phoneStage` counts storeys
+ *  with the same numbers, so the count and the drawing cannot drift apart. */
+export const PHONE = {
+  /** The gnome at 54px instead of 96, in proportion to a 112px house. */
+  rigScale: 0.56,
+  /** One storey: title headroom, the ledge band, then the house. */
+  rowH: 140,
+  rowGap: 8,
+  /** A landscape phone runs two towers side by side once each can still hold a readable line. */
+  colMin: 320,
+  colGap: 18,
+  /** The hook sits just left of the house so the gnome hangs over its own frame. */
+  hookInset: 5,
+} as const;
+
+export interface PhoneStage {
+  cols: number;
+  rows: number;
+  /** How many lanes fit on screen at once. */
+  lanes: number;
+}
+
+/** How many storeys fit a stack of the given size. Never fewer than one, so a tiny screen still shows
+ *  the most interesting lane rather than nothing. */
+export function phoneStage(width: number, height: number, maxLanes: number): PhoneStage {
+  const cols = Math.max(1, Math.floor((width + PHONE.colGap) / (PHONE.colMin + PHONE.colGap)));
+  const rows = Math.max(1, Math.floor((height + PHONE.rowGap) / (PHONE.rowH + PHONE.rowGap)));
+  return { cols, rows, lanes: Math.min(maxLanes, cols * rows) };
 }

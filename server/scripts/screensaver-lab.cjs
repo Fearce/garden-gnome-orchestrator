@@ -2,7 +2,9 @@
 /**
  * screensaver-lab: drive the AFK gnome scene in a real browser and MEASURE it.
  *
- *   npm run screensaver-lab --prefix server [-- --shots data/screensaver-shots] [--video <dir>] [--keep]
+ *   npm run screensaver-lab --prefix server [-- --shots data/screensaver-shots] [--video <dir>] [--keep] [--phone]
+ *
+ * `--phone` runs only the phone-tower section (one idle wait instead of four), for iterating on it.
  *
  * Why measuring and not looking. The prototype this scene grew out of shipped three real animation
  * bugs, and every one of them was invisible in a still: a CSS `transform-origin` composing with an
@@ -25,6 +27,7 @@ const { boot, killInstance, loadChromium, authPassword, requireBuild, createChec
 const PORT = 5317;
 const IDLE_MINUTES = 1; // the floor the settings row allows, so the lab waits the shortest real idle
 const KEEP = process.argv.includes("--keep");
+const PHONE_ONLY = process.argv.includes("--phone");
 
 /** `--video <dir>` records the main browser context to a .webm: the board, the wait, the scene
  *  arriving on its own, and the keypress that clears it. Off unless asked for, because a recording
@@ -337,6 +340,180 @@ function workPointFor(progress) {
   return WORK_PATH[WORK_PATH.length - 1];
 }
 
+/** The phone tower's numbers, mirrored from `PHONE` in web/src/components/screensaver/scene.ts for the
+ *  same reason RIG is mirrored above: a wrong constant must not cancel out on both sides. */
+const PHONE_RIG_SCALE = 0.56;
+
+/** Every storey of the phone tower as the browser lays it out: the card, its ledge, its title, and
+ *  where its gnome's rig and rope actually are. */
+const PHONE_PROBE = `() => {
+  const root = document.querySelector(".gs-root");
+  if (!root) return null;
+  const box = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height };
+  };
+  const angleOf = (el) => {
+    const m = getComputedStyle(el).transform;
+    const n = m && m.match(/matrix\\(([^)]+)\\)/);
+    if (!n) return 0;
+    const [a, b] = n[1].split(",").map(Number);
+    return (Math.atan2(b, a) * 180) / Math.PI;
+  };
+  const workers = Array.from(root.querySelectorAll(".gs-worker"));
+  return {
+    phone: root.classList.contains("gs-phone"),
+    vw: window.innerWidth,
+    vh: window.innerHeight,
+    hint: root.querySelector(".gs-hint").textContent,
+    hintTop: box(root.querySelector(".gs-hint")).t,
+    more: root.querySelector(".gs-more") ? root.querySelector(".gs-more").textContent : null,
+    beamShown: getComputedStyle(root.querySelector(".gs-beam")).display !== "none",
+    lanes: Array.from(root.querySelectorAll(".gs-card")).map((card, i) => {
+      const worker = workers[i];
+      return {
+        task: card.dataset.task,
+        classes: worker.className,
+        card: box(card),
+        ledge: box(card.querySelector(".gs-ledge")),
+        title: box(card.querySelector(".gs-title")),
+        plot: box(card.querySelector(".gs-plot")),
+        rig: box(worker.querySelector(".gs-rig svg")),
+        history: card.querySelector(".gs-history") ? getComputedStyle(card.querySelector(".gs-history")).display : "none",
+        anchorX: parseFloat(worker.style.left) || 0,
+        anchorY: parseFloat(worker.style.top) || 0,
+        ropeH: parseFloat(getComputedStyle(worker.querySelector(".gs-rope")).height) || 0,
+        leanDeg: angleOf(worker.querySelector(".gs-lean")),
+      };
+    }),
+  };
+}`;
+
+const overlaps = (a, b) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+
+/** Where a scaled gnome's tool lands: the same forward model as impactOf, in the rig's own frame and
+ *  then scaled about the hook. */
+function phoneImpactOf(lane) {
+  const t = (lane.leanDeg * Math.PI) / 180;
+  const ly = lane.ropeH + IMPACT_DY;
+  return {
+    x: lane.anchorX + PHONE_RIG_SCALE * (IMPACT_DX * Math.cos(t) - ly * Math.sin(t)),
+    y: lane.anchorY + PHONE_RIG_SCALE * (IMPACT_DX * Math.sin(t) + ly * Math.cos(t)),
+  };
+}
+
+/** The checks every phone viewport must pass: the tower fits the screen, its storeys do not collide,
+ *  and every gnome belongs to, and works on, his own storey. */
+function checkTower(check, label, f, expect) {
+  check(`${label}: the scene switches to the phone tower`, f.phone && !f.beamShown);
+  check(`${label}: it shows as many storeys as fit`, f.lanes.length === expect.lanes, `${f.lanes.length} lanes`);
+  check(
+    `${label}: the lanes it leaves off are counted, not dropped silently`,
+    expect.more ? f.more === `+${expect.more} more ${expect.more === 1 ? "task" : "tasks"} on the board` : f.more === null,
+    String(f.more),
+  );
+  check(
+    `${label}: every storey is fully on screen, above the hint`,
+    f.lanes.every((l) => l.card.l >= 0 && l.card.r <= f.vw + 0.5 && l.card.t >= 0 && l.card.b <= f.hintTop),
+    f.lanes.map((l) => `${l.task} x${l.card.l.toFixed(0)}-${l.card.r.toFixed(0)} y${l.card.t.toFixed(0)}-${l.card.b.toFixed(0)}`).join(", ") + ` hint ${f.hintTop.toFixed(0)}`,
+  );
+  const clashes = [];
+  f.lanes.forEach((a, i) => f.lanes.slice(i + 1).forEach((b) => overlaps(a.card, b.card) && clashes.push(`${a.task}/${b.task}`)));
+  check(`${label}: no two storeys overlap`, clashes.length === 0, clashes.join(", "));
+  check(`${label}: the house sits inside its storey`, f.lanes.every((l) => l.plot.b <= l.card.b + 0.5 && l.plot.w > 90), f.lanes.map((l) => `${l.plot.w.toFixed(0)}x${l.plot.h.toFixed(0)}`).join(", "));
+  check(`${label}: every rope hangs from its own ledge`, f.lanes.every((l) => Math.abs(l.anchorY - l.ledge.b) < 1 && l.anchorX >= l.card.l), f.lanes.map((l) => `${l.anchorY.toFixed(0)}/${l.ledge.b.toFixed(0)}`).join(", "));
+  // Measured on the upright gnomes only: a leaning rig's bounding box is wider than the rig.
+  const upright = f.lanes.filter((l) => /gs-perched/.test(l.classes));
+  check(`${label}: the gnome is drawn at phone size`, upright.length > 0 && upright.every((l) => Math.abs(l.rig.w - 96 * PHONE_RIG_SCALE) < 1.5), upright.map((l) => l.rig.w.toFixed(1)).join(", "));
+  check(
+    `${label}: no gnome covers any title`,
+    f.lanes.every((g) => f.lanes.every((l) => !overlaps(g.rig, l.title))),
+    f.lanes.map((l) => `${l.task} rig ${l.rig.l.toFixed(0)}-${l.rig.r.toFixed(0)}`).join(", "),
+  );
+  check(
+    `${label}: every gnome stays in his own storey, on screen`,
+    // Sideways he may hang in front of the tower's post (a coiled rope, a slumped failure); what he
+    // may not do is cross into another storey or off the edge of the phone.
+    f.lanes.every((l) => l.rig.t >= l.card.t - 1 && l.rig.b <= l.card.b + 2 && l.rig.l >= 0),
+    f.lanes.map((l) => `${l.task} x${l.rig.l.toFixed(0)} y${l.rig.t.toFixed(0)}-${l.rig.b.toFixed(0)} in ${l.card.t.toFixed(0)}-${l.card.b.toFixed(0)}`).join(", "),
+  );
+  check(`${label}: no message column on a phone`, f.lanes.every((l) => l.history === "none"));
+  const working = f.lanes.find((l) => l.task === "lab-working");
+  if (working) {
+    const hit = phoneImpactOf(working);
+    check(
+      `${label}: the working gnome's tool lands on his own house`,
+      hit.x >= working.plot.l - 4 && hit.x <= working.plot.r + 4 && hit.y >= working.plot.t - 4 && hit.y <= working.plot.b + 4,
+      `impact ${hit.x.toFixed(0)},${hit.y.toFixed(0)} plot ${working.plot.l.toFixed(0)}-${working.plot.r.toFixed(0)} x ${working.plot.t.toFixed(0)}-${working.plot.b.toFixed(0)}`,
+    );
+  }
+}
+
+/** The phone: a touch device with no mouse to move, a screen too narrow for one beam, and a single tap
+ *  as the only way back. One context, re-sized between orientations, since a resize is not activity and
+ *  so the scene stays up across all three. */
+async function phoneTower(browser, check, shots) {
+  const { context, page } = await openConsole(browser, { viewport: { width: 390, height: 664 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+  try {
+    await awaitScene(page, "a phone");
+    // Past the rappel, so every gnome is in his settled pose.
+    await page.waitForTimeout(1800);
+    // Until every newly added storey has finished arriving: the probe reads on-screen boxes, and a
+    // loaded box can still be sliding a card in well past its nominal 520ms.
+    const settle = async () => {
+      await page.waitForTimeout(700);
+      await page.waitForFunction(
+        () => !document.getAnimations().some((a) => a.animationName === "gs-card-in" && a.playState === "running"),
+        null,
+        { timeout: 15_000 },
+      );
+      return page.evaluate(`(${PHONE_PROBE})()`);
+    };
+
+    const small = await settle();
+    await page.screenshot({ path: path.join(shots, "10-phone-portrait.png") });
+    // 664 tall less the chrome holds three 140px storeys; the live work is what stays on stage.
+    checkTower(check, "phone portrait", small, { lanes: 3, more: 2 });
+    check("phone portrait: the live work is what stays on stage", ["lab-working", "lab-qa"].every((id) => small.lanes.some((l) => l.task === id)), small.lanes.map((l) => l.task).join(", "));
+    check("phone: the hint asks for a tap, not a mouse", /tap/i.test(small.hint) && !/mouse/i.test(small.hint), small.hint);
+    const perched = small.lanes.find((l) => /gs-perched/.test(l.classes));
+    if (perched) check("phone: a perched gnome sits on his ledge", perched.rig.t < perched.ledge.t && perched.rig.b > perched.ledge.t, `rig ${perched.rig.t.toFixed(0)}-${perched.rig.b.toFixed(0)} ledge ${perched.ledge.t.toFixed(0)}`);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const tall = await settle();
+    await page.screenshot({ path: path.join(shots, "11-phone-tall.png") });
+    checkTower(check, "tall phone", tall, { lanes: SEED.length, more: 0 });
+
+    await page.setViewportSize({ width: 844, height: 390 });
+    const side = await settle();
+    await page.screenshot({ path: path.join(shots, "12-phone-landscape.png") });
+    // Two towers of two storeys.
+    checkTower(check, "phone landscape", side, { lanes: 4, more: 1 });
+    check("phone landscape: the storeys run in two towers", new Set(side.lanes.map((l) => Math.round(l.card.l))).size === 2);
+
+    /* The waking tap must not also land on the board underneath. Tapped in landscape, since resizing
+       again first can scroll the page, which is activity and wakes the scene before the tap. */
+    const target = await page.evaluate(() => {
+      window.__boardClicks = [];
+      document.addEventListener("click", (e) => window.__boardClicks.push(String(e.target && e.target.className).slice(0, 40)));
+      const card = document.querySelector(".card");
+      const r = card.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 30), url: location.href, up: !!document.querySelector(".gs-root") };
+    });
+    check("phone: the scene is still up when the tap comes", target.up);
+    await page.touchscreen.tap(target.x, target.y);
+    await page.waitForSelector(".gs-root", { state: "detached", timeout: 4000 });
+    check("phone: a tap dismisses the scene at once", true);
+    await page.waitForTimeout(600);
+    const after = await page.evaluate(() => ({ clicks: window.__boardClicks, url: location.href }));
+    check("phone: the waking tap does not click through to the board", after.clicks.length === 0 && after.url === target.url, `${JSON.stringify(after.clicks)} ${after.url}`);
+    await page.screenshot({ path: path.join(shots, "13-phone-after-tap.png") });
+  } finally {
+    await context.close();
+  }
+}
+
 async function main() {
   requireBuild();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "gs-lab-"));
@@ -351,6 +528,12 @@ async function main() {
   let code = 1;
 
   try {
+    if (PHONE_ONLY) {
+      await phoneTower(browser, check, shots);
+      console.log(`\nshots: ${shots}`);
+      code = check.summary();
+      return code;
+    }
     const { context, page } = await openConsole(browser, {
       ...(VIDEO_DIR ? { recordVideo: { dir: VIDEO_DIR, size: { width: 1600, height: 1000 } } } : {}),
     });
@@ -521,12 +704,13 @@ async function main() {
     await page.screenshot({ path: path.join(shots, "06c-text-column-720p.png") });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(400);
-    const phone = await measureColumns(page);
+    const narrow = await page.evaluate(`(${PHONE_PROBE})()`);
     check(
-      "a phone keeps compact cards with no message column",
-      phone.lanes.every((l) => l.card.bottom < phone.viewportH - 160 && (!l.history || l.history.height === 0)),
-      phone.lanes.map((l) => `${l.task} ${l.card.bottom.toFixed(0)}`).join(", ") + ` of ${phone.viewportH}px`,
+      "a narrow window switches to the phone tower, with no message column",
+      narrow.phone && narrow.lanes.every((l) => l.history === "none" && l.card.b <= narrow.hintTop),
+      narrow.lanes.map((l) => `${l.task} ${l.card.b.toFixed(0)}`).join(", ") + ` hint ${narrow.hintTop.toFixed(0)}`,
     );
+    check("a window with a mouse still asks for the mouse", /mouse/i.test(narrow.hint), narrow.hint);
     await page.setViewportSize({ width: 1600, height: 1000 });
     await page.waitForTimeout(400);
 
@@ -605,6 +789,10 @@ async function main() {
     check("switched off, the scene never appears", (await offPage.locator(".gs-root").count()) === 0);
     await off.close();
 
+    /* ---- 10. the phone tower ---- */
+
+    await phoneTower(browser, check, shots);
+
     console.log(`\nshots: ${shots}`);
     code = check.summary();
   } finally {
@@ -619,10 +807,10 @@ async function main() {
       console.log(`kept: http://127.0.0.1:${PORT} (DATA_DIR ${dataDir})`);
     }
   }
-  process.exit(code);
+  return code;
 }
 
-main().catch((e) => {
+main().then((code) => process.exit(code), (e) => {
   console.error(e);
   killInstance(PORT);
   process.exit(1);

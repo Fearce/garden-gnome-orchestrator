@@ -76,8 +76,8 @@ Object.assign(globalThis, {
 });
 
 const { useStore, connect, IDLE_MINUTES_MIN, IDLE_MINUTES_MAX } = await import("../src/store.js");
-const { buildHeight, buildProgressFor, sceneTasks, targetPhase, MAX_LANES, LANE_HISTORY_MAX } = await import("../src/components/screensaver/taskScene.js");
-const { IMPACT_DX, IMPACT_DY, rigFor, targetFor, workPointAt, pulls, slipAmount, RAPPEL } = await import("../src/components/screensaver/scene.js");
+const { buildHeight, buildProgressFor, sceneLaneCount, sceneTasks, targetPhase, MAX_LANES, LANE_HISTORY_MAX } = await import("../src/components/screensaver/taskScene.js");
+const { IMPACT_DX, IMPACT_DY, PHONE, phoneStage, rigFor, targetFor, workPointAt, pulls, slipAmount, RAPPEL } = await import("../src/components/screensaver/scene.js");
 const { Screensaver, nextPhase } = await import("../src/components/screensaver/Screensaver.js");
 
 const results: { label: string; ok: boolean; detail?: string }[] = [];
@@ -146,6 +146,28 @@ check(
   sweep.every((d, i) => i === 0 || d < sweep[i - 1]!),
   sweep.map((d) => d.toFixed(1)).join(" > "),
 );
+
+// The phone tower scales its gnomes about the hook. Solved in the rig's own frame, the tool must
+// still land on the requested point once the browser scales that frame back down.
+let worstScaledMiss = 0;
+for (const progress of [0, 0.25, 0.55, 0.85, 1]) {
+  const target = targetFor(geo, progress);
+  const { len, deg } = rigFor(geo, ANCHOR_Y, target, PHONE.rigScale);
+  const local = impactPoint(len, deg);
+  const landed = { x: geo.anchorX + (local.x - geo.anchorX) * PHONE.rigScale, y: ANCHOR_Y + (local.y - ANCHOR_Y) * PHONE.rigScale };
+  worstScaledMiss = Math.max(worstScaledMiss, Math.hypot(landed.x - target.x, landed.y - target.y));
+}
+check("a scaled phone gnome still lands his tool on the requested point", worstScaledMiss < 1e-6, `worst miss ${worstScaledMiss.toExponential(2)}px`);
+
+// How many storeys a phone stack holds: a portrait phone is one tower, a phone on its side two.
+const portrait = phoneStage(366, 570, MAX_LANES);
+check("a 664px-tall phone holds three storeys in one tower", portrait.cols === 1 && portrait.lanes === 3, JSON.stringify(portrait));
+const tallPhone = phoneStage(366, 750, MAX_LANES);
+check("an 844px-tall phone holds five", tallPhone.cols === 1 && tallPhone.lanes === 5, JSON.stringify(tallPhone));
+const sideways = phoneStage(820, 296, MAX_LANES);
+check("a phone on its side runs two towers of two", sideways.cols === 2 && sideways.rows === 2 && sideways.lanes === 4, JSON.stringify(sideways));
+check("a tiny stack still shows the top lane", phoneStage(200, 40, MAX_LANES).lanes === 1);
+check("a huge stack never shows more than the beam's cap", phoneStage(2000, 3000, MAX_LANES).lanes === MAX_LANES);
 
 // The gnome rises as his own build does: a higher work point means a shorter rope.
 const low = rigFor(geo, ANCHOR_Y, targetFor(geo, 0.05)).len;
@@ -233,6 +255,7 @@ check("a collaborator never gets its own lane", !cast.some((t) => t.id === "kid"
 check("a closed task is off the board", !cast.some((t) => t.id === "gone"));
 check("a finished task ranks behind the waiting ones", cast[cast.length - 1]?.id === "fin", cast.map((t) => t.id).join(","));
 check("the beam is capped at MAX_LANES", sceneTasks(threads, {}, {}, 2).length === 2 && cast.length <= MAX_LANES);
+check("the uncapped lane count skips collaborators and closed tasks", sceneLaneCount(threads) === 6, String(sceneLaneCount(threads)));
 
 // The role a lane wears, and the tool that comes with it.
 const roleCast = sceneTasks(
@@ -516,11 +539,13 @@ check(
   /\.gs-history\s*\{[^}]*flex:\s*1 1 0;[^}]*contain:\s*size;[^}]*overflow:\s*hidden/s.test(sheet) && /\.gs-card\s*\{[^}]*min-height:\s*min-content/s.test(sheet),
 );
 check("the history fades out at the bottom edge", /\.gs-history\s*\{[^}]*mask-image:\s*linear-gradient\(to bottom/s.test(sheet));
-const phoneAt = sheet.indexOf("@media (max-width: 760px)");
-const phone = sheet.slice(phoneAt, sheet.indexOf("\n}", phoneAt));
-check("a phone hides the message column", /\.gs-history\s*\{\s*display:\s*none/.test(phone));
-check("a phone's cards size to their content instead of stretching into empty panels", /\.gs-cards\s*\{[^}]*bottom:\s*auto/.test(phone));
-check("the phone breakpoint the fetch skips is the stylesheet's own", read("src/components/screensaver/Screensaver.tsx").includes('"(max-width: 760px)"'));
+// The phone tower is switched by one JS media query (a class on the root), so the stylesheet must not
+// keep a width breakpoint of its own that could disagree with it.
+check("the phone layout keys on the root's class, not a second breakpoint", !sheet.includes("@media (max-width: 760px)") && sheet.includes(".gs-root.gs-phone .gs-cards"));
+check("a phone hides the message column", /\.gs-root\.gs-phone \.gs-ws,\s*\.gs-root\.gs-phone \.gs-history\s*\{\s*display:\s*none/.test(sheet));
+check("a phone drops the shared beam for per-storey ledges", /\.gs-root\.gs-phone \.gs-beam\s*\{\s*display:\s*none/.test(sheet) && /\.gs-root\.gs-phone \.gs-ledge\s*\{[^}]*display:\s*block/.test(sheet));
+check("the phone gnome is scaled about his hook", /\.gs-root\.gs-phone \.gs-worker\s*\{[^}]*transform:\s*scale\(var\(--gs-rig-scale\)\);[^}]*transform-origin:\s*0 0/.test(sheet));
+check("the tower's rows come from the same numbers phoneStage counts with", /grid-auto-rows:\s*var\(--gs-row-h\)/.test(sheet) && read("src/components/screensaver/Screensaver.tsx").includes('"--gs-row-h": `${PHONE.rowH}px`'));
 check("styles.css is left alone", !read("src/styles.css").includes("gs-root"));
 
 /* ---- summary ------------------------------------------------------------------------------------ */

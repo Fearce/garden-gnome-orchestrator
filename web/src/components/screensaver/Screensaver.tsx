@@ -19,7 +19,7 @@
  * the single static pass below implement together.
  */
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, type AnimationEvent, type CSSProperties } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useStore } from "../../store.js";
 import { roleColor } from "../../lib/format.js";
 import { DroppedTool, GROUND_Y, PLOT_VB, Plot, Rig, TOOL_MOTION } from "./rig.js";
@@ -31,17 +31,20 @@ import {
   DROP_W,
   EASE_IO,
   GUTTER,
+  PHONE,
   RAPPEL,
   SLIP,
   SWING_IN,
+  phoneStage,
   pulls,
   rigFor,
   slipAmount,
   swayFor,
   targetFor,
   type CardGeometry,
+  type PhoneStage,
 } from "./scene.js";
-import { buildHeight, sceneTasks, type LaneMessage, type SceneTask, type TargetPhase } from "./taskScene.js";
+import { MAX_LANES, buildHeight, sceneLaneCount, sceneTasks, type LaneMessage, type SceneTask, type TargetPhase } from "./taskScene.js";
 import { useDocumentHidden, useMediaQuery, usePrefersReducedMotion } from "./useIdle.js";
 import "./screensaver.css";
 
@@ -83,6 +86,9 @@ interface WorkerParts {
 /** The half of a lane that sits on the board. */
 interface CardParts {
   card: HTMLElement;
+  /** The lane's own storey ledge. Only the phone tower shows it; elsewhere the shared beam carries
+   *  every rope. */
+  ledge: HTMLElement;
   plot: HTMLElement;
   pieces: HTMLElement[];
   elapsed: HTMLElement;
@@ -91,10 +97,33 @@ interface CardParts {
 /** One lane's nodes, its pose, and the last values written to it. */
 interface Lane extends WorkerParts, CardParts {
   geo: CardGeometry | null;
+  /** The underside of whatever this lane's rope hangs from, in scene pixels. */
+  anchorY: number;
   phase: AnimPhase;
   /** When the current phase began, in ms, so a transition can be interpolated. */
   since: number;
   applied: { phase: string; pieces: number; snapped: number; len: number; deg: number; elapsed: string };
+}
+
+/** Where an element sits inside the scene with every transform ignored. A card that has just arrived
+ *  is still sliding and scaling in, and a rope rigged to its on-screen box would stay aimed where the
+ *  card WAS unless something re-measured the moment it landed. Layout offsets are the card at rest
+ *  from the first frame. */
+function layoutBox(el: HTMLElement, root: HTMLElement): { left: number; top: number; width: number; height: number } {
+  let left = 0;
+  let top = 0;
+  for (let node: HTMLElement | null = el; node && node !== root; ) {
+    left += node.offsetLeft;
+    top += node.offsetTop;
+    const parent = node.offsetParent as HTMLElement | null;
+    // Offsets run from the parent's padding edge, so its border belongs to the sum too.
+    if (parent && parent !== root) {
+      left += parent.clientLeft;
+      top += parent.clientTop;
+    }
+    node = parent;
+  }
+  return { left, top, width: el.offsetWidth, height: el.offsetHeight };
 }
 
 const mmss = (ms: number): string => {
@@ -135,11 +164,9 @@ export function nextPhase(phase: AnimPhase, target: TargetPhase, elapsedSec: num
  *  under each house would stay empty for exactly the tasks nobody is looking at. Live messages then
  *  stream into those feeds on their own. Opening the scene and every reconnect re-ask for all lanes,
  *  because a feed misses whatever arrived while the socket was down. */
-function useLaneHistories(tasks: SceneTask[]): void {
+function useLaneHistories(tasks: SceneTask[], phone: boolean): void {
   const connected = useStore((s) => s.connected);
   const prefetch = useStore((s) => s.prefetchThreadHistory);
-  // A phone hides the column (see the 760px rule in screensaver.css), so it fetches nothing for it.
-  const narrow = useMediaQuery(NARROW_VIEWPORT);
   const laneIds = tasks.map((t) => t.id).join("\n");
   // Starts true: a feed loaded before this idle period may have missed messages during a reconnect
   // the scene never saw, so the first ask after mounting refreshes every lane.
@@ -149,14 +176,54 @@ function useLaneHistories(tasks: SceneTask[]): void {
       stale.current = true;
       return;
     }
-    if (narrow) return;
+    // The phone tower has no message column, so it fetches nothing for it.
+    if (phone) return;
     prefetch(laneIds ? laneIds.split("\n") : [], stale.current);
     stale.current = false;
-  }, [laneIds, connected, narrow, prefetch]);
+  }, [laneIds, connected, phone, prefetch]);
 }
 
-/** Mirrors the stylesheet's narrowest breakpoint, where the message column is hidden. */
-const NARROW_VIEWPORT = "(max-width: 760px)";
+/** Where the scene switches to the phone tower: any narrow screen, and a phone on its side, whose
+ *  short height cannot fit a beam above a row of houses. */
+const PHONE_VIEWPORT = "(max-width: 760px), (max-height: 520px) and (pointer: coarse)";
+
+/** A screen with no hover has no mouse to move, so the hint asks for a tap instead. */
+const TOUCH_ONLY = "(hover: none)";
+
+/** How many storeys the phone tower's stack can hold, re-counted whenever the stack changes size (a
+ *  rotation, the browser's toolbar sliding away). Measured from the laid-out stack rather than from
+ *  the window, so the safe-area insets the stylesheet leaves around the notch are already paid for.
+ *  A layout effect, so a lane that will not fit is never painted for a frame first. */
+function usePhoneStage(stack: RefObject<HTMLDivElement | null>, phone: boolean): PhoneStage | null {
+  const [stage, setStage] = useState<PhoneStage | null>(null);
+  useLayoutEffect(() => {
+    const el = stack.current;
+    if (!phone || !el) {
+      setStage(null);
+      return;
+    }
+    const count = (): void => {
+      const next = phoneStage(el.clientWidth, el.clientHeight, MAX_LANES);
+      setStage((prev) => (prev && prev.cols === next.cols && prev.rows === next.rows && prev.lanes === next.lanes ? prev : next));
+    };
+    count();
+    const observer = new ResizeObserver(count);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [stack, phone]);
+  return stage;
+}
+
+/** The phone layout's numbers, handed to the stylesheet so it draws exactly what `phoneStage` counted. */
+const phoneVars = (stage: PhoneStage | null, lanes: number): CSSProperties =>
+  ({
+    "--gs-rig-scale": PHONE.rigScale,
+    "--gs-row-h": `${PHONE.rowH}px`,
+    "--gs-row-gap": `${PHONE.rowGap}px`,
+    "--gs-col-gap": `${PHONE.colGap}px`,
+    // A second tower only when there is a lane to put in it.
+    "--gs-cols": Math.max(1, Math.min(stage?.cols ?? 1, lanes)),
+  }) as CSSProperties;
 
 /** Where a lane starts the first time it appears. Work already in flight when the scene opens
  *  rappels in, which is how the whole board arrives rather than snapping into place. */
@@ -169,15 +236,25 @@ export function Screensaver() {
   const runs = useStore((s) => s.runs);
   const drafts = useStore((s) => s.threadDrafts);
   const feeds = useStore((s) => s.threadFeeds);
+
+  const phone = useMediaQuery(PHONE_VIEWPORT);
+  const touchOnly = useMediaQuery(TOUCH_ONLY);
+  const stackRef = useRef<HTMLDivElement>(null);
+  const stage = usePhoneStage(stackRef, phone);
+  const maxLanes = stage?.lanes ?? MAX_LANES;
+
   const tasks = useMemo(() => {
     const text: Record<string, string | undefined> = {};
     for (const [id, draft] of Object.entries(drafts)) text[id] = draft?.text;
-    return sceneTasks(threads, runs, text, undefined, feeds);
-  }, [threads, runs, drafts, feeds]);
+    return sceneTasks(threads, runs, text, maxLanes, feeds);
+  }, [threads, runs, drafts, feeds, maxLanes]);
+  // Only the phone says what it left off: its tower is short enough that a missing lane could
+  // otherwise read as a task that is not running.
+  const offStage = phone ? sceneLaneCount(threads) - tasks.length : 0;
 
   const reducedMotion = usePrefersReducedMotion();
   const hidden = useDocumentHidden();
-  useLaneHistories(tasks);
+  useLaneHistories(tasks, phone);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const beamRef = useRef<HTMLDivElement>(null);
@@ -189,7 +266,8 @@ export function Screensaver() {
   tasksRef.current = tasks;
   const snapRef = useRef(reducedMotion);
   snapRef.current = reducedMotion;
-  const anchorY = useRef(0);
+  const phoneRef = useRef(phone);
+  phoneRef.current = phone;
 
   /** Join the two halves of a lane once both have mounted, preserving the pose of a lane that is
    *  only re-registering (a tool change replaces the rig's SVG, which detaches the cached nodes). */
@@ -206,6 +284,7 @@ export function Screensaver() {
       ...worker,
       ...card,
       geo: existing?.geo ?? null,
+      anchorY: existing?.anchorY ?? 0,
       phase: existing?.phase ?? initialPhase(target),
       since: existing?.since ?? Date.now(),
       // Every "last written" value is deliberately impossible, so the first frame writes everything.
@@ -231,27 +310,29 @@ export function Screensaver() {
     [link],
   );
 
-  /** Re-read the layout: where the beam's underside is, and where each card's build plot sits. The
-   *  rigging solves against these, so they are re-measured whenever the cast or the viewport
-   *  changes rather than cached from mount. */
+  /** Re-read the layout: where each rope hangs from (the shared beam, or on a phone the lane's own
+   *  ledge), and where each card's build plot sits. The rigging solves against these, so they are
+   *  re-measured whenever the cast or the viewport changes rather than cached from mount. */
   const measure = useCallback(() => {
     const root = rootRef.current;
     const beam = beamRef.current;
     if (!root || !beam) return;
-    const scene = root.getBoundingClientRect();
-    anchorY.current = beam.getBoundingClientRect().bottom - scene.top;
+    const beamY = beam.offsetTop + beam.offsetHeight;
+    const phoneLayout = phoneRef.current;
     for (const lane of lanes.current.values()) {
-      const card = lane.card.getBoundingClientRect();
-      const plot = lane.plot.getBoundingClientRect();
+      const card = layoutBox(lane.card, root);
+      const plot = layoutBox(lane.plot, root);
+      const ledge = layoutBox(lane.ledge, root);
+      lane.anchorY = phoneLayout ? ledge.top + ledge.height : beamY;
       lane.geo = {
-        anchorX: card.left - scene.left - GUTTER,
-        plotL: plot.left - scene.left,
-        plotT: plot.top - scene.top,
+        anchorX: phoneLayout ? plot.left - PHONE.hookInset : card.left - GUTTER,
+        plotL: plot.left,
+        plotT: plot.top,
         plotW: plot.width,
         plotH: plot.height,
       };
       lane.worker.style.left = `${lane.geo.anchorX}px`;
-      lane.worker.style.top = `${anchorY.current}px`;
+      lane.worker.style.top = `${lane.anchorY}px`;
       // The falling tool is placed from the rig frame rather than from hand-tuned pixels, so it
       // leaves the mitt at exactly the size and spot it was being swung at.
       lane.dropped.style.left = `${DROP_LEFT.toFixed(2)}px`;
@@ -263,6 +344,7 @@ export function Screensaver() {
    *  wall-clock too; `instant` suppresses the piece-landing transition for the first pass after a
    *  layout change, so opening the scene does not fly thirteen timbers in at once. */
   const paint = useCallback((now: number, instant: boolean) => {
+    const scale = phoneRef.current ? PHONE.rigScale : 1;
     for (const task of tasksRef.current) {
       const lane = lanes.current.get(task.id);
       if (!lane || !lane.geo) continue;
@@ -286,7 +368,7 @@ export function Screensaver() {
 
       // ---- rigging ----
       const progress = buildHeight(task.build, now);
-      const work = rigFor(lane.geo, anchorY.current, targetFor(lane.geo, progress));
+      const work = rigFor(lane.geo, lane.anchorY, targetFor(lane.geo, progress), scale);
       let len = work.len;
       let deg = work.deg;
       switch (phase) {
@@ -322,7 +404,9 @@ export function Screensaver() {
         if (phase === "failed") {
           const ground = lane.geo.plotT + (GROUND_Y / PLOT_VB.h) * lane.geo.plotH;
           lane.dropped.style.top = `${len + DROP_TOP}px`;
-          lane.dropped.style.setProperty("--gs-fall", `${Math.max(0, ground - (anchorY.current + len + DROP_TOP))}px`);
+          // The rope and the tool live in the rig's frame, which a phone scales down about the hook.
+          const released = lane.anchorY + (len + DROP_TOP) * scale;
+          lane.dropped.style.setProperty("--gs-fall", `${Math.max(0, (ground - released) / scale)}px`);
           lane.dropped.classList.remove("gs-falling");
           void lane.dropped.offsetWidth; // restart the fall if this lane has failed before
           lane.dropped.classList.add("gs-falling");
@@ -372,21 +456,12 @@ export function Screensaver() {
     }
   }, []);
 
-  /** A card is measured while `gs-card-in` still translates and scales it, so the rigging aims a few
-   *  pixels off its plot until something re-measures. Once it has landed, measure again. */
-  const onCardArrived = useCallback(
-    (e: AnimationEvent<HTMLDivElement>) => {
-      if (e.animationName === "gs-card-in") measure();
-    },
-    [measure],
-  );
-
   // Measure before the first paint, and again whenever the cast changes the layout.
   const laneKey = tasks.map((t) => t.id).join("\n");
   useLayoutEffect(() => {
     measure();
     paint(Date.now(), true);
-  }, [laneKey, measure, paint]);
+  }, [laneKey, phone, measure, paint]);
 
   useEffect(() => {
     const onResize = (): void => {
@@ -424,13 +499,19 @@ export function Screensaver() {
   }, [reducedMotion, hidden, measure, paint]);
 
   return (
-    <div className="gs-root" ref={rootRef} role="presentation" data-screensaver="on">
+    <div
+      className={phone ? "gs-root gs-phone" : "gs-root"}
+      ref={rootRef}
+      role="presentation"
+      data-screensaver="on"
+      style={phone ? phoneVars(stage, tasks.length) : undefined}
+    >
       {/* The scaffold beam. Every rope hangs off it, and it is where a gnome sits when it has
           nothing to build yet, or has finished. */}
       <div className="gs-beam" ref={beamRef} aria-hidden="true">
         <span className="gs-beam-grain" />
       </div>
-      <div className="gs-cards" onAnimationEnd={onCardArrived}>
+      <div className="gs-cards" ref={stackRef}>
         {tasks.map((task) => (
           <LaneCard key={task.id} task={task} register={registerCard} />
         ))}
@@ -442,7 +523,12 @@ export function Screensaver() {
         ))}
       </div>
       {tasks.length === 0 ? <p className="gs-empty">The board is clear. The crew is on the beam.</p> : null}
-      <p className="gs-hint">move the mouse or press any key</p>
+      {offStage > 0 ? (
+        <p className="gs-more">
+          +{offStage} more {offStage === 1 ? "task" : "tasks"} on the board
+        </p>
+      ) : null}
+      <p className="gs-hint">{touchOnly ? "tap anywhere to wake" : "move the mouse or press any key"}</p>
     </div>
   );
 }
@@ -479,6 +565,7 @@ const LaneCard = memo(function LaneCard({
     if (!card) return;
     register(id, {
       card,
+      ledge: card.querySelector<HTMLElement>(".gs-ledge")!,
       plot: card.querySelector<HTMLElement>(".gs-plot")!,
       pieces: Array.from(card.querySelectorAll<HTMLElement>(".gs-b-piece")),
       elapsed: card.querySelector<HTMLElement>(".gs-elapsed")!,
@@ -490,6 +577,7 @@ const LaneCard = memo(function LaneCard({
     <article className="gs-card" ref={ref} style={{ "--gs-state": task.stateColor } as CSSProperties} data-task={id}>
       <div className="gs-title">{task.title}</div>
       <div className="gs-ws">{task.workspace}</div>
+      <div className="gs-ledge" aria-hidden="true" />
       <div className="gs-plot">
         <Plot />
       </div>

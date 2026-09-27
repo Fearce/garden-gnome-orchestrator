@@ -303,10 +303,20 @@ function groupRuns(runs: Record<string, AgentRun>): Map<string, AgentRun[]> {
   return byThread;
 }
 
+/** Every task the scene could show. Collaborator threads (`parentId`) are left out for the same
+ *  reason the board leaves them out: they belong inside their lead. Closed tasks are off the board
+ *  entirely. */
+function onStage(threads: Record<string, Thread>): Thread[] {
+  return Object.values(threads).filter((t) => !t.parentId && t.state !== "closed");
+}
+
+/** How many lanes the scene would show with no cap, so a stage that holds fewer can say how many it
+ *  left off. */
+export function sceneLaneCount(threads: Record<string, Thread>): number {
+  return onStage(threads).length;
+}
+
 /** Turn the console's live task state into the cast on the beam.
- *
- *  Collaborator threads (`parentId`) are left out for the same reason the board leaves them out:
- *  they belong inside their lead. Closed tasks are off the board entirely.
  *
  *  `drafts` is the live streaming agent text keyed by task id. `feeds` supplies a loaded durable
  *  conversation; the compact board snapshot provides `latestMessagePreview` for every other task. */
@@ -319,7 +329,7 @@ export function sceneTasks(
 ): SceneTask[] {
   const byThread = groupRuns(runs);
 
-  const eligible = Object.values(threads).filter((t) => !t.parentId && t.state !== "closed");
+  const eligible = onStage(threads);
   // Rank first, then oldest-first inside a rank: a stable order keeps a gnome from teleporting to
   // another card the moment an unrelated task updates.
   eligible.sort((a, b) => laneRank(a.state) - laneRank(b.state) || a.createdAt - b.createdAt);
