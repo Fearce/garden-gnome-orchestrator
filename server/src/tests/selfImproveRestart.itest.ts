@@ -415,6 +415,34 @@ async function testCapIsASkipNotAFailure(): Promise<void> {
   h.dispose();
 }
 
+async function testCliCapIsASkipNotAFailure(): Promise<void> {
+  console.log("\nTest C5 — a Codex cap (flagged `capped`, not `rateLimited`) is a skip too\n");
+  const { CodexAgentRun } = await import("../agents/codexRunner.js");
+  const { db, dir, workspace } = makeDb("self-improve-codex-cap-");
+  const h = boot(db, dir, workspace);
+  h.mgr.setSettings({ selfImproveEnabled: true });
+  const id = seedAcceptedTask(db, workspace, false);
+  h.mgr.latestImplementorSession = (): string => "session-abc";
+  h.mgr.stopLive = async (): Promise<void> => {};
+  h.mgr.flushDirectorNotes = (): void => {};
+  // A real CodexAgentRun instance so the `instanceof` routing sees it, without spawning a CLI.
+  const run = Object.assign(Object.create(CodexAgentRun.prototype), {
+    rateLimited: false,
+    capped: true,
+    finished: false,
+    send: (): void => {},
+    stop: async (): Promise<void> => {},
+    onEvent: () => (): void => {},
+  });
+  h.mgr.startImplementor = (): unknown => ({ run, runId: "bonus", accountId: "openai-codex" });
+  h.mgr.awaitTurnResult = async (): Promise<unknown> => ({ type: "result", subtype: "error_during_execution", isError: true, result: "You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage" });
+  await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF");
+  const findings = db.listFindings(id);
+  check("the Codex cap is not filed as the round failing", !findings.some((f) => f.summary.includes("didn't finish cleanly")), findings.map((f) => f.summary).join(" | "));
+  check("it is recorded as a skip, as info", findings.some((f) => f.summary.includes("skipped") && f.summary.includes("usage limit") && f.severity === "info"));
+  h.dispose();
+}
+
 async function testCliBonusRunsOnce(): Promise<void> {
   for (const provider of ["codex", "grok"] as const) {
     const { db, dir, workspace } = makeDb(`self-improve-${provider}-`);
@@ -598,6 +626,7 @@ async function main(): Promise<void> {
   await testBonusFailureDoesNotResume();
   await testWrapUpSteer();
   await testCapIsASkipNotAFailure();
+  await testCliCapIsASkipNotAFailure();
   await testCliBonusRunsOnce();
   await testRestartedCliBonusKeepsItsBackend();
   await testStaleMarkerCleared();

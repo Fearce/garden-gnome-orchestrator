@@ -11238,7 +11238,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     o: { timedOut: boolean; silent: boolean; wrapUpSent: boolean },
   ): void {
     if (res && !res.isError && !o.silent) return;
-    if (run.rateLimited) {
+    // A Claude/z.ai cap flags `rateLimited`; a Codex/Grok cap flags `capped` and leaves `rateLimited` false.
+    const capped = run.rateLimited || ((run instanceof CodexAgentRun || run instanceof GrokAgentRun) && run.capped);
+    if (capped) {
       this.postFinding({
         threadId,
         fromRole: "implementor",
