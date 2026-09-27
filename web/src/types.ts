@@ -482,35 +482,28 @@ export interface ChatMessage {
   createdAt: number;
 }
 
-// Mirror of the server's GNOME_NAMES + gnomeName + agentKey (server/src/types.ts) so the office UI shows
-// the same default name the agent itself was told. Each role in a task is a distinct agent with its own
-// name, keyed by (thread, role); picked-name overrides arrive via `nameOverrides`/chat.name.
-export const GNOME_NAMES = [
-  "Pip", "Nim", "Bram", "Tova", "Fen", "Sol", "Rune", "Liv", "Ask", "Eir",
-  "Odd", "Sten", "Tor", "Una", "Yara", "Knut", "Hilda", "Mads", "Sif", "Juni",
-  "Lumi", "Pax", "Wren", "Zia", "Ole", "Greta", "Finn", "Bo", "Vik", "Saga",
-] as const;
-
 /** Identity key for one agent — a (thread, role) pair. Mirrors the server; the `nameOverrides` map is
  *  keyed by this, so distinct roles of one task never collapse to a single name. */
 export function agentKey(threadId: string, role: Role): string {
   return `${threadId}::${role}`;
 }
 
-/** Mirror of the server's ROLE_RANK — offsets each role's default name so a task's roles map to
- *  consecutive (distinct) names. */
-const ROLE_RANK: Record<Role, number> = { director: 0, planner: 1, researcher: 2, implementor: 3, qa: 4, reader: 5, reviewer: 6 };
+/** Mirror of the server's unnamedAgentLabel: agents invent their own names, and go by their role until
+ *  they have. */
+const UNNAMED_AGENT_LABEL: Record<Role, string> = {
+  director: "Director",
+  planner: "Planner",
+  researcher: "Researcher",
+  implementor: "Implementor",
+  qa: "QA",
+  reader: "Reader",
+  reviewer: "Reviewer",
+};
 
-export function gnomeName(threadId: string, role: Role): string {
-  let h = 0;
-  for (let i = 0; i < threadId.length; i++) h = (h * 31 + threadId.charCodeAt(i)) >>> 0;
-  return GNOME_NAMES[(h + ROLE_RANK[role]) % GNOME_NAMES.length]!;
-}
-
-/** The office name to show for one of a task's agents: its picked/assigned override, else the
- *  deterministic per-(thread, role) default. The single place the UI resolves a name. */
+/** The office name to show for one of a task's agents: the name it picked (arriving via
+ *  `nameOverrides`/chat.name), else its role. The single place the UI resolves a name. */
 export function agentName(overrides: Record<string, string>, threadId: string, role: Role): string {
-  return overrides[agentKey(threadId, role)] ?? gnomeName(threadId, role);
+  return overrides[agentKey(threadId, role)] ?? UNNAMED_AGENT_LABEL[role];
 }
 
 export interface ChatRoomSummary {

@@ -544,4 +544,20 @@ import {
   assert.equal(glued.subTasks.length, 1);
 }
 
+// OFFICE[name]: the CLI agent's self-chosen office name — a name, never a chat post.
+{
+  const r = extractCliBridgeMessages("Starting.\n`OFFICE[name]: Marigold Thistlewick`\nOFFICE[team]: taking db.ts\nOn it.");
+  assert.deepEqual(r.names, ["Marigold Thistlewick"]);
+  assert.deepEqual(r.posts, [{ scope: "project", body: "taking db.ts" }]);
+  assert.equal(r.visible, "Starting.\n\nOn it.");
+
+  const glued = extractOfficeChat("OFFICE[name]: Bramblecrumb OFFICE[team]: hi all", { detectGluedTurns: false });
+  assert.deepEqual(glued.names, ["Bramblecrumb"]);
+  assert.deepEqual(glued.posts, [{ scope: "project", body: "hi all" }]);
+
+  const partial = extractCliBridgeMessages("OFFICE[name]: Moss", { openEnded: false });
+  assert.deepEqual(partial.names, []);
+  assert.equal(endsWithOpenOfficeMarker(partial.visible), true);
+}
+
 console.log("All officeBridge extraction checks passed.");

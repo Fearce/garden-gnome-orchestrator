@@ -14,7 +14,8 @@ Sets, the free-text role arrays, and the pipeline gates, which all compile fine 
 (For a knob use `add-a-setting.md`; for a persisted entity `add-a-broadcast-collection.md`.)
 
 ## A new ROLE
-1. `server/src/types.ts` — `Role` union + `ROLE_RANK` (office names). `config.ts` — `models.<role>`.
+1. `server/src/types.ts` — `Role` union + `UNNAMED_AGENT_LABEL` (what an agent shows before it names
+   itself). `config.ts` — `models.<role>`.
 2. `agents/prompts.ts` — `<ROLE>_PROMPT`. `agents/roles.ts` — `<role>Config()` + its `*_SCHEMA`
    (structured output is how the pipeline reads the verdict; make control-flow fields `required`).
    Read-only = `disallowedTools` under `bypassPermissions` (a HARD block), never prompt-only.
@@ -27,7 +28,7 @@ Sets, the free-text role arrays, and the pipeline gates, which all compile fine 
    to `CLI_BRIDGED_PROVIDERS`. Gate: `test:provider-serves-role`.
 5. `dropTerminalBookkeeping` + `retryThread` — both iterate a **hand-written role array** for the
    `checkedIn` office keys. Not typed: a miss leaks one Set entry per finished task, forever.
-6. Web mirror: `web/src/types.ts` (`Role` + `ROLE_RANK`), `styles.css` **`--role-<x>`** (`roleColor`
+6. Web mirror: `web/src/types.ts` (`Role` + `UNNAMED_AGENT_LABEL`), `styles.css` **`--role-<x>`** (`roleColor`
    builds `var(--role-${role})` — a missing var renders unstyled, no error), `Gnome.tsx` `roleProp`
    (default `null` = a propless gnome), `ThreadDetail.tsx` `ROLE_ORDER` + `FILTER_ORDER`,
    `Board.tsx` `pipRoles`.

@@ -125,7 +125,14 @@ async function main(): Promise<void> {
       const a = h.thread("A", REPO_A);
       h.seedLive(a.id, "implementor", { implementor: true });
       check("solo → officeNote returns undefined", h.internals.officeNote(a, "implementor", true) === undefined);
-      check("solo → withOfficeNote leaves the kickoff untouched", h.internals.withOfficeNote(a, "implementor", "KICKOFF", true) === "KICKOFF");
+      // No default names: an unnamed agent's kickoff asks it to invent one, through the channel its backend has.
+      const unnamed = h.internals.withOfficeNote(a, "implementor", "KICKOFF", true) as string;
+      check("unnamed → kickoff asks the agent to name itself via office_set_name", unnamed.startsWith("KICKOFF\n\n🏷️ NAME YOURSELF") && unnamed.includes("office_set_name"), unnamed);
+      const unnamedCli = h.internals.withOfficeNote(a, "implementor", "KICKOFF", false) as string;
+      check("unnamed CLI → kickoff asks for an OFFICE[name] line", unnamedCli.includes("OFFICE[name]:") && !unnamedCli.includes("office_set_name"), unnamedCli);
+      check("unnamed → the agent goes by its role", h.mgr.officeName(a.id, "implementor") === "Implementor");
+      check("named → setOfficeName keeps the agent's own pick", h.mgr.setOfficeName(a.id, "implementor", "  Marigold  ") === "Marigold");
+      check("solo + named → withOfficeNote leaves the kickoff untouched", h.internals.withOfficeNote(a, "implementor", "KICKOFF", true) === "KICKOFF");
 
       const b = h.thread("Build the exporter", REPO_A);
       h.seedLive(b.id, "planner");

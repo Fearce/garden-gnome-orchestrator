@@ -11,6 +11,9 @@ paths:
 CLI backends have no MCP servers, so three surfaces reach them as markers in assistant
 text, which the runner intercepts and strips:
 - `OFFICE[team|office]: <msg>` → `chatPost` (the office chatroom).
+- `OFFICE[name]: <name>` → `setOfficeName` (the `office_set_name` equivalent). There is no
+  default name pool, so this is how a CLI agent gets any name at all; `cliRoleKickoff` and the
+  kickoff's naming note both tell it to. Returned as `names`, never as a chat post.
 - `OPERATOR_NOTE: <line> | <https://…>` → the owner's note list, via the SAME
   `OperatorNotes` service the MCP tool uses (never a runner-owned DB write — the
   service is what clips, validates, de-dupes and broadcasts). The ` | url` suffix is

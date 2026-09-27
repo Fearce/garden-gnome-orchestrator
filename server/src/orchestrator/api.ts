@@ -95,7 +95,7 @@ export interface ChatReadInput {
 /** One coworker (or self) in the office, from the caller's point of view. */
 export interface RosterEntry {
   threadId: string;
-  name: string; // the gnome name this task goes by in the office
+  name: string; // the self-chosen gnome name this task goes by in the office (its role until it picks one)
   title: string;
   workspace: string;
   role: Role;
@@ -147,8 +147,8 @@ export interface OrchestratorApi {
   /** Who else is in the office right now (active agents), from a task's point of view. */
   officeRoster(threadId: string): RosterEntry[];
 
-  /** The office name one of a task's agents (a role) currently goes by — its picked name, or the
-   *  deterministic per-(thread, role) default. Each role in a task is a distinct agent with its own name. */
+  /** The office name one of a task's agents (a role) currently goes by — the name it invented for itself,
+   *  or its role until it has. Each role in a task is a distinct agent with its own name. */
   officeName(threadId: string, role: Role): string;
 
   /** The director persona's operator-chosen display name (from Settings; default "ChangeNameInSettings"). */

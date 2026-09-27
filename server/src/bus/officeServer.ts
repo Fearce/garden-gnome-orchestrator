@@ -36,7 +36,7 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
       const roster = api.officeRoster(ctx.threadId);
       const me = api.officeName(ctx.threadId, ctx.role);
       const others = roster.filter((r) => !r.self);
-      const youAre = `You're "${me}" in the office (rename with office_set_name if you like).`;
+      const youAre = `You go by "${me}" in the office (invent your own name, or change it, with office_set_name).`;
       if (!others.length) {
         return { content: [{ type: "text", text: `${youAre}\nYou're the only agent working right now — the office is quiet. No one else to coordinate with.` }] };
       }
@@ -58,8 +58,8 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
 
   const setName = tool(
     "office_set_name",
-    "Pick the name you go by in the office (how coworkers will address you, and what shows on your gnome). Optional — you get a default name otherwise. Choose something short and human.",
-    { name: z.string().min(1).max(24).describe("Your chosen office name, e.g. 'Nova'.") },
+    "Name yourself: set the name you go by in the office (how the owner and coworkers address you, and what shows on your gnome). There are no default names — invent your own, whatever you like, short (1–3 words). Until you do, you show up as just your role.",
+    { name: z.string().min(1).max(24).describe("The office name you invented for yourself.") },
     async (args) => {
       const saved = api.setOfficeName(ctx.threadId, ctx.role, args.name);
       return { content: [{ type: "text", text: `You're now "${saved}" in the office.` }] };

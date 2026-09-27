@@ -107,11 +107,12 @@ Object.assign(state, {
   threadFeeds: { [LEAD]: leadFeed, [KID]: kidFeed },
   threadDrafts: { [KID]: { runId: "run-kid", role: "implementor", text: "Tor is typing a live draft" } },
   outboundMessages: [],
+  nameOverrides: { [`${LEAD}::implementor`]: "Marigold", [`${KID}::implementor`]: "Bramblecrumb" },
 });
 const html = renderToStaticMarkup(React.createElement(ThreadDetail));
-const leadName = agentName({}, LEAD, "implementor");
-const kidName = agentName({}, KID, "implementor");
-assert.notEqual(leadName, kidName, "fixture sanity: the two agents have different default names");
+const leadName = agentName(state.nameOverrides, LEAD, "implementor");
+const kidName = agentName(state.nameOverrides, KID, "implementor");
+assert.notEqual(leadName, kidName, "fixture sanity: the two agents named themselves differently");
 
 const rowFor = (text: string): string => {
   const end = html.indexOf(text);

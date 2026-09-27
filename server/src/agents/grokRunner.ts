@@ -40,6 +40,8 @@ export interface GrokRunConfig {
   /** Grok has no office MCP tools. A standalone `OFFICE[team|office]: ...` line in its assistant message
    *  is intercepted here and posted through the orchestrator's real office chat backend. */
   onOfficeChat?: (scope: ChatScope, body: string) => void;
+  /** `OFFICE[name]: <name>` — the agent's self-chosen office name, the office_set_name equivalent. */
+  onOfficeName?: (name: string) => void;
   /** Grok has no bus MCP tools. A standalone `OPERATOR_NOTE: <line> | <https://...>` marker is
    * intercepted and posted through the owner's real note list, then stripped from the transcript. */
   onOperatorNote?: (body: string, url?: string) => void;
@@ -630,6 +632,13 @@ export class GrokAgentRun implements AgentRunLike {
         this.cfg.onOfficeChat?.(post.scope, post.body);
       } catch {
         /* best-effort side channel; never fail the turn because office chat failed */
+      }
+    }
+    for (const name of bridge.names) {
+      try {
+        this.cfg.onOfficeName?.(name);
+      } catch {
+        /* best-effort side channel; an unnamed agent just keeps its role label */
       }
     }
     for (const note of bridge.notes) {

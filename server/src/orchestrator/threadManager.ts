@@ -84,6 +84,7 @@ import { createGitReadServer } from "../bus/gitReadServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { OperatorNotes } from "./notes.js";
+import { cleanOfficeName, resolveLiveNameCollisions } from "./officeNames.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { recoveryHistoryBlock } from "./recoveryHistory.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
@@ -197,7 +198,7 @@ import type {
   UsageSavingPolicy,
   ZaiEffort,
 } from "../types.js";
-import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, DIRECTORS_ROOM, EFFORTS, GENERAL_ROOM, GNOME_NAMES, gnomeName, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, resolveZaiEffort, zaiEffortsForModel, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
+import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, DIRECTORS_ROOM, EFFORTS, GENERAL_ROOM, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, resolveZaiEffort, unnamedAgentLabel, zaiEffortsForModel, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
 import type { LocalAgentSnapshot, OnlineOffice } from "../office/onlineOffice.js";
 import { OFFICE_ROOM as ONLINE_OFFICE_ROOM } from "../office/onlineProtocol.js";
 import type { RelayChat, RelayPresentAgent } from "../office/onlineProtocol.js";
@@ -7694,6 +7695,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           onOfficeChat: (scope, body) => {
             this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
           },
+          onOfficeName: (name) => {
+            this.setOfficeName(thread.id, role, name);
+          },
           onOperatorNote: (body, url) => {
             this.postCliOperatorNote(thread, role, body, url);
           },
@@ -7714,6 +7718,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           outputSchema: cfg.outputFormat?.schema,
           onOfficeChat: (scope, body) => {
             this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
+          },
+          onOfficeName: (name) => {
+            this.setOfficeName(thread.id, role, name);
           },
           onOperatorNote: (body, url) => {
             this.postCliOperatorNote(thread, role, body, url);
@@ -8536,6 +8543,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         onOfficeChat: (scope, body) => {
           this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
         },
+        onOfficeName: (name) => {
+          this.setOfficeName(thread.id, "implementor", name);
+        },
         onOperatorNote: (body, url) => {
           this.postCliOperatorNote(thread, "implementor", body, url);
         },
@@ -8573,6 +8583,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         freshFallback: opts?.freshFallback ? this.communicationContent(opts.freshFallback) : undefined,
         onOfficeChat: (scope, body) => {
           this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
+        },
+        onOfficeName: (name) => {
+          this.setOfficeName(thread.id, "implementor", name);
         },
         onOperatorNote: (body, url) => {
           this.postCliOperatorNote(thread, "implementor", body, url);
@@ -14381,8 +14394,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   // ---- the office: cross-agent chat + grouping ----
 
-  /** Assigned/picked office names live in one kv JSON map keyed by agentKey(thread, role) — each role
-   *  in a task is a distinct agent with its own name. The default for an unlisted key is gnomeName. */
+  /** Self-picked office names live in one kv JSON map keyed by agentKey(thread, role) — each role in a
+   *  task is a distinct agent with its own name. An unlisted agent hasn't named itself yet. */
   private officeNameMap(): Record<string, string> {
     try {
       const v = this.db.kvGet("office_names");
@@ -14393,60 +14406,36 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   officeName(threadId: string, role: Role): string {
-    // The director is a singleton persona with one operator-chosen name, not a gnome from the pool.
+    // The director is a singleton persona with one operator-chosen name, not a self-named gnome.
     if (role === "director") return this.directorName();
-    return this.officeNameMap()[agentKey(threadId, role)] || gnomeName(threadId, role);
+    return this.officeNameMap()[agentKey(threadId, role)] || unnamedAgentLabel(role);
   }
 
-  /** Guarantee no two CURRENTLY-LIVE agents share an office name — the invariant a one-shot, first-
-   *  check-in assignment can't hold: two tasks whose default (or persisted) names collide need not have
-   *  been live at the same instant when each was first named, so both can end up persisted as e.g.
-   *  "Rune" and only clash once both go live again (a resume / a QA fix-round). This runs on every
-   *  go-live and re-derives uniqueness across the whole live set: walk the live agents in seniority
-   *  order (earliest-started run first) so whoever has been using a name longest keeps it, reassigning
-   *  any later collider to the next free gnome name. Directors are skipped (they carry the settings
-   *  name). Only changed names are persisted + broadcast, so a stable live set is a no-op. */
+  private hasOfficeName(threadId: string, role: Role): boolean {
+    return role === "director" || !!this.officeNameMap()[agentKey(threadId, role)];
+  }
+
+  /** Guarantee no two CURRENTLY-LIVE agents share an office name. Two tasks whose agents picked the same
+   *  name need not have been live at the same instant, so the clash can first appear on a resume or a QA
+   *  fix-round; this runs on every go-live and on every rename (see resolveLiveNameCollisions). Only
+   *  changed names are persisted + broadcast, so a stable live set is a no-op. */
   private ensureLiveNamesUnique(): void {
-    const live = this.liveAgentThreads()
-      .filter((l) => l.role !== "director")
-      .map((l) => ({ ...l, key: agentKey(l.threadId, l.role) }))
-      .sort((a, b) => a.startedAt - b.startedAt || a.key.localeCompare(b.key));
     const map = this.officeNameMap();
-    const names = GNOME_NAMES as readonly string[];
-    const used = new Set<string>();
-    let dirty = false;
+    const live = this.liveAgentThreads().filter((l) => l.role !== "director");
+    const changes = resolveLiveNameCollisions(live, map);
+    if (!changes.size) return;
     for (const l of live) {
-      // Also steer clear of names held by this task's OTHER roles (which may not be live) so a single
-      // task's feed never shows two same-named agents across its phases.
-      const taskMates = new Set(
-        Object.entries(map)
-          .filter(([k]) => k.startsWith(`${l.threadId}::`) && k !== l.key)
-          .map(([, v]) => v),
-      );
-      const preferred = map[l.key] || gnomeName(l.threadId, l.role);
-      let chosen = preferred;
-      if (used.has(preferred) || taskMates.has(preferred)) {
-        const start = Math.max(0, names.indexOf(preferred));
-        for (let i = 1; i <= names.length; i++) {
-          const cand = names[(start + i) % names.length]!;
-          if (!used.has(cand) && !taskMates.has(cand)) {
-            chosen = cand;
-            break;
-          }
-        }
-      }
-      used.add(chosen);
-      if (map[l.key] !== chosen) {
-        map[l.key] = chosen;
-        dirty = true;
-        this.hub.publish({ type: "chat.name", threadId: l.threadId, role: l.role, name: chosen });
-      }
+      const renamed = changes.get(agentKey(l.threadId, l.role));
+      if (!renamed) continue;
+      map[agentKey(l.threadId, l.role)] = renamed;
+      this.hub.publish({ type: "chat.name", threadId: l.threadId, role: l.role, name: renamed });
     }
-    if (dirty) this.db.kvSet("office_names", JSON.stringify(map));
+    this.db.kvSet("office_names", JSON.stringify(map));
   }
 
   setOfficeName(threadId: string, role: Role, name: string): string {
-    const clean = name.trim().replace(/\s+/g, " ").slice(0, 24) || gnomeName(threadId, role);
+    const clean = cleanOfficeName(name);
+    if (!clean) return this.officeName(threadId, role);
     const map = this.officeNameMap();
     map[agentKey(threadId, role)] = clean;
     this.db.kvSet("office_names", JSON.stringify(map));
@@ -14461,8 +14450,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return resolved;
   }
 
-  /** The current name overrides (assigned/picked names, keyed by agentKey) — sent in the hello snapshot
-   *  for the office UI, which falls back to the deterministic gnomeName for any agent not listed here. */
+  /** The self-picked names, keyed by agentKey — sent in the hello snapshot for the office UI, which
+   *  shows an agent not listed here by its role. */
   officeNameOverrides(): Record<string, string> {
     return this.officeNameMap();
   }
@@ -14800,6 +14789,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!this.repoPeers(t).length) return;
     this.checkedIn.add(key);
     const name = this.officeName(threadId, role);
+    const who = this.hasOfficeName(threadId, role) ? `${name} (${role})` : `A new ${role}`;
     const leaf = t.workspace.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || t.workspace;
     const m = this.db.addChatMessage({
       room: GENERAL_ROOM,
@@ -14809,7 +14799,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       runId: null,
       role,
       kind: "chat",
-      body: `👋 ${name} (${role}) here — starting on "${t.title}" in ${leaf}.`,
+      body: `👋 ${who} here — starting on "${t.title}" in ${leaf}.`,
       senderName: name,
     });
     this.hub.publish({ type: "chat.message", message: m });
@@ -14848,8 +14838,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  Returns `text` unchanged for a solo task, so the caller's kickoff carries zero office overhead
    *  until collaboration actually begins. */
   private withOfficeNote(thread: Thread, role: Role, text: string, withTools = true): string {
-    const note = this.officeNote(thread, role, withTools);
-    return note ? `${text}\n\n${note}` : text;
+    const notes = [this.namingNote(thread.id, role, withTools), this.officeNote(thread, role, withTools)].filter(Boolean);
+    return notes.length ? `${text}\n\n${notes.join("\n\n")}` : text;
+  }
+
+  /** Gnomes have no default names: an agent that hasn't named itself is asked to invent one at kickoff.
+   *  `withTools` is false for the CLI backends, which name themselves through the `OFFICE[name]:` bridge. */
+  private namingNote(threadId: string, role: Role, withTools: boolean): string | undefined {
+    if (this.hasOfficeName(threadId, role)) return undefined;
+    const how = withTools
+      ? "set it with `office_set_name` as your first action"
+      : "announce it with a standalone `OFFICE[name]: <your name>` line in your first response";
+    return `🏷️ NAME YOURSELF — you're one of the orchestrator's garden gnomes, and gnomes invent their own names. Pick any short name you like (1–3 words; there is no list to choose from, so be original) and ${how}. It's how the owner and your coworkers will see you.`;
   }
 
   // ---- run event wiring ----
@@ -15623,6 +15623,7 @@ export function cliRoleKickoff(
     noMcp,
     cliDeliverable,
     cliOperatorNote,
+    "When the orchestrator asks you to name yourself, `office_set_name` is unavailable here: emit one standalone `OFFICE[name]: <your name>` line instead.",
     schemaBlock,
   ]
     .filter(Boolean)

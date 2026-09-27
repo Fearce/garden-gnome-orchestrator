@@ -114,6 +114,7 @@ const GATES = [
   "test:dedupe-deliverable-findings",
   "test:recovery-features",
   "test:office-bridge",
+  "test:office-names",
   "test:office-gating",
   "test:office-health",
   "test:online-office",

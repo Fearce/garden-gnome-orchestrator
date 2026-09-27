@@ -41,7 +41,8 @@ import { NOTE_MAX_CHARS, type ChatScope } from "../types.js";
  */
 // Only horizontal whitespace after the colon — `\s*` would eat the newline and pull the NEXT line into the body
 // (`OFFICE[team]:\nAfter.` → body "After."), which both invents a post and steals transcript text.
-const MARKER_RE = /`?OFFICE\[(team|office)\][ \t]*:[ \t]*/gi;
+// `OFFICE[name]: <name>` rides the same bridge: the agent's self-chosen office name (office_set_name).
+const MARKER_RE = /`?OFFICE\[(team|office|name)\][ \t]*:[ \t]*/gi;
 
 // CLI backends cannot call the in-process `post_operator_note` MCP tool either. They use this
 // deliberately boring, standalone wire form instead:
@@ -140,6 +141,7 @@ export function extractCliBridgeMessages(
 ): {
   visible: string;
   posts: Array<{ scope: ChatScope; body: string }>;
+  names: string[];
   notes: CliOperatorNote[];
   deliverables: CliDeliverable[];
   manualDeployments: CliManualDeployment[];
@@ -153,6 +155,7 @@ export function extractCliBridgeMessages(
   return {
     visible: notes.visible,
     posts: office.posts,
+    names: office.names,
     notes: notes.notes,
     deliverables: files.deliverables,
     manualDeployments: deployment.manualDeployments,
@@ -282,10 +285,12 @@ export function extractOfficeChat(
 ): {
   visible: string;
   posts: Array<{ scope: ChatScope; body: string }>;
+  names: string[];
 } {
   const openEnded = opts?.openEnded !== false;
   const posts: Array<{ scope: ChatScope; body: string }> = [];
-  if (!text) return { visible: "", posts };
+  const names: string[] = [];
+  if (!text) return { visible: "", posts, names };
 
   let out = "";
   let cursor = 0;
@@ -310,11 +315,10 @@ export function extractOfficeChat(
       break;
     }
 
+    const kind = String(m[1]).toLowerCase();
     if (taken.body && !isJunkOfficeBody(taken.body)) {
-      posts.push({
-        scope: String(m[1]).toLowerCase() === "office" ? "general" : "project",
-        body: taken.body,
-      });
+      if (kind === "name") names.push(taken.body);
+      else posts.push({ scope: kind === "office" ? "general" : "project", body: taken.body });
     }
     // Drop the marker (+ optional closing backtick); leave a newline so surrounding prose doesn't glue.
     // Junk / empty bodies still strip (don't leave `OFFICE[team]: \n` littering the transcript).
@@ -337,7 +341,7 @@ export function extractOfficeChat(
         .replace(/\n{3,}/g, "\n\n")
         .trim();
 
-  return { visible, posts };
+  return { visible, posts, names };
 }
 
 /**
@@ -827,11 +831,11 @@ function isClosingOfficeWrapper(text: string, index: number, openEnded: boolean)
 }
 
 function startsOfficeMarker(text: string, i: number): boolean {
-  // Optional leading backtick, then OFFICE[team|office]
+  // Optional leading backtick, then OFFICE[team|office|name]
   let j = i;
   if (text[j] === "`") j++;
   const slice = text.slice(j, j + 14).toLowerCase();
-  return slice.startsWith("office[team]") || slice.startsWith("office[office]");
+  return slice.startsWith("office[team]") || slice.startsWith("office[office]") || slice.startsWith("office[name]");
 }
 
 /** True when `text` ends with an OFFICE marker whose body has no hard terminator yet. */
