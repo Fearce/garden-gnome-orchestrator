@@ -4628,3 +4628,19 @@ html.theme-transition * {
   .task-model-trigger { min-width: var(--tap); min-height: var(--tap); }
   .task-agents-row .segment button { min-height: var(--tap-sm); }
 }
+
+/* ---- phone swipe gestures (web/src/lib/swipe.ts) ----
+   A claimed drag moves the element under the finger with no transition; the release settles it back
+   or slides it out. The grabber marks the task panel's top edge as the place a pull-down starts,
+   since on a phone its header sits at the bottom and the top is otherwise just the feed. */
+.sheet-grabber { display: none; }
+.swipe-dragging { transition: none !important; will-change: transform; }
+.swipe-settling { transition: transform 190ms cubic-bezier(0.2, 0.8, 0.2, 1) !important; }
+@media (max-width: 899.98px) {
+  .sheet-grabber { display: flex; flex: none; justify-content: center; padding: 6px 0 4px; background: var(--bg-1); }
+  .sheet-grabber::before { content: ""; width: 36px; height: 4px; border-radius: 2px; background: var(--line-strong); }
+  .detail.swipe-dragging, .detail.swipe-settling { box-shadow: 0 -8px 32px oklch(0 0 0 / 0.45); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .swipe-settling { transition: none !important; }
+}

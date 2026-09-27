@@ -13,6 +13,7 @@ import { CodeContextBar } from "./CodeContextBar.js";
 import { CoworkTranscript } from "./CoworkTranscript.js";
 import { coworkOrigin } from "../lib/codeNav.js";
 import { Gnome } from "./Gnome.js";
+import { useSwipeDismiss } from "../lib/swipe.js";
 
 const EMPTY_COWORK_MESSAGES: CoworkMessage[] = [];
 
@@ -83,6 +84,8 @@ export function CoworkPopup() {
     else select(null);
   }, [worktreeOpen, summaryFor, openSummary, promoteOpen, select]);
   useEscapeToClose(!!selected, closeTop);
+  const [popup, setPopup] = useState<HTMLElement | null>(null);
+  useSwipeDismiss(popup, closeTop);
   const pending = selectedId
     ? outbound.filter((message): message is Extract<typeof message, { surface: "cowork" }> =>
       message.surface === "cowork" && message.sessionId === selectedId)
@@ -115,7 +118,7 @@ export function CoworkPopup() {
     // mousedown, not click: a text selection dragged out of the transcript ends in a click on the
     // backdrop, and that must not throw the conversation away.
     <div className="scrim cowork-popup-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) select(null); }}>
-      <section className="cowork-popup" role="dialog" aria-modal="true" aria-label={`Co-work: ${selected.name}`}>
+      <section ref={setPopup} className="cowork-popup" role="dialog" aria-modal="true" aria-label={`Co-work: ${selected.name}`}>
         <div className="cowork-conversation">
           <header className="cowork-chat-head">
             <Gnome role="coworker" size={24} className="cowork-chat-gnome" />

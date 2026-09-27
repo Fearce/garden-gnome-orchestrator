@@ -13,6 +13,7 @@ import { LazyChunkBoundary } from "./components/LazyChunkBoundary.js";
 import { useIdle } from "./components/screensaver/useIdle.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
+import { useSwipePanes, type WorkbenchPane } from "./lib/swipe.js";
 import ggLogo from "./assets/gg-logo.webp";
 import type { BoardView } from "./types.js";
 
@@ -25,7 +26,7 @@ const GitConsole = lazy(() => import("./components/GitConsole.js").then(({ GitCo
 // fetched, and the fade-in covers a cold load anyway.
 const Screensaver = lazy(() => import("./components/screensaver/Screensaver.js").then(({ Screensaver: component }) => ({ default: component })));
 
-type MobilePane = "director" | "board";
+type MobilePane = WorkbenchPane;
 
 export function App() {
   const connected = useStore((s) => s.connected);
@@ -59,6 +60,8 @@ export function App() {
   const gitOpen = useStore((s) => s.gitConsoleOpen);
   const openGitConsole = useStore((s) => s.openGitConsole);
   const closeGitConsole = useStore((s) => s.closeGitConsole);
+  const [workbench, setWorkbench] = useState<HTMLDivElement | null>(null);
+  useSwipePanes(workbench, mobilePane, setMobilePane, !selected);
 
   if (authRequired && !authed) return <Login />;
 
@@ -104,6 +107,7 @@ export function App() {
         </div>
       </header>
       <div
+        ref={setWorkbench}
         className={"workbench pane-" + mobilePane + (selected ? " detail-open" : "") + (railHidden ? " rail-hidden" : "")}
         style={{ "--detail-w": detailWidth + "px", "--rail-w": directorWidth + "px" } as CSSProperties}
       >

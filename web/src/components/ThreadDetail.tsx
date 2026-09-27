@@ -21,6 +21,7 @@ import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
 import { ImplementationMemos } from "./ImplementationMemos.js";
 import { CodeContextBar, useCodeContext } from "./CodeContextBar.js";
 import { WorkspacePath } from "./WorkspacePath.js";
+import { useSwipeDismiss } from "../lib/swipe.js";
 
 /**
  * The detail panel's workspace chip. The panel already resolves this task's code context for its
@@ -775,6 +776,9 @@ export function ThreadDetail() {
     }
   }, [roleFilter, showTools]);
 
+  const [panel, setPanel] = useState<HTMLElement | null>(null);
+  useSwipeDismiss(panel, () => select(null), { swipeRight: true });
+
   if (!id || !thread) return null;
 
   // Frozen (cap-parked) thread: the pane renders normally so the operator can read the feed, view the
@@ -915,8 +919,9 @@ export function ThreadDetail() {
   );
 
   return (
-    <section className="detail">
+    <section className="detail" ref={setPanel}>
       <div className="resize-handle" onPointerDown={startResize} title="Drag to resize this panel" />
+      <div className="sheet-grabber" aria-hidden="true" />
       <div className={"detail-head" + (headCollapsed ? " collapsed" : "")}>
         <div className="top">
           <div>

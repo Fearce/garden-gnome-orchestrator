@@ -7,6 +7,7 @@ import { Diff } from "./Diff.js";
 import { ReturnToOrigin } from "./CodeContextBar.js";
 import "./gitConsole.css";
 import { ideApi, cachedIde, invalidateIde } from "./ide/api.js";
+import { useSwipeDismiss } from "../lib/swipe.js";
 
 /**
  * The Git console — the whole GitHub Desktop surface, in the orchestrator. Repo picker, branch menu
@@ -109,6 +110,8 @@ export function GitConsole({ onClose }: { onClose: () => void }) {
   // not the task that happened to be open when the console was launched. An explicitly requested repo
   // counts as picked for the same reason: it is the whole point of that navigation.
   const picked = useRef(!!requestedRepo.current);
+  const windowRef = useRef<HTMLDivElement>(null);
+  useSwipeDismiss(windowRef, onClose);
 
   // The task this console was opened from, fixed for its lifetime: switching tasks behind an open
   // console shouldn't move it, and every later request (a Rescan) must echo the SAME value or its
@@ -152,7 +155,7 @@ export function GitConsole({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="gc-scrim" onClick={onClose}>
-      <div className="gc-window" role="dialog" aria-label="Git" onClick={(e) => e.stopPropagation()}>
+      <div ref={windowRef} className="gc-window" role="dialog" aria-label="Git" onClick={(e) => e.stopPropagation()}>
         <RepoBar
           repos={repos}
           path={path}

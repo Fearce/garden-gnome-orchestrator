@@ -9,6 +9,7 @@ import { FreeProviders } from "./FreeProviders.js";
 import { ThemePicker } from "./ThemePicker.js";
 import { FontPicker } from "./FontPicker.js";
 import { DISPLAY_FONTS, MONO_FONTS, UI_FONTS } from "../lib/font.js";
+import { useSwipeDismiss } from "../lib/swipe.js";
 
 type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "voice-alerts" | "office" | "appearance" | "interface";
 
@@ -83,6 +84,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SettingsSearchResult[]>([]);
   const dialogRef = useRef<HTMLDivElement>(null);
+  useSwipeDismiss(dialogRef, onClose);
   const contentRef = useRef<HTMLDivElement>(null);
   const desktopSearchRef = useRef<HTMLInputElement>(null);
   const mobileSearchRef = useRef<HTMLInputElement>(null);
