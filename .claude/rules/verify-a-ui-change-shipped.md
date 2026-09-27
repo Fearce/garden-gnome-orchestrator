@@ -52,7 +52,9 @@ columns, with the rail/detail widths replayed from a BIGGER monitor, across ever
 handles) and `panel-scroll-lab.cjs`
 (the detail panel on the OTHER axis: a 500-entry transcript under a work memo and deliverables, at five
 viewports x both header states — scrollport usable, composer pinned, nothing sideways, no clipping shell
-taller than its own box), `mobile-chunk-lab.cjs` (the phone's stale-tab recovery — it 404s a lazy chunk
+taller than its own box), `director-phone-lab.cjs` (the Director pane at 320–430px: the
+conversation's share of the pane, 44px targets, the pipeline menu, search, the options sheet, a send),
+`mobile-chunk-lab.cjs` (the phone's stale-tab recovery — it 404s a lazy chunk
 the way a rebuild deletes it; `-- --no-fault` is its own negative control)
 and `appearance-lab.cjs` (the theme picker + the computed-style diff that is
 the only proof Classic came back untouched — `getComputedStyle` returns the ANIMATED value, so a

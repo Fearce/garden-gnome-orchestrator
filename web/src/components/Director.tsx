@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
@@ -37,18 +37,22 @@ export function directorRuntimeLabel(status: DirectorStatus | null, busy: boolea
 // chips wrap exactly the same at 1280 as at 800. A coarse pointer means the rail's height is scarce,
 // so the chips scroll sideways instead of growing to four rows.
 const COMPACT_MQ = "(max-width: 899.98px), (pointer: coarse) and (max-width: 1365.98px)";
+// The single-pane layout (styles.css "Compact" band): the rail is the whole screen, so the composer
+// becomes a messenger-style bar and its options move into a sheet over the conversation.
+const PHONE_MQ = "(max-width: 899.98px)";
 
-function useIsCompact(): boolean {
-  const [compact, setCompact] = useState(
-    () => typeof window !== "undefined" && window.matchMedia(COMPACT_MQ).matches,
+function useMediaMatch(query: string): boolean {
+  const [matches, setMatches] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(query).matches,
   );
   useEffect(() => {
-    const mq = window.matchMedia(COMPACT_MQ);
-    const onChange = () => setCompact(mq.matches);
+    const mq = window.matchMedia(query);
+    const onChange = () => setMatches(mq.matches);
+    onChange();
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return compact;
+  }, [query]);
+  return matches;
 }
 
 export function Director() {
@@ -80,7 +84,11 @@ export function Director() {
   const maxRecentRepos = useStore((s) => s.settings.maxRecentRepos);
   const rememberRepo = useStore((s) => s.rememberRepo);
   const forgetRepo = useStore((s) => s.forgetRepo);
-  const isCompact = useIsCompact();
+  const isCompact = useMediaMatch(COMPACT_MQ);
+  const isPhone = useMediaMatch(PHONE_MQ);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const dockRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [text, setText] = useState("");
   const [ws, setWs] = useState("");
   // "path" fills the path field; "add" also remembers the picked folder as a recent-repo chip.
@@ -223,7 +231,123 @@ export function Director() {
     if (!sent) return;
     setText("");
     att.clear();
+    setSheetOpen(false);
   };
+
+  // The phone field starts one line tall and grows with the draft, like a messenger's.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "";
+    // An empty field keeps its one-line CSS height; a long placeholder must not grow it.
+    if (isPhone && text) el.style.height = `${Math.min(el.scrollHeight + 2, 168)}px`;
+  }, [text, isPhone]);
+
+  // The sheet covers the conversation but leaves the header, unless a keyboard-squeezed pane has
+  // too little room for a usable sheet; then it may cover the header too, but never leaves the rail.
+  useLayoutEffect(() => {
+    if (!sheetOpen) return;
+    const fit = () => {
+      const dock = dockRef.current;
+      const sheet = dock?.querySelector<HTMLElement>(".composer-options.sheet");
+      const rail = dock?.closest(".rail");
+      const head = rail?.querySelector(".rail-head");
+      if (!dock || !sheet || !rail || !head) return;
+      const top = dock.getBoundingClientRect().top;
+      const belowHead = top - head.getBoundingClientRect().bottom - 16;
+      sheet.style.maxHeight = `${belowHead >= 160 ? belowHead : top - rail.getBoundingClientRect().top - 8}px`;
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [sheetOpen, text, att.images.length]);
+
+  // The options sheet floats over the conversation, so a tap anywhere outside the dock dismisses it.
+  useEffect(() => {
+    if (!sheetOpen) return;
+    const closeIfOutside = (event: Event) => {
+      if (event.target instanceof Node && !dockRef.current?.contains(event.target)) setSheetOpen(false);
+    };
+    document.addEventListener("pointerdown", closeIfOutside);
+    return () => document.removeEventListener("pointerdown", closeIfOutside);
+  }, [sheetOpen]);
+
+  const workspaceField = (
+    <>
+      <PathInput
+        className="ws"
+        value={ws}
+        onChange={setWs}
+        placeholder={isPhone ? "Exact repo path (optional)" : "exact repo path (optional — used as-is)  e.g. /Users/you/project"}
+        title="If set, this exact path is the dispatch workspace — the director uses it verbatim instead of resolving a path itself. Leave blank to let the director find the repo from your description."
+      />
+      <button
+        className="btn ghost sm attach-btn"
+        type="button"
+        title="Browse for a folder"
+        aria-label="Browse for a folder"
+        onClick={() => setPicker("path")}
+      >
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+        </svg>
+      </button>
+    </>
+  );
+  const sendTitle = directNeedsWs ? "Skip-director needs a repo path — there's no director to resolve one." : undefined;
+  const openSearch = () => {
+    setSearchOpen(true);
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+  };
+  const searchToggle = (
+    <button
+      ref={searchToggleRef}
+      className="rail-search-toggle"
+      type="button"
+      aria-label="Expand search tasks and the director conversation"
+      aria-expanded="false"
+      title="Expand search"
+      onClick={openSearch}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7" />
+        <path d="m20 20-3.2-3.2" />
+      </svg>
+    </button>
+  );
+
+  const textareaEl = () => (
+    <textarea
+      ref={textareaRef}
+      value={text}
+      rows={isPhone ? 1 : undefined}
+      aria-label="Message"
+      placeholder={
+        isPhone
+          ? vanillaMode
+            ? "Default-mode task…"
+            : skip
+              ? "Direct task…"
+              : `Message ${directorName}…`
+          : vanillaMode
+            ? "Default mode — one stock session, no wrapper prompt. Set the repo path below.  (⌘/Ctrl+Enter to send)"
+            : skip
+              ? "Direct to task-aware route — set the repo path below.  (⌘/Ctrl+Enter to send)"
+              : "Describe a task…  (paste or drop images · ⌘/Ctrl+Enter to send)"
+      }
+      onChange={(e) => setText(e.target.value)}
+      onPaste={att.onPaste}
+      onKeyDown={(e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+          e.preventDefault();
+          submit();
+        } else if (e.key === "ArrowUp" && !text && lastSentRef.current) {
+          e.preventDefault();
+          setText(lastSentRef.current);
+        }
+      }}
+    />
+  );
 
   return (
     <>
@@ -260,36 +384,28 @@ export function Director() {
                 Stop
               </button>
             )}
-            <AgentToggles />
+            {isPhone ? (
+              <>
+                {searchExpanded ? null : searchToggle}
+                <PipelineMenu />
+              </>
+            ) : (
+              <AgentToggles />
+            )}
             <DirectorDirectives />
           </div>
         </div>
       </div>
 
-      <div ref={searchRowRef} className={"rail-search" + (searchExpanded ? " open" : "")}>
+      {/* A phone keeps the closed search as a header icon, so the row only exists while searching. */}
+      {isPhone && !searchExpanded ? null : <div ref={searchRowRef} className={"rail-search" + (searchExpanded ? " open" : "")}>
         {searchExpanded ? (
           <svg className="rail-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <circle cx="11" cy="11" r="7" />
             <path d="m20 20-3.2-3.2" />
           </svg>
         ) : (
-          <button
-            ref={searchToggleRef}
-            className="rail-search-toggle"
-            type="button"
-            aria-label="Expand search tasks and the director conversation"
-            aria-expanded="false"
-            title="Expand search"
-            onClick={() => {
-              setSearchOpen(true);
-              requestAnimationFrame(() => searchInputRef.current?.focus());
-            }}
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="11" cy="11" r="7" />
-              <path d="m20 20-3.2-3.2" />
-            </svg>
-          </button>
+          searchToggle
         )}
         <input
           ref={searchInputRef}
@@ -326,7 +442,7 @@ export function Director() {
             </svg>
           </button>
         )}
-      </div>
+      </div>}
 
       {directorSearch ? (
         <DirectorSearchResults search={directorSearch} directorName={directorName} onGoToTask={goToTask} />
@@ -350,9 +466,23 @@ export function Director() {
         </div>
       )}
 
-      <div className={"composer-options" + (att.dragging ? " dragging" : "")} {...att.dropHandlers}>
+      <div ref={dockRef} className="composer-dock">
+      {isPhone && !sheetOpen ? null : <div
+        className={"composer-options" + (isPhone ? " sheet" : "") + (att.dragging ? " dragging" : "")}
+        role={isPhone ? "dialog" : undefined}
+        aria-label={isPhone ? "Send options" : undefined}
+        {...att.dropHandlers}
+      >
+        {isPhone && (
+          <div className="composer-sheet-head">
+            <span className="composer-sheet-title">Send options</span>
+            <button type="button" className="btn ghost sm composer-sheet-done" onClick={() => setSheetOpen(false)}>
+              Done
+            </button>
+          </div>
+        )}
         {/* Always rendered, even with no chips: the + is how a repo gets here without dispatching to it. */}
-        <div className={"recent-repos" + (isCompact ? " compact" : "")} role="group" aria-label="Recent repositories">
+        <div className={"recent-repos" + (isCompact && !isPhone ? " compact" : "")} role="group" aria-label="Recent repositories">
               <span className="recent-repos-label mono">repos</span>
               {recentRepos.slice(0, maxRecentRepos).map((p) => {
                 const active = p === ws.trim();
@@ -388,6 +518,7 @@ export function Director() {
                 +
               </button>
         </div>
+        {isPhone && <div className="composer-sheet-ws">{workspaceField}</div>}
         <div className="composer-mode">
           <button
             type="button"
@@ -441,60 +572,54 @@ export function Director() {
             {skip && openComposerSections.includes("codex") && <ComposerEffortPickers provider="codex" />}
           </div>}
         </div>}
-      </div>
-      <div className={"composer" + (att.dragging ? " dragging" : "") + (skip ? " direct" : "")} {...att.dropHandlers}>
-        <textarea
-          value={text}
-          placeholder={
-            vanillaMode
-              ? "Default mode — one stock session, no wrapper prompt. Set the repo path below.  (⌘/Ctrl+Enter to send)"
-              : skip
-                ? "Direct to task-aware route — set the repo path below.  (⌘/Ctrl+Enter to send)"
-                : "Describe a task…  (paste or drop images · ⌘/Ctrl+Enter to send)"
-          }
-          onChange={(e) => setText(e.target.value)}
-          onPaste={att.onPaste}
-          onKeyDown={(e) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-              e.preventDefault();
-              submit();
-            } else if (e.key === "ArrowUp" && !text && lastSentRef.current) {
-              e.preventDefault();
-              setText(lastSentRef.current);
-            }
-          }}
-        />
-        <ComposerThumbs images={att.images} onRemove={att.remove} />
-        <div className="row">
-          <MicToggle />
-          <AttachButton onPick={att.addFiles} />
-          <PathInput
-            className="ws"
-            value={ws}
-            onChange={setWs}
-            placeholder="exact repo path (optional — used as-is)  e.g. /Users/you/project"
-            title="If set, this exact path is the dispatch workspace — the director uses it verbatim instead of resolving a path itself. Leave blank to let the director find the repo from your description."
+        {isPhone && (
+          <div className="composer-sheet-voice">
+            <MicToggle />
+            <span>Desk voice mode</span>
+          </div>
+        )}
+      </div>}
+      <div className={"composer" + (isPhone ? " phone" : "") + (att.dragging ? " dragging" : "") + (skip ? " direct" : "")} {...att.dropHandlers}>
+        {isPhone && (
+          <ComposerContextBar
+            open={sheetOpen}
+            onToggle={() => setSheetOpen((open) => !open)}
+            workspace={ws.trim()}
+            skip={skip}
+            vanilla={vanillaMode}
+            needsWorkspace={directNeedsWs}
           />
-          <button
-            className="btn ghost sm attach-btn"
-            type="button"
-            title="Browse for a folder"
-            aria-label="Browse for a folder"
-            onClick={() => setPicker("path")}
-          >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
-            </svg>
-          </button>
-          <button
-            className="btn primary"
-            onClick={submit}
-            disabled={!text.trim() || directNeedsWs}
-            title={directNeedsWs ? "Skip-director needs a repo path — there's no director to resolve one." : undefined}
-          >
-            Send
-          </button>
-        </div>
+        )}
+        {isPhone ? null : textareaEl()}
+        <ComposerThumbs images={att.images} onRemove={att.remove} />
+        {isPhone ? (
+          <div className="composer-phone-row">
+            <AttachButton onPick={att.addFiles} />
+            {textareaEl()}
+            <button
+              className="btn primary composer-send"
+              onClick={submit}
+              disabled={!text.trim() || directNeedsWs}
+              aria-label="Send"
+              title={sendTitle}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 19V5" />
+                <path d="m5 12 7-7 7 7" />
+              </svg>
+            </button>
+          </div>
+        ) : (
+          <div className="row">
+            <MicToggle />
+            <AttachButton onPick={att.addFiles} />
+            {workspaceField}
+            <button className="btn primary composer-send" onClick={submit} disabled={!text.trim() || directNeedsWs} title={sendTitle}>
+              Send
+            </button>
+          </div>
+        )}
+      </div>
       </div>
     </aside>
     {picker && (
@@ -508,6 +633,98 @@ export function Director() {
       />
     )}
     </>
+  );
+}
+
+/** The phone composer's one-line summary of where the next send goes: the repo, the route, and any
+ *  costly task mode. It replaces three rows of desktop controls and opens the sheet that holds them. */
+function ComposerContextBar({ open, onToggle, workspace, skip, vanilla, needsWorkspace }: {
+  open: boolean;
+  onToggle: () => void;
+  workspace: string;
+  skip: boolean;
+  vanilla: boolean;
+  needsWorkspace: boolean;
+}) {
+  const minutes = useStore((s) => s.settings.taskDurationMinutes);
+  const agents = useStore((s) => s.settings.taskAgentCount);
+  const route = vanilla ? "Default mode" : skip ? "Skip director" : "Via director";
+  const taskMode = [
+    minutes > 0 ? DURATIONS.find((d) => d.min === minutes)?.label ?? `${minutes}m` : "",
+    agents > 1 ? `${agents} agents` : "",
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <button
+      type="button"
+      className={"composer-options-toggle" + (open ? " open" : "") + (needsWorkspace ? " warn" : "")}
+      aria-expanded={open}
+      aria-label={`Send options: ${workspace ? repoLabel(workspace) : "any repo"}, ${route}${taskMode ? `, ${taskMode}` : ""}`}
+      onClick={onToggle}
+    >
+      <svg className="ctx-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+      </svg>
+      <span className="ctx-repo" title={workspace || undefined}>
+        {workspace ? repoLabel(workspace) : needsWorkspace ? "Pick a repo" : "Any repo"}
+      </span>
+      <span className={"ctx-route" + (skip || vanilla ? " lit" : "")}>{route}</span>
+      {taskMode ? <span className="ctx-mode">{taskMode}</span> : null}
+      <span className="ctx-chevron" aria-hidden="true" />
+    </button>
+  );
+}
+
+/** The phone header's stand-in for the three pipeline gate pills: one button whose dots show each
+ *  gate's state, opening the same toggles as full-width rows. */
+function PipelineMenu() {
+  const planner = useStore((s) => s.settings.plannerEnabled);
+  const researcher = useStore((s) => s.settings.researcherEnabled);
+  const qa = useStore((s) => s.settings.qaEnabled);
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const gates: { role: Role; on: boolean }[] = [
+    { role: "planner", on: planner },
+    { role: "researcher", on: researcher },
+    { role: "qa", on: qa },
+  ];
+
+  useEffect(() => {
+    if (!open) return;
+    const closeIfOutside = (event: Event) => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeIfOutside);
+    return () => document.removeEventListener("pointerdown", closeIfOutside);
+  }, [open]);
+
+  return (
+    <div className="pipeline-menu" ref={rootRef}>
+      <button
+        type="button"
+        className={"pipeline-menu-toggle" + (open ? " open" : "")}
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label="Pipeline agents"
+        title="Pipeline agents — Plan, Research, QA"
+        onClick={() => setOpen((o) => !o)}
+      >
+        {gates.map((g) => (
+          <span
+            key={g.role}
+            className={"pipeline-dot" + (g.on ? " on" : "")}
+            style={{ "--role": `var(--role-${g.role})` } as CSSProperties}
+            aria-hidden="true"
+          />
+        ))}
+      </button>
+      {open && (
+        <div className="pipeline-menu-pop" role="group" aria-label="Pipeline agents">
+          <div className="pipeline-menu-hint">On lets routing use a stage when a task needs it. Off means never.</div>
+          <AgentToggles />
+        </div>
+      )}
+    </div>
   );
 }
 

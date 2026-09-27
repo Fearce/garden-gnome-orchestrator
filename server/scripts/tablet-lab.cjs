@@ -215,8 +215,9 @@ async function drivePass(page, { name, width, height }) {
   await page.reload({ timeout: 45_000 });
   await page.waitForSelector(".topbar", { timeout: 20_000 });
   // The strip mounts off the WS hello, after the bar itself — wait for it, or the topbar geometry
-  // measured below is one row short of the one the tablet actually gets.
-  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  // measured below is one row short of the one the tablet actually gets. Below 900px it lives in a
+  // closed pop-over, so mounted (not visible) is the signal.
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 20_000 });
   await page.waitForSelector(".card", { timeout: 20_000 });
 
   // Everything below is fenced behind these two queries. If the emulation isn't reporting them, the
@@ -234,8 +235,17 @@ async function drivePass(page, { name, width, height }) {
   );
   // The band each layout rule belongs to, read off the element rather than off the stylesheet: an
   // equally specific declaration later in the file silently beats one inside a media query.
-  const order = await page.$eval(".accounts", (el) => getComputedStyle(el).order);
-  check(`${name}: the accounts strip took the right band's order`, order === (width < 900 ? "5" : "20"), `order=${order}`);
+  if (width < 900) {
+    // Compact keeps the usage chips in a pop-over behind the gauge button, so the top bar's second row is the office's.
+    const strip = await page.evaluate(() => ({
+      hidden: getComputedStyle(document.querySelector(".accounts")).display === "none",
+      toggle: getComputedStyle(document.querySelector(".accounts-toggle")).display !== "none",
+    }));
+    check(`${name}: the accounts strip waits behind its gauge button`, strip.hidden && strip.toggle, JSON.stringify(strip));
+  } else {
+    const order = await page.$eval(".accounts", (el) => getComputedStyle(el).order);
+    check(`${name}: the accounts strip took the landscape band's order`, order === "20", `order=${order}`);
+  }
 
   console.log("\n  LAYOUT — nothing wider than the screen");
   check(`${name}: no horizontal overflow, top bar intact`, (await page.evaluate(collectOverflow)).length === 0, (await page.evaluate(collectOverflow)).join(" | "));
@@ -261,52 +271,17 @@ async function drivePass(page, { name, width, height }) {
     };
   });
   const railBudget = `transcript ${rail.transcript} of ${rail.rail} (${Math.round((rail.transcript / rail.rail) * 100)}%) — head ${rail.head}, search ${rail.search}, composer ${rail.composer}`;
-  check(`${name}: recent repo chips stay in one scrollable row`, rail.compactChips && rail.chipCount > 1 && rail.chipRows === 1 && rail.scrollable, `compact=${rail.compactChips} chips=${rail.chipCount} rows=${rail.chipRows} scrollable=${rail.scrollable}`);
-  if (rail.chipCount > 1) {
-    const repo = page.locator(".recent-repos.compact .repo-chip").nth(1);
-    const path = await repo.getAttribute("title");
-    await repo.locator(".repo-chip-pick").tap();
-    check(`${name}: a repo chip selects its workspace`, !!path && await page.inputValue(".composer input.ws") === path, `picked=${path}`);
-  }
   check(`${name}: the transcript gets at least 40% of the rail`, rail.transcript >= rail.rail * 0.4, railBudget);
   check(`${name}: …and is taller than the composer below it`, rail.transcript > rail.composer, railBudget);
-  // An on-screen keyboard takes ~a third of the height. The desktop transcript floor once crushed the
-  // options row to 24px there: a 12px sliver of repo chips, with Send pushed under the bottom nav.
-  await page.setViewportSize({ width, height: 560 });
-  await page.waitForTimeout(300);
-  const short = await page.evaluate(() => {
-    const r = (s) => document.querySelector(s)?.getBoundingClientRect();
-    const opts = r(".composer-options"), repos = r(".recent-repos"), rail = r(".rail"), send = r(".composer .btn.primary, .composer button[type=submit], .composer .send-btn");
-    return {
-      reposShown: opts && repos ? Math.round(Math.min(opts.bottom, repos.bottom) - Math.max(opts.top, repos.top)) : -1,
-      reposH: repos ? Math.round(repos.height) : -1,
-      sendBottom: send ? Math.round(send.bottom) : -1, railBottom: rail ? Math.round(rail.bottom) : -1,
-    };
-  });
-  check(`${name}: with a keyboard up (560px tall) the repo row stays fully visible`, short.reposH > 0 && short.reposShown >= short.reposH, JSON.stringify(short));
-  check(`${name}: …and Send stays inside the rail`, short.sendBottom > 0 && short.sendBottom <= short.railBottom, JSON.stringify(short));
-  // On very short phones, the rail header + pinned composer can outgrow the rail itself. It must
-  // become a user-scrollable region so the repo row and Send can still be reached instead of clipped.
-  await page.setViewportSize({ width: 390, height: 450 });
-  if (width >= 900) await page.tap('.mobile-nav .mnav-btn:has-text("Director")');
-  await page.waitForTimeout(300);
-  const tiny = await page.evaluate(() => {
-    const rail = document.querySelector(".rail"), repos = document.querySelector(".recent-repos.compact");
-    const send = document.querySelector(".composer .btn.primary, .composer button[type=submit], .composer .send-btn");
-    if (!rail || !repos || !send) return { missing: true };
-    const rr = rail.getBoundingClientRect();
-    const canScroll = ["auto", "scroll"].includes(getComputedStyle(rail).overflowY) && rail.scrollHeight > rail.clientHeight + 1;
-    const contained = (el) => { const r = el.getBoundingClientRect(); return r.top >= rr.top && r.bottom <= rr.bottom; };
-    if (!contained(send) && canScroll) rail.scrollTop = rail.scrollHeight;
-    const afterRail = rail.getBoundingClientRect(), afterRepos = repos.getBoundingClientRect(), afterSend = send.getBoundingClientRect();
-    return {
-      railHeight: Math.round(afterRail.height), overflowY: getComputedStyle(rail).overflowY,
-      canScroll, repoHeight: Math.round(afterRepos.height),
-      repoVisible: Math.round(Math.max(0, Math.min(afterRail.bottom, afterRepos.bottom) - Math.max(afterRail.top, afterRepos.top))),
-      sendVisible: afterSend.top >= afterRail.top && afterSend.bottom <= afterRail.bottom,
-    };
-  });
-  check(`${name}: at 390×450, repo chips and Send remain reachable`, !tiny.missing && tiny.repoHeight > 0 && tiny.repoVisible >= tiny.repoHeight && tiny.sendVisible, JSON.stringify(tiny));
+  if (width < 900) {
+    await checkPhoneComposer(page, `${name}`, width, height);
+    // An on-screen keyboard takes ~a third of the height.
+    await checkPhoneComposer(page, `${name} with a keyboard up (${width}×560)`, width, 560);
+  } else {
+    await checkRailComposer(page, name, width, rail);
+  }
+  // The shortest phone this console is expected to work on, whichever pass got here.
+  await checkPhoneComposer(page, `${name} → 390×450`, 390, 450);
   await page.setViewportSize({ width, height });
   await page.waitForTimeout(300);
   if (width < 900) await page.tap('.mobile-nav .mnav-btn:has-text("Tasks")');
@@ -485,6 +460,74 @@ async function drivePass(page, { name, width, height }) {
 
 /** The just-killed instance can hold its sqlite file open for a moment, and on Windows that is an
  *  EBUSY, not a no-op — which would otherwise throw away a whole green run at the cleanup step. */
+/** The side rail's composer (≥900px): repo chips in one scrollable row, and — with an on-screen
+ *  keyboard taking ~a third of the height — the chip row and Send still fully visible. The desktop
+ *  transcript floor once crushed the options row to 24px there: a 12px sliver of repo chips, with
+ *  Send pushed under the bottom nav. */
+async function checkRailComposer(page, name, width, rail) {
+  check(`${name}: recent repo chips stay in one scrollable row`, rail.compactChips && rail.chipCount > 1 && rail.chipRows === 1 && rail.scrollable, `compact=${rail.compactChips} chips=${rail.chipCount} rows=${rail.chipRows} scrollable=${rail.scrollable}`);
+  if (rail.chipCount > 1) {
+    const repo = page.locator(".recent-repos.compact .repo-chip").nth(1);
+    const path = await repo.getAttribute("title");
+    await repo.locator(".repo-chip-pick").tap();
+    check(`${name}: a repo chip selects its workspace`, !!path && await page.inputValue(".composer input.ws") === path, `picked=${path}`);
+  }
+  await page.setViewportSize({ width, height: 560 });
+  await page.waitForTimeout(300);
+  const short = await page.evaluate(() => {
+    const r = (s) => document.querySelector(s)?.getBoundingClientRect();
+    const opts = r(".composer-options"), repos = r(".recent-repos"), rail = r(".rail"), send = r(".composer .composer-send");
+    return {
+      reposShown: opts && repos ? Math.round(Math.min(opts.bottom, repos.bottom) - Math.max(opts.top, repos.top)) : -1,
+      reposH: repos ? Math.round(repos.height) : -1,
+      sendBottom: send ? Math.round(send.bottom) : -1, railBottom: rail ? Math.round(rail.bottom) : -1,
+    };
+  });
+  check(`${name}: with a keyboard up (560px tall) the repo row stays fully visible`, short.reposH > 0 && short.reposShown >= short.reposH, JSON.stringify(short));
+  check(`${name}: …and Send stays inside the rail`, short.sendBottom > 0 && short.sendBottom <= short.railBottom, JSON.stringify(short));
+}
+
+/** The single-pane Director (<900px) keeps only a context bar and a messenger row under the
+ *  conversation; the repo chips live in the sheet that bar opens. At every height the bar and Send
+ *  must sit inside the pane above the bottom nav, and the sheet must open between the header and the
+ *  composer with a chip that actually selects its workspace. */
+async function checkPhoneComposer(page, name, width, height) {
+  await page.setViewportSize({ width, height });
+  await page.waitForTimeout(300);
+  // Crossing down from the side-rail layout lands on the board pane, the phone default.
+  if (await page.evaluate(() => !document.querySelector(".rail")?.clientHeight)) await page.tap('.mobile-nav .mnav-btn:has-text("Director")');
+  const dock = await page.evaluate(() => {
+    const r = (s) => document.querySelector(s)?.getBoundingClientRect();
+    const rail = r(".rail"), bar = r(".composer-options-toggle"), send = r(".composer .composer-send"), nav = r(".mobile-nav");
+    if (!rail || !bar || !send) return { missing: true };
+    const floor = Math.min(rail.bottom, nav && nav.height ? nav.top : Infinity);
+    return { barIn: bar.top >= rail.top && bar.bottom <= floor + 1, sendIn: send.top >= rail.top && send.bottom <= floor + 1, bar: Math.round(bar.bottom), send: Math.round(send.bottom), floor: Math.round(floor) };
+  });
+  check(`${name}: the context bar and Send sit inside the pane`, !dock.missing && dock.barIn && dock.sendIn, JSON.stringify(dock));
+  if (dock.missing) return;
+  await page.tap(".composer-options-toggle");
+  await page.waitForSelector(".composer-options.sheet", { state: "visible", timeout: 5000 }).catch(() => {});
+  const sheet = await page.evaluate(() => {
+    const s = document.querySelector(".composer-options.sheet"), rail = document.querySelector(".rail"), head = document.querySelector(".rail-head"), bar = document.querySelector(".composer-options-toggle");
+    if (!s || !rail || !head || !bar) return { missing: true };
+    const sb = s.getBoundingClientRect();
+    return { top: Math.round(sb.top), bottom: Math.round(sb.bottom), railTop: Math.round(rail.getBoundingClientRect().top), headBottom: Math.round(head.getBoundingClientRect().bottom), barTop: Math.round(bar.getBoundingClientRect().top), chips: s.querySelectorAll(".repo-chip").length };
+  });
+  // With a usable 160px between header and composer the sheet leaves the header alone; on a pane
+  // squeezed shorter than that it may cover the header, but must stay inside the rail's own box.
+  const ceiling = sheet.barTop - sheet.headBottom >= 176 ? sheet.headBottom : sheet.railTop;
+  check(`${name}: the options sheet opens above the composer, inside the pane`, !sheet.missing && sheet.top >= ceiling && sheet.bottom <= sheet.barTop, JSON.stringify(sheet));
+  if (!sheet.missing && sheet.chips > 1) {
+    const repo = page.locator(".composer-options.sheet .repo-chip").nth(1);
+    await repo.scrollIntoViewIfNeeded();
+    const path = await repo.getAttribute("title");
+    await repo.locator(".repo-chip-pick").tap();
+    check(`${name}: a repo chip in the sheet selects its workspace`, !!path && await page.inputValue(".composer-options.sheet input.ws") === path, `picked=${path}`);
+  }
+  await page.tap(".composer-sheet-done").catch(() => {});
+  check(`${name}: Done closes the sheet`, (await page.$(".composer-options.sheet")) === null);
+}
+
 async function rmWithRetry(dir) {
   for (let i = 0; ; i++) {
     try {
