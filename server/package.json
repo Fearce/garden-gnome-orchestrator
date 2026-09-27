@@ -19,6 +19,7 @@
     "discord-lab": "node scripts/discord-lab.cjs",
     "focus-lab": "node scripts/focus-lab.cjs",
     "git-lab": "node scripts/git-console-lab.cjs",
+    "goals-lab": "node scripts/goals-lab.cjs",
     "inject-lab": "node scripts/inject-lab.cjs",
     "layout-lab": "node scripts/layout-lab.cjs",
     "panel-scroll-lab": "node scripts/panel-scroll-lab.cjs",

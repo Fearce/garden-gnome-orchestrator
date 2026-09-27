@@ -15,6 +15,8 @@ import { EventHub } from "../events.js";
 import {
   GoalRunner,
   detectGoalComplete,
+  goalJudgeSchema,
+  goalStepPin,
   parseGoalJudgement,
   resolveStepPin,
   stepTitle,
@@ -23,7 +25,7 @@ import {
 } from "../orchestrator/goals.js";
 import type { DispatchInput } from "../orchestrator/api.js";
 import type { ModelCandidate } from "../orchestrator/modelSelector.js";
-import type { ThreadState } from "../types.js";
+import type { Goal, ThreadState } from "../types.js";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -72,6 +74,30 @@ function pure(): void {
   check("a model under the wrong backend moves to the one that has it", moved.provider === "codex" && moved.model === "gpt-5.6");
   const missing = resolveStepPin(parseGoalJudgement(answer("continue", "x", { model: "retired-model" }))!.next, ROSTER);
   check("an undispatchable model falls back to automatic routing", missing.provider === null && missing.model === null && !!missing.note);
+
+  console.log("goals: the owner's model and effort");
+  const auto = { effort: null, provider: null, model: null } satisfies Pick<Goal, "effort" | "provider" | "model">;
+  const pick = (over: Partial<GoalJudgement["next"]> = {}) => parseGoalJudgement(answer("continue", "x", over))!.next;
+  check("an unset effort caps the director's high pick at medium", goalStepPin(auto, pick({ effort: "high" }), ROSTER).effort === "medium");
+  check("an unset effort keeps the director's low pick", goalStepPin(auto, pick({ effort: "low" }), ROSTER).effort === "low");
+  check("an unset effort is noted when capped", /medium/.test(goalStepPin(auto, pick({ effort: "max" }), ROSTER).note ?? ""));
+  check("the owner's effort overrides the director's", goalStepPin({ ...auto, effort: "high" }, pick({ effort: "low" }), ROSTER).effort === "high");
+  const pinnedModel = goalStepPin({ effort: null, provider: "codex", model: "gpt-5.6" }, pick({ effort: "low" }), ROSTER);
+  check("the owner's model overrides the director's", pinnedModel.provider === "codex" && pinnedModel.model === "gpt-5.6" && pinnedModel.effort === "low");
+  const clamped = goalStepPin({ effort: "max", provider: "codex", model: "gpt-5.6" }, pick(), ROSTER);
+  check("the owner's effort drops to what the pinned model offers", clamped.effort === "high" && !!clamped.note);
+  const offRoster = goalStepPin({ effort: "medium", provider: "grok", model: "grok-5" }, pick(), ROSTER);
+  check("a pinned model with no capacity stays pinned (the task waits)", offRoster.provider === "grok" && offRoster.model === "grok-5" && offRoster.effort === "medium");
+
+  const enumOf = (schema: ReturnType<typeof goalJudgeSchema>, field: "effort" | "model") => {
+    const next = (schema.properties as { next: { properties: Record<string, { enum?: string[] }> } }).next;
+    return (next.properties[field]?.enum ?? []).join(",");
+  };
+  const effortsOf = (schema: ReturnType<typeof goalJudgeSchema>) => enumOf(schema, "effort");
+  const modelsOf = (schema: ReturnType<typeof goalJudgeSchema>) => enumOf(schema, "model");
+  check("the director may only pick low or medium by default", effortsOf(goalJudgeSchema(auto, ROSTER)) === "low,medium");
+  check("an owner effort is the only effort offered", effortsOf(goalJudgeSchema({ ...auto, effort: "high" }, ROSTER)) === "high");
+  check("an owner model is the only model offered", modelsOf(goalJudgeSchema({ effort: null, provider: "codex", model: "gpt-5.6" }, ROSTER)) === "gpt-5.6");
 }
 
 interface Harness {
@@ -128,7 +154,9 @@ async function lifecycle(): Promise<void> {
   check("the judge prompt carries the roster", h.judged[0]!.includes('model "gpt-5.6"'));
   check("step 1 dispatched once", h.dispatched.length === 1);
   const first = h.dispatched[0]!;
-  check("the step is pinned to the director's pick", first.requestedProvider === "claude" && first.requestedModel === "claude-opus-5-5" && first.effort === "high");
+  check("the step is pinned to the director's model", first.requestedProvider === "claude" && first.requestedModel === "claude-opus-5-5");
+  check("a goal with no effort set runs at medium even when the director asks for high", first.effort === "medium");
+  check("the judge prompt says the effort is capped", h.judged[0]!.includes("low or medium"));
   check("the brief carries the objective and the status-line rule", first.brief.includes("Parser, docs and tests all done.") && first.brief.includes("GOAL STATUS: COMPLETE"));
   check("a goal step is dispatched without QA", first.skipQa === true);
   check("the board title names goal and step", first.title === stepTitle(goal, 1, "Build the parser"));
@@ -265,7 +293,21 @@ async function guards(): Promise<void> {
   h.runner.stop();
   check("the next step was dispatched without waiting for the tick", h.dispatched.length === 2);
 
+  console.log("goals: owner-chosen model and effort");
+  h.answers.push(answer("continue", "pinned step", { provider: "claude", model: "claude-opus-5-5", effort: "low" }));
+  const p = h.runner.create({ title: "Pinned", objective: "o", workspace: ws, effort: "high", provider: "codex", model: "gpt-5.6" });
+  check("create stores the owner's pick", p.ok && p.goal?.effort === "high" && p.goal.provider === "codex" && p.goal.model === "gpt-5.6");
+  await h.runner.idle();
+  const pinned = h.dispatched.at(-1)!;
+  check("every step runs on the owner's model and effort", pinned.requestedProvider === "codex" && pinned.requestedModel === "gpt-5.6" && pinned.effort === "high");
+  check("the judge prompt names the owner's pin", h.judged.at(-1)!.includes("gpt-5.6") && h.judged.at(-1)!.includes("high"));
+  const cleared = h.runner.update(p.goal!.id, { effort: null, provider: null, model: null });
+  check("edit clears the pin back to automatic", cleared.ok && cleared.goal?.effort === null && cleared.goal.model === null && cleared.goal.provider === null);
+  const repinned = h.runner.update(p.goal!.id, { effort: "low", provider: "claude", model: "claude-opus-5-5" });
+  check("edit sets a new pin", repinned.goal?.effort === "low" && repinned.goal.model === "claude-opus-5-5");
   console.log("goals: validation");
+  check("rejects a model without its provider", !h.runner.create({ title: "t", objective: "o", workspace: ws, model: "gpt-5.6" }).ok);
+  check("rejects an unknown effort", !h.runner.update(p.goal!.id, { effort: "turbo" as never }).ok);
   check("rejects a missing workspace", !h.runner.create({ title: "t", objective: "o", workspace: join(ws, "no-such-dir-xyz") }).ok);
   check("rejects an empty objective", !h.runner.create({ title: "t", objective: " ", workspace: ws }).ok);
   check("an ended goal cannot be paused", !h.runner.setStatus(h.runner.setStatus(f.id, "abandoned").goal!.id, "paused").ok);

@@ -30,6 +30,12 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
 - **The pick is checked against `goalModelRoster()`** (= `implementorModelRoster`, the auto-selection
   roster). An undispatchable model falls back to automatic routing, with the reason written into the
   step's rationale, rather than pinning a step to a model that cannot run.
+- **The owner's pin bounds the director's pick; `goalStepPin` is the single place that applies it.** An
+  unset goal `effort` means low or medium ONLY — a 24/7 loop must not burn high-effort capacity by
+  default. The judge schema's enum and the prompt already say so, but `goalStepPin` still caps the
+  answer, because the CLI-bridge director and a schema-ignoring model can return anything. An owner
+  model skips the roster fallback above: it is dispatched as the exact pin and waits for capacity.
+  A model travels only with its provider (`validateGoalPin`); a half pin is rejected, never guessed.
 - **Guards fire at SETTLE time, not on every evaluation.** A cancelled step pauses the goal, and so do 3
   consecutive failed steps. If those checks ran on every evaluation, Resume would re-pause at once on the
   same old step (`test:goals` covers "resume judges again"). Only the step budget and a missing workspace

@@ -8,6 +8,8 @@ import { UNFINISHED_STATES } from "./scheduler.js";
 import {
   DEFAULT_GOAL_MAX_STEPS,
   EFFORTS,
+  GOAL_AUTO_EFFORTS,
+  GOAL_EFFORTS,
   MAX_GOAL_MAX_STEPS,
   type Effort,
   type Goal,
@@ -34,6 +36,9 @@ import {
  * The loop is driven by durable state only (`goals` + `goal_steps`), re-read on every evaluation, so a
  * restart simply re-evaluates. Bounded three ways: `maxSteps`, a run of failed steps, and a cancelled
  * step (the owner intervened) each pause the goal with a reason instead of spending forever.
+ *
+ * The owner may pin a goal's effort and/or model; the director then plans steps within that pin. With no
+ * effort pinned the director may only choose low or medium, because a goal spends capacity around the clock.
  */
 
 export const GOAL_TICK_MS = 60_000;
@@ -59,18 +64,27 @@ export interface GoalHost {
   notify?(kind: "done" | "input", title: string, detail?: string, repo?: string): void;
 }
 
-export interface GoalInput {
+/** The owner's pin on a goal. `null` leaves that choice to the director; `undefined` leaves it unchanged. */
+export interface GoalPinInput {
+  effort?: Effort | null;
+  provider?: ImplementorProvider | null;
+  model?: string | null;
+}
+
+export interface GoalInput extends GoalPinInput {
   title: string;
   objective: string;
   workspace: string;
   maxSteps?: number;
 }
 
-export interface GoalPatch {
+export interface GoalPatch extends GoalPinInput {
   title?: string;
   objective?: string;
   maxSteps?: number;
 }
+
+type GoalPin = Pick<Goal, "effort" | "provider" | "model">;
 
 export interface GoalResult {
   ok: boolean;
@@ -126,10 +140,26 @@ export function clampMaxSteps(value: number | undefined): number {
   return Math.min(MAX_GOAL_MAX_STEPS, Math.max(1, Math.round(value)));
 }
 
-/** The JSON schema of the director's answer, narrowed to what can dispatch right now. */
-export function goalJudgeSchema(roster: ModelCandidate[]): JsonSchemaLike {
-  const providers = GOAL_PROVIDERS.filter((p) => roster.some((c) => c.provider === p));
-  const efforts = EFFORTS.filter((e) => roster.some((c) => c.efforts.includes(e)));
+/**
+ * Validates an owner pin from any entry point (console, director tool, CLI bridge). A model travels only
+ * with its provider: half a pin would read as pinned while routing automatically.
+ */
+export function validateGoalPin(pin: GoalPinInput): string | null {
+  if (pin.effort != null && !GOAL_EFFORTS.includes(pin.effort)) return `Effort must be one of ${GOAL_EFFORTS.join(", ")}.`;
+  if (pin.provider != null && !GOAL_PROVIDERS.includes(pin.provider)) return `Provider must be one of ${GOAL_PROVIDERS.join(", ")}.`;
+  const halfPin = (pin.model === undefined) !== (pin.provider === undefined) || (pin.model == null) !== (pin.provider == null);
+  return halfPin ? "A model needs its provider, and a provider needs its model." : null;
+}
+
+/** The efforts the director may choose for a step: the owner's, or low/medium when the owner set none. */
+function allowedEfforts(goal: GoalPin): Effort[] {
+  return goal.effort ? [goal.effort] : GOAL_AUTO_EFFORTS;
+}
+
+/** The JSON schema of the director's answer, narrowed to the owner's pin and to what can dispatch now. */
+export function goalJudgeSchema(goal: GoalPin, roster: ModelCandidate[]): JsonSchemaLike {
+  const pinned = goal.provider && goal.model ? { provider: goal.provider, model: goal.model } : null;
+  const providers = pinned ? [pinned.provider] : GOAL_PROVIDERS.filter((p) => roster.some((c) => c.provider === p));
   return {
     type: "object",
     additionalProperties: false,
@@ -146,8 +176,8 @@ export function goalJudgeSchema(roster: ModelCandidate[]): JsonSchemaLike {
           title: { type: "string" },
           brief: { type: "string" },
           provider: { type: "string", enum: providers.length ? providers : GOAL_PROVIDERS },
-          model: { type: "string" },
-          effort: { type: "string", enum: efforts.length ? efforts : EFFORTS },
+          model: pinned ? { type: "string", enum: [pinned.model] } : { type: "string" },
+          effort: { type: "string", enum: allowedEfforts(goal) },
           rationale: { type: "string" },
         },
       },
@@ -205,13 +235,47 @@ export function resolveStepPin(pick: GoalJudgement["next"], roster: ModelCandida
       note: pick.model ? `${pick.model} is not dispatchable right now, so this step uses automatic model routing.` : null,
     };
   }
-  const idx = EFFORTS.indexOf(pick.effort);
-  const effort = found.efforts.includes(pick.effort)
-    ? pick.effort
-    : [...found.efforts].filter((e) => EFFORTS.indexOf(e) <= idx).pop() ?? found.efforts[0] ?? null;
+  const effort = lowerToOffered(pick.effort, found.efforts);
   const moved = found.provider !== pick.provider ? `${pick.model} runs on ${found.provider}, not ${pick.provider}. ` : "";
   const lowered = effort !== pick.effort ? `${found.model} does not offer ${pick.effort} effort; using ${effort}.` : "";
   return { provider: found.provider, model: found.model, effort, note: `${moved}${lowered}`.trim() || null };
+}
+
+/**
+ * The pin a step runs with: the director's pick, bounded by the owner's goal pin. An owner model is
+ * dispatched as an exact pin even when it has no capacity right now (the task waits for it, as a pinned
+ * schedule does); the effort still drops to the nearest tier that model offers.
+ */
+export function goalStepPin(goal: GoalPin, pick: GoalJudgement["next"], roster: ModelCandidate[]): StepPin {
+  const allowed = allowedEfforts(goal);
+  const effort = allowed.includes(pick.effort) ? pick.effort : allowed.at(-1)!;
+  const capped = !goal.effort && effort !== pick.effort ? `Capped at ${effort} effort: this goal has no effort set, so its steps run at low or medium.` : null;
+  if (!goal.provider || !goal.model) {
+    const pin = resolveStepPin({ ...pick, effort }, roster);
+    return { ...pin, note: [capped, pin.note].filter(Boolean).join(" ") || null };
+  }
+  const found = roster.find((c) => c.provider === goal.provider && c.model.toLowerCase() === goal.model!.toLowerCase());
+  const offered = found ? lowerToOffered(effort, found.efforts) : effort;
+  const lowered = offered !== effort ? `${goal.model} does not offer ${effort} effort; using ${offered}.` : null;
+  return { provider: goal.provider, model: goal.model, effort: offered, note: [capped, lowered].filter(Boolean).join(" ") || null };
+}
+
+/** The requested effort when offered, else the nearest lower tier, else the lowest one offered. */
+function lowerToOffered(effort: Effort, offered: Effort[]): Effort | null {
+  if (offered.includes(effort)) return effort;
+  const idx = EFFORTS.indexOf(effort);
+  return [...offered].filter((e) => EFFORTS.indexOf(e) <= idx).pop() ?? offered[0] ?? null;
+}
+
+/** The judge prompt's instruction for the step's backend, model and effort, per the owner's pin. */
+function pickInstruction(goal: GoalPin, ownerName: string): string {
+  const model = goal.provider && goal.model
+    ? `${ownerName} pinned every step to provider "${goal.provider}", model "${goal.model}": use exactly that.`
+    : "Choose `provider` and `model` for that step from the roster below. The goal runs 24/7, so spend capacity deliberately: a flagship model for hard, risky or architectural steps, a cheaper one for mechanical steps, and prefer pools with headroom so the goal does not exhaust one subscription and stall.";
+  const effort = goal.effort
+    ? `${ownerName} set this goal's effort to ${goal.effort}: use exactly "${goal.effort}".`
+    : `${ownerName} capped this goal at low or medium effort: choose "low" for mechanical steps and "medium" for everything else.`;
+  return `- ${model} ${effort} Say why in \`rationale\`.`;
 }
 
 export interface GoalJudgeContext {
@@ -259,7 +323,7 @@ export function buildGoalJudgePrompt(ctx: GoalJudgeContext): string {
     "- The goal ends only when you say complete AND the last step's agent declared it complete. If you believe it is complete but the agent did not declare it, still return \"complete\" and make `next` a VERIFICATION step: independently check every part of the objective, fix any gap, and declare the result.",
     "- `progress`: a short running summary of what is done and what remains, replacing the earlier one.",
     "- `next`: the next step. Make it a concrete, self-contained brief an implementor can finish in one task — the most valuable next slice toward the objective, not the whole objective at once. Build on what earlier steps did; if a step failed or QA rejected it, address why. The brief goes to the implementor as-is, together with the objective.",
-    "- Choose `provider`, `model` and `effort` for that step from the roster below. The goal runs 24/7, so spend capacity deliberately: a flagship model and higher effort for hard, risky or architectural steps; a cheaper model or lower effort for mechanical ones; prefer pools with headroom so the goal does not exhaust one subscription and stall. Say why in `rationale`.",
+    pickInstruction(goal, ctx.ownerName),
     "",
     rosterLines.length ? `DISPATCHABLE MODELS RIGHT NOW:\n${rosterLines.join("\n")}` : "No model reports headroom right now; pick the one you would want when capacity returns.",
   ].filter((line) => line !== "").join("\n");
@@ -341,7 +405,18 @@ export class GoalRunner {
     if (!objective) return { ok: false, error: "Objective is required." };
     if (!workspace) return { ok: false, error: "Workspace path is required." };
     if (!existsSync(workspace)) return { ok: false, error: `Workspace "${workspace}" does not exist.` };
-    const goal = this.db.createGoal({ title, objective, workspace, maxSteps: clampMaxSteps(input.maxSteps) });
+    const pin = trimPinModel({ effort: input.effort ?? null, provider: input.provider ?? null, model: input.model ?? null });
+    const pinError = validateGoalPin(pin);
+    if (pinError) return { ok: false, error: pinError };
+    const goal = this.db.createGoal({
+      title,
+      objective,
+      workspace,
+      maxSteps: clampMaxSteps(input.maxSteps),
+      effort: pin.effort ?? null,
+      provider: pin.provider ?? null,
+      model: pin.model ?? null,
+    });
     this.hub.log("info", `Goal "${title}" created in ${workspace}.`);
     this.broadcast();
     this.evaluate(goal.id);
@@ -355,10 +430,15 @@ export class GoalRunner {
     const objective = patch.objective?.trim();
     if (patch.title !== undefined && !title) return { ok: false, error: "Title is required." };
     if (patch.objective !== undefined && !objective) return { ok: false, error: "Objective is required." };
+    const pin = trimPinModel({ effort: patch.effort, provider: patch.provider, model: patch.model });
+    const pinError = validateGoalPin(pin);
+    if (pinError) return { ok: false, error: pinError };
     const goal = this.db.updateGoal(id, {
       ...(title ? { title } : {}),
       ...(objective ? { objective } : {}),
       ...(patch.maxSteps !== undefined ? { maxSteps: clampMaxSteps(patch.maxSteps) } : {}),
+      ...(pin.effort !== undefined ? { effort: pin.effort } : {}),
+      ...(pin.model !== undefined ? { provider: pin.provider ?? null, model: pin.model } : {}),
     });
     this.broadcast();
     return { ok: true, goal: goal ?? undefined };
@@ -504,7 +584,7 @@ export class GoalRunner {
       roster,
       ownerName: this.options.ownerName,
     });
-    const answer = await this.host.judge(prompt, goalJudgeSchema(roster)).catch(() => null);
+    const answer = await this.host.judge(prompt, goalJudgeSchema(goal, roster)).catch(() => null);
     const judgement = answer ? parseGoalJudgement(answer.output) : null;
     // The owner may have paused, ended or deleted the goal while the director was thinking.
     const fresh = this.db.getGoal(goalId);
@@ -520,7 +600,7 @@ export class GoalRunner {
   }
 
   private async dispatchStep(goal: Goal, judgement: GoalJudgement, verification: boolean, roster: ModelCandidate[]): Promise<void> {
-    const pin = resolveStepPin(judgement.next, roster);
+    const pin = goalStepPin(goal, judgement.next, roster);
     const rationale = [judgement.next.rationale, pin.note].filter(Boolean).join(" ");
     const step = this.db.createGoalStep({
       goalId: goal.id,
@@ -590,19 +670,30 @@ export class GoalRunner {
   }
 }
 
+/** A blank model is no pin. Undefined fields stay undefined so a patch leaves them unchanged. */
+function trimPinModel(pin: GoalPinInput): GoalPinInput {
+  return pin.model === undefined ? pin : { ...pin, model: pin.model?.trim() || null };
+}
+
+/** The owner's pin as the director reads it, e.g. "codex / gpt-5.6, high effort". */
+export function describeGoalPin(g: GoalPin): string {
+  const model = g.provider && g.model ? `${g.provider} / ${g.model}` : "director's model";
+  return `${model}, ${g.effort ? `${g.effort} effort` : "low–medium effort"}`;
+}
+
 /** One line per goal for the director's list tool and its CLI bridge. */
 export function describeGoal(g: Goal): string {
   const current = g.currentThreadId ? `, current task ${g.currentThreadId.slice(0, 8)}` : "";
   const reason = g.statusReason ? ` (${g.statusReason})` : "";
   const progress = g.progress ? ` Progress: ${clip(g.progress, 300)}` : "";
-  return `- ${g.id} [${g.status}]${reason} "${g.title}" @ ${g.workspace} — ${g.stepCount}/${g.maxSteps} steps${current}.${progress}`;
+  return `- ${g.id} [${g.status}]${reason} "${g.title}" @ ${g.workspace} — ${g.stepCount}/${g.maxSteps} steps, ${describeGoalPin(g)}${current}.${progress}`;
 }
 
 /** The director's update_goal, shared by the MCP tool and the CLI bridge. Returns the reply text; a
  *  failure starts with "Could not". */
 export function applyGoalChange(
   goals: GoalRunner,
-  change: { id: string; title?: string; objective?: string; maxSteps?: number; status?: GoalStatus },
+  change: { id: string; title?: string; objective?: string; maxSteps?: number; status?: GoalStatus } & GoalPinInput,
   statusReason: string,
 ): string {
   const { id, status, ...patch } = change;

@@ -269,7 +269,8 @@ export interface GoalVerdict {
 /**
  * A goal-directed task: a standing objective GGO keeps a task working on, around the clock, until the
  * step's agent AND the director both judge it fully complete. The director plans each step and picks
- * its model and effort. Persisted in `goals` + `goal_steps`; mirrored in web/src/types.ts.
+ * its model and effort, unless the owner pinned them on the goal. Persisted in `goals` + `goal_steps`;
+ * mirrored in web/src/types.ts.
  */
 export interface Goal {
   id: string;
@@ -281,6 +282,9 @@ export interface Goal {
   progress: string | null; // the director's running summary of what is done and what remains
   lastVerdict: GoalVerdict | null;
   maxSteps: number; // runaway bound: the goal pauses once it has dispatched this many step tasks
+  effort: Effort | null; // the owner's effort for every step; null = the director picks, low or medium only
+  provider: ImplementorProvider | null; // with `model`, the owner's exact pin for every step; null = the director picks
+  model: string | null;
   currentThreadId: string | null; // the step task in flight (or last dispatched)
   nextCheckAt: number | null; // backoff: when the director could not be reached, the next attempt
   stepCount: number;
@@ -294,6 +298,10 @@ export interface Goal {
 export const GOAL_STEPS_SHOWN = 30;
 export const DEFAULT_GOAL_MAX_STEPS = 100;
 export const MAX_GOAL_MAX_STEPS = 1000;
+/** The efforts the owner can set on a goal (the schedule editor's set). */
+export const GOAL_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
+/** A goal runs around the clock, so with no owner effort the director chooses only among these. */
+export const GOAL_AUTO_EFFORTS: Effort[] = ["low", "medium"];
 
 /** The hard ceiling on a note's body, in characters. The whole point of the note list is that it can be
  *  skimmed in seconds, so this is enforced by TRUNCATION at the write boundary (never a rejection — a

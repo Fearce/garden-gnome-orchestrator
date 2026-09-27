@@ -528,8 +528,8 @@ interface State {
   deleteSchedule: (id: string) => boolean;
   runSchedule: (id: string) => void;
   // Goals: each returns whether the command reached the socket, so a form never closes on a dropped write.
-  createGoal: (input: { title: string; objective: string; workspace: string; maxSteps?: number }) => boolean;
-  updateGoal: (id: string, patch: { title?: string; objective?: string; maxSteps?: number }) => boolean;
+  createGoal: (input: { title: string; objective: string; workspace: string; maxSteps?: number } & GoalPin) => boolean;
+  updateGoal: (id: string, patch: { title?: string; objective?: string; maxSteps?: number } & GoalPin) => boolean;
   setGoalStatus: (id: string, status: GoalStatus) => boolean;
   deleteGoal: (id: string) => boolean;
   // The owner's note list — still optimism-free (unlike the schedule writes above): send, let the
@@ -1141,6 +1141,9 @@ function sendScheduleMutation(cmd: ScheduleMutation): boolean {
   });
   return false;
 }
+
+/** The owner's per-goal effort and model pin; null hands that choice back to the director. */
+type GoalPin = { effort?: Effort | null; provider?: ImplementorProvider | null; model?: string | null };
 
 type GoalCommand = Extract<ClientCommand, { type: "goal.create" | "goal.update" | "goal.status" | "goal.delete" }>;
 

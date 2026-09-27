@@ -1,8 +1,19 @@
-import { useState, type CSSProperties } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
-import { DEFAULT_GOAL_MAX_STEPS, MAX_GOAL_MAX_STEPS, type Goal, type GoalStatus, type GoalStep, type ThreadState } from "../types.js";
+import {
+  DEFAULT_GOAL_MAX_STEPS,
+  GOAL_EFFORTS,
+  MAX_GOAL_MAX_STEPS,
+  type Effort,
+  type Goal,
+  type GoalStatus,
+  type GoalStep,
+  type ImplementorProvider,
+  type ThreadState,
+} from "../types.js";
 import { WorkspacePath } from "./WorkspacePath.js";
 import { PathInput } from "./PathInput.js";
+import { taskModelTargets } from "./TaskModelPicker.js";
 import { modelLabel, since, stateColor, stateLabel } from "../lib/format.js";
 import { useCoarseNow } from "../lib/timing.js";
 
@@ -100,6 +111,7 @@ function GoalCard({ goal, onEdit }: { goal: Goal; onEdit: () => void }) {
       ) : null}
 
       <div className="sched-meta">
+        <GoalPinChip goal={goal} />
         <span className="goal-steps-count" title={`The goal pauses after ${goal.maxSteps} step tasks`}>
           Step {goal.stepCount} of {goal.maxSteps}
         </span>
@@ -223,6 +235,30 @@ function StepRow({ step }: { step: GoalStep }) {
   );
 }
 
+/** The owner's pin for every step, or what the director is left to choose. */
+function GoalPinChip({ goal }: { goal: Goal }) {
+  const pinned = goal.provider && goal.model;
+  return (
+    <>
+      <span
+        className="sched-model"
+        title={pinned ? "Every step runs on this exact model" : "The director picks each step's model from what has capacity"}
+      >
+        {pinned ? modelLabel(goal.model!) : "Director's model"}
+      </span>
+      {goal.effort ? (
+        <span className={"effort-badge eff-" + goal.effort} title="Every step runs at this effort">
+          {goal.effort}
+        </span>
+      ) : (
+        <span className="goal-effort-auto" title="No effort set: the director picks low or medium for each step">
+          low–medium
+        </span>
+      )}
+    </>
+  );
+}
+
 /** The model and effort the director chose for a step ("auto routing" when its pick could not run). */
 function PickChip({ step }: { step: GoalStep }) {
   return (
@@ -250,15 +286,18 @@ function GoalEditor({ initial, onClose }: { initial: Goal | null; onClose: () =>
   const [workspace, setWorkspace] = useState(initial?.workspace ?? "");
   const [objective, setObjective] = useState(initial?.objective ?? "");
   const [maxSteps, setMaxSteps] = useState(String(initial?.maxSteps ?? DEFAULT_GOAL_MAX_STEPS));
+  const [effort, setEffort] = useState<Effort | "">(initial?.effort ?? "");
+  const model = useGoalModelPin(initial);
   const budget = Number(maxSteps);
   const budgetValid = Number.isInteger(budget) && budget >= 1 && budget <= MAX_GOAL_MAX_STEPS;
-  const canSave = !!title.trim() && !!objective.trim() && !!workspace.trim() && budgetValid;
+  const canSave = !!title.trim() && !!objective.trim() && !!workspace.trim() && budgetValid && model.valid;
 
   const save = () => {
     if (!canSave) return;
+    const pin = { effort: effort || null, provider: model.pinned ? model.provider || null : null, model: model.pinned ? model.model : null };
     const saved = initial
-      ? updateGoal(initial.id, { title: title.trim(), objective: objective.trim(), maxSteps: budget })
-      : createGoal({ title: title.trim(), objective: objective.trim(), workspace: workspace.trim(), maxSteps: budget });
+      ? updateGoal(initial.id, { title: title.trim(), objective: objective.trim(), maxSteps: budget, ...pin })
+      : createGoal({ title: title.trim(), objective: objective.trim(), workspace: workspace.trim(), maxSteps: budget, ...pin });
     if (saved) onClose();
   };
 
@@ -304,9 +343,60 @@ function GoalEditor({ initial, onClose }: { initial: Goal | null; onClose: () =>
               onChange={(e) => setMaxSteps(e.target.value)}
             />
           </label>
+          <div className="sched-row">
+            <label className="sched-field sched-field-inline">
+              <span className="sched-label">Effort</span>
+              <select value={effort} onChange={(e) => setEffort(e.target.value as Effort | "")} title="The implementor effort every step runs at">
+                <option value="">Auto (low or medium)</option>
+                {GOAL_EFFORTS.map((ef) => (
+                  <option key={ef} value={ef}>
+                    {ef}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="sched-field sched-field-inline">
+              <span className="sched-label">Provider</span>
+              <select
+                value={model.provider}
+                onChange={(e) => model.chooseProvider(e.target.value as ImplementorProvider | "")}
+                title="Pin every step to one backend, or let the director pick per step"
+              >
+                <option value="">Director picks</option>
+                {model.targets.map((t) => (
+                  <option key={t.provider} value={t.provider}>
+                    {t.label}
+                    {t.enabled ? "" : " (disabled)"}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="sched-field sched-field-inline">
+              <span className="sched-label">Model</span>
+              <select
+                value={model.model}
+                disabled={!model.provider}
+                onChange={(e) => model.setModel(e.target.value)}
+                title={model.provider ? "The exact model every step runs on" : "Choose a provider first"}
+              >
+                {model.provider ? null : <option value="">—</option>}
+                {model.target?.models.map((m) => (
+                  <option key={m} value={m}>
+                    {modelLabel(m)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="sched-hint">
-            The director plans each step and picks its model and effort from what has capacity. The goal ends when a step's agent and the
-            director both judge the objective complete, and pauses if it uses its step budget, three steps in a row fail, or you cancel a step.
+            {model.pinned
+              ? "Every step runs on this exact model; if it has no capacity, the step waits for it."
+              : "The director picks each step's model from what has capacity."}{" "}
+            {effort
+              ? `Every step runs at ${effort} effort.`
+              : "With effort on Auto, the director picks low or medium for each step, since a goal spends capacity around the clock."}{" "}
+            The goal ends when a step's agent and the director both judge the objective complete, and pauses if it uses its step budget, three
+            steps in a row fail, or you cancel a step.
           </div>
         </div>
         <div className="m-foot sched-foot">
@@ -320,6 +410,28 @@ function GoalEditor({ initial, onClose }: { initial: Goal | null; onClose: () =>
       </div>
     </div>
   );
+}
+
+/** The editor's provider/model pair. A pin is only ever sent whole: a provider with no model is not saveable. */
+function useGoalModelPin(initial: Goal | null) {
+  const settings = useStore((s) => s.settings);
+  const current = initial?.provider && initial.model ? { provider: initial.provider, model: initial.model } : null;
+  // Built with the saved pin so a goal pinned to a since-disabled backend still shows its own pin.
+  const targets = useMemo(
+    () => taskModelTargets(settings, initial?.provider && initial.model ? { requested: initial.model, provider: initial.provider, model: initial.model, strict: true } : null),
+    [settings, initial],
+  );
+  const [provider, setProvider] = useState<ImplementorProvider | "">(current?.provider ?? "");
+  const [model, setModel] = useState(current?.model ?? "");
+  const target = targets.find((t) => t.provider === provider);
+
+  const chooseProvider = (next: ImplementorProvider | ""): void => {
+    setProvider(next);
+    const roster = targets.find((t) => t.provider === next);
+    setModel(!next ? "" : roster?.models.includes(model) ? model : (roster?.models[0] ?? ""));
+  };
+
+  return { targets, target, provider, model, setModel, chooseProvider, pinned: !!provider && !!model, valid: !provider || !!model };
 }
 
 function PlusIcon() {

@@ -896,6 +896,9 @@ export class Db {
       "ALTER TABLE scheduled_tasks ADD COLUMN model TEXT",
       "ALTER TABLE scheduled_tasks ADD COLUMN provider TEXT",
       "ALTER TABLE threads ADD COLUMN latest_message_preview TEXT",
+      "ALTER TABLE goals ADD COLUMN effort TEXT",
+      "ALTER TABLE goals ADD COLUMN provider TEXT",
+      "ALTER TABLE goals ADD COLUMN model TEXT",
     ]) {
       try {
         this.raw.exec(stmt);
@@ -3577,13 +3580,21 @@ export class Db {
   }
 
   // ---- goals (goal-directed tasks) ----
-  createGoal(input: { title: string; objective: string; workspace: string; maxSteps: number }): Goal {
+  createGoal(input: {
+    title: string;
+    objective: string;
+    workspace: string;
+    maxSteps: number;
+    effort: Effort | null;
+    provider: ImplementorProvider | null;
+    model: string | null;
+  }): Goal {
     const at = now();
     const id = newId();
     this.raw
       .prepare(
-        `INSERT INTO goals(id, title, objective, workspace, status, max_steps, created_at, updated_at)
-         VALUES(@id, @title, @objective, @workspace, 'active', @maxSteps, @at, @at)`,
+        `INSERT INTO goals(id, title, objective, workspace, status, max_steps, effort, provider, model, created_at, updated_at)
+         VALUES(@id, @title, @objective, @workspace, 'active', @maxSteps, @effort, @provider, @model, @at, @at)`,
       )
       .run({ id, ...input, at });
     return this.getGoal(id)!;
@@ -3609,6 +3620,9 @@ export class Db {
       progress: string | null;
       lastVerdict: GoalVerdict | null;
       maxSteps: number;
+      effort: Effort | null;
+      provider: ImplementorProvider | null;
+      model: string | null;
       currentThreadId: string | null;
       nextCheckAt: number | null;
       endedAt: number | null;
@@ -3623,6 +3637,9 @@ export class Db {
       progress: "progress",
       lastVerdict: "last_verdict",
       maxSteps: "max_steps",
+      effort: "effort",
+      provider: "provider",
+      model: "model",
       currentThreadId: "current_thread_id",
       nextCheckAt: "next_check_at",
       endedAt: "ended_at",
@@ -3719,6 +3736,9 @@ export class Db {
       progress: (r.progress as string | null) ?? null,
       lastVerdict: parseGoalVerdict(r.last_verdict),
       maxSteps: r.max_steps as number,
+      effort: (r.effort as Effort | null) ?? null,
+      provider: (r.provider as ImplementorProvider | null) ?? null,
+      model: (r.model as string | null) ?? null,
       currentThreadId: (r.current_thread_id as string | null) ?? null,
       nextCheckAt: (r.next_check_at as number | null) ?? null,
       stepCount,

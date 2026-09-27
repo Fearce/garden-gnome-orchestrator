@@ -420,12 +420,15 @@ export function createDirectorServer(
 
   const createGoal = tool(
     "create_goal",
-    `Create a GOAL-DIRECTED TASK: a standing objective GGO keeps a task working on around the clock until the step's agent AND the director both judge it fully complete. GGO's director plans every step and picks each step's model and effort itself. Use this O"\n"Y when ${config.ownerName} asks for a goal in so many words ("make this a goal", "goal-directed task", "keep working on this until it's done", "run this 24/7 until X") — an ordinary request, however large, is dispatched once. The objective is the yardstick every step and verdict is judged against, so write it as ${config.ownerName} stated it, complete and unambiguous. Resolve the repo path first (find_workspace) if you don't have it.`,
+    `Create a GOAL-DIRECTED TASK: a standing objective GGO keeps a task working on around the clock until the step's agent AND the director both judge it fully complete. GGO's director plans every step and picks each step's model and effort itself (low or medium effort unless ${config.ownerName} set one). Use this ONLY when ${config.ownerName} asks for a goal in so many words ("make this a goal", "goal-directed task", "keep working on this until it's done", "run this 24/7 until X") — an ordinary request, however large, is dispatched once. The objective is the yardstick every step and verdict is judged against, so write it as ${config.ownerName} stated it, complete and unambiguous. Resolve the repo path first (find_workspace) if you don't have it.`,
     {
       title: z.string().describe("Short name for the goal (prefixes each step's board title)."),
       objective: z.string().describe(`The full objective, in ${config.ownerName}'s own terms: what "done" means. Keep their wording; add only what the conversation made explicit.`),
       workspace: z.string().describe("Absolute path of the EXISTING repo/dir the goal works in."),
       maxSteps: z.number().int().min(1).max(1000).optional().describe("Runaway bound: the goal pauses after this many step tasks (default 100). Set it only if the owner named a budget."),
+      effort: z.enum(["low", "medium", "high", "max"]).optional().describe(`Effort for EVERY step, only when ${config.ownerName} named one. Omit it and the director picks low or medium per step.`),
+      provider: z.enum(["claude", "codex", "grok", "zai"]).optional().describe("The backend of `model`."),
+      model: z.string().optional().describe(`Exact model id for EVERY step, only when ${config.ownerName} named one; always with its provider. Omit both and the director picks per step.`),
     },
     async (args) => {
       if (!goals) return goalsUnavailable;
@@ -448,12 +451,15 @@ export function createDirectorServer(
 
   const updateGoal = tool(
     "update_goal",
-    `Change a goal (id from list_goals): edit its title, objective or step budget, and/or set its status — "paused" stops new steps (the running one finishes), "active" resumes, "abandoned" ends it, "achieved" marks it done on ${config.ownerName}'s say-so. Only change status when ${config.ownerName} asked for it.`,
+    `Change a goal (id from list_goals): edit its title, objective, step budget, effort or model pin, and/or set its status — "paused" stops new steps (the running one finishes), "active" resumes, "abandoned" ends it, "achieved" marks it done on ${config.ownerName}'s say-so. Only change status when ${config.ownerName} asked for it.`,
     {
       id: z.string().describe("The goal id (from list_goals)."),
       title: z.string().optional(),
       objective: z.string().optional(),
       maxSteps: z.number().int().min(1).max(1000).optional(),
+      effort: z.enum(["low", "medium", "high", "max"]).nullable().optional().describe("Effort for every step from now on; null hands it back to the director (low or medium)."),
+      provider: z.enum(["claude", "codex", "grok", "zai"]).nullable().optional().describe("The backend of `model`; null together with model hands the pick back to the director."),
+      model: z.string().nullable().optional().describe("Exact model for every step from now on, always with its provider; null clears the pin."),
       status: z.enum(["active", "paused", "abandoned", "achieved"]).optional(),
     },
     async (args) => {

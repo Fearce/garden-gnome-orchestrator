@@ -245,6 +245,13 @@ export type ServerEvent =
 
 // ---- Client -> Server commands (inbound; zod-validated) ----
 
+// The owner's per-goal pin; null hands that choice back to the director (orchestrator/goals.ts validates the pair).
+const GOAL_PIN_FIELDS = {
+  effort: z.enum(["low", "medium", "high", "max"]).nullable().optional(),
+  provider: z.enum(["claude", "codex", "grok", "zai"]).nullable().optional(),
+  model: z.string().trim().max(100).nullable().optional(),
+};
+
 const imageAttachmentSchema = z.object({
   name: z.string(),
   mediaType: z.enum(["image/png", "image/jpeg", "image/gif", "image/webp"]),
@@ -603,6 +610,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     objective: z.string().trim().min(1).max(20000),
     workspace: z.string().trim().min(1).max(600),
     maxSteps: z.number().int().min(1).max(MAX_GOAL_MAX_STEPS).optional(),
+    ...GOAL_PIN_FIELDS,
   }),
   z.object({
     type: z.literal("goal.update"),
@@ -611,6 +619,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       title: z.string().trim().min(1).max(200).optional(),
       objective: z.string().trim().min(1).max(20000).optional(),
       maxSteps: z.number().int().min(1).max(MAX_GOAL_MAX_STEPS).optional(),
+      ...GOAL_PIN_FIELDS,
     }),
   }),
   z.object({ type: z.literal("goal.status"), id: z.string(), status: z.enum(GOAL_STATUSES as [GoalStatus, ...GoalStatus[]]) }),

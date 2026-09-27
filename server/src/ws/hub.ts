@@ -545,7 +545,15 @@ export async function handleCommand(
       await ctx.scheduler.runNow(cmd.id);
       break;
     case "goal.create": {
-      const r = ctx.goals.create({ title: cmd.title, objective: cmd.objective, workspace: cmd.workspace, maxSteps: cmd.maxSteps });
+      const r = ctx.goals.create({
+        title: cmd.title,
+        objective: cmd.objective,
+        workspace: cmd.workspace,
+        maxSteps: cmd.maxSteps,
+        effort: cmd.effort,
+        provider: cmd.provider,
+        model: cmd.model,
+      });
       if (!r.ok) send(socket, { type: "notice", level: "warn", title: "Goal not created", message: r.error ?? "Unknown error." });
       break;
     }

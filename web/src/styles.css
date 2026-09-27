@@ -2950,6 +2950,7 @@ body.dl-resizing { user-select: none; }
 /* ---- Goals view (reuses the schedule toolbar, fields and modal) ---- */
 .goal-view { --goal: oklch(0.83 0.14 128); }
 .goal-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(400px, 100%), 1fr)); gap: 12px; }
+.goal-effort-auto { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); white-space: nowrap; }
 .goal-card {
   background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-lg);
   padding: 14px 14px 14px 17px; display: flex; flex-direction: column; gap: 10px; position: relative; overflow: hidden;

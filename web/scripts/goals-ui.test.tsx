@@ -59,6 +59,9 @@ const goal: Goal = {
   progress: "Cache layer done; sync queue remains.",
   lastVerdict: { verdict: "continue", reason: "Sync is missing.", agentClaimedComplete: true, at: Date.now() - 60_000 },
   maxSteps: 100,
+  effort: null,
+  provider: null,
+  model: null,
   currentThreadId: "thread-2",
   nextCheckAt: null,
   stepCount: 2,
@@ -77,6 +80,22 @@ assert.deepEqual(useStore.getState().goals, [goal], "the goals broadcast replace
 
 assert.equal(useStore.getState().createGoal({ title: "t", objective: "o", workspace: "C:\\repo" }), true);
 assert.deepEqual(socket.sent.map((f) => f.type), ["goal.create"], "a create costs one small command, never a snapshot");
+
+socket.sent.length = 0;
+assert.equal(useStore.getState().createGoal({ title: "t", objective: "o", workspace: "C:\\repo", effort: "high", provider: "codex", model: "gpt-5.6" }), true);
+assert.deepEqual(
+  { effort: socket.sent[0]?.effort, provider: socket.sent[0]?.provider, model: socket.sent[0]?.model },
+  { effort: "high", provider: "codex", model: "gpt-5.6" },
+  "the owner's effort and model ride on the create",
+);
+
+socket.sent.length = 0;
+assert.equal(useStore.getState().updateGoal("goal-1", { effort: null, provider: null, model: null }), true);
+assert.deepEqual(
+  socket.sent,
+  [{ type: "goal.update", id: "goal-1", patch: { effort: null, provider: null, model: null } }],
+  "an edit can hand the pick back to the director",
+);
 
 socket.sent.length = 0;
 assert.equal(useStore.getState().setGoalStatus("goal-1", "paused"), true);
@@ -115,6 +134,8 @@ assert.match(active, /Current step/);
 assert.match(active, /Sync queue/);
 assert.match(active, /Mechanical follow-up\./, "the director's reason for the pick is shown");
 assert.match(active, /effort-badge eff-medium/, "the step's effort is shown");
+assert.match(active, /Director&#x27;s model/, "an unpinned goal says the director picks the model");
+assert.match(active, /low–medium/, "an unpinned goal shows its low-or-medium effort default");
 assert.match(active, />Pause</);
 assert.doesNotMatch(active, />Resume</);
 
@@ -127,6 +148,11 @@ assert.match(achieved, />Achieved</);
 assert.match(achieved, />Reopen</);
 assert.doesNotMatch(achieved, /Mark achieved/, "an ended goal offers no lifecycle it cannot take");
 assert.doesNotMatch(achieved, /Current step/);
+
+const pinned = render([{ ...goal, effort: "high", provider: "codex", model: "gpt-5.6" }]);
+assert.match(pinned, /effort-badge eff-high[^>]*>high</, "the owner's effort is on the card");
+assert.doesNotMatch(pinned, /low–medium/);
+assert.doesNotMatch(pinned, /Director&#x27;s model/, "a pinned goal shows its model, not the director's");
 
 const empty = render([]);
 assert.match(empty, /No goals/);

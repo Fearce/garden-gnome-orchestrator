@@ -233,6 +233,9 @@ export interface Goal {
   progress: string | null;
   lastVerdict: GoalVerdict | null;
   maxSteps: number;
+  effort: Effort | null; // the owner's effort for every step; null = the director picks, low or medium only
+  provider: ImplementorProvider | null; // with `model`, the owner's exact pin for every step
+  model: string | null;
   currentThreadId: string | null;
   nextCheckAt: number | null;
   stepCount: number;
@@ -245,6 +248,7 @@ export interface Goal {
 /** Mirrors server/src/types.ts. */
 export const DEFAULT_GOAL_MAX_STEPS = 100;
 export const MAX_GOAL_MAX_STEPS = 1000;
+export const GOAL_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
 
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
 /** Co-work is not a pane: its sessions are cards on the task board, and a conversation opens as a popup

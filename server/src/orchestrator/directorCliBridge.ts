@@ -6,7 +6,7 @@ import type { ThreadManager } from "./threadManager.js";
 import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
 import { applyGoalChange, describeGoal, type GoalRunner } from "./goals.js";
-import type { GoalStatus } from "../types.js";
+import type { GoalStatus, ImplementorProvider } from "../types.js";
 import { findWorkspaces } from "../workspace/findWorkspace.js";
 import { normalizeDuration } from "./timedTasks.js";
 import { clampAgentCount } from "./shotgun.js";
@@ -59,6 +59,7 @@ export const DIRECTOR_CLI_SCHEMA: JsonSchemaLike = {
     enabled: { type: "boolean" },
     all: { type: "boolean" },
     effort: { type: "string", enum: ["low", "medium", "high", "max"] },
+    provider: { type: "string", enum: ["claude", "codex", "grok", "zai"] },
     objective: { type: "string" },
     maxSteps: { type: "number" },
     status: { type: "string", enum: ["active", "paused", "abandoned", "achieved"] },
@@ -89,6 +90,7 @@ export interface DirectorCliAction {
   enabled?: boolean;
   all?: boolean;
   effort?: "low" | "medium" | "high" | "max";
+  provider?: ImplementorProvider;
   objective?: string;
   maxSteps?: number;
   status?: GoalStatus;
@@ -126,9 +128,9 @@ Commands and fields:
 - list_scheduled_tasks
 - update_scheduled_task: id plus any of title/workspace/prompt/cron/enabled/effort/model
 - delete_scheduled_task: id
-- create_goal: title, objective, workspace, maxSteps? — a GOAL-DIRECTED TASK that GGO keeps working on around the clock, one step task at a time, until the step's agent and the director both judge the objective complete. Only when the owner asks for a goal in so many words ("make this a goal", "keep working on this until it's done").
+- create_goal: title, objective, workspace, maxSteps?, effort?, provider?+model? (set effort or model only when the owner named one; otherwise the director picks per step, at low or medium effort) — a GOAL-DIRECTED TASK that GGO keeps working on around the clock, one step task at a time, until the step's agent and the director both judge the objective complete. Only when the owner asks for a goal in so many words ("make this a goal", "keep working on this until it's done").
 - list_goals
-- update_goal: id plus any of title/objective/maxSteps/status (status: active|paused|abandoned|achieved — only when the owner asked)
+- update_goal: id plus any of title/objective/maxSteps/effort/provider+model/status (status: active|paused|abandoned|achieved — only when the owner asked)
 
 Never say something was dispatched/changed until the server has returned a successful TOOL RESULT.
 `;
@@ -286,6 +288,7 @@ export async function executeDirectorCliAction(
         const r = goals.create({
           title: required(action, "title"), objective: required(action, "objective"),
           workspace: required(action, "workspace"), maxSteps: action.maxSteps,
+          effort: action.effort, provider: action.provider, model: action.model,
         });
         return outcome("create_goal", r.ok && r.goal ? `Created goal ${r.goal.id}; its first step is being planned now.` : `ERROR: ${r.error}`);
       }
@@ -299,6 +302,7 @@ export async function executeDirectorCliAction(
         const text = applyGoalChange(goals, {
           id: required(action, "id"), title: action.title, objective: action.objective,
           maxSteps: action.maxSteps, status: action.status,
+          effort: action.effort, provider: action.provider, model: action.model,
         }, `Set by the director at ${config.ownerName}'s request.`);
         return outcome("update_goal", text.startsWith("Could not") ? `ERROR: ${text}` : text);
       }
