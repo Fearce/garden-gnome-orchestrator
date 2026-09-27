@@ -75,6 +75,32 @@ assert.match(directOffice, /solo-project/, "a new direct room gets a visible con
 assert.match(directOffice, /This agent&#x27;s project chat/, "the panel labels direct agent chat clearly");
 assert.match(directOffice, /Message this project&#x27;s agent as director/, "the composer targets the selected agent's repository");
 
+// A message's gnome opens the task that posted it. Only a task this console holds can be opened: a
+// line from another machine, or from a task no longer loaded, keeps a plain gnome.
+Object.assign(state, {
+  chat: [
+    { id: "m-local", room: soloRoom, scope: "project", role: "implementor", kind: "chat", threadId: "solo-thread", body: "local line", createdAt: at },
+    { id: "m-gone", room: soloRoom, scope: "project", role: "qa", kind: "chat", threadId: "gone-thread", body: "gone line", createdAt: at + 1 },
+    { id: "m-remote", room: soloRoom, scope: "project", role: "planner", kind: "chat", threadId: "solo-thread", remoteInstance: "Mikkel's laptop", body: "remote line", createdAt: at + 2 },
+  ],
+});
+const messagePanel = renderToStaticMarkup(React.createElement(Office));
+const avatarsIn = (id: string) => {
+  const start = messagePanel.indexOf(`data-message-id="${id}"`);
+  const end = messagePanel.indexOf("data-message-id=", start + 1);
+  return messagePanel.slice(start, end < 0 ? undefined : end).split('class="office-msg-avatar"').length - 1;
+};
+assert.equal(avatarsIn("m-local"), 1, "a local task's message gnome is a button that opens the task");
+assert.match(messagePanel, /title="Open “Solo navigation”"/, "…titled with the task it opens");
+assert.equal(avatarsIn("m-gone"), 0, "a message from an unloaded task keeps a plain gnome");
+assert.equal(avatarsIn("m-remote"), 0, "a message from another machine keeps a plain gnome");
+assert.match(
+  officeSource,
+  /setBoardView\("tasks"\);\s*select\(threadId\);\s*close\(\);/,
+  "opening a message's task switches to the task board, selects it and closes the modal panel",
+);
+Object.assign(state, { chat: [] });
+
 // ---- the Online Office section: the people, not their agents ---------------------------------------
 
 // Nobody else is at a console, so there is nothing to draw. An empty "Online Office" pill in the top

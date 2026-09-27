@@ -366,7 +366,16 @@ function OfficePanel() {
   const directorName = useStore((s) => s.settings.directorName);
   const outbound = useStore((s) => s.outboundMessages);
   const postChat = useStore((s) => s.postChat);
+  const select = useStore((s) => s.select);
+  const setBoardView = useStore((s) => s.setBoardView);
   const [draft, setDraft] = useState("");
+
+  // The panel is modal, so it closes to reveal the task it opened.
+  const openTask = (threadId: string) => {
+    setBoardView("tasks");
+    select(threadId);
+    close();
+  };
 
   // Loaded pages if any have been fetched; otherwise a placeholder from the recent cross-room slice we
   // hold — capped to one page's worth so the initial view already matches the first fetched page (no
@@ -548,6 +557,7 @@ function OfficePanel() {
                 key={m.id}
                 m={m}
                 title={m.threadId ? threads[m.threadId]?.title : undefined}
+                onOpenTask={m.threadId && threads[m.threadId] && !m.remoteInstance ? () => openTask(m.threadId!) : undefined}
                 name={
                   m.senderName ||
                   (m.role === "director"
@@ -589,7 +599,7 @@ function OfficePanel() {
   );
 }
 
-function OfficeMsg({ m, title, name }: { m: DisplayChatMessage; title?: string; name?: string }) {
+function OfficeMsg({ m, title, name, onOpenTask }: { m: DisplayChatMessage; title?: string; name?: string; onOpenTask?: () => void }) {
   const [copied, setCopied] = useState(false);
   if (m.kind === "system") {
     return <div className="office-sys">{m.body}</div>;
@@ -608,7 +618,19 @@ function OfficeMsg({ m, title, name }: { m: DisplayChatMessage; title?: string; 
       data-message-id={m.id}
       style={{ "--role": roleColor(role) } as CSSProperties}
     >
-      <Gnome role={role} size={22} />
+      {onOpenTask ? (
+        <button
+          type="button"
+          className="office-msg-avatar"
+          onClick={onOpenTask}
+          aria-label={`Open ${name ?? role}'s task${title ? ` “${title}”` : ""}`}
+          title={title ? `Open “${title}”` : "Open this agent's task"}
+        >
+          <Gnome role={role} size={22} />
+        </button>
+      ) : (
+        <Gnome role={role} size={22} />
+      )}
       <div className="office-msg-main">
         <div className="office-msg-head">
           <span className="office-msg-role" style={{ color: roleColor(role) }}>
