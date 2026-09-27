@@ -1876,8 +1876,6 @@ export class Db {
     this.raw.prepare("UPDATE threads SET baseline_head = ? WHERE id = ?").run(sha, id);
   }
 
-  /** Persist a task-local strict model request independently of routine state updates, then return the
-   * fresh row for immediate WS broadcast. */
   /** Persist the owner's per-task role switches; an empty set clears the column back to "follow the route". */
   setRoleToggles(id: string, toggles: RoleToggles | null): Thread | null {
     const value = toggles && Object.keys(toggles).length ? JSON.stringify(toggles) : null;
@@ -1885,6 +1883,8 @@ export class Db {
     return result.changes ? this.getThread(id) : null;
   }
 
+  /** Persist a task-local strict model request independently of routine state updates, then return the
+   * fresh row for immediate WS broadcast. */
   setModelRequest(id: string, request: ModelRequest | null): Thread | null {
     const at = now();
     const result = this.raw

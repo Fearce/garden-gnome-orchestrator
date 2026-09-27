@@ -215,6 +215,31 @@ async function pipelineScenarios(): Promise<void> {
       check("switched off with the setting on → it settles without one", !rounds.includes(off) && h.db.getThread(off)?.state === "done");
     } finally { h.dispose(); }
   }
+  {
+    // The REAL bonus round, with only the implementor spawn stubbed: switching it off mid-round stops it.
+    const h = makeHarness();
+    try {
+      h.manager.setSettings({ selfImproveEnabled: true });
+      h.internals.latestImplementorSession = () => "session-1";
+      const id = h.createTask(NARROW_BRIEF);
+      const created: string[] = [];
+      let agent: ReturnType<typeof heldRoleAgent> | undefined;
+      h.internals.startImplementor = (t: { id: string }) => {
+        agent = heldRoleAgent(created);
+        h.internals.live.set(t.id, { run: agent, runId: "run-bonus", accountId: "acct1" });
+        return { run: agent, runId: "run-bonus", accountId: "acct1" };
+      };
+      const round = h.internals.runSelfImprovement(h.db.getThread(id), undefined, "kickoff");
+      check("the bonus round is running", await until(() => created.length === 1 && h.internals.selfImproving.has(id), 2000));
+      const action = await h.manager.setThreadRole(id, "selfImprove", false);
+      const ended = await Promise.race([round.then(() => "ended"), new Promise((r) => setTimeout(() => r("timeout"), 3000))]);
+      check("switching self-improvement off mid-round stops the running bonus round", ended === "ended", String(ended));
+      check("…and the notice says it was stopped", /was stopped/.test(action.message ?? ""), action.message);
+      const failure = h.db.listFindings(id).some((f: { summary: string }) => /didn't finish cleanly/.test(f.summary));
+      check("…without filing the deliberate stop as a failed round", !failure);
+      check("…and the task stays done", h.db.getThread(id)?.state === "done", h.db.getThread(id)?.state);
+    } finally { h.dispose(); }
+  }
 
   console.log("\n4. Persistence, notices and refusals");
   {

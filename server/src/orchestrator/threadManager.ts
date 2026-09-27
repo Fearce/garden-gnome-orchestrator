@@ -3330,7 +3330,10 @@ export class ThreadManager implements OrchestratorApi {
         ? this.liveResearcher.get(threadId)
         : role === "qa"
           ? this.liveQa.get(threadId)
-          : undefined;
+          // The bonus round is a resumed implementor; while it owns the slot, the live implementor IS it.
+          : this.selfImproving.has(threadId)
+            ? this.live.get(threadId)?.run
+            : undefined;
     if (!agent) return false;
     try {
       await agent.stop();
@@ -11115,6 +11118,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (stopTimer) clearTimeout(stopTimer);
     if (!stopped) throw new Error(`The prior run did not stop within ${SELF_IMPROVE_TIMEOUT_MS / 60_000} minutes.`);
     if (this.cancelled(thread.id)) return;
+    // The owner can switch the round off while the prior run drains; honour it before spawning.
+    if (this.roleToggle(thread.id, "selfImprove") === false) return;
     const start = this.startImplementor(thread, SELF_IMPROVE_MSG, { resume: session, effort });
     if (start.run instanceof CodexAgentRun || start.run instanceof GrokAgentRun) {
       const notes = this.directorNotes.get(thread.id);
@@ -11141,12 +11146,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // durable bonus marker until that process has stopped, on success and failure alike.
       await start.run.stop();
     }
-    const silent = !timedOut && this.ranSilently(thread.id, "implementor", attemptFrom, res);
+    // Switched off mid-round by the owner: the stop was deliberate, so its partial result is neither a
+    // silent run nor a failure worth a finding.
+    const stoppedByOwner = !timedOut && this.roleToggle(thread.id, "selfImprove") === false;
+    const silent = !timedOut && !stoppedByOwner && this.ranSilently(thread.id, "implementor", attemptFrom, res);
     if (silent) this.markSilentRun(thread.id, "implementor");
     // A cap flagged during this bonus round must not tag the task's settle — the task is going 'done',
     // and a stale flag could otherwise leak into a later settle of this thread.
     this.capParked.delete(thread.id);
-    if (!res || res.isError || silent) {
+    if (!stoppedByOwner && (!res || res.isError || silent)) {
       this.postFinding({
         threadId: thread.id,
         fromRole: "implementor",
