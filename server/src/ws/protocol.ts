@@ -465,6 +465,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         discordNotify: z.boolean(),
         // Bounded for a pasted channel LINK, not just a bare id — the server lifts the id out of it.
         discordChannelId: z.string().max(200),
+        // The owner's Discord user id (or a `<@id>` mention); set, notices go to their DMs instead.
+        discordUserId: z.string().max(200),
         // Write-only: the raw Discord bot token is accepted here and stored server-side, never echoed
         // back. An empty string clears it (falls back to DISCORD_BOT_TOKEN). The broadcast carries only
         // discordTokenPresent/last4.

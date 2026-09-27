@@ -1140,6 +1140,7 @@ export interface OrchestratorSettings {
   // ---- Phone notifications: post to a Discord channel when a task finishes or needs you ----
   discordNotify: boolean; // off (default) → nothing is posted; on → a Discord message when a task settles done, needs your input (a review park or an agent's question), or fails. Pipeline chatter (cap failover, auto-resume) is never posted.
   discordChannelId: string; // the Discord channel the notices go to — accepts a bare id, a channel link or a <#id> mention, stored as the id; empty falls back to DISCORD_CHANNEL_ID
+  discordUserId: string; // the owner's Discord user id — set, notices are DMed to them and the channel is ignored; empty falls back to DISCORD_USER_ID
   discordTokenPresent: boolean; // read-only — a bot token is stored (env or kv); the raw token is never broadcast
   discordTokenLast4?: string | null; // read-only — last 4 chars of the stored token, for the masked field
   // ---- Composer state, persisted server-side (not localStorage) so it survives across the HTTP and

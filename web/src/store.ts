@@ -778,6 +778,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   zaiModels: [],
   discordNotify: false,
   discordChannelId: "",
+  discordUserId: "",
   discordTokenPresent: false,
   discordTokenLast4: null,
   skipDirector: false,

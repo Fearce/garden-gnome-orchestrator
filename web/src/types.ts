@@ -733,6 +733,7 @@ export interface OrchestratorSettings {
   // park or an agent's question), or fails. Pipeline chatter is never posted.
   discordNotify: boolean;
   discordChannelId: string; // the channel notices go to (a pasted link is reduced to its id server-side); empty falls back to the server's DISCORD_CHANNEL_ID
+  discordUserId: string; // the owner's Discord user id — set, notices are DMed to them instead of the channel; empty falls back to DISCORD_USER_ID
   discordTokenPresent: boolean; // read-only: a bot token is stored (raw token never reaches the client)
   discordTokenLast4?: string | null; // read-only: last 4 chars for the masked field
   // Composer state persisted server-side (survives across the HTTP/HTTPS surfaces, which don't share

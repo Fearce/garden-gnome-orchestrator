@@ -137,7 +137,7 @@ import {
   qualifyManualDeployment,
   verifyManualDeployment,
 } from "./manualDeployment.js";
-import { DiscordNotifier, parseChannelId, type OwnerNotice } from "./discordNotify.js";
+import { DiscordNotifier, parseChannelId, parseUserId, type OwnerNotice } from "./discordNotify.js";
 import type { CoworkTarget, PreparedCoworkRun } from "./cowork.js";
 import { DirectorSupervisor, SUPERVISOR_JUDGE_MAX_TURNS, type SupervisorJudgement } from "./supervisor.js";
 import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
@@ -1151,7 +1151,12 @@ export class ThreadManager implements OrchestratorApi {
     this.liveBench = new LiveBenchScores(db, (level, message) => this.hub.log(level, message));
     // Reads its config lazily on every notice, so flipping the toggle applies to tasks already running.
     this.discord = new DiscordNotifier(
-      () => ({ enabled: this.settingBool("setting_discord_notify", false), token: this.discordBotToken(), channelId: this.discordChannelId() }),
+      () => ({
+        enabled: this.settingBool("setting_discord_notify", false),
+        token: this.discordBotToken(),
+        channelId: this.discordChannelId(),
+        userId: this.discordUserId(),
+      }),
       (level, message) => this.hub.log(level, message),
     );
     this.supervisor = new DirectorSupervisor(this);
@@ -2833,6 +2838,7 @@ export class ThreadManager implements OrchestratorApi {
       zaiModels: this.pickableZaiModels(),
       discordNotify: this.settingBool("setting_discord_notify", false),
       discordChannelId: this.discordChannelId(),
+      discordUserId: this.discordUserId(),
       discordTokenPresent: !!this.discordBotToken(),
       discordTokenLast4: this.discordTokenLast4(),
       skipDirector: this.settingBool("setting_skip_director", false),
@@ -4681,6 +4687,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.db.kvGet("setting_discord_channel_id")?.trim() || parseChannelId(config.discord.channelId ?? "");
   }
 
+  /** The owner's Discord user id — when set, notices are DMed to them instead of posted in the channel. */
+  private discordUserId(): string {
+    return this.db.kvGet("setting_discord_user_id")?.trim() || parseUserId(config.discord.userId ?? "");
+  }
+
   /** Last 4 chars of the stored bot token for the masked settings field. */
   private discordTokenLast4(): string | null {
     const t = this.discordBotToken();
@@ -4826,6 +4837,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // A pasted channel LINK or `<#id>` mention is the common paste; stored verbatim it 404s on every
     // notice, so the id is lifted out of whichever shape arrived.
     if (patch.discordChannelId !== undefined) this.db.kvSet("setting_discord_channel_id", parseChannelId(patch.discordChannelId));
+    if (patch.discordUserId !== undefined) this.db.kvSet("setting_discord_user_id", parseUserId(patch.discordUserId));
     // Write-only bot token: stored server-side, never echoed back (only discordTokenPresent/last4 are).
     // An empty string clears it, falling back to DISCORD_BOT_TOKEN.
     if (patch.discordBotToken !== undefined) this.db.kvSet("discord_bot_token", patch.discordBotToken.trim());
@@ -6885,7 +6897,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   /** The supervisor must not create a false "sent" record while Phone notifications is off or incomplete. */
   supervisorDiscordReady(): boolean {
-    return this.settingBool("setting_discord_notify", false) && !!this.discordBotToken() && !!this.discordChannelId();
+    return (
+      this.settingBool("setting_discord_notify", false) &&
+      !!this.discordBotToken() &&
+      !!(this.discordUserId() || this.discordChannelId())
+    );
   }
 
   /** Supervisor corrections are urgent steering, not recovery. Only send one if ThreadManager currently

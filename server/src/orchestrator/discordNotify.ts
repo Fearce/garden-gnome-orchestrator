@@ -1,11 +1,11 @@
 // Phone notifications: the three moments the owner personally cares about — a task finished, a task
 // needs their input, a task failed — posted as a Discord message by a bot they already have on their
-// phone. Everything else `notifyExternal` sends is pipeline chatter (cap failover, account resume) and
+// phone — as a DM to the owner when their user ID is set, else in a channel. Everything else `notifyExternal` sends is pipeline chatter (cap failover, account resume) and
 // deliberately never reaches here; a channel that buzzes for routine routing stops being read.
 //
 // The push preview on a phone comes from `content`, NOT from an embed, so the essential line lives in
 // content and the embed only carries the detail (park reason / question / error) and the repo. Best-
-// effort end to end: no token, no channel, or the toggle off → nothing is sent and nothing throws.
+// effort end to end: no token, no destination, or the toggle off → nothing is sent and nothing throws.
 
 import { basename } from "node:path";
 
@@ -36,6 +36,17 @@ export interface DiscordConfig {
   enabled: boolean;
   token?: string;
   channelId?: string;
+  /** The owner's own Discord user — when set, notices go to their DMs and `channelId` is ignored. */
+  userId?: string;
+}
+
+/** Where one send goes: a DM needs its channel opened first, a guild channel is posted to directly. */
+type Destination = { dm: true; userId: string } | { dm: false; channelId: string };
+
+function destinationOf(cfg: DiscordConfig): Destination | null {
+  if (cfg.userId) return { dm: true, userId: cfg.userId };
+  if (cfg.channelId) return { dm: false, channelId: cfg.channelId };
+  return null;
 }
 
 interface DiscordEmbed {
@@ -84,6 +95,15 @@ export function formatNotice(notice: OwnerNotice): DiscordMessage {
  * channel is the LAST snowflake in all three; anything with no snowflake in it degrades to its digits.
  */
 export function parseChannelId(raw: string): string {
+  return lastSnowflake(raw);
+}
+
+/** The user id out of a bare "Copy User ID" snowflake or a `<@id>` / `<@!id>` mention. */
+export function parseUserId(raw: string): string {
+  return lastSnowflake(raw);
+}
+
+function lastSnowflake(raw: string): string {
   const ids = raw.match(/\d{15,25}/g);
   return (ids ? ids[ids.length - 1]! : raw.replace(/\D/g, "")).slice(0, 32);
 }
@@ -91,6 +111,8 @@ export function parseChannelId(raw: string): string {
 /** What a failed send means in the owner's terms — a 403 is an invite problem, not a token problem. */
 function explainStatus(status: number, body: string): string {
   if (status === 401) return "Discord rejected the bot token (401) — check the token.";
+  // 50007: the recipient's privacy settings refuse DMs from this bot, or it shares no server with them.
+  if (body.includes("50007")) return "Discord won't let the bot DM you — share a server with it and allow DMs from that server's members.";
   if (status === 403) return "The bot can't post in that channel (403) — invite it to the server and give it Send Messages.";
   if (status === 404) return "No such channel (404) — check the channel ID.";
   return `Discord refused the message (${status})${body ? ` — ${clip(body, 200)}` : ""}.`;
@@ -99,7 +121,7 @@ function explainStatus(status: number, body: string): string {
 export type SendResult = { ok: true } | { ok: false; message: string };
 
 /**
- * Posts owner notices to one Discord channel. Sends are serialized through a promise chain: Discord
+ * Posts owner notices to the owner's DMs or one Discord channel. Sends are serialized through a promise chain: Discord
  * rate-limits per channel, and a settling burst that fires them in parallel earns a 429 for messages
  * that would each have gone through fine on their own.
  */
@@ -107,6 +129,8 @@ export class DiscordNotifier {
   private chain: Promise<void> = Promise.resolve();
   private queued = 0;
   private warnedIncomplete = false;
+  /** userId → the DM channel Discord opened for it; opening is idempotent, so this only saves a call. */
+  private readonly dmChannels = new Map<string, string>();
 
   constructor(
     private readonly config: () => DiscordConfig,
@@ -117,11 +141,12 @@ export class DiscordNotifier {
   notify(notice: OwnerNotice): void {
     const cfg = this.config();
     if (!cfg.enabled) return;
-    if (!cfg.token || !cfg.channelId) {
+    const destination = destinationOf(cfg);
+    if (!cfg.token || !destination) {
       // Once per gap, not once per task — an unconfigured toggle would otherwise fill the log.
       if (!this.warnedIncomplete) {
         this.warnedIncomplete = true;
-        this.log("warn", `Discord notifications are on but ${cfg.token ? "no channel ID is set" : "no bot token is set"} — nothing sent.`);
+        this.log("warn", `Discord notifications are on but ${cfg.token ? "no user or channel ID is set" : "no bot token is set"} — nothing sent.`);
       }
       return;
     }
@@ -135,7 +160,7 @@ export class DiscordNotifier {
     // is swallowed — a lost ping must never cost the next one.
     this.chain = this.chain.then(async () => {
       try {
-        const result = await this.send(cfg.token!, cfg.channelId!, formatNotice(notice));
+        const result = await this.deliver(cfg.token!, destination, formatNotice(notice));
         if (!result.ok) this.log("warn", `Discord notification failed: ${result.message}`);
       } catch (e) {
         this.log("warn", `Discord notification failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -149,33 +174,60 @@ export class DiscordNotifier {
   async test(): Promise<SendResult> {
     const cfg = this.config();
     if (!cfg.token) return { ok: false, message: "No bot token — paste one (or set DISCORD_BOT_TOKEN) first." };
-    if (!cfg.channelId) return { ok: false, message: "No channel ID — paste the Discord channel's ID first." };
-    const result = await this.send(cfg.token, cfg.channelId, {
+    const destination = destinationOf(cfg);
+    if (!destination) return { ok: false, message: "No user or channel ID — paste your Discord user ID (or a channel's) first." };
+    const result = await this.deliver(cfg.token, destination, {
       content: "🔔 **Test** — orchestrator notifications are wired up.",
     });
     return result.ok ? { ok: true } : result;
   }
 
+  private async deliver(token: string, destination: Destination, message: DiscordMessage): Promise<SendResult> {
+    let channelId: string;
+    if (destination.dm) {
+      const dm = await this.dmChannel(token, destination.userId);
+      if ("message" in dm) return { ok: false, message: dm.message };
+      channelId = dm.channelId;
+    } else {
+      channelId = destination.channelId;
+    }
+    return (await this.post(token, `channels/${encodeURIComponent(channelId)}/messages`, message)).result;
+  }
+
+  /** The DM channel with `userId`, opened on first use. A 404 here means the USER id is wrong. */
+  private async dmChannel(token: string, userId: string): Promise<{ channelId: string } | { message: string }> {
+    const cached = this.dmChannels.get(userId);
+    if (cached) return { channelId: cached };
+    const { result, body } = await this.post(token, "users/@me/channels", { recipient_id: userId });
+    if (!result.ok) {
+      return { message: result.message.includes("(404)") ? "No such Discord user (404) — check your user ID." : result.message };
+    }
+    const id = (body as { id?: unknown } | null)?.id;
+    if (typeof id !== "string" || !id) return { message: "Discord opened no DM channel for that user." };
+    this.dmChannels.set(userId, id);
+    return { channelId: id };
+  }
+
   /** One POST, retrying a 429 in place for as long as Discord's own Retry-After says to. */
-  private async send(token: string, channelId: string, message: DiscordMessage): Promise<SendResult> {
+  private async post(token: string, path: string, payload: unknown): Promise<{ result: SendResult; body?: unknown }> {
     for (let attempt = 0; ; attempt++) {
       let res: Response;
       try {
-        res = await fetch(`${API_BASE}/channels/${encodeURIComponent(channelId)}/messages`, {
+        res = await fetch(`${API_BASE}/${path}`, {
           method: "POST",
           headers: { "content-type": "application/json", authorization: `Bot ${token}` },
-          body: JSON.stringify(message),
+          body: JSON.stringify(payload),
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
       } catch (e) {
-        return { ok: false, message: `Couldn't reach Discord — ${e instanceof Error ? e.message : String(e)}.` };
+        return { result: { ok: false, message: `Couldn't reach Discord — ${e instanceof Error ? e.message : String(e)}.` } };
       }
-      if (res.ok) return { ok: true };
+      if (res.ok) return { result: { ok: true }, body: await res.json().catch(() => null) };
       if (res.status === 429 && attempt < RATE_LIMIT_RETRIES) {
         await sleep(await retryAfterMs(res));
         continue;
       }
-      return { ok: false, message: explainStatus(res.status, await res.text().catch(() => "")) };
+      return { result: { ok: false, message: explainStatus(res.status, await res.text().catch(() => "")) } };
     }
   }
 }

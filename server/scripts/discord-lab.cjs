@@ -1,5 +1,5 @@
 // Drive the "Phone notifications" settings surface in a real browser, headlessly, without touching prod
-// — the toggle's round-trip, the channel-ID sanitize, the write-only bot token, and the Send-test reply.
+// — the toggle's round-trip, the user- and channel-ID sanitize, the write-only bot token, and the Send-test reply.
 //
 //   npm run discord-lab --prefix server
 //   npm run discord-lab --prefix server -- --keep
@@ -28,7 +28,7 @@ const NAV_TIMEOUT = 45_000; // this box runs near 100% CPU; a cold goto has meas
 // Deliberately unusable. The env values are what `config.discord` falls back to, and this box carries a
 // MACHINE-wide DISCORD_BOT_TOKEN for a real bot — an empty string would not shadow it (Windows drops
 // empty-value env vars, so dotenv would then load server/.env's real one), hence a junk value, not "".
-const LAB_ENV = { DISCORD_BOT_TOKEN: "lab-not-a-real-token", DISCORD_CHANNEL_ID: "lab-no-channel" };
+const LAB_ENV = { DISCORD_BOT_TOKEN: "lab-not-a-real-token", DISCORD_CHANNEL_ID: "lab-no-channel", DISCORD_USER_ID: "lab-no-user" };
 const TYPED_TOKEN = "lab.secret.token.WXYZ";
 const GROUP = '.settings-group:has(.settings-group-label:text-is("Phone notifications"))';
 const TOGGLE = 'button.switch[aria-label="Post to Discord"]';
@@ -63,11 +63,26 @@ async function waitForPersisted(dataDir, key, want, timeoutMs = 15_000) {
   return last;
 }
 
-/** Type into the group's channel field and commit it the way the operator does (Enter blurs → commit). */
-async function setChannel(page, value) {
-  const input = page.locator(`${GROUP} input.text-input`);
+// The group's two text fields, in render order: the DM recipient first, the channel second.
+const USER_FIELD = `${GROUP} input.text-input >> nth=0`;
+const CHANNEL_FIELD = `${GROUP} input.text-input >> nth=1`;
+
+/** Type into one of the group's text fields and commit it the way the operator does (Enter blurs → commit). */
+async function setField(page, selector, value) {
+  const input = page.locator(selector);
   await input.fill(value);
   await input.press("Enter");
+}
+
+/** Poll a field until the server's broadcast has replaced the optimistic value with `want`. */
+async function waitForField(page, selector, want) {
+  const field = page.locator(selector);
+  let shown = "";
+  for (let i = 0; i < 40 && shown !== want; i++) {
+    shown = await field.inputValue();
+    if (shown !== want) await page.waitForTimeout(250);
+  }
+  return shown;
 }
 
 async function main() {
@@ -91,7 +106,7 @@ async function main() {
 
       // The channel field takes what Discord's UI actually gives you. A pasted channel LINK is the common
       // paste, and storing it verbatim is a 404 on every notice, so the server keeps only the digits.
-      await setChannel(page, "https://discord.com/channels/1422860693161381909/1542104062156079144");
+      await setField(page, CHANNEL_FIELD, "https://discord.com/channels/1422860693161381909/1542104062156079144");
       const channel = await waitForPersisted(dataDir, "setting_discord_channel_id", "1542104062156079144");
       check("a pasted channel link stores the CHANNEL, not the guild", channel === "1542104062156079144", String(channel));
       // The field is optimistic — it holds the pasted LINK until the server's broadcast replaces it with
@@ -100,13 +115,16 @@ async function main() {
       // NB: poll the LOCATOR, never `page.waitForFunction` — GROUP carries `:text-is()`, a Playwright-only
       // pseudo-class, so a `document.querySelector(GROUP)` inside the page throws SyntaxError and a
       // `.catch(() => false)` around it reports a healthy field as broken.
-      const field = page.locator(`${GROUP} input.text-input`);
-      let shown = "";
-      for (let i = 0; i < 40 && shown !== "1542104062156079144"; i++) {
-        shown = await field.inputValue();
-        if (shown !== "1542104062156079144") await page.waitForTimeout(250);
-      }
+      const shown = await waitForField(page, CHANNEL_FIELD, "1542104062156079144");
       check("…and the field is corrected to what was kept", shown === "1542104062156079144", shown);
+
+      // A user id moves every notice to the owner's DMs; a pasted `<@!id>` mention keeps only the id.
+      await setField(page, USER_FIELD, "<@!111909686583828480>");
+      const user = await waitForPersisted(dataDir, "setting_discord_user_id", "111909686583828480");
+      check("a pasted user mention stores the bare user id", user === "111909686583828480", String(user));
+      const userShown = await waitForField(page, USER_FIELD, "111909686583828480");
+      check("…and the field is corrected to what was kept", userShown === "111909686583828480", userShown);
+      check("the channel field says it is unused while DMs are on", (await page.locator(GROUP).innerText()).includes("Unused while your user ID is set"));
 
       // The write-only token: typed here, stored server-side, and never sent back to any client.
       const tokenInput = page.locator(`${GROUP} .key-input input`);
@@ -138,7 +156,8 @@ async function main() {
       // still reads as present when the browser has never been told what it is.
       const second = await openSettings(browser);
       check("the toggle survives a reload", (await second.getAttribute(TOGGLE, "aria-checked")) === "true", await second.getAttribute(TOGGLE, "aria-checked"));
-      check("the channel survives a reload", (await second.locator(`${GROUP} input.text-input`).inputValue()) === "1542104062156079144");
+      check("the channel survives a reload", (await second.locator(CHANNEL_FIELD).inputValue()) === "1542104062156079144");
+      check("the user id survives a reload", (await second.locator(USER_FIELD).inputValue()) === "111909686583828480");
       check("the stored token is still known to be there", (await second.locator(`${GROUP} .sub-btn:text-is("Remove")`).count()) === 1);
       check("…and is still not in the page", !(await second.content()).includes(TYPED_TOKEN));
 

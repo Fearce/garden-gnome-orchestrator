@@ -155,6 +155,7 @@ export const config = {
   discord: {
     botToken: process.env.DISCORD_BOT_TOKEN || undefined,
     channelId: process.env.DISCORD_CHANNEL_ID || undefined,
+    userId: process.env.DISCORD_USER_ID || undefined,
   },
   models: {
     // Every Claude role runs Opus 5.5 — the owner's standing rule (claudeOpusFloor.ts enforces it).

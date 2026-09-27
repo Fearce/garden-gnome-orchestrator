@@ -15,7 +15,8 @@
  * Scenarios:
  *   A. FORMAT   — the push preview lives in `content`; the embed carries detail + repo + a per-kind color.
  *   B. GATING   — the toggle off, or no token/channel, sends nothing at all (and warns once, not per task).
- *   C. TRANSPORT— the right URL + `Bot` auth; a 429 retries; a refusal is explained and can't mute the next one.
+ *   C. TRANSPORT— the right URL + `Bot` auth; a 429 retries; a refusal is explained and can't mute the next one;
+ *                 a user id DMs the owner (opening the DM channel once) instead of posting in the channel.
  *   D. ROUTING  — done/review/failed/ask_user post; a cap-park and ordinary pipeline chatter do NOT.
  *
  * Run:  npm run test:discord-notify   (from server/)   — or:  npx tsx src/tests/discordNotify.itest.ts
@@ -26,7 +27,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { formatNotice, parseChannelId, DiscordNotifier } = await import("../orchestrator/discordNotify.js");
+const { formatNotice, parseChannelId, parseUserId, DiscordNotifier } = await import("../orchestrator/discordNotify.js");
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
@@ -58,6 +59,8 @@ interface Posted {
   auth: string;
   content: string;
   embed?: { color: number; description?: string; footer?: { text: string } };
+  /** Set on a DM-open call (`POST /users/@me/channels`). */
+  recipient?: string;
 }
 const realFetch = globalThis.fetch;
 let posted: Posted[] = [];
@@ -71,12 +74,13 @@ globalThis.fetch = (async (url: Parameters<typeof fetch>[0], init?: Parameters<t
   // completionAnnouncement probes the voice gateway inside the `done` path — report voice mode OFF so it
   // returns null without a model call, exactly as it does on a box with no gateway running.
   if (!href.includes("discord.com")) return new Response("", { status: 503 });
-  const body = JSON.parse(String(init?.body ?? "{}")) as { content: string; embeds?: Posted["embed"][] };
+  const body = JSON.parse(String(init?.body ?? "{}")) as { content: string; embeds?: Posted["embed"][]; recipient_id?: string };
   posted.push({
     url: href,
     auth: String((init?.headers as Record<string, string> | undefined)?.authorization ?? ""),
     content: body.content,
     embed: body.embeds?.[0],
+    recipient: body.recipient_id,
   });
   inFlight++;
   maxInFlight = Math.max(maxInFlight, inFlight);
@@ -84,6 +88,11 @@ globalThis.fetch = (async (url: Parameters<typeof fetch>[0], init?: Parameters<t
   inFlight--;
   const status = statuses.shift() ?? 200;
   if (status === 429) return new Response(JSON.stringify({ retry_after: 0.25 }), { status: 429 });
+  if (status === 403 && body.content !== undefined && href.includes("/channels/dm-")) {
+    return new Response(JSON.stringify({ message: "Cannot send messages to this user", code: 50007 }), { status: 403 });
+  }
+  // Opening a DM answers with the DM channel object — its id is where the message then goes.
+  if (href.endsWith("/users/@me/channels")) return new Response(JSON.stringify({ id: `dm-${body.recipient_id}` }), { status });
   return new Response("", { status });
 }) as typeof fetch;
 
@@ -142,6 +151,10 @@ console.log("\nA. the message a phone actually shows");
   check("a <#id> mention is unwrapped", parseChannelId(`<#${CHANNEL}>`) === CHANNEL);
   check("surrounding whitespace/quotes don't survive", parseChannelId(` "${CHANNEL}" `) === CHANNEL);
   check("nothing id-shaped degrades to empty, not to junk", parseChannelId("#general") === "");
+
+  const USER = "111909686583828480";
+  check("a bare user id is kept", parseUserId(USER) === USER);
+  check("a <@!id> user mention is unwrapped", parseUserId(`<@!${USER}>`) === USER);
 }
 
 // ---- B. gating -------------------------------------------------------------------------------------
@@ -209,6 +222,27 @@ console.log("\nC. the HTTP call, and what happens when Discord says no");
   check("the test button reports a bad token in the owner's words", !result.ok && result.message.includes("401"));
   const unset = await notifierFor({ enabled: true, token: undefined, channelId: "1" }).test();
   check("the test button says what is missing before it sends", !unset.ok && unset.message.includes("bot token"));
+
+  reset();
+  const dm = notifierFor({ enabled: true, token: "t", channelId: "1542104062156079144", userId: "111909686583828480" });
+  dm.notify(NOTICE);
+  await settle();
+  check("a user id opens a DM with that user", posted[0]?.url.endsWith("/users/@me/channels") === true && posted[0]?.recipient === "111909686583828480");
+  check("…and the notice goes to the DM, not the channel", posted.length === 2 && posted[1]?.url.endsWith("/channels/dm-111909686583828480/messages") === true, posted.map((p) => p.url).join(", "));
+  check("…with the notice itself intact", posted[1]?.content === formatNotice(NOTICE).content);
+
+  reset();
+  dm.notify(NOTICE);
+  await settle();
+  check("the DM channel is opened once, not once per notice", posted.length === 1 && posted[0]?.url.endsWith("/channels/dm-111909686583828480/messages") === true);
+
+  reset([200, 403]);
+  const blocked = await notifierFor({ enabled: true, token: "t", userId: "222222222222222222" }).test();
+  check("a DM the owner's privacy settings refuse is explained as such", !blocked.ok && blocked.message.includes("DM"), blocked.ok ? "ok" : blocked.message);
+
+  reset([404]);
+  const nobody = await notifierFor({ enabled: true, token: "t", userId: "333333333333333333" }).test();
+  check("an unknown user id is named as the user id, not the channel", !nobody.ok && nobody.message.includes("user ID"), nobody.ok ? "ok" : nobody.message);
 }
 
 // ---- D. routing — the invariant that keeps the channel worth reading --------------------------------
@@ -290,6 +324,14 @@ async function afterTransition(run: () => void): Promise<Posted[]> {
     void manager.askUser({ threadId: null, header: "Which repo?", question: "Two checkouts match that name.", options: [], multiSelect: false });
   });
   check("a director-scoped question still reaches the phone", sent.length === 1 && (sent[0]?.content ?? "").includes("Which repo?"));
+}
+{
+  manager.setSettings({ discordUserId: "<@111909686583828480>" });
+  const sent = await afterTransition(() => priv.setState(newThread("Straight to my DMs"), "done"));
+  check("a user id set in Settings moves notices to the owner's DMs", sent.at(-1)?.url.endsWith("/channels/dm-111909686583828480/messages") === true, sent.map((p) => p.url).join(", "));
+  check("…and the pasted mention was stored as the bare id", manager.settings().discordUserId === "111909686583828480");
+  check("…with nothing posted in the channel", !sent.some((p) => p.url.includes("/channels/1542104062156079144/")));
+  manager.setSettings({ discordUserId: "" });
 }
 {
   manager.setSettings({ discordNotify: false });

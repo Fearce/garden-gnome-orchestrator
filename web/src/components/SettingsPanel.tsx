@@ -890,10 +890,11 @@ function SettingsCategoryIcon({ category }: { category: SettingsCategoryId }) {
 }
 
 /**
- * Post to a Discord channel when a task finishes, needs you, or fails — so the console can reach a phone.
+ * DM the owner (or post to a Discord channel) when a task finishes, needs you, or fails — so the console
+ * can reach a phone.
  * The bot token is write-only (typed here, stored server-side, never read back), so the field shows a
  * masked placeholder once one is stored. "Send test" is the only way to prove the whole chain — token,
- * channel, and the bot's permission to post there — without waiting for a task to settle.
+ * destination, and the bot's permission to post there — without waiting for a task to settle.
  */
 function PhoneNotificationsSection() {
   const settings = useStore((s) => s.settings);
@@ -904,7 +905,7 @@ function PhoneNotificationsSection() {
   const [tokenDraft, setTokenDraft] = useState("");
   const [reveal, setReveal] = useState(false);
 
-  const configured = settings.discordTokenPresent && !!settings.discordChannelId;
+  const configured = settings.discordTokenPresent && !!(settings.discordUserId || settings.discordChannelId);
   const saveToken = () => {
     if (!tokenDraft.trim()) return;
     setSettings({ discordBotToken: tokenDraft.trim() });
@@ -921,8 +922,20 @@ function PhoneNotificationsSection() {
         onChange={(v) => setSettings({ discordNotify: v })}
       />
       <TextRow
+        label="Your user ID"
+        hint="Set to get notices as DMs from the bot — right-click your name → Copy User ID. The bot must share a server with you. Leave empty to post in the channel below."
+        value={settings.discordUserId}
+        placeholder="111909686583828480"
+        maxLength={200}
+        onChange={(v) => setSettings({ discordUserId: v })}
+      />
+      <TextRow
         label="Channel ID"
-        hint="The Discord channel to post in — right-click it → Copy Channel ID, or just paste the channel's link."
+        hint={
+          settings.discordUserId
+            ? "Unused while your user ID is set — notices go to your DMs."
+            : "The Discord channel to post in — right-click it → Copy Channel ID, or just paste the channel's link."
+        }
         value={settings.discordChannelId}
         placeholder="1542104062156079144"
         // Long enough for a pasted channel LINK; the server lifts the id out of whatever arrives. A
@@ -971,7 +984,7 @@ function PhoneNotificationsSection() {
         {result && <div className={"sub-msg" + (result.ok ? " ok" : " bad")}>{result.message}</div>}
         {!result && !configured && (
           <div className="sub-msg dim">
-            {settings.discordTokenPresent ? "Token stored — add the channel ID above." : "Paste a bot token that can post in that channel."}
+            {settings.discordTokenPresent ? "Token stored — add your user ID or a channel ID above." : "Paste a bot token that can DM you or post in that channel."}
           </div>
         )}
         {!result && configured && (
