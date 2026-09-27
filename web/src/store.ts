@@ -1532,7 +1532,7 @@ export const useStore = create<State>((set) => ({
   markDone: (threadId) => sendCommand({ type: "thread.markDone", threadId }),
   startQa: (threadId) => {
     if (!useStore.getState().startQaSupported) {
-      const message = "Start QA is waiting for the server update. GGO will restart after active agent work finishes.";
+      const message = "Start QA is waiting for the server update. Try again once GGO has restarted onto the new build.";
       useStore.setState({ notice: { level: "warn", title: "Start QA unavailable", message } });
       notify("Start QA unavailable", message);
       return;
