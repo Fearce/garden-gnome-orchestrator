@@ -2896,6 +2896,18 @@ body.dl-resizing { user-select: none; }
   .modal.changes .m-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 }
 
+/* Narrowest phones (a Galaxy S21 is 360px): brand + four 44px controls fill the first row and the
+   bell no longer fits, so it wrapped onto a row of its own above the office. That made the bar three
+   rows and took ~50px from the Director conversation. The bell and the live dot join the office row
+   instead, and the office (which scrolls sideways) absorbs the squeeze, so the bar stays two rows. The
+   basis leaves ~120px for the gauge, the bell and the dot, and is too wide for the first row's leftover,
+   so the office always starts row two. `.accounts-toggle` also carries `.bell`, hence the :not(). */
+@media (max-width: 399.98px) {
+  .topbar > .bell:not(.accounts-toggle) { order: 7; }
+  .topbar > .conn { order: 8; }
+  .office { flex: 1 1 calc(100% - 120px); min-width: 0; }
+}
+
 /* ============================================================
    Phone Director — ≤899.98px (PHONE_MQ in Director.tsx). The rail is the whole screen here, so it is
    laid out as a messenger: a one-line header, the conversation, and a bottom composer whose options
