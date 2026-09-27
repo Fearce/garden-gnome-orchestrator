@@ -192,6 +192,7 @@ import type {
   SupervisorSnapshot,
   Thread,
   TokenSafetyState,
+  ToggleableRole,
   UsageSavingPolicies,
   UsageSavingPolicy,
   ZaiEffort,
@@ -236,6 +237,13 @@ function planDigest(plan?: PlanOutput): string | undefined {
   if (plan.effort) parts.push("", `The planner judged this task's effort as: ${plan.effort}.`);
   return parts.join("\n");
 }
+
+const ROLE_TOGGLE_LABEL: Record<ToggleableRole, string> = {
+  planner: "Planner",
+  researcher: "Researcher",
+  qa: "QA",
+  selfImprove: "Self-improvement",
+};
 
 /** A dispatch-level QA opt-out beats the classifier. Only `useQa` moves: planning and model/effort
  *  routing still follow the work's actual scope. */
@@ -951,6 +959,8 @@ export class ThreadManager implements OrchestratorApi {
   // directorNotes buffers the injected steering until the planner drains it (a re-plan) or the
   // pipeline folds it into the implementor's kickoff.
   private readonly liveRole = new Map<string, AgentRunLike>();
+  // The running researcher, so switching the researcher off for a task can stop it mid-run.
+  private readonly liveResearcher = new Map<string, AgentRunLike>();
   private readonly directorNotes = new Map<string, string[]>();
   // Messages the director QUEUED (the composer's Queue button) for the implementor to pick up at its
   // hand-off boundary rather than mid-run: held here while the implementor works, then drained by
@@ -3259,6 +3269,130 @@ export class ThreadManager implements OrchestratorApi {
     this.hub.publish({ type: "thread.message", threadId, message });
     this.hub.log("info", `${content} [${threadId.slice(0, 8)}]`);
     return { ok: true, state: updated.state, message: content };
+  }
+
+  /** Authenticated task-detail control: switch one optional role on or off for THIS task, or back to
+   *  Auto (null — the global setting and the task-aware route decide). Stored on the task row, so a
+   *  Retry keeps it. Switching a role off while it runs stops it; a switch for a stage the task has
+   *  already passed takes effect if the task is retried. */
+  async setThreadRole(threadId: string, role: ToggleableRole, enabled: boolean | null): Promise<ThreadActionResult> {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    const refusal = this.roleToggleRefusal(thread);
+    if (refusal) return { ok: false, state: thread.state, error: refusal };
+    if (thread.roleToggles?.[role] === (enabled ?? undefined)) {
+      return { ok: true, state: thread.state, message: `${ROLE_TOGGLE_LABEL[role]} is already ${enabled === null ? "on Auto" : enabled ? "on" : "off"} for this task.` };
+    }
+
+    const next = { ...(thread.roleToggles ?? {}) };
+    if (enabled === null) delete next[role];
+    else next[role] = enabled;
+    const updated = this.db.setRoleToggles(threadId, next);
+    if (!updated) return { ok: false, error: "No such task." };
+    if (role === "qa") this.applyQaToggle(threadId, enabled);
+    const stopped = enabled === false && (await this.stopSwitchedOffRole(threadId, role));
+
+    this.hub.publish({ type: "thread.upsert", thread: this.db.getThread(threadId) ?? updated });
+    const content = this.roleToggleNotice(thread, role, enabled, stopped);
+    const message = this.db.addMessage({ threadId, role: "director", kind: "system", content });
+    this.hub.publish({ type: "thread.message", threadId, message });
+    this.hub.log("info", `${content} [${threadId.slice(0, 8)}]`);
+    return { ok: true, state: updated.state, message: content };
+  }
+
+  /** Tasks whose route is fixed by construction: switching a role there would either do nothing or
+   *  put a planner/QA pass on work that is deliberately partial. */
+  private roleToggleRefusal(thread: Thread): string | undefined {
+    if (isJevSubTask(thread)) return "A Jev sub-task is a single judgement call; it has no other agents to switch.";
+    if (thread.lane === "read") return "A read-only task runs one reader; it has no other agents to switch.";
+    if (thread.lane === "vanilla") return "Default mode runs one stock session without planner, researcher, QA or self-improvement.";
+    if (thread.parentId) return "This task works a share of its parent task, which owns planning and QA. Switch the agents on the parent.";
+    return undefined;
+  }
+
+  /** QA-off reuses the owner's finish-without-QA marker, which every implementor-to-QA boundary already
+   *  honours, so a task that is implementing right now settles without review. Any other value lifts it. */
+  private applyQaToggle(threadId: string, enabled: boolean | null): void {
+    const stage = this.db.getThreadStageOutputs(threadId);
+    if (enabled === false) {
+      if (stage.ownerQaBypassedAt == null) this.db.updateThreadStageOutputs(threadId, { ownerQaBypassedAt: Date.now() });
+    } else if (stage.ownerQaBypassedAt != null) {
+      this.db.updateThreadStageOutputs(threadId, { ownerQaBypassedAt: undefined });
+    }
+  }
+
+  /** Stop the switched-off role if it is the one running. runRole sees the stored switch and returns no
+   *  result instead of failing over, so the pipeline carries on as if the stage had been skipped. */
+  private async stopSwitchedOffRole(threadId: string, role: ToggleableRole): Promise<boolean> {
+    const agent = role === "planner"
+      ? this.liveRole.get(threadId)
+      : role === "researcher"
+        ? this.liveResearcher.get(threadId)
+        : role === "qa"
+          ? this.liveQa.get(threadId)
+          : undefined;
+    if (!agent) return false;
+    try {
+      await agent.stop();
+      return true;
+    } catch (e) {
+      this.hub.log("warn", `Could not stop the ${ROLE_TOGGLE_LABEL[role]} run for ${threadId.slice(0, 8)}: ${String(e)}`);
+      return false;
+    }
+  }
+
+  private roleToggleNotice(thread: Thread, role: ToggleableRole, enabled: boolean | null, stopped: boolean): string {
+    const label = ROLE_TOGGLE_LABEL[role];
+    const head = enabled === null
+      ? `◆ ${label} returned to Auto for this task — the settings and the task's route decide.`
+      : `◆ ${label} switched ${enabled ? "on" : "off"} for this task.`;
+    if (stopped) return `${head} The running ${role === "qa" ? "QA review" : label.toLowerCase()} was stopped.`;
+    if (role === "qa" && enabled === true && thread.state === "done") return `${head} The task is already done; use Start QA to review it now.`;
+    return this.roleStagePassed(thread, role) ? `${head} This task is past that stage, so it applies if the task is retried.` : head;
+  }
+
+  private roleStagePassed(thread: Thread, role: ToggleableRole): boolean {
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    switch (role) {
+      case "planner":
+        return !!stage.planDone || stage.kickoff != null;
+      case "researcher":
+        return !!stage.researchDone || stage.kickoff != null || !PRE_IMPLEMENTOR.has(thread.state);
+      case "qa":
+      case "selfImprove":
+        return thread.state === "done" || thread.state === "cancelled" || thread.state === "closed";
+    }
+  }
+
+  private clearRoleToggle(threadId: string, role: ToggleableRole): void {
+    const toggles = { ...(this.db.getThread(threadId)?.roleToggles ?? {}) };
+    delete toggles[role];
+    this.db.setRoleToggles(threadId, toggles);
+  }
+
+  /** The owner's switch for one optional role on this task; undefined = Auto. Read from the row every
+   *  time, because the owner can flip it while the pipeline is already running. */
+  private roleToggle(threadId: string, role: ToggleableRole): boolean | undefined {
+    return this.db.getThread(threadId)?.roleToggles?.[role];
+  }
+
+  private roleSwitchedOff(threadId: string, role: StructuredRole): boolean {
+    return (role === "planner" || role === "researcher" || role === "qa") && this.roleToggle(threadId, role) === false;
+  }
+
+  private plannerRoutedFor(thread: Thread, settings: OrchestratorSettings, route: RouteDecision | null | undefined): boolean {
+    return this.roleToggle(thread.id, "planner") ?? (settings.plannerEnabled && (route?.usePlanner ?? true));
+  }
+
+  private researcherRoutedFor(thread: Thread, settings: OrchestratorSettings, plan: PlanOutput | undefined): boolean {
+    return this.roleToggle(thread.id, "researcher") ?? (settings.researcherEnabled && plan?.nextAgent === "researcher");
+  }
+
+  /** Whether QA reviews this task: the owner's switch, else the global setting AND the route. A share of
+   *  a parent task and an owner finish-without-QA directive always skip it. */
+  private qaRoutedFor(thread: Thread, settings: OrchestratorSettings, route: RouteDecision | null | undefined): boolean {
+    if (thread.parentId || this.qaBypassedByOwner(thread.id)) return false;
+    return this.roleToggle(thread.id, "qa") ?? (settings.qaEnabled && (route?.useQa ?? true));
   }
 
   /** Every model the Codex runner's active auth can actually use. ChatGPT auth uses the CLI's own live
@@ -6931,7 +7065,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // (composeKickoff notes it).
       let plan = saved.plan ?? undefined;
       if (!planningSettled && !saved.planDone) {
-        if (settings.plannerEnabled && (route?.usePlanner ?? true)) {
+        if (this.plannerRoutedFor(thread, settings, route)) {
           this.setState(threadId, "planning");
           plan = await this.runPlanner(thread).catch((e) => {
             this.hub.log("warn", `Planner failed on ${threadId.slice(0, 8)}: ${String(e)}`);
@@ -6949,7 +7083,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         } else {
           this.hub.log(
             "info",
-            `Planner ${settings.plannerEnabled ? "routed around (narrow task)" : "disabled"} — ${threadId.slice(0, 8)} skips planning, straight to the implementor.`,
+            `Planner ${this.roleToggle(threadId, "planner") === false ? "switched off for this task" : settings.plannerEnabled ? "routed around (narrow task)" : "disabled"} — ${threadId.slice(0, 8)} skips planning, straight to the implementor.`,
           );
         }
         // Persist planDone even when the planner was SKIPPED (disabled or routed around), so a later
@@ -6960,7 +7094,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // 2. Researcher — only when the planner routed to it (external info needed). Always →
       //    implementor afterward. researchDone (and a settled-planning resume) guard against re-running it.
       let research = saved.research ?? undefined;
-      if (!planningSettled && settings.researcherEnabled && plan?.nextAgent === "researcher" && !saved.researchDone) {
+      if (!planningSettled && !saved.researchDone && this.researcherRoutedFor(thread, settings, plan)) {
         if ((saved.manualPlannerRan || this.db.getThreadStageOutputs(threadId).manualPlannerRan) && !this.manualStage(threadId, "researcher")) return;
         this.setState(threadId, "researching");
         research = await this.runResearcher(thread, plan).catch((e) => {
@@ -6981,12 +7115,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // 3. Approval gate — after the full context (plan + any research) exists, so the human sees
       //    everything before approving. Skipped on resume if already approved. Reuse the saved kickoff
       //    when planning already happened so a re-derivation can't strip a real plan down to "no plan".
-      const qaEnabled =
-        settings.qaEnabled &&
-        (route?.useQa ?? true) &&
-        !collaborator &&
-        !this.qaBypassedByOwner(threadId);
-      const plannerRuns = settings.plannerEnabled && (route?.usePlanner ?? true) && !collaborator;
+      const qaEnabled = !collaborator && this.qaRoutedFor(thread, settings, route);
+      const plannerRuns = !collaborator && this.plannerRoutedFor(thread, settings, route);
       let kickoff = saved.kickoff ?? composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled, plannerRuns, route });
       // Ownership is what keeps parallel agents out of each other's files, so it is rebuilt here (from
       // the persisted share) rather than only at spawn time — a collaborator revived by a restart must
@@ -7166,12 +7296,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  naming the route's own verdict and whatever the operator's global toggles further restrict, since
    *  the two can diverge (route wants QA, but QA is globally disabled). */
   private announceRoute(threadId: string, decision: RouteDecision, settings: OrchestratorSettings, updated = false): void {
-    const planner = !settings.plannerEnabled
-      ? "no planning (disabled in settings)"
-      : decision.usePlanner
-        ? "planning"
-        : "no planning (routed straight to the implementor)";
-    const qa = !settings.qaEnabled ? "no QA (disabled in settings)" : decision.useQa ? "QA" : "no QA (implementor output is final)";
+    const toggles = this.db.getThread(threadId)?.roleToggles;
+    const planner = toggles?.planner !== undefined
+      ? toggles.planner ? "planning (switched on for this task)" : "no planning (switched off for this task)"
+      : !settings.plannerEnabled
+        ? "no planning (disabled in settings)"
+        : decision.usePlanner
+          ? "planning"
+          : "no planning (routed straight to the implementor)";
+    const qa = toggles?.qa !== undefined
+      ? toggles.qa ? "QA (switched on for this task)" : "no QA (switched off for this task)"
+      : !settings.qaEnabled ? "no QA (disabled in settings)" : decision.useQa ? "QA" : "no QA (implementor output is final)";
     const request = this.db.getThread(threadId)?.modelRequest;
     const modelRoute = request
       ? `strict owner model pin ${request.model ?? request.requested}; automatic routing cannot substitute`
@@ -7388,6 +7523,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       return undefined;
     }
 
+    if (this.roleSwitchedOff(thread.id, role)) return undefined;
     this.postFinding({
       threadId: thread.id,
       fromRole: role,
@@ -7427,6 +7563,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     ) {
       const freeResult = await this.tryFreeStructuredRole(thread, role, kickoff, makeCfg);
       if (freeResult) return freeResult;
+      if (this.roleSwitchedOff(thread.id, role)) return undefined;
     }
     let roleKickoff: string | unknown[] = kickoff;
     if (role === "planner") {
@@ -7504,6 +7641,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
     while (!this.cancelled(thread.id)) {
       if (role === "qa" && this.qaSuperseded(thread.id)) return undefined;
+      if (this.roleSwitchedOff(thread.id, role)) return undefined;
       if (provider === "claude" && !acct) {
         acct = this.dispatchAccount(demand);
         triedClaudeAccounts.add(acct.id);
@@ -7604,6 +7742,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // stops/supersedes that handle and resumes implementation without spawning beside the review.
       // (Researcher-phase notes flow forward into the implementor's kickoff instead.)
       if (role === "planner") this.liveRole.set(thread.id, agent);
+      if (role === "researcher") this.liveResearcher.set(thread.id, agent);
       if (role === "qa") {
         this.liveQa.set(thread.id, agent);
         this.liveQaRunId.set(thread.id, run.id);
@@ -7653,8 +7792,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           });
         }
       }
-      if (role === "planner" && res && !res.isError && !capped) res = await this.drainDirectorNotes(thread, agent, res);
+      if (role === "planner" && res && !res.isError && !capped && !this.roleSwitchedOff(thread.id, role)) res = await this.drainDirectorNotes(thread, agent, res);
       if (role === "planner") this.liveRole.delete(thread.id);
+      if (role === "researcher") this.liveResearcher.delete(thread.id);
       if (role === "qa") {
         this.liveQa.delete(thread.id);
         this.liveQaRunId.delete(thread.id);
@@ -7665,9 +7805,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       }
       await agent.stop();
       this.untrack(thread.id, agent);
-      const qaWasSuperseded = role === "qa" && this.qaSuperseded(thread.id);
-      this.finishRun(run.id, res, agent, qaWasSuperseded ? "interrupted" : undefined);
-      if (qaWasSuperseded) return undefined;
+      // A role the owner switched off mid-run was stopped on purpose: its partial result is not a verdict,
+      // and a failover or retry would only bring it back.
+      const stoppedByOwner = (role === "qa" && this.qaSuperseded(thread.id)) || this.roleSwitchedOff(thread.id, role);
+      this.finishRun(run.id, res, agent, stoppedByOwner ? "interrupted" : undefined);
+      if (stoppedByOwner) return undefined;
       if (this.cancelled(thread.id) || (res && !res.isError && !capped)) return res;
 
       if (!capped && agent.transientApiError) {
@@ -10220,6 +10362,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // the implementor was running. All implementation, queue, timed, and shotgun work is complete here.
     if (this.settleOwnerQaBypass(thread, res)) return;
 
+    if (!pipe.qaEnabled && !pipe.vanilla && this.qaRoutedFor(this.db.getThread(thread.id) ?? thread, this.settings(), this.db.getThreadStageOutputs(thread.id).routeDecision)) {
+      pipe = { ...pipe, qaEnabled: true };
+    }
     if (!pipe.qaEnabled) {
       if (this.cancelled(thread.id)) return;
       if (pipe.vanilla) {
@@ -10894,7 +11039,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const settleDone = (): void => {
       if (this.db.getThread(thread.id)?.state !== "done") this.setState(thread.id, "done");
     };
-    if (this.db.getThreadStageOutputs(thread.id).skipSelfImprovement === true || !this.settings().selfImproveEnabled || this.settings().manualSupervisionEnabled) { settleDone(); return; }
+    const selfImprove = this.roleToggle(thread.id, "selfImprove") ??
+      (this.db.getThreadStageOutputs(thread.id).skipSelfImprovement !== true && this.settings().selfImproveEnabled);
+    if (!selfImprove || this.settings().manualSupervisionEnabled) { settleDone(); return; }
     // A shotgun collaborator finished one SHARE, not a task. The reflection round is about what the whole
     // job needed, so it belongs to the lead — running it per share would spend N bonus Opus rounds on N
     // partial views, and each one would be reflecting on a tree the other shares are still changing.
@@ -12267,9 +12414,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   /** A follow-up injected into a completed review task is new work, so retain the task's sticky QA
    * route unless QA was disabled globally or the owner explicitly opted out. */
   private resumeFollowupRequiresQa(thread: Thread): boolean {
-    const settings = this.settings();
-    const route = this.db.getThreadStageOutputs(thread.id).routeDecision;
-    return settings.qaEnabled && (route?.useQa ?? true) && !thread.parentId && !this.qaBypassedByOwner(thread.id);
+    return this.qaRoutedFor(thread, this.settings(), this.db.getThreadStageOutputs(thread.id).routeDecision);
   }
 
   /** Manual resume (the Resume control, or an inject into a cold/non-live task) that talks ONLY to
@@ -12496,6 +12641,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.resuming.delete(threadId);
     this.pendingResumeMsgs.delete(threadId);
     this.liveRole.delete(threadId);
+    this.liveResearcher.delete(threadId);
     this.liveQa.delete(threadId);
     this.liveQaRunId.delete(threadId);
     this.clearQaFixHandoff(threadId);
@@ -12562,6 +12708,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.directorNotes.delete(threadId);
     this.queuedForImplementor.delete(threadId);
     this.liveRole.delete(threadId);
+    this.liveResearcher.delete(threadId);
     this.liveQa.delete(threadId);
     this.liveQaRunId.delete(threadId);
     this.clearQaFixHandoff(threadId);
@@ -12637,6 +12784,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.resuming.delete(threadId);
     this.pendingResumeMsgs.delete(threadId);
     this.liveRole.delete(threadId);
+    this.liveResearcher.delete(threadId);
     this.directorNotes.delete(threadId);
     this.stopping.delete(threadId);
     this.disarmActiveDeadline(threadId);
@@ -12728,6 +12876,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     });
     this.setState(threadId, "qa");
     this.postFinding({ threadId, fromRole: "qa", summary: "Owner started QA on the completed task.", severity: "info" });
+    if (thread.roleToggles?.qa === false) this.clearRoleToggle(threadId, "qa");
     void this.runPipeline(threadId);
     return { ok: true, state: "qa" };
   }
@@ -13440,6 +13589,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.resuming.delete(threadId);
     this.pendingResumeMsgs.delete(threadId);
     this.liveRole.delete(threadId);
+    this.liveResearcher.delete(threadId);
     // A task settles to 'review' straight out of the QA loop, so a mid-QA account failover can leave a
     // stale liveQa handle behind (the window the QA-inject gate also guards) — drop it so it can't leak.
     this.liveQa.delete(threadId);
@@ -13544,6 +13694,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.resuming.delete(threadId);
     this.pendingResumeMsgs.delete(threadId);
     this.liveRole.delete(threadId);
+    this.liveResearcher.delete(threadId);
     this.directorNotes.delete(threadId);
     this.dropTerminalBookkeeping(threadId); // the row is about to be deleted — drop its bookkeeping too
     this.releasePipelineSlot(threadId); // the row never publishes a slot-free state — release it here

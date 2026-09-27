@@ -20,6 +20,7 @@ server/.token-safety-lab-dist/
 server/.subtask-lab-dist/
 server/.remote-access-lab-dist/
 server/.goals-lab-dist/
+server/.task-agents-lab-dist/
 server/.lab-web-dist*/
 web/dist/
 relay/dist/

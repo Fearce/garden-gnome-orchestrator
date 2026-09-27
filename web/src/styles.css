@@ -1895,6 +1895,16 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 .task-model-warning.active, .task-model-error { color: var(--warn); }
 .task-model-error { margin-top: 7px; font-size: 10.5px; line-height: 1.35; }
 .task-model-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; margin-top: 10px; }
+/* Per-task agent switches share the model picker's chip + popover; only the rows are their own. */
+.task-agents-popover { width: min(360px, calc(100vw - 32px)); }
+.task-agents-rows { display: flex; flex-direction: column; }
+.task-agents-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0; }
+.task-agents-row + .task-agents-row { border-top: 1px solid var(--line); }
+.task-agents-label { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.task-agents-label span { font-size: 12px; color: var(--text); }
+.task-agents-label small { color: var(--text-faint); font-size: 10.5px; line-height: 1.3; }
+.task-agents-row .segment button { padding: 4px 10px; }
+.task-agents-row .segment button:disabled { cursor: progress; }
 
 .pip { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
 /* A small role-status dot stands in for the role: it inherits the pip's colour (faint for a
@@ -2766,10 +2776,12 @@ body.dl-resizing { user-select: none; }
   .inject-bar .row .inject-row-spacer, .inject-bar .row .inject-id { display: none; }
   /* Keep the new model control out of the already-tight one-line action row. It shares the top-right
      textarea chrome with the compose close button while retaining a full touch target. */
-  .inject-bar textarea { padding-right: calc(var(--tap) * 2 + 14px); }
+  .inject-bar textarea { padding-right: calc(var(--tap) * 3 + 18px); }
   .inject-bar .task-model-picker { position: absolute; top: 11px; right: calc(12px + var(--tap) + 4px); }
+  .inject-bar .task-agents-picker { right: calc(12px + var(--tap) * 2 + 8px); }
   .task-model-trigger { width: var(--tap); height: var(--tap); background: color-mix(in oklch, var(--bg-2) 88%, transparent); }
   .task-model-popover { left: auto; right: calc(-1 * (var(--tap) + 4px)); width: min(310px, calc(100vw - 24px)); }
+  .task-agents-popover { right: calc(-1 * (var(--tap) * 2 + 8px)); width: min(360px, calc(100vw - 24px)); }
 
   /* Clears the notch / browser chrome via the safe-area inset. The header used to be `position:
      sticky` here as well, to keep the close control reachable while the feed scrolled. That was
@@ -4439,4 +4451,5 @@ html.theme-transition * {
   .board-area-select select, .mnav-area select { min-height: var(--tap); }
   .deliverables-label { min-height: var(--tap); }
   .task-model-trigger { min-width: var(--tap); min-height: var(--tap); }
+  .task-agents-row .segment button { min-height: var(--tap-sm); }
 }

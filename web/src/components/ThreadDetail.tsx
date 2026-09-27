@@ -15,6 +15,7 @@ import { Deliverables } from "./Deliverables.js";
 import { columnDragMax, useColumnResize } from "./useColumnResize.js";
 import { Markdown } from "./Markdown.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
+import { TaskAgentsPicker } from "./TaskAgentsPicker.js";
 import { TaskModelPicker } from "./TaskModelPicker.js";
 import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
 import { ImplementationMemos } from "./ImplementationMemos.js";
@@ -1368,6 +1369,10 @@ export function ThreadDetail() {
               thread={thread}
               active={isLive || threadRuns.some((run) => run.role === "implementor" && runActive(run.state))}
             />
+          )}
+          {/* Mirrors the server's roleToggleRefusal: these tasks have no optional agents of their own. */}
+          {thread.subTask?.provider === "jev" || thread.lane === "read" || thread.lane === "vanilla" || thread.parentId ? null : (
+            <TaskAgentsPicker thread={thread} />
           )}
           <button
             className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}

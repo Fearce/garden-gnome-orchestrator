@@ -355,6 +355,13 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     model: z.string().trim().min(1).max(100).nullable(),
     clientId: z.string().uuid().optional(),
   }),
+  // Per-task role switch. enabled null = Auto (global setting + task-aware route); true/false beats both.
+  z.object({
+    type: z.literal("thread.role"),
+    threadId: z.string(),
+    role: z.enum(["planner", "researcher", "qa", "selfImprove"]),
+    enabled: z.boolean().nullable(),
+  }),
   z.object({ type: z.literal("thread.cancel"), threadId: z.string() }),
   // Restart a cancelled task from the very beginning — wipes the prior attempt and re-runs the whole
   // pipeline from the brief the director first dispatched (see ThreadManager.retryThread).

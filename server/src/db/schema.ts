@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS threads (
   -- Strict owner-requested implementor model as JSON ({requested, provider, model, strict}). Kept on the
   -- task row because retries/resumes must retain it and the mobile UI renders requested vs actual.
   model_request TEXT,
+  -- Owner per-task role switches as JSON ({planner?, researcher?, qa?, selfImprove?}: boolean). An absent
+  -- role follows the settings and the task-aware route. On the row, not stage_outputs, so Retry keeps it.
+  role_toggles TEXT,
   stage_outputs TEXT,
   closed_at         INTEGER,
   closed_prev_state TEXT,

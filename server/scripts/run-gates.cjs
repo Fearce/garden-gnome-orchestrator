@@ -144,6 +144,7 @@ const GATES = [
   "test:vanilla-lane",
   "test:route-selection",
   "test:route-pipeline",
+  "test:task-role-toggles",
   "test:routing-notes",
   "test:routing-probe",
   "test:token-freeze",

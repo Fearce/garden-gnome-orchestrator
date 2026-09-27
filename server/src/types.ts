@@ -159,6 +159,11 @@ export interface ShotgunAssignment {
   files: string[]; // the paths it exclusively owns; nothing outside them may be edited
 }
 
+/** The optional agent roles the owner can switch on or off for one task, including after dispatch. */
+export type ToggleableRole = "planner" | "researcher" | "qa" | "selfImprove";
+/** Per-task owner switches. A role that is absent follows the settings and the task-aware route. */
+export type RoleToggles = Partial<Record<ToggleableRole, boolean>>;
+
 export interface Thread {
   id: string;
   title: string;
@@ -171,6 +176,8 @@ export interface Thread {
    * canonical provider id resolved from the live system; null means the request is persisted but cannot
    * currently be resolved, which blocks clearly instead of falling back. */
   modelRequest?: ModelRequest | null;
+  /** Owner switches for optional roles on this task; they beat the global settings and the route. */
+  roleToggles?: RoleToggles | null;
   effortOverride?: Effort | null; // operator-pinned implementor effort, snapshotted at a skip-director dispatch — beats the planner's pick
   closedAt?: number | null; // when soft-closed (state === "closed"); drives the 30-day auto-purge clock
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' means it finished correctly (drives the closed-card checkmark)

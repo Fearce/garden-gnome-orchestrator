@@ -52,6 +52,8 @@ import type {
   ModelGrade,
   ModelOutcome,
   ModelRequest,
+  RoleToggles,
+  ToggleableRole,
   ModelStat,
   ModelEffortStat,
   OperatorNote,
@@ -121,6 +123,7 @@ function rowToThreadFields(r: Row, manualDeploymentRaw: unknown): Thread {
     error: (r.error as string | null) ?? null,
     effortOverride: (r.effort_override as Effort | null) ?? null,
     modelRequest: parseModelRequest(r.model_request),
+    roleToggles: parseRoleToggles(r.role_toggles),
     closedAt: (r.closed_at as number | null) ?? null,
     // The state a closed task came from: kept for restore, and surfaced so the UI can mark tasks that
     // finished correctly (closed_prev_state === 'done') with a checkmark. Null on never-closed rows.
@@ -192,7 +195,7 @@ function summaryOfThread(thread: Thread, r: Row): ThreadSummary {
  *  represented only by its extracted `manual_deployment_raw` sub-field (see `rowToThreadFromListing`).
  *  Shared by every bulk listing query so they stay in sync with `rowToThreadFields`. */
 const THREAD_LISTING_COLUMNS = `id, title, state, workspace, brief, raw_prompt, error, effort_override,
-  model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
+  model_request, role_toggles, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
   active_deadline_at, agent_count, parent_id, assignment, sub_task, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
 
@@ -204,7 +207,7 @@ const THREAD_MIRROR_COLUMNS = `rowid AS seq, ${THREAD_LISTING_COLUMNS},
  *  caller that edits one throws instead of silently changing every later listing. */
 function rowToListedThread(r: Row): ListedThread {
   const thread = rowToThreadFromListing(r);
-  for (const nested of [thread.assignment, thread.modelRequest, thread.subTask, thread.manualDeployment]) deepFreeze(nested);
+  for (const nested of [thread.assignment, thread.modelRequest, thread.roleToggles, thread.subTask, thread.manualDeployment]) deepFreeze(nested);
   return { seq: r.seq as number, thread, summary: summaryOfThread(thread, r) };
 }
 
@@ -227,9 +230,24 @@ const LATEST_PREVIEW_BACKFILL_CHUNK = 12;
 const THREAD_SUMMARY_COLUMNS = `id, title, state, workspace, error, effort_override,
   substr(brief, 1, ${BRIEF_PREVIEW_CHARS}) AS brief_preview,
   latest_message_preview,
-  model_request, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
+  model_request, role_toggles, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
   active_deadline_at, agent_count, parent_id, assignment, sub_task, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
+
+const TOGGLEABLE_ROLES: readonly ToggleableRole[] = ["planner", "researcher", "qa", "selfImprove"];
+
+/** Keeps only known roles with a real boolean, so a hand-edited row can't smuggle a truthy string in. */
+function parseRoleToggles(raw: unknown): RoleToggles | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown> | null;
+    const toggles: RoleToggles = {};
+    for (const role of TOGGLEABLE_ROLES) if (typeof value?.[role] === "boolean") toggles[role] = value[role] as boolean;
+    return Object.keys(toggles).length ? toggles : null;
+  } catch {
+    return null;
+  }
+}
 
 function parseModelRequest(raw: unknown): ModelRequest | null {
   if (typeof raw !== "string" || !raw) return null;
@@ -860,6 +878,7 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN stage_outputs TEXT",
       "ALTER TABLE threads ADD COLUMN effort_override TEXT",
       "ALTER TABLE threads ADD COLUMN model_request TEXT",
+      "ALTER TABLE threads ADD COLUMN role_toggles TEXT",
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
       "ALTER TABLE threads ADD COLUMN closed_prev_state TEXT",
       "ALTER TABLE threads ADD COLUMN baseline_head TEXT",
@@ -1859,6 +1878,13 @@ export class Db {
 
   /** Persist a task-local strict model request independently of routine state updates, then return the
    * fresh row for immediate WS broadcast. */
+  /** Persist the owner's per-task role switches; an empty set clears the column back to "follow the route". */
+  setRoleToggles(id: string, toggles: RoleToggles | null): Thread | null {
+    const value = toggles && Object.keys(toggles).length ? JSON.stringify(toggles) : null;
+    const result = this.raw.prepare("UPDATE threads SET role_toggles = ?, updated_at = ? WHERE id = ?").run(value, now(), id);
+    return result.changes ? this.getThread(id) : null;
+  }
+
   setModelRequest(id: string, request: ModelRequest | null): Thread | null {
     const at = now();
     const result = this.raw

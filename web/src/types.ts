@@ -133,6 +133,10 @@ export interface ManualDeploymentSummary {
   invalidReason?: string | null;
 }
 
+/** Mirrors server/src/types.ts: the optional roles the owner can switch per task. */
+export type ToggleableRole = "planner" | "researcher" | "qa" | "selfImprove";
+export type RoleToggles = Partial<Record<ToggleableRole, boolean>>;
+
 export interface Thread {
   id: string;
   title: string;
@@ -151,6 +155,8 @@ export interface Thread {
   /** Strict owner-requested implementor model. `model` is the canonical runtime id; null means the
    * request could not be resolved and the task is blocked rather than silently downgraded. */
   modelRequest?: ModelRequest | null;
+  /** Owner switches for optional roles on this task; an absent role follows settings + route. */
+  roleToggles?: RoleToggles | null;
   closedAt?: number | null;
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' marks a successful close
   lane?: ThreadLane | null; // 'read' = the read-only reader lane — drives the card's READ badge
@@ -1410,6 +1416,7 @@ export type ClientCommand =
   | { type: "thread.proceed"; threadId: string }
   | { type: "thread.deadline"; threadId: string; deadlineAt: number | null }
   | { type: "thread.model"; threadId: string; provider: ImplementorProvider | null; model: string | null; clientId?: string }
+  | { type: "thread.role"; threadId: string; role: ToggleableRole; enabled: boolean | null }
   | { type: "thread.cancel"; threadId: string }
   | { type: "thread.retry"; threadId: string }
   | { type: "thread.rename"; threadId: string; title: string }

@@ -54,6 +54,7 @@ import type {
   TaskSearchHit,
   Thread,
   TokenSafetyState,
+  ToggleableRole,
 } from "./types.js";
 import { agentKey, GENERAL_ROOM, normalizeWorkspace, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
 import { notify } from "./lib/notify.js";
@@ -417,6 +418,7 @@ interface State {
   proceed: (threadId: string) => void;
   setDeadline: (threadId: string, deadlineAt: number | null) => Promise<boolean>;
   setTaskModel: (threadId: string, provider: ImplementorProvider | null, model: string | null) => Promise<boolean>;
+  setTaskRole: (threadId: string, role: ToggleableRole, enabled: boolean | null) => Promise<boolean>;
   cancel: (threadId: string) => void;
   retry: (threadId: string) => void;
   rename: (threadId: string, title: string) => void;
@@ -1524,6 +1526,8 @@ export const useStore = create<State>((set) => ({
     const clientId = newOutboundId();
     return sendThreadActionCommand({ type: "thread.model", threadId, provider, model, clientId }, "model", threadId);
   },
+  setTaskRole: (threadId, role, enabled) =>
+    sendThreadActionCommand({ type: "thread.role", threadId, role, enabled }, "role", threadId),
   cancel: (threadId) => sendCommand({ type: "thread.cancel", threadId }),
   retry: (threadId) => sendCommand({ type: "thread.retry", threadId }),
   rename: (threadId, title) => sendCommand({ type: "thread.rename", threadId, title }),

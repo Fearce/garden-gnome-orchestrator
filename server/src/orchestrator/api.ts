@@ -2,7 +2,7 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
 import type { TokenShiftReport } from "./usageWindows.js";
-import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, JevJson, JevQuestion, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, SubTaskSpec, Thread, ThreadLane } from "../types.js";
+import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, JevJson, JevQuestion, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, SubTaskSpec, Thread, ThreadLane, ToggleableRole } from "../types.js";
 import type { SubTaskService } from "./subTasks.js";
 
 export interface DispatchInput {
@@ -174,6 +174,8 @@ export interface OrchestratorApi {
   setActiveDeadline(threadId: string, deadlineAt: number | null): Promise<ThreadActionResult>;
   /** Pin one exact implementor provider/model for this task, or clear the pin back to automatic routing. */
   setThreadModel(threadId: string, provider: ImplementorProvider | null, model: string | null): Promise<ThreadActionResult>;
+  /** Switch one optional role on or off for this task; null returns it to the settings + route. */
+  setThreadRole(threadId: string, role: ToggleableRole, enabled: boolean | null): Promise<ThreadActionResult>;
   cancelThread(threadId: string): Promise<ThreadActionResult>;
   retryThread(threadId: string): Promise<ThreadActionResult>;
   /** Delegate the owner's final review of a task parked in `review` to the auto-reviewer. The unattended
