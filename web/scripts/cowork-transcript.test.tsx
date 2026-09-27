@@ -189,11 +189,15 @@ Object.assign(ssr, { coworkSessions: {} });
 assert.equal(renderToStaticMarkup(React.createElement(BoardLanes)), "", "no sessions means no cards");
 
 // ---- 4. the director is never blocked ----------------------------------------------------------
-// The rail is a SIBLING of the board and is rendered unconditionally, which is what makes a live
-// Co-work turn non-modal: whatever the board is showing, the director is still there to talk to.
-assert.match(appSource, /\n\s*<Director \/>\n\s*<Board \/>/, "the director rail is a sibling of the board, not something a board view can replace");
-const directorLine = appSource.split("\n").find((line) => line.includes("<Director />"))!;
-assert.equal(directorLine.trim(), "<Director />", "the director rail is rendered unconditionally - no view, state or session may gate it");
+// The rail is a SIBLING of the board, mounted through DirectorGate: a phone defers the heavy transcript
+// until the director pane is first used, but the gate LATCHES — once opened, Director is never unmounted.
+// That latch is what makes a live Co-work turn non-modal: whatever the board is showing, the director
+// still holds its draft, attachments and scroll, and no view or session can replace it.
+assert.match(appSource, /\n\s*<DirectorGate[^\n]*\/>\n\s*<Board \/>/, "the director rail is a sibling of the board, not something a board view can replace");
+const gateSource = appSource.slice(appSource.indexOf("function DirectorGate"));
+assert.ok(gateSource.includes("function DirectorGate"), "DirectorGate must be defined in App.tsx itself, where the board layout lives");
+assert.match(gateSource, /return opened \|\| visible \? <Director \/> : null;/,
+  "the rail renders through a mount-once gate - after first use no view, state or session may unmount it");
 assert.match(appSource, /className=\{"mnav-btn" \+ \(pane === "director" \? " on" : ""\)\}/,
   "the phone nav always offers the director pane, including while a Co-work turn streams");
 
