@@ -147,7 +147,7 @@ async function drive(page, shots) {
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   await page.goto(`${BASE}/`);
   // The socket's hello, not the shell: everything server-authoritative is neutral until it lands.
-  await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
 
   console.log("\nTASK — workspace navigation is usable before Git enrichment");
   await openTask(page, "Repo task");

@@ -166,7 +166,7 @@ async function directorBox(page) {
     page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
     await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
     await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
 
     // ---- 4a. the card is IN the task lanes, as its own kind of card -------------------------------
     await page.waitForSelector(".lanes .cowork-card", { timeout: 15000 });

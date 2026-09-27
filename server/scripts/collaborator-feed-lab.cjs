@@ -99,14 +99,14 @@ function assertPanel(panel, where) {
     const page = await ctx.newPage();
     await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
     await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 }); // hello landed
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 }); // hello landed
 
     check("the collaborator has no card of its own", (await page.locator(`.card:has-text("Economy share")`).count()) === 0);
     await openLead(page);
     assertPanel(await readPanel(page), "on open");
 
     await page.reload({ timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
     await openLead(page);
     assertPanel(await readPanel(page), "after a reload");
 

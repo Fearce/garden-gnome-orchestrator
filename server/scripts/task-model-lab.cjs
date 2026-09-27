@@ -117,7 +117,7 @@ async function loginAndLoad(page) {
   const login = await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   if (!login.ok()) throw new Error(`Lab login failed: HTTP ${login.status()}`);
   await page.goto(`${BASE}/`, { timeout: 45_000 }).catch(() => page.goto(`${BASE}/`, { timeout: 45_000 }));
-  await page.waitForSelector(".accounts .acct", { timeout: 30_000 }); // server-authoritative hello landed
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 }); // server-authoritative hello landed
 }
 
 async function openTask(page, threadId, title) {
@@ -203,7 +203,7 @@ async function desktopPass(browser, dataDir, shots, errors) {
   await page.getByRole("button", { name: "Close model picker", exact: true }).click();
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
   await openTask(page, TASK_ID, "Choose an exact task model");
   trigger = page.locator('[aria-label="Choose task provider and model"]');
   check(
@@ -222,7 +222,7 @@ async function desktopPass(browser, dataDir, shots, errors) {
   );
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
   await openTask(page, TASK_ID, "Choose an exact task model");
   check(
     "Auto routing survives a full browser reload",

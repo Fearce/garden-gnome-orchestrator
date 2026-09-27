@@ -69,7 +69,7 @@ function rawGet(url, encoding) {
         };
       });
       await page.goto(BASE + '/');
-      await page.waitForSelector('.accounts .acct');
+      await page.waitForSelector('.accounts .acct', { state: "attached" });
       await page.waitForTimeout(400);
       assert.equal(sockets.length, 1);
       assert.equal(sockets[0].hello, 1, 'one initial snapshot');
@@ -99,7 +99,7 @@ function rawGet(url, encoding) {
       assert.equal(sockets[1].hello, 2, 'explicit resync still returns a snapshot');
       assert.deepEqual(errors, []);
       await page.goto(BASE + '/orchestrator');
-      await page.waitForSelector('.accounts .acct');
+      await page.waitForSelector('.accounts .acct', { state: "attached" });
       assert.equal(new URL(page.url()).pathname, '/orchestrator/');
       assert.match(await page.evaluate(() => window.__startupSockets[0].url), /\/orchestrator\/ws$/);
       assert.match(await page.evaluate(() => window.__startupSockets[0].extensions), /permessage-deflate/);

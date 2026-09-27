@@ -16,6 +16,8 @@
 //     (settings, accounts, any broadcast collection) renders NEUTRAL DEFAULTS until that frame lands, so
 //     a check that opens on `.topbar` reads a toggle as "off" and a list as empty on a busy box — which
 //     is indistinguishable from the feature being broken. `.accounts .acct` is hello-only ⇒ the signal.
+//     Wait for it with `state: "attached"`: below 900px the chips live in a closed pop-over, so a
+//     wait for VISIBLE times out on every phone-width pass.
 //   • Lazy views: wait for their VISIBLE panel, not a fixed delay after the navigation click.
 //     Retained panels may still exist under `hidden`; DOM presence alone doesn't prove navigation.
 //   • A diff's `.diff` shell also wraps "Loading diff…". For a fixture with known changes, wait for

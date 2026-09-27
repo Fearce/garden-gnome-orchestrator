@@ -97,7 +97,7 @@ const card = (page, title) => page.locator(".goal-card", { has: page.locator(`.s
     });
     await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
     await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
     await openGoals(page);
 
     // ---- a new goal defaults to the director's model at low-or-medium effort ----
@@ -173,7 +173,7 @@ const card = (page, title) => page.locator(".goal-card", { has: page.locator(`.s
 
     // ---- server-authoritative: a reload shows what the DB holds ----
     await page.reload({ timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
     await openGoals(page);
     await card(page, "Pinned goal").waitFor({ timeout: 10000 });
     check("after a reload the edited goal reads low–medium", (await card(page, "Pinned goal").locator(".goal-effort-auto").count()) === 1);

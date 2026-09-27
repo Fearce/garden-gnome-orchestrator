@@ -40,7 +40,7 @@ async function openSettings(browser) {
   // Wait for the socket's `hello`, not for the shell to mount: the panel renders neutral defaults until
   // that frame lands, so a toggle reads "off" and a stored token reads "absent" on a busy box — which is
   // indistinguishable from the feature being broken. The account chips are hello-only, so they are the signal.
-  await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 25_000 });
   await page.click('[aria-label="Open settings"]');
   await page.waitForSelector('[role="dialog"][aria-label="Settings"]', { timeout: 20_000 });
   await page.click('[data-settings-category="voice-alerts"]');

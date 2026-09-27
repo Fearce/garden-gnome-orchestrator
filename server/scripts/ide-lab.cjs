@@ -56,7 +56,7 @@ async function settled(page) {
     page.on("console", m => { if (m.type() === "error" && !/Failed to load resource.*(409|400)/.test(m.text())) errors.push(m.text()); });
     page.on("dialog", d => d.accept());
     assert.equal((await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } })).status(), 200);
-    await page.goto(BASE); await page.waitForSelector(".accounts .acct");
+    await page.goto(BASE); await page.waitForSelector(".accounts .acct", { state: "attached" });
     await area(page, "ide"); await page.waitForSelector('[aria-label="IDE workspace"] option:has-text("sample-project")', { state: "attached" });
     const workspaces = await (await page.request.get(`${BASE}/api/ide/workspaces`)).json();
     const ws = workspaces.find(w => w.name === "sample-project"); assert.ok(ws);
@@ -76,7 +76,7 @@ async function settled(page) {
     await area(page, "notes"); await area(page, "ide");
     assert.match(await page.locator('.ide-tabs').textContent(), /● app.ts/);
     passed("save reaches disk; multiple tabs and unsaved drafts survive area navigation");
-    await page.reload(); await page.waitForSelector(".accounts .acct"); await area(page, "ide");
+    await page.reload(); await page.waitForSelector(".accounts .acct", { state: "attached" }); await area(page, "ide");
     await page.waitForSelector(".monaco-editor"); assert.match(await page.locator('.ide-tabs').textContent(), /● app.ts/);
     fs.writeFileSync(path.join(work, "app.ts"), "const greeting = 'external edit';\n");
     await page.locator('.ide-save').click(); await page.waitForSelector('.ide-error');
@@ -191,7 +191,7 @@ async function settled(page) {
       const mobile = await browser.newContext({ viewport: { width, height: 844 }, isMobile: true, hasTouch: true });
       const p = await mobile.newPage(); p.on("dialog", d => d.accept());
       await p.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
-      await p.goto(BASE); await p.waitForSelector('.accounts .acct');
+      await p.goto(BASE); await p.waitForSelector('.accounts .acct', { state: "attached" });
       for (const value of ["tasks", "cowork", "notes", "schedules", "supervisor", "ide"]) {
         await area(p, value);
         const geometry = await p.evaluate(() => ({ width: innerWidth, scroll: document.documentElement.scrollWidth, nav: document.querySelector('.mobile-nav').getBoundingClientRect().width }));

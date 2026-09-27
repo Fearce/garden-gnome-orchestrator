@@ -79,7 +79,7 @@ async function installStaleChunkRoute(page, state) {
 /** A console that has really finished booting: the shell plus a hello-only surface. */
 async function waitForConsole(page) {
   await page.waitForSelector(".topbar", { timeout: 20_000 });
-  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 20_000 });
 }
 
 /** Load the console with the boot's own assets whitelisted, leaving the route disarmed. */

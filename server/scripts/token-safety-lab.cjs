@@ -152,7 +152,7 @@ async function openConsole(browser, name) {
   const page = await context.newPage();
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   await page.goto(`${BASE}/?lab=${name}`);
-  await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
   return { context, page };
 }
 
@@ -253,7 +253,7 @@ async function main() {
 
     console.log("\n4. durable across a reload, and dismissible");
     await page.reload();
-    await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
     check("the confirmation survives a reload", await visible(page, confirm, 10_000));
     check("and the freeze did not come back", !(await page.locator(box).isVisible().catch(() => false)));
     await page.click(`${confirm} .notice-x`);

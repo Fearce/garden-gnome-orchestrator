@@ -123,7 +123,7 @@ async function labelsInFeed(page) {
     const page = await ctx.newPage();
     await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
     await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 }); // hello landed
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 }); // hello landed
 
     await openTask(page);
     // The history reply carries the runs; the label appears with it, not before.
@@ -144,7 +144,7 @@ async function labelsInFeed(page) {
     // A reload re-delivers the bounded snapshot and re-fetches history from nothing; the labels must
     // come back, which they can only do from the history payload.
     await page.reload({ timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
     await openTask(page);
     await awaitOpusLabel(page, "after a reload");
     const afterReload = await labelsInFeed(page);

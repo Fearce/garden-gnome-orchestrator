@@ -263,7 +263,7 @@ async function drivePass(page, { name, width, height }, shotDir) {
   await page.waitForSelector(".topbar", { timeout: 20_000 });
   // Everything server-authoritative renders neutral defaults until the WS hello lands; the account
   // chips are hello-only, so they are the signal that the bar being measured is the real one.
-  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 20_000 });
   await page.waitForSelector(".card", { timeout: 20_000 });
 
   // Fenced-behind guard: every rule below lives in a coarse-pointer / compact-width block, so a pass
@@ -424,7 +424,7 @@ async function driveDesktop(page, shotDir) {
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   await page.goto(`${BASE}/`, { timeout: 45_000 });
-  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 20_000 });
   await page.click(".board-tab.bt-supervisor");
   await page.waitForSelector(".supervisor-chat");
 
@@ -470,7 +470,7 @@ async function driveChatRoundTrip(page) {
   console.log("\n════ CHAT ROUND TRIP — authenticated submit, target routing, pending/failure, reload");
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   await page.goto(`${BASE}/`, { timeout: 45_000 });
-  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 20_000 });
   await page.click(".board-tab.bt-supervisor");
   await page.waitForSelector(".supervisor-chat");
 
@@ -541,7 +541,7 @@ async function driveChatRoundTrip(page) {
   check("chat: a targeted assessment visibly passes through pending into an honest provider failure", /failed/i.test(failedAssessment.status ?? "") && /no task action/i.test(failedAssessment.response ?? ""), JSON.stringify(failedAssessment));
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 20_000 });
   await page.click(".board-tab.bt-supervisor");
   await page.waitForFunction((n) => document.querySelectorAll(".supervisor-turn").length >= n + 3, before);
   const restored = (await page.textContent(".supervisor-turn:last-of-type")) ?? "";
@@ -578,7 +578,7 @@ async function driveAllChatReceipts(page) {
   console.log("\n════ CHAT RECEIPTS — immediate owner bubbles in every conversation surface");
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   await page.goto(`${BASE}/`, { timeout: 45_000 });
-  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 20_000 });
 
   await delayNextChatCommand(page, "prompt.new");
   await page.fill(".composer textarea", "Receipt check for Director chat.");
@@ -622,7 +622,7 @@ async function driveManualSweep(page) {
   console.log(`\n════ MANUAL SWEEP — budget spent, bounded operator sweep, end to end`);
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   await page.goto(`${BASE}/`, { timeout: 45_000 });
-  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 20_000 });
   await page.click('.mnav-btn:has-text("Supervisor")');
   await page.waitForSelector(".supervisor-view", { timeout: 10_000 });
 

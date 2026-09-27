@@ -78,7 +78,7 @@ const detailText = (page) => page.evaluate(() => document.querySelector(".detail
     const page = await ctx.newPage();
     await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
     await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 }); // hello landed
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 }); // hello landed
 
     // ---- the board: sub-tasks live inside their parent ----
     check("a sub-task has no board card of its own", (await page.locator(`.card:has-text("Port the parser tests")`).count()) === 0);

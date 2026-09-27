@@ -177,7 +177,7 @@ async function openOfficeSettings(browser) {
   await page.goto(`${BASE}/`, { timeout: NAV_TIMEOUT });
   // Wait for the socket's `hello`, not for the shell: the whole office panel renders neutral "off"
   // defaults until that frame lands, which is indistinguishable from a broken feature.
-  await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 25_000 });
   await page.click('[aria-label="Open settings"]');
   await page.waitForSelector('[role="dialog"][aria-label="Settings"]', { timeout: 20_000 });
   await page.click('[data-settings-category="office"]');
@@ -291,7 +291,7 @@ async function main() {
       // gated on exactly that count — so the cross-machine talk happened where the owner could not see it.
       const room = seedRemoteConversation(dataDir, LAB_REPO);
       await page.reload({ timeout: NAV_TIMEOUT });
-      await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+      await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 25_000 });
       await page.click(".office-strip .office-director");
       await page.waitForSelector(".office-panel", { timeout: 20_000 });
       const tabs = await page.locator(".office-tab").allInnerTexts();
@@ -338,7 +338,7 @@ async function main() {
       // to exactly one bubble, never a hello/history duplicate.
       await page.setViewportSize({ width: 1500, height: 950 });
       await page.reload({ timeout: NAV_TIMEOUT });
-      await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+      await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 25_000 });
       await page.click(".office-strip .office-director");
       await page.waitForSelector(".office-panel", { timeout: 20_000 });
       await page.click(`.office-tab:has-text("${LAB_REPO_LEAF}")`);

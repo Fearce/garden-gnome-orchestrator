@@ -114,7 +114,7 @@ async function openConsole(context) {
   await page.goto(`${BASE}/`, { timeout: NAV_TIMEOUT });
   // Wait for the socket's `hello`, not just the shell: the account chips are the only hello-only
   // element, and a half-rendered console would give the style snapshot neutral defaults to compare.
-  await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 25_000 });
   await page.waitForSelector(".card", { timeout: 15_000 });
   return page;
 }
@@ -352,7 +352,7 @@ async function main() {
       const reloaded = await context.newPage();
       await reloaded.goto(`${BASE}/`, { waitUntil: "domcontentloaded", timeout: NAV_TIMEOUT });
       check("the theme is painted before the bundle mounts (no Classic flash)", (await activeTheme(reloaded)) === "nocturne", String(await activeTheme(reloaded)));
-      await reloaded.waitForSelector(".accounts .acct", { timeout: 25_000 });
+      await reloaded.waitForSelector(".accounts .acct", { state: "attached", timeout: 25_000 });
       check("it survives a reload", (await activeTheme(reloaded)) === "nocturne", String(await activeTheme(reloaded)));
 
       // ---- phone width -----------------------------------------------------------------------
@@ -501,7 +501,7 @@ async function main() {
           JSON.stringify({ ui: "source-serif", mono: "fira-code", display: "instrument-sans" }),
         JSON.stringify(await activeFonts(refonted)),
       );
-      await refonted.waitForSelector(".accounts .acct", { timeout: 25_000 });
+      await refonted.waitForSelector(".accounts .acct", { state: "attached", timeout: 25_000 });
       await refonted.waitForSelector(".card", { timeout: 15_000 });
       check("and they survive the reload", /Source Serif/.test((await usedFaces(refonted)).body), (await usedFaces(refonted)).body);
 

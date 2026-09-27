@@ -80,7 +80,7 @@ async function openNotes(page) {
     });
     await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
     await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 }); // hello landed
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 }); // hello landed
 
     // ---- the badge on the task board is the whole point: it says "something is waiting on you" ----
     const badge = (await page.textContent('.board-tab:has-text("Notes") .board-tab-count')) ?? "";
@@ -121,7 +121,7 @@ async function openNotes(page) {
     check("ticking a note removes it from the list", !(await rows(page)).some((r) => r.body.startsWith("PR #412")));
 
     await page.reload({ timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
     await openNotes(page);
     list = await rows(page);
     check("the deletion survived a reload (server-authoritative)", list.length === 3 && !list.some((r) => r.body.startsWith("PR #412")), JSON.stringify(list.map((r) => r.body)));

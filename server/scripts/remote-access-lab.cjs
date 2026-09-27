@@ -120,7 +120,7 @@ async function sessionCookie(base, password) {
     await owner.addCookies([{ name: "orch_session", value: local.value, url: tunnel }]);
     const ownerPage = await owner.newPage();
     await ownerPage.goto(`${tunnel}/`, { timeout: 45_000 });
-    await ownerPage.waitForSelector(".accounts .acct", { timeout: 30_000 });
+    await ownerPage.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
     check("a signed-in owner gets the live console, WebSocket included", (await ownerPage.locator(".modal.login").count()) === 0);
     await ownerPage.screenshot({ path: path.join(shots, "remote-console.png") });
     await owner.close();

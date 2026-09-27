@@ -91,6 +91,7 @@ const PANEL_ROOT = {
   schedules: ".sched-view",
   supervisor: ".supervisor-view",
   ide: ".ide",
+  goals: ".goal-view",
 };
 
 const ACCOUNT_ENV = { ACCOUNT_1_ID: "acct1", ACCOUNT_1_LABEL: "personal", ACCOUNT_2_ID: "acct2", ACCOUNT_2_LABEL: "secondary" };
@@ -205,7 +206,7 @@ async function resetToBoard(page) {
   await page.waitForSelector(".topbar", { timeout: 20_000 });
   // Server-authoritative surfaces render neutral defaults until the WS hello lands; `.accounts .acct`
   // is hello-only, so it is the signal that the page is really ready to measure.
-  await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 20_000 });
   await page.waitForSelector(".board-tabs", { timeout: 20_000, state: "attached" });
   await page.waitForTimeout(250);
 }

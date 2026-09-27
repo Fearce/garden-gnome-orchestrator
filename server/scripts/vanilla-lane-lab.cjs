@@ -22,7 +22,7 @@ const DATA_DIR = path.join(os.tmpdir(), "gg-vanilla-lab");
 const FIXTURE_WORKSPACE = "fixture/repo";
 
 async function waitForServerHello(page) {
-  await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
 }
 
 /** Seed a paused vanilla-lane task directly against the throwaway DB — no agent ever runs. */

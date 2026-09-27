@@ -202,7 +202,7 @@ async function drive(page, shots, claude, codex) {
 
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   await page.goto(`${BASE}/`);
-  await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
 
   console.log("\nCODEX: the ↻1 badge redeems the banked full reset, only after a confirm");
   await page.waitForSelector(badge(CODEX_CHIP), { timeout: 60_000 });

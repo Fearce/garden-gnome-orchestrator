@@ -77,7 +77,7 @@ async function waitForDeadline(predicate, timeoutMs = 10_000) {
 async function loginAndOpen(page) {
   await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
   await page.goto(`${BASE}/`, { timeout: 45_000 });
-  await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
   await page.waitForSelector(`[data-thread-id="${TASK_ID}"]`, { timeout: 30_000 });
   await page.click(`[data-thread-id="${TASK_ID}"]`);
   await page.waitForSelector(".detail", { timeout: 15_000 });
@@ -111,7 +111,7 @@ async function desktopPass(browser, errors) {
   await page.click(".head-toggle");
   check("collapsing the header hides the deadline control", (await page.$$(".deadline-panel")).length === 0);
   await page.reload({ timeout: 45_000 });
-  await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
   await page.click(`[data-thread-id="${TASK_ID}"]`);
   check("collapsed-header preference survives reload", (await page.$$(".deadline-panel")).length === 0);
   await page.click(".head-toggle");

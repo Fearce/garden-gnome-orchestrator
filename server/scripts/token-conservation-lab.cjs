@@ -62,7 +62,7 @@ async function openSettings(page, { login = false, reload = false } = {}) {
   else await page.goto(`${BASE}/`, { timeout: NAV_TIMEOUT });
 
   // Settings are server-authoritative. The account chip only appears after the WebSocket hello frame.
-  await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 25_000 });
   await page.click('[aria-label="Open settings"]');
   await page.waitForSelector(SETTINGS, { timeout: 20_000 });
   // Settings is CATEGORIZED — the toggle lives on the "usage" page, not the default General one.

@@ -71,7 +71,7 @@ async function openTask(page, title) {
     const liveFixture = await page.request.post(`http://127.0.0.1:${PORT}/api/lab/live-qa/11111111-1111-4111-8111-111111111111`);
     check("the happy-path QA task has a real live QA fixture", liveFixture.ok(), await liveFixture.text().catch(() => ""));
     await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 }); // hello landed
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 }); // hello landed
 
     await openTask(page, "REVIEWED TASK");
     const qa = await titles(page);

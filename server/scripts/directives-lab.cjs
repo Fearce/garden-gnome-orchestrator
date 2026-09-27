@@ -51,7 +51,7 @@ async function open(page, { login = false, reload = false, directorPane = false 
   if (reload) await page.reload({ timeout: NAV_TIMEOUT });
   else await page.goto(`${BASE}/`, { timeout: NAV_TIMEOUT });
   // Settings are server-authoritative; the account chip only renders once the socket's hello landed.
-  await page.waitForSelector(".accounts .acct", { timeout: 25_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 25_000 });
   // The mobile console opens on the board and hides the Director rail until its tab is selected.
   if (directorPane && (page.viewportSize()?.width ?? Infinity) < 900) {
     await page.locator(".mobile-nav button").first().click();

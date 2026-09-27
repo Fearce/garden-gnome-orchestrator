@@ -156,7 +156,7 @@ async function main() {
 
     await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
     await page.goto(`${BASE}/`, { timeout: 45_000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30_000 }); // hello landed
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 }); // hello landed
     await page.waitForSelector(".workbench", { timeout: 45_000 });
     await page.click(".card", { timeout: 45_000 });
     await page.waitForSelector(".detail", { timeout: 20_000 });
@@ -235,7 +235,7 @@ async function main() {
         // A broken modal blocks every later control. Reload lets the same run capture the companion
         // Changes failure and the Classic control case instead of aborting on the first symptom.
         await page.reload();
-        await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+        await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
         await page.click(".card", { timeout: 45_000 });
         await page.waitForSelector(".detail", { timeout: 20_000 });
       }
@@ -330,7 +330,7 @@ async function main() {
       localStorage.setItem("director_settings", JSON.stringify({ ...current, theme: "classic" }));
     });
     await page.reload();
-    await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
     await page.click(".card", { timeout: 45_000 });
     await page.waitForSelector(".detail", { timeout: 20_000 });
     await page.click(`.dl-chip-btn[aria-label="${MD_LABEL}"]`);

@@ -29,7 +29,7 @@ const FIXTURE_WORKSPACE = "fixture/repo";
  * indicator flips before that payload lands; account chips are created only by `hello`, so they are
  * the durable signal documented by the shared lab harness. */
 async function waitForServerHello(page) {
-  await page.waitForSelector(".accounts .acct", { timeout: 30_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
 }
 
 /** Assert a reload has rendered the values which came back from the server, rather than the client's

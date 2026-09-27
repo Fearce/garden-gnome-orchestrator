@@ -61,7 +61,7 @@ const screenshot = { name:'Screenshot.png', mimeType:'image/png', buffer:Buffer.
       };
     });
     await page.goto(BASE + '/');
-    await page.waitForSelector('.accounts .acct');
+    await page.waitForSelector('.accounts .acct', { state: "attached" });
     await page.locator('.card').filter({hasText:'Screenshot picker fixture'}).click();
     const expand = page.locator('.detail .mobile-inject-toggle');
     if (await expand.isVisible()) await expand.click();

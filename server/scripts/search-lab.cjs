@@ -83,7 +83,7 @@ async function search(page, query) {
     });
     await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
     await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
-    await page.waitForSelector(".accounts .acct", { timeout: 30000 }); // hello landed
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 }); // hello landed
 
     // ---- the bug, end to end: a word only the agent ever said still finds its task ----
     await search(page, "milkshake");
