@@ -69,11 +69,19 @@ const SEED = [
     state: "implementing",
     createdAt: NOW - 1_800_000,
     runs: [
-      { role: "planner", state: "done", startedAt: NOW - 1_800_000, endedAt: NOW - 1_500_000 },
+      // Started three and a half hours ago, so the lane's clock needs three digits of minutes.
+      { role: "planner", state: "done", startedAt: NOW - 12_600_000, endedAt: NOW - 1_500_000 },
       { role: "implementor", state: "running", startedAt: NOW - 1_400_000, endedAt: null },
     ],
   },
   { id: "lab-queued", title: "Audit the deliverable path guard", state: "queued", createdAt: NOW - 1_700_000, runs: [] },
+  {
+    id: "lab-queued-2",
+    title: "Make the office relay survive a laptop sleeping through a whole weekend without losing its room",
+    state: "queued",
+    createdAt: NOW - 1_300_000,
+    runs: [],
+  },
   {
     id: "lab-qa",
     title: "Wire the notes text bridge",
@@ -362,6 +370,13 @@ const PHONE_PROBE = `() => {
     return (Math.atan2(b, a) * 180) / Math.PI;
   };
   const workers = Array.from(root.querySelectorAll(".gs-worker"));
+  /** How many lines a clamped text box shows, and whether that is a whole number: a box taller than
+   *  its clamp clips a sliver of the next line into view. */
+  const clampOf = (t) => {
+    const lh = parseFloat(getComputedStyle(t).lineHeight);
+    const lines = t.clientHeight / lh;
+    return { height: t.clientHeight, lines: Math.round(lines), whole: Math.abs(lines - Math.round(lines)) < 0.15, overflows: t.scrollHeight > t.clientHeight + 1 };
+  };
   return {
     phone: root.classList.contains("gs-phone"),
     vw: window.innerWidth,
@@ -378,6 +393,11 @@ const PHONE_PROBE = `() => {
         card: box(card),
         ledge: box(card.querySelector(".gs-ledge")),
         title: box(card.querySelector(".gs-title")),
+        titleClipped: clampOf(card.querySelector(".gs-title")),
+        activityClipped: clampOf(card.querySelector(".gs-activity")),
+        foot: box(card.querySelector(".gs-foot")),
+        elapsed: box(card.querySelector(".gs-elapsed")),
+        elapsedText: card.querySelector(".gs-elapsed").textContent,
         plot: box(card.querySelector(".gs-plot")),
         rig: box(worker.querySelector(".gs-rig svg")),
         history: card.querySelector(".gs-history") ? getComputedStyle(card.querySelector(".gs-history")).display : "none",
@@ -410,7 +430,7 @@ function checkTower(check, label, f, expect) {
   check(`${label}: it shows as many storeys as fit`, f.lanes.length === expect.lanes, `${f.lanes.length} lanes`);
   check(
     `${label}: the lanes it leaves off are counted, not dropped silently`,
-    expect.more ? f.more === `+${expect.more} more ${expect.more === 1 ? "task" : "tasks"} on the board` : f.more === null,
+    expect.more ? f.more === `+${expect.more} more active ${expect.more === 1 ? "task" : "tasks"}` : f.more === null,
     String(f.more),
   );
   check(
@@ -439,6 +459,21 @@ function checkTower(check, label, f, expect) {
     f.lanes.map((l) => `${l.task} x${l.rig.l.toFixed(0)} y${l.rig.t.toFixed(0)}-${l.rig.b.toFixed(0)} in ${l.card.t.toFixed(0)}-${l.card.b.toFixed(0)}`).join(", "),
   );
   check(`${label}: no message column on a phone`, f.lanes.every((l) => l.history === "none"));
+  check(
+    `${label}: a title shows at most two whole lines, no sliver of a third`,
+    f.lanes.every((l) => l.titleClipped.lines <= 2 && l.titleClipped.whole && l.title.b <= l.ledge.t),
+    f.lanes.map((l) => `${l.task} ${l.titleClipped.height}px/${l.titleClipped.lines}`).join(", "),
+  );
+  check(
+    `${label}: a headline shows at most three whole lines, no sliver of a fourth`,
+    f.lanes.every((l) => l.activityClipped.lines <= 3 && l.activityClipped.whole),
+    f.lanes.map((l) => `${l.task} ${l.activityClipped.height}px/${l.activityClipped.lines}`).join(", "),
+  );
+  check(
+    `${label}: the clock stays inside its storey, clear of the post`,
+    f.lanes.every((l) => l.elapsed.r <= l.card.r - 8 && l.elapsed.r <= l.foot.r + 0.5),
+    f.lanes.map((l) => `${l.task} ${l.elapsedText} ends ${l.elapsed.r.toFixed(0)} / card ${l.card.r.toFixed(0)}`).join(", "),
+  );
   const working = f.lanes.find((l) => l.task === "lab-working");
   if (working) {
     const hit = phoneImpactOf(working);
@@ -473,8 +508,10 @@ async function phoneTower(browser, check, shots) {
 
     const small = await settle();
     await page.screenshot({ path: path.join(shots, "10-phone-portrait.png") });
-    // 664 tall less the chrome holds three 140px storeys; the live work is what stays on stage.
-    checkTower(check, "phone portrait", small, { lanes: 3, more: 2 });
+    // 664 tall less the chrome holds three 140px storeys; the live work is what stays on stage, and of
+    // the three left off only the waiting one is counted (a finished or failed task is not "missing").
+    checkTower(check, "phone portrait", small, { lanes: 3, more: 1 });
+    check("phone portrait: a three-digit clock is on stage", small.lanes.some((l) => /^\d{3}:/.test(l.elapsedText)), small.lanes.map((l) => l.elapsedText).join(", "));
     check("phone portrait: the live work is what stays on stage", ["lab-working", "lab-qa"].every((id) => small.lanes.some((l) => l.task === id)), small.lanes.map((l) => l.task).join(", "));
     check("phone: the hint asks for a tap, not a mouse", /tap/i.test(small.hint) && !/mouse/i.test(small.hint), small.hint);
     const perched = small.lanes.find((l) => /gs-perched/.test(l.classes));
@@ -483,13 +520,14 @@ async function phoneTower(browser, check, shots) {
     await page.setViewportSize({ width: 390, height: 844 });
     const tall = await settle();
     await page.screenshot({ path: path.join(shots, "11-phone-tall.png") });
-    checkTower(check, "tall phone", tall, { lanes: SEED.length, more: 0 });
+    checkTower(check, "tall phone", tall, { lanes: 5, more: 0 });
+    check("tall phone: the long title is clamped to two lines", tall.lanes.some((l) => l.task === "lab-queued-2" && l.titleClipped.overflows && l.titleClipped.lines === 2));
 
     await page.setViewportSize({ width: 844, height: 390 });
     const side = await settle();
     await page.screenshot({ path: path.join(shots, "12-phone-landscape.png") });
     // Two towers of two storeys.
-    checkTower(check, "phone landscape", side, { lanes: 4, more: 1 });
+    checkTower(check, "phone landscape", side, { lanes: 4, more: 0 });
     check("phone landscape: the storeys run in two towers", new Set(side.lanes.map((l) => Math.round(l.card.l))).size === 2);
 
     /* The waking tap must not also land on the board underneath. Tapped in landscape, since resizing

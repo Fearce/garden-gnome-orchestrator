@@ -18,9 +18,10 @@ must be *visible* at common desktop widths.
 - `.accounts` has `min-width: 0`, `overflow-x: auto`, chips `flex: 0 0 auto`.
 - At **900–1899px** desktop, `.accounts` wraps to a **full-width second row**
   so personal+secondary+Codex+Grok+z.ai all fit (see `eda230f`). Compact (≤899.98, which
-  since 2026-08-18 includes a portrait 800px tablet) already full-width-scrolls the
-  strip — `probe:chips` shares that bound as `DESKTOP_MIN` and does not treat a
-  scrollable strip below it as clipping. **Adding or widening a chip moves the wrap
+  since 2026-08-18 includes a portrait 800px tablet) hides the strip behind the
+  `.accounts-toggle` gauge button as a pop-over (`.accounts.phone-open`) so the second
+  topbar row belongs to the office — `probe:chips` shares that bound as `DESKTOP_MIN`
+  and does not check the strip below it. **Adding or widening a chip moves the wrap
   bound** — don't
   bisect it by hand, print it: `npm run probe:chips -- --explain` reports the
   single-row floor per width (chips + fixed items + gaps + padding).

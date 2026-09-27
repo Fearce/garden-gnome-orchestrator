@@ -310,10 +310,11 @@ function onStage(threads: Record<string, Thread>): Thread[] {
   return Object.values(threads).filter((t) => !t.parentId && t.state !== "closed");
 }
 
-/** How many lanes the scene would show with no cap, so a stage that holds fewer can say how many it
- *  left off. */
-export function sceneLaneCount(threads: Record<string, Thread>): number {
-  return onStage(threads).length;
+/** How many live or waiting tasks a capped stage left off. Finished and failed ones are not counted:
+ *  they rank last anyway, and a console with a thousand of them must not claim a thousand missing. */
+export function offStageActive(threads: Record<string, Thread>, shown: SceneTask[]): number {
+  const onScreen = new Set(shown.map((t) => t.id));
+  return onStage(threads).filter((t) => laneRank(t.state) < 2 && !onScreen.has(t.id)).length;
 }
 
 /** Turn the console's live task state into the cast on the beam.

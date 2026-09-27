@@ -66,10 +66,23 @@ export function Accounts() {
   const showGrok = settings.grokEnabled || settings.grokSignedIn;
   // Show the z.ai chip once z.ai is configured — enabled, or an API key is stored.
   const showZai = settings.zaiEnabled || settings.zaiKeyPresent;
+  const [phoneOpen, setPhoneOpen] = useState(false);
   if (!accounts.length && !showCodex && !showGrok && !showZai) return null;
   return (
+    <>
+    <button
+      type="button"
+      className={"bell accounts-toggle" + (phoneOpen ? " on" : "") + (frozen ? " frozen" : "")}
+      aria-expanded={phoneOpen}
+      aria-label="Subscription usage"
+      title="Subscription usage"
+      onClick={() => setPhoneOpen((o) => !o)}
+    >
+      <UsageIcon />
+    </button>
+    {phoneOpen ? <div className="accounts-scrim" onClick={() => setPhoneOpen(false)} /> : null}
     <div
-      className={"accounts" + (frozen ? " frozen" : "")}
+      className={"accounts" + (frozen ? " frozen" : "") + (phoneOpen ? " phone-open" : "")}
       title={
         frozen
           ? "Token freeze — a task is parked because every account it needs is rate-limited. Parked tasks auto-resume the moment a window resets or a backend frees up."
@@ -117,6 +130,17 @@ export function Accounts() {
         />
       ) : null}
     </div>
+    </>
+  );
+}
+
+function UsageIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
+      <path d="M4 18a8 8 0 1 1 16 0" />
+      <path d="M12 18l4.5-5" />
+      <path d="M4 18h16" />
+    </svg>
   );
 }
 

@@ -44,7 +44,7 @@ import {
   type CardGeometry,
   type PhoneStage,
 } from "./scene.js";
-import { MAX_LANES, buildHeight, sceneLaneCount, sceneTasks, type LaneMessage, type SceneTask, type TargetPhase } from "./taskScene.js";
+import { MAX_LANES, buildHeight, offStageActive, sceneTasks, type LaneMessage, type SceneTask, type TargetPhase } from "./taskScene.js";
 import { useDocumentHidden, useMediaQuery, usePrefersReducedMotion } from "./useIdle.js";
 import "./screensaver.css";
 
@@ -250,7 +250,7 @@ export function Screensaver() {
   }, [threads, runs, drafts, feeds, maxLanes]);
   // Only the phone says what it left off: its tower is short enough that a missing lane could
   // otherwise read as a task that is not running.
-  const offStage = phone ? sceneLaneCount(threads) - tasks.length : 0;
+  const offStage = phone ? offStageActive(threads, tasks) : 0;
 
   const reducedMotion = usePrefersReducedMotion();
   const hidden = useDocumentHidden();
@@ -525,7 +525,7 @@ export function Screensaver() {
       {tasks.length === 0 ? <p className="gs-empty">The board is clear. The crew is on the beam.</p> : null}
       {offStage > 0 ? (
         <p className="gs-more">
-          +{offStage} more {offStage === 1 ? "task" : "tasks"} on the board
+          +{offStage} more active {offStage === 1 ? "task" : "tasks"}
         </p>
       ) : null}
       <p className="gs-hint">{touchOnly ? "tap anywhere to wake" : "move the mouse or press any key"}</p>
@@ -587,7 +587,7 @@ const LaneCard = memo(function LaneCard({
         <span className="gs-badge">{task.badge}</span>
         <span className="gs-rolechip" style={{ "--gs-role": roleColor(task.role) } as CSSProperties}>
           <i />
-          {task.role}
+          <span>{task.role}</span>
         </span>
         <span className="gs-elapsed">--:--</span>
       </div>

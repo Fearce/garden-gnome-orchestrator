@@ -76,7 +76,7 @@ Object.assign(globalThis, {
 });
 
 const { useStore, connect, IDLE_MINUTES_MIN, IDLE_MINUTES_MAX } = await import("../src/store.js");
-const { buildHeight, buildProgressFor, sceneLaneCount, sceneTasks, targetPhase, MAX_LANES, LANE_HISTORY_MAX } = await import("../src/components/screensaver/taskScene.js");
+const { buildHeight, buildProgressFor, offStageActive, sceneTasks, targetPhase, MAX_LANES, LANE_HISTORY_MAX } = await import("../src/components/screensaver/taskScene.js");
 const { IMPACT_DX, IMPACT_DY, PHONE, phoneStage, rigFor, targetFor, workPointAt, pulls, slipAmount, RAPPEL } = await import("../src/components/screensaver/scene.js");
 const { Screensaver, nextPhase } = await import("../src/components/screensaver/Screensaver.js");
 
@@ -255,7 +255,11 @@ check("a collaborator never gets its own lane", !cast.some((t) => t.id === "kid"
 check("a closed task is off the board", !cast.some((t) => t.id === "gone"));
 check("a finished task ranks behind the waiting ones", cast[cast.length - 1]?.id === "fin", cast.map((t) => t.id).join(","));
 check("the beam is capped at MAX_LANES", sceneTasks(threads, {}, {}, 2).length === 2 && cast.length <= MAX_LANES);
-check("the uncapped lane count skips collaborators and closed tasks", sceneLaneCount(threads) === 6, String(sceneLaneCount(threads)));
+// What a short phone tower says it left off: live and waiting work only. A console with a thousand
+// finished tasks must not read "+1000 more", and a collaborator or a closed task is never a lane.
+const twoLanes = sceneTasks(threads, {}, {}, 2);
+check("the off-stage count is the active work left off, not every task", offStageActive(threads, twoLanes) === 3, `${offStageActive(threads, twoLanes)} (shown ${twoLanes.map((t) => t.id).join(",")})`);
+check("a finished task left off is not counted", offStageActive(threads, sceneTasks(threads, {}, {}, 5)) === 0);
 
 // The role a lane wears, and the tool that comes with it.
 const roleCast = sceneTasks(

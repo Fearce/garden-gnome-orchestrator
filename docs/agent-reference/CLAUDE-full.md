@@ -543,8 +543,9 @@ Rules not to re-break:
   ledge (`.gs-ledge`), the gnome is scaled to 0.56 about his hook (`rigFor(..., scale)` solves in the
   rig's own frame), and the title, status and headline sit beside the house; no history column. Only
   as many storeys as fit are shown (`phoneStage`, counted from the laid-out stack via ResizeObserver so
-  safe-area insets are paid for; a phone on its side gets two towers), with a `+N more tasks on the
-  board` line for the rest, and the hint says "tap anywhere to wake" on `(hover: none)`. `PHONE` in
+  safe-area insets are paid for; a phone on its side gets two towers), with a `+N more active tasks`
+  line counting only the live or waiting work left off (`offStageActive`; counting every task read
+  "+1005 more" on the live console, which has a thousand finished ones), and the hint says "tap anywhere to wake" on `(hover: none)`. `PHONE` in
   `scene.ts` is the single source for the row/gap/scale numbers: the scene writes them to CSS
   variables, so the count and the drawing cannot drift. A long single beam here put three of six
   lanes off-screen with gnomes over the titles, which is why this is a layout, not a breakpoint tweak.

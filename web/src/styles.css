@@ -885,6 +885,8 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 }
 .bell:hover { color: var(--text-dim); border-color: var(--line-strong); }
 .bell.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); }
+/* Phone-only: the usage pop-over trigger (see the ≤899px block). */
+.accounts-toggle { display: none; }
 .gate {
   display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; cursor: pointer;
   border-radius: var(--r-sm); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;
@@ -2682,13 +2684,20 @@ body.dl-resizing { user-select: none; }
   /* The plan-approval gate collapses to an icon-only square (its "gate" word is the widest topbar
      control) so brand + settings + gate + bell + live-dot all fit on ONE row instead of wrapping. */
   .gate > span { display: none; }
-  .accounts {
-    order: 5; flex-basis: 100%; flex-wrap: nowrap;
-    overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch;
-    padding-bottom: 1px;
+  /* Usage chips live behind the gauge button as a pop-over so the second topbar row can hold the office. */
+  .accounts { display: none; }
+  .accounts.phone-open {
+    display: flex; flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 6px;
+    position: fixed; z-index: 81; top: 104px; left: 8px; right: 8px; max-height: calc(100dvh - 180px);
+    overflow-y: auto; padding: 8px; background: var(--bg-1); border: 1px solid var(--line-strong);
+    border-radius: var(--r-md); box-shadow: 0 12px 32px oklch(0 0 0 / 0.45);
   }
+  .accounts-scrim { position: fixed; inset: 0; z-index: 80; background: oklch(0 0 0 / 0.35); }
+  .accounts-toggle { display: inline-flex; order: 6; width: 44px; height: 44px; }
+  .accounts-toggle.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); }
+  .accounts-toggle.frozen { color: var(--frost-strong); }
   /* Slimmer chips: the burn strip is a reference row on mobile, not the focus — trim its vertical band. */
-  .acct { flex: 0 0 auto; min-width: 150px; padding: 3px 8px; gap: 2px; }
+  .acct { flex: 0 0 auto; min-width: 0; padding: 6px 10px; gap: 3px; }
 
   /* tappable topbar controls */
   .gate { width: 44px; height: 44px; padding: 0; gap: 0; justify-content: center; }
@@ -2697,11 +2706,9 @@ body.dl-resizing { user-select: none; }
   /* Focus mode stays reachable on a phone — the burn strip it hides is a whole row here too. */
   .focus-toggle { width: 44px; height: 44px; }
   .rail-toggle, .resize-handle { display: none; } /* rail-hide + resize are desktop-only */
-  /* The ambient office (pacing/huddling gnomes) is a multi-agent presence visualization that needs
-     horizontal room a phone doesn't have — it overflowed and overlapped the topbar controls. Keep the
-     .office element as the flexible spacer that right-aligns the conn/bell cluster, but drop the strip;
-     per-task chatroom access remains on the board cards. */
-  .office-strip { display: none; }
+  /* The office gets the whole second row (scrolling sideways when crowded) — inline it overlapped the controls. */
+  .office { order: 5; flex: 1 0 calc(100% - 50px); min-height: 40px; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+  .office-strip { flex: 0 0 auto; }
   .settings-btn { width: 40px; height: 40px; }
 
   /* Director header — collapse the name row + pipeline gates + search onto ONE tight line so the

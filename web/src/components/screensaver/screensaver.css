@@ -715,7 +715,7 @@
   grid-template-columns: 112px minmax(0, 1fr);
   grid-template-rows: 44px 9px auto 1fr;
   gap: 0 14px;
-  padding: 0 8px 0 38px;
+  padding: 0 14px 0 38px;
   border: 0;
   border-radius: 0;
   background: none;
@@ -726,7 +726,9 @@
   grid-column: 2;
   grid-row: 1;
   align-self: end;
-  padding-bottom: 5px;
+  /* A margin, not padding: the clamp clips at the padding box, so padding would show a sliver of
+     the third line. */
+  margin-bottom: 5px;
   font-size: 13.5px;
 }
 .gs-root.gs-phone .gs-ledge {
@@ -734,7 +736,7 @@
   grid-column: 1 / -1;
   grid-row: 2;
   position: relative;
-  margin: 0 -8px 0 -38px;
+  margin: 0 -14px 0 -38px;
   background: linear-gradient(180deg, oklch(0.52 0.055 60) 0%, oklch(0.44 0.05 58) 46%, oklch(0.33 0.04 54) 100%);
   border-top: 1px solid oklch(0.6 0.06 62);
   box-shadow: 0 6px 14px oklch(0 0 0 / 0.38);
@@ -766,10 +768,16 @@
   gap: 9px;
   padding-top: 8px;
 }
+/* A three-digit clock and a long role still fit the row: the role gives way, the clock never does. */
+.gs-root.gs-phone .gs-foot > * { flex: none; }
+.gs-root.gs-phone .gs-rolechip { flex: 0 1 auto; min-width: 0; }
+.gs-root.gs-phone .gs-rolechip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gs-root.gs-phone .gs-elapsed { margin-left: auto; }
 .gs-root.gs-phone .gs-activity {
   grid-column: 2;
   grid-row: 4;
+  /* Sized by its three clamped lines, not stretched to the row, or the clip shows part of a fourth. */
+  align-self: start;
   margin-top: 6px;
   min-height: 0;
   -webkit-line-clamp: 3;
