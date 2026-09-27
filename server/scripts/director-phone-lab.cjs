@@ -60,7 +60,7 @@ async function seed(dataDir) {
   const rows = [
     ["user", "text", "The phone layout of the board is cramped, can you look at it?"],
     ["director", "tool", "search_memories · phone layout board"],
-    ["director", "text", "Sure. I found two earlier notes about the board on phones:\n\n- the tab strip overflowed below 500px\n- the sort menu covered the last tab\n\nI'll dispatch a task with the repo path `C:\\claude-orchestrator\\web\\src\\components\\Board.tsx` so it starts in the right place."],
+    ["director", "text", "Sure. I found two earlier notes about the board on phones:\n\n- the tab strip overflowed below 500px\n- the sort menu covered the last tab\n\nI'll dispatch a task with the repo path `web/src/components/Board.tsx` so it starts in the right place."],
     ["director", "tool", "dispatch_task · Fix phone board layout"],
     ["user", "text", "Also show me the current routing table please"],
     ["director", "text", "| Route | Planner | QA |\n|---|---|---|\n| narrow | no | no |\n| contained | no | yes |\n| broad | yes | yes |\n\n```ts\nconst route = selectRoute({ scope: \"broad\", risk: \"medium\", planner: true, qa: true });\n```\n\nThat's the table the router reads today."],
@@ -70,7 +70,7 @@ async function seed(dataDir) {
   ];
   rows.forEach(([role, kind, content], i) => insert.run(`dpl-${i}`, role, kind, content, t0 + i * 60_000));
   const kv = db.prepare("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
-  kv.run("setting_recent_repos", JSON.stringify(["C:\\claude-orchestrator", "C:\\vota\\vota-graphql-api", "C:\\repos\\d2r_summon_overlay", "C:\\repos\\defend-your-castle", "C:\\Users\\theke\\.openclaw\\workspace\\script-hub"]));
+  kv.run("setting_recent_repos", JSON.stringify(["/work/claude-orchestrator", "/work/graphql-api", "/work/summon-overlay", "/work/defend-your-castle", "/work/automation/script-hub"]));
   db.close();
 }
 
