@@ -10,6 +10,7 @@ import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { RepoActionDTO, RepoConsole } from "../orchestrator/repoConsole.js";
 import type { CodeContextService } from "../orchestrator/codeContext.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
+import type { GoalRunner } from "../orchestrator/goals.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
 import type { OnlineOffice } from "../office/onlineOffice.js";
 import type { CoworkManager } from "../orchestrator/cowork.js";
@@ -42,6 +43,7 @@ export interface WsContext {
   director: Director;
   accounts: AccountManager;
   scheduler: Scheduler;
+  goals: GoalRunner;
   notes: OperatorNotes;
   repos: RepoConsole;
   codeContext: CodeContextService;
@@ -114,6 +116,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     chatRooms: ctx.db.listProjectRooms(),
     nameOverrides: ctx.manager.officeNameOverrides(),
     schedules: ctx.scheduler.list(),
+    goals: ctx.goals.list(),
     modelStats: ctx.db.modelStats(),
     notes: ctx.notes.list(),
     onlineOffice: ctx.onlineOffice.status(),
@@ -540,6 +543,24 @@ export async function handleCommand(
       break;
     case "schedule.run":
       await ctx.scheduler.runNow(cmd.id);
+      break;
+    case "goal.create": {
+      const r = ctx.goals.create({ title: cmd.title, objective: cmd.objective, workspace: cmd.workspace, maxSteps: cmd.maxSteps });
+      if (!r.ok) send(socket, { type: "notice", level: "warn", title: "Goal not created", message: r.error ?? "Unknown error." });
+      break;
+    }
+    case "goal.update": {
+      const r = ctx.goals.update(cmd.id, cmd.patch);
+      if (!r.ok) send(socket, { type: "notice", level: "warn", title: "Goal not updated", message: r.error ?? "Unknown error." });
+      break;
+    }
+    case "goal.status": {
+      const r = ctx.goals.setStatus(cmd.id, cmd.status);
+      if (!r.ok) send(socket, { type: "notice", level: "warn", title: "Goal not changed", message: r.error ?? "Unknown error." });
+      break;
+    }
+    case "goal.delete":
+      ctx.goals.remove(cmd.id);
       break;
     case "office.join": {
       // The join code is used here and dropped — only the device token it buys is persisted. The

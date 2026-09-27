@@ -40,6 +40,7 @@ import { CodeContextService } from "./orchestrator/codeContext.js";
 import { OperatorNotes } from "./orchestrator/notes.js";
 import { RestartCoordinator } from "./orchestrator/restartCoordinator.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
+import { GoalRunner } from "./orchestrator/goals.js";
 import { OnlineOffice } from "./office/onlineOffice.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { knownWorkspaces, revealWorkspace } from "./workspace/revealWorkspace.js";
@@ -161,7 +162,15 @@ async function main(): Promise<void> {
   // The owner's note list. Stateless over (db, hub), so each agent's bus server builds its own rather
   // than routing every post through this instance; they can't diverge, and the pipeline stays untouched.
   const notes = new OperatorNotes(db, hub);
-  const director = new Director(manager, db, hub, scheduler, notes);
+  // Goal-directed tasks: keeps one step task working on each active goal, with the director judging
+  // every step's outcome and picking the next step's model and effort from the live roster.
+  const goals = new GoalRunner(db, hub, {
+    dispatch: (input) => manager.dispatch(input),
+    judge: (prompt, schema) => manager.supervisorJudge(prompt, schema),
+    roster: () => manager.goalModelRoster(),
+    notify: (kind, title, detail, repo) => manager.notifyGoal(kind, title, detail, repo),
+  }, { ownerName: config.ownerName });
+  const director = new Director(manager, db, hub, scheduler, notes, goals);
   // The repo-level Git console (fetch/pull/push/branch/commit over any repo the console knows about).
   // Standalone: Db only, so it never entangles with the pipeline. It always offers the orchestrator's
   // own checkout (resolved from server/, so it holds in dev and in the built dist alike) even before any
@@ -212,6 +221,7 @@ async function main(): Promise<void> {
       () => onlineOffice.start(),
       () => accounts.start(),
       () => scheduler.start(),
+      () => goals.start(),
       () => manager.startModelCatalog(),
       () => freeProviders.start(),
       () => startUpdatePoll(),
@@ -297,7 +307,7 @@ async function main(): Promise<void> {
         zlibDeflateOptions: { level: 3 },
       },
     } });
-    registerWs(app, { db, hub, manager, director, accounts, scheduler, notes, repos, onlineOffice, cowork, codeContext });
+    registerWs(app, { db, hub, manager, director, accounts, scheduler, goals, notes, repos, onlineOffice, cowork, codeContext });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
     registerIdeRoutes(app, ide, isAuthed);
     registerPortalLink(app, isAuthed);

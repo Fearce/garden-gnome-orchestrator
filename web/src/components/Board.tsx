@@ -22,6 +22,7 @@ import { Gnome } from "./Gnome.js";
 import { ChangesChip } from "./GitChanges.js";
 import { splitWorkspace, WorkspacePath } from "./WorkspacePath.js";
 import { ScheduledTasks } from "./ScheduledTasks.js";
+import { Goals, goalStepOf } from "./Goals.js";
 import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
@@ -275,6 +276,8 @@ export function Board() {
       <CoworkPopup />
       {boardView === "ide" ? null : boardView === "schedules" ? (
         <ScheduledTasks />
+      ) : boardView === "goals" ? (
+        <Goals />
       ) : boardView === "notes" ? (
         <OperatorNotes />
       ) : boardView === "supervisor" ? (
@@ -331,6 +334,7 @@ function BoardTabs() {
     ide: null,
     notes: useStore((s) => s.notes.length),
     schedules: useStore((s) => s.schedules.length),
+    goals: useStore((s) => s.goals.filter((g) => g.status === "active").length),
     supervisor: useStore((s) => (s.supervisor.enabled ? s.supervisor.watching : null)),
   };
   return (
@@ -354,6 +358,7 @@ const BOARD_TABS: { view: BoardView; label: string; title: string }[] = [
   { view: "ide", label: "IDE", title: "Edit workspace files and manage Git" },
   { view: "notes", label: "Notes", title: "Branches, PRs and reminders waiting on you" },
   { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },
+  { view: "goals", label: "Goals", title: "Goal-directed tasks: standing objectives the director keeps working on until they are met" },
   { view: "supervisor", label: "Supervisor", title: "The Director Supervisor watchdog: its state, budget and recent checks/actions" },
 ];
 
@@ -612,6 +617,9 @@ const Card = memo(function Card({
     for (const t of Object.values(s.threads)) if (t.parentId === thread.id && t.subTask) n++;
     return n;
   });
+  // The goal this task is a step of — two primitives, by the same selector rule as above.
+  const goalStepSeq = useStore((s) => goalStepOf(s.goals, thread.id)?.step.seq ?? 0);
+  const goalTitle = useStore((s) => goalStepOf(s.goals, thread.id)?.goal.title ?? "");
 
   // The ✕ soft-closes a parked task (review / paused / done / failed / cancelled) — it moves to the
   // Closed list below, restorable, rather than being deleted outright. A running task shows no ✕, so
@@ -723,6 +731,11 @@ const Card = memo(function Card({
           {collabCount ? (
             <span className="shotgun-badge" title={`${collabCount + 1} agents working this task in parallel`}>
               ⚡ {collabCount + 1}
+            </span>
+          ) : null}
+          {goalStepSeq ? (
+            <span className="goal-badge" title={`Step ${goalStepSeq} of the goal "${goalTitle}" — see the Goals tab`}>
+              Goal · {goalStepSeq}
             </span>
           ) : null}
           {subTaskCount ? (

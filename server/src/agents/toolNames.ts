@@ -46,6 +46,9 @@ export const T = {
   listScheduledTasks: `mcp__${DIRECTOR_SERVER}__list_scheduled_tasks`,
   updateScheduledTask: `mcp__${DIRECTOR_SERVER}__update_scheduled_task`,
   deleteScheduledTask: `mcp__${DIRECTOR_SERVER}__delete_scheduled_task`,
+  createGoal: `mcp__${DIRECTOR_SERVER}__create_goal`,
+  listGoals: `mcp__${DIRECTOR_SERVER}__list_goals`,
+  updateGoal: `mcp__${DIRECTOR_SERVER}__update_goal`,
 } as const;
 
 export const BUS_TOOLS = [T.postFinding, T.postDeliverable, T.handoffManualDeployment, T.readFindings, T.notifyThread, T.busAskUser, T.postNote];
@@ -72,4 +75,7 @@ export const DIRECTOR_TOOLS = [
   T.listScheduledTasks,
   T.updateScheduledTask,
   T.deleteScheduledTask,
+  T.createGoal,
+  T.listGoals,
+  T.updateGoal,
 ];

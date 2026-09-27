@@ -255,6 +255,45 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   updated_at     INTEGER NOT NULL
 );
 
+-- Goal-directed tasks (orchestrator/goals.ts): a standing objective the director keeps a step task
+-- working on until the step's agent and the director both judge it complete. last_verdict is JSON.
+CREATE TABLE IF NOT EXISTS goals (
+  id                TEXT PRIMARY KEY,
+  title             TEXT NOT NULL,
+  objective         TEXT NOT NULL,
+  workspace         TEXT NOT NULL,
+  status            TEXT NOT NULL,
+  status_reason     TEXT,
+  progress          TEXT,
+  last_verdict      TEXT,
+  max_steps         INTEGER NOT NULL,
+  current_thread_id TEXT,
+  next_check_at     INTEGER,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
+  ended_at          INTEGER
+);
+
+-- One row per task a goal dispatched. thread_id has no FK: a purged task must not erase the goal's
+-- history. The row is written BEFORE the dispatch, so a crash in between leaves a findable orphan.
+CREATE TABLE IF NOT EXISTS goal_steps (
+  id                     TEXT PRIMARY KEY,
+  goal_id                TEXT NOT NULL,
+  seq                    INTEGER NOT NULL,
+  thread_id              TEXT,
+  title                  TEXT NOT NULL,
+  provider               TEXT,
+  model                  TEXT,
+  effort                 TEXT,
+  rationale              TEXT NOT NULL DEFAULT '',
+  outcome                TEXT,
+  agent_claimed_complete INTEGER,
+  created_at             INTEGER NOT NULL,
+  settled_at             INTEGER,
+  UNIQUE(goal_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_goal_steps_thread ON goal_steps(thread_id) WHERE thread_id IS NOT NULL;
+
 -- The operator's note list: short pointers agents leave for the owner — a branch to review, a PR to
 -- merge — that they click and then delete. Deliberately NOT keyed to a task: the note outlives the
 -- work (a PR waits for the owner long after the task closes), so thread_id has NO FK and the task's

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CODEX_EFFORTS, GROK_EFFORTS, MAX_DIRECTOR_DIRECTIVES_CHARS, ZAI_EFFORTS } from "../types.js";
+import { CODEX_EFFORTS, GOAL_STATUSES, GROK_EFFORTS, MAX_DIRECTOR_DIRECTIVES_CHARS, MAX_GOAL_MAX_STEPS, ZAI_EFFORTS } from "../types.js";
 import type { CodexUsageDTO } from "../agents/codexUsage.js";
 import type { GrokUsageDTO } from "../agents/grokUsage.js";
 import type { ZaiUsageDTO } from "../agents/zaiUsage.js";
@@ -26,6 +26,8 @@ import type {
   DirectorMessage,
   DirectorStatus,
   Finding,
+  Goal,
+  GoalStatus,
   ImplementationMemo,
   Message,
   MessageCursor,
@@ -102,6 +104,7 @@ export type ServerEvent =
       chatRooms: ChatRoomSummary[];
       nameOverrides: Record<string, string>;
       schedules: ScheduledTask[];
+      goals: Goal[];
       modelStats: ModelStat[];
       notes: OperatorNote[];
       onlineOffice: OnlineOfficeDTO;
@@ -118,6 +121,8 @@ export type ServerEvent =
   | { type: "model.stats"; stats: ModelStat[] }
   // The full scheduled-task list, rebroadcast on every create/update/delete/fire (it's small and bounded).
   | { type: "schedules"; schedules: ScheduledTask[] }
+  // Every goal-directed task with its newest steps, rebroadcast on every create/edit/status change/step.
+  | { type: "goals"; goals: Goal[] }
   // The owner's note list, rebroadcast whole on every post/delete (hard-capped, so it stays small).
   | { type: "notes"; notes: OperatorNote[] }
   // The Director Supervisor's whole live state (watchdog, explicit chat, and recent audit),
@@ -591,6 +596,25 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("schedule.delete"), id: z.string() }),
   z.object({ type: z.literal("schedule.run"), id: z.string() }),
+  // ---- Goal-directed tasks — create/edit/pause/resume/end without the director ----
+  z.object({
+    type: z.literal("goal.create"),
+    title: z.string().trim().min(1).max(200),
+    objective: z.string().trim().min(1).max(20000),
+    workspace: z.string().trim().min(1).max(600),
+    maxSteps: z.number().int().min(1).max(MAX_GOAL_MAX_STEPS).optional(),
+  }),
+  z.object({
+    type: z.literal("goal.update"),
+    id: z.string(),
+    patch: z.object({
+      title: z.string().trim().min(1).max(200).optional(),
+      objective: z.string().trim().min(1).max(20000).optional(),
+      maxSteps: z.number().int().min(1).max(MAX_GOAL_MAX_STEPS).optional(),
+    }),
+  }),
+  z.object({ type: z.literal("goal.status"), id: z.string(), status: z.enum(GOAL_STATUSES as [GoalStatus, ...GoalStatus[]]) }),
+  z.object({ type: z.literal("goal.delete"), id: z.string() }),
   // ---- The owner's note list — agents post via the bus tool; these are the owner's own edits ----
   // `body` is bounded generously here and CLIPPED to NOTE_MAX_CHARS by the service, so a paste that
   // overshoots the composer's own limit is still recorded rather than silently dropped at this boundary.

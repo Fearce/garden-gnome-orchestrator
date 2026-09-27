@@ -14,7 +14,7 @@ import {
   trigramMatchExpr,
   type BackfillStep,
 } from "./searchIndex.js";
-import { BRIEF_PREVIEW_CHARS, COWORK_SNIPPET_CHARS, SUB_AGENT_PROVIDERS } from "../types.js";
+import { BRIEF_PREVIEW_CHARS, COWORK_SNIPPET_CHARS, GOAL_STEPS_SHOWN, SUB_AGENT_PROVIDERS } from "../types.js";
 import type {
   AgentRun,
   AgentRunState,
@@ -37,6 +37,10 @@ import type {
   FileAttachment,
   Finding,
   FindingKind,
+  Goal,
+  GoalStatus,
+  GoalStep,
+  GoalVerdict,
   ImplementationMemo,
   ImplementationMemoDeliverable,
   ImplementationMemoHandoff,
@@ -490,6 +494,36 @@ function rowToQuestion(r: Row): Question {
     answeredAt: (r.answered_at as number | null) ?? null,
     createdAt: r.created_at as number,
   };
+}
+
+function rowToGoalStep(r: Row): GoalStep {
+  const claimed = r.agent_claimed_complete as number | null;
+  return {
+    id: r.id as string,
+    goalId: r.goal_id as string,
+    seq: r.seq as number,
+    threadId: (r.thread_id as string | null) ?? null,
+    title: r.title as string,
+    provider: (r.provider as ImplementorProvider | null) ?? null,
+    model: (r.model as string | null) ?? null,
+    effort: (r.effort as Effort | null) ?? null,
+    rationale: (r.rationale as string | null) ?? "",
+    outcome: (r.outcome as ThreadState | null) ?? null,
+    agentClaimedComplete: claimed == null ? null : Boolean(claimed),
+    createdAt: r.created_at as number,
+    settledAt: (r.settled_at as number | null) ?? null,
+  };
+}
+
+function parseGoalVerdict(raw: unknown): GoalVerdict | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<GoalVerdict>;
+    if ((v.verdict !== "complete" && v.verdict !== "continue") || typeof v.reason !== "string" || typeof v.at !== "number") return null;
+    return { verdict: v.verdict, reason: v.reason, agentClaimedComplete: v.agentClaimedComplete === true, at: v.at };
+  } catch {
+    return null;
+  }
 }
 
 function rowToScheduledTask(r: Row): ScheduledTask {
@@ -3539,6 +3573,159 @@ export class Db {
 
   deleteScheduledTask(id: string): boolean {
     return this.raw.prepare("DELETE FROM scheduled_tasks WHERE id = ?").run(id).changes > 0;
+  }
+
+  // ---- goals (goal-directed tasks) ----
+  createGoal(input: { title: string; objective: string; workspace: string; maxSteps: number }): Goal {
+    const at = now();
+    const id = newId();
+    this.raw
+      .prepare(
+        `INSERT INTO goals(id, title, objective, workspace, status, max_steps, created_at, updated_at)
+         VALUES(@id, @title, @objective, @workspace, 'active', @maxSteps, @at, @at)`,
+      )
+      .run({ id, ...input, at });
+    return this.getGoal(id)!;
+  }
+
+  getGoal(id: string): Goal | null {
+    const r = this.raw.prepare("SELECT * FROM goals WHERE id = ?").get(id) as Row | undefined;
+    return r ? this.rowToGoal(r) : null;
+  }
+
+  listGoals(): Goal[] {
+    return (this.raw.prepare("SELECT * FROM goals ORDER BY created_at ASC, rowid ASC").all() as Row[]).map((r) => this.rowToGoal(r));
+  }
+
+  updateGoal(
+    id: string,
+    patch: Partial<{
+      title: string;
+      objective: string;
+      workspace: string;
+      status: GoalStatus;
+      statusReason: string | null;
+      progress: string | null;
+      lastVerdict: GoalVerdict | null;
+      maxSteps: number;
+      currentThreadId: string | null;
+      nextCheckAt: number | null;
+      endedAt: number | null;
+    }>,
+  ): Goal | null {
+    const map: Record<string, string> = {
+      title: "title",
+      objective: "objective",
+      workspace: "workspace",
+      status: "status",
+      statusReason: "status_reason",
+      progress: "progress",
+      lastVerdict: "last_verdict",
+      maxSteps: "max_steps",
+      currentThreadId: "current_thread_id",
+      nextCheckAt: "next_check_at",
+      endedAt: "ended_at",
+    };
+    const sets: string[] = [];
+    const params: Row = { id, updatedAt: now() };
+    for (const [k, col] of Object.entries(map)) {
+      if (!(k in patch)) continue;
+      sets.push(`${col} = @${k}`);
+      const v = (patch as Row)[k];
+      params[k] = k === "lastVerdict" ? (v ? JSON.stringify(v) : null) : (v ?? null);
+    }
+    sets.push("updated_at = @updatedAt");
+    this.raw.prepare(`UPDATE goals SET ${sets.join(", ")} WHERE id = @id`).run(params);
+    return this.getGoal(id);
+  }
+
+  /** Deletes the goal and its step history. The tasks it dispatched are ordinary tasks and stay. */
+  deleteGoal(id: string): boolean {
+    return this.raw.transaction(() => {
+      this.raw.prepare("DELETE FROM goal_steps WHERE goal_id = ?").run(id);
+      return this.raw.prepare("DELETE FROM goals WHERE id = ?").run(id).changes > 0;
+    })();
+  }
+
+  /** Records a step before its task is dispatched; `seq` is allocated in the same statement. */
+  createGoalStep(input: {
+    goalId: string;
+    title: string;
+    provider: ImplementorProvider | null;
+    model: string | null;
+    effort: Effort | null;
+    rationale: string;
+  }): GoalStep {
+    const id = newId();
+    this.raw
+      .prepare(
+        `INSERT INTO goal_steps(id, goal_id, seq, title, provider, model, effort, rationale, created_at)
+         VALUES(@id, @goalId, (SELECT IFNULL(MAX(seq), 0) + 1 FROM goal_steps WHERE goal_id = @goalId),
+                @title, @provider, @model, @effort, @rationale, @createdAt)`,
+      )
+      .run({ id, ...input, createdAt: now() });
+    return rowToGoalStep(this.raw.prepare("SELECT * FROM goal_steps WHERE id = ?").get(id) as Row);
+  }
+
+  updateGoalStep(
+    id: string,
+    patch: Partial<{ threadId: string | null; outcome: ThreadState | null; agentClaimedComplete: boolean | null; settledAt: number | null }>,
+  ): void {
+    const map: Record<string, string> = {
+      threadId: "thread_id",
+      outcome: "outcome",
+      agentClaimedComplete: "agent_claimed_complete",
+      settledAt: "settled_at",
+    };
+    const sets: string[] = [];
+    const params: Row = { id };
+    for (const [k, col] of Object.entries(map)) {
+      if (!(k in patch)) continue;
+      sets.push(`${col} = @${k}`);
+      const v = (patch as Row)[k];
+      params[k] = k === "agentClaimedComplete" ? (v == null ? null : v ? 1 : 0) : (v ?? null);
+    }
+    if (sets.length) this.raw.prepare(`UPDATE goal_steps SET ${sets.join(", ")} WHERE id = @id`).run(params);
+  }
+
+  /** The task a dispatch created for a step whose thread id was never written back (a crash between the
+   *  dispatch and the write): the first task with that exact title in that workspace since the step. */
+  findGoalStepThread(workspace: string, title: string, since: number): string | null {
+    const r = this.raw
+      .prepare("SELECT id FROM threads WHERE workspace = ? AND title = ? AND created_at >= ? ORDER BY created_at ASC, rowid ASC LIMIT 1")
+      .get(workspace, title, since) as { id: string } | undefined;
+    return r?.id ?? null;
+  }
+
+  /** A goal's steps, oldest first; `limit` keeps only the newest ones. */
+  listGoalSteps(goalId: string, limit?: number): GoalStep[] {
+    const rows = limit
+      ? (this.raw.prepare("SELECT * FROM (SELECT * FROM goal_steps WHERE goal_id = ? ORDER BY seq DESC LIMIT ?) ORDER BY seq ASC").all(goalId, limit) as Row[])
+      : (this.raw.prepare("SELECT * FROM goal_steps WHERE goal_id = ? ORDER BY seq ASC").all(goalId) as Row[]);
+    return rows.map(rowToGoalStep);
+  }
+
+  private rowToGoal(r: Row): Goal {
+    const id = r.id as string;
+    const stepCount = (this.raw.prepare("SELECT COUNT(*) AS n FROM goal_steps WHERE goal_id = ?").get(id) as { n: number }).n;
+    return {
+      id,
+      title: r.title as string,
+      objective: r.objective as string,
+      workspace: r.workspace as string,
+      status: r.status as GoalStatus,
+      statusReason: (r.status_reason as string | null) ?? null,
+      progress: (r.progress as string | null) ?? null,
+      lastVerdict: parseGoalVerdict(r.last_verdict),
+      maxSteps: r.max_steps as number,
+      currentThreadId: (r.current_thread_id as string | null) ?? null,
+      nextCheckAt: (r.next_check_at as number | null) ?? null,
+      stepCount,
+      steps: this.listGoalSteps(id, GOAL_STEPS_SHOWN),
+      createdAt: r.created_at as number,
+      updatedAt: r.updated_at as number,
+      endedAt: (r.ended_at as number | null) ?? null,
+    };
   }
 
   // ---- operator notes (the owner's own review list) ----

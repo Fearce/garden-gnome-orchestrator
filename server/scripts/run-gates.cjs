@@ -63,6 +63,7 @@ const GATES = [
   "test:schedule-detect",
   "test:scheduler",
   "test:scheduler-latency",
+  "test:goals",
   "test:notes",
   "test:task-search",
   "test:performance-paths",

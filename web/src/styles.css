@@ -2947,6 +2947,69 @@ body.dl-resizing { user-select: none; }
 .sched-switch input:checked + .sched-switch-track .sched-switch-thumb { transform: translateX(15px); background: oklch(0.2 0.03 78); }
 .sched-switch input:focus-visible + .sched-switch-track { box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent) 50%, transparent); }
 
+/* ---- Goals view (reuses the schedule toolbar, fields and modal) ---- */
+.goal-view { --goal: oklch(0.83 0.14 128); }
+.goal-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(400px, 100%), 1fr)); gap: 12px; }
+.goal-card {
+  background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 14px 14px 14px 17px; display: flex; flex-direction: column; gap: 10px; position: relative; overflow: hidden;
+  transition: border-color 0.14s;
+}
+.goal-card:hover { border-color: var(--line-strong); }
+.goal-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--goal); }
+.goal-card.gs-paused::before { background: var(--warn); }
+.goal-card.gs-achieved::before { background: var(--ok); }
+.goal-card.gs-abandoned { opacity: 0.62; }
+.goal-card.gs-abandoned::before { background: var(--text-faint); }
+.goal-card .ws-path { font-size: 11px; align-self: flex-start; }
+
+.goal-status {
+  flex: 0 0 auto; font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; font-weight: 700;
+  padding: 2px 8px; border-radius: 100px; --gs: var(--goal);
+  color: var(--gs); background: color-mix(in oklch, var(--gs) 13%, transparent);
+  border: 1px solid color-mix(in oklch, var(--gs) 42%, transparent);
+}
+.goal-status.gs-paused { --gs: var(--warn); }
+.goal-status.gs-achieved { --gs: var(--ok); }
+.goal-status.gs-abandoned { --gs: var(--text-faint); }
+
+.goal-objective {
+  font-size: 12.5px; color: var(--text-dim); line-height: 1.45; white-space: pre-wrap;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.goal-reason { font-size: 12px; line-height: 1.4; color: var(--text-dim); padding-left: 9px; border-left: 2px solid var(--line-strong); }
+.goal-reason.gs-paused { color: var(--warn); border-left-color: color-mix(in oklch, var(--warn) 60%, transparent); }
+.goal-reason.gs-achieved { color: var(--ok); border-left-color: color-mix(in oklch, var(--ok) 60%, transparent); }
+
+.goal-progress { display: flex; flex-direction: column; gap: 4px; }
+.goal-progress p { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text); white-space: pre-wrap; }
+
+.goal-steps-count { font-family: var(--font-mono); font-size: 11px; color: var(--goal); font-weight: 600; }
+.goal-verdict { font-size: 11px; color: var(--text-faint); }
+
+.goal-current {
+  display: flex; flex-direction: column; gap: 5px; padding: 9px 10px;
+  background: var(--bg-2); border-radius: var(--r-md); border: 1px solid var(--line);
+}
+.goal-rationale { margin: 0; font-size: 11.5px; line-height: 1.4; color: var(--text-faint); }
+.goal-step-link {
+  appearance: none; background: transparent; border: none; padding: 0; text-align: left; cursor: pointer;
+  font-family: var(--font-sans); font-size: 13px; color: var(--text); line-height: 1.35;
+}
+.goal-step-link:hover:not(:disabled) { text-decoration: underline; }
+.goal-step-link:disabled { cursor: default; color: var(--text-dim); }
+.goal-step-seq { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); }
+.goal-step-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.goal-claim { font-family: var(--font-mono); font-size: 10px; color: var(--ok); }
+
+.goal-history { display: flex; flex-direction: column; gap: 6px; }
+.goal-step-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; }
+.goal-step { display: flex; flex-direction: column; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.goal-step:last-child { border-bottom: none; padding-bottom: 0; }
+
+.goal-objective-input { min-height: 120px; }
+.goal-budget { width: 96px; }
+
 /* ---- create/edit modal ---- */
 .modal.sched-modal { width: min(560px, 94vw); max-height: 90vh; display: flex; flex-direction: column; }
 .modal.sched-modal .m-body { overflow-y: auto; }
@@ -3588,6 +3651,17 @@ button.note-from:hover { color: var(--text-dim); }
   color: var(--sub);
   background: color-mix(in oklch, var(--sub) 13%, transparent);
   border: 1px solid color-mix(in oklch, var(--sub) 45%, transparent);
+}
+
+/* A task that is one step of a goal. The goal lime marks standing objectives everywhere they appear
+   (card badge, Goals view), apart from the teal lookups/helpers and the amber shotgun. */
+.goal-badge {
+  --goal: oklch(0.83 0.14 128);
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.06em; font-weight: 700;
+  padding: 2px 7px; border-radius: 100px; white-space: nowrap;
+  color: var(--goal);
+  background: color-mix(in oklch, var(--goal) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--goal) 42%, transparent);
 }
 
 /* ── The composer's task-mode row ────────────────────────────────────────────────────────────────

@@ -5,6 +5,8 @@ import type { ImageAttachment } from "../types.js";
 import type { ThreadManager } from "./threadManager.js";
 import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
+import { applyGoalChange, describeGoal, type GoalRunner } from "./goals.js";
+import type { GoalStatus } from "../types.js";
 import { findWorkspaces } from "../workspace/findWorkspace.js";
 import { normalizeDuration } from "./timedTasks.js";
 import { clampAgentCount } from "./shotgun.js";
@@ -24,6 +26,7 @@ export const DIRECTOR_CLI_SCHEMA: JsonSchemaLike = {
         "reply", "ask_user", "find_workspace", "dispatch", "dispatch_read", "list_threads",
         "thread_status", "inject", "interrupt_thread", "auto_review", "read_findings", "next_token_shift", "post_operator_note",
         "create_scheduled_task", "list_scheduled_tasks", "update_scheduled_task", "delete_scheduled_task",
+        "create_goal", "list_goals", "update_goal",
       ],
     },
     message: { type: "string" },
@@ -56,6 +59,9 @@ export const DIRECTOR_CLI_SCHEMA: JsonSchemaLike = {
     enabled: { type: "boolean" },
     all: { type: "boolean" },
     effort: { type: "string", enum: ["low", "medium", "high", "max"] },
+    objective: { type: "string" },
+    maxSteps: { type: "number" },
+    status: { type: "string", enum: ["active", "paused", "abandoned", "achieved"] },
   },
 };
 
@@ -83,6 +89,9 @@ export interface DirectorCliAction {
   enabled?: boolean;
   all?: boolean;
   effort?: "low" | "medium" | "high" | "max";
+  objective?: string;
+  maxSteps?: number;
+  status?: GoalStatus;
 }
 
 export interface DirectorCliOutcome {
@@ -117,6 +126,9 @@ Commands and fields:
 - list_scheduled_tasks
 - update_scheduled_task: id plus any of title/workspace/prompt/cron/enabled/effort/model
 - delete_scheduled_task: id
+- create_goal: title, objective, workspace, maxSteps? — a GOAL-DIRECTED TASK that GGO keeps working on around the clock, one step task at a time, until the step's agent and the director both judge the objective complete. Only when the owner asks for a goal in so many words ("make this a goal", "keep working on this until it's done").
+- list_goals
+- update_goal: id plus any of title/objective/maxSteps/status (status: active|paused|abandoned|achieved — only when the owner asked)
 
 Never say something was dispatched/changed until the server has returned a successful TOOL RESULT.
 `;
@@ -134,6 +146,7 @@ export async function executeDirectorCliAction(
   notes: OperatorNotes,
   images: ImageAttachment[],
   getTaskMode: () => { durationMs: number | null; agentCount: number | null } = () => ({ durationMs: null, agentCount: null }),
+  goals?: GoalRunner,
 ): Promise<DirectorCliOutcome> {
   if (action.kind === "reply") return { final: required(action, "message") };
   const toolInput = { ...action, kind: undefined };
@@ -267,6 +280,27 @@ export async function executeDirectorCliAction(
         const id = required(action, "id");
         const r = scheduler.remove(id);
         return outcome("delete_scheduled_task", r.ok ? `Deleted scheduled task ${id}.` : `ERROR: ${r.error}`);
+      }
+      case "create_goal": {
+        if (!goals) return outcome("create_goal", "ERROR: goal-directed tasks are not available in this session.");
+        const r = goals.create({
+          title: required(action, "title"), objective: required(action, "objective"),
+          workspace: required(action, "workspace"), maxSteps: action.maxSteps,
+        });
+        return outcome("create_goal", r.ok && r.goal ? `Created goal ${r.goal.id}; its first step is being planned now.` : `ERROR: ${r.error}`);
+      }
+      case "list_goals": {
+        if (!goals) return outcome("list_goals", "ERROR: goal-directed tasks are not available in this session.");
+        const list = goals.list();
+        return outcome("list_goals", list.length ? list.map(describeGoal).join("\n") : "No goals.");
+      }
+      case "update_goal": {
+        if (!goals) return outcome("update_goal", "ERROR: goal-directed tasks are not available in this session.");
+        const text = applyGoalChange(goals, {
+          id: required(action, "id"), title: action.title, objective: action.objective,
+          maxSteps: action.maxSteps, status: action.status,
+        }, `Set by the director at ${config.ownerName}'s request.`);
+        return outcome("update_goal", text.startsWith("Could not") ? `ERROR: ${text}` : text);
       }
       default:
         return outcome("unknown", `ERROR: unsupported director command "${action.kind}".`);

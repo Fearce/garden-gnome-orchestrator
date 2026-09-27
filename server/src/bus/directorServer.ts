@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { OrchestratorApi } from "../orchestrator/api.js";
 import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
+import { applyGoalChange, describeGoal, type GoalRunner } from "../orchestrator/goals.js";
 import { NOTE_MAX_CHARS, type ImageAttachment } from "../types.js";
 import { DIRECTOR_SERVER } from "../agents/toolNames.js";
 import { existsSync } from "node:fs";
@@ -27,6 +28,7 @@ export function createDirectorServer(
   // The composer's task-mode picks for this turn, so a window / agent count chosen in the console applies
   // to whatever the director dispatches from it. An explicit tool argument always wins over these.
   getTaskMode: () => { durationMs: number | null; agentCount: number | null } = () => ({ durationMs: null, agentCount: null }),
+  goals?: GoalRunner,
 ): McpServerConfig {
   const askUser = tool(
     "ask_user",
@@ -414,9 +416,56 @@ export function createDirectorServer(
     },
   );
 
+  const goalsUnavailable = { content: [{ type: "text" as const, text: "Goal-directed tasks are not available in this session." }], isError: true };
+
+  const createGoal = tool(
+    "create_goal",
+    `Create a GOAL-DIRECTED TASK: a standing objective GGO keeps a task working on around the clock until the step's agent AND the director both judge it fully complete. GGO's director plans every step and picks each step's model and effort itself. Use this O"\n"Y when ${config.ownerName} asks for a goal in so many words ("make this a goal", "goal-directed task", "keep working on this until it's done", "run this 24/7 until X") — an ordinary request, however large, is dispatched once. The objective is the yardstick every step and verdict is judged against, so write it as ${config.ownerName} stated it, complete and unambiguous. Resolve the repo path first (find_workspace) if you don't have it.`,
+    {
+      title: z.string().describe("Short name for the goal (prefixes each step's board title)."),
+      objective: z.string().describe(`The full objective, in ${config.ownerName}'s own terms: what "done" means. Keep their wording; add only what the conversation made explicit.`),
+      workspace: z.string().describe("Absolute path of the EXISTING repo/dir the goal works in."),
+      maxSteps: z.number().int().min(1).max(1000).optional().describe("Runaway bound: the goal pauses after this many step tasks (default 100). Set it only if the owner named a budget."),
+    },
+    async (args) => {
+      if (!goals) return goalsUnavailable;
+      const r = goals.create(args);
+      if (!r.ok || !r.goal) return { content: [{ type: "text", text: `Could not create the goal: ${r.error}` }], isError: true };
+      return { content: [{ type: "text", text: `Created goal "${r.goal.title}" (${r.goal.id}) in ${r.goal.workspace}. The first step is being planned now.` }] };
+    },
+  );
+
+  const listGoals = tool(
+    "list_goals",
+    "List every goal-directed task with its status, step count, current step task and the director's latest progress summary — to report on one or get its id before changing it.",
+    {},
+    async () => {
+      if (!goals) return goalsUnavailable;
+      const list = goals.list();
+      return { content: [{ type: "text", text: list.length ? list.map(describeGoal).join("\n") : "No goals." }] };
+    },
+  );
+
+  const updateGoal = tool(
+    "update_goal",
+    `Change a goal (id from list_goals): edit its title, objective or step budget, and/or set its status — "paused" stops new steps (the running one finishes), "active" resumes, "abandoned" ends it, "achieved" marks it done on ${config.ownerName}'s say-so. Only change status when ${config.ownerName} asked for it.`,
+    {
+      id: z.string().describe("The goal id (from list_goals)."),
+      title: z.string().optional(),
+      objective: z.string().optional(),
+      maxSteps: z.number().int().min(1).max(1000).optional(),
+      status: z.enum(["active", "paused", "abandoned", "achieved"]).optional(),
+    },
+    async (args) => {
+      if (!goals) return goalsUnavailable;
+      const r = applyGoalChange(goals, args, `Set by the director at ${config.ownerName}'s request.`);
+      return { content: [{ type: "text", text: r }], isError: r.startsWith("Could not") };
+    },
+  );
+
   return createSdkMcpServer({
     name: DIRECTOR_SERVER,
     version: "0.1.0",
-    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, autoReview, readFindings, nextTokenShift, postOperatorNote, createScheduledTask, listScheduledTasks, updateScheduledTask, deleteScheduledTask],
+    tools: [askUser, findWorkspace, dispatch, dispatchRead, listThreads, threadStatus, inject, interruptThread, autoReview, readFindings, nextTokenShift, postOperatorNote, createScheduledTask, listScheduledTasks, updateScheduledTask, deleteScheduledTask, createGoal, listGoals, updateGoal],
   });
 }

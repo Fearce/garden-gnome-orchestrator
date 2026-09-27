@@ -236,6 +236,65 @@ export interface ScheduledTask {
   updatedAt: number;
 }
 
+/** A goal's lifecycle. `active` keeps a step task running; `paused` stops dispatching new steps (the
+ *  running one finishes); `achieved` and `abandoned` are terminal. */
+export type GoalStatus = "active" | "paused" | "achieved" | "abandoned";
+export const GOAL_STATUSES: GoalStatus[] = ["active", "paused", "achieved", "abandoned"];
+
+/** One task a goal dispatched. The director picked its brief, backend, model and effort. */
+export interface GoalStep {
+  id: string;
+  goalId: string;
+  seq: number; // 1-based step number within the goal
+  threadId: string | null; // null only in the instant between recording the step and the dispatch returning
+  title: string;
+  provider: ImplementorProvider | null;
+  model: string | null;
+  effort: Effort | null;
+  rationale: string; // the director's reason for this step and its model/effort pick
+  outcome: ThreadState | null; // the state the task settled in; null while it is still running
+  agentClaimedComplete: boolean | null; // the step's implementor declared the WHOLE objective complete
+  createdAt: number;
+  settledAt: number | null;
+}
+
+/** The director's latest judgement of a goal, kept so the console can say why it continued or ended. */
+export interface GoalVerdict {
+  verdict: "complete" | "continue";
+  reason: string;
+  agentClaimedComplete: boolean;
+  at: number;
+}
+
+/**
+ * A goal-directed task: a standing objective GGO keeps a task working on, around the clock, until the
+ * step's agent AND the director both judge it fully complete. The director plans each step and picks
+ * its model and effort. Persisted in `goals` + `goal_steps`; mirrored in web/src/types.ts.
+ */
+export interface Goal {
+  id: string;
+  title: string;
+  objective: string; // the owner's objective, verbatim — the fixed yardstick every verdict is judged on
+  workspace: string;
+  status: GoalStatus;
+  statusReason: string | null; // why it is paused / achieved / abandoned
+  progress: string | null; // the director's running summary of what is done and what remains
+  lastVerdict: GoalVerdict | null;
+  maxSteps: number; // runaway bound: the goal pauses once it has dispatched this many step tasks
+  currentThreadId: string | null; // the step task in flight (or last dispatched)
+  nextCheckAt: number | null; // backoff: when the director could not be reached, the next attempt
+  stepCount: number;
+  steps: GoalStep[]; // the newest GOAL_STEPS_SHOWN steps, oldest first
+  createdAt: number;
+  updatedAt: number;
+  endedAt: number | null;
+}
+
+/** How many of a goal's newest steps ride on the broadcast; `stepCount` carries the full total. */
+export const GOAL_STEPS_SHOWN = 30;
+export const DEFAULT_GOAL_MAX_STEPS = 100;
+export const MAX_GOAL_MAX_STEPS = 1000;
+
 /** The hard ceiling on a note's body, in characters. The whole point of the note list is that it can be
  *  skimmed in seconds, so this is enforced by TRUNCATION at the write boundary (never a rejection — a
  *  long note still carries its link). Mirrored in web/src/types.ts and in the bus tool's description. */

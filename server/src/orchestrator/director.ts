@@ -9,6 +9,7 @@ import type { AgentEvent, DirectorMessage, DirectorStatus, Effort, ImageAttachme
 import type { DirectorTarget, ThreadManager } from "./threadManager.js";
 import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
+import type { GoalRunner } from "./goals.js";
 import type { Account } from "../accounts/account.js";
 import { config, fallbackModelFor } from "../config.js";
 import { normalizeDuration } from "./timedTasks.js";
@@ -73,6 +74,7 @@ export class Director {
     private readonly hub: EventHub,
     private readonly scheduler: Scheduler,
     private readonly notes: OperatorNotes,
+    private readonly goals?: GoalRunner,
   ) {
     const key = db.kvGet(DIRECTOR_TARGET_KV);
     db.kvDelete(RETIRED_DIRECTOR_TARGET_AUTO_KV);
@@ -363,7 +365,7 @@ export class Director {
     const director = createDirectorServer(this.api, () => this.pendingImages, (threadId) => {
       this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId);
       this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
-    }, this.scheduler, this.notes, () => this.taskModeDefaults());
+    }, this.scheduler, this.notes, () => this.taskModeDefaults(), this.goals);
     const memory = createMemoryServer(this.api.memory);
     const { conciseAgentCommunication: conciseCommunication, directorDirectives: directives } = this.api.settings();
     const cfg = directorConfig(
@@ -558,7 +560,7 @@ export class Director {
       this.settleTurn();
       return;
     }
-    const outcome = await executeDirectorCliAction(action, this.api, this.scheduler, this.notes, this.pendingImages, () => this.taskModeDefaults());
+    const outcome = await executeDirectorCliAction(action, this.api, this.scheduler, this.notes, this.pendingImages, () => this.taskModeDefaults(), this.goals);
     if (this.run !== run || this.pending === undefined) return;
     if (outcome.toolName) this.hub.publish({ type: "director.tool", name: outcome.toolName, input: outcome.toolInput });
     if (outcome.dispatchedId) {

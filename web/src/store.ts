@@ -37,6 +37,8 @@ import type {
   RepoOp,
   RepoRef,
   RepoState,
+  Goal,
+  GoalStatus,
   Message,
   MessageCursor,
   ModelStat,
@@ -348,6 +350,8 @@ interface State {
   // Recurring/scheduled tasks (server-authoritative, broadcast over WS). Managed from the Scheduled Tasks
   // view; `boardView` toggles the center pane between the live task board and that view.
   schedules: ScheduledTask[];
+  // Goal-directed tasks (server-authoritative, broadcast over WS), shown in the Goals board view.
+  goals: Goal[];
   // The owner's note list (server-authoritative): short pointers agents leave for them — a branch to
   // review, a PR to merge — shown in the Notes board view, cleared by the owner one note at a time.
   notes: OperatorNote[];
@@ -523,6 +527,11 @@ interface State {
   ) => boolean;
   deleteSchedule: (id: string) => boolean;
   runSchedule: (id: string) => void;
+  // Goals: each returns whether the command reached the socket, so a form never closes on a dropped write.
+  createGoal: (input: { title: string; objective: string; workspace: string; maxSteps?: number }) => boolean;
+  updateGoal: (id: string, patch: { title?: string; objective?: string; maxSteps?: number }) => boolean;
+  setGoalStatus: (id: string, status: GoalStatus) => boolean;
+  deleteGoal: (id: string) => boolean;
   // The owner's note list — still optimism-free (unlike the schedule writes above): send, let the
   // `notes` broadcast reconcile. Nobody watches a note row for a response, so it needs no projection.
   addNote: (body: string, url?: string) => void;
@@ -1133,6 +1142,28 @@ function sendScheduleMutation(cmd: ScheduleMutation): boolean {
   return false;
 }
 
+type GoalCommand = Extract<ClientCommand, { type: "goal.create" | "goal.update" | "goal.status" | "goal.delete" }>;
+
+/**
+ * Goal writes. A status change (the Pause/Resume/End buttons) projects locally the moment it is sent,
+ * for the same reason schedule toggles do (see `projectScheduleMutation`); everything else waits for the
+ * `goals` broadcast, which overwrites any projection.
+ */
+function sendGoalCommand(cmd: GoalCommand): boolean {
+  if (!sendCommand(cmd)) {
+    useStore.setState({
+      notice: { level: "warn", title: "Goal not changed", message: "The console is reconnecting. Try again when it is connected." },
+    });
+    return false;
+  }
+  if (cmd.type === "goal.status") {
+    useStore.setState((s) => ({ goals: s.goals.map((g) => (g.id === cmd.id ? { ...g, status: cmd.status } : g)) }));
+  } else if (cmd.type === "goal.delete") {
+    useStore.setState((s) => ({ goals: s.goals.filter((g) => g.id !== cmd.id) }));
+  }
+  return true;
+}
+
 function sendThreadActionCommand(cmd: ClientCommand, action: string, threadId: string): Promise<boolean> {
   if (!socket || socket.readyState !== WebSocket.OPEN) return Promise.resolve(false);
   return new Promise((resolve) => {
@@ -1293,6 +1324,7 @@ export const useStore = create<State>((set) => ({
   resetRedeeming: {},
   tokenSafetyDismissed: null,
   schedules: [],
+  goals: [],
   notes: [],
   supervisor: IDLE_SUPERVISOR,
   onlineOffice: OFFLINE_OFFICE,
@@ -1788,6 +1820,10 @@ export const useStore = create<State>((set) => ({
   updateSchedule: (id, patch) => sendScheduleMutation({ type: "schedule.update", id, patch }),
   deleteSchedule: (id) => sendScheduleMutation({ type: "schedule.delete", id }),
   runSchedule: (id) => sendCommand({ type: "schedule.run", id }),
+  createGoal: (input) => sendGoalCommand({ type: "goal.create", ...input }),
+  updateGoal: (id, patch) => sendGoalCommand({ type: "goal.update", id, patch }),
+  setGoalStatus: (id, status) => sendGoalCommand({ type: "goal.status", id, status }),
+  deleteGoal: (id) => sendGoalCommand({ type: "goal.delete", id }),
   addNote: (body, url) => {
     const text = body.trim();
     const link = url?.trim();
@@ -2035,6 +2071,7 @@ function applyEvent(ev: ServerEvent): void {
         ...(ev.chatRooms ? { chatRooms: ev.chatRooms } : {}),
         ...(ev.nameOverrides ? { nameOverrides: ev.nameOverrides } : {}),
         ...(ev.schedules ? { schedules: ev.schedules } : {}),
+        ...(ev.goals ? { goals: ev.goals } : {}),
         ...(ev.modelStats ? { modelStats: ev.modelStats } : {}),
         ...(ev.notes ? { notes: ev.notes } : {}),
         ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}),
@@ -2201,6 +2238,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "schedules":
       useStore.setState({ schedules: ev.schedules });
+      break;
+    case "goals":
+      useStore.setState({ goals: ev.goals });
       break;
     case "supervisor":
       {

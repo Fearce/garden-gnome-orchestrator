@@ -13,7 +13,7 @@ import { isValidCron, nextRun } from "./cron.js";
  *  Why this exists: a shutdown check scheduled every five minutes (2026-09-23) fired on that cadence while each fire took
  *  10-40 minutes, so up to nine full implementor+QA tasks ran at once in one repo, each re-verifying and
  *  re-committing the same helper scripts. One fire at a time is the bound the pipeline needs. */
-const UNFINISHED_STATES: ReadonlySet<ThreadState> = new Set<ThreadState>([
+export const UNFINISHED_STATES: ReadonlySet<ThreadState> = new Set<ThreadState>([
   "intake",
   "enriching",
   "queued",

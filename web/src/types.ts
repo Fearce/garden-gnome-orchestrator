@@ -193,10 +193,63 @@ export interface ScheduledTask {
   updatedAt: number;
 }
 
+/** Mirrors the server's GoalStatus. */
+export type GoalStatus = "active" | "paused" | "achieved" | "abandoned";
+
+/** One task a goal dispatched. Mirrors the server's GoalStep. */
+export interface GoalStep {
+  id: string;
+  goalId: string;
+  seq: number;
+  threadId: string | null;
+  title: string;
+  provider: ImplementorProvider | null;
+  model: string | null;
+  effort: Effort | null;
+  rationale: string;
+  outcome: ThreadState | null;
+  agentClaimedComplete: boolean | null;
+  createdAt: number;
+  settledAt: number | null;
+}
+
+/** Mirrors the server's GoalVerdict. */
+export interface GoalVerdict {
+  verdict: "complete" | "continue";
+  reason: string;
+  agentClaimedComplete: boolean;
+  at: number;
+}
+
+/** A goal-directed task: a standing objective the director keeps a task working on until the step's
+ *  agent and the director both judge it complete. Mirrors the server's Goal. */
+export interface Goal {
+  id: string;
+  title: string;
+  objective: string;
+  workspace: string;
+  status: GoalStatus;
+  statusReason: string | null;
+  progress: string | null;
+  lastVerdict: GoalVerdict | null;
+  maxSteps: number;
+  currentThreadId: string | null;
+  nextCheckAt: number | null;
+  stepCount: number;
+  steps: GoalStep[];
+  createdAt: number;
+  updatedAt: number;
+  endedAt: number | null;
+}
+
+/** Mirrors server/src/types.ts. */
+export const DEFAULT_GOAL_MAX_STEPS = 100;
+export const MAX_GOAL_MAX_STEPS = 1000;
+
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
 /** Co-work is not a pane: its sessions are cards on the task board, and a conversation opens as a popup
  *  over whatever pane is showing so the rest of the work stays in sight. */
-export type BoardView = "tasks" | "notes" | "schedules" | "supervisor" | "ide";
+export type BoardView = "tasks" | "notes" | "schedules" | "goals" | "supervisor" | "ide";
 
 /** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
 export const NOTE_MAX_CHARS = 255;
@@ -1220,6 +1273,7 @@ export type ServerEvent =
       chatRooms: ChatRoomSummary[];
       nameOverrides: Record<string, string>;
       schedules: ScheduledTask[];
+      goals?: Goal[];
       modelStats: ModelStat[];
       notes: OperatorNote[];
       onlineOffice: OnlineOfficeDTO;
@@ -1234,6 +1288,7 @@ export type ServerEvent =
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "model.stats"; stats: ModelStat[] }
   | { type: "schedules"; schedules: ScheduledTask[] }
+  | { type: "goals"; goals: Goal[] }
   | { type: "notes"; notes: OperatorNote[] }
   | { type: "supervisor"; supervisor: SupervisorSnapshot }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
@@ -1387,6 +1442,10 @@ export type ClientCommand =
   | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null; model?: string | null; provider?: ImplementorProvider | null } }
   | { type: "schedule.delete"; id: string }
   | { type: "schedule.run"; id: string }
+  | { type: "goal.create"; title: string; objective: string; workspace: string; maxSteps?: number }
+  | { type: "goal.update"; id: string; patch: { title?: string; objective?: string; maxSteps?: number } }
+  | { type: "goal.status"; id: string; status: GoalStatus }
+  | { type: "goal.delete"; id: string }
   | { type: "office.join"; url: string; code: string; instanceName: string }
   | { type: "office.leave" }
   | { type: "office.set"; enabled?: boolean; instanceName?: string }

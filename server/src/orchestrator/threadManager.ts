@@ -3742,6 +3742,17 @@ export class ThreadManager implements OrchestratorApi {
     };
   }
 
+  /** The roster a goal's director picks each step's model and effort from — the same one auto model
+   *  selection uses, so a goal never pins a step to a backend that cannot run it. */
+  goalModelRoster(): ModelCandidate[] {
+    return this.implementorModelRoster();
+  }
+
+  /** Goal achieved / paused notices, over the same Discord path as every other owner notice. */
+  notifyGoal(kind: "done" | "input", title: string, detail?: string, repo?: string): void {
+    this.discord.notify({ kind, title, detail, repo });
+  }
+
   /** Every (provider, model) pair a task could ACTUALLY be dispatched to right now — each backend that is
    *  enabled, authed and not usage-capped, with the models its own picker offers. A roster built from
    *  anything looser would let the selector choose a backend that then can't run. */
