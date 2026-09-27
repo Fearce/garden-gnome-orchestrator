@@ -6,6 +6,12 @@ import type { AgentEvent } from "../types.js";
 // the owner's injection unread for as long as it runs — measured at 5m49s on 2026-09-24 before the owner
 // had to ask again. `priority: "now"` does NOT help here: a probe showed it waits for the running tool to
 // finish too. `interrupt()` stops the tool within ~60ms and the queued message is answered right after.
+//
+// That holds ONLY while the message is still queued behind a tool call. A message sent to an idle session
+// (or one still booting) starts its own turn; interrupting a quiet turn then aborts the owner's message
+// itself, nothing is left queued, and the task sits dead (c9d16556, 2026-09-27: a 10s prompt hook plus a
+// slow first token passed the deadline twice). So a run is interrupted only while a tool call is open and
+// the CLI has not stamped the message as consumed.
 
 /** Events that prove the run crossed a boundary where the queued message was handed to the model. */
 const PICKUP_EVENTS: ReadonlySet<AgentEvent["type"]> = new Set(["tool_result", "result"]);
@@ -57,7 +63,9 @@ export function watchInjectionPickup(run: AgentRunLike, opts: InjectionPickupOpt
   };
   function check() {
     if (settled) return;
-    if (run.finished || !opts.mayInterrupt()) return settle();
+    if (run.finished || !opts.mayInterrupt() || run.latestSendConsumed) return settle();
+    // Not blocked behind a tool: the message is read at the turn's next boundary, so keep watching.
+    if (run.toolCallInFlight === false) return arm(quietMs);
     const now = Date.now();
     const quietFor = now - lastActivity;
     if (quietFor < quietMs && now - sentAt < maxWaitMs) return arm(quietMs - quietFor);

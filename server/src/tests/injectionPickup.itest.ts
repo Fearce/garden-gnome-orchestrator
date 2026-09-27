@@ -8,6 +8,11 @@
  * `config.injectionPickupMs`; an SDK probe showed `interrupt()` stops a running Bash tool within ~60ms
  * and the queued message is answered right after, while `priority: "now"` waits for the tool to finish.
  *
+ * The reverse bug (task c9d16556, 2026-09-27): a message sent to an IDLE (or still-booting) session starts
+ * its own turn, and a slow prompt hook plus first token kept that turn quiet past the deadline. The watch
+ * interrupted the turn that had just read the owner's message, nothing was left queued, and the task sat
+ * dead. Only an open tool call with an unconsumed message may be interrupted.
+ *
  * WHAT IS REAL vs. STUBBED
  *  - REAL: `watchInjectionPickup`, `injectionNeedsPickupWatch`, `injectThread`'s live branch, a real Db.
  *  - STUBBED: the agent itself — a subclass of the real `AgentRun` whose send/interrupt only record, and
@@ -69,6 +74,21 @@ class FakeSdkRun extends AgentRun {
   fire(e: AgentEvent): void {
     this.emitter.emit("event", e);
   }
+  /** Put the run inside one tool call, as the classic blocked case is. */
+  blockInTool(): void {
+    this.fire({ type: "tool_use", id: "blocking", name: "Bash", input: {} });
+  }
+  /** Send through the real AgentRun path, so the message carries the uuid the CLI echoes back. */
+  realSend(): string {
+    super.send("owner message");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this as any).latestSendId as string;
+  }
+  /** Stamp a sent message the way the CLI does on the first stream frame of the turn that consumed it. */
+  cliConsumes(uuid: string): void {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (this as any).handle({ type: "stream_event", event: { type: "message_start" }, user_message_uuids: [uuid] });
+  }
   end(): void {
     this.finished = true;
     this.emitter.emit("end");
@@ -97,6 +117,7 @@ async function unitCases(): Promise<void> {
   console.log("Watcher — the decision itself");
   {
     const run = new FakeSdkRun();
+    run.blockInTool();
     const w = watch(run);
     await sleep(120);
     check("a silent run (blocked in one tool call) is interrupted", run.interrupts === 1 && w.interrupted.length === 1, JSON.stringify(w));
@@ -123,11 +144,13 @@ async function unitCases(): Promise<void> {
     await sleep(150);
     check("a run still streaming is not interrupted mid-generation", run.interrupts === 0, String(run.interrupts));
     clearInterval(streaming);
+    run.blockInTool();
     await sleep(150);
     check("…and is interrupted once it falls quiet (the tool call it started is blocking)", run.interrupts === 1 && w.interrupted.length === 1, JSON.stringify(w));
   }
   {
     const run = new FakeSdkRun();
+    run.blockInTool();
     watch(run, { timeoutMs: 40, quietMs: 60, maxWaitMs: 120 });
     const streaming = setInterval(() => run.fire({ type: "thinking_delta", text: "…" }), 10);
     await sleep(220);
@@ -136,6 +159,7 @@ async function unitCases(): Promise<void> {
   }
   {
     const run = new FakeSdkRun();
+    run.blockInTool();
     const w = watch(run, { mayInterrupt: () => false });
     await sleep(120);
     check("a run the task no longer owns (replaced, or waiting on its question) is left alone", run.interrupts === 0 && w.settled === 1, JSON.stringify(w));
@@ -152,6 +176,46 @@ async function unitCases(): Promise<void> {
     const w = watch(run, { timeoutMs: 0 });
     await sleep(60);
     check("timeoutMs 0 disables the watch", run.interrupts === 0 && w.settled === 1, JSON.stringify(w));
+  }
+
+  console.log("\nA message that started its own turn (idle or booting session)");
+  {
+    const run = new FakeSdkRun();
+    run.realSend();
+    const w = watch(run);
+    await sleep(150);
+    check("a quiet run with no tool call open is NOT interrupted — the quiet turn may be the owner's own message", run.interrupts === 0 && w.interrupted.length === 0, JSON.stringify(w));
+    check("…and the watch stays armed until the message is read", w.settled === 0, String(w.settled));
+    run.fire({ type: "result", subtype: "success", isError: false, result: "ACK" });
+    check("…which a finished turn proves", w.settled === 1, String(w.settled));
+  }
+  {
+    const run = new FakeSdkRun();
+    const sent = run.realSend();
+    const w = watch(run);
+    run.cliConsumes(sent);
+    run.blockInTool();
+    await sleep(150);
+    check("a message the CLI stamped as consumed is not interrupted once its turn opens a long tool call", run.interrupts === 0 && w.settled === 1, JSON.stringify(w));
+  }
+  {
+    const run = new FakeSdkRun();
+    run.cliConsumes(run.realSend());
+    run.realSend();
+    run.blockInTool();
+    const w = watch(run);
+    await sleep(150);
+    check("an older consumed message does not excuse the newest one still queued behind a tool call", run.interrupts === 1 && w.interrupted.length === 1, JSON.stringify(w));
+  }
+  {
+    const run = new FakeSdkRun();
+    run.blockInTool();
+    run.fire({ type: "result", subtype: "error_during_execution", isError: true });
+    run.realSend();
+    const w = watch(run);
+    await sleep(150);
+    check("a tool call left open by an aborted turn does not count as blocking the next one", run.interrupts === 0, JSON.stringify(w));
+    run.end();
   }
 
   console.log("\nWhich sends need a watch");
@@ -228,6 +292,7 @@ async function wiringCases(): Promise<void> {
   console.log("\ninjectThread — the live implementor branch");
   await withManager(async ({ mgr, db, seedLive }) => {
     const { id, run } = seedLive();
+    run.blockInTool();
     const r = await mgr.injectThread(id, "stop and answer me", "append");
     check("the append was accepted and delivered", r.ok && run.sends.length === 1, JSON.stringify(r));
     check("it was delivered as a plain append (no abort up front)", run.sends[0]?.opts === undefined, JSON.stringify(run.sends[0]));
@@ -237,6 +302,7 @@ async function wiringCases(): Promise<void> {
   });
   await withManager(async ({ mgr, db, seedLive }) => {
     const { id, run } = seedLive();
+    run.blockInTool();
     await mgr.injectThread(id, "first", "append");
     await mgr.injectThread(id, "second", "append");
     await sleep(350);
@@ -244,6 +310,7 @@ async function wiringCases(): Promise<void> {
   });
   await withManager(async ({ mgr, db, seedLive }) => {
     const { id, run } = seedLive();
+    run.blockInTool();
     await mgr.injectThread(id, "answer me", "append");
     run.fire({ type: "tool_result", id: "t1", content: "done", isError: false });
     await sleep(350);
@@ -251,6 +318,7 @@ async function wiringCases(): Promise<void> {
   });
   await withManager(async ({ mgr, db, seedLive }) => {
     const { id, run } = seedLive();
+    run.blockInTool();
     await mgr.injectThread(id, "answer me", "append");
     db.updateThread(id, { state: "awaiting_user" });
     await sleep(350);
@@ -258,10 +326,18 @@ async function wiringCases(): Promise<void> {
   });
   await withManager(async ({ mgr, seedLive, internals }) => {
     const { id, run } = seedLive();
+    run.blockInTool();
     await mgr.injectThread(id, "answer me", "append");
     internals.live.set(id, { run: new FakeSdkRun(), runId: "run-2", accountId: "acct-a" });
     await sleep(350);
     check("a run replaced by a relaunch is not interrupted", run.interrupts === 0, String(run.interrupts));
+  });
+  await withManager(async ({ mgr, db, seedLive }) => {
+    const { id, run } = seedLive();
+    await mgr.injectThread(id, "salvage the stash", "append");
+    await sleep(350);
+    check("an idle implementor whose turn is slow to start is not interrupted, and the owner is not told it was", run.interrupts === 0 && pickupNotes(db, id).length === 0, `${run.interrupts} / ${pickupNotes(db, id).length}`);
+    run.end();
   });
 
   console.log("\ninjectThread — no agent running (cold inject)");

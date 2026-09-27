@@ -9,6 +9,7 @@ import type {
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import type { Account } from "../accounts/account.js";
 import { config } from "../config.js";
@@ -113,6 +114,10 @@ export interface AgentRunLike {
    *  means even a fresh process failed to start, so the orchestrator may quarantine that backend. */
   startupWedged?: boolean;
   startupWedgeScope?: StartupWedgeScope;
+  /** Streaming SDK runs only (see injectionPickup.ts): a tool call the model started has not returned. */
+  readonly toolCallInFlight?: boolean;
+  /** Streaming SDK runs only: the CLI has stamped the newest sent message on a turn that consumed it. */
+  readonly latestSendConsumed?: boolean;
   start(firstMessage: UserContent): this;
   onEvent(cb: (e: AgentEvent) => void): () => void;
   onEnd(cb: () => void): void;
@@ -255,12 +260,14 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
 function toUserMessage(
   content: UserContent,
   opts?: { shouldQuery?: boolean; priority?: "now" | "next" | "later" },
+  uuid?: SDKUserMessage["uuid"],
 ): SDKUserMessage {
   const msg: SDKUserMessage = {
     type: "user",
     message: { role: "user", content: content as never },
     parent_tool_use_id: null,
   };
+  if (uuid) msg.uuid = uuid;
   if (opts?.shouldQuery === false) msg.shouldQuery = false;
   if (opts?.priority) msg.priority = opts.priority;
   return msg;
@@ -284,9 +291,23 @@ export class AgentRun implements AgentRunLike {
 
   private readonly input = new InputQueue();
   private q: Query | undefined;
+  private readonly openToolCalls = new Set<string>();
+  // The CLI echoes the client uuid of every user message a turn consumed (`user_message_uuids` on the
+  // turn's first stream frame), which is the only proof that a message sent while idle was read.
+  private readonly consumedSends = new Set<string>();
+  private latestSendId: string | undefined;
 
   constructor(private readonly cfg: AgentRunConfig) {
     this.emitter.setMaxListeners(50);
+    this.emitter.on("event", (e: AgentEvent) => this.trackToolCalls(e));
+  }
+
+  get toolCallInFlight(): boolean {
+    return this.openToolCalls.size > 0;
+  }
+
+  get latestSendConsumed(): boolean {
+    return this.latestSendId !== undefined && this.consumedSends.has(this.latestSendId);
   }
 
   /** Cap wording specific to the backend this run talks to, beyond the Claude CLI's own notice.
@@ -318,7 +339,7 @@ export class AgentRun implements AgentRunLike {
 
     try {
       this.q = query({ prompt: this.input, options });
-      this.input.push(toUserMessage(firstMessage));
+      this.input.push(this.stampedUserMessage(firstMessage));
       void this.consume();
     } catch (err) {
       // Most provider rejections arrive while consuming the query, but an SDK is also allowed to reject
@@ -344,7 +365,26 @@ export class AgentRun implements AgentRunLike {
 
   /** Send a follow-up user message into the live session (the inject path). */
   send(content: UserContent, opts?: { shouldQuery?: boolean; priority?: "now" | "next" | "later" }): void {
-    this.input.push(toUserMessage(content, opts));
+    this.input.push(this.stampedUserMessage(content, opts));
+  }
+
+  private stampedUserMessage(content: UserContent, opts?: SendOpts): SDKUserMessage {
+    const uuid = randomUUID();
+    this.latestSendId = uuid;
+    return toUserMessage(content, opts, uuid);
+  }
+
+  private trackToolCalls(e: AgentEvent): void {
+    if (e.type === "tool_use") this.openToolCalls.add(e.id);
+    else if (e.type === "tool_result") this.openToolCalls.delete(e.id);
+    else if (e.type === "result") this.openToolCalls.clear();
+  }
+
+  private noteConsumedSends(m: Record<string, any>): void {
+    if (typeof m.user_message_uuid === "string") this.consumedSends.add(m.user_message_uuid);
+    if (Array.isArray(m.user_message_uuids)) {
+      for (const id of m.user_message_uuids) if (typeof id === "string") this.consumedSends.add(id);
+    }
   }
 
   async interrupt(): Promise<void> {
@@ -522,6 +562,7 @@ export class AgentRun implements AgentRunLike {
 
   private handle(message: SDKMessage): void {
     const m = message as Record<string, any>;
+    if (m.type === "stream_event" || m.type === "assistant") this.noteConsumedSends(m);
     switch (m.type) {
       case "system":
         if (m.subtype === "init" && typeof m.session_id === "string") {
