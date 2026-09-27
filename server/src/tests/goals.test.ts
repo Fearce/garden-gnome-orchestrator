@@ -158,6 +158,8 @@ async function lifecycle(): Promise<void> {
   check("a goal with no effort set runs at medium even when the director asks for high", first.effort === "medium");
   check("the judge prompt says the effort is capped", h.judged[0]!.includes("low or medium"));
   check("the brief carries the objective and the status-line rule", first.brief.includes("Parser, docs and tests all done.") && first.brief.includes("GOAL STATUS: COMPLETE"));
+  check("the judge prompt asks for the whole remaining objective per step", h.judged[0]!.includes("ALL the remaining work") && !h.judged[0]!.includes("not the whole objective at once"));
+  check("the brief tells the agent to keep going past its step", first.brief.includes("keep going into the rest of the objective") && !first.brief.includes("do not stretch this step"));
   check("a goal step is dispatched without QA", first.skipQa === true);
   check("the board title names goal and step", first.title === stepTitle(goal, 1, "Build the parser"));
   check("the goal tracks its current task", goal.currentThreadId !== null && goal.steps[0]?.threadId === goal.currentThreadId);

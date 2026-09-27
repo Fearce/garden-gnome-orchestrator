@@ -322,7 +322,7 @@ export function buildGoalJudgePrompt(ctx: GoalJudgeContext): string {
     `- verdict "complete" ONLY if the objective as ${ctx.ownerName} wrote it is fully met and the evidence shows it (not merely that a step finished). Otherwise "continue".`,
     "- The goal ends only when you say complete AND the last step's agent declared it complete. If you believe it is complete but the agent did not declare it, still return \"complete\" and make `next` a VERIFICATION step: independently check every part of the objective, fix any gap, and declare the result.",
     "- `progress`: a short running summary of what is done and what remains, replacing the earlier one.",
-    "- `next`: the next step. Make it a concrete, self-contained brief an implementor can finish in one task — the most valuable next slice toward the objective, not the whole objective at once. Build on what earlier steps did; if a step failed or QA rejected it, address why. The brief goes to the implementor as-is, together with the objective.",
+    "- `next`: the next step, as a concrete, self-contained brief. Make it one LONG-RUNNING task covering ALL the remaining work of the objective, ordered so the most valuable part comes first. Every step is a fresh agent session that re-reads the repository before it can work, plus another judgement from you, so many small steps waste tokens that one long step spends on the work itself. Split the remaining work only where a later part truly depends on your judging an earlier result, never just to keep a step small. Build on what earlier steps did; if a step failed or QA rejected it, address why. The brief goes to the implementor as-is, together with the objective.",
     pickInstruction(goal, ctx.ownerName),
     "",
     rosterLines.length ? `DISPATCHABLE MODELS RIGHT NOW:\n${rosterLines.join("\n")}` : "No model reports headroom right now; pick the one you would want when capacity returns.",
@@ -338,7 +338,7 @@ export function goalStepBrief(goal: Goal, seq: number, judgement: GoalJudgement,
     verification
       ? `THIS STEP IS A VERIFICATION: the director believes the objective is already met. Check every part of it against the repository and running behaviour, fix any gap you find, then report honestly.\n\n${judgement.next.brief}`
       : `THIS STEP:\n${judgement.next.brief}`,
-    "Finish this step completely, commit it, and report what you did. GGO dispatches further steps until the objective is met, so do not stretch this step to cover everything.",
+    "This is a long-running task: finish this step completely, then keep going into the rest of the objective in this same task, committing at each coherent point. Stop only when the ENTIRE objective is achieved or you are blocked on something only the owner can resolve. Each new step starts a fresh session that must re-learn the repository, so one long task costs far fewer tokens than many short ones. Then report what you did.",
     "End your final report with one status line on its own. Write `GOAL STATUS: COMPLETE` only if the ENTIRE objective, not just this step, is now fully achieved and verified. Otherwise write `GOAL STATUS: CONTINUE — <what still remains>`. The director checks your claim against the evidence; claiming complete early only earns a verification step.",
   ].filter(Boolean).join("\n\n");
 }

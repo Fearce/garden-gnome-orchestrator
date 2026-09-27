@@ -19,6 +19,11 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   outcome from durable rows. Steps dispatch with `skipQa: true`, which `resolveRoute` turns into a
   route with `useQa: false` (`withoutQaWhenSkipped`); the director's step judgement is the review.
   Gates: `test:goals` (the flag is sent) and `test:route-pipeline` §2b (QA never runs, Retry keeps it).
+- **Steps are long, not sliced.** The judge prompt asks for `next` to cover ALL the remaining work, split
+  only where a later part depends on judging an earlier result; the step brief tells the agent to keep going
+  past its step into the rest of the objective. Each step is a fresh session that re-reads the repo plus a
+  director call, so many small steps burn tokens on overhead. Do not reintroduce "one slice per step"
+  wording; `test:goals` pins both texts.
 - **Ending takes two voices.** The step's implementor must write a standalone `GOAL STATUS: COMPLETE` line
   (`detectGoalComplete`: the last status line wins, and it must stand alone because the brief quotes the
   marker mid-sentence), AND the director's verdict must be `complete`. A lone director verdict dispatches a
