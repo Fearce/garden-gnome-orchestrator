@@ -8520,6 +8520,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return { run: agent, runId, accountId };
   }
 
+  /** A model change cannot land in the old session, so the resume reseeds a new one — and that new CLI can
+   *  take minutes to say anything on a busy machine. Say which model is starting before the silence does. */
+  private announceModelChangeReseed(threadId: string, priorModel: string, selectedModel: string, why: string): void {
+    const content = `↻ Model change: the earlier session ran ${priorModel}, but ${why}. A session can't switch models, so a new ${selectedModel} session is starting from a handoff of the earlier one. Its first output can take a few minutes.`;
+    const message = this.db.addMessage({ threadId, role: "director", kind: "system", content });
+    this.hub.publish({ type: "thread.message", threadId, message });
+    this.touchThread(threadId);
+  }
+
   /**
    * Start the implementor for a resume, picking the cheap path so a resume never silently reloads a
    * whole prior session. The gate (shared by the pipeline's implementor→QA loop AND manual resume /
@@ -8532,15 +8541,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * `resumeNudge` is the message sent on a warm full-resume; `directorNote` is any new instruction
    * from this resume (woven into the cold seed, since that path doesn't continue the live session).
    */
-  /** A model change cannot land in the old session, so the resume reseeds a new one — and that new CLI can
-   *  take minutes to say anything on a busy machine. Say which model is starting before the silence does. */
-  private announceModelChangeReseed(threadId: string, priorModel: string, selectedModel: string, why: string): void {
-    const content = `↻ Model change: the earlier session ran ${priorModel}, but ${why}. A session can't switch models, so a new ${selectedModel} session is starting from a handoff of the earlier one. Its first output can take a few minutes.`;
-    const message = this.db.addMessage({ threadId, role: "director", kind: "system", content });
-    this.hub.publish({ type: "thread.message", threadId, message });
-    this.touchThread(threadId);
-  }
-
   private async startResumedImplementor(
     thread: Thread,
     baseKickoff: string,
