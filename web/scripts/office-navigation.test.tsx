@@ -122,4 +122,47 @@ assert.doesNotMatch(
   "no repo-room copy leaks into a room that has no repository",
 );
 
-console.log("Office navigation UI gate passed - lone gnomes open their own visible project chat directly, and the Online Office section opens the directors' room.");
+// ---- a busy huddle draws its whole crowd --------------------------------------------------------------
+
+// Five tasks in one repo used to render as four gnomes (a hard slice(0, 4)), which read as "four agents
+// here". Everyone is drawn up to six; past that the tail folds into a "+N" so the pill never under-reads.
+const busyWorkspace = "C:\\workspaces\\busy-repo";
+function huddleWith(localCount: number, remoteCount = 0): { gnomes: number; more: string | null } {
+  const threads: Record<string, unknown> = {};
+  const runs: Record<string, unknown> = {};
+  for (let i = 0; i < localCount; i++) {
+    threads[`busy-${i}`] = {
+      id: `busy-${i}`, title: `Busy ${i}`, state: "building", workspace: busyWorkspace,
+      brief: "crowd", rawPrompt: "crowd", createdAt: at, updatedAt: at,
+    };
+    runs[`busy-run-${i}`] = { id: `busy-run-${i}`, threadId: `busy-${i}`, role: "implementor", model: "claude-opus", state: "running", startedAt: at + i };
+  }
+  const remoteAgents = Array.from({ length: remoteCount }, (_, i) => ({
+    key: `remote-${i}`, name: `Remote ${i}`, role: "qa", title: "remote", repoKey: "busy-key", repoLabel: "busy-repo",
+    instanceId: "inst-mikkel", instanceName: "Mikkel's laptop",
+  }));
+  Object.assign(state, {
+    officeRoom: null,
+    threads,
+    runs,
+    onlineOffice: {
+      ...state.onlineOffice,
+      remoteAgents,
+      sharedRepos: remoteCount ? [{ repoKey: "busy-key", repoLabel: "busy-repo", workspaces: [busyWorkspace] }] : [],
+    },
+  });
+  const strip = renderToStaticMarkup(React.createElement(Office));
+  const start = strip.indexOf('class="office-huddle-gnomes"');
+  assert.ok(start >= 0, `a ${localCount}+${remoteCount} crowd renders as a huddle`);
+  const huddle = strip.slice(start, strip.indexOf('class="office-huddle-tag"', start));
+  const more = huddle.match(/class="office-crowd-more">\+(\d+)</);
+  return { gnomes: huddle.split("<svg").length - 1, more: more ? more[1]! : null };
+}
+assert.deepEqual(huddleWith(4), { gnomes: 4, more: null }, "four tasks in a repo draw four gnomes");
+assert.deepEqual(huddleWith(5), { gnomes: 5, more: null }, "five tasks in a repo draw five gnomes, not four");
+assert.deepEqual(huddleWith(6), { gnomes: 6, more: null }, "six still fit without a count");
+assert.deepEqual(huddleWith(9), { gnomes: 5, more: "4" }, "past six, five gnomes plus +4 account for all nine");
+assert.deepEqual(huddleWith(3, 2), { gnomes: 5, more: null }, "local and remote agents share the crowd budget");
+assert.deepEqual(huddleWith(4, 4), { gnomes: 5, more: "3" }, "a mixed crowd past six folds its tail into +N");
+
+console.log("Office navigation UI gate passed - lone gnomes open their own visible project chat directly, the Online Office section opens the directors' room, and a busy huddle accounts for every agent.");
