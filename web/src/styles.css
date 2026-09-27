@@ -2764,12 +2764,11 @@ body.dl-resizing { user-select: none; }
   @supports (height: 100dvh) {
     .detail { height: 100dvh; }
   }
-  .inject-bar { padding-bottom: calc(11px + env(safe-area-inset-bottom)); }
   /* Reading mode is the phone default: one compact disclosure replaces the 120px composer until the
      operator needs it. The close control floats over the textarea, so opening it adds no extra row. */
   .mobile-inject-toggle {
     display: flex; flex: 0 0 auto; align-items: center; justify-content: flex-start;
-    min-height: var(--tap); margin: 0; padding: 0 16px calc(env(safe-area-inset-bottom) / 2);
+    min-height: var(--tap); margin: 0; padding: 0 16px;
     border: 0; border-top: 1px solid var(--line); background: var(--bg-1);
     color: var(--text-dim); font: 13px var(--font-sans); text-align: left;
   }
@@ -2801,14 +2800,20 @@ body.dl-resizing { user-select: none; }
   .task-model-popover { left: auto; right: calc(-1 * (var(--tap) + 4px)); width: min(310px, calc(100vw - 24px)); }
   .task-agents-popover { right: calc(-1 * (var(--tap) * 2 + 8px)); width: min(360px, calc(100vw - 24px)); }
 
-  /* Clears the notch / browser chrome via the safe-area inset. The header used to be `position:
-     sticky` here as well, to keep the close control reachable while the feed scrolled. That was
-     already inert (its only scrolling ancestor would have been `.detail`, which is `overflow:
-     hidden`), and it is now actively wrong: the header is a flex row that never scrolls, and
-     `.detail-body` below it owns the scroll. */
-  .detail-head { padding-top: calc(13px + env(safe-area-inset-top)); }
+  /* On a phone the header docks BELOW the composer, so its collapse chevron and ✕ sit where the thumb
+     is. `order` moves it past every other flex row of `.detail`; inside the header the title row goes
+     last, so expanding grows the details upward and the toggle does not move. The chevron is flipped
+     to match: collapsed points up (opens upward). The panel keeps the notch inset the header used to
+     carry, and the header takes the home-indicator inset the composer used to carry. */
+  .detail { padding-top: env(safe-area-inset-top); }
+  .detail-head {
+    order: 1; border-bottom: 0; border-top: 1px solid var(--line);
+    padding-bottom: calc(13px + env(safe-area-inset-bottom));
+  }
+  .detail-head.collapsed { padding-bottom: calc(9px + env(safe-area-inset-bottom)); }
+  .detail-head .head-toggle svg { scale: 1 -1; }
   .detail-head .top {
-    position: relative; display: block; padding-right: 96px; /* strip for the two corner buttons */
+    order: 1; position: relative; display: block; padding-right: 96px; /* strip for the two corner buttons */
   }
   .detail-title-actions {
     margin-top: 8px; flex-wrap: wrap; align-items: center;

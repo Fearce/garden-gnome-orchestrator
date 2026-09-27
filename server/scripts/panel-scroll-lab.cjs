@@ -49,6 +49,9 @@ const TASK_ID = "panel-scroll-lab-task-00";
  *  lands a rounding step outside its container. */
 const SLACK = 1;
 
+/** The compact band's upper bound (`@media (max-width: 899.98px)`), where the panel is a phone overlay. */
+const PHONE_MAX = 900;
+
 /** The smallest transcript viewport that is still a transcript. Below this the panel is the reported
  *  bug ("a sliver"), whether or not anything technically overflowed. Two `.fi` rows plus their gap. */
 const MIN_SCROLLPORT = 150;
@@ -291,6 +294,8 @@ function readPanel(page) {
         const t = document.querySelector(".transcript");
         return t && t.getBoundingClientRect().height > 0 ? { clientHeight: t.clientHeight, scrollHeight: t.scrollHeight } : null;
       })(),
+      head: rect(document.querySelector(".detail-head")),
+      headToggle: rect(document.querySelector(".detail-head .head-toggle")),
       memo: rect(document.querySelector(".implementation-memo-pin")),
       deliverables: rect(document.querySelector(".deliverables")),
       deliverableChips: document.querySelectorAll(".deliverables .dl-chip").length,
@@ -479,6 +484,8 @@ function assertPanel(check, tag, P) {
     composer ? `the composer sits ${px(composer.bottom - detail.bottom)} below the panel` : "no visible composer in the panel",
   );
 
+  if (P.viewport.width < PHONE_MAX) assertPhoneHeadDocked(check, tag, P);
+
   // Every role control must stay inside the filter strip, with no horizontal scrollbar across the
   // top of the transcript.
   check(
@@ -597,6 +604,28 @@ function assertScrolledToEnd(check, tag, P) {
   // The state the owner actually reported from: a long task, scrolled to the newest message. This is
   // where the strip used to be thousands of pixels away.
   assertDeliverablesOnScreen(check, tag, P, "after scrolling to the newest message");
+}
+
+/** On a phone the header docks under the composer so it opens and closes from the thumb's reach:
+ *  it must sit below the composer, end on the panel's floor, and keep its toggle in the bottom band. */
+function assertPhoneHeadDocked(check, tag, P) {
+  const px = (n) => `${Math.round(n)}px`;
+  const { detail, composer, head, headToggle } = P;
+  check(
+    `${tag} · phone: the task header sits under the composer (${px(head ? head.top : 0)} >= ${px(composer ? composer.bottom : 0)})`,
+    !!head && !!composer && head.top >= composer.bottom - SLACK,
+    head && composer ? `the header starts ${px(composer.bottom - head.top)} above the composer's bottom` : "no header or composer",
+  );
+  check(
+    `${tag} · phone: the task header ends on the panel's floor`,
+    !!head && Math.abs(head.bottom - detail.bottom) <= SLACK,
+    head ? `the header ends ${px(detail.bottom - head.bottom)} above the panel bottom` : "no .detail-head",
+  );
+  check(
+    `${tag} · phone: the header toggle is in the bottom quarter of the panel`,
+    !!headToggle && headToggle.height > 0 && headToggle.top >= detail.top + detail.height * 0.75,
+    headToggle ? `the toggle is at ${px(headToggle.top)} in a ${px(detail.top)}-${px(detail.bottom)} panel` : "no .head-toggle",
+  );
 }
 
 async function openPanel(browser, viewport, head) {
