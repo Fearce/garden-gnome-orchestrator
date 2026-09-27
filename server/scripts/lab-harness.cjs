@@ -211,7 +211,11 @@ async function boot({ dataDir, port, env = {}, entry }) {
   const log = fs.createWriteStream(path.join(dataDir, "lab.log"));
   child.stdout.pipe(log);
   child.stderr.pipe(log);
-  for (let i = 0; i < 60; i++) {
+  // A cold boot measured past 30s on the loaded box (2026-09-27), so the default is generous and a
+  // child that already died fails at once instead of waiting it out.
+  const timeoutMs = Number(process.env.LAB_BOOT_TIMEOUT_MS ?? 120_000);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && child.exitCode === null) {
     await new Promise((r) => setTimeout(r, 500));
     try {
       if ((await fetch(`http://127.0.0.1:${port}/api/me`)).ok) return child;
@@ -219,7 +223,9 @@ async function boot({ dataDir, port, env = {}, entry }) {
       /* not listening yet */
     }
   }
-  throw new Error(`instance never came up — see ${path.join(dataDir, "lab.log")}`);
+  const why = child.exitCode === null ? `not answering after ${timeoutMs}ms (LAB_BOOT_TIMEOUT_MS)` : `exited with code ${child.exitCode}`;
+  child.kill();
+  throw new Error(`instance never came up — ${why}; see ${path.join(dataDir, "lab.log")}`);
 }
 
 /**
