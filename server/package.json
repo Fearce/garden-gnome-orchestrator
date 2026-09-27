@@ -243,6 +243,7 @@
     "verify:deployment": "node scripts/verify-deployment.cjs",
     "probe:cowork": "node scripts/probe-cowork.cjs",
     "probe:task-runs": "node scripts/probe-task-runs.cjs",
+    "probe:dispatch-latency": "node scripts/probe-dispatch-latency.cjs",
     "probe:routing": "node scripts/probe-routing.cjs",
     "probe:model-pin": "node scripts/probe-model-pin.cjs",
     "probe:supervisor-chat": "node scripts/probe-supervisor-chat.cjs",
