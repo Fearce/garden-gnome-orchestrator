@@ -10,7 +10,9 @@ const spawned = [];
 const realSpawn = childProcess.spawn;
 childProcess.spawn = (_cmd, _args, opts) => {
   spawned.push(opts);
-  return { stdout: new PassThrough(), stderr: new PassThrough() };
+  // Shaped like a live ChildProcess: boot() polls only while exitCode is null and kills a child that
+  // never answers. Without these the poll loop was skipped outright and kill() threw.
+  return { stdout: new PassThrough(), stderr: new PassThrough(), exitCode: null, kill() {} };
 };
 const { SERVER_ROOT, requireBuild, boxBounds, labWebDist, labChildEnv, boot } = require("./lab-harness.cjs");
 childProcess.spawn = realSpawn;
