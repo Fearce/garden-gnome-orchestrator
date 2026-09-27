@@ -717,7 +717,11 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   takes over). Weekly headroom → 5h headroom → round-robin are the tiebreaks. A
   run's `rate_limit_event` still flags `rateLimited` fast mid-burst (the ping owns
   the %). State streams to the GUI as `accounts` events → the topbar burn strip; a
-  failed ping marks the value "stale" (dimmed) after 20 min.
+  failed ping marks the value "stale" (dimmed) after 20 min. Each 5h/7d meter also
+  shows its burn pace (`Accounts.tsx` `burnPace`): used % over elapsed share of the
+  window, so 1× spends it exactly by its reset — the goal burn guard's yardstick —
+  and over 1× turns warn, with the run-dry time on hover. Derived in the browser from
+  the % and reset alone; blank in a window's first 5% or with no known reset.
 - **Mid-task failover** (`threadManager.ts`). The account is picked per run, but if it
   hits a 5h/weekly cap *mid-run* (`rate_limit_event` `status:"rejected"` →
   `AgentRun.rateLimited`), the task doesn't stall: `selectFailover` picks another account

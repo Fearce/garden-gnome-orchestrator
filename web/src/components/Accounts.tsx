@@ -24,6 +24,44 @@ function countdown(reset: number | null | undefined, now: number): string {
   return `${sec}s`;
 }
 
+const HOUR_MS = 3_600_000;
+const WINDOW_MS: Record<string, number> = { "5h": 5 * HOUR_MS, "7d": 7 * 24 * HOUR_MS };
+// Before this share of a window has passed, a few percent of usage reads as a wild multiple.
+const MIN_PACE_ELAPSED_SHARE = 0.05;
+
+/**
+ * How fast a window is being spent, as a multiple of the even pace that uses it up exactly at its reset
+ * (1 = on pace) — the goal burn-rate guard's yardstick. Null when the window's length or reset is unknown,
+ * or too little of it has passed for the ratio to mean anything.
+ */
+function burnPace(pct: number | null, reset: number | null | undefined, windowMs: number | undefined, now: number): Burn | null {
+  if (pct == null || reset == null || reset <= now || !windowMs) return null;
+  const elapsed = windowMs - (reset - now);
+  if (elapsed < windowMs * MIN_PACE_ELAPSED_SHARE) return null;
+  const pace = pct / ((100 * elapsed) / windowMs);
+  // At the average rate so far (pct per elapsed ms), the rest of the window lasts this long.
+  const msToEmpty = pct > 0 ? ((100 - pct) * elapsed) / pct : Infinity;
+  return { pace, msToEmpty, msToReset: reset - now };
+}
+
+interface Burn {
+  pace: number;
+  msToEmpty: number;
+  msToReset: number;
+}
+
+function paceLabel(pace: number): string {
+  return pace >= 9.95 ? `${Math.min(99, Math.round(pace))}×` : `${pace.toFixed(1)}×`;
+}
+
+/** Hover text for a pace: when an over-pace window runs dry, or where an under-pace one ends up. */
+function paceTip({ pace, msToEmpty, msToReset }: Burn, now: number): string {
+  const head = `burn ${pace.toFixed(2)}× the even pace`;
+  if (msToEmpty >= msToReset) return `${head} — on track to end the window near ${Math.round(Math.min(100, pace * 100))}%`;
+  if (msToEmpty <= 0) return `${head} — the window is already spent, ${countdown(now + msToReset, now)} before it resets`;
+  return `${head} — at this rate it runs out in ${countdown(now + msToEmpty, now)}, ${countdown(now + msToReset - msToEmpty, now)} before it resets`;
+}
+
 export function Accounts() {
   const accounts = useStore((s) => s.accounts);
   const settings = useStore((s) => s.settings);
@@ -661,10 +699,12 @@ function Meter({
       ? `${win} usage: —${detailNote}`
       : `${win} usage: ${stale ? "~" : ""}${label(pct)}${stale ? " (last known)" : ""}${detailNote}`;
   const resetTip = resetEstimated ? `estimated reset in ${left} (Codex omitted the 5-hour window)` : `resets in ${left}`;
+  const burn = holding ? null : burnPace(pct, reset, WINDOW_MS[k], now);
+  const burnNote = burn ? ` · ${paceTip(burn, now)}` : "";
   const tip = holding
     ? `${usageTip} · window idle — starts in ${countdown(hold, now)} (staggered so 5h resets spread out across subscriptions; a dispatch starts it right away)`
     : left
-      ? `${usageTip} · ${resetTip}`
+      ? `${usageTip} · ${resetTip}${burnNote}`
       : lapsed
         ? `${usageTip} · the ${win} window has reset — this reading is from before it and updates at the next usage read`
         : usageTip;
@@ -678,6 +718,7 @@ function Meter({
         <div className={"meter-fill " + kind + (stale ? " stale" : "")} style={{ width: `${clamp(pct)}%` }} />
       </div>
       <span className="meter-v">{shown}</span>
+      <span className={"meter-b" + (burn && burn.pace > 1 ? " over" : "")}>{burn ? paceLabel(burn.pace) : ""}</span>
       <span className="meter-r">{holding ? `idle ${countdown(hold, now)}` : left ? `${resetEstimated ? "~" : ""}${left}` : lapsed ? "reset" : ""}</span>
     </div>
   );

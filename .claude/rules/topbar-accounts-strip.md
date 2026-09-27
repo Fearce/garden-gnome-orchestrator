@@ -49,9 +49,15 @@ npm run chip-lab --prefix server -- --list               # healthy | lapsed-week
 **bogus account tokens** (a live token makes the boot ping START a real 5h window and
 wreck the stagger you're inspecting), seeded `account_usage_*` blobs, then a real
 browser at 1280/1440/1600/1850/1900/1920 (straddling the bound) printing every meter's
-text + tooltip. Exit 1 = clipped.
+text + tooltip. Exit 1 = clipped or a meter column spills.
 Use it for any change to a meter's *state* — an `idle`/`stale`/lapsed-reset reading
 is invisible to a typecheck and to prod (whose accounts are usually healthy).
+
+Each meter is a fixed grid (`.meter`: key · track · % · burn pace · countdown); only the
+track is `1fr`, so it absorbs any width a new column takes. chip-lab prints each meter's
+track width and fails with `SPILLS` when a value, pace or countdown outgrows its column.
+To negative-control a CSS tweak in a pinned lab bundle, delete the asset's `.css.br`/`.css.gz`
+siblings too — the instance serves the precompressed copy, so editing only the `.css` changes nothing.
 
 `npm run probe:chips` (`web/scripts/check-accounts-visible.cjs`) is the geometry-only
 check against an already-running instance (`ORCH_URL=…`); it fails when a chip isn't

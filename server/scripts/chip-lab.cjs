@@ -175,6 +175,13 @@ async function readStrip(page) {
           k: m.querySelector(".meter-k")?.textContent?.trim(),
           v: m.querySelector(".meter-v")?.textContent?.trim(),
           r: m.querySelector(".meter-r")?.textContent?.trim() || "",
+          b: m.querySelector(".meter-b")?.textContent?.trim() || "",
+          track: Math.round(m.querySelector(".meter-track")?.getBoundingClientRect().width ?? 0),
+          // A value, pace or countdown wider than its fixed grid column spills into its neighbour.
+          spills: [".meter-v", ".meter-b", ".meter-r"].filter((sel) => {
+            const el = m.querySelector(sel);
+            return !!el && el.scrollWidth > el.clientWidth + 1;
+          }),
           tip: m.getAttribute("title"),
         })),
         // A chip with no meters says why on this line instead — "polling usage…", an error, or (a free
@@ -192,7 +199,10 @@ function report(width, strip) {
   for (const c of strip.chips) {
     const tags = c.tags.length ? ` [${c.tags.join(", ")}]` : "";
     console.log(`    ${c.label}${tags}`);
-    for (const m of c.meters) console.log(`      ${m.k.padEnd(3)} ${(m.v || "").padStart(5)}  ${m.r.padEnd(12)} ${m.tip ?? ""}`);
+    for (const m of c.meters) {
+      const flag = m.spills.length ? `  SPILLS ${m.spills.join(",")}` : "";
+      console.log(`      ${m.k.padEnd(3)} ${(m.v || "").padStart(5)} ${m.b.padStart(5)}  ${m.r.padEnd(12)} track ${m.track}px${flag}  ${m.tip ?? ""}`);
+    }
     if (!c.meters.length && c.note) console.log(`      ${c.note}${c.errTitle ? ` (${c.errTitle})` : ""}`);
   }
 }
@@ -224,6 +234,7 @@ async function main() {
       : ACCOUNT_ENV;
   console.log(`chip-lab — scenario "${args.scenario}" on ${BASE} (data ${dataDir})`);
   let clipped = false;
+  let spilled = false;
   try {
     // First boot creates the schema; the snapshots are only read by bootPing, so seed and boot again.
     await boot({ dataDir, port: PORT, env });
@@ -243,6 +254,7 @@ async function main() {
         const strip = await readStrip(page);
         report(width, strip);
         clipped = clipped || strip.clipped;
+        spilled = spilled || strip.chips.some((c) => c.meters.some((m) => m.spills.length > 0));
         if (width === args.widths[0]) await page.screenshot({ path: shot, clip: { x: 0, y: 0, width, height: 130 } });
         await page.close();
       }
@@ -257,6 +269,10 @@ async function main() {
   }
   if (clipped) {
     console.error("\nFAIL — the strip is clipped at one or more widths (widen the wrap breakpoint in web/src/styles.css).");
+    return 1;
+  }
+  if (spilled) {
+    console.error("\nFAIL — a meter value, burn pace or countdown is wider than its .meter grid column (web/src/styles.css).");
     return 1;
   }
   console.log("\nOK — every chip visible at every width.");
