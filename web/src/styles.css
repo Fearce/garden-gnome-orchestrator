@@ -2803,17 +2803,24 @@ body.dl-resizing { user-select: none; }
      is. `order` moves it past every other flex row of `.detail`; inside the header the title row goes
      last, so expanding grows the details upward and the toggle does not move. The chevron is flipped
      to match: collapsed points up (opens upward). The panel keeps the notch inset the header used to
-     carry, and the header takes the home-indicator inset the composer used to carry. */
+     carry, and the header takes the home-indicator inset the composer used to carry.
+     An expanded header on a short phone (390x664) is taller than the room it gets, so it scrolls inside
+     itself, and a scroller opens at its TOP: the title row, now last, started 27-130px below the panel
+     with the chevron and ✕ out of reach. So the title row is `sticky; bottom: 0` with an opaque
+     background, and the details scroll up behind it. The bottom inset lives on the row, not on the
+     header, so the stuck row and the fully scrolled row land in the same place. */
   .detail { padding-top: env(safe-area-inset-top); }
   .detail-head {
-    order: 1; border-bottom: 0; border-top: 1px solid var(--line);
-    padding-bottom: calc(13px + env(safe-area-inset-bottom));
+    order: 1; border-bottom: 0; border-top: 1px solid var(--line); padding-bottom: 0;
   }
-  .detail-head.collapsed { padding-bottom: calc(9px + env(safe-area-inset-bottom)); }
+  .detail-head.collapsed { padding-bottom: 0; }
   .detail-head .head-toggle svg { scale: 1 -1; }
   .detail-head .top {
-    order: 1; position: relative; display: block; padding-right: 96px; /* strip for the two corner buttons */
+    order: 1; position: sticky; bottom: 0; z-index: 2; background: var(--bg-1);
+    display: block; padding-right: 96px; /* strip for the two corner buttons */
+    padding-bottom: calc(13px + env(safe-area-inset-bottom));
   }
+  .detail-head.collapsed .top { padding-bottom: calc(9px + env(safe-area-inset-bottom)); }
   .detail-title-actions {
     margin-top: 8px; flex-wrap: wrap; align-items: center;
   }

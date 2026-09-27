@@ -75,8 +75,11 @@ const MAX_DELIVERABLE_SHARE = 0.34;
 
 /** Each band is a different rule, so each gets a width. 580 is the reported one (compact single-pane,
  *  `.detail` is a fixed full-screen overlay); 900 is the first desktop width; 1440x620 is the case
- *  people forget, a laptop whose window is SHORT, where the chrome starves the feed on desktop too. */
+ *  people forget, a laptop whose window is SHORT, where the chrome starves the feed on desktop too.
+ *  390x664 is a real phone, and the only viewport here where the EXPANDED header outgrows its room and
+ *  scrolls inside itself, which is what once put the docked header's chevron and ✕ below the screen. */
 const VIEWPORTS = [
+  { width: 390, height: 664, why: "a phone: an iPhone's viewport under Safari's bars" },
   { width: 580, height: 740, why: "the reported narrow window" },
   { width: 760, height: 820, why: "large phone / small tablet" },
   { width: 900, height: 900, why: "the first desktop band" },
@@ -625,6 +628,15 @@ function assertPhoneHeadDocked(check, tag, P) {
     `${tag} · phone: the header toggle is in the bottom quarter of the panel`,
     !!headToggle && headToggle.height > 0 && headToggle.top >= detail.top + detail.height * 0.75,
     headToggle ? `the toggle is at ${px(headToggle.top)} in a ${px(detail.top)}-${px(detail.bottom)} panel` : "no .head-toggle",
+  );
+  // The check above reads the toggle's layout box, which is still "in the bottom quarter" when the
+  // header scrolls inside itself and has clipped the toggle out of view. So also require the whole
+  // toggle inside the header's own visible box: an expanded header taller than its room opens at its
+  // scroll top, and the title row (the last row here) must be pinned so it is not left below the fold.
+  check(
+    `${tag} · phone: the header toggle is visible, not scrolled out of the header`,
+    !!head && !!headToggle && headToggle.top >= head.top - SLACK && headToggle.bottom <= head.bottom + SLACK,
+    head && headToggle ? `the toggle spans ${px(headToggle.top)}-${px(headToggle.bottom)} in a header showing ${px(head.top)}-${px(head.bottom)}` : "no header or toggle",
   );
 }
 
