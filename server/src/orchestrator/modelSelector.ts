@@ -304,6 +304,7 @@ export function buildSelectionPrompt(ctx: SelectionContext): string {
     "",
     "## Effort levels",
     `${ctx.efforts.join(" | ")} — how much reasoning the model spends per turn. Each model's exact available subset is shown beside it above; choose only a tier listed for the model you pick.`,
+    "Current models are strong: medium is the right effort for most tasks, low for small contained ones. Reserve high and above for work that is genuinely critical (security/auth, money, destructive data migration) or genuinely complicated — never as a default.",
     "",
     "## How earlier auto-picked tasks actually scored",
     "100 = accepted with no human involvement; 40 = the task ended up needing a human; each QA fix-round past the first costs 12 more. Dollars, tokens, turns and time cover the WHOLE pipeline, so a cheap model that needed three QA rounds reads as expensive here. Prefer this evidence over your priors about these models. Never treat $0 as free when token burn is known.",

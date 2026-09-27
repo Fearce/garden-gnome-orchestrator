@@ -150,14 +150,18 @@ deliberately no per-command approval gate; it would defeat firing many concurren
 tasks. (The `permission_request` event type exists as a hook point if a future
 opt-in gate is ever wanted.)
 
-Effort is assigned per task. The deterministic route starts narrow edits at low
-or medium, ordinary contained work at medium, and broad or risk-bearing work at
-high; substantial correctness-critical work can start at max. The planner can
-refine that baseline, and automatic model selection can choose a supported tier
-using the same route/planner effort as its starting point. A specific effort
-selected for the run reaches the provider setting and the implementor prompt.
-Precedence is `effort_override` > automatic model pick > planner > route. Legacy
-paths without a task effort still use the provider's high default.
+Effort is assigned per task. Modern models are strong enough that medium is the
+right default for most work, so the deterministic route starts narrow edits at
+low or medium and ordinary contained work at medium — including most
+broad-scoped or multi-part work, unless it is either genuinely correctness-
+critical (security/auth, money, destructive data migration) or shows real
+scale/complexity evidence, which raises it to high; only work that is both
+raises it to max. The planner can refine that baseline, and automatic model
+selection can choose a supported tier using the same route/planner effort as
+its starting point. A specific effort selected for the run reaches the
+provider setting and the implementor prompt. Precedence is `effort_override` >
+automatic model pick > planner > route. Legacy paths without a task effort
+still use the provider's high default.
 
 The Implementor row above is the **default** model, not the only one: with the
 opt-in `autoModelSelection` setting the director picks this task's implementor

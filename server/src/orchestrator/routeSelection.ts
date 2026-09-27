@@ -187,6 +187,13 @@ const CORRECTNESS_CRITICAL = new Set(["security/auth", "money/finance", "data mi
  * The implementor effort this route implies — the fallback used only when no owner pin, auto-selected
  * pick, or planner judgement exists (with the planner off or skipped, that is most tasks). Without it an
  * unset effort resolves to `high` for everything, including a typo fix.
+ *
+ * Current models are strong enough that `medium` is the right default for the bulk of real work, not
+ * just the narrow/standard tiers — `high`/`max` are reserved for tasks that are genuinely correctness-
+ * critical (security/auth, money, destructive data migration) or that carry real scale/complexity
+ * evidence (`scaleSignals`), not merely "broad" by a single keyword hit. A `broad` task that hits one
+ * risk or structural signal without either of those still runs at `medium`; `high` needs one of them,
+ * `max` needs both.
  */
 function routeImplementorEffort(
   scope: RouteScope,
@@ -198,7 +205,10 @@ function routeImplementorEffort(
   if (scope === "narrow") return narrowHinted ? "low" : "medium";
   if (scope === "standard") return "medium";
   const critical = riskHits.some((name) => CORRECTNESS_CRITICAL.has(name));
-  return critical && scaleSignals(riskHits, structural, evidence).length > 0 ? "max" : "high";
+  const hasScale = scaleSignals(riskHits, structural, evidence).length > 0;
+  if (critical && hasScale) return "max";
+  if (critical || hasScale) return "high";
+  return "medium";
 }
 
 function completeDecision(
@@ -245,7 +255,8 @@ const NARROW_FILE_LIMIT = 2;
  * Deterministic and explainable: identical input always yields the identical decision, and every decision
  * carries the matched signal names (`signals`) behind its one-line `reason`. Each tier also carries the
  * implementor effort it implies (`routeImplementorEffort`): narrow → low/medium, standard → medium, broad →
- * high, and max only for substantial correctness-critical work.
+ * medium by default too, rising to high only when the task is correctness-critical or shows real scale/
+ * complexity evidence, and max only when both are true.
  */
 export function selectRoute(input: RouteInput): RouteDecision {
   const text = `${input.title}\n${input.brief}`;
