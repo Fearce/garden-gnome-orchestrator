@@ -103,12 +103,12 @@ which drives the Claude Code binary and inherits your existing CLI login. Defaul
 
 | Role | Model |
 | --- | --- |
-| Director | `claude-sonnet-5` |
+| Director | `claude-opus-5-5` |
 | Planner | `claude-opus-5-5` |
-| Researcher | `claude-sonnet-5` |
+| Researcher | `claude-opus-5-5` |
 | Implementor | `claude-opus-5-5` |
 | QA | `claude-opus-5-5` |
-| Reader (read lane) | `claude-sonnet-5` |
+| Reader (read lane) | `claude-opus-5-5` |
 | Reviewer (auto-review) | `claude-opus-5-5` |
 
 Three other backends are optional, off by default, and enabled per machine under
