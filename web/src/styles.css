@@ -346,7 +346,12 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 /* A huddle spanning the online office: same repository, two working trees. Dashed so the boundary is
    visible without splitting the group — they ARE collaborating, they just aren't in this checkout. */
 .office-huddle.cross-machine { border-style: dashed; }
-.office-huddle-gnomes { display: inline-flex; }
+.office-huddle-gnomes { display: inline-flex; align-items: center; }
+/* The crowd past CROWD_MAX in Office.tsx folds into a count, so a busy repo never reads as fewer agents. */
+.office-crowd-more {
+  margin-left: 3px; font-family: var(--font-mono); font-size: 9.5px; font-weight: 600;
+  letter-spacing: 0.02em; color: var(--text-dim); font-variant-numeric: tabular-nums;
+}
 .office-huddle-gnomes > .gnome,
 .office-huddle-gnomes > .office-huddle-remote { margin-left: -9px; } /* overlap so they read as a huddle */
 .office-huddle-gnomes > :first-child { margin-left: 0; }
@@ -1218,7 +1223,7 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
   border: 1px dashed var(--line-strong); background: transparent; opacity: 0.82;
 }
 .office-remote:hover { opacity: 1; background: var(--bg-2); }
-.office-remote-gnomes { display: inline-flex; }
+.office-remote-gnomes { display: inline-flex; align-items: center; }
 .office-remote-gnomes > .gnome { margin-left: -8px; }
 .office-remote-gnomes > .gnome:first-child { margin-left: 0; }
 .office-remote-tag {
@@ -1236,7 +1241,7 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
   background: color-mix(in oklch, var(--role-director) 8%, var(--bg-2));
 }
 .office-online:hover { background: color-mix(in oklch, var(--role-director) 15%, var(--bg-2)); }
-.office-online-gnomes { display: inline-flex; }
+.office-online-gnomes { display: inline-flex; align-items: center; }
 .office-online-gnomes > .gnome { margin-left: -9px; } /* overlap, so a group of people reads as a group */
 .office-online-gnomes > .gnome:first-child { margin-left: 0; }
 .office-online-tag {

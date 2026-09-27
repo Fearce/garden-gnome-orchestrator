@@ -77,6 +77,39 @@ function Pacer({ role, active }: { role: Role; active: boolean }) {
   );
 }
 
+// The most gnomes a cluster draws before the tail folds into a "+N" count.
+const CROWD_MAX = 6;
+
+/** How many of a cluster's members get a gnome, and how many fold into "+N". Everyone is drawn while
+ *  they fit; past that the count badge takes one gnome's slot, so the pill never under-reads the crowd. */
+function crowd(total: number): { shown: number; more: number } {
+  return total <= CROWD_MAX ? { shown: total, more: 0 } : { shown: CROWD_MAX - 1, more: total - (CROWD_MAX - 1) };
+}
+
+function CrowdMore({ more }: { more: number }) {
+  return more > 0 ? <span className="office-crowd-more">+{more}</span> : null;
+}
+
+/** A huddle's gnomes: local workers first, then the remote teammates, sharing one crowd budget. */
+function HuddleGnomes({ group }: { group: Group }) {
+  const { shown, more } = crowd(group.workers.length + group.remotes.length);
+  return (
+    <span className="office-huddle-gnomes">
+      {group.workers.slice(0, shown).map((w) => (
+        <Gnome key={w.threadId} role={w.role} size={20} />
+      ))}
+      {/* Teammates from another machine stand in the same huddle — dimmed, because nothing
+          they do lands in this working tree until someone pushes. */}
+      {group.remotes.slice(0, Math.max(0, shown - group.workers.length)).map((a) => (
+        <span className="office-huddle-remote" key={`${a.instanceId}:${a.key}`}>
+          <Gnome role={roleOf(a.role)} size={20} />
+        </span>
+      ))}
+      <CrowdMore more={more} />
+    </span>
+  );
+}
+
 const roleOf = (r: string): Role => ((ROLES as readonly string[]).includes(r) ? (r as Role) : "implementor");
 
 /** The hover text for a huddle. It names the remote half explicitly, by machine: "who is in this repo
@@ -252,9 +285,10 @@ export function Office() {
             title={onlineOfficeTitle(onlineOffice.directors)}
           >
             <span className="office-online-gnomes">
-              {onlineOffice.directors.slice(0, 4).map((d) => (
+              {onlineOffice.directors.slice(0, crowd(onlineOffice.directors.length).shown).map((d) => (
                 <Gnome key={d.instanceId} role="director" size={20} />
               ))}
+              <CrowdMore more={crowd(onlineOffice.directors.length).more} />
             </span>
             <span className="office-online-tag">Online Office</span>
             {bubbleFor(byRoom.get(DIRECTORS_ROOM)) ? <span className="office-bubble team">{bubbleFor(byRoom.get(DIRECTORS_ROOM))}</span> : null}
@@ -270,18 +304,7 @@ export function Office() {
                 data-office-room={g.room}
                 title={huddleTitle(g, (w) => nameOf(w.threadId, w.role))}
               >
-                <span className="office-huddle-gnomes">
-                  {g.workers.slice(0, 4).map((w) => (
-                    <Gnome key={w.threadId} role={w.role} size={20} />
-                  ))}
-                  {/* Teammates from another machine stand in the same huddle — dimmed, because nothing
-                      they do lands in this working tree until someone pushes. */}
-                  {g.remotes.slice(0, 3).map((a) => (
-                    <span className="office-huddle-remote" key={`${a.instanceId}:${a.key}`}>
-                      <Gnome role={roleOf(a.role)} size={20} />
-                    </span>
-                  ))}
-                </span>
+                <HuddleGnomes group={g} />
                 <span className="office-huddle-tag">{leaf(g.workspace)}</span>
                 {bubbleFor(byRoom.get(g.room)) ? <span className="office-bubble team">{bubbleFor(byRoom.get(g.room))}</span> : null}
               </button>
@@ -313,9 +336,10 @@ export function Office() {
             }
           >
             <span className="office-remote-gnomes">
-              {m.agents.slice(0, 3).map((a) => (
+              {m.agents.slice(0, crowd(m.agents.length).shown).map((a) => (
                 <Gnome key={`${a.instanceId}:${a.key}`} role={roleOf(a.role)} size={18} />
               ))}
+              <CrowdMore more={crowd(m.agents.length).more} />
             </span>
             <span className="office-remote-tag">{m.name}</span>
           </button>
