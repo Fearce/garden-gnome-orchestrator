@@ -60,11 +60,11 @@ function seed(dataDir) {
   const pngPath = path.join(workspace, PNG_NAME);
   fs.writeFileSync(mdPath, MD_TEXT, "utf8");
   fs.writeFileSync(pngPath, Buffer.from(PNG_B64, "base64"));
-  execFileSync("git", ["init", "-q"], { cwd: workspace });
-  execFileSync("git", ["config", "user.email", "deliverables-lab@example.invalid"], { cwd: workspace });
-  execFileSync("git", ["config", "user.name", "Deliverables Lab"], { cwd: workspace });
-  execFileSync("git", ["add", MD_NAME, PNG_NAME], { cwd: workspace });
-  execFileSync("git", ["commit", "-qm", "seed deliverables"], { cwd: workspace });
+  execFileSync("git", ["init", "-q"], { cwd: workspace, windowsHide: true });
+  execFileSync("git", ["config", "user.email", "deliverables-lab@example.invalid"], { cwd: workspace, windowsHide: true });
+  execFileSync("git", ["config", "user.name", "Deliverables Lab"], { cwd: workspace, windowsHide: true });
+  execFileSync("git", ["add", MD_NAME, PNG_NAME], { cwd: workspace, windowsHide: true });
+  execFileSync("git", ["commit", "-qm", "seed deliverables"], { cwd: workspace, windowsHide: true });
   fs.appendFileSync(mdPath, "\nWorking-tree line for the Changes viewer.\n", "utf8");
 
   const db = new Database(path.join(dataDir, "orchestrator.sqlite"));
