@@ -199,7 +199,7 @@ interface RoundStubs {
 /** Stub the round's agent-spawning leaves; reports what the round looked like from the inside. */
 function stubRoundLeaves(h: Harness, opts: { throwInRound?: boolean } = {}): RoundStubs {
   const out: RoundStubs = { markerDuringRound: [], episodeDuringRound: [], slotDuringRound: [], drained: 0 };
-  const fakeStart = { run: { send(): void {}, async stop(): Promise<void> {} }, runId: "run-x", accountId: "acct-a" };
+  const fakeStart = { run: { send(): void {}, async stop(): Promise<void> {}, onEvent: () => (): void => {} }, runId: "run-x", accountId: "acct-a" };
   h.mgr.stopLive = async (): Promise<void> => {};
   h.mgr.flushDirectorNotes = (): void => {};
   h.mgr.startImplementor = (t: Thread): typeof fakeStart => {
@@ -318,7 +318,7 @@ async function testBonusFailureDoesNotResume(): Promise<void> {
     let heldSlotAtStop = false;
     h.mgr.startImplementor = (): unknown => {
       launches++;
-      return { run: { stop: async (): Promise<void> => { stops++; heldSlotAtStop = h.mgr.activePipelines.has(id); } }, runId: "bonus", accountId: "acct" };
+      return { run: { stop: async (): Promise<void> => { stops++; heldSlotAtStop = h.mgr.activePipelines.has(id); }, onEvent: () => (): void => {} }, runId: "bonus", accountId: "acct" };
     };
     h.mgr.awaitTurnResult = async (): Promise<unknown> => {
       completions++;
@@ -332,6 +332,87 @@ async function testBonusFailureDoesNotResume(): Promise<void> {
     check(`${outcome.subtype}: failure is visible`, db.listFindings(id).some((f) => f.summary.includes("didn't finish cleanly")));
     h.dispose();
   }
+}
+
+/** A streaming bonus run the test drives by hand: it emits events like the real AgentRun and only returns
+ *  its result when the test says so. */
+function steerableRun(): {
+  run: Record<string, unknown>;
+  emit: (e: Record<string, unknown>) => void;
+  finish: (res: unknown) => void;
+  sends: { content: string; priority?: string }[];
+  result: Promise<unknown>;
+  listeners: () => number;
+} {
+  const listeners = new Set<(e: Record<string, unknown>) => void>();
+  const sends: { content: string; priority?: string }[] = [];
+  let finish!: (res: unknown) => void;
+  const result = new Promise<unknown>((resolve) => { finish = resolve; });
+  const run = {
+    finished: false,
+    rateLimited: false,
+    send: (content: unknown, opts?: { priority?: string }): void => void sends.push({ content: JSON.stringify(content), priority: opts?.priority }),
+    stop: async (): Promise<void> => {},
+    onEvent: (cb: (e: Record<string, unknown>) => void): (() => void) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+  return { run, emit: (e) => { for (const cb of listeners) cb(e); }, finish, sends, result, listeners: () => listeners.size };
+}
+
+async function testWrapUpSteer(): Promise<void> {
+  console.log("\nTest C3 — a round that spends its soft budget is asked to wrap up, not killed mid-commit\n");
+  const { db, dir, workspace } = makeDb("self-improve-wrapup-");
+  const h = boot(db, dir, workspace);
+  h.mgr.setSettings({ selfImproveEnabled: true });
+  const id = seedAcceptedTask(db, workspace, false);
+  h.mgr.latestImplementorSession = (): string => "session-abc";
+  h.mgr.stopLive = async (): Promise<void> => {};
+  h.mgr.flushDirectorNotes = (): void => {};
+  const bonus = steerableRun();
+  h.mgr.ranSilently = (): boolean => false; // the fake persists no agent messages for it to count
+  h.mgr.startImplementor = (): unknown => ({ run: bonus.run, runId: "bonus", accountId: "acct" });
+  h.mgr.awaitTurnResult = async (): Promise<unknown> => {
+    for (let i = 0; i < 9; i++) bonus.emit({ type: "tool_use", id: `t${i}`, name: "Bash", input: {} });
+    check("nine tool calls are still inside the budget", bonus.sends.length === 0, `sends=${bonus.sends.length}`);
+    bonus.emit({ type: "tool_use", id: "t9", name: "Bash", input: {} });
+    bonus.emit({ type: "tool_use", id: "t10", name: "Bash", input: {} });
+    bonus.finish(OK_RESULT);
+    return bonus.result;
+  };
+  await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF");
+  check("the tenth tool call sends exactly one wrap-up", bonus.sends.length === 1, `sends=${bonus.sends.length}`);
+  check("…as the wrap-up instruction", (bonus.sends[0]?.content ?? "").includes("Self-improvement time is up"), bonus.sends[0]?.content);
+  // "now" is an abort of the running turn: the one thing a round sitting between an edit and its commit
+  // must never get.
+  check("…queued with priority next, never now", bonus.sends[0]?.priority === "next", `priority=${bonus.sends[0]?.priority}`);
+  check("the feed says the round was asked to wrap up", db.listMessages(id).some((m) => m.content.includes("asked the round to commit or revert")));
+  check("a round that wraps up cleanly files no failure", !db.listFindings(id).some((f) => f.summary.includes("didn't finish cleanly")));
+  check("the accepted task stays done", db.getThread(id)?.state === "done");
+  check("the wrap-up watcher is detached once the round ends", bonus.listeners() === 0, `listeners=${bonus.listeners()}`);
+  h.dispose();
+}
+
+async function testCapIsASkipNotAFailure(): Promise<void> {
+  console.log("\nTest C4 — a usage cap during the round is reported as a skip\n");
+  const { db, dir, workspace } = makeDb("self-improve-cap-");
+  const h = boot(db, dir, workspace);
+  h.mgr.setSettings({ selfImproveEnabled: true });
+  const id = seedAcceptedTask(db, workspace, false);
+  h.mgr.latestImplementorSession = (): string => "session-abc";
+  h.mgr.stopLive = async (): Promise<void> => {};
+  h.mgr.flushDirectorNotes = (): void => {};
+  const bonus = steerableRun();
+  bonus.run.rateLimited = true;
+  h.mgr.startImplementor = (): unknown => ({ run: bonus.run, runId: "bonus", accountId: "acct" });
+  h.mgr.awaitTurnResult = async (): Promise<unknown> => ({ type: "result", subtype: "error_during_execution", isError: true, result: "You've hit your session limit · resets 6:40am" });
+  await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF");
+  const findings = db.listFindings(id);
+  check("the cap is not filed as the round failing", !findings.some((f) => f.summary.includes("didn't finish cleanly")), findings.map((f) => f.summary).join(" | "));
+  check("it is recorded as a skip, as info", findings.some((f) => f.summary.includes("skipped") && f.summary.includes("usage limit") && f.severity === "info"));
+  check("the accepted task stays done", db.getThread(id)?.state === "done");
+  h.dispose();
 }
 
 async function testCliBonusRunsOnce(): Promise<void> {
@@ -352,7 +433,7 @@ async function testCliBonusRunsOnce(): Promise<void> {
       launches++;
       resumeSession = opts.resume;
       freshFallback = opts.freshFallback;
-      const run = { stop: async (): Promise<void> => {}, send: (): void => { sends++; } };
+      const run = { stop: async (): Promise<void> => {}, send: (): void => { sends++; }, onEvent: () => (): void => {} };
       // Register it as the live implementor, as the real startImplementor does, so every push path
       // that targets `this.live` (office chat, heads-up findings, sub-task notices) can reach it.
       h.mgr.live.set(id, { run, runId: "bonus", accountId: provider === "codex" ? "openai-codex" : "xai-grok" });
@@ -395,7 +476,7 @@ async function testRestartedCliBonusKeepsItsBackend(): Promise<void> {
     h.mgr.startImplementor = (_thread: Thread, _message: string, opts: { resume?: string }): unknown => {
       launchedOn = h.mgr.implementorProvider.get(id);
       resumeSession = opts.resume;
-      return { run: { stop: async (): Promise<void> => {}, send: (): void => {} }, runId: "bonus", accountId: provider };
+      return { run: { stop: async (): Promise<void> => {}, send: (): void => {}, onEvent: () => (): void => {} }, runId: "bonus", accountId: provider };
     };
     h.mgr.awaitTurnResult = async (): Promise<unknown> => OK_RESULT;
     await h.mgr.runSelfImprovement(db.getThread(id)!, undefined, "KICKOFF");
@@ -515,6 +596,8 @@ async function main(): Promise<void> {
   await testApprovedTaskRestriction();
   await testConcurrentRoundIsOneShot();
   await testBonusFailureDoesNotResume();
+  await testWrapUpSteer();
+  await testCapIsASkipNotAFailure();
   await testCliBonusRunsOnce();
   await testRestartedCliBonusKeepsItsBackend();
   await testStaleMarkerCleared();

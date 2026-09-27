@@ -651,9 +651,20 @@ const SELF_IMPROVE_MSG =
   "one concrete reusable improvement that this task clearly exposed. If there is none, say so in one " +
   "sentence and finish. If there is one, make the smallest useful change, verify it proportionately, " +
   "and commit it separately under the task's normal commit policy. Stay within this task's workspace. " +
-  "Do not start a new project or service. This bonus stops after eight turns or three minutes.";
-const SELF_IMPROVE_MAX_TURNS = 8;
-const SELF_IMPROVE_TIMEOUT_MS = 3 * 60_000;
+  "Do not start a new project or service. Keep it to a few minutes; if you are told time is up, wrap up at once.";
+// Sent while the round is still working once its soft budget is spent, so it ends on a commit or a revert
+// instead of being killed between an edit and its commit.
+const SELF_IMPROVE_WRAP_UP_MSG =
+  "[Self-improvement time is up.] Stop exploring now. If your improvement is finished and verified, commit it " +
+  "under the task's normal commit policy; otherwise revert only your own uncommitted bonus edits. Then reply " +
+  "with one sentence saying which. This round is stopped shortly regardless.";
+// The soft budget is spent at whichever comes first: the wrap-up time, or this many tool calls (a proxy for
+// turns — parallel calls over-count, which only wraps up earlier). The hard ceilings sit well past it so a
+// wrap-up still has room to commit on this box, where one hooked commit takes 20-80s.
+const SELF_IMPROVE_WRAP_UP_MS = 4 * 60_000;
+const SELF_IMPROVE_WRAP_UP_TOOL_CALLS = 10;
+const SELF_IMPROVE_MAX_TURNS = 18;
+const SELF_IMPROVE_TIMEOUT_MS = 8 * 60_000;
 const MAX_TRANSIENT_API_FAILURES = config.maxTransientApiFailures;
 // On a model-pool cap (Fable's own gated allowance, separate from the 5h/weekly windows) the run
 // relaunches on the SAME account with the fallback model — this is that relaunch's continuation nudge,
@@ -11124,7 +11135,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.hub.publish({ type: "thread.message", threadId: thread.id, message: m });
     // Use one direct resume. The ordinary resume gate may spend an unbounded interval compressing
     // a cold session before the worker starts, which would escape this round's wall-clock budget.
-    const deadline = Date.now() + SELF_IMPROVE_TIMEOUT_MS;
+    const roundStart = Date.now();
+    const deadline = roundStart + SELF_IMPROVE_TIMEOUT_MS;
     let stopTimer: ReturnType<typeof setTimeout> | undefined;
     const stopped = await Promise.race([
       this.stopLive(thread.id).then(() => true),
@@ -11147,6 +11159,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // cutoffs or empty results while it makes progress, and can fail over on process errors; none is
     // justified after QA has already accepted the task.
     const attemptFrom = this.attemptStart(thread.id);
+    const wrapUp = this.armSelfImproveWrapUp(thread.id, start.run, roundStart);
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<undefined>((resolve) => {
@@ -11157,6 +11170,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       res = await Promise.race([this.awaitTurnResult(start.run, false), timeout]);
     } finally {
       if (timer) clearTimeout(timer);
+      wrapUp.disarm();
       // A result ends a turn, not the streaming provider process. Keep the workspace slot and
       // durable bonus marker until that process has stopped, on success and failure alike.
       await start.run.stop();
@@ -11169,15 +11183,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // A cap flagged during this bonus round must not tag the task's settle — the task is going 'done',
     // and a stale flag could otherwise leak into a later settle of this thread.
     this.capParked.delete(thread.id);
-    if (!stoppedByOwner && (!res || res.isError || silent)) {
-      this.postFinding({
-        threadId: thread.id,
-        fromRole: "implementor",
-        summary: "Self-improvement round didn't finish cleanly — the task itself is already complete and unaffected",
-        detail: timedOut ? `Stopped after ${SELF_IMPROVE_TIMEOUT_MS / 60_000} minutes.` : silent ? SILENT_RUN_ERROR : res?.isError ? runErrorText(res) : "The bonus run ended without a result.",
-        severity: "note",
-      });
-    }
+    if (!stoppedByOwner) this.reportSelfImproveOutcome(thread.id, start.run, res, { timedOut, silent, wrapUpSent: wrapUp.sent() });
     // A queued owner instruction is separate task work and must run even if this optional bonus
     // failed or timed out. Close the bonus identity before the normal implementor resume.
     if (this.queuedForImplementor.get(thread.id)?.length && !this.cancelled(thread.id)) {
@@ -11190,6 +11196,59 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (followUp && !followUp.isError) this.setState(thread.id, "done");
       else this.settleReview(thread.id, this.implementorParkReason(followUp, "the queued owner follow-up needs review."));
     }
+  }
+
+  /** Ask the round to wrap up once its soft budget is spent, by time or by tool calls, whichever comes
+   *  first. Streaming runs only: a Codex/Grok bonus is one batch process that cannot be steered. `priority:
+   *  "next"` on purpose — "now" aborts the turn, possibly between an edit and its commit. */
+  private armSelfImproveWrapUp(threadId: string, run: AgentRunLike, roundStart: number): { disarm: () => void; sent: () => boolean } {
+    if (run instanceof CodexAgentRun || run instanceof GrokAgentRun) return { disarm: () => {}, sent: () => false };
+    let sent = false;
+    let toolCalls = 0;
+    const wrapUp = (): void => {
+      if (sent || run.finished) return;
+      sent = true;
+      const m = this.db.addMessage({ threadId, role: "implementor", kind: "system", content: "⏱ Self-improvement budget spent — asked the round to commit or revert and wrap up." });
+      this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.sendCommunication(run, SELF_IMPROVE_WRAP_UP_MSG, { priority: "next" });
+    };
+    const timer = setTimeout(wrapUp, Math.max(0, roundStart + SELF_IMPROVE_WRAP_UP_MS - Date.now()));
+    const off = run.onEvent((e) => {
+      if (e.type === "tool_use" && ++toolCalls >= SELF_IMPROVE_WRAP_UP_TOOL_CALLS) wrapUp();
+    });
+    return { disarm: () => { clearTimeout(timer); off(); }, sent: () => sent };
+  }
+
+  /** One finding for a round that did not end on its own clean result. A usage cap is the subscription's
+   *  state rather than the round's failure, so it is reported as a skip, not as a failure. */
+  private reportSelfImproveOutcome(
+    threadId: string,
+    run: AgentRunLike,
+    res: ResultEvent | undefined,
+    o: { timedOut: boolean; silent: boolean; wrapUpSent: boolean },
+  ): void {
+    if (res && !res.isError && !o.silent) return;
+    if (run.rateLimited) {
+      this.postFinding({
+        threadId,
+        fromRole: "implementor",
+        summary: "Self-improvement round skipped — its subscription hit a usage limit; the task itself is complete",
+        detail: res?.isError ? runErrorText(res) : undefined,
+        severity: "info",
+      });
+      return;
+    }
+    const minutes = SELF_IMPROVE_TIMEOUT_MS / 60_000;
+    const timedOutDetail = o.wrapUpSent
+      ? `Asked to wrap up, then stopped at the ${minutes}-minute limit before it replied.`
+      : `Stopped at the ${minutes}-minute limit.`;
+    this.postFinding({
+      threadId,
+      fromRole: "implementor",
+      summary: "Self-improvement round didn't finish cleanly — the task itself is already complete and unaffected",
+      detail: o.timedOut ? timedOutDetail : o.silent ? SILENT_RUN_ERROR : res?.isError ? runErrorText(res) : "The bonus run ended without a result.",
+      severity: "note",
+    });
   }
 
   // ---- live thread controls ----

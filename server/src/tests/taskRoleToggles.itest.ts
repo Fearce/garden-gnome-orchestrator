@@ -282,6 +282,7 @@ function heldRoleAgent(created: string[]) {
     start: () => {},
     result: () => done.promise,
     nextResult: () => done.promise,
+    onEvent: () => () => {},
     stop: async () => done.resolve(SUCCESS),
   };
 }

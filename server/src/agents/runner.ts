@@ -59,6 +59,15 @@ export type ResultEvent = Extract<AgentEvent, { type: "result" }>;
  *  These two are the whole set the CLI itself treats as "aborted"; every other reason ends a real turn. */
 const ABORTED_TERMINAL_REASONS = new Set(["aborted_streaming", "aborted_tools"]);
 
+/** A turn the CLI opened on its own and closed without reaching the model. On resume it reports every
+ *  background task the previous process left behind (`origin.kind: "task-notification"`) BEFORE reading
+ *  our prompt, closing that turn with a 0-turn success. It answers none of our messages, so it is never the
+ *  run's outcome: read as one, it ended runs half a second into their real turn. */
+function isUnpromptedHousekeepingResult(m: Record<string, any>): boolean {
+  const consumedOurs = typeof m.user_message_uuid === "string" || (Array.isArray(m.user_message_uuids) && m.user_message_uuids.length > 0);
+  return !!m.origin && typeof m.origin === "object" && m.num_turns === 0 && !m.is_error && !consumedOurs;
+}
+
 function finiteCount(value: unknown): number {
   const n = Number(value ?? 0);
   return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
@@ -651,6 +660,7 @@ export class AgentRun implements AgentRunLike {
         }
         break;
       case "result": {
+        if (isUnpromptedHousekeepingResult(m)) break;
         const evt: ResultEvent = {
           type: "result",
           subtype: m.subtype,

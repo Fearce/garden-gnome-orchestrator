@@ -77,6 +77,7 @@ const GATES = [
   "test:tree-owner",
   "test:api-errors",
   "test:runner-stop-drain",
+  "test:unprompted-result",
   "test:injection",
   "test:auto-title",
   "test:voice-announce",

@@ -257,6 +257,12 @@ Read the run trail to tell causes apart:
   run under auto-resume states): an auto-review fix round re-parks (`reviewFixing`), and the opt-in
   self-improvement round settles the task **done** (`selfImproving`) — so a `done` task holding one
   interrupted implementor run is that, not a lost resume. Gate: `test:self-improve-restart`.
+- **"Self-improvement round didn't finish cleanly"** is one bonus launch that ended without its own clean
+  result. The round's budget is two-stage: at 4 minutes or 10 tool calls it is sent a wrap-up at priority
+  `next` (commit a finished change or revert its own edits, then one sentence), and only at 8 minutes / 18
+  turns is it stopped. The earlier single hard stop at 3 minutes / 8 turns killed 10 of 41 rounds
+  (2026-09-23 → 09-27), most of them between an edit and its commit or on the closing sentence after a push.
+  A usage cap during the round is filed as an info-level skip, not as this failure. Gate: `test:self-improve-restart`.
 - run `state='error'` → a real failure, an involuntary **cutoff**, or a **usage cap**. Read the row's
   `error` text: it now names the reason (the SDK's `errors`, else the subtype). "Stopped at the
   per-session turn ceiling" is the deliberate role turn ceiling — benign, warm-resumed on the implementor
@@ -301,7 +307,13 @@ Read the run trail to tell causes apart:
   (`ImplementorTurn`) and `awaitImplementorCompletion` tracks THAT, never the run it passed in. Tracking the
   argument stopped a corpse and started the continuation beside a child still working: two agents committing
   over each other on one production branch for 45 minutes (2026-09-11). `startImplementor` ends an unfinished
-  implementor it displaces as a backstop. Gate: `test:implementor-handover`. A 5h/weekly cap auto-switches account and
+  implementor it displaces as a backstop. Gate: `test:implementor-handover`. **A third cause is a result
+  that answers nothing we sent.** Resuming a session whose previous process left a background task (a
+  `run_in_background` Bash, a background sub-agent) makes the CLI report that task first, in a turn of its
+  own: `origin.kind: "task-notification"`, 0 turns, an empty success, emitted before our prompt is read.
+  `AgentRun` drops it (`isUnpromptedHousekeepingResult`, keyed on `origin` + 0 turns + no consumed
+  `user_message_uuid`); read as the outcome, it stopped the run half a second into its real turn
+  ("[Request interrupted by user]" in the transcript). Gate: `test:unprompted-result`. A 5h/weekly cap auto-switches account and
   resumes the SDK session; `runner.ts` flags the cap from a `rate_limit_event`, an assistant
   `error:"rate_limit"`, OR an error result (429 / rate-limit text), and `AccountManager` failover picks
   another sub with headroom. A cap on a **Fable** model is first classified (`classifyCap`: fresh Haiku

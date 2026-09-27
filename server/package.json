@@ -87,6 +87,7 @@
     "test:tree-owner": "node scripts/tree-owner.test.cjs",
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",
     "test:runner-stop-drain": "tsx src/tests/runnerStopDrain.test.ts",
+    "test:unprompted-result": "tsx src/tests/unpromptedResult.test.ts",
     "test:injection": "tsx src/tests/injection.test.ts",
     "test:auto-title": "tsx src/tests/autoTitle.test.ts",
     "test:title-ownership": "tsx src/tests/titleOwnership.test.ts",
