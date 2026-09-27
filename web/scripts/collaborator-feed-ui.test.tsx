@@ -130,4 +130,13 @@ assert.ok(html.includes(`${kidName} · Nightmare/Hell economy`), "the agents str
 assert.ok(html.includes(`${kidName} · Route selected for the share`), "a collaborator's system row names the collaborator");
 assert.ok(html.includes(`${leadName} +1`), "the implementor chip covers both agents, so it says so");
 
+console.log("C. an agent that hasn't named itself shows its role once, not twice");
+Object.assign(state, { nameOverrides: {} });
+const unnamedHtml = renderToStaticMarkup(React.createElement(ThreadDetail));
+const leadEnd = unnamedHtml.indexOf("Lead line about Act II quests");
+const unnamedRow = unnamedHtml.slice(unnamedHtml.lastIndexOf('<div class="fi', leadEnd), leadEnd);
+assert.ok(unnamedRow.includes(">implementor<"), "the role word still labels the row");
+assert.ok(!unnamedRow.includes("(Implementor"), "the role fallback name is not echoed after the role word");
+assert.ok(unnamedRow.includes(`<span class="role-name">(<span class="role-model">`), "the model still shows, with no name before it");
+
 console.log("\nCollaborator feed checks passed.");

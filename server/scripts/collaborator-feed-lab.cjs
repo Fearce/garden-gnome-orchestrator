@@ -34,6 +34,10 @@ function seed(dataDir) {
   insRun.run("run-kid", KID, "implementor", "gpt-6-sol", "codex:gpt-6-sol", "high", "running", now - 890_000, null);
   insMsg.run("msg-lead", LEAD, "run-lead", "implementor", "text", "LEAD LINE: working on quests.", now - 800_000);
   insMsg.run("msg-kid", KID, "run-kid", "implementor", "text", "COLLAB LINE: working on potion prices.", now - 700_000);
+  // There is no default name pool: agents invent their own (office_set_name). Seed the names they picked,
+  // so the rows are told apart by NAME — two unnamed implementors would both read as their role.
+  const names = { [`${LEAD}::implementor`]: "Quillon", [`${KID}::implementor`]: "Mossbeard" };
+  db.prepare("INSERT INTO kv(key, value) VALUES('office_names', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(JSON.stringify(names));
   db.close();
 }
 
@@ -72,10 +76,11 @@ function assertPanel(panel, where) {
   const { rows } = panel;
   check(`the lead's row and the collaborator's row are both shown ${where}`, !!rows.lead && !!rows.collab, JSON.stringify(panel));
   check(`the two rows name different agents ${where}`, !!rows.lead && !!rows.collab && rows.lead !== rows.collab, JSON.stringify(rows));
+  check(`each row carries the name its agent picked ${where}`, /Quillon/.test(rows.lead ?? "") && /Mossbeard/.test(rows.collab ?? ""), JSON.stringify(rows));
   check(`the rows interleave by time ${where}`, panel.order.indexOf("LEAD LINE: ") < panel.order.indexOf("COLLAB LINE"), JSON.stringify(panel.order));
   check(`the collaborator's assignment does not pose as a director message ${where}`, !panel.assignmentShown);
   const collabName = (rows.collab ?? "").replace(/[()]/g, "").split(",")[0].trim();
-  check(`the agents strip names the collaborator beside its share ${where}`, panel.strip.some((s) => s === `${collabName} · Economy share`), JSON.stringify(panel.strip));
+  check(`the agents strip names the collaborator beside its share ${where}`, collabName === "Mossbeard" && panel.strip.some((s) => s === `${collabName} · Economy share`), JSON.stringify(panel.strip));
 }
 
 (async () => {
