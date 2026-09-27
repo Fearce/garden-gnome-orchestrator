@@ -14,7 +14,7 @@ import { isGpt6Model } from "../agents/codexModelGeneration.js";
 
 import { EFFORTS, type Effort, type ImplementorProvider, type ModelEffortStat, type ModelPick, type ModelStat } from "../types.js";
 import { isPolicyApprovedFlagship } from "./modelRoutingPolicy.js";
-import { claudeOpusVersion, isRetiredClaudeOpus } from "./claudeOpusFloor.js";
+import { claudeOpusVersion, isDisallowedClaudeModel, isRetiredClaudeOpus } from "./claudeOpusFloor.js";
 
 const SELECTOR_TIMEOUT_MS = 45_000;
 const MAX_OUTPUT_TOKENS = 300;
@@ -140,11 +140,10 @@ export function isLegacyCodexAutoModel(candidate: Pick<ModelCandidate, "provider
   return isLegacyCodexId(candidate.model);
 }
 
-/** A Claude Opus older than the version floor — the same shape as a legacy Codex id, on the other
- *  backend. Non-Opus Claude models (Sonnet, Fable, Haiku) are cheaper tiers, not outdated flagships,
- *  and stay selectable. */
+/** A Claude model roles must not run on — an Opus below the floor or any non-Opus tier (Sonnet, Haiku,
+ *  Fable). The owner runs Claude on Opus 5.5 only; see `claudeOpusFloor.ts`. */
 export function isRetiredClaudeAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {
-  return candidate.provider === "claude" && isRetiredClaudeOpus(candidate.model);
+  return candidate.provider === "claude" && isDisallowedClaudeModel(candidate.model);
 }
 
 function isCurrentClaudeOpusAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {

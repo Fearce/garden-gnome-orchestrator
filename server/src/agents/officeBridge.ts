@@ -75,7 +75,7 @@ const MAX_MANUAL_DEPLOY_ONLY_WIRE_CHARS = 12_000;
 // tool takes, on one line. Case-sensitive and anchored on the opening brace, unlike the markers above,
 // because "Subtask:" is ordinary prose in a plan and must never be read as a spawn.
 //
-//   SUBTASK: {"provider":"claude","model":"claude-sonnet-5","title":"Port tests","brief":"..."}
+//   SUBTASK: {"provider":"claude","model":"claude-opus-5-5","title":"Port tests","brief":"..."}
 const SUBTASK_RE = /`?SUBTASK[ \t]*:[ \t]*(?=\{)/g;
 const MAX_SUBTASK_WIRE_CHARS = 60_000;
 

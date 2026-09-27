@@ -400,7 +400,7 @@ export function reviewerConfig(
 }
 
 /**
- * The read-only "reader" lane (dispatch_read): ONE cheap Sonnet agent that answers a lookup/question and
+ * The read-only "reader" lane (dispatch_read): ONE agent that answers a lookup/question and
  * posts its answer as a finding — no planner/researcher/implementor/QA. Read-only is enforced at the
  * HARNESS level, not by the prompt: under bypassPermissions the disallowedTools denylist is a HARD block
  * (the exact mechanism that stops the QA role from editing today), so Write/Edit/NotebookEdit/Bash/

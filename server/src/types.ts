@@ -11,7 +11,7 @@ export function isRole(v: string): v is Role {
 }
 
 /** Dispatch lane. Absent/null = the normal task-aware implementation route (planner/QA optional); 'read' = the cheap
- *  single-agent read-only reader lane (dispatch_read) — one Sonnet reader answers a lookup and escalates
+ *  single-agent read-only reader lane (dispatch_read) — one reader answers a lookup and escalates
  *  rather than half-answering, no QA. 'vanilla' = Default mode — one stock implementor session (no
  *  orchestrator system-prompt wrapper, no planner/QA/self-improvement/review) that stays warm ('paused',
  *  resumable) until the owner clicks Mark done. Persisted on the thread so it survives resume and drives the badge. */
@@ -1076,12 +1076,12 @@ export interface OrchestratorSettings {
   // ---- Fast usage polling: opt-in tighter cadence for the account usage ping ----
   fastUsagePolling: boolean; // off (default) → 10-min ping; on → poll every ~30s so the strip tracks the live burn within ~1-2%
   spreadUsage: boolean; // off (default) → burn the soonest-resetting provider/sub first; on → always dispatch to the provider (Claude sub, Codex, or Grok) with the lowest weekly usage, balancing burn across every enabled platform
-  // Token conservation mode: off (default) → normal model routing. on → once a Claude subscription or
-  // the Codex general pool sits in the LAST 10% of its weekly window (and isn't resetting within 24h),
-  // every role dispatched against it is capped to that provider's economy-tier model (Claude Sonnet /
-  // GPT-5.6 Luna) instead of a non-economy one (Opus/Fable, GPT-6 Astra / GPT-5.6 Sol) — trading quality
-  // for runway so the window doesn't hard-cap outright. Never overrides a strict owner model pin or an
-  // auto-model-selection pick. Grok/z.ai have no reviewed economy tier in this app, so they're unaffected.
+  // Token conservation mode: off (default) → normal model routing. on → once the Codex general pool sits
+  // in the LAST 10% of its weekly window (and isn't resetting within 24h), every role dispatched against it
+  // is capped to GPT-6 Luna instead of a non-economy one (GPT-6 Astra / Sol) — trading quality for runway
+  // so the window doesn't hard-cap outright. Never overrides a strict owner model pin or an
+  // auto-model-selection pick. Claude runs Opus 5.5 only and Grok/z.ai have no reviewed economy tier, so
+  // they're unaffected.
   tokenConservationMode: boolean;
   // Per-subscription exact model/effort fallback. Off by default; the threshold defaults to 90% and
   // trips when EITHER a provider's 5-hour or weekly used-percent reaches it.

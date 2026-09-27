@@ -8,9 +8,9 @@ import type { ImplementorProvider } from "../types.js";
  * TOKEN_CONSERVATION_RESET_GRACE_MS), in which case there is nothing worth conserving for; fresh
  * capacity is about to land regardless.
  *
- * Scoped to Claude and Codex: those are the only two backends this codebase already splits into a
- * reviewed flagship tier and an economy tier. Grok ships a single model and z.ai has no reviewed
- * flagship/economy split, so there is nothing to downgrade there.
+ * Scoped to Codex: it is the only backend with a reviewed flagship/economy split that roles may run
+ * on. Claude has none — every Claude role runs Opus 5.5 (claudeOpusFloor.ts), so a cheaper Claude tier
+ * is never a target. Grok ships a single model and z.ai has no reviewed split either.
  *
  * This only ever adjusts the DEFAULT model-resolution path (the per-role/per-subscription override
  * matrix and its built-in fallback) — never a strict owner model pin, an auto-model-selection pick, or
@@ -26,7 +26,6 @@ export const TOKEN_CONSERVATION_RESET_GRACE_MS = 24 * 60 * 60 * 1000;
 
 /** The economy-tier model each conservable provider is capped to — the brief's own examples. */
 export const TOKEN_CONSERVATION_MODEL: Partial<Record<ImplementorProvider, string>> = {
-  claude: "claude-sonnet-5",
   codex: "gpt-6-luna",
 };
 
@@ -48,7 +47,6 @@ export const TOKEN_CONSERVATION_MODEL: Partial<Record<ImplementorProvider, strin
  * reviewed for conservation yet.
  */
 const TOKEN_CONSERVATION_ECONOMY_MODELS: Partial<Record<ImplementorProvider, ReadonlySet<string>>> = {
-  claude: new Set(["claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]),
   codex: new Set(["gpt-6-luna"]),
 };
 
@@ -79,8 +77,7 @@ export function conservationActive(window: ConservationWindow, now: number): boo
 }
 
 /**
- * Apply conservation to one resolved model. A pick that is already economy-tier (an explicit Haiku
- * override, a Grok/z.ai model, or anything else on `TOKEN_CONSERVATION_ECONOMY_MODELS`) passes through
+ * Apply conservation to one resolved model. A pick that is already economy-tier (a Grok/z.ai model, or anything else on `TOKEN_CONSERVATION_ECONOMY_MODELS`) passes through
  * unchanged: conservation only ever pulls a non-economy pick down to the provider's economy tier, it
  * never substitutes a different economy model for another.
  *
@@ -95,7 +92,7 @@ export function conservationResolvedModel(
   now: number,
 ): string {
   const cheap = TOKEN_CONSERVATION_MODEL[provider];
-  if (!cheap) return model; // no reviewed economy tier for this provider (Grok / z.ai)
+  if (!cheap) return model; // no economy tier roles may run on (Claude / Grok / z.ai)
   if (!conservationActive(window, now)) return model;
   if (TOKEN_CONSERVATION_ECONOMY_MODELS[provider]?.has(model)) return model;
   return cheap;

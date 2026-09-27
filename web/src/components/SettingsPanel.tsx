@@ -433,7 +433,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 />
                 <ToggleRow
                   label="Token conservation mode"
-                  hint="On: once a Claude subscription or the Codex general pool sits in the last 10% of its weekly window, every role dispatched against it is capped to a cheap, fast model (Claude Sonnet / GPT-5.6 Luna) instead of a pricier one (Opus/Fable, GPT-6 Astra / GPT-5.6 Sol) — unless that window resets within 24h, in which case there's nothing worth conserving for. Never overrides an explicit model pin or an auto-selected model. Off by default."
+                  hint="On: once the Codex general pool sits in the last 10% of its weekly window, every role dispatched against it is capped to GPT-6 Luna instead of a pricier model (GPT-6 Astra / Sol) — unless that window resets within 24h, in which case there's nothing worth conserving for. Claude is never downgraded: every Claude role runs Opus 5.5. Never overrides an explicit model pin or an auto-selected model. Off by default."
                   on={settings.tokenConservationMode}
                   onChange={(v) => setSettings({ tokenConservationMode: v })}
                 />
@@ -1428,7 +1428,7 @@ function AccountEffort({ accountId }: { accountId: string }) {
 
 function AccountUsageSaving({ accountId }: { accountId: string }) {
   const models = useStore((s) => s.settings.claudeModels);
-  const defaultModel = useStore((s) => s.settings.modelDefaults.implementor ?? "claude-sonnet-5");
+  const defaultModel = useStore((s) => s.settings.modelDefaults.implementor ?? "claude-opus-5-5");
   return <UsageSavingField subId={accountId} models={models} defaultModel={defaultModel} effortsFor={claudeEffortsForModel} />;
 }
 

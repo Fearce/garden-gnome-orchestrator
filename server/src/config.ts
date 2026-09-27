@@ -157,15 +157,15 @@ export const config = {
     channelId: process.env.DISCORD_CHANNEL_ID || undefined,
   },
   models: {
-    director: "claude-sonnet-5",
+    // Every Claude role runs Opus 5.5 — the owner's standing rule (claudeOpusFloor.ts enforces it).
+    director: "claude-opus-5-5",
     planner: "claude-opus-5-5",
-    researcher: "claude-sonnet-5",
+    researcher: "claude-opus-5-5",
     implementor: "claude-opus-5-5",
     qa: "claude-opus-5-5",
-    // The single-agent read-only "reader" lane (dispatch_read). Sonnet, not Haiku: misrouting TO the
-    // reader is the unsafe direction (it has no QA behind it), so it's biased to capability — a Sonnet
-    // reader that occasionally escalates beats a Haiku one that half-answers. Configurable like any role.
-    reader: "claude-sonnet-5",
+    // The single-agent read-only "reader" lane (dispatch_read). Misrouting TO the reader is the unsafe
+    // direction (it has no QA behind it), so it's biased to capability. Configurable like any role.
+    reader: "claude-opus-5-5",
     // The on-demand auto-reviewer (the "auto-review & mark done" button). It stands in for the owner's
     // own final review and can settle a task 'done', so it gets the strongest model — a cheap reviewer
     // that waves work through is the exact failure this button must not have.

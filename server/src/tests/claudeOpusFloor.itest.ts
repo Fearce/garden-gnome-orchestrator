@@ -42,7 +42,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
-const { claudeOpusTarget, claudeOpusVersion, isRetiredClaudeOpus, CLAUDE_OPUS_FLOOR_MODEL } =
+const { claudeOpusTarget, claudeOpusVersion, isDisallowedClaudeModel, isRetiredClaudeOpus, CLAUDE_OPUS_FLOOR_MODEL } =
   await import("../orchestrator/claudeOpusFloor.js");
 const { filterAutoSelectionCandidates } = await import("../orchestrator/modelSelector.js");
 
@@ -175,11 +175,23 @@ check(
   !isRetiredClaudeOpus("claude-opus-5-6") && !isRetiredClaudeOpus("claude-opus-6"),
 );
 check(
-  "a cheaper Claude tier is a choice, not an outdated flagship",
-  !isRetiredClaudeOpus("claude-sonnet-5") && !isRetiredClaudeOpus("claude-sonnet-4-6")
-    && !isRetiredClaudeOpus("claude-fable-5") && !isRetiredClaudeOpus("claude-haiku-4-5-20251001"),
+  "a cheaper Claude tier is not a RETIRED Opus",
+  !isRetiredClaudeOpus("claude-sonnet-5") && !isRetiredClaudeOpus("claude-haiku-4-5-20251001"),
 );
-check("a Claude-family rule never touches another backend", !isRetiredClaudeOpus("gpt-5.5") && !isRetiredClaudeOpus("glm-5.2"));
+// Owner rule 2026-09-27: "always use opus 5.5, never use sonnet as a claude model".
+check(
+  "every non-Opus Claude tier is disallowed, full id or bare alias",
+  ["claude-sonnet-5", "claude-sonnet-4-6", "sonnet", "claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-3-5-haiku-20241022", "claude-mythos-5"]
+    .every(isDisallowedClaudeModel),
+);
+check(
+  "Opus 5.5 and newer stay allowed",
+  !isDisallowedClaudeModel("claude-opus-5-5") && !isDisallowedClaudeModel("claude-opus-6") && !isDisallowedClaudeModel("opus"),
+);
+check(
+  "a Claude-family rule never touches another backend",
+  !isRetiredClaudeOpus("gpt-5.5") && !isRetiredClaudeOpus("glm-5.2") && !isDisallowedClaudeModel("gpt-6-luna") && !isDisallowedClaudeModel("grok-4.6"),
+);
 
 {
   const target = claudeOpusTarget("claude-opus-5", LIVE_ROSTER);
@@ -191,11 +203,10 @@ check(
   claudeOpusTarget("claude-opus-5-5", LIVE_ROSTER).model === "claude-opus-5-5"
     && claudeOpusTarget("claude-opus-5-5", LIVE_ROSTER).replaced === undefined,
 );
-check(
-  "a Sonnet pin is not lifted to Opus",
-  claudeOpusTarget("claude-sonnet-5", LIVE_ROSTER).model === "claude-sonnet-5"
-    && claudeOpusTarget("claude-sonnet-5", LIVE_ROSTER).replaced === undefined,
-);
+{
+  const target = claudeOpusTarget("claude-sonnet-5", LIVE_ROSTER);
+  check("a configured Sonnet is lifted to Opus 5.5", target.model === CLAUDE_OPUS_FLOOR_MODEL && target.replaced === "claude-sonnet-5", JSON.stringify(target));
+}
 check(
   "with the floor model absent it takes the newest Opus above the floor rather than inventing one",
   claudeOpusTarget("claude-opus-5", ["claude-opus-6", "claude-opus-5-7", "claude-opus-5"]).model === "claude-opus-6",
@@ -227,7 +238,7 @@ console.log("\n=== claude opus floor — the auto-selection roster ===\n");
   ];
   const kept = filterAutoSelectionCandidates(candidates).map((c) => `${c.provider}:${c.model}`);
   check("a retired Opus is dropped while a current one is dispatchable", !kept.includes("claude:claude-opus-5"), kept.join(","));
-  check("the current Opus and the cheaper Claude tiers stay", kept.includes("claude:claude-opus-5-5") && kept.includes("claude:claude-sonnet-5"), kept.join(","));
+  check("the current Opus stays and Sonnet is dropped", kept.includes("claude:claude-opus-5-5") && !kept.includes("claude:claude-sonnet-5"), kept.join(","));
   check("the GPT-6-only Codex policy keeps current models and drops older ones", kept.includes("codex:gpt-6-sol") && !kept.includes("codex:gpt-5.5"), kept.join(","));
 }
 {
@@ -267,8 +278,8 @@ console.log("\n=== claude opus floor — the wiring (real ThreadManager, real Db
       String(h.internals.modelFor("acct2", "implementor")),
     );
     check(
-      "a deliberate Sonnet pin beside them is left exactly as configured",
-      h.internals.modelFor("acct2", "director") === "claude-sonnet-4-6",
+      "a Sonnet pin beside them runs Opus 5.5 too",
+      h.internals.modelFor("acct2", "director") === CLAUDE_OPUS_FLOOR_MODEL,
       String(h.internals.modelFor("acct2", "director")),
     );
     check(
@@ -288,9 +299,14 @@ console.log("\n=== claude opus floor — the wiring (real ThreadManager, real Db
       JSON.stringify(h.internals.settings().modelOverrides),
     );
     check(
-      "the Settings projection leaves a current pin alone",
-      h.internals.settings().modelOverrides.acct2?.director === "claude-sonnet-4-6",
+      "the Settings projection shows the Sonnet pin as the Opus it runs on",
+      h.internals.settings().modelOverrides.acct2?.director === CLAUDE_OPUS_FLOOR_MODEL,
       JSON.stringify(h.internals.settings().modelOverrides.acct2),
+    );
+    check(
+      "no Settings picker offers a Sonnet",
+      !(h.internals.settings().claudeModels as string[]).some((model) => /sonnet/.test(model)),
+      JSON.stringify(h.internals.settings().claudeModels),
     );
     check(
       "the raw matrix is NOT rewritten — the floor is a resolution rule, not a migration",
@@ -331,8 +347,8 @@ console.log("\n=== claude opus floor — the wiring (real ThreadManager, real Db
     h.db.kvSet("setting_usage_saving", JSON.stringify({ acct1: { enabled: true, thresholdPct: 90, model: "claude-opus-5", effort: "medium" } }));
     const saved = h.internals.usageSavingTarget("acct1");
     check(
-      "a usage-saving target is reachable in this harness (else the assertion below proves nothing)",
-      saved?.model === "claude-opus-5",
+      "a usage-saving target is reachable in this harness, already floored",
+      saved?.model === CLAUDE_OPUS_FLOOR_MODEL && saved.effort === "medium",
       JSON.stringify(saved),
     );
     check(

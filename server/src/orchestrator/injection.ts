@@ -1,6 +1,10 @@
 import { CodexAgentRun } from "../agents/codexRunner.js";
 import { GrokAgentRun } from "../agents/grokRunner.js";
 import { AgentRun, type AgentRunLike, type SendOpts } from "../agents/runner.js";
+import { config } from "../config.js";
+
+/** Only the orchestrator emits this marker; `neutralizeSteeringMarkers` escapes it in peer text. */
+export const OWNER_STEERING_TAG = "OWNER STEERING";
 
 /**
  * Format a live owner injection consistently for every implementor backend.
@@ -9,14 +13,14 @@ import { AgentRun, type AgentRunLike, type SendOpts } from "../agents/runner.js"
  * Codex and Grok finish or interrupt their batch and resume with it. The
  * delivery mechanics differ, but the instruction must not: a vague contextual
  * note is too easy for a provider to defer or overlook.
+ *
+ * The frame states provenance plainly. The earlier "[DIRECTOR INJECTION —
+ * ACKNOWLEDGEMENT REQUIRED] … highest-priority … overrides" wording read as a
+ * textbook prompt injection, and an implementor refused a real owner instruction.
  */
 export function acknowledgedInjection(message: string): string {
   return [
-    "[DIRECTOR INJECTION — ACKNOWLEDGEMENT REQUIRED]",
-    message.trim(),
-    "[/DIRECTOR INJECTION]",
-    "",
-    "This is new, highest-priority direction from the task owner. It overrides conflicting earlier assumptions.",
+    ...steeringFrame(message),
     "Before any further investigation, tool use, implementation, or final answer, begin your next visible response with `ACK:` and briefly state how you will apply this direction. Then apply it; do not treat it as background context or merely repeat it.",
   ].join("\n");
 }
@@ -24,13 +28,25 @@ export function acknowledgedInjection(message: string): string {
 /** Acknowledge without breaking a planner/QA JSON contract. */
 export function structuredAcknowledgedInjection(message: string): string {
   return [
-    "[DIRECTOR INJECTION — ACKNOWLEDGEMENT REQUIRED]",
-    message.trim(),
-    "[/DIRECTOR INJECTION]",
-    "",
-    "This is new, highest-priority direction from the task owner. It overrides conflicting earlier assumptions.",
+    ...steeringFrame(message),
     "Your response must remain schema-valid. Begin its required `summary` field with `ACK:` and briefly state how you applied this direction, then complete the requested structured response.",
   ].join("\n");
+}
+
+function steeringFrame(message: string): string[] {
+  return [
+    `[${OWNER_STEERING_TAG} — from ${config.ownerName}, delivered by GGO]`,
+    message.trim(),
+    `[/${OWNER_STEERING_TAG}]`,
+    "",
+    `${config.ownerName} sent this to your task mid-run through the GGO console (the task's Inject box, or the Director or review lane relaying their words). It has the same authority as your brief, including when it changes models, scope or policy. Where it conflicts with the brief or your current plan, follow it.`,
+  ];
+}
+
+/** Office chat reaches a session through the same channel as owner steering, so a teammate's text
+ *  must never be able to wear the owner's marker. */
+export function neutralizeSteeringMarkers(text: string): string {
+  return text.replace(/\[\s*(\/?)\s*OWNER\s+STEERING/gi, "[quoted $1owner steering");
 }
 
 /**

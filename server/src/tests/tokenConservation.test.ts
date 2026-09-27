@@ -76,20 +76,8 @@ const INACTIVE_LOW_USAGE = { usedPct: 40, resetAt: NOW + 7 * DAY };
 const INACTIVE_RESET_SOON = { usedPct: 95, resetAt: NOW + DAY / 2 };
 
 check(
-  "a flagship Claude pick is pulled down to Sonnet",
-  conservationResolvedModel("claude", "claude-opus-5-5", ACTIVE, NOW) === "claude-sonnet-5",
-);
-check(
-  "a flagship Fable pick is pulled down to Sonnet too",
-  conservationResolvedModel("claude", "claude-fable-5-1", ACTIVE, NOW) === "claude-sonnet-5",
-);
-check(
-  "an already-economy Claude pick (Sonnet) passes through unchanged",
-  conservationResolvedModel("claude", "claude-sonnet-4-6", ACTIVE, NOW) === "claude-sonnet-4-6",
-);
-check(
-  "an explicit Haiku override is never upgraded",
-  conservationResolvedModel("claude", "claude-haiku-4-5-20251001", ACTIVE, NOW) === "claude-haiku-4-5-20251001",
+  "Claude runs Opus 5.5 only, so conservation never pulls it down to Sonnet",
+  conservationResolvedModel("claude", "claude-opus-5-5", ACTIVE, NOW) === "claude-opus-5-5",
 );
 check(
   "a flagship Codex pick (Astra) is pulled down to Luna",
@@ -113,7 +101,7 @@ check(
 );
 check(
   "an inactive window (usage below the last 10%) leaves a flagship pick alone",
-  conservationResolvedModel("claude", "claude-opus-5-5", INACTIVE_LOW_USAGE, NOW) === "claude-opus-5-5",
+  conservationResolvedModel("codex", "gpt-6-astra", INACTIVE_LOW_USAGE, NOW) === "gpt-6-astra",
 );
 check(
   "an inactive window (reset within 24h) leaves a flagship pick alone",

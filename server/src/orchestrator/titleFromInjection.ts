@@ -1,6 +1,6 @@
 // Derive a concise board title from raw prose when the director is SKIPPED. The only title we'd
 // otherwise have is its truncated first line ("trash"). This gives skip-director tasks a real
-// board title without paying for the full Sonnet director — just one cheap Haiku call.
+// board title without paying for the full director — just one cheap Haiku call.
 //
 // Short prose (< SHORT_WORD_LIMIT words) is used verbatim — no model latency for "re-run the tests".
 // Longer prose gets a single ≤8-word Haiku summary via the same raw OAuth fetch the resume compressor

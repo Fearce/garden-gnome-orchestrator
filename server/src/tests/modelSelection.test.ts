@@ -108,7 +108,7 @@ console.log("Flagship capability floor");
 
   const blocked = applyImplementorModelPolicy(roster.filter((candidate) => candidate.model === "claude-sonnet-5"), FLAGSHIP_POLICY);
   check("a workhorse-only roster blocks instead of silently downgrading", blocked.mode === "blocked" && blocked.eligible.length === 0, JSON.stringify(blocked));
-  check("the approved families exclude retired Opus 5 plus cheaper or legacy tiers", isPolicyApprovedFlagship({ provider: "claude", model: "claude-fable-5" }) && !isPolicyApprovedFlagship({ provider: "claude", model: "claude-opus-5" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-astra" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-sol" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-terra" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.5" }) && !isPolicyApprovedFlagship({ provider: "zai", model: "glm-5.3" }));
+  check("the approved families exclude retired Opus 5 plus cheaper or legacy tiers", !isPolicyApprovedFlagship({ provider: "claude", model: "claude-fable-5" }) && !isPolicyApprovedFlagship({ provider: "claude", model: "claude-opus-5" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-astra" }) && isPolicyApprovedFlagship({ provider: "codex", model: "gpt-6-sol" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.6-terra" }) && !isPolicyApprovedFlagship({ provider: "codex", model: "gpt-5.5" }) && !isPolicyApprovedFlagship({ provider: "zai", model: "glm-5.3" }));
 }
 
 {

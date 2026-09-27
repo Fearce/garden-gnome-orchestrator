@@ -87,14 +87,14 @@ import { OperatorNotes } from "./notes.js";
 import { compressSession, sessionAgeMs } from "./resumeCompress.js";
 import { recoveryHistoryBlock } from "./recoveryHistory.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
-import { autoSelectableEffortsForCandidate, buildSelectionPrompt, defaultCandidateEffort, filterAutoSelectionCandidates, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
+import { autoSelectableEffortsForCandidate, buildSelectionPrompt, defaultCandidateEffort, filterAutoSelectionCandidates, isRetiredClaudeAutoModel, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
 import {
   DEFAULT_FLAGSHIP_MODEL,
   applyImplementorModelPolicy,
   modelMatchesPolicy,
 } from "./modelRoutingPolicy.js";
 import { codexReviewTarget, type CodexReviewTarget } from "./reviewModelFloor.js";
-import { claudeOpusTarget, CLAUDE_OPUS_FLOOR_MODEL, type ClaudeOpusTarget } from "./claudeOpusFloor.js";
+import { claudeOpusTarget, CLAUDE_OPUS_FLOOR_MODEL, isDisallowedClaudeModel, type ClaudeOpusTarget } from "./claudeOpusFloor.js";
 import { conservationResolvedCodexModel, conservationResolvedModel } from "./tokenConservation.js";
 import { usageSavingActive } from "./usageSaving.js";
 import { providerIntent } from "./providerIntent.js";
@@ -146,7 +146,7 @@ import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import { coworkContentWithAttachments } from "../coworkAttachments.js";
-import { acknowledgedInjection, injectionNeedsPickupWatch, injectionSendOptions, structuredAcknowledgedInjection } from "./injection.js";
+import { acknowledgedInjection, injectionNeedsPickupWatch, injectionSendOptions, neutralizeSteeringMarkers, structuredAcknowledgedInjection } from "./injection.js";
 import { watchInjectionPickup } from "./injectionPickup.js";
 import {
   ReviewInjectionStore,
@@ -2893,9 +2893,15 @@ export class ThreadManager implements OrchestratorApi {
       [ZAI_SUB_ID]: { enabled: false, thresholdPct: 90, model: this.zaiModel(), effort: "low" },
     };
     for (const account of this.usageSavingAccounts()) {
-      defaults[account.id] = { enabled: false, thresholdPct: 90, model: "claude-sonnet-5", effort: "low" };
+      defaults[account.id] = { enabled: false, thresholdPct: 90, model: CLAUDE_OPUS_FLOOR_MODEL, effort: "low" };
     }
-    return { ...defaults, ...saved };
+    const merged: UsageSavingPolicies = { ...defaults, ...saved };
+    // Usage saving may lower a Claude sub's effort, never its tier: a stored Sonnet saving model runs Opus.
+    for (const [subId, policy] of Object.entries(merged)) {
+      if (subId === CODEX_SUB_ID || subId === GROK_SUB_ID || subId === ZAI_SUB_ID) continue;
+      merged[subId] = { ...policy, model: this.claudeOpusFloored(policy.model).model };
+    }
+    return merged;
   }
 
   /** Exact fallback for a subscription right now. Either exposed rolling meter can activate it. */
@@ -3064,7 +3070,9 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** Pickable Claude model ids for the Settings dropdowns: the live list unioned with the curated
-   *  fallback and every currently-selected Claude model, so a picked model never drops out of its list. */
+   *  fallback and every currently-selected Claude model, so a picked model never drops out of its list.
+   *  Tiers no role may run on (Sonnet, Haiku, Fable, retired Opus) are never offered — the stored picks
+   *  that still name one are shown floored (`opusSafeModelOverrides`, `usageSavingSettings`). */
   private pickableClaudeModels(): string[] {
     const ov = this.modelOverrides();
     const selected: string[] = [];
@@ -3075,7 +3083,8 @@ export class ThreadManager implements OrchestratorApi {
     const saving = Object.entries(this.storedUsageSaving())
       .filter(([id]) => id !== CODEX_SUB_ID && id !== GROK_SUB_ID && id !== ZAI_SUB_ID)
       .map(([, policy]) => policy.model);
-    return uniq([...this.modelCatalog.claudeModels(), ...CURATED_CLAUDE_MODELS, ...Object.values(config.models), ...selected, ...saving]);
+    return uniq([...this.modelCatalog.claudeModels(), ...CURATED_CLAUDE_MODELS, ...Object.values(config.models), ...selected, ...saving])
+      .filter((model) => !isDisallowedClaudeModel(model));
   }
 
   /** Pickable Codex model ids for the Settings dropdown: curated flagships first, then any additional
@@ -3889,6 +3898,18 @@ export class ThreadManager implements OrchestratorApi {
     const stage = this.db.getThreadStageOutputs(thread.id);
     const policy = stage.routeDecision?.modelPolicy;
     let saved = stage.modelPick;
+    if (saved && isRetiredClaudeAutoModel(saved)) {
+      // A pick made before the Opus-only Claude rule must not resume its Sonnet/Haiku/Fable session.
+      this.db.updateThreadStageOutputs(thread.id, { modelPick: undefined });
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "director",
+        summary: `Superseded automatic ${saved.model} route — Claude roles run on Opus 5.5 only`,
+        detail: `The prior pick was ${saved.model} at ${saved.effort}. ${config.ownerName} runs every Claude role on Opus 5.5 or newer, so the next run starts fresh on a compliant model instead of resuming that session. Its run history remains intact.`,
+        severity: "warning",
+      });
+      saved = undefined;
+    }
     const savedComplies = !saved || modelMatchesPolicy(saved, policy);
     if (saved && !savedComplies) {
       // Policy v2 can be applied to a paused/restart-interrupted legacy episode. Preserve its run and
@@ -4086,7 +4107,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (provider === "grok") return { model: picked ?? this.grokModel(), saving };
     if (provider === "zai") return { model: picked ?? this.zaiModel(), saving };
     const subId = accountId ?? this.accounts.dispatchPreview().account.id;
-    return { model: picked ? this.poolResolved(subId, picked) : this.modelFor(subId, "implementor"), saving };
+    return { model: picked ? this.claudeOpusFloored(this.poolResolved(subId, picked)).model : this.modelFor(subId, "implementor"), saving };
   }
 
   /** The implementor's effort for this task: an operator pin beats everything, then the auto-selected
@@ -14306,7 +14327,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const norm = normalizeWorkspace(m.workspace);
     const who = m.senderName || (m.threadId && m.role !== "system" ? this.officeName(m.threadId, m.role) : "a teammate");
     const text =
-      `💬 [Office — ${who} (${m.role}) posted to your team room]: ${m.body}\n` +
+      `💬 [Office — ${who} (${m.role}) posted to your team room]: ${neutralizeSteeringMarkers(m.body)}\n` +
       `(A teammate working in this same repo sent this. If it touches your work or asks something, reply with ` +
       `chat_post(scope:"team") — address them as ${who} — and adjust; don't keep editing blind.)`;
     let pinged = 0;
@@ -14327,7 +14348,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   private cliTeamChatPush(m: ChatMessage, who: string): string {
     return (
-      `[Office - ${who} (${m.role}) posted to your team room]: ${m.body}\n` +
+      `[Office - ${who} (${m.role}) posted to your team room]: ${neutralizeSteeringMarkers(m.body)}\n` +
       `(A teammate working in this same repo sent this. If it touches your work or asks something, reply with a standalone ` +
       `OFFICE[team]: ... line addressed to ${who}, then adjust; don't keep editing blind.)`
     );

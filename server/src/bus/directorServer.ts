@@ -81,7 +81,7 @@ export function createDirectorServer(
 
   const dispatch = tool(
     "dispatch",
-    `Dispatch a task: it self-assembles the smallest capable pipeline for the work — a narrow, contained change may run the Opus 4.8 implementor alone, while anything broader, riskier, or more ambiguous first runs a planner (reads the repo, decides whether external research is needed, routes to a researcher or straight to the implementor) and then QA reviews the result; you don't choose the agents, and the pick is explained in the task's own history. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). If ${config.ownerName} explicitly requested a model or its capacity, copy that exact label into \`model\`; the server resolves and strictly pins it, so never choose or infer a model yourself. Any image(s) ${config.ownerName} attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.`,
+    `Dispatch a task: it self-assembles the smallest capable pipeline for the work — a narrow, contained change may run the Opus 5.5 implementor alone, while anything broader, riskier, or more ambiguous first runs a planner (reads the repo, decides whether external research is needed, routes to a researcher or straight to the implementor) and then QA reviews the result; you don't choose the agents, and the pick is explained in the task's own history. Returns the task id immediately; the pipeline runs in the background and streams to the board. Call this once you have enough context (after enriching and any clarifying questions). If ${config.ownerName} explicitly requested a model or its capacity, copy that exact label into \`model\`; the server resolves and strictly pins it, so never choose or infer a model yourself. Any image(s) ${config.ownerName} attached to this request are forwarded to the planner/implementor automatically — reference what they show in the brief if relevant; you don't need to re-describe them pixel by pixel.`,
     {
       title: z
         .string()
@@ -96,7 +96,7 @@ export function createDirectorServer(
       brief: z
         .string()
         .describe(
-          `The ENRICHED brief for the implementor: the goal, the context you gathered (memories, constraints, conventions), what done looks like, and anything ${config.ownerName} clarified. Write it as the full spec you'd give up front — Opus 4.8 does best with the whole task stated at once.`,
+          `The ENRICHED brief for the implementor: the goal, the context you gathered (memories, constraints, conventions), what done looks like, and anything ${config.ownerName} clarified. Write it as the full spec you'd give up front — Opus 5.5 does best with the whole task stated at once.`,
         ),
       model: z
         .string()

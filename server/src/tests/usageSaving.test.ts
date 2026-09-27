@@ -100,7 +100,8 @@ try {
       "account-a": { enabled: true, thresholdPct: 90, model: "claude-haiku-4-5-20251001", effort: "low" },
     },
   });
-  check("5-hour usage selects the exact configured model for every role", manager.modelFor("account-a", "planner") === "claude-haiku-4-5-20251001" && manager.modelFor("account-a", "implementor") === "claude-haiku-4-5-20251001");
+  // Claude runs Opus 5.5 only (claudeOpusFloor.ts): a stored cheaper saving model keeps its effort half.
+  check("5-hour usage applies to every role, on Opus 5.5 rather than the stored Haiku", manager.modelFor("account-a", "planner") === "claude-opus-5-5" && manager.modelFor("account-a", "implementor") === "claude-opus-5-5");
   check("the runtime target carries the exact configured effort", internals.usageSavingTarget("account-a")?.effort === "low");
 
   // A strict owner pin outranks usage saving. The pin's own feed message promises no fallback model, and
@@ -114,7 +115,7 @@ try {
   });
   const savingTarget = internals.implementorDispatchTarget(unpinned.id, "claude", "account-a");
   const pinnedTarget = internals.implementorDispatchTarget(pinned.id, "claude", "account-a");
-  check("an unpinned task still dispatches the saving model", savingTarget.model === "claude-haiku-4-5-20251001");
+  check("an unpinned task still dispatches the saving policy, floored to Opus 5.5 at its low effort", savingTarget.model === "claude-opus-5-5" && savingTarget.saving?.effort === "low");
   check("a strict pin dispatches the pinned model while saving is active", pinnedTarget.model === "claude-opus-5-5");
   // The policy is a model+effort PAIR resolved against ITS model, so half of it must not travel onto a
   // model the pair never described — every effort site reads `saving?.effort`.

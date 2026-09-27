@@ -181,6 +181,18 @@ const HAIKU = "claude-haiku-4-5-20251001";
 const SONNET_5 = "claude-sonnet-5";
 const OPUS_5 = "claude-opus-5-5";
 const SOL_56 = "gpt-6-sol";
+const LUNA = "gpt-6-luna";
+
+/** Claude runs Opus 5.5 only, so a judgement between two models needs a second backend. Codex is the
+ *  realistic one; stubbed rather than configured so the verdict never depends on this box's login. */
+function withCodexLuna(h: Harness): void {
+  h.internals.codexImplementorReady = (): boolean => true;
+  h.internals.codexPoolSnapshot = (): null => null;
+  h.internals.codexProviderCandidate = (): Record<string, unknown> => ({ provider: "codex", hasHeadroom: true, capacityWindows: [] });
+  h.internals.codexRosterModels = (): string[] => [LUNA];
+  h.internals.codexSupportedEfforts = (): Effort[] => ["low", "medium", "high", "xhigh"];
+  h.internals.codexEffort = (): Effort => "xhigh";
+}
 const COMPLEX_DATA_BRIEF = `Investigate why stale business records remain visible to users and implement a durable end-to-end fix.
 
 Trace the full lifecycle across ingestion sources, stored status timestamps, refresh jobs, query filters,
@@ -256,21 +268,21 @@ async function main(): Promise<void> {
       const pickable = h.internals.pickableClaudeModels() as string[];
       check("every live Claude model is an automatic candidate", live.every((model) => roster.includes(model)), JSON.stringify(roster));
       check("the live roster is not padded with inaccessible curated ids", roster.length === live.length, JSON.stringify(roster));
-      check("manual pickers still union live and the latest curated models", pickable.length > roster.length && pickable.includes("claude-fable-5-1"), JSON.stringify(pickable));
+      check(
+        "manual pickers offer Opus 5.5 and never Sonnet, Haiku, Fable or a retired Opus",
+        pickable.includes(OPUS_5) && !pickable.some((model) => /sonnet|haiku|fable|opus-4-8/.test(model)),
+        JSON.stringify(pickable),
+      );
       const candidates = h.internals.implementorModelRoster() as { model: string; efforts: Effort[] }[];
       const opus = candidates.find((candidate) => candidate.model === "claude-opus-5-5");
-      const sonnet = candidates.find((candidate) => candidate.model === "claude-sonnet-4-6");
-      const haiku = candidates.find((candidate) => candidate.model === HAIKU);
       check("Opus 5.5 exposes all five effort levels", opus?.efforts.join(",") === "low,medium,high,xhigh,max", JSON.stringify(opus));
-      // The version floor: a retired Opus is not an automatic candidate while a current one is
-      // dispatchable, but it stays on the manual picker so an existing pin never vanishes from its list.
+      // Owner rule 2026-09-27: every Claude role runs Opus 5.5. Adaptive selection had put a Sonnet
+      // implementor on ordinary work; no other Claude tier may reach the judge while Opus 5.5 is live.
       check(
-        "a retired Opus is not offered to automatic selection",
-        !candidates.some((candidate) => candidate.model === "claude-opus-4-8") && pickable.includes("claude-opus-4-8"),
+        "only Opus 5.5 is offered to automatic selection on Claude",
+        candidates.filter((candidate) => candidate.model.startsWith("claude-")).map((candidate) => candidate.model).join(",") === OPUS_5,
         JSON.stringify(candidates.map((candidate) => candidate.model)),
       );
-      check("Sonnet 4.6 exposes Max but not unsupported Extra High", sonnet?.efforts.join(",") === "low,medium,high,max", JSON.stringify(sonnet));
-      check("Haiku exposes only its supported effort levels", haiku?.efforts.join(",") === "low,medium,high", JSON.stringify(haiku));
     } finally {
       h.dispose();
     }
@@ -368,20 +380,21 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       h.mgr.setSettings({ autoModelSelection: true });
+      withCodexLuna(h);
       const id = h.seed();
-      h.reply(pickReply(HAIKU));
+      h.reply(pickReply(LUNA));
       const pick = (await h.internals.autoSelectModel(thread(h, id), { summary: "one component", steps: [], risks: [], openQuestions: [], effort: "max" })) as ModelPick;
-      check("a pick comes back", pick?.model === HAIKU && pick.effort === "low", JSON.stringify(pick));
-      check("it is persisted on the task", h.db.getThreadStageOutputs(id).modelPick?.model === HAIKU, JSON.stringify(h.db.getThreadStageOutputs(id).modelPick));
+      check("a pick comes back", pick?.model === LUNA && pick.effort === "low", JSON.stringify(pick));
+      check("it is persisted on the task", h.db.getThreadStageOutputs(id).modelPick?.model === LUNA, JSON.stringify(h.db.getThreadStageOutputs(id).modelPick));
       const rec = h.db.getModelGrade(id);
-      check("a grade record is opened, ungraded", rec?.model === HAIKU && rec.gradedAt == null && rec.score == null, JSON.stringify(rec));
-      check("the owner is told what was chosen", h.db.listFindings(id).some((f) => f.summary.includes(HAIKU)), "no finding posted");
+      check("a grade record is opened, ungraded", rec?.model === LUNA && rec.gradedAt == null && rec.score == null, JSON.stringify(rec));
+      check("the owner is told what was chosen", h.db.listFindings(id).some((f) => f.summary.includes(LUNA)), "no finding posted");
 
       // The resume invariant: a task must never re-decide its backend mid-flight — a session id is
       // provider-specific, so a second opinion would strand the work it was meant to continue.
       h.reply(pickReply("claude-opus-4-8", "max"));
       const again = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick;
-      check("a resume reuses the pick it already made", again?.model === HAIKU, JSON.stringify(again));
+      check("a resume reuses the pick it already made", again?.model === LUNA, JSON.stringify(again));
       check("…without paying for a second call", h.calls() === 0, String(h.calls()));
     } finally {
       h.dispose();
@@ -415,6 +428,7 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       h.mgr.setSettings({ autoModelSelection: true });
+      withCodexLuna(h);
       const id = h.seed();
       h.reply(pickReply("gpt-4o-mini"), "sorry, I'd rather not say");
       const pick = await h.internals.autoSelectModel(thread(h, id));
@@ -438,10 +452,11 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       h.mgr.setSettings({ autoModelSelection: true });
+      withCodexLuna(h);
       const id = h.seed();
       const realRoster = h.internals.implementorModelRoster.bind(h.internals);
       h.internals.implementorModelRoster = (): unknown[] => [];
-      h.reply(pickReply(HAIKU));
+      h.reply(pickReply(LUNA));
       const parked = await h.internals.autoSelectModel(thread(h, id));
       check("no pick is returned while no pool has runway", parked === undefined, JSON.stringify(parked));
       check("no provider turn is spent on an empty roster", h.calls() === 0, String(h.calls()));
@@ -451,9 +466,9 @@ async function main(): Promise<void> {
         JSON.stringify(h.db.getThreadStageOutputs(id).modelPick),
       );
       h.internals.implementorModelRoster = realRoster;
-      h.reply(pickReply(HAIKU));
+      h.reply(pickReply(LUNA));
       const resumed = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick | undefined;
-      check("the capacity-resumed task still auto-selects", resumed?.model === HAIKU, JSON.stringify(resumed));
+      check("the capacity-resumed task still auto-selects", resumed?.model === LUNA, JSON.stringify(resumed));
     } finally {
       h.dispose();
     }
@@ -631,14 +646,15 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       h.mgr.setSettings({ autoModelSelection: true });
+      withCodexLuna(h);
       const id = h.seed();
-      h.reply(pickReply(HAIKU, "medium"));
+      h.reply(pickReply(LUNA, "medium"));
       await h.internals.autoSelectModel(thread(h, id));
       check("the pick's effort beats the planner's", h.internals.implementorEffort(id, "max") === "medium", String(h.internals.implementorEffort(id, "max")));
       // An operator pin is snapshotted onto the thread at dispatch (there is no later setter), so seed a
       // second task the way a pinned dispatch does and give it the same pick.
       const pinned = h.db.createThread({ title: "pinned", workspace: h.workspace, rawPrompt: "x", effortOverride: "low" });
-      h.db.updateThreadStageOutputs(pinned.id, { modelPick: { provider: "claude", model: HAIKU, effort: "medium", reason: "r" } });
+      h.db.updateThreadStageOutputs(pinned.id, { modelPick: { provider: "codex", model: LUNA, effort: "medium", reason: "r" } });
       check("an operator-pinned effort still wins", h.internals.implementorEffort(pinned.id, "max") === "low", String(h.internals.implementorEffort(pinned.id, "max")));
     } finally {
       h.dispose();
@@ -657,8 +673,8 @@ async function main(): Promise<void> {
       check("an unpinned Grok selection follows the cached live model", h.internals.grokModel() === "grok-4.6", String(h.internals.grokModel()));
 
       const id = h.seed();
-      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: HAIKU, effort: "low", reason: "r" } });
-      check("its own backend gets the model", h.internals.pickedModel(id, "claude") === HAIKU, String(h.internals.pickedModel(id, "claude")));
+      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: OPUS_5, effort: "low", reason: "r" } });
+      check("its own backend gets the model", h.internals.pickedModel(id, "claude") === OPUS_5, String(h.internals.pickedModel(id, "claude")));
       for (const p of ["codex", "grok", "zai"] as ImplementorProvider[]) {
         check(`${p} does not inherit a Claude model id`, h.internals.pickedModel(id, p) === undefined, String(h.internals.pickedModel(id, p)));
       }
@@ -674,7 +690,7 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const id = h.seed();
-      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: HAIKU, effort: "low", reason: "r" } });
+      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: OPUS_5, effort: "low", reason: "r" } });
       // Through the REAL routing gate, not the helper alone — a pick the gate never consults would leave
       // every one of these assertions passing while tasks routed by usage as before.
       check("a Claude pick routes to Claude", h.internals.gateImplementorProvider(thread(h, id)) === "claude", String(h.internals.gateImplementorProvider(thread(h, id))));
@@ -745,7 +761,7 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const id = h.seed();
-      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: HAIKU, effort: "low", reason: "r" } });
+      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: OPUS_5, effort: "low", reason: "r" } });
       h.internals.implementorProvider.set(id, "claude");
       try {
         h.internals.startImplementor(thread(h, id), "KICKOFF: mock", { effort: h.internals.implementorEffort(id) });
@@ -754,8 +770,20 @@ async function main(): Promise<void> {
         check("stopped exactly before the spawn", (e as Error).message === WIRE_SENTINEL, (e as Error).message);
       }
       const run = h.db.listRuns(id).find((r) => r.role === "implementor");
-      check("the run records the picked model", run?.model === HAIKU, String(run?.model));
+      check("the run records the picked model", run?.model === OPUS_5, String(run?.model));
       check("the run records the picked effort", run?.effort === "low", String(run?.effort));
+
+      // A pick stored before the Opus-only rule (task b9c181b7 ran Sonnet this way) never reaches a run.
+      const legacy = h.seed();
+      h.db.updateThreadStageOutputs(legacy, { modelPick: { provider: "claude", model: SONNET_5, effort: "medium", reason: "r" } });
+      h.internals.implementorProvider.set(legacy, "claude");
+      try {
+        h.internals.startImplementor(thread(h, legacy), "KICKOFF: mock", { effort: h.internals.implementorEffort(legacy) });
+      } catch {
+        /* the same sentinel */
+      }
+      const legacyRun = h.db.listRuns(legacy).find((r) => r.role === "implementor");
+      check("a stored Sonnet pick dispatches Opus 5.5 instead", legacyRun?.model === OPUS_5, String(legacyRun?.model));
 
       // …and with no pick, the configured default is what runs — the feature must be invisible when off.
       const plain = h.seed();
@@ -778,10 +806,11 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       h.mgr.setSettings({ autoModelSelection: true });
+      withCodexLuna(h);
       const id = h.seed();
-      h.reply(pickReply(HAIKU));
+      h.reply(pickReply(LUNA));
       await h.internals.autoSelectModel(thread(h, id));
-      const r1 = h.db.createRun({ threadId: id, role: "implementor", model: HAIKU, account: "account a", effort: "low" });
+      const r1 = h.db.createRun({ threadId: id, role: "implementor", model: LUNA, account: `codex:${LUNA}`, effort: "low" });
       h.db.updateRun(r1.id, { state: "done", costUsd: 0.5, numTurns: 12, tokenUsage: { inputTokens: 70_000, outputTokens: 10_000, cacheReadInputTokens: 20_000, cacheCreationInputTokens: 2_000, reasoningOutputTokens: 0, totalTokens: 80_000 }, endedAt: Date.now() });
       const r2 = h.db.createRun({ threadId: id, role: "qa", model: "claude-opus-4-8" });
       h.db.updateRun(r2.id, { state: "done", costUsd: 1.5, numTurns: 20, tokenUsage: { inputTokens: 30_000, outputTokens: 5_000, cacheReadInputTokens: 10_000, cacheCreationInputTokens: 1_000, reasoningOutputTokens: 0, totalTokens: 35_000 }, endedAt: Date.now() });
@@ -794,9 +823,9 @@ async function main(): Promise<void> {
       check("the whole task's cost is recorded", graded?.costUsd === 2, String(graded?.costUsd));
       check("the whole pipeline's token burn is recorded durably", graded?.tokenUsage?.totalTokens === 115_000 && graded.tokenUsage.cacheReadInputTokens === 30_000, JSON.stringify(graded?.tokenUsage));
       check("complete token telemetry is marked comparable", graded?.tokenUsageComplete === true, JSON.stringify(graded));
-      check("the model that ran is credited", graded?.gradedModel === HAIKU, String(graded?.gradedModel));
+      check("the model that ran is credited", graded?.gradedModel === LUNA, String(graded?.gradedModel));
       const stats = h.db.modelStats();
-      check("the scoreboard has it", stats.length === 1 && stats[0]!.model === HAIKU && stats[0]!.avgScore === 88, JSON.stringify(stats));
+      check("the scoreboard has it", stats.length === 1 && stats[0]!.model === LUNA && stats[0]!.avgScore === 88, JSON.stringify(stats));
       check("the scoreboard feeds token burn to later picks", stats[0]?.avgTotalTokens === 115_000 && stats[0]?.avgOutputTokens === 15_000, JSON.stringify(stats[0]));
       check("the scoreboard exposes token measurement coverage", stats[0]?.tokenSampleRate === 1, JSON.stringify(stats[0]));
       check("effort-specific history is retained too", h.db.modelEffortStats()[0]?.effort === "low" && h.db.modelEffortStats()[0]?.avgTotalTokens === 115_000, JSON.stringify(h.db.modelEffortStats()));
@@ -813,10 +842,11 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       h.mgr.setSettings({ autoModelSelection: true });
+      withCodexLuna(h);
       const id = h.seed();
-      h.reply(pickReply(HAIKU));
+      h.reply(pickReply(LUNA));
       await h.internals.autoSelectModel(thread(h, id));
-      const r = h.db.createRun({ threadId: id, role: "implementor", model: HAIKU, effort: "low" });
+      const r = h.db.createRun({ threadId: id, role: "implementor", model: LUNA, account: `codex:${LUNA}`, effort: "low" });
       h.db.updateRun(r.id, { state: "done", costUsd: 1, numTurns: 8, endedAt: Date.now() });
 
       h.internals.setState(id, "review", "⏳ Auto-resume pending — every Claude subscription was rate-limited mid-task.");

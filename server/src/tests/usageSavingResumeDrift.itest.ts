@@ -165,7 +165,9 @@ console.log("\n=== A. usage saving still active: the warm session is preserved (
     usageSaving: { "account-a": { enabled: true, thresholdPct: 90, model: "claude-sonnet-5", effort: "medium" } },
     modelOverrides: { "account-a": { implementor: "claude-opus-5-5" } },
   });
-  const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-sonnet-5", account: "Claude A" });
+  // The stored saving model is Sonnet, but Claude runs Opus 5.5 only: saving still active means the
+  // Opus session it produced is the one a fresh dispatch would pick, so it resumes in place.
+  const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-opus-5-5", account: "Claude A" });
   h.db.updateRun(priorRun.id, { sessionId: "sess-1" });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = h.mgr as any;
@@ -174,7 +176,7 @@ console.log("\n=== A. usage saving still active: the warm session is preserved (
     qaFollows: true,
   });
   check("the resume was driven", result != null);
-  check("the prior session was resumed in place (still on sonnet, still saving)", h.asks.length === 1 && h.asks[0]?.resume === "sess-1", JSON.stringify(h.asks));
+  check("the prior session was resumed in place (saving still active, floored to Opus)", h.asks.length === 1 && h.asks[0]?.resume === "sess-1" && h.asks[0]?.model === "claude-opus-5-5", JSON.stringify(h.asks));
   h.dispose();
 }
 

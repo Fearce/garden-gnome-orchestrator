@@ -1,4 +1,5 @@
-// Deterministic version floor for the Claude Opus family: never run a role on an Opus older than 5.5.
+// Deterministic Claude model floor: every Claude role runs on Opus 5.5 or a newer Opus — never on an
+// older Opus, and never on Sonnet, Haiku or Fable.
 //
 // Same defect shape as `reviewModelFloor.ts`, on the other backend. The persisted per-subscription role
 // override matrix is enforced verbatim by `modelFor`, so a stored `acct1.implementor` naming the bare-major 5.0 Opus
@@ -9,9 +10,9 @@
 // like the Codex floor it deliberately sits BELOW the matrix: deny-listing the Settings dropdown alone
 // would leave every already-persisted pin running.
 //
-// Scope, deliberately narrow in three directions:
-//  - Opus to Opus only. A configured Sonnet, Fable or Haiku is a chosen cheaper tier, not an outdated
-//    flagship, and lifting one to Opus would spend the owner's quota on a decision they did not make.
+// Scope:
+//  - Every non-Opus Claude tier is lifted too. Owner directive, 2026-09-27: "always use opus 5.5, never
+//    use sonnet as a claude model". Adaptive auto-selection had put a Sonnet implementor on ordinary work.
 //  - The per-task strict owner model pin (`thread.modelRequest`) is untouched, exactly as the Codex
 //    floor leaves it: naming a model for one task must keep naming that model.
 //  - It is a MINIMUM, not a pin. A future `claude-opus-6` is already above the floor and passes through.
@@ -51,6 +52,16 @@ export function isRetiredClaudeOpus(model: string): boolean {
   return version !== null && version < MIN_OPUS_VERSION;
 }
 
+/** Every Claude tier that is not Opus, bare alias or full id (`sonnet`, `claude-sonnet-5`,
+ *  `claude-3-5-haiku-20241022`, `claude-fable-5-1`). */
+const NON_OPUS_CLAUDE_TIER = /^(?:claude-(?:[\d.-]+-)?)?(?:sonnet|haiku|fable|mythos)(?:[-.[]|$)/i;
+
+/** True for any Claude model a role must not run on: a retired Opus or any non-Opus tier. False for
+ *  Opus 5.5 or newer and for every non-Claude model. */
+export function isDisallowedClaudeModel(model: string): boolean {
+  return isRetiredClaudeOpus(model) || NON_OPUS_CLAUDE_TIER.test(model.trim());
+}
+
 /** The best Opus at or above the floor that this installation can actually dispatch. */
 function replacementFor(dispatchable: readonly string[]): string | undefined {
   const current = dispatchable
@@ -65,18 +76,18 @@ function replacementFor(dispatchable: readonly string[]): string | undefined {
  * Resolve what a role runs on Claude, given the configured model and the Claude ids this installation
  * can name right now.
  *
- * A non-Opus model and an already-current Opus are returned untouched. A retired Opus is replaced by
+ * A current Opus is returned untouched. A retired Opus or any non-Opus Claude tier is replaced by
  * the floor model when the roster carries it, else by the newest Opus above the floor that it does —
  * never by a hand-written id, which is the lesson the Codex floor paid for: a model string this
  * installation's catalog does not resolve fails the whole run rather than degrading.
  *
- * When the roster carries NO current Opus the retired id passes through unchanged. That differs from
- * the Codex review floor, which blocks and routes the role elsewhere, and the difference is the
+ * When the roster carries NO current Opus the configured id passes through unchanged. That differs
+ * from the Codex review floor, which blocks and routes the role elsewhere, and the difference is the
  * backend's position: Claude is the backbone here, so refusing it on a degraded catalog fetch would
- * park the whole fleet to avoid running a model that is merely a generation old.
+ * park the whole fleet.
  */
 export function claudeOpusTarget(configured: string, dispatchable: readonly string[]): ClaudeOpusTarget {
-  if (!isRetiredClaudeOpus(configured)) return { model: configured };
+  if (!isDisallowedClaudeModel(configured)) return { model: configured };
   const replacement = replacementFor(dispatchable);
   if (!replacement) return { model: configured };
   return { model: replacement, replaced: configured.trim() };

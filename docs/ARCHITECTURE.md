@@ -6,7 +6,7 @@ The contract every module builds against. Read this before touching code.
 
 ```
                         ┌──────────────────────────────────────────┐
-   you  ───chat──────▶  │  DIRECTOR  (Sonnet 4.6, streaming input)  │
+   you  ───chat──────▶  │  DIRECTOR  (Opus 5.5, streaming input)    │
                         │  enrich · recall memories · clarify       │
                         └───────────────┬──────────────────────────┘
                                         │ dispatch(threadId, brief)
@@ -193,11 +193,11 @@ token-window burn are separate: a flat-subscription run can say `$0` while still
 so the selector explicitly optimizes the cheapest *reliable* choice across both.
 
 **Token conservation mode** (`setting_token_conservation_mode`, off by default; `orchestrator/tokenConservation.ts`)
-is a much smaller, deterministic sibling of the above: once a Claude subscription or the Codex general pool
+is a much smaller, deterministic sibling of the above: once the Codex general pool
 sits in the last 10% of its weekly window, `modelFor`/`providerRoleModel` — the plain default model-resolution
 layer every role runs through absent a strict pin or an auto-select pick, including the per-role/per-subscription
-model-matrix override — caps that subscription's/backend's model to its economy tier (Claude Sonnet, GPT-5.6
-Luna) instead of a pricier one, so the remaining runway isn't spent on the most expensive model right before the
+model-matrix override — caps the backend's model to its economy tier (GPT-6
+Luna — Claude has no economy tier: every Claude role runs Opus 5.5, `claudeOpusFloor.ts`) instead of a pricier one, so the remaining runway isn't spent on the most expensive model right before the
 window caps outright. Unlike `modelRoutingPolicy.isPolicyApprovedFlagship` (which fails CLOSED — an unreviewed
 model id is excluded from flagship routing), conservation's own "is this already cheap" check
 (`TOKEN_CONSERVATION_ECONOMY_MODELS`) fails OPEN toward conserving: an id it has never seen is conserved by
@@ -326,7 +326,7 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
 - **Read lane (`dispatch_read`) — a single-agent short-circuit, immune to route selection.** A
   thread dispatched with `lane: "read"` (the director's `dispatch_read` tool) skips the whole
   planner→implementor→QA pipeline and the route decision above entirely: `runPipeline` sees the
-  lane and runs ONE read-only **reader** (`runReader` → Sonnet, the §3 read-only toolset), which
+  lane and runs ONE read-only **reader** (`runReader` → Opus 5.5, the §3 read-only toolset), which
   answers a pure lookup by posting the answer as a finding — no planner, no QA, regardless of the
   operator's settings. It's for the ~1% of tasks that are answered just by reading (the
   cost/benefit analysis's Option C): seconds-to-minutes and a fraction of the cost of the
@@ -346,7 +346,7 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   half-answers** — anything needing an edit, a build/test, verification, or a broad multi-file
   investigation is an escalation, not a guess. `readerDone` is a sticky stage marker (like
   `planDone`) so a restart mid-read can't re-run the reader and double-post. The card shows a
-  distinct **READ** badge (`lane === "read"`) until an escalation clears it. Sonnet, not Haiku, is
+  distinct **READ** badge (`lane === "read"`) until an escalation clears it. Opus, not a cheaper tier, is
   the reader's default because misrouting *to* the reader is the unsafe direction — it has no QA
   behind it — so the lane is biased to capability (`config.models.reader`, configurable like every
   role's model).
