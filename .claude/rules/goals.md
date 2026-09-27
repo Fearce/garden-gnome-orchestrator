@@ -1,0 +1,42 @@
+---
+paths:
+  - "server/src/orchestrator/goals.ts"
+  - "server/src/tests/goals.test.ts"
+  - "web/src/components/Goals.tsx"
+  - "web/scripts/goals-ui.test.tsx"
+---
+
+# Goal-directed tasks (the traps, not the tour)
+
+Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, the director's
+`create_goal`/`list_goals`/`update_goal` tools, or the Goals view. The shape is in
+`docs/agent-reference/CLAUDE-full.md` § "Goal-directed tasks".
+
+- **A goal is a loop of ORDINARY tasks, not a lane or a mode.** Each step goes through
+  `manager.dispatch` like a hand-dispatched task, with a strict model pin (`requestedProvider` +
+  `requestedModel`) and an effort. Do not add goal-specific branches to `runPipeline`. The goal learns a
+  step ended from the hub's `thread.upsert` (fast path) and the 60s tick (safety net), and reads the
+  outcome from durable rows.
+- **Ending takes two voices.** The step's implementor must write a standalone `GOAL STATUS: COMPLETE` line
+  (`detectGoalComplete`: the last status line wins, and it must stand alone because the brief quotes the
+  marker mid-sentence), AND the director's verdict must be `complete`. A lone director verdict dispatches a
+  VERIFICATION step; a lone agent claim just gets the next step. Revert-checked: dropping `&& agentClaimed`
+  turns `test:goals` red.
+- **The director call is `supervisorJudge`**, the bounded no-tools, capacity-aware judgement ThreadManager
+  already has. It returns null during a restart drain or when nothing can answer, and the goal then WAITS
+  (`nextCheckAt` + a visible `statusReason`). It must never dispatch blind.
+- **The pick is checked against `goalModelRoster()`** (= `implementorModelRoster`, the auto-selection
+  roster). An undispatchable model falls back to automatic routing, with the reason written into the
+  step's rationale, rather than pinning a step to a model that cannot run.
+- **Guards fire at SETTLE time, not on every evaluation.** A cancelled step pauses the goal, and so do 3
+  consecutive failed steps. If those checks ran on every evaluation, Resume would re-pause at once on the
+  same old step (`test:goals` covers "resume judges again"). Only the step budget and a missing workspace
+  are re-checked on every pass. A `review` outcome is NOT a failure: QA was unsatisfied, but the work exists.
+- **The step row is written BEFORE the dispatch.** A crash in between leaves a step with no `thread_id`;
+  `adoptOrphan` finds its task by the exact `stepTitle` in that workspace, and while that is unresolved
+  the goal dispatches nothing. That early return is load-bearing: without it a restart doubles the step.
+- **Re-read the goal after the judge returns.** The owner may pause, end or delete it while the director
+  is thinking; a judgement that lands afterwards must dispatch nothing.
+- Pausing/ending never touches the running step task: it finishes, and no step follows.
+
+Verify: `npm run test:goals --prefix server` (server loop + the web store/view gate), then typecheck.
