@@ -16,6 +16,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { buildStamp, fingerprintFile } = require("./gates-provenance.cjs");
 const { acquireGateRunLease } = require("./gate-run-lease.cjs");
+const { gateEnv } = require("./gate-git-env.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const ROOT_DIR = path.resolve(SERVER_DIR, "..");
@@ -289,7 +290,7 @@ function runGate(gate, livePath) {
     const started = Date.now();
     let output = "";
     const live = fs.createWriteStream(livePath, { flags: "w" });
-    const child = spawn("npm", ["run", gate], { cwd: SERVER_DIR, stdio: ["ignore", "pipe", "pipe"], shell: win, windowsHide: true });
+    const child = spawn("npm", ["run", gate], { cwd: SERVER_DIR, env: gateEnv(), stdio: ["ignore", "pipe", "pipe"], shell: win, windowsHide: true });
     const take = (chunk) => {
       const text = chunk.toString();
       output += text;
@@ -626,6 +627,7 @@ module.exports = {
   SERIAL_GATES,
   clearLiveLogs,
   gateJobs,
+  runGate,
   runPool,
   runGateGroups,
   busyText,

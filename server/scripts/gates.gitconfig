@@ -1,0 +1,18 @@
+# The global git config every gate runs under (GIT_CONFIG_GLOBAL, set by gate-git-env.cjs).
+# Gates build throwaway repos and must not inherit the operator's own global config: a global
+# core.hooksPath ran a full personal validation suite on every commit, checkout and push inside
+# them (a commit took ~6s instead of ~0.13s), which alone stretched the suite by many minutes.
+# This file sets only what the gates rely on, so they behave the same on every machine.
+[user]
+	name = GGO Gates
+	email = gates@localhost
+[init]
+	defaultBranch = master
+[core]
+	autocrlf = input
+	longpaths = true
+# Every commit, fetch and push otherwise spawns one more `git maintenance run --auto` process.
+[maintenance]
+	auto = false
+[gc]
+	auto = 0

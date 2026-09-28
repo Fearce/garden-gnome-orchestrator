@@ -84,6 +84,13 @@ The general rule: **stubbing a ThreadManager method does not stub a module-level
   return before their run settles; closing the DB under one throws "database connection
   is not open" — surfacing inside the NEXT test, so it reads as that test's bug. Yield
   several macrotask turns (not one `setTimeout(0)`) after any call you don't await.
+- **The runner gives every gate its own global git config** (`scripts/gates.gitconfig` via
+  `GIT_CONFIG_GLOBAL`, `scripts/gate-git-env.cjs`; `test:gates` and `gates:touching` both apply it). Run a
+  git-heavy gate by hand (`npx tsx` on its file, or a bare `npm run test:repo-ops`) and its throwaway
+  repos inherit YOUR global config instead: on this box a global `core.hooksPath` ran a personal
+  validation suite on every commit, so one commit took ~6s instead of ~0.13s and `test:repo-ops` took
+  258s instead of ~80s (2026-09-28). Prefix `GIT_CONFIG_GLOBAL=$PWD/scripts/gates.gitconfig` to reproduce
+  a suite timing. A setting a gate genuinely depends on goes in that file, never in your own config.
 - `db.createThread` requires `rawPrompt` (NOT NULL) — omitting it throws SQLITE_CONSTRAINT.
 - **`db.updateThread` writes only title/state/brief/workspace/error.** `effort_override` (and the close
   columns) are set at creation / by their own methods, so `updateThread({effortOverride})` silently no-ops
@@ -112,4 +119,4 @@ The general rule: **stubbing a ThreadManager method does not stub a module-level
   quota: `probe:sdk-resume` (`out: 0` on success = silent resume, ~$0.10); what STEERING one does:
   `probe:sdk-steer [-- --mode now|next|interrupt]`, ~$0.03 — read `terminal_reason`, never the shape
   (a `"now"` abort is success-shaped, a bare `interrupt()` is `error_during_execution`).
-- Register the gate in BOTH `server/package.json` and `GATES` in `scripts/run-gates.cjs`, else the nightly sweep never runs it; `test:gate-registration` red-flags either omission. Verify with `npm run typecheck && npm run test:gates --prefix server` — but FIRST, when you touched a shared seam, `npm run gates:touching --prefix server -- <symbol>` (`--list` to look) runs every gate whose test file names it. The suite is ~45min here, so discovering a broken gate one suite at a time is the expensive mistake: adding a `this.accounts.select()` call to `startResumedImplementor` crashed every itest whose StubAccounts had only `dispatchPreview`, and the hand-rolled version of this grep ran a subset of its own answer and missed one (2026-09-17).
+- Register the gate in BOTH `server/package.json` and `GATES` in `scripts/run-gates.cjs`, else the nightly sweep never runs it; `test:gate-registration` red-flags either omission. Verify with `npm run typecheck && npm run test:gates --prefix server` — but FIRST, when you touched a shared seam, `npm run gates:touching --prefix server -- <symbol>` (`--list` to look) runs every gate whose test file names it. The suite is ~5min here, so discovering a broken gate one suite at a time is the expensive mistake: adding a `this.accounts.select()` call to `startResumedImplementor` crashed every itest whose StubAccounts had only `dispatchPreview`, and the hand-rolled version of this grep ran a subset of its own answer and missed one (2026-09-17).

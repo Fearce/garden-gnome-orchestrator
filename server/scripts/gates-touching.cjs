@@ -27,6 +27,7 @@
 const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { gateEnv } = require("./gate-git-env.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const TESTS_DIR = path.join(SERVER_DIR, "src", "tests");
@@ -76,6 +77,7 @@ function runGate(name) {
   const started = Date.now();
   const res = spawnSync("npm", ["run", "--silent", name], {
     cwd: SERVER_DIR,
+    env: gateEnv(),
     encoding: "utf8",
     shell: process.platform === "win32",
   });

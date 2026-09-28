@@ -14,6 +14,8 @@
 //   4. Every gate is spawned per name, so the count in the summary is the count of gates.
 //   5. One OS-backed lease owns the shared transcript; a killed owner releases it automatically.
 //      A pidfile would need stale/PID-reuse guesses and can still strand or steal the suite.
+//   6. Every gate runs under the suite's own global git config. The operator's global hooksPath ran a
+//      personal validation suite on every git call in the throwaway repos and doubled the suite's time.
 //
 // Run: node scripts/run-gates.test.cjs
 
@@ -34,6 +36,7 @@ const {
   SERIAL_GATES,
   clearLiveLogs,
   gateJobs,
+  runGate,
   runPool,
   runGateGroups,
   busyText,
@@ -49,6 +52,7 @@ const {
   tail,
 } = require("./run-gates.cjs");
 const { LOCK_DB, OWNER_FILE, acquireGateRunLease, readOwner } = require("./gate-run-lease.cjs");
+const { GATES_GITCONFIG, gateEnv } = require("./gate-git-env.cjs");
 
 const SERVER_DIR = path.resolve(__dirname, "..");
 const ROOT = path.resolve(SERVER_DIR, "..");
@@ -448,7 +452,33 @@ assert.equal(timed.get("test:git"), 9_000, "a gate the newest run never reached 
 assert.equal(timed.get("test:ide"), 30_500, "the newest transcript wins, and a failed gate's time still counts");
 assert.equal(timed.size, 2, "an unreadable transcript is skipped, not fatal");
 
-Promise.all([assertCrashSafeLease(), assertBoundedPool(), assertExclusiveGates(), assertLongestFirst()])
+// --- 6. gates run under the suite's git config, not the operator's ------------------------------
+function gitGlobal(key) {
+  const res = require("node:child_process").spawnSync("git", ["config", "--global", "--get", key], {
+    env: gateEnv(),
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  return res.stdout.trim();
+}
+assert.equal(gitGlobal("core.hooksPath"), "", "no global hooks run inside a gate's throwaway repos");
+assert.equal(gitGlobal("maintenance.auto"), "false", "git spawns no background maintenance after each commit");
+assert.equal(gitGlobal("init.defaultBranch"), "master", "a gate's `git init` names the branch the gates expect");
+
+async function assertGateGitConfig() {
+  const livePath = path.join(os.tmpdir(), `run-gates-env-${process.pid}.log`);
+  try {
+    // `npm run env` is npm's built-in environment dump, so this runs the real spawn with no gate behind it.
+    const r = await runGate("env", livePath);
+    assert.ok(r.ok, `npm run env failed:\n${r.output}`);
+    const line = r.output.split(/\r?\n/).find((l) => /^GIT_CONFIG_GLOBAL=/i.test(l));
+    assert.equal(line?.slice(line.indexOf("=") + 1), GATES_GITCONFIG, "runGate hands every gate the suite's global git config");
+  } finally {
+    fs.rmSync(livePath, { force: true });
+  }
+}
+
+Promise.all([assertCrashSafeLease(), assertBoundedPool(), assertExclusiveGates(), assertLongestFirst(), assertGateGitConfig()])
   .then(() => console.log(`runGates: all assertions passed (${GATES.length} gates, transcript ${path.relative(ROOT, TRANSCRIPT)})`))
   .catch((err) => {
     console.error(err);
