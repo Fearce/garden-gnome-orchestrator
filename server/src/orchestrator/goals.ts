@@ -713,6 +713,7 @@ export class GoalRunner {
    * is recorded but its task not yet found, so nothing may dispatch; "paused" means a settle paused the goal.
    */
   private settleOpenSteps(goal: Goal): GoalStep[] | "orphan" | "paused" {
+    this.reopenResumedSteps(goal);
     const running: GoalStep[] = [];
     for (const open of this.db.listOpenGoalSteps(goal.id)) {
       const step = this.adoptOrphan(goal, open);
@@ -723,6 +724,31 @@ export class GoalRunner {
       else if (this.settleStep(goal, step, thread)) return "paused";
     }
     return running;
+  }
+
+  /**
+   * A settled step whose task came back to life (a cap auto-resume, a Retry, an inject) is running again and
+   * must hold its slot, or the goal runs more steps than `maxConcurrent`. Reopening it also means its real
+   * ending is settled and reported later, not the stale one.
+   */
+  private reopenResumedSteps(goal: Goal): void {
+    for (const step of this.db.listGoalSteps(goal.id)) {
+      if (step.settledAt == null || !step.threadId) continue;
+      const thread = this.db.getThread(step.threadId);
+      if (!thread || !UNFINISHED_STATES.has(thread.state)) continue;
+      this.db.updateGoalStep(step.id, { outcome: null, agentClaimedComplete: null, settledAt: null });
+      this.uncountSettle(goal.id, step.settledAt);
+      this.hub.log("info", `Goal "${goal.title}" step ${step.seq}'s task is ${thread.state} again, so the step counts as running.`);
+      this.broadcast();
+    }
+  }
+
+  /** Keeps the last verdict's settled count in step with the settled list, so the step's next ending is
+   *  reported to the director and lifts any `wait` hold. */
+  private uncountSettle(goalId: string, settledAt: number): void {
+    const verdict = this.db.getGoal(goalId)?.lastVerdict;
+    if (!verdict || verdict.settledSteps == null || settledAt > verdict.at) return;
+    this.db.updateGoal(goalId, { lastVerdict: { ...verdict, settledSteps: Math.max(0, verdict.settledSteps - 1) } });
   }
 
   /** The director answered `wait` (or `complete`) while steps ran: plan nothing until one of them ends. */

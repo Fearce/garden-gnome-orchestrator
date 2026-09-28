@@ -512,6 +512,38 @@ function legacyMigration(): void {
   check("a new goal can be created on the migrated table", db.getGoal(created.id)?.status === "active");
 }
 
+async function resumedStep(): Promise<void> {
+  const ws = process.cwd();
+  console.log("goals: a settled step whose task resumes takes its slot back");
+  const h = harness();
+  h.answers.push(answer("continue", "a"), answer("continue", "b"));
+  const g = h.runner.create({ title: "Revive", objective: "o", workspace: ws, maxConcurrent: 2 }).goal!;
+  await h.runner.idle();
+  const [ta, tb] = h.db.listOpenGoalSteps(g.id).map((s) => s.threadId!);
+  h.answers.push(answer("continue", "c"));
+  settle(h, ta!, "failed", "Hit the usage cap.");
+  await h.runner.idle();
+  await h.runner.evaluate(g.id);
+  check("the failed step's slot is refilled", h.dispatched.length === 3);
+
+  h.db.updateThread(ta!, { state: "implementing" });
+  const tc = h.db.listOpenGoalSteps(g.id).find((s) => s.threadId !== tb)!.threadId!;
+  settle(h, tc, "done", "C done.");
+  await h.runner.evaluate(g.id);
+  const reopened = h.db.listGoalSteps(g.id)[0]!;
+  check("a resumed task reopens its step", reopened.settledAt === null && reopened.outcome === null);
+  check("the resumed step fills the freed slot: nothing new starts", h.dispatched.length === 3 && h.judged.length === 3);
+  await h.runner.evaluate(g.id);
+  check("a later tick still sees two steps running", h.dispatched.length === 3);
+
+  h.answers.push(answer("continue", "d"));
+  settle(h, ta!, "done", "A finished after resuming.");
+  await h.runner.evaluate(g.id);
+  await h.runner.idle();
+  check("the resumed step ending is reported to the director", h.judged[3]!.includes("A finished after resuming.") && !h.judged[3]!.includes("Hit the usage cap."));
+  check("its settle frees the slot again", h.dispatched.length === 4 && h.db.listGoalSteps(g.id)[0]!.outcome === "done");
+}
+
 async function main(): Promise<void> {
   pure();
   burnRate();
@@ -519,6 +551,7 @@ async function main(): Promise<void> {
   await guards();
   await burnHoldLoop();
   await parallel();
+  await resumedStep();
   legacyMigration();
   if (failures) {
     console.error(`\n${failures} check(s) failed`);
