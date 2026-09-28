@@ -12,7 +12,8 @@
  * is a local bare repo instead of GitHub; every git operation is 100% real.
  *
  * Scenarios:
- *   A. RESOLVE     — workspace = repo root, workspace = PARENT of a nested repo, and a non-repo dir.
+ *   A. RESOLVE     — workspace = repo root, workspace = PARENT of a nested repo, and a non-repo dir;
+ *                    a read that timed out is unknown and never cached (A3).
  *   B. STATUS      — modified + untracked + staged + deleted files, with correct statuses and ±counts.
  *   C. PUSH STATE  — a local commit not on @{push} reads "unpushed"/local; after a push it's "pushed".
  *   D. COMMIT ONLY — an origin matching the configured substring reads commit-only, never a push nag.
@@ -150,6 +151,30 @@ try {
     check("getGitStatus via the multi-nested parent is a repo", s.isRepo && s.repoRoot === mainTop, `${s.isRepo}/${s.repoRoot}`);
     const sum = await getGitSummary(parent);
     check("getGitSummary via the multi-nested parent is a repo (chip would render)", sum.isRepo, String(sum.isRepo));
+  }
+
+  // ---- A3. a timed-out resolution is unknown, never cached ------------------------------------------
+  // On a loaded box one `rev-parse --show-toplevel` can stall past its timeout (reproduced 2026-09-28).
+  // That read used to fall into the nested-repo scan and cache the result for the TTL: "not a repo",
+  // or a checkout nested inside the real one, for every git surface on that workspace.
+  console.log("\nA3. resolveRepoRoot — a timed-out read is not cached as an answer");
+  {
+    const { work } = setupClone(root, "stall");
+    const vendored = join(work, "vendor");
+    git(work, "init", "--quiet", "vendor");
+    configureRepo(vendored);
+    const nestedTop = git(vendored, "rev-parse", "--show-toplevel");
+    process.env.GIT_READ_TIMEOUT_MS = "1";
+    let stalled: string | null = null;
+    try {
+      stalled = await resolveRepoRoot(work);
+    } finally {
+      delete process.env.GIT_READ_TIMEOUT_MS;
+    }
+    check("a resolution whose reads timed out answers null, not the nested checkout", stalled === null, String(stalled));
+    const recovered = await resolveRepoRoot(work);
+    check("the next resolution asks git again and finds the real repo", recovered === git(work, "rev-parse", "--show-toplevel"), String(recovered));
+    check("and never the checkout nested inside it", recovered !== nestedTop, String(recovered));
   }
 
   // ---- B. status: file statuses + counts ------------------------------------------------------------

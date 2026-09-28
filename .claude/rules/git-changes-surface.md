@@ -90,6 +90,13 @@ urgent, nothing is. A job that waited over 5s is summarised once a minute in the
 (`child command pool: N command(s) waited …`). Gates: `test:child-runner`, `test:dispatch-latency` and
 `test:git` section J.
 
+**A timed-out read is UNKNOWN, never an answer to cache.** Under heavy spawn load one git process here
+can stall past its 15s timeout and not even die on the kill (`rev-parse --show-toplevel`, 2 in 10 under
+three git-heavy gates, 2026-09-28). `resolveRepoRoot` used to fall into the nested-repo scan and cache
+the result for `REPO_ROOT_TTL_MS`: "not a repo", or a checkout nested inside the real one, on every
+surface for that workspace. It now returns null uncached. The timeout is `GIT_READ_TIMEOUT_MS` (default
+15000, read per call) — raise it on a box that stalls; gates use it to force a timeout (`test:git` A3).
+
 Four traps the console hit, all in the reply path:
 - `repo.list` echoes `forThread`; a reply not matching the request in flight is DISCARDED. The
   first list costs a disk scan, so a previous open's answer routinely arrives after the current

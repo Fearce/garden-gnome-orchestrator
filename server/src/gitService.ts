@@ -12,7 +12,9 @@ import { isConfiguredCommitOnlyOrigin } from "./git/commitOnly.js";
 // update.ts, whose runGit is hardcoded to the orchestrator's OWN checkout for self-update; this one takes
 // the repo dir as its first argument so it can inspect any repo a task is working in.
 
-const GIT_TIMEOUT_MS = 15_000;
+// Read per call, like childRunner's watchdog grace, so a gate can force a timeout and an operator can
+// widen it on a box where process creation stalls.
+const gitTimeoutMs = (): number => Number(process.env.GIT_READ_TIMEOUT_MS) || 15_000;
 // Bound a pathological diff/log so a runaway repo can't blow the WS frame or the browser. The per-file
 // diff truncates to this many bytes; the file list and log are naturally bounded by their own caps.
 const DIFF_MAX_BYTES = 200_000;
@@ -37,7 +39,7 @@ export interface GitResult {
  *  credential prompt, GIT_OPTIONAL_LOCKS=0 so a read never races an index lock a concurrent agent holds.
  *  Exported for `git/repoOps.ts` (the write-side repo console), so every git surface in the app goes
  *  through this one hardened, shell-free spawn. */
-export async function runGit(cwd: string, args: string[], timeoutMs = GIT_TIMEOUT_MS, opts: GitCallOptions = {}): Promise<GitResult> {
+export async function runGit(cwd: string, args: string[], timeoutMs = gitTimeoutMs(), opts: GitCallOptions = {}): Promise<GitResult> {
   // Runs on a worker thread (see childRunner.ts). This is the busiest git surface in the app — a board
   // of cards, the Changes drawer and the Git console all land here — and on Windows an in-process spawn
   // blocks the whole server for the duration of CreateProcess.
@@ -109,14 +111,20 @@ export async function resolveRepoRoot(workspace: string, opts: GitCallOptions = 
   const cached = repoRootCache.get(workspace);
   if (cached && Date.now() - cached.at < REPO_ROOT_TTL_MS) return cached.root;
   const root = await resolveRepoRootUncached(workspace, opts);
+  // Unknown is not cached: the next caller asks git again instead of inheriting one stalled read.
+  if (root === undefined) return null;
   repoRootCache.set(workspace, { at: Date.now(), root });
   return root;
 }
 
-async function resolveRepoRootUncached(workspace: string, opts: GitCallOptions): Promise<string | null> {
+/** `undefined` when a git read timed out: the answer is unknown, which is not the same as "not a repo". */
+async function resolveRepoRootUncached(workspace: string, opts: GitCallOptions): Promise<string | null | undefined> {
   if (!existsSync(workspace)) return null;
-  const top = await runGit(workspace, ["rev-parse", "--show-toplevel"], GIT_TIMEOUT_MS, opts);
+  const top = await runGit(workspace, ["rev-parse", "--show-toplevel"], gitTimeoutMs(), opts);
   if (top.code === 0 && top.stdout.trim()) return top.stdout.trim();
+  // A killed read says nothing about this directory. The nested scan below would answer for it anyway —
+  // "not a repo", or a checkout nested INSIDE the real repo — and that answer would be cached.
+  if (top.timedOut) return undefined;
 
   // Workspace isn't itself in a repo — look one level down for nested checkouts. A parent that holds
   // MORE THAN ONE nested repo is normal for the orchestrator (sibling worktrees, a `-demo` checkout, a
@@ -153,7 +161,8 @@ async function resolveRepoRootUncached(workspace: string, opts: GitCallOptions):
     return a.name.length - b.name.length;
   });
 
-  const t = await runGit(candidates[0]!.dir, ["rev-parse", "--show-toplevel"], GIT_TIMEOUT_MS, opts);
+  const t = await runGit(candidates[0]!.dir, ["rev-parse", "--show-toplevel"], gitTimeoutMs(), opts);
+  if (t.timedOut && t.code !== 0) return undefined;
   return t.code === 0 && t.stdout.trim() ? t.stdout.trim() : null;
 }
 
@@ -845,7 +854,7 @@ function toRepoRelative(repoRoot: string, absFiles: string[]): string[] {
 export async function getHeadSha(workspace: string, opts: GitCallOptions = {}): Promise<string | null> {
   const repoRoot = await resolveRepoRoot(workspace, opts);
   if (!repoRoot) return null;
-  return okOut(await runGit(repoRoot, ["rev-parse", "HEAD"], GIT_TIMEOUT_MS, opts));
+  return okOut(await runGit(repoRoot, ["rev-parse", "HEAD"], gitTimeoutMs(), opts));
 }
 
 // ---- per-file diff (lazy) ---------------------------------------------------------------------------
