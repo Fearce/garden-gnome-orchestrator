@@ -63,6 +63,10 @@
 //     build:lab empties its one directory, so two labs running at once need one each: from web/,
 //     `npx vite build --outDir ../server/.lab-web-dist-<lab> --emptyOutDir` + the matching variable.
 //     An isolated lab proves behavior, not deployment; verify the live revision after committing.
+//     Exit code 2 with "older than web/src" is requireFreshWebBuild(), not your change failing: in a
+//     busy shared checkout ANY teammate's web/src save during a run trips it. Rebuild the isolated
+//     bundle immediately before each lab and retry on 2, e.g. from server/:
+//     `for t in 1 2 3; do (cd ../web && npx vite build --outDir ../server/<dist> --emptyOutDir); node scripts/<lab>.cjs; [ $? -ne 2 ] && break; done`
 //   • Assert `getComputedStyle`, never the CSS rule you wrote: `main.tsx` loads `styles.css` FIRST, so
 //     `gitChanges.css` / `gitConsole.css` / `diff.css` land later in the bundle and win ties.
 //   • Playwright's `locator.boundingBox()` returns `{x,y,width,height}`, NOT a DOMRect. `right` and
