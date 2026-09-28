@@ -487,7 +487,9 @@ export function startDiscordInbox(deps: DiscordInboxDeps): DiscordInbox {
     },
   });
   deps.hub.subscribe((event) => {
-    if (event.type === "settings") inbox.reconcile();
+    // After the triggering broadcast has reached every client: a status published from inside it would
+    // be delivered first and then overwritten by that older broadcast.
+    if (event.type === "settings") queueMicrotask(() => inbox.reconcile());
   });
   inbox.reconcile();
   return inbox;

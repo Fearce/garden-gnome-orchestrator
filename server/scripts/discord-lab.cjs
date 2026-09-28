@@ -1,5 +1,6 @@
 // Drive the "Phone notifications" settings surface in a real browser, headlessly, without touching prod
-// — the toggle's round-trip, the user- and channel-ID sanitize, the write-only bot token, and the Send-test reply.
+// — the toggle's round-trip, the user- and channel-ID sanitize, the write-only bot token, the Send-test reply,
+// and the "DM the director" toggle with its live gateway status.
 //
 //   npm run discord-lab --prefix server
 //   npm run discord-lab --prefix server -- --keep
@@ -12,8 +13,9 @@
 //
 // It is safe against the owner's real channel BY CONSTRUCTION: the instance is booted with a junk token
 // and channel id, and the lab types junk of its own, so the one Send-test click reaches Discord with
-// credentials that cannot authenticate — a 401, which is exactly the failure path being asserted. Never
-// seed this lab with a working token: the button posts for real.
+// credentials that cannot authenticate — a 401, which is exactly the failure path being asserted. The DM
+// inbox likewise opens a real Discord gateway session with that junk token and must report Discord's
+// refusal (close 4004). Never seed this lab with a working token: the button posts for real.
 
 const fs = require("node:fs");
 const os = require("node:os");
@@ -32,6 +34,8 @@ const LAB_ENV = { DISCORD_BOT_TOKEN: "lab-not-a-real-token", DISCORD_CHANNEL_ID:
 const TYPED_TOKEN = "lab.secret.token.WXYZ";
 const GROUP = '.settings-group:has(.settings-group-label:text-is("Phone notifications"))';
 const TOGGLE = 'button.switch[aria-label="Post to Discord"]';
+const INBOX_TOGGLE = 'button.switch[aria-label="DM the director"]';
+const INBOX_STATUS = `${GROUP} .discord-inbox-status`;
 
 async function openSettings(browser) {
   const page = await browser.newPage({ viewport: { width: 1500, height: 950 } });
@@ -74,6 +78,18 @@ async function setField(page, selector, value) {
   await input.press("Enter");
 }
 
+/** Poll the inbox's status line until it contains `want` — it changes only on the server's broadcast. */
+async function waitForStatus(page, want, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  let text = "";
+  while (Date.now() < deadline) {
+    text = await page.locator(INBOX_STATUS).innerText();
+    if (text.includes(want)) return text;
+    await page.waitForTimeout(250);
+  }
+  return text;
+}
+
 /** Poll a field until the server's broadcast has replaced the optimistic value with `want`. */
 async function waitForField(page, selector, want) {
   const field = page.locator(selector);
@@ -103,6 +119,9 @@ async function main() {
       // Send test must not be offerable before it can work — the click would only ever produce an error.
       const sendTest = page.locator(`${GROUP} .sub-btn:text-is("Send test")`);
       check("Send test is disabled with no channel yet", await sendTest.isDisabled());
+      check("DM the director is ON for a fresh instance", (await page.getAttribute(INBOX_TOGGLE, "aria-checked")) === "true");
+      const waiting = await waitForStatus(page, "Waiting for your Discord user ID");
+      check("…and says it waits for a user ID before listening", waiting.includes("Waiting for your Discord user ID"), waiting);
 
       // The channel field takes what Discord's UI actually gives you. A pasted channel LINK is the common
       // paste, and storing it verbatim is a 404 on every notice, so the server keeps only the digits.
@@ -134,7 +153,7 @@ async function main() {
       check("the typed token reaches the server", (await waitForPersisted(dataDir, "discord_bot_token", TYPED_TOKEN)) === TYPED_TOKEN);
       await page.waitForSelector(`${GROUP} .sub-btn:text-is("Remove")`, { timeout: 10_000 });
       check("the field clears itself after saving", (await tokenInput.inputValue()) === "");
-      check("the stored token shows as its last 4 only", (await page.locator(`${GROUP} .sub-msg.dim`).innerText()).includes("WXYZ"));
+      check("the stored token shows as its last 4 only", (await page.locator(`${GROUP} .sub-field .sub-msg.dim`).innerText()).includes("WXYZ"));
       check("the raw token is nowhere in the page", !(await page.content()).includes(TYPED_TOKEN));
 
       // The click that proves the whole wire: WS command → server → Discord → WS reply → rendered result.
@@ -147,6 +166,14 @@ async function main() {
       await page.click(TOGGLE);
       check("turning it on persists", (await waitForPersisted(dataDir, "setting_discord_notify", "1")) === "1");
 
+      // Token + user id are set, so the inbox opened a real gateway session with the junk token.
+      const refused = await waitForStatus(page, "rejected the bot token");
+      check("the DM inbox reports Discord refusing a bad token", refused.includes("rejected the bot token"), refused);
+      await page.click(INBOX_TOGGLE);
+      check("turning DM the director off persists", (await waitForPersisted(dataDir, "setting_discord_inbox", "0")) === "0");
+      const off = await waitForStatus(page, "Off.");
+      check("…and the status says Off", off === "Off.", off);
+
       const shot = path.join(shotDir(dataDir), "phone-notifications.png");
       await page.locator(GROUP).screenshot({ path: shot });
       console.log(`  screenshot: ${shot}`);
@@ -158,6 +185,7 @@ async function main() {
       check("the toggle survives a reload", (await second.getAttribute(TOGGLE, "aria-checked")) === "true", await second.getAttribute(TOGGLE, "aria-checked"));
       check("the channel survives a reload", (await second.locator(CHANNEL_FIELD).inputValue()) === "1542104062156079144");
       check("the user id survives a reload", (await second.locator(USER_FIELD).inputValue()) === "111909686583828480");
+      check("DM the director stays off after a reload", (await second.getAttribute(INBOX_TOGGLE, "aria-checked")) === "false");
       check("the stored token is still known to be there", (await second.locator(`${GROUP} .sub-btn:text-is("Remove")`).count()) === 1);
       check("…and is still not in the page", !(await second.content()).includes(TYPED_TOKEN));
 

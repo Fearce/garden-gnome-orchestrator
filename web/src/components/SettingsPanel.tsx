@@ -1008,7 +1008,7 @@ function PhoneNotificationsSection() {
         on={settings.discordInbox}
         onChange={(v) => setSettings({ discordInbox: v })}
       />
-      <div className="sub-msg dim discord-inbox-status">{settings.discordInboxStatus}</div>
+      <div className="settings-note tight discord-inbox-status">{settings.discordInboxStatus}</div>
     </>
   );
 }
