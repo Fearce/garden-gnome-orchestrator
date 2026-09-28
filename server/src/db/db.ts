@@ -2460,6 +2460,24 @@ export class Db {
     ).map(rowToRun);
   }
 
+  /** Each (thread, role) agent's last moment of activity at or after `since`, keyed by agentKey: `now`
+   *  while one of its runs is still open, else its latest run's end (or start, for a run never finished).
+   *  Two indexed reads instead of one OR, which the planner answers with a full-table scan. A finished
+   *  run is looked up from a week before `since`, since a run ending inside the window started earlier. */
+  agentLastActivity(since: number, now: number): Map<string, number> {
+    const rows = this.raw
+      .prepare(
+        `SELECT thread_id, role, MAX(last) AS last FROM (
+           SELECT thread_id, role, COALESCE(ended_at, started_at) AS last FROM agent_runs
+            WHERE started_at >= ? AND state NOT IN ('starting', 'running', 'idle')
+           UNION ALL
+           SELECT thread_id, role, ? AS last FROM agent_runs WHERE state IN ('starting', 'running', 'idle')
+         ) GROUP BY thread_id, role HAVING last >= ?`,
+      )
+      .all(since - 7 * 24 * 60 * 60 * 1000, now, since) as { thread_id: string; role: string; last: number }[];
+    return new Map(rows.map((r) => [`${r.thread_id}::${r.role}`, r.last]));
+  }
+
   /** All runs (ASC), or — for the connect snapshot — the most recent `limit` (still returned ASC) so
    *  the hello frame can't grow unbounded as months of history accumulate. */
   listAllRuns(limit?: number): AgentRun[] {

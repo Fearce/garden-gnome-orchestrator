@@ -2,6 +2,7 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
 import type { TokenShiftReport } from "./usageWindows.js";
+import type { OfficeNameResult } from "./officeNames.js";
 import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, JevJson, JevQuestion, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, SubTaskSpec, Thread, ThreadLane, ToggleableRole } from "../types.js";
 import type { SubTaskService } from "./subTasks.js";
 
@@ -158,8 +159,9 @@ export interface OrchestratorApi {
    *  built-in config.models). Used so the director runs on the operator's picked model. */
   modelFor(subId: string, role: Role): string;
 
-  /** Let an agent pick/rename its own office gnome (per role); returns the stored name (trimmed/clamped). */
-  setOfficeName(threadId: string, role: Role, name: string): string;
+  /** Let an agent pick/rename its own office gnome (per role). Refused when another agent went by the name
+   *  within the reuse window; otherwise returns the stored name (trimmed/clamped). */
+  setOfficeName(threadId: string, role: Role, name: string): OfficeNameResult;
 
   injectThread(
     threadId: string,

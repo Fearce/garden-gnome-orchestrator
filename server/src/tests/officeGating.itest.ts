@@ -131,7 +131,7 @@ async function main(): Promise<void> {
       const unnamedCli = h.internals.withOfficeNote(a, "implementor", "KICKOFF", false) as string;
       check("unnamed CLI → kickoff asks for an OFFICE[name] line", unnamedCli.includes("OFFICE[name]:") && !unnamedCli.includes("office_set_name"), unnamedCli);
       check("unnamed → the agent goes by its role", h.mgr.officeName(a.id, "implementor") === "Implementor");
-      check("named → setOfficeName keeps the agent's own pick", h.mgr.setOfficeName(a.id, "implementor", "  Marigold  ") === "Marigold");
+      check("named → setOfficeName keeps the agent's own pick", h.mgr.setOfficeName(a.id, "implementor", "  Marigold  ").name === "Marigold");
       check("solo + named → withOfficeNote leaves the kickoff untouched", h.internals.withOfficeNote(a, "implementor", "KICKOFF", true) === "KICKOFF");
 
       const b = h.thread("Build the exporter", REPO_A);
@@ -309,6 +309,56 @@ async function main(): Promise<void> {
       check("one post publishes exactly one chat event", events.filter((event) => event.type === "chat.message" && event.message.id === posted.id).length === 1);
     } finally {
       unsubscribe();
+      h.dispose();
+    }
+  }
+
+  // -- Test H: a name any other agent went by in the last 30 days is refused, and the agent re-picks ---
+  console.log("\nTest H — 30-day name reservation: refuse a recent name, ask the agent to pick again");
+  {
+    const h = makeHarness();
+    const DAY = 24 * 60 * 60 * 1000;
+    /** An agent whose only run ended `daysAgo` days ago, going by `name`. */
+    const pastAgent = (title: string, role: Role, name: string, daysAgo: number): string => {
+      const t = h.thread(title, REPO_B);
+      const run = h.db.createRun({ threadId: t.id, role, model: "claude-x", account: "claude-max", effort: "high" });
+      const at = Date.now() - daysAgo * DAY;
+      h.db.raw.prepare("UPDATE agent_runs SET state = 'done', started_at = ?, ended_at = ? WHERE id = ?").run(at - 60_000, at, run.id);
+      const names = JSON.parse(h.db.kvGet("office_names") ?? "{}") as Record<string, string>;
+      names[`${t.id}::${role}`] = name;
+      h.db.kvSet("office_names", JSON.stringify(names));
+      return t.id;
+    };
+    try {
+      pastAgent("Old task", "qa", "Oak", 31);
+      pastAgent("Recent task", "implementor", "Pine", 29);
+      const a = h.thread("A", REPO_A);
+      h.seedLive(a.id, "implementor", { implementor: true });
+      const b = h.thread("B", REPO_A);
+      h.seedLive(b.id, "implementor", { implementor: true });
+
+      check("a fresh name is accepted", h.mgr.setOfficeName(a.id, "implementor", "Fern").ok);
+      const clash = h.mgr.setOfficeName(b.id, "implementor", "fern");
+      check("a live coworker's name is refused, case-insensitively", !clash.ok, JSON.stringify(clash));
+      check("the refusal asks for another name and names the rule", !clash.ok && /30 days/.test(clash.reason) && /different/.test(clash.reason), JSON.stringify(clash));
+      check("a refused agent keeps its role label, not the name", h.mgr.officeName(b.id, "implementor") === "Implementor");
+      check("a name last used 29 days ago is still refused", !h.mgr.setOfficeName(b.id, "implementor", "Pine").ok);
+      check("a name last used 31 days ago is free again", h.mgr.setOfficeName(b.id, "implementor", "Oak").ok && h.mgr.officeName(b.id, "implementor") === "Oak");
+
+      check("an agent may re-pick its own name", h.mgr.setOfficeName(a.id, "implementor", "Fern").ok);
+      check("renaming succeeds", h.mgr.setOfficeName(a.id, "implementor", "Hazel").ok);
+      check("the name it renamed away from stays reserved", !h.mgr.setOfficeName(b.id, "implementor", "Fern").ok);
+      check("its own earlier name is not reserved against itself", h.mgr.setOfficeName(a.id, "implementor", "Fern").ok);
+      check("the same task's other role is another agent, so it is refused too", !h.mgr.setOfficeName(a.id, "qa", "Fern").ok);
+
+      const cliRun = { sent: [] as string[], send(text: string) { this.sent.push(text); } };
+      h.internals.applyCliOfficeName(b.id, "implementor", "Fern", () => cliRun);
+      check("a CLI implementor's refused OFFICE[name] is answered in its session", cliRun.sent.length === 1 && /Name refused/.test(cliRun.sent[0]!) && /OFFICE\[name\]:/.test(cliRun.sent[0]!), JSON.stringify(cliRun.sent));
+      check("the CLI implementor keeps its previous name until it re-picks", h.mgr.officeName(b.id, "implementor") === "Oak");
+
+      h.internals.applyCliOfficeName(b.id, "qa", "Fern");
+      check("a one-shot CLI role takes a free numbered variant instead of a mid-run message", h.mgr.officeName(b.id, "qa") === "Fern 2", h.mgr.officeName(b.id, "qa"));
+    } finally {
       h.dispose();
     }
   }

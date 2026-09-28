@@ -84,7 +84,17 @@ import { createGitReadServer } from "../bus/gitReadServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { OperatorNotes } from "./notes.js";
-import { cleanOfficeName, resolveLiveNameCollisions } from "./officeNames.js";
+import {
+  cleanOfficeName,
+  firstFreeName,
+  NAME_REUSE_WINDOW_MS,
+  nameReuseRefusal,
+  pruneNameUses,
+  recentNameHolder,
+  resolveLiveNameCollisions,
+  type NameUse,
+  type OfficeNameResult,
+} from "./officeNames.js";
 import { compressSession, sessionAgeMs, sessionContextTokens } from "./resumeCompress.js";
 import { recoveryHistoryBlock } from "./recoveryHistory.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
@@ -7735,7 +7745,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
           },
           onOfficeName: (name) => {
-            this.setOfficeName(thread.id, role, name);
+            this.applyCliOfficeName(thread.id, role, name);
           },
           onOperatorNote: (body, url) => {
             this.postCliOperatorNote(thread, role, body, url);
@@ -7759,7 +7769,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             this.chatPost({ threadId: thread.id, runId: run.id, role, scope, body });
           },
           onOfficeName: (name) => {
-            this.setOfficeName(thread.id, role, name);
+            this.applyCliOfficeName(thread.id, role, name);
           },
           onOperatorNote: (body, url) => {
             this.postCliOperatorNote(thread, role, body, url);
@@ -8583,7 +8593,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
         },
         onOfficeName: (name) => {
-          this.setOfficeName(thread.id, "implementor", name);
+          this.applyCliOfficeName(thread.id, "implementor", name, () => codexAgent);
         },
         onOperatorNote: (body, url) => {
           this.postCliOperatorNote(thread, "implementor", body, url);
@@ -8624,7 +8634,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
         },
         onOfficeName: (name) => {
-          this.setOfficeName(thread.id, "implementor", name);
+          this.applyCliOfficeName(thread.id, "implementor", name, () => grokAgent);
         },
         onOperatorNote: (body, url) => {
           this.postCliOperatorNote(thread, "implementor", body, url);
@@ -14528,32 +14538,88 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private ensureLiveNamesUnique(): void {
     const map = this.officeNameMap();
     const live = this.liveAgentThreads().filter((l) => l.role !== "director");
-    const changes = resolveLiveNameCollisions(live, map);
-    if (!changes.size) return;
+    // This runs on every go-live, so the run-history read that keeps a variant off recently used names
+    // is only paid once a clash is actually found.
+    if (!resolveLiveNameCollisions(live, map).size) return;
+    const liveKeys = new Set(live.map((l) => agentKey(l.threadId, l.role)));
+    const reserved = new Set(this.recentNameUses(Date.now()).filter((u) => !liveKeys.has(u.agentKey)).map((u) => u.name));
+    const changes = resolveLiveNameCollisions(live, map, reserved);
     for (const l of live) {
-      const renamed = changes.get(agentKey(l.threadId, l.role));
+      const key = agentKey(l.threadId, l.role);
+      const renamed = changes.get(key);
       if (!renamed) continue;
-      map[agentKey(l.threadId, l.role)] = renamed;
+      this.recordNameRelease(key, map[key]!);
+      map[key] = renamed;
       this.hub.publish({ type: "chat.name", threadId: l.threadId, role: l.role, name: renamed });
     }
     this.db.kvSet("office_names", JSON.stringify(map));
   }
 
-  setOfficeName(threadId: string, role: Role, name: string): string {
+  /** Names an agent went by before renaming, dated by the rename — the current map alone forgets them. */
+  private officeNameReleases(): NameUse[] {
+    try {
+      const v = this.db.kvGet("office_name_releases");
+      return v ? (JSON.parse(v) as NameUse[]) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private recordNameRelease(key: string, name: string): void {
+    const now = Date.now();
+    const kept = pruneNameUses(this.officeNameReleases(), now).filter((u) => !(u.agentKey === key && u.name === name));
+    this.db.kvSet("office_name_releases", JSON.stringify([...kept, { agentKey: key, name, lastUsedAt: now }]));
+  }
+
+  /** Every name use still inside the reuse window: each agent's current name, dated by its latest run,
+   *  plus the names agents released by renaming. An agent with no run in the window (or none on record,
+   *  its task deleted) no longer holds its name. */
+  private recentNameUses(now: number): NameUse[] {
+    const lastActive = this.db.agentLastActivity(now - NAME_REUSE_WINDOW_MS, now);
+    const current = Object.entries(this.officeNameMap()).flatMap(([key, name]) => {
+      const lastUsedAt = lastActive.get(key);
+      return lastUsedAt === undefined ? [] : [{ agentKey: key, name, lastUsedAt }];
+    });
+    return pruneNameUses([...current, ...this.officeNameReleases()], now);
+  }
+
+  /** Let an agent pick its own name. A name any OTHER agent went by within the reuse window is refused, so
+   *  the agent is told to invent another — a name then points at one agent across a month of history. */
+  setOfficeName(threadId: string, role: Role, name: string): OfficeNameResult {
     const clean = cleanOfficeName(name);
-    if (!clean) return this.officeName(threadId, role);
+    if (!clean) return { ok: true, name: this.officeName(threadId, role) };
+    const key = agentKey(threadId, role);
+    const now = Date.now();
+    const holder = recentNameHolder(clean, key, this.recentNameUses(now), now);
+    if (holder) return { ok: false, name: this.officeName(threadId, role), reason: nameReuseRefusal(clean, holder, now) };
     const map = this.officeNameMap();
-    map[agentKey(threadId, role)] = clean;
+    const previous = map[key];
+    if (previous && previous !== clean) this.recordNameRelease(key, previous);
+    map[key] = clean;
     this.db.kvSet("office_names", JSON.stringify(map));
-    // A self-chosen name can collide with a live coworker; the uniqueness pass walks this agent to a
-    // free name if a senior live coworker already holds `clean`, and broadcasts whatever it changes.
-    // We therefore broadcast + return the RESOLVED name (not the raw pick) so the tool's confirmation
-    // to the agent matches what everyone else sees — and only broadcast ourselves when the pass, having
-    // found no collision, left the name untouched (else its own chat.name already went out).
+    // Legacy data can still hold a live clash the refusal above never saw; the uniqueness pass walks this
+    // agent to a free variant then and broadcasts it. Return the RESOLVED name so the confirmation matches
+    // what everyone else sees, and broadcast ourselves only when the pass left the name untouched.
     this.ensureLiveNamesUnique();
     const resolved = this.officeName(threadId, role);
     if (resolved === clean) this.hub.publish({ type: "chat.name", threadId, role, name: clean });
-    return resolved;
+    return { ok: true, name: resolved };
+  }
+
+  /** A CLI agent names itself with an `OFFICE[name]:` line and can't see a tool result, so a refused pick
+   *  is sent back into its live session asking for another line. A one-shot role gets no `run`: a
+   *  mid-run message would corrupt its structured verdict, so it takes the nearest free variant instead. */
+  private applyCliOfficeName(threadId: string, role: Role, name: string, run?: () => AgentRunLike | undefined): void {
+    const result = this.setOfficeName(threadId, role, name);
+    if (result.ok) return;
+    const target = run?.();
+    if (target) {
+      this.sendCommunication(target, `[Office] Name refused. ${result.reason} Reply with a standalone OFFICE[name]: <new name> line.`, { priority: "next" });
+      return;
+    }
+    const key = agentKey(threadId, role);
+    const taken = new Set(this.recentNameUses(Date.now()).filter((u) => u.agentKey !== key).map((u) => u.name));
+    this.setOfficeName(threadId, role, firstFreeName(cleanOfficeName(name), taken));
   }
 
   /** The self-picked names, keyed by agentKey — sent in the hello snapshot for the office UI, which
@@ -14955,7 +15021,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const how = withTools
       ? "set it with `office_set_name` as your first action"
       : "announce it with a standalone `OFFICE[name]: <your name>` line in your first response";
-    return `🏷️ NAME YOURSELF — you're one of the orchestrator's garden gnomes, and gnomes invent their own names. Pick any short name you like (1–3 words; there is no list to choose from, so be original) and ${how}. It's how the owner and your coworkers will see you.`;
+    return `🏷️ NAME YOURSELF — you're one of the orchestrator's garden gnomes, and gnomes invent their own names. Pick any short name you like (1–3 words; there is no list to choose from, so be original — a name any other agent used in the last 30 days is refused) and ${how}. It's how the owner and your coworkers will see you.`;
   }
 
   // ---- run event wiring ----

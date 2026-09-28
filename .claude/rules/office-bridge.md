@@ -13,7 +13,9 @@ text, which the runner intercepts and strips:
 - `OFFICE[team|office]: <msg>` → `chatPost` (the office chatroom).
 - `OFFICE[name]: <name>` → `setOfficeName` (the `office_set_name` equivalent). There is no
   default name pool, so this is how a CLI agent gets any name at all; `cliRoleKickoff` and the
-  kickoff's naming note both tell it to. Returned as `names`, never as a chat post.
+  kickoff's naming note both tell it to. Returned as `names`, never as a chat post. A name another
+  agent used within 30 days is refused (`applyCliOfficeName`): an implementor is sent the refusal and
+  must answer with a new `OFFICE[name]:` line; a one-shot role gets a free "Name 2" instead.
 - `OPERATOR_NOTE: <line> | <https://…>` → the owner's note list, via the SAME
   `OperatorNotes` service the MCP tool uses (never a runner-owned DB write — the
   service is what clips, validates, de-dupes and broadcasts). The ` | url` suffix is
