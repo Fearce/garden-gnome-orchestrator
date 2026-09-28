@@ -62,7 +62,7 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
     { name: z.string().min(1).max(24).describe("The office name you invented for yourself.") },
     async (args) => {
       const result = api.setOfficeName(ctx.threadId, ctx.role, args.name);
-      if (!result.ok) return { content: [{ type: "text", text: `Name refused. ${result.reason} Call office_set_name again.` }], isError: true };
+      if (!result.ok) return { content: [{ type: "text", text: `Name refused. ${result.reason} Then call office_set_name with it.` }], isError: true };
       return { content: [{ type: "text", text: `You're now "${result.name}" in the office.` }] };
     },
   );

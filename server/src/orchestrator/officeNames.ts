@@ -50,7 +50,7 @@ export function nameReuseRefusal(name: string, holder: NameUse, now: number): st
   const days = Math.floor((now - holder.lastUsedAt) / (24 * 60 * 60 * 1000));
   const when = days < 1 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
   const windowDays = NAME_REUSE_WINDOW_MS / (24 * 60 * 60 * 1000);
-  return `"${name}" is taken: another agent went by it ${when}, and a name stays reserved for ${windowDays} days after its last use. Invent a different, original name and set it again.`;
+  return `"${name}" is taken: another agent went by it ${when}, and a name stays reserved for ${windowDays} days after its last use. Invent a different, original name.`;
 }
 
 /** Drop released-name records that have aged out of the reuse window, so the ledger stays bounded. */
