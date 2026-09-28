@@ -219,10 +219,11 @@ button { font-family: inherit; cursor: pointer; }
 .acct-tag { font-family: var(--font-mono); font-size: 8.5px; text-transform: uppercase; color: var(--danger); margin-left: auto; }
 .acct-meters { display: flex; flex-direction: column; gap: 2px; }
 /* The track yields width to the burn-pace column (`.meter-b`), so each window shows its usage AND how fast
-   it is being spent. */
-.meter { display: grid; grid-template-columns: 15px 1fr 28px 24px 44px; align-items: center; gap: 4px; }
+   it is being spent. The track's floor keeps the bar visible in a content-sized chip (`.acct.codex` is
+   `min-width: auto`): a bare `1fr` there resolved to 0px and the Codex bars vanished. */
+.meter { display: grid; grid-template-columns: 15px minmax(20px, 1fr) 28px 24px 44px; align-items: center; gap: 4px; }
 /* SuperGrok monthly credits use absolute units ("1k/15k") — widen the value column so it doesn't clip. */
-.meter.meter-wide-v { grid-template-columns: 15px 1fr 48px 24px 44px; }
+.meter.meter-wide-v { grid-template-columns: 15px minmax(20px, 1fr) 48px 24px 44px; }
 .meter-k { font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); }
 .meter-track { height: 4px; background: var(--bg); border-radius: 3px; overflow: hidden; }
 .meter-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }

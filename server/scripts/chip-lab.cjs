@@ -31,6 +31,8 @@ const PORT = 4327;
 const BASE = `http://127.0.0.1:${PORT}`;
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
+// A content-sized chip (`.acct.codex` is `min-width: auto`) resolved a bare `1fr` track to 0px — the bar vanished.
+const MIN_TRACK_PX = 12;
 
 /** Account snapshots keyed by the state a reviewer wants to see. `at` is the boot instant. */
 const SCENARIOS = {
@@ -200,7 +202,7 @@ function report(width, strip) {
     const tags = c.tags.length ? ` [${c.tags.join(", ")}]` : "";
     console.log(`    ${c.label}${tags}`);
     for (const m of c.meters) {
-      const flag = m.spills.length ? `  SPILLS ${m.spills.join(",")}` : "";
+      const flag = (m.spills.length ? `  SPILLS ${m.spills.join(",")}` : "") + (m.track < MIN_TRACK_PX ? "  COLLAPSED" : "");
       console.log(`      ${m.k.padEnd(3)} ${(m.v || "").padStart(5)} ${m.b.padStart(5)}  ${m.r.padEnd(12)} track ${m.track}px${flag}  ${m.tip ?? ""}`);
     }
     if (!c.meters.length && c.note) console.log(`      ${c.note}${c.errTitle ? ` (${c.errTitle})` : ""}`);
@@ -235,6 +237,7 @@ async function main() {
   console.log(`chip-lab — scenario "${args.scenario}" on ${BASE} (data ${dataDir})`);
   let clipped = false;
   let spilled = false;
+  let collapsed = false;
   try {
     // First boot creates the schema; the snapshots are only read by bootPing, so seed and boot again.
     await boot({ dataDir, port: PORT, env });
@@ -255,6 +258,7 @@ async function main() {
         report(width, strip);
         clipped = clipped || strip.clipped;
         spilled = spilled || strip.chips.some((c) => c.meters.some((m) => m.spills.length > 0));
+        collapsed = collapsed || strip.chips.some((c) => c.meters.some((m) => m.track < MIN_TRACK_PX));
         if (width === args.widths[0]) await page.screenshot({ path: shot, clip: { x: 0, y: 0, width, height: 130 } });
         await page.close();
       }
@@ -273,6 +277,10 @@ async function main() {
   }
   if (spilled) {
     console.error("\nFAIL — a meter value, burn pace or countdown is wider than its .meter grid column (web/src/styles.css).");
+    return 1;
+  }
+  if (collapsed) {
+    console.error(`\nFAIL — a meter's bar track is under ${MIN_TRACK_PX}px, so its usage bar is invisible (the .meter track floor in web/src/styles.css).`);
     return 1;
   }
   console.log("\nOK — every chip visible at every width.");

@@ -54,8 +54,11 @@ Use it for any change to a meter's *state* — an `idle`/`stale`/lapsed-reset re
 is invisible to a typecheck and to prod (whose accounts are usually healthy).
 
 Each meter is a fixed grid (`.meter`: key · track · % · burn pace · countdown); only the
-track is `1fr`, so it absorbs any width a new column takes. chip-lab prints each meter's
-track width and fails with `SPILLS` when a value, pace or countdown outgrows its column.
+track is `minmax(20px, 1fr)`, so it absorbs any width a new column takes. The floor matters:
+the Codex chip is `min-width: auto` (content-sized), and a bare `1fr` there resolved to 0px, so its
+bars vanished while every other check stayed green. chip-lab prints each meter's track width and
+fails with `SPILLS` when a value, pace or countdown outgrows its column, and with `COLLAPSED` when a
+track drops under 12px.
 To negative-control a CSS tweak in a pinned lab bundle, delete the asset's `.css.br`/`.css.gz`
 siblings too — the instance serves the precompressed copy, so editing only the `.css` changes nothing.
 
