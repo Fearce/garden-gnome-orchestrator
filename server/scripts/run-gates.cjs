@@ -86,6 +86,7 @@ const GATES = [
   "test:auto-title",
   "test:voice-announce",
   "test:discord-notify",
+  "test:discord-inbox",
   "test:director-supervisor",
   "test:auto-review-health",
   "test:supervisor-chat-probe",

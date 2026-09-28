@@ -784,6 +784,8 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   discordUserId: "",
   discordTokenPresent: false,
   discordTokenLast4: null,
+  discordInbox: true,
+  discordInboxStatus: "",
   skipDirector: false,
   showComposerPickers: false,
   showAgentModel: true,

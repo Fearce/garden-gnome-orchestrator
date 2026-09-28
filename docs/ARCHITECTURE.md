@@ -940,6 +940,9 @@ Three controls that make the console a hands-off, anywhere replacement for the C
   set: `ThreadManager.notifyOwner` feeds Discord and carries only what the owner
   acts on (done · needs-input · failed), while plain `notifyExternal` also carries
   pipeline chatter (cap failover, auto-resume) that must never reach a phone.
+  The same bot also listens: a DM from the owner is a director message
+  (`orchestrator/discordInbox.ts`, a Gateway session with only the DM intent), and
+  that turn's director replies go back to the DM — Settings → **DM the director**.
 - **Access auth** (`server/src/auth.ts`). A **password and/or Google sign-in**, both valid
   when configured — each mints the same HMAC-signed (`email|exp`) httpOnly session cookie, and
   `isAuthed` accepts that one cookie. `authRequired()` is true if either method is set; the `/ws`

@@ -732,6 +732,8 @@ export interface OrchestratorSettings {
   discordUserId: string; // the owner's Discord user id — set, notices are DMed to them instead of the channel; empty falls back to DISCORD_USER_ID
   discordTokenPresent: boolean; // read-only: a bot token is stored (raw token never reaches the client)
   discordTokenLast4?: string | null; // read-only: last 4 chars for the masked field
+  discordInbox: boolean; // a DM from the owner's user id to the bot is a message to the director; replies go back to the DM
+  discordInboxStatus: string; // read-only: the inbox's connection state in words
   // Composer state persisted server-side (survives across the HTTP/HTTPS surfaces, which don't share
   // localStorage): the skip-director mode, the recent-repo chip cap, and the recent-repo list itself.
   skipDirector: boolean;
@@ -984,6 +986,7 @@ export type SettingsPatch = Partial<
     | "jevKeyLast4"
     | "discordTokenPresent"
     | "discordTokenLast4"
+    | "discordInboxStatus"
     | "xhighEnabled"
     | "modelDefaults"
     | "claudeModels"

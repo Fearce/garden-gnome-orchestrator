@@ -133,7 +133,7 @@ export class Director {
     return true;
   }
 
-  handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice", messageId?: string): void {
+  handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice" | "discord", messageId?: string): void {
     if (this.replayedOwnerMessage(messageId)) return;
     const refs = (images ?? []).map((img) =>
       this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
@@ -163,7 +163,8 @@ export class Director {
     const base = workspace
       ? `${text}\n\n[TARGET WORKSPACE — ${config.ownerName} set this explicitly. Use this EXACT absolute path as the dispatch workspace; do NOT call find_workspace and do NOT substitute another path: ${workspace}]`
       : text;
-    const content = contentWithImages(source === "voice" ? `${base}\n\n${voiceNote()}` : base, this.pendingImages.map(toImageBlock));
+    const note = sourceNote(source);
+    const content = contentWithImages(note ? `${base}\n\n${note}` : base, this.pendingImages.map(toImageBlock));
     this.pending = content;
     this.failovers = 0;
     this.cliActions = 0;
@@ -756,6 +757,18 @@ function providerName(target: DirectorTarget): string {
  *  director must talk like a person and get a spoken go-ahead before dispatching. */
 function voiceNote(): string {
   return `[VOICE — ${config.ownerName} spoke this aloud and your reply will be read out by TTS in a live back-and-forth conversation. Answer like you're talking: brief plain sentences, no markdown, no lists, no code, no file paths. Talk the idea through with them and get a spoken go-ahead before dispatching a task; a "yeah"/"sure"/"go ahead" means dispatch now without re-asking. Skip this only when they explicitly say to dispatch immediately.]`;
+}
+
+/** Appended to prompts sent as a Discord DM: the owner is away from the console, probably on a phone,
+ *  and only this turn's text replies travel back to them. */
+function discordNote(): string {
+  return `[DISCORD — ${config.ownerName} sent this as a Discord DM, probably from their phone, away from the console. Your text replies this turn are relayed back to that DM, and they see nothing else of the console (no tool calls, no board). Keep replies short; Discord markdown is fine but tables don't render. Treat it like any other message: dispatch when they ask for work.]`;
+}
+
+function sourceNote(source: "voice" | "discord" | undefined): string | null {
+  if (source === "voice") return voiceNote();
+  if (source === "discord") return discordNote();
+  return null;
 }
 
 // Up to three words may sit between the two halves ("schedule a cleanup task").

@@ -6,6 +6,7 @@
 // The push preview on a phone comes from `content`, NOT from an embed, so the essential line lives in
 // content and the embed only carries the detail (park reason / question / error) and the repo. Best-
 // effort end to end: no token, no destination, or the toggle off → nothing is sent and nothing throws.
+// The same bot also carries the director's replies back to a DM the owner wrote it (`discordInbox.ts`).
 
 import { basename } from "node:path";
 
@@ -151,19 +152,47 @@ export class DiscordNotifier {
       return;
     }
     this.warnedIncomplete = false;
+    this.enqueue("notification", async () => {
+      const result = await this.deliver(cfg.token!, destination, formatNotice(notice));
+      if (!result.ok) this.log("warn", `Discord notification failed: ${result.message}`);
+    });
+  }
+
+  /** A director reply into the DM channel the owner wrote from, split to fit Discord's message limit.
+   *  Rides the same serialized chain as the notices, so a long answer's parts arrive in order. */
+  reply(channelId: string, text: string): void {
+    const token = this.config().token;
+    if (!token) return;
+    for (const part of splitForDiscord(text)) {
+      this.enqueue("reply", async () => {
+        const { result } = await this.post(token, `channels/${encodeURIComponent(channelId)}/messages`, {
+          content: part,
+          allowed_mentions: { parse: [] },
+        });
+        if (!result.ok) this.log("warn", `Discord reply failed: ${result.message}`);
+      });
+    }
+  }
+
+  /** The "typing…" indicator in a DM channel; Discord shows it for ~10s or until the next message. */
+  typing(channelId: string): void {
+    const token = this.config().token;
+    if (token) void this.post(token, `channels/${encodeURIComponent(channelId)}/typing`, {});
+  }
+
+  private enqueue(what: string, step: () => Promise<void>): void {
     if (this.queued >= MAX_QUEUED) {
-      this.log("warn", `Discord notification dropped — ${MAX_QUEUED} already queued.`);
+      this.log("warn", `Discord ${what} dropped — ${MAX_QUEUED} already queued.`);
       return;
     }
     this.queued += 1;
-    // A rejection here would poison the chain and silently mute every LATER notice, so the whole step
+    // A rejection here would poison the chain and silently mute every LATER send, so the whole step
     // is swallowed — a lost ping must never cost the next one.
     this.chain = this.chain.then(async () => {
       try {
-        const result = await this.deliver(cfg.token!, destination, formatNotice(notice));
-        if (!result.ok) this.log("warn", `Discord notification failed: ${result.message}`);
+        await step();
       } catch (e) {
-        this.log("warn", `Discord notification failed: ${e instanceof Error ? e.message : String(e)}`);
+        this.log("warn", `Discord ${what} failed: ${e instanceof Error ? e.message : String(e)}`);
       } finally {
         this.queued -= 1;
       }
@@ -230,6 +259,22 @@ export class DiscordNotifier {
       return { result: { ok: false, message: explainStatus(res.status, await res.text().catch(() => "")) } };
     }
   }
+}
+
+/** `text` in parts of at most MAX_CONTENT characters, cut at a paragraph, line or word break where one
+ *  is near, so a long director answer reads as consecutive messages rather than words sliced in half. */
+export function splitForDiscord(text: string): string[] {
+  const parts: string[] = [];
+  let rest = text.trim();
+  while (rest.length > MAX_CONTENT) {
+    const window = rest.slice(0, MAX_CONTENT);
+    const breaks = [window.lastIndexOf("\n\n"), window.lastIndexOf("\n"), window.lastIndexOf(" ")];
+    const cut = breaks.find((i) => i > MAX_CONTENT / 2) ?? MAX_CONTENT;
+    parts.push(rest.slice(0, cut).trimEnd());
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest) parts.push(rest);
+  return parts;
 }
 
 /** Discord answers a 429 with `retry_after` seconds in the body (and the header); clamped so a bad

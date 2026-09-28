@@ -470,6 +470,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         // back. An empty string clears it (falls back to DISCORD_BOT_TOKEN). The broadcast carries only
         // discordTokenPresent/last4.
         discordBotToken: z.string().max(200),
+        // A DM from the owner to the bot reaches the director (orchestrator/discordInbox.ts).
+        discordInbox: z.boolean(),
         // Composer state, persisted server-side so it survives across the HTTP/HTTPS surfaces.
         skipDirector: z.boolean(),
     // Bounded at the boundary as well as in the UI: these arrive from a client and drive how much

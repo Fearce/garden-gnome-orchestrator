@@ -100,6 +100,7 @@
     "test:title-ownership": "tsx src/tests/titleOwnership.test.ts",
     "test:voice-announce": "tsx src/tests/voiceAnnounce.test.ts",
     "test:discord-notify": "tsx src/tests/discordNotify.itest.ts",
+    "test:discord-inbox": "tsx src/tests/discordInbox.test.ts",
     "test:director-supervisor": "tsx src/tests/directorSupervisor.test.ts",
     "test:auto-review-health": "node scripts/auto-review-health.test.cjs",
     "test:supervisor-chat-probe": "node scripts/supervisor-chat-probe.test.cjs",

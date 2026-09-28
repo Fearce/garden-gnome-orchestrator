@@ -148,6 +148,7 @@ import {
   verifyManualDeployment,
 } from "./manualDeployment.js";
 import { DiscordNotifier, parseChannelId, parseUserId, type OwnerNotice } from "./discordNotify.js";
+import type { InboxConfig } from "./discordInbox.js";
 import type { CoworkTarget, PreparedCoworkRun } from "./cowork.js";
 import { DirectorSupervisor, SUPERVISOR_JUDGE_MAX_TURNS, type SupervisorJudgement } from "./supervisor.js";
 import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
@@ -517,6 +518,7 @@ export type SettingsPatch = Partial<
     | "jevKeyLast4"
     | "discordTokenPresent"
     | "discordTokenLast4"
+    | "discordInboxStatus"
     | "xhighEnabled"
     | "modelDefaults"
     | "claudeModels"
@@ -1131,6 +1133,8 @@ export class ThreadManager implements OrchestratorApi {
   private readonly liveBench: LiveBenchScores;
   // Posts the owner's phone notifications (task done / needs you / failed) to their Discord channel.
   private readonly discord: DiscordNotifier;
+  /** The Discord inbox's last reported connection state, for the Settings panel. */
+  private discordInboxStatus = "Off.";
   // The Director Supervisor watchdog (off by default) — see orchestrator/supervisor.ts. Standalone over a
   // narrow SupervisorHost view of this manager, so its logic never entangles with the pipeline internals.
   private readonly supervisor: DirectorSupervisor;
@@ -2851,6 +2855,8 @@ export class ThreadManager implements OrchestratorApi {
       discordUserId: this.discordUserId(),
       discordTokenPresent: !!this.discordBotToken(),
       discordTokenLast4: this.discordTokenLast4(),
+      discordInbox: this.settingBool("setting_discord_inbox", true),
+      discordInboxStatus: this.discordInboxStatus,
       skipDirector: this.settingBool("setting_skip_director", false),
       taskDurationMinutes: this.settingNum("setting_task_duration_minutes", 0, 0, 7 * 24 * 60),
       taskAgentCount: this.settingNum("setting_task_agent_count", 1, 1, MAX_AGENTS),
@@ -4702,6 +4708,31 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.db.kvGet("setting_discord_user_id")?.trim() || parseUserId(config.discord.userId ?? "");
   }
 
+  /** What the Discord inbox (`discordInbox.ts`) listens with: the same bot and owner the notices use,
+   *  under its own toggle. */
+  discordInboxConfig(): InboxConfig {
+    return {
+      enabled: this.settingBool("setting_discord_inbox", true),
+      token: this.discordBotToken(),
+      userId: this.discordUserId(),
+    };
+  }
+
+  setDiscordInboxStatus(text: string): void {
+    if (text === this.discordInboxStatus) return;
+    this.discordInboxStatus = text;
+    this.hub.publish({ type: "settings", settings: this.settings() });
+  }
+
+  /** Director replies and the typing indicator for a DM the owner wrote the bot. */
+  discordReply(channelId: string, text: string): void {
+    this.discord.reply(channelId, text);
+  }
+
+  discordTyping(channelId: string): void {
+    this.discord.typing(channelId);
+  }
+
   /** Last 4 chars of the stored bot token for the masked settings field. */
   private discordTokenLast4(): string | null {
     const t = this.discordBotToken();
@@ -4851,6 +4882,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Write-only bot token: stored server-side, never echoed back (only discordTokenPresent/last4 are).
     // An empty string clears it, falling back to DISCORD_BOT_TOKEN.
     if (patch.discordBotToken !== undefined) this.db.kvSet("discord_bot_token", patch.discordBotToken.trim());
+    if (patch.discordInbox !== undefined) this.db.kvSet("setting_discord_inbox", patch.discordInbox ? "1" : "0");
     if (patch.modelOverrides !== undefined) {
       this.db.kvSet("setting_model_overrides", JSON.stringify(sanitizeModelOverrides(patch.modelOverrides)));
     }

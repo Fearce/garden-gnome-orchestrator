@@ -36,6 +36,7 @@ import { ThreadManager } from "./orchestrator/threadManager.js";
 import { resolveDeliverable } from "./orchestrator/deliverablePath.js";
 import { CoworkManager } from "./orchestrator/cowork.js";
 import { Director } from "./orchestrator/director.js";
+import { startDiscordInbox } from "./orchestrator/discordInbox.js";
 import { RepoConsole } from "./orchestrator/repoConsole.js";
 import { CodeContextService } from "./orchestrator/codeContext.js";
 import { OperatorNotes } from "./orchestrator/notes.js";
@@ -201,6 +202,17 @@ async function main(): Promise<void> {
   manager.attachRestartDrain(() => restartCoordinator.isDraining(), () => restartCoordinator.workChanged());
   cowork.attachRestartDrain(() => restartCoordinator.isDraining());
   director.attachRestartDrain(() => restartCoordinator.isDraining(), () => restartCoordinator.workChanged());
+  // A DM from the owner to the Discord bot is a message to the director; that turn's replies go back to the DM.
+  const discordInbox = startDiscordInbox({
+    hub,
+    config: () => manager.discordInboxConfig(),
+    status: (text) => manager.setDiscordInboxStatus(text),
+    transport: { reply: (channelId, text) => manager.discordReply(channelId, text), typing: (channelId) => manager.discordTyping(channelId) },
+    directorBusy: () => director.activeWorkCount() > 0,
+    lastSeen: { get: () => db.kvGet("discord_inbox_last_id") ?? null, set: (id) => db.kvSet("discord_inbox_last_id", id) },
+    toDirector: (text, images, messageId) => director.handleUserMessage(text, undefined, images, "discord", messageId),
+  });
+  process.once("exit", () => discordInbox.stop());
   hub.log("info", "restart coordinator: planned restarts fire immediately; interrupted work auto-resumes on the new build");
   // The Online Office: this instance's link to the shared relay, where agents on OTHER machines working
   // the same repository show up as coworkers. Standalone over (db, hub) + three callbacks into the

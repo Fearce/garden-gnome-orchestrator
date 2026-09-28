@@ -1001,6 +1001,14 @@ function PhoneNotificationsSection() {
           <div className="sub-msg dim">Token stored (••••{settings.discordTokenLast4 ?? ""}). Send a test to confirm it reaches your phone.</div>
         )}
       </div>
+
+      <ToggleRow
+        label="DM the director"
+        hint="On (default): a DM you send the bot is a message to the director — the same as typing it here, so you can start tasks from your phone — and the director's replies to it come back as DMs. Needs your user ID; DMs from anyone else are ignored."
+        on={settings.discordInbox}
+        onChange={(v) => setSettings({ discordInbox: v })}
+      />
+      <div className="sub-msg dim discord-inbox-status">{settings.discordInboxStatus}</div>
     </>
   );
 }

@@ -1140,6 +1140,8 @@ export interface OrchestratorSettings {
   discordUserId: string; // the owner's Discord user id — set, notices are DMed to them and the channel is ignored; empty falls back to DISCORD_USER_ID
   discordTokenPresent: boolean; // read-only — a bot token is stored (env or kv); the raw token is never broadcast
   discordTokenLast4?: string | null; // read-only — last 4 chars of the stored token, for the masked field
+  discordInbox: boolean; // on (default) → a DM from discordUserId to the bot is a message to the director, and that turn's replies go back to the DM
+  discordInboxStatus: string; // read-only — the inbox's connection state in words ("Listening — …", "Off.", a Discord refusal)
   // ---- Composer state, persisted server-side (not localStorage) so it survives across the HTTP and
   //      HTTPS surfaces the console is served on — the two origins don't share localStorage. ----
   skipDirector: boolean; // composer's skip-director mode — persists so "on" stays on next time it opens
