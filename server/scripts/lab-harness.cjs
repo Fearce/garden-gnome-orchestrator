@@ -62,6 +62,8 @@
 //     checkout's web/dist. Either way the instance never runs its own web auto-builder (labChildEnv).
 //     build:lab empties its one directory, so two labs running at once need one each: from web/,
 //     `npx vite build --outDir ../server/.lab-web-dist-<lab> --emptyOutDir` + the matching variable.
+//     Hand-patching a built asset (a CSS negative control) also needs its `.br`/`.gz` siblings deleted:
+//     the instance serves the precompressed copy, so the patched file alone changes nothing.
 //     An isolated lab proves behavior, not deployment; verify the live revision after committing.
 //     Exit code 2 with "older than web/src" is requireFreshWebBuild(), not your change failing: in a
 //     busy shared checkout ANY teammate's web/src save during a run trips it. Rebuild the isolated
