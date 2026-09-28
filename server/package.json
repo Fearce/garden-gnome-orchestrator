@@ -68,6 +68,7 @@
     "test:event-loop": "tsx src/tests/eventLoopMonitor.test.ts",
     "test:ext-wake": "tsx src/tests/extWakeProbe.test.ts",
     "test:account-usage": "tsx src/tests/accountUsageSnapshot.test.ts",
+    "test:auto-compact-window": "tsx src/tests/autoCompactWindow.test.ts",
     "test:grok-runner": "tsx src/tests/grokRunner.test.ts",
     "test:incident-recovery": "tsx src/tests/incidentRecovery.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/incident-recovery-ui.test.ts",
     "test:grok-reasoning": "tsx src/tests/grokReasoning.test.ts",

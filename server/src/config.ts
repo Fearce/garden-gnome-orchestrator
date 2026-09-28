@@ -421,6 +421,10 @@ export const config = {
   // context. Continuations of one long task stacked a session to ~1M tokens this way, so past this many
   // tokens of live context a resume reseeds from the compressed handoff instead (0 disables).
   resumeReseedContextTokens: Math.max(0, numEnv(process.env.RESUME_RESEED_CONTEXT_TOKENS, 200_000)),
+  // The CLI compacts a session only near its model's window, ~1M tokens on Opus 5.5, so a long run
+  // re-read 500k-900k tokens per call before its first compaction. GGO-driven runs compact here
+  // instead (CLAUDE_CODE_AUTO_COMPACT_WINDOW; 0 = the CLI's own window).
+  autoCompactWindowTokens: Math.max(0, numEnv(process.env.AUTO_COMPACT_WINDOW_TOKENS, 300_000)),
 };
 
 export type RoleModelKey = keyof typeof config.models;

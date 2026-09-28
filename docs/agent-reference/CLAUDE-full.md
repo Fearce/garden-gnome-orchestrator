@@ -275,7 +275,8 @@ Read the run trail to tell causes apart:
   path, and several per long task are expected, NOT failures. A continuation resumes the session in full
   only while its live context is under `RESUME_RESEED_CONTEXT_TOKENS` (200K); past that it reseeds from a
   compressed handoff, because continuing in full stacked one task's context toward 1M tokens and every
-  later call re-read it (`docs/ARCHITECTURE.md` §5, `test:bloated-resume-reseed`). **There is no fixed count of implementor
+  later call re-read it (`docs/ARCHITECTURE.md` §5, `test:bloated-resume-reseed`). Within one session the
+  CLI compacts at `AUTO_COMPACT_WINDOW_TOKENS` (300K) instead of the model's ~1M (`test:auto-compact-window`). **There is no fixed count of implementor
   continuations** (`MAX_AUTO_RESUMES` defaults to 0 = unbounded; setting it is an opt-in cap): a task that keeps
   doing new work is continued for as long as it takes. Only `IMPLEMENTOR_NO_PROGRESS_LIMIT` (3) consecutive
   sessions with no new work park it: no new finding of its own, fewer than 3 distinct tool actions absent

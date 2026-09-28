@@ -48,6 +48,9 @@ export interface AgentRunConfig {
   baseUrl?: string;
   /** Bearer auth token for `baseUrl` (the z.ai API key), sent as ANTHROPIC_AUTH_TOKEN. */
   authToken?: string;
+  /** Tokens of context at which the CLI auto-compacts; unset = `config.autoCompactWindowTokens`,
+   *  0 = the CLI's own (model-sized) window. */
+  autoCompactWindow?: number;
 }
 
 export type SendOpts = { shouldQuery?: boolean; priority?: "now" | "next" | "later" };
@@ -173,7 +176,7 @@ export function accountForToken(accounts: Account[], token: string | undefined):
  * Exported for `test:account-usage`: the three RUN_IDENTITY_ENV names are a contract with a hook in
  * another repo, so a rename here has to fail a gate rather than silently stop identifying sessions.
  */
-export function buildEnv(opts: { oauthToken?: string; baseUrl?: string; authToken?: string }): Record<string, string | undefined> {
+export function buildEnv(opts: { oauthToken?: string; baseUrl?: string; authToken?: string; autoCompactWindow?: number }): Record<string, string | undefined> {
   const env = withAgentToolPath();
   delete env.ANTHROPIC_API_KEY;
   // Clear any inherited endpoint override so a stray env var can't redirect a normal Claude run; the
@@ -184,6 +187,8 @@ export function buildEnv(opts: { oauthToken?: string; baseUrl?: string; authToke
   // identity would mislabel every run it spawns. Each branch below states its own.
   for (const key of RUN_IDENTITY_ENV) delete env[key];
   env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT ?? "1800000";
+  const compactWindow = opts.autoCompactWindow ?? config.autoCompactWindowTokens;
+  if (compactWindow > 0) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = env.CLAUDE_CODE_AUTO_COMPACT_WINDOW ?? String(compactWindow);
   if (opts.baseUrl && opts.authToken) {
     delete env.CLAUDE_CODE_OAUTH_TOKEN; // don't leak a Claude sub token to the alternate provider
     env.ANTHROPIC_BASE_URL = opts.baseUrl;
@@ -332,7 +337,7 @@ export class AgentRun implements AgentRunLike {
       permissionMode: this.cfg.permissionMode ?? "default",
       includePartialMessages: this.cfg.includePartialMessages ?? true,
       settingSources: this.cfg.settingSources ?? [],
-      env: buildEnv({ oauthToken: this.cfg.oauthToken, baseUrl: this.cfg.baseUrl, authToken: this.cfg.authToken }),
+      env: buildEnv({ oauthToken: this.cfg.oauthToken, baseUrl: this.cfg.baseUrl, authToken: this.cfg.authToken, autoCompactWindow: this.cfg.autoCompactWindow }),
     };
     if (this.cfg.systemPrompt !== undefined) options.systemPrompt = this.cfg.systemPrompt;
     if (this.cfg.allowedTools) options.allowedTools = this.cfg.allowedTools;

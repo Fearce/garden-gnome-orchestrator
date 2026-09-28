@@ -493,6 +493,12 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   read from the transcript tail by `sessionContextTokens` — the resume takes the compressed path
   (`bloatedSessionReason`). A Default-mode (`vanilla`) session is exempt: it is a stock session by
   contract. Gate: `test:bloated-resume-reseed`.
+  **Inside a session, the CLI compacts at GGO's window, not the model's.** Context also grows ~300K
+  inside one 100-turn session, and the CLI's own threshold for Opus 5.5 is 967K tokens (read live via
+  `getContextUsage().autoCompactThreshold`). `buildEnv` therefore sets `CLAUDE_CODE_AUTO_COMPACT_WINDOW`
+  to `config.autoCompactWindowTokens` (`AUTO_COMPACT_WINDOW_TOKENS`, default 300K → a 267K threshold)
+  on every SDK-backed run (Claude and z.ai). An inherited value wins; `AgentRunConfig.autoCompactWindow:
+  0` keeps the CLI's window, which Default mode uses. Gate: `test:auto-compact-window`.
   **This gate is the single choke-point for *every* implementor resume** — `startResumedImplementor`,
   shared by the pipeline's implementor→QA loop (a `failed` thread re-entering) **and** a manual
   `Resume` / an `inject` into a cold (non-live) task. The manual path matters most for cost: after a

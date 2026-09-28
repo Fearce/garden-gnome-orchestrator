@@ -310,6 +310,7 @@ export function implementorConfig(
     maxTurns: config.implementorMaxTurns,
   };
   if (opts?.resume) cfg.resume = opts.resume;
+  if (opts?.vanilla) cfg.autoCompactWindow = 0; // stock Claude Code compacts at its own window
   return cfg;
 }
 
