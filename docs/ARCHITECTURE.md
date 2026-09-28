@@ -484,6 +484,15 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   branch checks the session's age from its transcript mtime (`sessionAgeMs`): within
   `config.resumeWarmMinutes` (default 40, under the 1h TTL) → **full session resume**; older (cache
   likely cold) → **compressed resume**. `RESUME_FULL_SESSION=1` forces full resume regardless of age.
+  **A warm session that is already big is compressed anyway.** A warm cache makes a full resume cheap
+  to *start*, not to *run*: every later call re-reads the whole context. Each turn-ceiling continuation
+  of one long task used to resume in full, so its context only grew (a measured d2r task: 300K → 450K →
+  550K → 900K tokens, until the CLI compacted near its 1M window), and the night of 2026-09-27 read
+  2.3B cache tokens on 69 implementor runs. So when the session's latest call carried more than
+  `config.resumeReseedContextTokens` (`RESUME_RESEED_CONTEXT_TOKENS`, default 200K; `0` disables) —
+  read from the transcript tail by `sessionContextTokens` — the resume takes the compressed path
+  (`bloatedSessionReason`). A Default-mode (`vanilla`) session is exempt: it is a stock session by
+  contract. Gate: `test:bloated-resume-reseed`.
   **This gate is the single choke-point for *every* implementor resume** — `startResumedImplementor`,
   shared by the pipeline's implementor→QA loop (a `failed` thread re-entering) **and** a manual
   `Resume` / an `inject` into a cold (non-live) task. The manual path matters most for cost: after a

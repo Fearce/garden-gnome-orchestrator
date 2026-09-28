@@ -271,8 +271,11 @@ Read the run trail to tell causes apart:
   A usage cap during the round is filed as an info-level skip, not as this failure. Gate: `test:self-improve-restart`.
 - run `state='error'` → a real failure, an involuntary **cutoff**, or a **usage cap**. Read the row's
   `error` text: it now names the reason (the SDK's `errors`, else the subtype). "Stopped at the
-  per-session turn ceiling" is the deliberate role turn ceiling — benign, warm-resumed on the implementor
-  path, and several per long task are expected, NOT failures. **There is no fixed count of implementor
+  per-session turn ceiling" is the deliberate role turn ceiling — benign, continued on the implementor
+  path, and several per long task are expected, NOT failures. A continuation resumes the session in full
+  only while its live context is under `RESUME_RESEED_CONTEXT_TOKENS` (200K); past that it reseeds from a
+  compressed handoff, because continuing in full stacked one task's context toward 1M tokens and every
+  later call re-read it (`docs/ARCHITECTURE.md` §5, `test:bloated-resume-reseed`). **There is no fixed count of implementor
   continuations** (`MAX_AUTO_RESUMES` defaults to 0 = unbounded; setting it is an opt-in cap): a task that keeps
   doing new work is continued for as long as it takes. Only `IMPLEMENTOR_NO_PROGRESS_LIMIT` (3) consecutive
   sessions with no new work park it: no new finding of its own, fewer than 3 distinct tool actions absent

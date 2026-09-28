@@ -18,7 +18,7 @@
 // NOTE: this is a hand-maintained TS port — if you change the compression/summary logic here,
 // update the upstream tool too (and vice-versa), or the two will drift.
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -68,6 +68,53 @@ export function sessionAgeMs(sessionId: string): number | null {
     return Date.now() - statSync(p).mtimeMs;
   } catch {
     return null;
+  }
+}
+
+// The latest model call sits near the end; one tool result can be large, so read a generous tail rather
+// than the whole (often 10MB+) transcript.
+const CONTEXT_TAIL_BYTES = 4 * 1024 * 1024;
+
+/** The prompt size of the session's latest model call — what every call of a full resume starts by
+ *  re-reading. Taken from the last assistant `usage` in the transcript tail; null when none is found. */
+export function sessionContextTokens(sessionId: string): number | null {
+  const p = findTranscript(sessionId);
+  if (!p) return null;
+  let lines: string[];
+  try {
+    lines = readTail(p, CONTEXT_TAIL_BYTES).split("\n");
+  } catch {
+    return null;
+  }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const usage = assistantUsage(lines[i] ?? "");
+    if (usage) return (usage.input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
+  }
+  return null;
+}
+
+type Usage = { input_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+
+function assistantUsage(line: string): Usage | null {
+  if (!line.includes('"usage"')) return null;
+  try {
+    const o = JSON.parse(line) as { type?: string; message?: { usage?: Usage } };
+    return o.type === "assistant" && o.message?.usage ? o.message.usage : null;
+  } catch {
+    return null; // the first line of a tail read is usually cut mid-record
+  }
+}
+
+function readTail(path: string, maxBytes: number): string {
+  const fd = openSync(path, "r");
+  try {
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, maxBytes);
+    const buf = Buffer.alloc(length);
+    readSync(fd, buf, 0, length, size - length);
+    return buf.toString("utf8");
+  } finally {
+    closeSync(fd);
   }
 }
 

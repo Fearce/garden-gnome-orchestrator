@@ -191,6 +191,7 @@ const GATES = [
   "test:token-conservation",
   "test:usage-saving",
   "test:usage-saving-resume-drift",
+  "test:bloated-resume-reseed",
   "test:themes",
   "test:fonts",
   "test:gnome-skins",

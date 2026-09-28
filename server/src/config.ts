@@ -417,6 +417,10 @@ export const config = {
   // RESUME_FULL_SESSION=1 forces full resume regardless of age.
   resumeWarmMinutes: Number(process.env.RESUME_WARM_MINUTES ?? 40),
   resumeFullSession: process.env.RESUME_FULL_SESSION === "1",
+  // A warm cache makes a full resume cheap to START, not to RUN: every later call re-reads the whole
+  // context. Continuations of one long task stacked a session to ~1M tokens this way, so past this many
+  // tokens of live context a resume reseeds from the compressed handoff instead (0 disables).
+  resumeReseedContextTokens: Math.max(0, numEnv(process.env.RESUME_RESEED_CONTEXT_TOKENS, 200_000)),
 };
 
 export type RoleModelKey = keyof typeof config.models;

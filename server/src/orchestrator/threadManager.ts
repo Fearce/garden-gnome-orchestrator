@@ -85,7 +85,7 @@ import { createOfficeServer } from "../bus/officeServer.js";
 import { createMemoryServer } from "../bus/memoryServer.js";
 import { OperatorNotes } from "./notes.js";
 import { cleanOfficeName, resolveLiveNameCollisions } from "./officeNames.js";
-import { compressSession, sessionAgeMs } from "./resumeCompress.js";
+import { compressSession, sessionAgeMs, sessionContextTokens } from "./resumeCompress.js";
 import { recoveryHistoryBlock } from "./recoveryHistory.js";
 import { gradeSettledTask, outcomeOfState } from "./modelGrading.js";
 import { autoSelectableEffortsForCandidate, buildSelectionPrompt, defaultCandidateEffort, filterAutoSelectionCandidates, isRetiredClaudeAutoModel, modelNote, parseSelection, type ModelCandidate } from "./modelSelector.js";
@@ -8878,6 +8878,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         images: opts.images,
       });
     }
+    const bloated = forceFresh ? null : this.bloatedSessionReason(thread, resumeSession);
+    if (bloated) {
+      forceFresh = true;
+      freshReason = bloated;
+    }
     const ageMs = sessionAgeMs(resumeSession);
     const warm = ageMs != null && ageMs < config.resumeWarmMinutes * 60_000;
     // forceFresh overrides the warm/forced gate: continuing this session in place is what just failed, so
@@ -8914,6 +8919,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     });
     if (this.cancelled(thread.id)) return null; // user cancelled while we were compressing
     return this.startImplementor(thread, seed, { effort: opts.effort, account, images: opts.images });
+  }
+
+  /** Why a Claude session is too big to resume in full, or null when a full resume is fine. A resumed
+   *  session re-reads its whole context on every call, so continuing one long task in place grew it
+   *  across every turn-ceiling continuation until the CLI compacted near 1M tokens. A Default-mode
+   *  session is a stock session by contract and RESUME_FULL_SESSION opts out explicitly. */
+  private bloatedSessionReason(thread: Thread, sessionId: string): string | null {
+    const limit = config.resumeReseedContextTokens;
+    if (!limit || config.resumeFullSession || thread.lane === "vanilla") return null;
+    const tokens = sessionContextTokens(sessionId);
+    if (tokens == null || tokens <= limit) return null;
+    return `the prior session's live context is ${Math.round(tokens / 1000)}k tokens (over ${Math.round(limit / 1000)}k), which every call of a full resume would re-read`;
   }
 
   /** The implementor's next real turn outcome — skipping any turn the owner's steering ABORTED.
