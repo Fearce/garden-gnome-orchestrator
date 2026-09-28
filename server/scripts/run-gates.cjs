@@ -228,6 +228,7 @@ const GATES = [
   "test:qa-loop-check",
   "test:ceiling-economics",
   "test:role-ceilings",
+  "test:session-usage",
   "test:pdf-parse",
   "test:readme-claims",
   "test:db-size",

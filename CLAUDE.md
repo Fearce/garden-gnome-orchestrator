@@ -18,6 +18,7 @@ Node/Fastify API in `server/`, React/Vite console in `web/`, one origin. The imp
 `.claude/rules/*.md` load only when you touch the files they cover. Some tasks are defined by the brief rather than by a file. For these, read the rule first:
 - Health or quality sweep, or resume after a restart: `.claude/rules/nightly-quality-sweep.md`.
 - "Check on earlier work" or a watchdog: `.claude/rules/watchdog-triage.md`.
+- Token efficiency, high usage, or "optimize for tokens": `.claude/rules/token-efficiency-audit.md`. Measure with `npm run probe:token-burn --prefix server` before changing anything.
 - Merging an incoming PR: `.claude/rules/merge-an-incoming-pr.md`.
 - Pipeline or ThreadManager behavior: `.claude/rules/threadmanager-itest.md` and `.claude/rules/e2e-a-pipeline-lane.md`.
 - Any other area: `ls .claude/rules`; each file name describes its topic.

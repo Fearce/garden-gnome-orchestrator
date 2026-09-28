@@ -487,8 +487,8 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   **A warm session that is already big is compressed anyway.** A warm cache makes a full resume cheap
   to *start*, not to *run*: every later call re-reads the whole context. Each turn-ceiling continuation
   of one long task used to resume in full, so its context only grew (a measured d2r task: 300K → 450K →
-  550K → 900K tokens, until the CLI compacted near its 1M window), and the night of 2026-09-27 read
-  2.3B cache tokens on 69 implementor runs. So when the session's latest call carried more than
+  550K → 900K tokens, until the CLI compacted near its 1M window), and on 2026-09-27/28 51–70% of all
+  implementor tokens were spent at a context above 300K (measured per call by `probe:token-burn`). So when the session's latest call carried more than
   `config.resumeReseedContextTokens` (`RESUME_RESEED_CONTEXT_TOKENS`, default 200K; `0` disables) —
   read from the transcript tail by `sessionContextTokens` — the resume takes the compressed path
   (`bloatedSessionReason`). A Default-mode (`vanilla`) session is exempt: it is a stock session by
@@ -499,6 +499,13 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   to `config.autoCompactWindowTokens` (`AUTO_COMPACT_WINDOW_TOKENS`, default 300K → a 267K threshold)
   on every SDK-backed run (Claude and z.ai). An inherited value wins; `AgentRunConfig.autoCompactWindow:
   0` keeps the CLI's window, which Default mode uses. Gate: `test:auto-compact-window`.
+  **A resumed run is charged only for its own tokens.** The CLI restores a session's saved totals on
+  `--resume`, so a result's `modelUsage`/`total_cost_usd` are session-cumulative. Codex's resumed
+  `turn.completed.usage` is thread-cumulative in the same way. `agents/sessionUsage.ts` subtracts a
+  per-run baseline before the result reaches `agent_runs`. For Claude, the first result's cumulative minus
+  its own `usage` is the baseline. For Codex, it is the rollout's last `token_count`. Rows written before
+  this repeat every earlier run of their session. Gate: `test:session-usage`. `probe:token-burn` measures
+  spend from the transcripts and flags any drift.
   **This gate is the single choke-point for *every* implementor resume** — `startResumedImplementor`,
   shared by the pipeline's implementor→QA loop (a `failed` thread re-entering) **and** a manual
   `Resume` / an `inject` into a cold (non-live) task. The manual path matters most for cost: after a

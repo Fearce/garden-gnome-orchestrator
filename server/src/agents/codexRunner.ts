@@ -10,6 +10,7 @@ import { logCrash } from "../crashLog.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { extractCliBridgeMessages } from "./officeBridge.js";
+import { CodexRunMeter } from "./sessionUsage.js";
 import {
   looksLikeCapNotice,
   parseUsageLimitResetAt,
@@ -383,6 +384,7 @@ export class CodexAgentRun implements AgentRunLike {
   // run ends so it can stop attempting resume for this thread (resume keeps wedging → skip the 60s
   // watchdog + self-heal spam every turn and go straight to fresh).
   resumeHealed = false;
+  private readonly usageMeter = new CodexRunMeter(config.codex.home);
 
   constructor(private readonly cfg: CodexRunConfig) {
     this.cfg = { ...cfg, model: currentCodexModel(cfg.model) };
@@ -556,6 +558,7 @@ export class CodexAgentRun implements AgentRunLike {
     // must exist before spawn or codex errors + exits 1.
     await mkdir(config.codex.home, { recursive: true }).catch(() => {});
     const authMode = await seedCodexAuth(this.cfg.apiKey).catch(() => "none" as const);
+    await this.usageMeter.beginTurn(resumeId).catch(() => {});
     // Materialize pasted screenshots to temp files up front — codex attaches them by path via --image.
     const imagePaths = await this.writeImages(images);
     const args = ["exec"];
@@ -693,6 +696,10 @@ export class CodexAgentRun implements AgentRunLike {
     }
   }
 
+  private runTokenUsage(raw: Record<string, number> | undefined): TokenUsage | undefined {
+    return this.usageMeter.record(this.sessionId, codexTokenUsage(raw));
+  }
+
   private handleEvent(ev: CodexEvent): void {
     switch (ev.type) {
       case "thread.started":
@@ -708,8 +715,8 @@ export class CodexAgentRun implements AgentRunLike {
         // turn `completed`. The message is the provider's rejection, not a successful role result:
         // preserve it as an error so the stage fallback can switch providers.
         this.pendingTerminalResult = this.capped
-          ? { subtype: "error", isError: true, result: this.lastAgentText || this.lastErrorMsg || "Codex hit its usage limit.", numTurns: 1, tokenUsage: codexTokenUsage(ev.usage) }
-          : { subtype: "success", isError: false, numTurns: 1, tokenUsage: codexTokenUsage(ev.usage) };
+          ? { subtype: "error", isError: true, result: this.lastAgentText || this.lastErrorMsg || "Codex hit its usage limit.", numTurns: 1, tokenUsage: this.runTokenUsage(ev.usage) }
+          : { subtype: "success", isError: false, numTurns: 1, tokenUsage: this.runTokenUsage(ev.usage) };
         break;
       case "turn.failed": {
         this.sawTerminal = true;
@@ -717,7 +724,7 @@ export class CodexAgentRun implements AgentRunLike {
         if (this.isResumeTurn && codexResumeRolloutMissing(ev.error ?? msg)) this.markResumeRolloutMissing(msg);
         if (codexErrorLooksRateLimited(ev.error ?? msg)) this.markCapped(msg);
         else this.markTransientApiError(msg);
-        this.pendingTerminalResult = { subtype: "error", isError: true, result: msg, tokenUsage: codexTokenUsage(ev.usage) };
+        this.pendingTerminalResult = { subtype: "error", isError: true, result: msg, tokenUsage: this.runTokenUsage(ev.usage) };
         break;
       }
       case "error":

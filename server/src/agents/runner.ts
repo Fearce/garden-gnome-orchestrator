@@ -16,6 +16,7 @@ import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { AgentEvent, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
+import { ClaudeRunMeter } from "./sessionUsage.js";
 
 export type UserContent = string | unknown[];
 export type StartupWedgeScope = "session" | "provider";
@@ -305,6 +306,7 @@ export class AgentRun implements AgentRunLike {
 
   private readonly input = new InputQueue();
   private q: Query | undefined;
+  private readonly usageMeter: ClaudeRunMeter;
   private readonly openToolCalls = new Set<string>();
   // The CLI echoes the client uuid of every user message a turn consumed (`user_message_uuids` on the
   // turn's first stream frame), which is the only proof that a message sent while idle was read.
@@ -314,6 +316,7 @@ export class AgentRun implements AgentRunLike {
   constructor(private readonly cfg: AgentRunConfig) {
     this.emitter.setMaxListeners(50);
     this.emitter.on("event", (e: AgentEvent) => this.trackToolCalls(e));
+    this.usageMeter = new ClaudeRunMeter(Boolean(cfg.resume));
   }
 
   get toolCallInFlight(): boolean {
@@ -665,6 +668,7 @@ export class AgentRun implements AgentRunLike {
         }
         break;
       case "result": {
+        const runUsage = this.usageMeter.measure(m);
         if (isUnpromptedHousekeepingResult(m)) break;
         const evt: ResultEvent = {
           type: "result",
@@ -673,9 +677,9 @@ export class AgentRun implements AgentRunLike {
           result: m.result,
           errors: Array.isArray(m.errors) ? m.errors.filter((e: unknown) => typeof e === "string") : undefined,
           structuredOutput: m.structured_output,
-          costUsd: m.total_cost_usd,
+          costUsd: runUsage.costUsd,
           numTurns: m.num_turns,
-          tokenUsage: claudeTokenUsage(m.modelUsage),
+          tokenUsage: runUsage.tokenUsage,
         };
         // An ABORTED turn is not an outcome. The CLI ends one with subtype "success", is_error false and
         // an EMPTY `result` — identical, in every field the pipeline reads, to a turn that finished. Only
