@@ -211,7 +211,11 @@ The index is shared too. Before committing, inspect both `git diff --cached` and
 `python C:/Users/theke/.claude/scripts/safe_commit.py -m "type: summary" -- path/to/file` so foreign
 staged work cannot enter the commit. When another agent changed the same file, use
 `python C:/Users/theke/.claude/scripts/stage_my_hunks.py --list path/to/file`, select only your hunks,
-verify the cached diff, then commit that verified index without a pathspec. These tools are the required
+verify the cached diff, then commit exactly the tree you verified. A plain `git commit` re-reads the
+shared index, and a peer staging between your check and your commit lands their files in it (hit
+2026-09-28). Freeze the tree at verification and commit it atomically:
+`T=$(git write-tree); P=$(git rev-parse HEAD); git diff --stat $P $T` (confirm only your files), then
+`git update-ref HEAD $(git commit-tree $T -p $P -F msg.txt) $P` — it refuses if HEAD moved. These tools are the required
 commit boundary for concurrent work; do not hand-roll an index patch or rely on interactive `git add -p`.
 
 ## Deliverables (agent-produced files)
