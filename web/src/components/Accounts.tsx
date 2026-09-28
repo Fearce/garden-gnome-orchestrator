@@ -105,22 +105,27 @@ export function Accounts() {
   // Show the z.ai chip once z.ai is configured — enabled, or an API key is stored.
   const showZai = settings.zaiEnabled || settings.zaiKeyPresent;
   const [phoneOpen, setPhoneOpen] = useState(false);
+  const usageHidden = useStore((s) => s.usageHidden);
+  const toggleUsage = useStore((s) => s.toggleUsage);
+  // One gauge button, two jobs: a phone pops the chips over the page, a desktop folds the strip in place.
+  const compact = useCompact();
+  const shown = compact ? phoneOpen : !usageHidden;
   if (!accounts.length && !showCodex && !showGrok && !showZai) return null;
   return (
     <>
     <button
       type="button"
-      className={"bell accounts-toggle" + (phoneOpen ? " on" : "") + (frozen ? " frozen" : "")}
-      aria-expanded={phoneOpen}
+      className={"bell accounts-toggle" + (shown ? " on" : " off") + (frozen ? " frozen" : "")}
+      aria-expanded={shown}
       aria-label="Subscription usage"
-      title="Subscription usage"
-      onClick={() => setPhoneOpen((o) => !o)}
+      title={compact ? "Subscription usage" : usageHidden ? "Show subscription usage" : "Hide subscription usage"}
+      onClick={compact ? () => setPhoneOpen((o) => !o) : toggleUsage}
     >
       <UsageIcon />
     </button>
-    {phoneOpen ? <div className="accounts-scrim" onClick={() => setPhoneOpen(false)} /> : null}
+    {compact && phoneOpen ? <div className="accounts-scrim" onClick={() => setPhoneOpen(false)} /> : null}
     <div
-      className={"accounts" + (frozen ? " frozen" : "") + (phoneOpen ? " phone-open" : "")}
+      className={"accounts" + (frozen ? " frozen" : "") + (compact && phoneOpen ? " phone-open" : "") + (!compact && usageHidden ? " usage-hidden" : "")}
       title={
         frozen
           ? "Token freeze — a task is parked because every account it needs is rate-limited. Parked tasks auto-resume the moment a window resets or a backend frees up."
@@ -170,6 +175,21 @@ export function Accounts() {
     </div>
     </>
   );
+}
+
+// Mirrors the compact band in styles.css, where the strip only exists as a pop-over.
+const COMPACT_MQ = "(max-width: 899.98px)";
+
+function useCompact(): boolean {
+  const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_MQ).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(COMPACT_MQ);
+    const onChange = () => setCompact(mq.matches);
+    onChange();
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return compact;
 }
 
 function UsageIcon() {

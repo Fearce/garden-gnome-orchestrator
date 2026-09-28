@@ -315,6 +315,8 @@ interface State {
   // Focus mode: the top bar keeps only what a working session might click and drops everything that
   // merely reports state (build tag, git/settings, office, account burn strip, counters, gate, bell).
   focusMode: boolean;
+  // Desktop-only: the account burn strip folded away behind its gauge button (a phone always folds it).
+  usageHidden: boolean;
   detailWidth: number;
   directorWidth: number;
   // The office: recent chat across all rooms (live feed), the project-room roll-up (drives the
@@ -485,6 +487,7 @@ interface State {
   clearCodeOrigin: () => void;
   toggleRail: () => void;
   toggleFocus: () => void;
+  toggleUsage: () => void;
   setDetailWidth: (px: number) => void;
   setDirectorWidth: (px: number) => void;
   // Open the office panel on a room (defaults to the general room); fetches that room's newest page.
@@ -1313,6 +1316,7 @@ export const useStore = create<State>((set) => ({
   gitConsoleCommit: null,
   railHidden: lsBool("orch-rail-hidden", false),
   focusMode: lsBool("orch-focus-mode", false),
+  usageHidden: lsBool("orch-usage-hidden", false),
   detailWidth: lsNum("orch-detail-w", 480),
   directorWidth: lsNum("orch-rail-w", 384),
   chat: [],
@@ -1765,6 +1769,12 @@ export const useStore = create<State>((set) => ({
       const v = !s.focusMode;
       lsSet("orch-focus-mode", v ? "1" : "0");
       return { focusMode: v };
+    }),
+  toggleUsage: () =>
+    set((s) => {
+      const v = !s.usageHidden;
+      lsSet("orch-usage-hidden", v ? "1" : "0");
+      return { usageHidden: v };
     }),
   setDetailWidth: (px) => {
     lsSet("orch-detail-w", String(Math.round(px)));

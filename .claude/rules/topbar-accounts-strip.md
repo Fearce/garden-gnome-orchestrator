@@ -21,7 +21,10 @@ must be *visible* at common desktop widths.
   since 2026-08-18 includes a portrait 800px tablet) hides the strip behind the
   `.accounts-toggle` gauge button as a pop-over (`.accounts.phone-open`) so the second
   topbar row belongs to the office — `probe:chips` shares that bound as `DESKTOP_MIN`
-  and does not check the strip below it. **Adding or widening a chip moves the wrap
+  and does not check the strip below it. On desktop the same gauge button sits in the
+  bar (28px, counted in the single-row floor) and folds the strip away in place
+  (`.accounts.usage-hidden`, persisted as `orch-usage-hidden`); `usage-strip-lab` drives
+  both jobs, including that a desktop "hidden" never suppresses the phone pop-over. **Adding or widening a chip moves the wrap
   bound** — don't
   bisect it by hand, print it: `npm run probe:chips -- --explain` reports the
   single-row floor per width (chips + fixed items + gaps + padding).

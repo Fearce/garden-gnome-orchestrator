@@ -677,7 +677,10 @@ everything in the header that only *reports* state — build tag, Git/settings
 buttons, office gnomes, the account burn strip, the counters, gate and bell —
 leaving the two toggles, an update badge if one landed, and the socket. Below
 1900px the strip is a whole second row, so the bar goes 128px → 41px. Browser
-check: `npm run focus-lab --prefix server`.
+check: `npm run focus-lab --prefix server`. To drop only the burn strip, the
+gauge button beside it (`.accounts-toggle`) folds it away (`store.usageHidden`,
+also per-browser); below 900px the same button opens the strip as a pop-over
+instead and ignores that setting. Browser check: `npm run usage-strip-lab --prefix server`.
 
 **Themes** (Settings → Appearance) are a per-browser choice between *Classic*
 — `styles.css` itself, with no attribute on `<html>` — and *Nocturne*, whose

@@ -899,8 +899,12 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 }
 .bell:hover { color: var(--text-dim); border-color: var(--line-strong); }
 .bell.on { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line)); }
-/* Phone-only: the usage pop-over trigger (see the ≤899px block). */
-.accounts-toggle { display: none; }
+/* The burn strip's own hide switch — dim while the chips show, faint while folded, like the panel
+   toggles. The ≤899px block turns the same button into the pop-over trigger. */
+.accounts-toggle.on { color: var(--text-dim); border-color: var(--line); }
+.accounts-toggle.on:hover { color: var(--text); border-color: var(--line-strong); }
+.accounts-toggle.frozen { color: var(--frost-strong); }
+.accounts.usage-hidden { display: none; }
 .gate {
   display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 9px; cursor: pointer;
   border-radius: var(--r-sm); font-family: var(--font-mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em;

@@ -16,6 +16,7 @@
     "directives-lab": "node scripts/directives-lab.cjs",
     "token-conservation-lab": "node scripts/token-conservation-lab.cjs",
     "token-safety-lab": "node scripts/token-safety-lab.cjs",
+    "usage-strip-lab": "node scripts/usage-strip-lab.cjs",
     "discord-lab": "node scripts/discord-lab.cjs",
     "focus-lab": "node scripts/focus-lab.cjs",
     "git-lab": "node scripts/git-console-lab.cjs",

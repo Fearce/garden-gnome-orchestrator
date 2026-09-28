@@ -45,7 +45,8 @@ drives one surface — copy the closest of `chip-lab.cjs` (accounts strip), `git
 console + fixture repo), `tablet-lab.cjs` (both tablet orientations in a TOUCH context),
 `model-select-lab.cjs` (a Settings toggle's round-trip + a server-fed table), `inject-lab.cjs`
 (state-conditional button labels + a click that must not kill the task), `focus-lab.cjs` (the top bar's
-focus toggle, both themes), `task-model-lab.cjs` (the per-task exact provider/model pin on desktop +
+focus toggle, both themes), `usage-strip-lab.cjs` (the gauge button folding the burn strip on desktop vs
+its phone pop-over), `task-model-lab.cjs` (the per-task exact provider/model pin on desktop +
 phone, including persistence, Auto, and the running-task guard), `code-nav-lab.cjs` (the contextual
 routes out of a task / Co-work / Supervisor row into the IDE and the Git console, and back), `layout-lab.cjs` (the workbench's
 columns, with the rail/detail widths replayed from a BIGGER monitor, across every band and both drag
