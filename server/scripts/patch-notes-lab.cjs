@@ -192,6 +192,8 @@ async function upcomingPass(browser, dataDir) {
   await waitForRows(page);
   const flagged = await page.$$eval(".pn-day .pn-row:has(.pn-flag.pending) .pn-summary", (els) => els.map((e) => e.textContent.trim()));
   check("\"Not live yet\" marks exactly the commits the server lists as pending", flagged.length === 1 && flagged[0] === pendingSummary, JSON.stringify(flagged));
+  // A refresh can still be inside route.fetch when the context closes; unhandled, that rejection kills the lab.
+  await page.unrouteAll({ behavior: "ignoreErrors" });
   await ctx.close();
 }
 
