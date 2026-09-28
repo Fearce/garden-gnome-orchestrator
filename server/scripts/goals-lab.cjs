@@ -110,13 +110,15 @@ const card = (page, title) => page.locator(".goal-card", { has: page.locator(`.s
     check("the model picker waits for a provider", p.model?.disabled === true, JSON.stringify(p.model));
     let pace = await paceControls(page);
     check("the dialog defaults to one step at a time with the burn guard on at 100%", pace.parallel === "1" && pace.guard === true && pace.rate === "100" && pace.rateDisabled === false, JSON.stringify(pace));
+    check("the dialog has no step budget", !/budget/i.test(await page.locator(".goal-modal").textContent()));
     await saveAndClose(page);
     let row = await waitForRow(dataDir, "Default goal", () => true);
     check("an untouched dialog stores no pin (director picks, low or medium)", row && row.effort === null && row.provider === null && row.model === null, JSON.stringify(row));
     check("...and the pace defaults", row && row.max_concurrent === 1 && row.burn_conservation === 1 && row.burn_rate_pct === 100, JSON.stringify(row));
     await card(page, "Default goal").waitFor({ timeout: 10000 });
     check("the card says the effort is low–medium", (await card(page, "Default goal").locator(".goal-effort-auto").textContent())?.trim() === "low–medium");
-    check("the card shows one at a time and the guard", /1 at a time/.test(await card(page, "Default goal").locator(".sched-meta").textContent()) && (await card(page, "Default goal").locator(".goal-burn:not(.off)").textContent())?.trim() === "burn ≤ 100%");
+    check("the card counts steps without a budget", /\b0 steps\b/.test(await card(page, "Default goal").locator(".goal-steps-count").textContent()));
+    check("the card shows one at a time and the guard",/1 at a time/.test(await card(page, "Default goal").locator(".sched-meta").textContent()) && (await card(page, "Default goal").locator(".goal-burn:not(.off)").textContent())?.trim() === "burn ≤ 100%");
 
     // ---- several agents at once, guard off ----
     await fillNewGoal(page, "Parallel goal", workspace);

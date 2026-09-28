@@ -58,7 +58,6 @@ const goal: Goal = {
   statusReason: null,
   progress: "Cache layer done; sync queue remains.",
   lastVerdict: { verdict: "continue", reason: "Sync is missing.", agentClaimedComplete: true, at: Date.now() - 60_000 },
-  maxSteps: 100,
   effort: null,
   provider: null,
   model: null,
@@ -114,8 +113,8 @@ assert.deepEqual(socket.sent, [{ type: "goal.status", id: "goal-1", status: "pau
 assert.equal(useStore.getState().goals[0]?.status, "paused", "Pause projects in the same click");
 
 socket.sent.length = 0;
-assert.equal(useStore.getState().updateGoal("goal-1", { maxSteps: 40 }), true);
-assert.deepEqual(socket.sent, [{ type: "goal.update", id: "goal-1", patch: { maxSteps: 40 } }]);
+assert.equal(useStore.getState().updateGoal("goal-1", { maxConcurrent: 3 }), true);
+assert.deepEqual(socket.sent, [{ type: "goal.update", id: "goal-1", patch: { maxConcurrent: 3 } }]);
 
 socket.readyState = FakeWebSocket.CLOSED;
 socket.sent.length = 0;
@@ -139,7 +138,8 @@ const render = (goals: Goal[]): string => {
 const active = render([goal]);
 assert.match(active, /Offline support/);
 assert.match(active, /Cache layer done; sync queue remains\./, "the director's progress is shown");
-assert.match(active, /Step 2 of 100/);
+assert.match(active, />2 steps</, "the step count carries no budget");
+assert.doesNotMatch(active, /budget/i, "a goal has no step budget");
 assert.match(active, /Director: continue/);
 assert.match(active, /Current step/);
 assert.match(active, /Sync queue/);

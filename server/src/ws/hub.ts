@@ -552,7 +552,6 @@ export async function handleCommand(
         title: cmd.title,
         objective: cmd.objective,
         workspace: cmd.workspace,
-        maxSteps: cmd.maxSteps,
         effort: cmd.effort,
         provider: cmd.provider,
         model: cmd.model,

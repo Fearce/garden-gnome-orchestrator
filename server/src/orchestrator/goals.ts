@@ -9,13 +9,11 @@ import { formatUntil } from "./capacityRouting.js";
 import {
   DEFAULT_GOAL_BURN_RATE_PCT,
   DEFAULT_GOAL_MAX_CONCURRENT,
-  DEFAULT_GOAL_MAX_STEPS,
   EFFORTS,
   GOAL_AUTO_EFFORTS,
   GOAL_EFFORTS,
   MAX_GOAL_BURN_RATE_PCT,
   MAX_GOAL_MAX_CONCURRENT,
-  MAX_GOAL_MAX_STEPS,
   MIN_GOAL_BURN_RATE_PCT,
   type Effort,
   type Goal,
@@ -40,8 +38,8 @@ import {
  * claim the director rejects just gets the next step. Neither side can end the loop alone.
  *
  * The loop is driven by durable state only (`goals` + `goal_steps`), re-read on every evaluation, so a
- * restart simply re-evaluates. Bounded three ways: `maxSteps`, a run of failed steps, and a cancelled
- * step (the owner intervened) each pause the goal with a reason instead of spending forever.
+ * restart simply re-evaluates. There is no step budget: a goal keeps going until it is done. Only a run
+ * of failed steps or a cancelled step (the owner intervened) pauses it with a reason.
  *
  * The owner may pin a goal's effort and/or model; the director then plans steps within that pin. With no
  * effort pinned the director may only choose low or medium, because a goal spends capacity around the clock.
@@ -103,13 +101,11 @@ export interface GoalInput extends GoalPinInput, GoalPaceInput {
   title: string;
   objective: string;
   workspace: string;
-  maxSteps?: number;
 }
 
 export interface GoalPatch extends GoalPinInput, GoalPaceInput {
   title?: string;
   objective?: string;
-  maxSteps?: number;
 }
 
 type GoalPin = Pick<Goal, "effort" | "provider" | "model">;
@@ -162,10 +158,6 @@ export function detectGoalComplete(report: string | null | undefined): boolean {
     else if (CONTINUE_LINE.test(line)) claim = false;
   }
   return claim;
-}
-
-export function clampMaxSteps(value: number | undefined): number {
-  return clampInt(value, 1, MAX_GOAL_MAX_STEPS, DEFAULT_GOAL_MAX_STEPS);
 }
 
 export function clampMaxConcurrent(value: number | undefined): number {
@@ -486,7 +478,7 @@ export function buildGoalJudgePrompt(ctx: GoalJudgeContext): string {
     `GOAL: ${goal.title}`,
     `OBJECTIVE (${ctx.ownerName}'s words, the fixed yardstick):\n${goal.objective}`,
     `REPOSITORY: ${goal.workspace}`,
-    `Steps used: ${goal.stepCount} of ${goal.maxSteps}.`,
+    `Steps so far: ${goal.stepCount}.`,
     `Progress so far (your own earlier summary): ${goal.progress || "none yet"}`,
     history.length ? `Step history (oldest first):\n${history.join("\n")}` : "",
     "",
@@ -597,7 +589,6 @@ export class GoalRunner {
       title,
       objective,
       workspace,
-      maxSteps: clampMaxSteps(input.maxSteps),
       effort: pin.effort ?? null,
       provider: pin.provider ?? null,
       model: pin.model ?? null,
@@ -625,7 +616,6 @@ export class GoalRunner {
     const goal = this.db.updateGoal(id, {
       ...(title ? { title } : {}),
       ...(objective ? { objective } : {}),
-      ...(patch.maxSteps !== undefined ? { maxSteps: clampMaxSteps(patch.maxSteps) } : {}),
       ...(pin.effort !== undefined ? { effort: pin.effort } : {}),
       ...(pin.model !== undefined ? { provider: pin.provider ?? null, model: pin.model } : {}),
       // A burn-rate hold or a full slot may no longer apply, so look again now instead of at the next check.
@@ -715,10 +705,6 @@ export class GoalRunner {
     if (running.length >= goal.maxConcurrent) return;
     if (running.length && this.heldForRunningSteps(goal)) return;
     if (!existsSync(goal.workspace)) return this.pause(goal, `Workspace ${goal.workspace} no longer exists.`);
-    if (goal.stepCount >= goal.maxSteps) {
-      if (running.length) return;
-      return this.pause(goal, `Reached its budget of ${goal.maxSteps} steps. Raise the step budget and resume to continue.`);
-    }
     await this.judgeAndAct(goalId, running);
   }
 
@@ -986,14 +972,14 @@ export function describeGoal(g: Goal): string {
     : g.currentThreadId ? `, last task ${g.currentThreadId.slice(0, 8)}` : "";
   const reason = g.statusReason ? ` (${g.statusReason})` : "";
   const progress = g.progress ? ` Progress: ${clip(g.progress, 300)}` : "";
-  return `- ${g.id} [${g.status}]${reason} "${g.title}" @ ${g.workspace} — ${g.stepCount}/${g.maxSteps} steps, ${describeGoalPin(g)}, ${describeGoalPace(g)}${current}.${progress}`;
+  return `- ${g.id} [${g.status}]${reason} "${g.title}" @ ${g.workspace} — ${g.stepCount} step${g.stepCount === 1 ? "" : "s"}, ${describeGoalPin(g)}, ${describeGoalPace(g)}${current}.${progress}`;
 }
 
 /** The director's update_goal, shared by the MCP tool and the CLI bridge. Returns the reply text; a
  *  failure starts with "Could not". */
 export function applyGoalChange(
   goals: GoalRunner,
-  change: { id: string; title?: string; objective?: string; maxSteps?: number; status?: GoalStatus } & GoalPinInput & GoalPaceInput,
+  change: { id: string; title?: string; objective?: string; status?: GoalStatus } & GoalPinInput & GoalPaceInput,
   statusReason: string,
 ): string {
   const { id, status, ...patch } = change;

@@ -290,7 +290,6 @@ export interface Goal {
   statusReason: string | null; // why it is paused / achieved / abandoned
   progress: string | null; // the director's running summary of what is done and what remains
   lastVerdict: GoalVerdict | null;
-  maxSteps: number; // runaway bound: the goal pauses once it has dispatched this many step tasks
   effort: Effort | null; // the owner's effort for every step; null = the director picks, low or medium only
   provider: ImplementorProvider | null; // with `model`, the owner's exact pin for every step; null = the director picks
   model: string | null;
@@ -308,8 +307,6 @@ export interface Goal {
 
 /** How many of a goal's newest steps ride on the broadcast; `stepCount` carries the full total. */
 export const GOAL_STEPS_SHOWN = 30;
-export const DEFAULT_GOAL_MAX_STEPS = 100;
-export const MAX_GOAL_MAX_STEPS = 1000;
 /** The efforts the owner can set on a goal (the schedule editor's set). */
 export const GOAL_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
 /** A goal runs around the clock, so with no owner effort the director chooses only among these. */

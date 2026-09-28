@@ -935,11 +935,13 @@ export class Db {
       "ALTER TABLE goals ADD COLUMN burn_conservation INTEGER NOT NULL DEFAULT 1",
       "ALTER TABLE goals ADD COLUMN burn_rate_pct INTEGER NOT NULL DEFAULT 100",
       "ALTER TABLE goal_steps ADD COLUMN brief TEXT NOT NULL DEFAULT ''",
+      // Goals no longer have a step budget; the NOT NULL column would reject every new goal.
+      "ALTER TABLE goals DROP COLUMN max_steps",
     ]) {
       try {
         this.raw.exec(stmt);
       } catch {
-        /* column already present */
+        /* already applied */
       }
     }
     // After the ALTER, never in SCHEMA: on a pre-sha256 DB the column doesn't exist yet when
@@ -962,6 +964,18 @@ export class Db {
     this.backfillAutoReviewEpisodes();
     this.repairAutoReviewBackfillFreshWork();
     this.backfillImplementationMemos();
+    this.resumeBudgetPausedGoals();
+  }
+
+  /** Goals have no step budget any more, so one the old budget paused would otherwise wait forever on a
+   *  limit that no longer exists. Matches only the budget pause's own reason; an owner pause stays put. */
+  private resumeBudgetPausedGoals(): void {
+    this.raw
+      .prepare(
+        `UPDATE goals SET status = 'active', status_reason = NULL, next_check_at = NULL, updated_at = ?
+          WHERE status = 'paused' AND status_reason LIKE 'Reached its budget of %'`,
+      )
+      .run(now());
   }
 
   /** Keep `threads.latest_message_preview` true for every insert path, including the raw ones in tests
@@ -3627,7 +3641,6 @@ export class Db {
     title: string;
     objective: string;
     workspace: string;
-    maxSteps: number;
     effort: Effort | null;
     provider: ImplementorProvider | null;
     model: string | null;
@@ -3639,9 +3652,9 @@ export class Db {
     const id = newId();
     this.raw
       .prepare(
-        `INSERT INTO goals(id, title, objective, workspace, status, max_steps, effort, provider, model,
+        `INSERT INTO goals(id, title, objective, workspace, status, effort, provider, model,
                            max_concurrent, burn_conservation, burn_rate_pct, created_at, updated_at)
-         VALUES(@id, @title, @objective, @workspace, 'active', @maxSteps, @effort, @provider, @model,
+         VALUES(@id, @title, @objective, @workspace, 'active', @effort, @provider, @model,
                 @maxConcurrent, @burnConservation, @burnRatePct, @at, @at)`,
       )
       .run({ id, ...input, burnConservation: input.burnConservation ? 1 : 0, at });
@@ -3667,7 +3680,6 @@ export class Db {
       statusReason: string | null;
       progress: string | null;
       lastVerdict: GoalVerdict | null;
-      maxSteps: number;
       effort: Effort | null;
       provider: ImplementorProvider | null;
       model: string | null;
@@ -3687,7 +3699,6 @@ export class Db {
       statusReason: "status_reason",
       progress: "progress",
       lastVerdict: "last_verdict",
-      maxSteps: "max_steps",
       effort: "effort",
       provider: "provider",
       model: "model",
@@ -3805,7 +3816,6 @@ export class Db {
       statusReason: (r.status_reason as string | null) ?? null,
       progress: (r.progress as string | null) ?? null,
       lastVerdict: parseGoalVerdict(r.last_verdict),
-      maxSteps: r.max_steps as number,
       effort: (r.effort as Effort | null) ?? null,
       provider: (r.provider as ImplementorProvider | null) ?? null,
       model: (r.model as string | null) ?? null,

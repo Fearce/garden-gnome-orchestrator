@@ -45,9 +45,12 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   A model travels only with its provider (`validateGoalPin`); a half pin is rejected, never guessed.
 - **Guards fire at SETTLE time, not on every evaluation.** A cancelled step pauses the goal, and so do 3
   consecutive failed steps. If those checks ran on every evaluation, Resume would re-pause at once on the
-  same old step (`test:goals` covers "resume judges again"). Only the step budget and a missing workspace
-  are re-checked on every pass; a spent budget waits for the running steps before it pauses. A `review`
-  outcome is NOT a failure: QA was unsatisfied, but the work exists.
+  same old step (`test:goals` covers "resume judges again"). Only a missing workspace is re-checked on
+  every pass. A `review` outcome is NOT a failure: QA was unsatisfied, but the work exists.
+- **There is no step budget; a goal keeps going until it is done.** The owner removed it on 2026-09-28,
+  so do not reintroduce a step count limit as a runaway guard. The bounds are the failed-step streak,
+  a cancelled step, the burn-rate hold and the owner's Pause. Boot drops the old `goals.max_steps`
+  column and reactivates any goal still paused by "Reached its budget of …" (`resumeBudgetPausedGoals`).
 - **The step row is written BEFORE the dispatch.** A crash in between leaves a step with no `thread_id`;
   `adoptOrphan` finds its task by the exact `stepTitle` in that workspace, and while that is unresolved
   the goal dispatches nothing. That early return is load-bearing: without it a restart doubles the step.

@@ -269,7 +269,6 @@ CREATE TABLE IF NOT EXISTS goals (
   status_reason     TEXT,
   progress          TEXT,
   last_verdict      TEXT,
-  max_steps         INTEGER NOT NULL,
   effort            TEXT,
   provider          TEXT,
   model             TEXT,

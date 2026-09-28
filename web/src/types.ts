@@ -239,7 +239,6 @@ export interface Goal {
   statusReason: string | null;
   progress: string | null;
   lastVerdict: GoalVerdict | null;
-  maxSteps: number;
   effort: Effort | null; // the owner's effort for every step; null = the director picks, low or medium only
   provider: ImplementorProvider | null; // with `model`, the owner's exact pin for every step
   model: string | null;
@@ -256,12 +255,9 @@ export interface Goal {
 }
 
 /** Mirrors server/src/types.ts. */
-export const DEFAULT_GOAL_MAX_STEPS = 100;
-export const MAX_GOAL_MAX_STEPS = 1000;
 export const GOAL_EFFORTS: Effort[] = ["low", "medium", "high", "max"];
 /** The owner's per-goal settings a goal.create / goal.update may carry; null hands a pin back to the director. */
 export interface GoalOptions {
-  maxSteps?: number;
   effort?: Effort | null;
   provider?: ImplementorProvider | null;
   model?: string | null;

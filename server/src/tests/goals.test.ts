@@ -4,9 +4,10 @@
 //
 // What it pins: the two-voice ending (agent claim AND director verdict), the verification step when only
 // the director thinks it is done, the step-in-flight gate, the backoff when no director answers, the three
-// runaway guards (cancel, failed streak, step budget), orphan adoption after a crash, the owner pausing
-// mid-judgement, the hub wake-up when a step task settles, the weekly burn-rate hold, and parallel steps
-// (slots, the director's `wait`, and reports of several steps that ended together).
+// runaway guards (cancel, failed streak) and the absence of any step budget, the step-budget column's
+// removal from an old database, orphan adoption after a crash, the owner pausing mid-judgement, the hub
+// wake-up when a step task settles, the weekly burn-rate hold, and parallel steps (slots, the director's
+// `wait`, and reports of several steps that ended together).
 
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -292,16 +293,21 @@ async function guards(): Promise<void> {
   check("three failed steps pause the goal", goal.status === "paused" && /3 steps failed/.test(goal.statusReason ?? ""));
   check("no fourth step was dispatched", h.dispatched.length === 3);
 
-  console.log("goals: the step budget pauses");
+  console.log("goals: there is no step budget");
   h = harness();
-  h.answers.push(answer("continue", "only"));
-  const c = h.runner.create({ title: "Budget", objective: "o", workspace: ws, maxSteps: 1 }).goal!;
+  h.answers.push(answer("continue", "s0"));
+  const c = h.runner.create({ title: "Endless", objective: "o", workspace: ws }).goal!;
   await h.runner.idle();
-  settle(h, h.db.getGoal(c.id)!.currentThreadId!, "review");
-  await h.runner.evaluate(c.id);
+  const stepsPastOldDefault = 105;
+  for (let i = 1; i < stepsPastOldDefault; i++) {
+    settle(h, h.db.getGoal(c.id)!.currentThreadId!, i === 1 ? "review" : "done", `s${i - 1} done`);
+    h.answers.push(answer("continue", `s${i}`));
+    await h.runner.evaluate(c.id);
+  }
   goal = h.db.getGoal(c.id)!;
-  check("the budget pauses before a second judgement", goal.status === "paused" && /budget of 1 steps/.test(goal.statusReason ?? "") && h.judged.length === 1);
-  check("a review outcome is not a failure", goal.steps[0]?.outcome === "review");
+  check("a goal keeps dispatching past the old 100-step default", goal.status === "active" && h.dispatched.length === stepsPastOldDefault);
+  check("the director is not told a step limit", !/ of \d+\.|budget/i.test(h.judged.at(-1) ?? ""));
+  check("a review outcome is not a failure", h.db.listGoalSteps(c.id)[0]?.outcome === "review");
 
   console.log("goals: the owner pauses while the director is thinking");
   h = harness();
@@ -470,19 +476,40 @@ async function parallel(): Promise<void> {
   h.runner.update(r.id, { maxConcurrent: 2 });
   await h.runner.idle();
   check("the new slot is filled without waiting for the step to end", h.dispatched.length === 2);
+}
 
-  console.log("goals: the step budget waits for running steps");
-  h = harness();
-  h.answers.push(answer("continue", "x"), answer("continue", "y"));
-  const b = h.runner.create({ title: "Budget2", objective: "o", workspace: ws, maxSteps: 2, maxConcurrent: 2 }).goal!;
-  await h.runner.idle();
-  const [bx, by] = h.db.listOpenGoalSteps(b.id).map((s) => s.threadId!);
-  settle(h, bx!, "done", "x done");
-  await h.runner.evaluate(b.id);
-  check("budget reached with a step running: not paused yet", h.db.getGoal(b.id)!.status === "active" && h.judged.length === 2);
-  settle(h, by!, "done", "y done");
-  await h.runner.evaluate(b.id);
-  check("once every step ended, the budget pauses", h.db.getGoal(b.id)!.status === "paused");
+/** A database from before step budgets were removed: the NOT NULL max_steps column, and a goal the budget paused. */
+function legacyBudgetDb(): string {
+  const path = join(mkdtempSync(join(tmpdir(), "goals-legacy-")), "t.sqlite");
+  const fresh = new Db(path);
+  fresh.raw.exec("DROP TABLE goals");
+  fresh.raw.exec(`CREATE TABLE goals (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, objective TEXT NOT NULL, workspace TEXT NOT NULL,
+    status TEXT NOT NULL, status_reason TEXT, progress TEXT, last_verdict TEXT, max_steps INTEGER NOT NULL,
+    effort TEXT, provider TEXT, model TEXT, max_concurrent INTEGER NOT NULL DEFAULT 1,
+    burn_conservation INTEGER NOT NULL DEFAULT 1, burn_rate_pct INTEGER NOT NULL DEFAULT 100,
+    current_thread_id TEXT, next_check_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, ended_at INTEGER)`);
+  const insert = fresh.raw.prepare(
+    "INSERT INTO goals(id, title, objective, workspace, status, status_reason, max_steps, created_at, updated_at) VALUES(?, ?, 'o', ?, 'paused', ?, 1, 1, 1)",
+  );
+  insert.run("budget", "Budget", process.cwd(), "Reached its budget of 1 steps. Raise the step budget and resume to continue.");
+  insert.run("owner", "Owner", process.cwd(), "Paused by the owner.");
+  fresh.raw.close();
+  return path;
+}
+
+function legacyMigration(): void {
+  console.log("goals: a database from the step-budget era");
+  const db = new Db(legacyBudgetDb());
+  const columns = (db.raw.prepare("PRAGMA table_info(goals)").all() as { name: string }[]).map((c) => c.name);
+  check("the max_steps column is dropped", !columns.includes("max_steps"));
+  check("a goal the budget paused is active again", db.getGoal("budget")?.status === "active" && db.getGoal("budget")?.statusReason === null);
+  check("a goal the owner paused stays paused", db.getGoal("owner")?.status === "paused");
+  const created = db.createGoal({
+    title: "New", objective: "o", workspace: process.cwd(), effort: null, provider: null, model: null,
+    maxConcurrent: 1, burnConservation: true, burnRatePct: 100,
+  });
+  check("a new goal can be created on the migrated table", db.getGoal(created.id)?.status === "active");
 }
 
 async function main(): Promise<void> {
@@ -492,6 +519,7 @@ async function main(): Promise<void> {
   await guards();
   await burnHoldLoop();
   await parallel();
+  legacyMigration();
   if (failures) {
     console.error(`\n${failures} check(s) failed`);
     process.exit(1);

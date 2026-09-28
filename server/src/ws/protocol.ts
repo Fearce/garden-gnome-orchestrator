@@ -6,7 +6,6 @@ import {
   MAX_DIRECTOR_DIRECTIVES_CHARS,
   MAX_GOAL_BURN_RATE_PCT,
   MAX_GOAL_MAX_CONCURRENT,
-  MAX_GOAL_MAX_STEPS,
   MIN_GOAL_BURN_RATE_PCT,
   ZAI_EFFORTS,
 } from "../types.js";
@@ -635,7 +634,6 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     title: z.string().trim().min(1).max(200),
     objective: z.string().trim().min(1).max(20000),
     workspace: z.string().trim().min(1).max(600),
-    maxSteps: z.number().int().min(1).max(MAX_GOAL_MAX_STEPS).optional(),
     ...GOAL_PIN_FIELDS,
     ...GOAL_PACE_FIELDS,
   }),
@@ -645,7 +643,6 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     patch: z.object({
       title: z.string().trim().min(1).max(200).optional(),
       objective: z.string().trim().min(1).max(20000).optional(),
-      maxSteps: z.number().int().min(1).max(MAX_GOAL_MAX_STEPS).optional(),
       ...GOAL_PIN_FIELDS,
       ...GOAL_PACE_FIELDS,
     }),

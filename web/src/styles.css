@@ -3196,7 +3196,6 @@ body.dl-resizing { user-select: none; }
 .goal-step:last-child { border-bottom: none; padding-bottom: 0; }
 
 .goal-objective-input { min-height: 120px; }
-.goal-budget { width: 96px; }
 
 .goal-running { display: flex; flex-direction: column; gap: 6px; }
 /* The burn-rate guard is a spending policy, so it carries the goal's own hue while on and goes quiet when off. */

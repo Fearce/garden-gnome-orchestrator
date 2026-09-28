@@ -3,11 +3,9 @@ import { useStore } from "../store.js";
 import {
   DEFAULT_GOAL_BURN_RATE_PCT,
   DEFAULT_GOAL_MAX_CONCURRENT,
-  DEFAULT_GOAL_MAX_STEPS,
   GOAL_EFFORTS,
   MAX_GOAL_BURN_RATE_PCT,
   MAX_GOAL_MAX_CONCURRENT,
-  MAX_GOAL_MAX_STEPS,
   MIN_GOAL_BURN_RATE_PCT,
   type Effort,
   type Goal,
@@ -125,8 +123,8 @@ function GoalCard({ goal, onEdit }: { goal: Goal; onEdit: () => void }) {
       <div className="sched-meta">
         <GoalPinChip goal={goal} />
         <GoalPaceChips goal={goal} />
-        <span className="goal-steps-count" title={`The goal pauses after ${goal.maxSteps} step tasks`}>
-          Step {goal.stepCount} of {goal.maxSteps}
+        <span className="goal-steps-count" title="Step tasks dispatched so far; the goal keeps going until it is done">
+          {goal.stepCount} step{goal.stepCount === 1 ? "" : "s"}
         </span>
         {goal.lastVerdict ? (
           <span className="goal-verdict" title={goal.lastVerdict.reason}>
@@ -171,7 +169,7 @@ function GoalCard({ goal, onEdit }: { goal: Goal; onEdit: () => void }) {
           </button>
         )}
         {!ended ? (
-          <button className="btn ghost sm" onClick={onEdit} title="Edit the goal's title, objective or step budget">
+          <button className="btn ghost sm" onClick={onEdit} title="Edit the goal's objective, model pin or pace">
             Edit
           </button>
         ) : null}
@@ -327,18 +325,15 @@ function GoalEditor({ initial, onClose }: { initial: Goal | null; onClose: () =>
   const [title, setTitle] = useState(initial?.title ?? "");
   const [workspace, setWorkspace] = useState(initial?.workspace ?? "");
   const [objective, setObjective] = useState(initial?.objective ?? "");
-  const [maxSteps, setMaxSteps] = useState(String(initial?.maxSteps ?? DEFAULT_GOAL_MAX_STEPS));
   const [effort, setEffort] = useState<Effort | "">(initial?.effort ?? "");
   const model = useGoalModelPin(initial);
   const pace = useGoalPace(initial);
-  const budget = Number(maxSteps);
-  const budgetValid = Number.isInteger(budget) && budget >= 1 && budget <= MAX_GOAL_MAX_STEPS;
-  const canSave = !!title.trim() && !!objective.trim() && !!workspace.trim() && budgetValid && model.valid && pace.valid;
+  const canSave = !!title.trim() && !!objective.trim() && !!workspace.trim() && model.valid && pace.valid;
 
   const save = () => {
     if (!canSave) return;
     const pin = { effort: effort || null, provider: model.pinned ? model.provider || null : null, model: model.pinned ? model.model : null };
-    const options = { maxSteps: budget, ...pin, ...pace.values };
+    const options = { ...pin, ...pace.values };
     const saved = initial
       ? updateGoal(initial.id, { title: title.trim(), objective: objective.trim(), ...options })
       : createGoal({ title: title.trim(), objective: objective.trim(), workspace: workspace.trim(), ...options });
@@ -376,17 +371,6 @@ function GoalEditor({ initial, onClose }: { initial: Goal | null; onClose: () =>
             />
           </label>
 
-          <label className="sched-field sched-field-inline">
-            <span className="sched-label">Step budget</span>
-            <input
-              type="number"
-              className="sched-num goal-budget"
-              min={1}
-              max={MAX_GOAL_MAX_STEPS}
-              value={maxSteps}
-              onChange={(e) => setMaxSteps(e.target.value)}
-            />
-          </label>
           <div className="sched-row">
             <label className="sched-field sched-field-inline">
               <span className="sched-label">Effort</span>
@@ -439,8 +423,8 @@ function GoalEditor({ initial, onClose }: { initial: Goal | null; onClose: () =>
             {effort
               ? `Every step runs at ${effort} effort.`
               : "With effort on Auto, the director picks low or medium for each step, since a goal spends capacity around the clock."}{" "}
-            The goal ends when a step's agent and the director both judge the objective complete, and pauses if it uses its step budget, three
-            steps in a row fail, or you cancel a step.
+            The goal keeps going until a step's agent and the director both judge the objective complete. It pauses only if three steps in a
+            row fail or you cancel a step.
           </div>
           <div className="sched-row goal-pace-row">
             <label className="sched-field sched-field-inline">
