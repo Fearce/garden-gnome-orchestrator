@@ -47,6 +47,19 @@ export function startsInExemptTarget(target: EventTarget | null, root: Element, 
   return false;
 }
 
+/** Whether the touch lands in a vertical scroller that is scrolled away from its top. A downward
+ *  drag there scrolls that content back up, the way a native sheet only pulls down once its content
+ *  is at the top; otherwise a scroll-up flick near the panel's top edge would close the task. */
+export function startsInScrolledContent(target: EventTarget | null, root: Element): boolean {
+  for (let el = target instanceof Element ? target : null; el && el !== root; el = el.parentElement) {
+    if (el.scrollTop > 0 && el.scrollHeight > el.clientHeight + 1) {
+      const overflow = getComputedStyle(el).overflowY;
+      if (overflow === "auto" || overflow === "scroll") return true;
+    }
+  }
+  return false;
+}
+
 function scrollsSideways(el: Element): boolean {
   if (el.scrollWidth <= el.clientWidth + 1) return false;
   const overflow = getComputedStyle(el).overflowX;
@@ -119,7 +132,7 @@ export function useSwipeDismiss(
       track = null;
       if (e.touches.length !== 1 || !onPhone() || el.classList.contains("swipe-settling")) return;
       const t = e.touches[0]!;
-      fromTop = t.clientY - el.getBoundingClientRect().top <= PULL_ZONE_PX;
+      fromTop = t.clientY - el.getBoundingClientRect().top <= PULL_ZONE_PX && !startsInScrolledContent(e.target, el);
       if (!fromTop && !swipeRight) return;
       if (startsInExemptTarget(e.target, el, swipeRight && !fromTop) || inOverlay(e.target, el)) return;
       track = beginTrack(t);

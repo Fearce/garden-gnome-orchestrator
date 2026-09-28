@@ -119,6 +119,32 @@ async function taskPanel(page, cdp) {
   await drag(page, cdp, [w * 0.5, h * 0.45], [w * 0.5, h * 0.45 + 300]);
   check("a downward drag lower in the panel is a scroll, not a close", await detailOpen(page));
 
+  // A feed scrolled away from its top owns a downward drag near the panel's top edge: that is the
+  // operator scrolling back up, and a native sheet only pulls down once its content is at the top.
+  // The seeded task is too short to scroll, so pad the feed for this one check.
+  const scrolled = await page.evaluate(() => {
+    const body = document.querySelector(".detail .detail-body");
+    const r = body?.getBoundingClientRect();
+    if (!body || !r) return null;
+    const pad = document.createElement("div");
+    pad.id = "swipe-lab-pad";
+    pad.style.cssText = "flex: none; height: 3000px";
+    body.appendChild(pad);
+    body.scrollTop = 600;
+    return { top: Math.round(r.top), scrollTop: body.scrollTop };
+  });
+  check("the padded feed scrolls, and starts inside the pull zone", !!scrolled && scrolled.scrollTop > 0 && scrolled.top < 60, JSON.stringify(scrolled));
+  const startY = Math.max(scrolled?.top ?? 30, 20) + 10;
+  await drag(page, cdp, [w * 0.5, startY], [w * 0.5, startY + 340], { ms: 160 });
+  const afterScroll = await page.evaluate(() => document.querySelector(".detail .detail-body")?.scrollTop ?? -1);
+  check("a pull-down on a scrolled feed scrolls it back, not closes the task", await detailOpen(page), `scrollTop ${afterScroll}`);
+  check("…and the feed did scroll up", afterScroll >= 0 && afterScroll < (scrolled?.scrollTop ?? 0),`scrollTop ${afterScroll}`);
+  await page.evaluate(() => {
+    document.getElementById("swipe-lab-pad")?.remove();
+    const body = document.querySelector(".detail .detail-body");
+    if (body) body.scrollTop = 0;
+  });
+
   await drag(page, cdp, [w * 0.5, 20], [w * 0.5, 360]);
   check("pulling down from the top closes the task", !(await detailOpen(page)));
   check("…back on the board", (await pane(page)) === "board", await pane(page));
