@@ -254,8 +254,11 @@ async function main() {
         // A hidden rail has no edge to drag. Assert that pairing rather than skipping quietly: a
         // missing handle beside a VISIBLE pane is the real defect, and a `boundingBox()` on nothing
         // throws a TypeError that says none of this. Test the BOX, not the count: `rail-hidden` is
-        // `display: none` on the pane, so the handle is still in the DOM with nothing to grab.
-        if ((await drags.locator(handle).boundingBox()) === null) {
+        // `display: none` on the pane, so the handle is still in the DOM with nothing to grab. A rail
+        // hidden from the first paint is never mounted at all, and `boundingBox()` on a locator that
+        // matches nothing waits out its whole timeout instead of returning null — so count first.
+        const handleBox = (await drags.locator(handle).count()) === 0 ? null : await drags.locator(handle).boundingBox();
+        if (handleBox === null) {
           const paneVisible = await drags.evaluate((sel) => {
             const el = document.querySelector(sel);
             return !!el && el.getBoundingClientRect().width > 0;
