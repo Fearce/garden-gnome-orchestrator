@@ -393,7 +393,7 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
         <span>All areas</span>
         <select aria-label="All areas" value={pane === "director" ? "" : boardView} onChange={e => openBoardView(e.target.value as BoardView)}>
           <option value="" disabled>Choose…</option>
-          <option value="tasks">Tasks</option><option value="ide">IDE</option><option value="notes">Notes</option><option value="schedules">Scheduled Tasks</option><option value="goals">Goals</option><option value="supervisor">Supervisor</option>
+          <option value="tasks">Tasks</option><option value="ide">IDE</option><option value="notes">Notes</option><option value="schedules">Scheduled Tasks</option><option value="goals">Goals</option><option value="supervisor">Supervisor</option><option value="patchnotes">Patch notes</option>
         </select>
       </label>
     </nav>

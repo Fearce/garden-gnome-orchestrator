@@ -1,0 +1,87 @@
+/* ---- Patch notes board view ----
+   A changelog read top to bottom: day headings in the serif accent, one dense row per change. The kind
+   label is the only colour on a row, so a long day of fixes stays calm and the features stand out. */
+.pn-view { display: flex; flex-direction: column; min-height: 0; max-width: 920px; }
+
+.pn-toolbar {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px;
+  margin-bottom: 16px;
+}
+.pn-filters { display: inline-flex; gap: 2px; padding: 2px; background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.pn-filter {
+  appearance: none; border: none; background: transparent; color: var(--text-dim); cursor: pointer;
+  font: 500 12px var(--font-sans); padding: 5px 11px; border-radius: 4px;
+}
+.pn-filter:hover { color: var(--text); }
+.pn-filter.on { background: var(--bg-3); color: var(--text); }
+.pn-internal { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim); cursor: pointer; user-select: none; }
+.pn-internal input { accent-color: var(--accent); margin: 0; }
+
+.pn-error {
+  font-size: 12.5px; color: var(--danger); padding: 10px 12px; margin-bottom: 14px;
+  border: 1px solid color-mix(in oklch, var(--danger) 45%, var(--line)); border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--danger) 8%, var(--bg-1));
+}
+
+.pn-upcoming {
+  border: 1px solid color-mix(in oklch, var(--accent) 45%, var(--line)); border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--accent) 6%, var(--bg-1)); padding: 12px 14px 8px; margin-bottom: 22px;
+}
+.pn-upcoming-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.pn-upcoming-head h3 { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.pn-upcoming-sub { font-size: 11.5px; color: var(--text-faint); margin: 2px 0 6px; }
+.pn-upcoming .pn-row { background: transparent; border-color: transparent; padding-left: 0; padding-right: 0; }
+
+.pn-day { margin-bottom: 18px; }
+.pn-day-head {
+  margin: 0 0 6px; padding-bottom: 5px; border-bottom: 1px solid var(--line);
+  font-family: var(--font-serif); font-style: italic; font-weight: 400; font-size: 19px; color: var(--text-dim);
+}
+
+.pn-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.pn-row {
+  display: grid; grid-template-columns: 62px minmax(0, 1fr); align-items: baseline; gap: 12px;
+  padding: 8px 4px; border-bottom: 1px solid color-mix(in oklch, var(--line) 50%, transparent);
+}
+.pn-row:last-child { border-bottom: none; }
+
+.pn-kind {
+  font: 600 10px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint);
+  justify-self: start; padding: 2px 6px; border-radius: 4px; background: var(--bg-2);
+}
+.pn-row.k-feature .pn-kind { color: var(--accent); background: color-mix(in oklch, var(--accent) 13%, var(--bg-1)); }
+.pn-row.k-fix .pn-kind { color: var(--ok); background: color-mix(in oklch, var(--ok) 12%, var(--bg-1)); }
+.pn-row.k-perf .pn-kind { color: var(--role-researcher); background: color-mix(in oklch, var(--role-researcher) 12%, var(--bg-1)); }
+.pn-row.k-other .pn-kind { color: var(--text-dim); }
+
+.pn-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.pn-summary {
+  appearance: none; background: none; border: none; padding: 0; text-align: left; cursor: pointer;
+  font: 500 13.5px/1.4 var(--font-sans); color: var(--text); overflow-wrap: anywhere;
+}
+.pn-summary:disabled { cursor: default; }
+.pn-summary:not(:disabled):hover { color: var(--accent); }
+.pn-row.k-internal .pn-summary { font-weight: 400; color: var(--text-dim); }
+.pn-chevron { display: inline-block; margin-left: 6px; vertical-align: -1px; color: var(--text-faint); }
+
+.pn-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 10px; font-size: 11px; color: var(--text-faint); }
+.pn-scope { font-family: var(--font-mono); color: var(--text-dim); }
+.pn-sha, .pn-time { font-family: var(--font-mono); }
+.pn-flag { font-weight: 600; }
+.pn-flag.new { color: var(--accent); }
+.pn-flag.pending { color: var(--warn); cursor: help; }
+.pn-flag.breaking { color: var(--danger); }
+
+.pn-body { margin-top: 6px; padding-left: 10px; border-left: 2px solid var(--line); }
+.pn-body p { margin: 0 0 8px; font-size: 12.5px; line-height: 1.55; color: var(--text-dim); max-width: 72ch; overflow-wrap: anywhere; }
+.pn-body p:last-child { margin-bottom: 2px; }
+
+.pn-none { font-size: 12.5px; padding: 18px 4px; }
+.pn-more { display: flex; justify-content: center; padding: 8px 0 20px; }
+
+@media (max-width: 899.98px) {
+  .pn-row { grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 10px 2px; }
+  .pn-filter { min-height: var(--tap-sm); padding: 0 12px; }
+  .pn-summary { font-size: 14.5px; }
+  .pn-upcoming-head { flex-direction: column; align-items: stretch; }
+}

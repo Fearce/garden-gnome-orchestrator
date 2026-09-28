@@ -25,6 +25,8 @@ import { ScheduledTasks } from "./ScheduledTasks.js";
 import { Goals, goalStepOf } from "./Goals.js";
 import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
+import { PatchNotes } from "./PatchNotes.js";
+import { usePatchNotesWatch, useUnseenPatchNotes } from "../lib/patchNotes.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { CoworkPopup, NewCoworkButton } from "./CoWork.js";
 import { ClosedCoworkCard, CoworkCard, useBoardCoworkSessions } from "./CoworkCards.js";
@@ -282,6 +284,8 @@ export function Board() {
         <OperatorNotes />
       ) : boardView === "supervisor" ? (
         <SupervisorPanel />
+      ) : boardView === "patchnotes" ? (
+        <PatchNotes />
       ) : (
         <>
           {list.length === 0 ? (
@@ -336,7 +340,9 @@ function BoardTabs() {
     schedules: useStore((s) => s.schedules.length),
     goals: useStore((s) => s.goals.filter((g) => g.status === "active").length),
     supervisor: useStore((s) => (s.supervisor.enabled ? s.supervisor.watching : null)),
+    patchnotes: useUnseenPatchNotes(),
   };
+  usePatchNotesWatch();
   return (
     <><label className="board-area-select">Area<select aria-label="Board area" value={boardView} onChange={e => setBoardView(e.target.value as BoardView)}>{BOARD_TABS.map(tab => <option value={tab.view} key={tab.view}>{tab.label}{counts[tab.view] ? ` (${counts[tab.view]})` : ""}</option>)}</select></label><div className="board-tabs" aria-label="Board areas">
       {BOARD_TABS.map((tab) =>
@@ -360,6 +366,7 @@ const BOARD_TABS: { view: BoardView; label: string; title: string }[] = [
   { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },
   { view: "goals", label: "Goals", title: "Goal-directed tasks: standing objectives the director keeps working on until they are met" },
   { view: "supervisor", label: "Supervisor", title: "The Director Supervisor watchdog: its state, budget and recent checks/actions" },
+  { view: "patchnotes", label: "Patch notes", title: "What changed in GGO: new features, fixes and what the next update brings" },
 ];
 
 /** The board sort control: a quiet trigger in the header that opens a listbox of sort options, reusing

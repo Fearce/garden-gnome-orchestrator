@@ -89,8 +89,9 @@ when they need you to look; you click it, deal with it, and delete the line.
 
 Also in the console: a per-repo chat room so concurrent agents on the same checkout do not
 clobber each other, an in-app git surface for branches, diffs and commits, search across
-every task's full conversation, and opt-in browser, Discord or webhook notifications when
-a task finishes or needs you.
+every task's full conversation, opt-in browser, Discord or webhook notifications when
+a task finishes or needs you, and a Patch notes area that lists what changed in your install
+(and what the next update brings) straight from its git history.
 
 ## Runtime model
 

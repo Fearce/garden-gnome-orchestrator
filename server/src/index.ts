@@ -47,6 +47,7 @@ import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { knownWorkspaces, revealWorkspace } from "./workspace/revealWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
 import { refreshStatus, getStatus, applyUpdate, startUpdatePoll } from "./update.js";
+import { readPatchNotes } from "./patchNotes.js";
 import { registerWs } from "./ws/hub.js";
 import { FreeProviderService } from "./freeProviders/service.js";
 import { registerFreeProviderRoutes } from "./freeProviders/routes.js";
@@ -348,6 +349,16 @@ async function main(): Promise<void> {
       if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
       reply.header("cache-control", "no-store");
       return req.query.refresh !== undefined ? await refreshStatus(true) : getStatus();
+    });
+
+    // The console's Patch notes area: this checkout's own commit history, classified by Conventional
+    // Commit type, plus whatever the tracked upstream has that an update would bring in. Read-only.
+    app.get<{ Querystring: { skip?: string; limit?: string } }>("/api/patch-notes", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      reply.header("cache-control", "no-store");
+      const skip = req.query.skip === undefined ? undefined : Number(req.query.skip);
+      const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
+      return readPatchNotes({ skip, limit });
     });
 
     // Durable implementor handoffs are fetched independently of the chronological task feed so QA,

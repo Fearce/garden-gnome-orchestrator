@@ -21,6 +21,7 @@ server/.subtask-lab-dist/
 server/.remote-access-lab-dist/
 server/.goals-lab-dist/
 server/.task-agents-lab-dist/
+server/.patch-notes-lab-dist/
 server/.lab-web-dist*/
 web/dist/
 relay/dist/
