@@ -594,6 +594,46 @@ const lsSet = (k: string, v: string): void => {
   }
 };
 
+/** The pane widths the owner last had under one combination of the two hide toggles. */
+type PaneWidths = { detailWidth: number; directorWidth: number };
+
+const layoutKey = (railHidden: boolean, focusMode: boolean): string =>
+  `orch-layout-${railHidden ? "rail-hidden" : "rail"}-${focusMode ? "focus" : "full"}`;
+
+const readLayout = (railHidden: boolean, focusMode: boolean): PaneWidths | null => {
+  try {
+    const raw = localStorage.getItem(layoutKey(railHidden, focusMode));
+    if (raw == null) return null;
+    const { detailWidth, directorWidth } = JSON.parse(raw) as Partial<PaneWidths>;
+    if (typeof detailWidth !== "number" || typeof directorWidth !== "number") return null;
+    return Number.isFinite(detailWidth) && Number.isFinite(directorWidth) ? { detailWidth, directorWidth } : null;
+  } catch {
+    return null;
+  }
+};
+
+const saveLayout = (railHidden: boolean, focusMode: boolean, widths: PaneWidths): void => {
+  const rounded = { detailWidth: Math.round(widths.detailWidth), directorWidth: Math.round(widths.directorWidth) };
+  lsSet(layoutKey(railHidden, focusMode), JSON.stringify(rounded));
+  lsSet("orch-detail-w", String(rounded.detailWidth));
+  lsSet("orch-rail-w", String(rounded.directorWidth));
+};
+
+/** Boot widths: the current toggle combination's own layout, else the last widths dragged anywhere. */
+const initialLayout = (railHidden: boolean, focusMode: boolean): PaneWidths =>
+  readLayout(railHidden, focusMode) ?? { detailWidth: lsNum("orch-detail-w", 480), directorWidth: lsNum("orch-rail-w", 384) };
+
+/** Flips one hide toggle and swaps to the widths last used under the resulting combination — a
+ *  combination never seen before keeps the current widths, which then become its layout. */
+const switchLayout = (s: PaneWidths & { railHidden: boolean; focusMode: boolean }, next: { railHidden: boolean; focusMode: boolean }) => {
+  saveLayout(s.railHidden, s.focusMode, s);
+  const widths = readLayout(next.railHidden, next.focusMode) ?? { detailWidth: s.detailWidth, directorWidth: s.directorWidth };
+  saveLayout(next.railHidden, next.focusMode, widths);
+  lsSet("orch-rail-hidden", next.railHidden ? "1" : "0");
+  lsSet("orch-focus-mode", next.focusMode ? "1" : "0");
+  return { ...next, ...widths };
+};
+
 export type Verbosity = "compact" | "full";
 
 // How the board orders tasks when drag-and-drop is off. "created_desc" (newest first) is the default;
@@ -1319,8 +1359,7 @@ export const useStore = create<State>((set) => ({
   railHidden: lsBool("orch-rail-hidden", false),
   focusMode: lsBool("orch-focus-mode", false),
   usageHidden: lsBool("orch-usage-hidden", false),
-  detailWidth: lsNum("orch-detail-w", 480),
-  directorWidth: lsNum("orch-rail-w", 384),
+  ...initialLayout(lsBool("orch-rail-hidden", false), lsBool("orch-focus-mode", false)),
   chat: [],
   chatRooms: [],
   roomHistory: {},
@@ -1760,18 +1799,8 @@ export const useStore = create<State>((set) => ({
     if (origin.kind === "cowork" && useStore.getState().coworkSessions[origin.id]) useStore.getState().selectCowork(origin.id);
   },
   clearCodeOrigin: () => set({ codeOrigin: null }),
-  toggleRail: () =>
-    set((s) => {
-      const v = !s.railHidden;
-      lsSet("orch-rail-hidden", v ? "1" : "0");
-      return { railHidden: v };
-    }),
-  toggleFocus: () =>
-    set((s) => {
-      const v = !s.focusMode;
-      lsSet("orch-focus-mode", v ? "1" : "0");
-      return { focusMode: v };
-    }),
+  toggleRail: () => set((s) => switchLayout(s, { railHidden: !s.railHidden, focusMode: s.focusMode })),
+  toggleFocus: () => set((s) => switchLayout(s, { railHidden: s.railHidden, focusMode: !s.focusMode })),
   toggleUsage: () =>
     set((s) => {
       const v = !s.usageHidden;
@@ -1779,11 +1808,13 @@ export const useStore = create<State>((set) => ({
       return { usageHidden: v };
     }),
   setDetailWidth: (px) => {
-    lsSet("orch-detail-w", String(Math.round(px)));
+    const s = useStore.getState();
+    saveLayout(s.railHidden, s.focusMode, { detailWidth: px, directorWidth: s.directorWidth });
     set({ detailWidth: px });
   },
   setDirectorWidth: (px) => {
-    lsSet("orch-rail-w", String(Math.round(px)));
+    const s = useStore.getState();
+    saveLayout(s.railHidden, s.focusMode, { detailWidth: s.detailWidth, directorWidth: px });
     set({ directorWidth: px });
   },
   openOffice: (room) => {

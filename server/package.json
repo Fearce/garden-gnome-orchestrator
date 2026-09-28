@@ -23,6 +23,7 @@
     "goals-lab": "node scripts/goals-lab.cjs",
     "inject-lab": "node scripts/inject-lab.cjs",
     "layout-lab": "node scripts/layout-lab.cjs",
+    "layout-memory-lab": "node scripts/layout-memory-lab.cjs",
     "panel-scroll-lab": "node scripts/panel-scroll-lab.cjs",
     "run-attribution-lab": "node scripts/run-attribution-lab.cjs",
     "collaborator-feed-lab": "node scripts/collaborator-feed-lab.cjs",

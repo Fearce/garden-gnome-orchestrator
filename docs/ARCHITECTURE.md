@@ -694,6 +694,15 @@ gauge button beside it (`.accounts-toggle`) folds it away (`store.usageHidden`,
 also per-browser); below 900px the same button opens the strip as a pop-over
 instead and ignores that setting. Browser check: `npm run usage-strip-lab --prefix server`.
 
+Each of the four combinations of those two toggles keeps its own pane widths
+(`orch-layout-<rail|rail-hidden>-<full|focus>` in `localStorage`, written on
+every drag and on every flip): flipping either toggle swaps the director and
+detail widths back to what they were the last time that combination was open.
+A combination never opened before keeps the current widths. The legacy
+`orch-rail-w`/`orch-detail-w` keys still carry the last widths used anywhere,
+the boot fallback when the current combination has no layout of its own.
+Browser check: `npm run layout-memory-lab --prefix server`.
+
 **Themes** (Settings → Appearance) are a per-browser choice between *Classic*
 — `styles.css` itself, with no attribute on `<html>` — and *Nocturne*, whose
 every rule is scoped behind `[data-theme="nocturne"]` in `web/src/themes/`.
