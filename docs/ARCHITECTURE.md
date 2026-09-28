@@ -164,7 +164,12 @@ raises it to max. The planner can refine that baseline, and automatic model
 selection can choose a supported tier using the same route/planner effort as
 its starting point. A specific effort selected for the run reaches the
 provider setting and the implementor prompt. Precedence is `effort_override` >
-automatic model pick > planner > route. Legacy paths without a task effort
+automatic model pick > planner > route. `effort_override` is the owner's pin: the
+skip-director composer pick, the director's dispatch `effort`, or an effort the
+owner named in their own message ("with high effort", "a max effort task"),
+which `orchestrator/effortRequest.ts` reads deterministically so a director that
+leaves the argument empty cannot drop it (gate `test:effort-request`, corpus
+replay `probe:effort-request`). Legacy paths without a task effort
 still use the provider's high default.
 
 The Implementor row above is the **default** model, not the only one: with the

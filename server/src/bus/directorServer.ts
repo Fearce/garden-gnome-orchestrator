@@ -1,7 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import type { OrchestratorApi } from "../orchestrator/api.js";
+import type { DispatchTaskMode, OrchestratorApi } from "../orchestrator/api.js";
 import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
 import { applyGoalChange, describeGoal, type GoalRunner } from "../orchestrator/goals.js";
@@ -26,8 +26,9 @@ export function createDirectorServer(
   scheduler: Scheduler,
   notes: OperatorNotes,
   // The composer's task-mode picks for this turn, so a window / agent count chosen in the console applies
-  // to whatever the director dispatches from it. An explicit tool argument always wins over these.
-  getTaskMode: () => { durationMs: number | null; agentCount: number | null } = () => ({ durationMs: null, agentCount: null }),
+  // to whatever the director dispatches from it, plus an effort the owner named this turn. An explicit
+  // tool argument always wins over these.
+  getTaskMode: () => DispatchTaskMode = () => ({ durationMs: null, agentCount: null }),
   goals?: GoalRunner,
 ): McpServerConfig {
   const askUser = tool(
@@ -108,7 +109,7 @@ export function createDirectorServer(
         .enum(["low", "medium", "high", "max"])
         .optional()
         .describe(
-          `Pins the implementor's effort for this task. Set it ONLY when ${config.ownerName} asked for an effort, in this message or in their standing directives. Omit otherwise; the pipeline then picks the effort per task.`,
+          `Pins the implementor's effort for this task. Set it whenever ${config.ownerName} asked for an effort, in this message ("with high effort", "a max effort task") or in their standing directives — and ONLY then. Omit otherwise; the pipeline then picks the effort per task.`,
         ),
       duration: z
         .string()
@@ -150,7 +151,7 @@ export function createDirectorServer(
         workspace: args.workspace,
         brief: args.brief,
         requestedModel: args.model,
-        effort: args.effort,
+        effort: args.effort ?? mode.effort ?? undefined,
         images: getImages(),
         durationMs,
         agentCount,

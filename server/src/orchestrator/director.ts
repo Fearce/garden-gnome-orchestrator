@@ -7,6 +7,8 @@ import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { AgentEvent, DirectorMessage, DirectorStatus, Effort, ImageAttachment } from "../types.js";
 import type { DirectorTarget, ThreadManager } from "./threadManager.js";
+import type { DispatchTaskMode } from "./api.js";
+import { detectEffortRequest } from "./effortRequest.js";
 import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
 import type { GoalRunner } from "./goals.js";
@@ -44,6 +46,9 @@ export class Director {
   private restartWorkChanged: () => void = () => {};
   /** Images from the current user turn — carried past the text-only dispatch tool to the pipeline. */
   private pendingImages: ImageAttachment[] = [];
+  /** An effort the owner asked for in so many words this turn — the dispatch tools' fallback when the
+   *  director leaves `effort` empty. */
+  private turnEffort: Effort | null = null;
   /** The in-flight turn's content — kept so a usage-cap failover can re-send it. */
   private pending: UserContent | undefined;
   private failovers = 0;
@@ -151,6 +156,8 @@ export class Director {
     this.turnDispatchId = undefined;
 
     this.pendingImages = images ?? [];
+    // A follow-up that steers a live turn keeps an ask made earlier in it unless it names a new one.
+    this.turnEffort = detectEffortRequest(text) ?? this.turnEffort;
     // A path the owner typed in the path field is AUTHORITATIVE — it's the exact dispatch workspace, not
     // a hint to re-resolve. Tell the director to use it verbatim and skip find_workspace entirely.
     const base = workspace
@@ -231,13 +238,14 @@ export class Director {
     const title = directTitle(text);
     // The composer's effort pick rides along: with no planner-adjacent director in the loop, the owner
     // chooses how hard the implementor works. "auto" keeps the planner (or the high default) in charge.
+    // An effort named in this very message beats the composer's standing pick.
     const effort = this.api.settings().skipDirectorEffort;
     const id = await this.api.dispatch({
       title,
       workspace: ws,
       brief: text,
       images,
-      effort: effort === "auto" ? undefined : effort,
+      effort: detectEffortRequest(text) ?? (effort === "auto" ? undefined : effort),
       ...(skipSelfImprovement === true ? { skipSelfImprovement: true as const } : {}),
       ...this.taskModeDefaults(),
     });
@@ -301,7 +309,7 @@ export class Director {
       images,
       lane: "vanilla",
       requestedModel: model?.trim() || undefined,
-      effort,
+      effort: effort ?? detectEffortRequest(text) ?? undefined,
     });
     const note = this.postDirectorNote(
       `Default mode — dispatched "${title}" as a single vanilla session (task ${id.slice(0, 8)}). It stays warm; reply on the task or click Mark done when you're finished.`,
@@ -317,6 +325,11 @@ export class Director {
       durationMs: s.taskDurationMinutes > 0 ? normalizeDuration(s.taskDurationMinutes) : null,
       agentCount: s.taskAgentCount > 1 ? clampAgentCount(s.taskAgentCount) : null,
     };
+  }
+
+  /** The director's dispatch defaults for this turn: the composer's task mode plus the effort the owner named. */
+  private turnTaskMode(): DispatchTaskMode {
+    return { ...this.taskModeDefaults(), effort: this.turnEffort };
   }
 
   /**
@@ -338,6 +351,7 @@ export class Director {
     // `pending === undefined`) and no re-send can resurrect the loop.
     this.pending = undefined;
     this.pendingImages = [];
+    this.turnEffort = null;
     this.failovers = 0;
     if (run) void run.stop();
     this.hub.log("info", "Director turn stopped by the owner.");
@@ -365,7 +379,7 @@ export class Director {
     const director = createDirectorServer(this.api, () => this.pendingImages, (threadId) => {
       this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId);
       this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
-    }, this.scheduler, this.notes, () => this.taskModeDefaults(), this.goals);
+    }, this.scheduler, this.notes, () => this.turnTaskMode(), this.goals);
     const memory = createMemoryServer(this.api.memory);
     const { conciseAgentCommunication: conciseCommunication, directorDirectives: directives } = this.api.settings();
     const cfg = directorConfig(
@@ -560,7 +574,7 @@ export class Director {
       this.settleTurn();
       return;
     }
-    const outcome = await executeDirectorCliAction(action, this.api, this.scheduler, this.notes, this.pendingImages, () => this.taskModeDefaults(), this.goals);
+    const outcome = await executeDirectorCliAction(action, this.api, this.scheduler, this.notes, this.pendingImages, () => this.turnTaskMode(), this.goals);
     if (this.run !== run || this.pending === undefined) return;
     if (outcome.toolName) this.hub.publish({ type: "director.tool", name: outcome.toolName, input: outcome.toolInput });
     if (outcome.dispatchedId) {
@@ -701,6 +715,7 @@ export class Director {
     this.pending = undefined;
     this.failovers = 0;
     this.pendingImages = [];
+    this.turnEffort = null;
     this.cliActions = 0;
     this.cliCorrections = 0;
     this.cliCommittedResult = undefined;

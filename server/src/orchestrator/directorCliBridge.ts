@@ -3,6 +3,7 @@ import { config } from "../config.js";
 import type { JsonSchemaLike } from "../agents/structuredText.js";
 import type { ImageAttachment } from "../types.js";
 import type { ThreadManager } from "./threadManager.js";
+import type { DispatchTaskMode } from "./api.js";
 import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
 import { applyGoalChange, describeGoal, type GoalRunner } from "./goals.js";
@@ -118,7 +119,7 @@ Commands and fields:
 - reply: message
 - ask_user: header, question, options?, multiSelect?
 - find_workspace: query
-- dispatch: title, workspace, brief, model?, effort?, duration?, agents? — set model ONLY by copying an explicit owner model/capacity request (for example "GPT Spark"); omit it otherwise. The server resolves and strictly pins the canonical model. Set effort (low|medium|high|max) ONLY when the owner asked for one, in the message or in their standing directives.
+- dispatch: title, workspace, brief, model?, effort?, duration?, agents? — set model ONLY by copying an explicit owner model/capacity request (for example "GPT Spark"); omit it otherwise. The server resolves and strictly pins the canonical model. Set effort (low|medium|high|max) whenever the owner asked for one, in the message ("with high effort", "a max effort task") or in their standing directives — and ONLY then.
 - dispatch_read: title, workspace, brief
 - list_threads
 - thread_status: threadId
@@ -151,7 +152,7 @@ export async function executeDirectorCliAction(
   scheduler: Scheduler,
   notes: OperatorNotes,
   images: ImageAttachment[],
-  getTaskMode: () => { durationMs: number | null; agentCount: number | null } = () => ({ durationMs: null, agentCount: null }),
+  getTaskMode: () => DispatchTaskMode = () => ({ durationMs: null, agentCount: null }),
   goals?: GoalRunner,
 ): Promise<DirectorCliOutcome> {
   if (action.kind === "reply") return { final: required(action, "message") };
@@ -197,7 +198,7 @@ export async function executeDirectorCliAction(
           brief,
           requestedModel: action.model?.trim() || undefined,
           images,
-          ...(action.kind === "dispatch_read" ? { lane: "read" as const } : { durationMs, agentCount, effort: action.effort }),
+          ...(action.kind === "dispatch_read" ? { lane: "read" as const } : { durationMs, agentCount, effort: action.effort ?? mode.effort ?? undefined }),
         });
         return outcome(action.kind, `Dispatched task ${id} ("${title}") in ${workspace}.`, id);
       }

@@ -6,6 +6,14 @@ import type { OfficeNameResult } from "./officeNames.js";
 import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, JevJson, JevQuestion, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, SubTaskSpec, Thread, ThreadLane, ToggleableRole } from "../types.js";
 import type { SubTaskService } from "./subTasks.js";
 
+/** What a director dispatch falls back to when the tool call leaves a field empty. `effort` is one the
+ *  owner named in the current turn; the read lane ignores it. */
+export interface DispatchTaskMode {
+  durationMs: number | null;
+  agentCount: number | null;
+  effort?: Effort | null;
+}
+
 export interface DispatchInput {
   title: string;
   workspace: string;
