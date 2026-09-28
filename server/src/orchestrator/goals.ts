@@ -731,7 +731,8 @@ export class GoalRunner {
    * must hold its slot, or the goal runs more steps than `maxConcurrent`. Reopening it also means its real
    * ending is settled and reported later, not the stale one.
    */
-  private reopenResumedSteps(goal: Goal): void {
+  private reopenResumedSteps(goal: Goal): number {
+    let reopened = 0;
     for (const step of this.db.listGoalSteps(goal.id)) {
       if (step.settledAt == null || !step.threadId) continue;
       const thread = this.db.getThread(step.threadId);
@@ -740,7 +741,9 @@ export class GoalRunner {
       this.uncountSettle(goal.id, step.settledAt);
       this.hub.log("info", `Goal "${goal.title}" step ${step.seq}'s task is ${thread.state} again, so the step counts as running.`);
       this.broadcast();
+      reopened++;
     }
+    return reopened;
   }
 
   /** Keeps the last verdict's settled count in step with the settled list, so the step's next ending is
@@ -825,6 +828,12 @@ export class GoalRunner {
     // The owner may have paused, ended or deleted the goal while the director was thinking.
     const fresh = this.db.getGoal(goalId);
     if (!fresh || fresh.status !== "active") return;
+    // A settled step's task came back while the director was thinking (a cap reset both resumes it and
+    // frees capacity for this judgement). The slot count above is stale, so plan again with it in view.
+    if (this.reopenResumedSteps(fresh)) {
+      if (this.running.has(goalId)) this.running.set(goalId, true);
+      return;
+    }
     if (!judgement) return this.wait(fresh, "Waiting for the director: no director model returned a usable decision.");
 
     const agentClaimed = settled.at(-1)?.agentClaimedComplete === true;

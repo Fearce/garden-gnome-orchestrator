@@ -62,7 +62,9 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
 - **A settled step is not final: its task can come back.** Cap auto-resume, Retry and inject all restart a
   task the goal already settled. `reopenResumedSteps` clears the step's settle so it holds a slot again, and
   `uncountSettle` lowers the last verdict's `settledSteps`, so the real ending is still reported and still lifts a
-  `wait`. Counting only `listOpenGoalSteps` let a 2-slot goal run 3 steps. Gate: `test:goals` ("takes its slot back").
+  `wait`. Counting only `listOpenGoalSteps` let a 2-slot goal run 3 steps. `judgeAndAct` re-runs it after the
+  director answers and drops the judgement if a step came back meanwhile (a cap reset both resumes a task and
+  frees capacity for the judge call). Gates: `test:goals` ("takes its slot back", "while the director judges").
 - **A `wait` must cost nothing until a step settles.** The hold is the `wait` verdict plus its `settledSteps`
   count, NOT a timestamp: the gate's clock is frozen, and a same-millisecond settle would lift a
   timestamp hold and re-judge every tick. `complete` while steps run is stored as the same hold.

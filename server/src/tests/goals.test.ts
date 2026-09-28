@@ -544,6 +544,28 @@ async function resumedStep(): Promise<void> {
   check("its settle frees the slot again", h.dispatched.length === 4 && h.db.listGoalSteps(g.id)[0]!.outcome === "done");
 }
 
+async function resumedMidJudge(): Promise<void> {
+  const ws = process.cwd();
+  console.log("goals: a step whose task resumes while the director judges keeps its slot");
+  const h = harness();
+  h.answers.push(answer("continue", "a"), answer("continue", "b"));
+  const g = h.runner.create({ title: "Race", objective: "o", workspace: ws, maxConcurrent: 2 }).goal!;
+  await h.runner.idle();
+  const [ta] = h.db.listOpenGoalSteps(g.id).map((s) => s.threadId!);
+  h.answers.push(answer("continue", "c"));
+  h.onJudge = () => {
+    h.onJudge = undefined;
+    h.db.updateThread(ta!, { state: "implementing" });
+  };
+  settle(h, ta!, "failed", "Hit the usage cap.");
+  await h.runner.evaluate(g.id);
+  await h.runner.idle();
+  check("the judgement is dropped: no third step starts", h.dispatched.length === 2);
+  check("the resumed step is open again", h.db.listGoalSteps(g.id)[0]!.settledAt === null);
+  await h.runner.evaluate(g.id);
+  check("a later tick still starts nothing", h.dispatched.length === 2 && h.db.listOpenGoalSteps(g.id).length === 2);
+}
+
 async function main(): Promise<void> {
   pure();
   burnRate();
@@ -552,6 +574,7 @@ async function main(): Promise<void> {
   await burnHoldLoop();
   await parallel();
   await resumedStep();
+  await resumedMidJudge();
   legacyMigration();
   if (failures) {
     console.error(`\n${failures} check(s) failed`);
