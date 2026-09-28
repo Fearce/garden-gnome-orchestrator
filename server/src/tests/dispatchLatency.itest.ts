@@ -17,6 +17,9 @@
 process.env.CAP_RETRY_MS = "0";
 process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
+// Under suite load one git spawn here can stall past the 15s default (2 in 10 reproduced 2026-09-28), and
+// a timed-out baseline read is null by design. This gate is about queue order, not that timeout.
+process.env.GIT_READ_TIMEOUT_MS = "60000";
 
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -28,7 +31,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
-const { runChild, stopChildRunner } = await import("../childRunner.js");
+const { runChild, stopChildRunner, childRunnerState } = await import("../childRunner.js");
 
 let passed = 0;
 let failed = 0;
@@ -123,15 +126,28 @@ try {
   console.log("\nC. a dispatch does not wait for ordinary git reads that fill the pool");
   {
     const order: string[] = [];
+    // Each blocker holds its worker until the test drops the release file (or 30s pass), so the pool stays
+    // full for as long as dispatch takes — however slow the box — and only the urgent reserve can serve it.
+    const release = join(root, "release-blockers");
+    const hold = "const fs=require('fs');const t=Date.now();setInterval(()=>{if(fs.existsSync(process.argv[1])||Date.now()-t>30000)process.exit(0)},50)";
     const blockers = Array.from({ length: 6 }, (_, i) =>
-      runChild(process.execPath, ["-e", "setTimeout(() => {}, 8000)"]).then(() => order.push(`blocker${i}`)),
+      runChild(process.execPath, ["-e", hold, release], { timeoutMs: 60_000 }).then(() => order.push(`blocker${i}`)),
     );
     await new Promise((r) => setTimeout(r, 100));
+    const queued = childRunnerState().queued;
+    const dispatchStart = Date.now();
     const id = await mgr.dispatch({ title: "busy-pool", workspace: repo, brief: "b" });
+    const dispatchMs = Date.now() - dispatchStart;
     order.push("dispatch");
+    writeFileSync(release, "");
     await Promise.all(blockers);
-    check("dispatch returned before any queued ordinary read finished", order[0] === "dispatch", order.join(", "));
-    check("and it still stamped the baseline", db.getThread(id)?.baselineHead === head, String(db.getThread(id)?.baselineHead));
+    check("some ordinary reads really were queued behind a full pool", queued > 0, `queued=${queued}`);
+    check("dispatch returned while every ordinary read still held or waited for a worker", order[0] === "dispatch", order.join(", "));
+    check(
+      "and it still stamped the baseline",
+      db.getThread(id)?.baselineHead === head,
+      `${db.getThread(id)?.baselineHead} after a ${dispatchMs}ms dispatch`,
+    );
   }
 } finally {
   if (internals.capSupervisor) clearInterval(internals.capSupervisor);
