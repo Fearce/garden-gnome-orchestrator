@@ -943,6 +943,12 @@ Three controls that make the console a hands-off, anywhere replacement for the C
   The same bot also listens: a DM from the owner is a director message
   (`orchestrator/discordInbox.ts`, a Gateway session with only the DM intent), and
   that turn's director replies go back to the DM — Settings → **DM the director**.
+- **Remote control** (`server/src/remoteControl/`, `web/src/components/remote/`). Once
+  Settings → **Remote control** has checked the PC and been switched on, a board tab streams
+  this machine's desktop (ffmpeg Desktop Duplication → NVENC/x264 H.264 → FLV, demuxed per
+  frame onto a dedicated WebSocket, decoded with WebCodecs) and sends mouse, touch and
+  scancode input back through a small C# `SendInput` helper. The socket needs the session
+  cookie plus a single-use ticket. Detail in CLAUDE-full.md → Remote control.
 - **Access auth** (`server/src/auth.ts`). A **password and/or Google sign-in**, both valid
   when configured — each mints the same HMAC-signed (`email|exp`) httpOnly session cookie, and
   `isAuthed` accepts that one cookie. `authRequired()` is true if either method is set; the `/ws`
