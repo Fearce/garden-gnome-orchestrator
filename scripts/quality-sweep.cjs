@@ -79,7 +79,7 @@ function sweepBusyText(owner) {
 const STEPS = [
   { step: 1, name: "health", what: "server up, dist vs HEAD, parks/caps, crash log", script: "health", cwd: SERVER },
   { step: 2, name: "typecheck", what: "server + web", script: "typecheck", cwd: ROOT },
-  { step: 2, name: "gates", what: "every FREE test gate (~9 min)", script: "test:gates", cwd: SERVER },
+  { step: 2, name: "gates", what: "every FREE test gate (~5 min)", script: "test:gates", cwd: SERVER },
   { step: 3, name: "run-errors", what: "triage the non-done runs", script: "probe:run-errors", cwd: SERVER },
   { step: 4, name: "parks", what: "parked + abandoned tasks", script: "probe:parks", cwd: SERVER },
   { step: 5, name: "accounts", what: "backend headroom + failover ladder", script: "probe:accounts", cwd: SERVER },
@@ -92,6 +92,7 @@ const STEPS = [
   { step: 10, name: "model-catalog", what: "all provider models + exact effort tiers available to Auto-select", script: "probe:model-catalog", cwd: SERVER },
   { step: 11, name: "provider-toolchain", what: "Claude SDK/runtime + Codex/Grok CLI stable-version currency", script: "probe:provider-toolchain", cwd: SERVER },
   { step: 12, name: "auto-review", what: "auto-review ownership + whether unattended review stays inside both convergence fences", script: "probe:auto-review", cwd: SERVER },
+  { step: 13, name: "token-burn", what: "Claude tokens per API call, from the transcripts", script: "probe:token-burn", cwd: SERVER },
 ];
 
 // npm is a .cmd on Windows; Node refuses to spawn .cmd/.bat without a shell.
@@ -99,7 +100,7 @@ const win = process.platform === "win32";
 
 /** Every line goes to BOTH the terminal (live, so a watcher sees the gates tick past) and the
  *  transcript. `spawn` + piped stdio rather than `stdio: "inherit"` is what makes the second half
- *  possible without giving up the first — a spawnSync/pipe would go silent for the gates' 8 minutes. */
+ *  possible without giving up the first — a spawnSync/pipe would go silent for the gates' 5 minutes. */
 function emit(log, text) {
   try {
     process.stdout.write(text);

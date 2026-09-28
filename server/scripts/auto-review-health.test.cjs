@@ -218,7 +218,6 @@ function runConvergenceChecks() {
   );
   assert.equal(loop.violations.length, 2, "the same-revision and cross-revision loop shapes are independently visible");
   assert.equal(loop.taskBudgetMeasuredClaims, 7);
-  assert.equal(loop.taskBudgetUnmeasuredClaims, 2, "pre-marker history stays explicit instead of being treated as a healthy zero");
   assert.equal(loop.fencedFree, 1, "a fence hit before any paid check-in is the cheap, working path");
   assert.equal(loop.fencedPaid, 1);
   assert.equal(loop.otherSkips, 1, "a race guard is not the fence and must not be counted as one");
@@ -230,6 +229,7 @@ function runConvergenceChecks() {
   // shipped — the default window's contents move with the calendar, so it is asserted on shape only.
   const wide = JSON.parse(runProbe(file, "--json", "--days", wideDays).stdout).convergence;
   assert.equal(wide.launches, 9);
+  assert.equal(wide.taskBudgetUnmeasuredClaims, 2, "pre-marker history stays explicit instead of being treated as a healthy zero");
   assert.equal(wide.revisions, 7, "progress and budget fixtures mint a real revision for every new work run");
   assert.equal(
     wide.repeats.length,
