@@ -208,6 +208,7 @@ const GATES = [
   "test:self-improve-restart",
   "test:restart-revival",
   "test:silent-resume",
+  "test:steering-reply",
   "test:continuation-progress",
   "test:implementor-handover",
   "test:cli-role-kickoff",

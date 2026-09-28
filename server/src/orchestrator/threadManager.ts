@@ -644,6 +644,13 @@ const STALL_NUDGE =
   "restore, test run, server start), WAIT for it to finish IN THIS TURN — block on it, await it, or poll it in " +
   "a loop — then act on the result. Continue now and finish the task completely, or call ask_user if you're " +
   `genuinely blocked on ${config.ownerName}.`;
+// The nudge sent when the implementor ended its turn right after being steered mid-task. Its last message
+// is usually the answer to that side request, so it says nothing about whether the task itself is done.
+const STEERING_REPLY_NUDGE =
+  `Your last message answered a message that reached you while you were working — answering it does not end ` +
+  `the task, and ending your turn is read as the whole task being finished. Go back to the ORIGINAL task. If it ` +
+  `is not fully complete, continue it now and finish it. If it genuinely is complete and verified, reply with ` +
+  `your final completion report for the whole task (not just the answer to that message) and end.`;
 // The nudge sent when a resume came back having produced NOTHING. The agent never saw the previous nudge —
 // that session returned without ever reaching the model — so this one has to re-state the whole situation
 // from scratch rather than referring back to it.
@@ -998,6 +1005,9 @@ export class ThreadManager implements OrchestratorApi {
   // (re)enters, cleared when it exits. It numbers the continuations; it bounds them only when the optional
   // config.maxAutoResumes is set — a wedged implementor is stopped by the no-progress streak instead.
   private readonly autoResumes = new Map<string, number>();
+  // When steering last reached each thread's live implementor. A voluntary finish after it is often just the
+  // reply to that message, so awaitImplementorCompletion continues it once instead of reading it as done.
+  private readonly implementorSteeredAt = new Map<string, number>();
   // During QA the implementor is fully stopped (the slot is exclusive — one agent at a time), so the
   // QA agent is the only thing running. Append steering reaches THAT QA agent; interrupt steering stops
   // or supersedes it and resumes the implementor. Either path must never wake/spawn an implementor beside
@@ -9152,8 +9162,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const history = new ActionHistory(config.implementorNoProgressLimit + 1);
     let idleStreak = 0;
     let wedged = false;
+    let steeringReply = this.endedOnSteeringReply(thread, res, attemptFrom);
     while (
-      (this.isTurnLimitStop(res) || this.implementorStalled(thread.id, res) || silent) &&
+      (this.isTurnLimitStop(res) || this.implementorStalled(thread.id, res) || steeringReply || silent) &&
       !this.cancelled(thread.id) &&
       // A turn-ceiling stop is involuntary even if the last text sounded final. A silent run produced no
       // new text, so its last message may belong to an earlier completed round. Only a voluntary finish
@@ -9180,12 +9191,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       }
       const n = (this.autoResumes.get(thread.id) ?? 0) + 1;
       this.autoResumes.set(thread.id, n);
-      // Three involuntary-park cases share this resume: a turn-ceiling cutoff (error_max_turns), a voluntary
-      // stall (the agent ended its turn promising to "confirm once it finishes"), and a silent run (the
-      // session came back without producing anything). All three leave the task waiting on a wake-up that
-      // never comes; they differ only in the nudge, and in whether the dead session may be resumed again.
+      // Four premature-finish cases share this resume: a turn-ceiling cutoff (error_max_turns), a voluntary
+      // stall (the agent ended its turn promising to "confirm once it finishes"), a reply to mid-task
+      // steering, and a silent run (the session came back without producing anything). They differ only
+      // in the nudge, and in whether the dead session may be resumed again.
       const turnLimit = this.isTurnLimitStop(res);
-      const reason = silent ? "resumed session produced nothing" : turnLimit ? "turn limit hit" : "ended its turn without finishing";
+      const steered = steeringReply && !silent;
+      if (steered) this.implementorSteeredAt.delete(thread.id);
+      const reason = silent
+        ? "resumed session produced nothing"
+        : turnLimit
+          ? "turn limit hit"
+          : steered
+            ? "answered a mid-task message, task not confirmed finished"
+            : "ended its turn without finishing";
       this.logAutoResume(thread.id, n, reason, idleStreak);
       const nudge = silent
         ? SILENT_RESUME_NUDGE
@@ -9194,7 +9213,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             "where you left off and complete the task. " +
             (qaFollows ? "A QA agent" : config.ownerName) +
             " will review your work when you're genuinely done."
-          : STALL_NUDGE;
+          : steered && !this.implementorStalled(thread.id, res)
+            ? STEERING_REPLY_NUDGE
+            : STALL_NUDGE;
       // Close the turn-maxed query before resuming so we never run two implementors on one workspace;
       // startImplementor's onEnd guard tolerates the relaunch replacing `this.live` first either way.
       await current.stop();
@@ -9216,6 +9237,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       current = turn.run;
       silent = this.ranSilently(thread.id, "implementor", attemptFrom, res);
       if (silent) this.markSilentRun(thread.id, "implementor");
+      steeringReply = this.endedOnSteeringReply(thread, res, attemptFrom);
     }
     // Still silent on the way out (the auto-resume budget ran out, or there was no session left to resume):
     // the implementor did NOT finish, so replace its hollow success with a real failure. Without this the
@@ -9488,6 +9510,22 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!last) return false;
     const tail = last.content.slice(-700).toLowerCase().replace(/’/g, "'");
     return IMPLEMENTOR_STALL_RE.test(tail) && !IMPLEMENTOR_DONE_RE.test(tail);
+  }
+
+  /** Record that steering (an owner injection, a buffered director note) was delivered to the live implementor. */
+  private noteImplementorSteered(threadId: string): void {
+    this.implementorSteeredAt.set(threadId, Date.now());
+  }
+
+  /** Whether the attempt that began at `attemptFrom` ended voluntarily after steering reached it, without
+   *  its last words reading as a completion. Its closing message then usually answers the side request —
+   *  task 499a4890 was settled done on "please try 127.0.0.4 again" while its real work was hours from
+   *  finished. */
+  private endedOnSteeringReply(thread: Thread, res: ResultEvent | undefined, attemptFrom: number): boolean {
+    // Default mode is a stock conversation that parks after every turn, so a reply is its expected end.
+    if (!res || res.isError || thread.lane === "vanilla") return false;
+    const steeredAt = this.implementorSteeredAt.get(thread.id);
+    return steeredAt != null && steeredAt >= attemptFrom && !this.implementorLooksDone(thread.id);
   }
 
   /** The optional `MAX_AUTO_RESUMES` hard cap. Unset or 0 means unbounded. */
@@ -12142,6 +12180,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         contentWithImages(acknowledgedInjection(message), blocks),
         injectionSendOptions(live.run, mode),
       );
+      this.noteImplementorSteered(threadId);
       this.watchInjectionPickup(threadId, live.run, mode);
       const m = this.db.addMessage({
         threadId,
@@ -12325,6 +12364,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.directorNotes.delete(threadId);
     this.hub.log("info", `Delivering ${notes.length} buffered director note(s) to the now-live implementor on ${threadId.slice(0, 8)}.`);
     this.sendCommunication(run, acknowledgedInjection(notes.join("\n\n")), { priority: "now" });
+    this.noteImplementorSteered(threadId);
   }
 
   async interruptThread(threadId: string): Promise<ThreadActionResult> {
@@ -12521,6 +12561,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         message?.trim() ? acknowledgedInjection(message) : "Continue.",
         { priority: "now" },
       );
+      if (message?.trim()) this.noteImplementorSteered(threadId);
       this.setState(threadId, "implementing");
       return { ok: true, state: "implementing" };
     }
@@ -12719,6 +12760,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         if (vanilla) start.run.send(m, { priority: "next" });
         else this.sendCommunication(start.run, acknowledgedInjection(m), { priority: "next" });
       }
+      this.noteImplementorSteered(thread.id);
     }
     let implementationFinished = false;
     await this.awaitImplementorCompletion(thread, this.implementorEffort(thread.id), baseKickoff, start.run, start.accountId, false, resumeNudge, recheckWithQa)
@@ -13785,6 +13827,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private dropTerminalBookkeeping(threadId: string): void {
     this.capResumeNotifiedAt.delete(threadId);
     this.lastImplementorSession.delete(threadId);
+    this.implementorSteeredAt.delete(threadId);
     for (const role of ["planner", "researcher", "implementor", "qa", "reviewer"] as Role[]) {
       this.checkedIn.delete(`${threadId}:${role}`);
     }
