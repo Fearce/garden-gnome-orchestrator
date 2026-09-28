@@ -701,6 +701,12 @@ detail widths back to what they were the last time that combination was open.
 A combination never opened before keeps the current widths. The legacy
 `orch-rail-w`/`orch-detail-w` keys still carry the last widths used anywhere,
 the boot fallback when the current combination has no layout of its own.
+Each board tab (Tasks, IDE, Remote control, Notes…) also remembers which of the
+two toggles it was left with (`orch-view-chrome-<view>`): leaving a tab records
+its state, entering one restores its own (and so its combination's widths), and
+a never-visited tab keeps the current state. Every tab switch goes through the
+store's `switchView` — `setBoardView`, `openInIde` and `returnToOrigin` alike.
+A load always opens on Tasks, so boot uses the Tasks tab's saved state.
 Browser check: `npm run layout-memory-lab --prefix server`.
 
 **Themes** (Settings → Appearance) are a per-browser choice between *Classic*

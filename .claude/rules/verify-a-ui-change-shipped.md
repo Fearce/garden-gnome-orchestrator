@@ -50,8 +50,8 @@ its phone pop-over), `task-model-lab.cjs` (the per-task exact provider/model pin
 phone, including persistence, Auto, and the running-task guard), `code-nav-lab.cjs` (the contextual
 routes out of a task / Co-work / Supervisor row into the IDE and the Git console, and back), `layout-lab.cjs` (the workbench's
 columns, with the rail/detail widths replayed from a BIGGER monitor, across every band and both drag
-handles), `layout-memory-lab.cjs` (each rail/focus toggle combination restoring its own dragged widths,
-across a reload) and `panel-scroll-lab.cjs`
+handles), `layout-memory-lab.cjs` (each rail/focus toggle combination restoring its own dragged widths, and
+each board tab restoring its own toggles, across a reload) and `panel-scroll-lab.cjs`
 (the detail panel on the OTHER axis: a 500-entry transcript under a work memo and deliverables, at five
 viewports x both header states — scrollport usable, composer pinned, nothing sideways, no clipping shell
 taller than its own box), `director-phone-lab.cjs` (the Director pane at 320–430px: the

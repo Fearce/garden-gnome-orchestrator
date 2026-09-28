@@ -634,6 +634,47 @@ const switchLayout = (s: PaneWidths & { railHidden: boolean; focusMode: boolean 
   return { ...next, ...widths };
 };
 
+/** Which of the director rail and the full header a board tab was last left with. */
+type Chrome = { railHidden: boolean; focusMode: boolean };
+type ChromeState = PaneWidths & Chrome & { boardView: BoardView };
+
+const viewChromeKey = (view: BoardView): string => `orch-view-chrome-${view}`;
+
+const readViewChrome = (view: BoardView): Chrome | null => {
+  try {
+    const raw = localStorage.getItem(viewChromeKey(view));
+    if (raw == null) return null;
+    const { railHidden, focusMode } = JSON.parse(raw) as Partial<Chrome>;
+    return typeof railHidden === "boolean" && typeof focusMode === "boolean" ? { railHidden, focusMode } : null;
+  } catch {
+    return null;
+  }
+};
+
+const saveViewChrome = (view: BoardView, chrome: Chrome): void =>
+  lsSet(viewChromeKey(view), JSON.stringify({ railHidden: chrome.railHidden, focusMode: chrome.focusMode }));
+
+/** Boot chrome: what the tasks tab (the one every load opens on) was last left with, else the last toggles. */
+const initialChrome = (): Chrome =>
+  readViewChrome("tasks") ?? { railHidden: lsBool("orch-rail-hidden", false), focusMode: lsBool("orch-focus-mode", false) };
+
+/** A hide toggle flipped by the owner: it becomes the current tab's own chrome. */
+const toggleChrome = (s: ChromeState, next: Chrome) => {
+  saveViewChrome(s.boardView, next);
+  return switchLayout(s, next);
+};
+
+/** Moves to another board tab, restoring the chrome it was last left with. The tab being left records
+ *  its own first, so a tab visited only once still comes back as it was; a never-visited tab keeps the
+ *  current chrome. */
+const switchView = (s: ChromeState, view: BoardView) => {
+  if (view === s.boardView) return { boardView: view };
+  saveViewChrome(s.boardView, s);
+  const chrome = readViewChrome(view);
+  const changed = chrome && (chrome.railHidden !== s.railHidden || chrome.focusMode !== s.focusMode);
+  return { boardView: view, ...(changed ? switchLayout(s, chrome) : {}) };
+};
+
 export type Verbosity = "compact" | "full";
 
 // How the board orders tasks when drag-and-drop is off. "created_desc" (newest first) is the default;
@@ -1260,6 +1301,8 @@ function failPendingThreadActions(): void {
   }
 }
 
+const BOOT_CHROME = initialChrome();
+
 export const useStore = create<State>((set) => ({
   startQaSupported: false,
   connected: false,
@@ -1356,10 +1399,9 @@ export const useStore = create<State>((set) => ({
   gitConsoleFor: null,
   gitConsoleRepo: null,
   gitConsoleCommit: null,
-  railHidden: lsBool("orch-rail-hidden", false),
-  focusMode: lsBool("orch-focus-mode", false),
+  ...BOOT_CHROME,
   usageHidden: lsBool("orch-usage-hidden", false),
-  ...initialLayout(lsBool("orch-rail-hidden", false), lsBool("orch-focus-mode", false)),
+  ...initialLayout(BOOT_CHROME.railHidden, BOOT_CHROME.focusMode),
   chat: [],
   chatRooms: [],
   roomHistory: {},
@@ -1767,7 +1809,7 @@ export const useStore = create<State>((set) => ({
   },
   openInIde: (target, origin) => {
     set((s) => ({
-      boardView: "ide",
+      ...switchView(s, "ide"),
       // The Git console is a full-screen modal; leaving it open over the editor we just navigated to
       // would hide the destination behind the surface the operator left.
       gitConsoleOpen: false,
@@ -1793,14 +1835,14 @@ export const useStore = create<State>((set) => ({
   returnToOrigin: () => {
     const origin = useStore.getState().codeOrigin;
     if (!origin) return;
-    set({ boardView: origin.view, gitConsoleOpen: false, codeOrigin: null, ideTarget: null });
+    set((s) => ({ ...switchView(s, origin.view), gitConsoleOpen: false, codeOrigin: null, ideTarget: null }));
     // A task re-opens its card and a Co-work session its popup; a Supervisor row is its own board area.
     if (origin.kind === "thread") useStore.getState().select(origin.id);
     if (origin.kind === "cowork" && useStore.getState().coworkSessions[origin.id]) useStore.getState().selectCowork(origin.id);
   },
   clearCodeOrigin: () => set({ codeOrigin: null }),
-  toggleRail: () => set((s) => switchLayout(s, { railHidden: !s.railHidden, focusMode: s.focusMode })),
-  toggleFocus: () => set((s) => switchLayout(s, { railHidden: s.railHidden, focusMode: !s.focusMode })),
+  toggleRail: () => set((s) => toggleChrome(s, { railHidden: !s.railHidden, focusMode: s.focusMode })),
+  toggleFocus: () => set((s) => toggleChrome(s, { railHidden: s.railHidden, focusMode: !s.focusMode })),
   toggleUsage: () =>
     set((s) => {
       const v = !s.usageHidden;
@@ -1864,7 +1906,7 @@ export const useStore = create<State>((set) => ({
     set((s) => ({ resetRedeeming: { ...s.resetRedeeming, [key]: true } }));
   },
   dismissTokenSafety: () => set((s) => ({ tokenSafetyDismissed: s.tokenSafety ? tokenSafetyBoxKey(s.tokenSafety) : null })),
-  setBoardView: (v) => set({ boardView: v }),
+  setBoardView: (v) => set((s) => switchView(s, v)),
   createSchedule: (input) => sendScheduleMutation({ type: "schedule.create", ...input }),
   updateSchedule: (id, patch) => sendScheduleMutation({ type: "schedule.update", id, patch }),
   deleteSchedule: (id) => sendScheduleMutation({ type: "schedule.delete", id }),

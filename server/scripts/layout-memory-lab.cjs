@@ -64,8 +64,8 @@ function widths(page) {
     return {
       detail: w(".detail"),
       rail: w(".rail"),
-      railHidden: localStorage.getItem("orch-rail-hidden") === "1",
-      focus: localStorage.getItem("orch-focus-mode") === "1",
+      railHidden: !!document.querySelector(".workbench.rail-hidden"),
+      focus: !!document.querySelector(".topbar.focus"),
     };
   });
 }
@@ -109,6 +109,47 @@ async function buildViews(page, check) {
   const details = Object.values(views).map((v) => v.detail);
   check("the four views have four distinct detail widths", new Set(details).size === 4, JSON.stringify(details));
   return views;
+}
+
+/** A narrow board folds its tab row into the "Area" select, so use whichever switcher is on screen. */
+async function switchTab(page, view) {
+  const tab = page.locator(`.board-tab.bt-${view}`);
+  if (await tab.isVisible()) await tab.click();
+  else await page.selectOption('select[aria-label="Board area"]', view);
+  await page.waitForTimeout(250);
+}
+
+function expectChrome(check, label, got, railHidden, focus) {
+  check(
+    `${label}: director ${got.railHidden ? "hidden" : "shown"}, header ${got.focus ? "hidden" : "shown"}`,
+    got.railHidden === railHidden && got.focus === focus,
+    JSON.stringify({ got, want: { railHidden, focus } }),
+  );
+}
+
+/** Each board tab keeps its own hide toggles: Notes is set to both-hidden while Tasks stays fully shown,
+ *  and switching between them — or reloading — brings each back as it was left. Starts on Tasks, view 1. */
+async function tabPass(page, check, views, args) {
+  await switchTab(page, "notes");
+  expectChrome(check, "a never-visited tab keeps the current chrome", await widths(page), false, false);
+  await toggle(page, ".rail-toggle");
+  await toggle(page, ".focus-toggle");
+
+  await switchTab(page, "tasks");
+  const tasks = await widths(page);
+  expectChrome(check, "back on Tasks → as Tasks was left", tasks, false, false);
+  expectView(check, "back on Tasks → view 1 widths", tasks, views.all);
+
+  await switchTab(page, "notes");
+  expectChrome(check, "back on Notes → as Notes was left", await widths(page), true, true);
+  if (args.shot) await page.screenshot({ path: path.join(args.shot, "notes-tab.png") });
+
+  await page.reload({ timeout: 45_000 });
+  await page.waitForSelector(".workbench", { timeout: 20_000 });
+  await page.waitForTimeout(300);
+  expectChrome(check, "after reload, the console opens on Tasks as Tasks was left", await widths(page), false, false);
+  await switchTab(page, "notes");
+  expectChrome(check, "after reload, Notes → as Notes was left", await widths(page), true, true);
 }
 
 function expectView(check, label, got, want) {
@@ -161,6 +202,8 @@ async function main() {
       await toggle(page, ".focus-toggle");
       expectView(check, "after reload, header shown → view 1", await widths(page), views.all);
       if (args.shot) await page.screenshot({ path: path.join(args.shot, "view1.png") });
+
+      await tabPass(page, check, views, args);
       await context.close();
     } finally {
       await browser.close();
