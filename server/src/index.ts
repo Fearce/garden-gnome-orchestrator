@@ -53,6 +53,8 @@ import { FreeProviderService } from "./freeProviders/service.js";
 import { registerFreeProviderRoutes } from "./freeProviders/routes.js";
 import { IdeService } from "./ide/service.js";
 import { registerIdeRoutes } from "./ide/routes.js";
+import { RemoteControlService } from "./remoteControl/service.js";
+import { registerRemoteControlRoutes } from "./remoteControl/routes.js";
 import { randomUUID } from "node:crypto";
 import { acquireInstanceGuard } from "./instanceGuard.js";
 import { testInvocationUsesDefaultData } from "./runtimeIsolation.js";
@@ -185,6 +187,8 @@ async function main(): Promise<void> {
   const repos = new RepoConsole(db, config.serverRoot);
   const ide = new IdeService(db, dirname(config.serverRoot));
   const codeContext = new CodeContextService(db, ide);
+  const remoteControl = new RemoteControlService(db, config.dataDir);
+  process.once("exit", () => remoteControl.shutdown());
   // A planned deploy/update restart fires immediately. The bounce tree-kills every CLI child and boot
   // auto-resumes the interrupted work; admission closes only for the few hundred ms the restart takes.
   const restartCoordinator = new RestartCoordinator({
@@ -316,6 +320,7 @@ async function main(): Promise<void> {
     registerWs(app, { db, hub, manager, director, accounts, scheduler, goals, notes, repos, onlineOffice, cowork, codeContext });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
     registerIdeRoutes(app, ide, isAuthed);
+    registerRemoteControlRoutes(app, remoteControl, isAuthed);
     registerPortalLink(app, isAuthed);
 
     // `build` is which dist THIS process loaded, read once at boot — the fact that turns "is the live

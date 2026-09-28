@@ -16,6 +16,7 @@ import { apiUrl } from "./lib/base.js";
 import { useSwipePanes, type WorkbenchPane } from "./lib/swipe.js";
 import ggLogo from "./assets/gg-logo.webp";
 import type { BoardView } from "./types.js";
+import { useRemoteControlEnabled } from "./components/remote/remoteApi.js";
 
 // Settings and Git are opt-in and code-heavy. Task detail stays eager: an already-open pre-deploy tab
 // must not request a removed hashed chunk and sit forever on "Opening task…" after the server restarts.
@@ -359,6 +360,7 @@ function ApprovalToggle() {
 function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePane) => void }) {
   const boardView = useStore((s) => s.boardView);
   const setBoardView = useStore((s) => s.setBoardView);
+  const remoteEnabled = useRemoteControlEnabled();
   const openBoardView = (view: BoardView) => {
     setBoardView(view);
     setPane("board");
@@ -393,7 +395,7 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
         <span>All areas</span>
         <select aria-label="All areas" value={pane === "director" ? "" : boardView} onChange={e => openBoardView(e.target.value as BoardView)}>
           <option value="" disabled>Choose…</option>
-          <option value="tasks">Tasks</option><option value="ide">IDE</option><option value="notes">Notes</option><option value="schedules">Scheduled Tasks</option><option value="goals">Goals</option><option value="supervisor">Supervisor</option><option value="patchnotes">Patch notes</option>
+          <option value="tasks">Tasks</option><option value="ide">IDE</option>{remoteEnabled ? <option value="remote">Remote control</option> : null}<option value="notes">Notes</option><option value="schedules">Scheduled Tasks</option><option value="goals">Goals</option><option value="supervisor">Supervisor</option><option value="patchnotes">Patch notes</option>
         </select>
       </label>
     </nav>

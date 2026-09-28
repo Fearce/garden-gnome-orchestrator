@@ -274,7 +274,7 @@ export const MAX_GOAL_BURN_RATE_PCT = 500;
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
 /** Co-work is not a pane: its sessions are cards on the task board, and a conversation opens as a popup
  *  over whatever pane is showing so the rest of the work stays in sight. */
-export type BoardView = "tasks" | "notes" | "schedules" | "goals" | "supervisor" | "patchnotes" | "ide";
+export type BoardView = "tasks" | "notes" | "schedules" | "goals" | "supervisor" | "patchnotes" | "ide" | "remote";
 
 /** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
 export const NOTE_MAX_CHARS = 255;

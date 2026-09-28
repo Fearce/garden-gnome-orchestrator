@@ -27,6 +27,7 @@ import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
 import { PatchNotes } from "./PatchNotes.js";
 import { usePatchNotesWatch, useUnseenPatchNotes } from "../lib/patchNotes.js";
+import { useRemoteControlEnabled } from "./remote/remoteApi.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { CoworkPopup, NewCoworkButton } from "./CoWork.js";
 import { ClosedCoworkCard, CoworkCard, useBoardCoworkSessions } from "./CoworkCards.js";
@@ -34,6 +35,7 @@ import { ManualDeploymentBadge } from "./ManualDeploymentStatus.js";
 import { LazyChunkBoundary } from "./LazyChunkBoundary.js";
 import type { DragCardProps } from "../lib/dragCard.js";
 const Ide = lazy(() => import("./ide/Ide.js").then(m => ({ default: m.Ide })));
+const RemoteViewer = lazy(() => import("./remote/RemoteViewer.js").then(m => ({ default: m.RemoteViewer })));
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -276,7 +278,9 @@ export function Board() {
       {/* The Co-work popup is ALWAYS mounted and renders nothing until a card opens it. Unmounting it would
           drop the unsent draft and staged attachments on every close; see CoworkPopup. */}
       <CoworkPopup />
-      {boardView === "ide" ? null : boardView === "schedules" ? (
+      {boardView === "ide" ? null : boardView === "remote" ? (
+        <LazyChunkBoundary label="Remote control" className="ide-load-error"><Suspense fallback={<p>Opening Remote control…</p>}><RemoteViewer /></Suspense></LazyChunkBoundary>
+      ) : boardView === "schedules" ? (
         <ScheduledTasks />
       ) : boardView === "goals" ? (
         <Goals />
@@ -333,9 +337,14 @@ export function Board() {
 function BoardTabs() {
   const boardView = useStore((s) => s.boardView);
   const setBoardView = useStore((s) => s.setBoardView);
+  const remoteEnabled = useRemoteControlEnabled();
+  // The tab exists only once remote control is set up; turned off elsewhere, the board falls back to tasks.
+  useEffect(() => { if (!remoteEnabled && boardView === "remote") setBoardView("tasks"); }, [remoteEnabled, boardView, setBoardView]);
+  const tabs = remoteEnabled ? BOARD_TABS : BOARD_TABS.filter((tab) => tab.view !== "remote");
   const counts = {
     tasks: null,
     ide: null,
+    remote: null,
     notes: useStore((s) => s.notes.length),
     schedules: useStore((s) => s.schedules.length),
     goals: useStore((s) => s.goals.filter((g) => g.status === "active").length),
@@ -344,8 +353,8 @@ function BoardTabs() {
   };
   usePatchNotesWatch();
   return (
-    <><label className="board-area-select">Area<select aria-label="Board area" value={boardView} onChange={e => setBoardView(e.target.value as BoardView)}>{BOARD_TABS.map(tab => <option value={tab.view} key={tab.view}>{tab.label}{counts[tab.view] ? ` (${counts[tab.view]})` : ""}</option>)}</select></label><div className="board-tabs" aria-label="Board areas">
-      {BOARD_TABS.map((tab) =>
+    <><label className="board-area-select">Area<select aria-label="Board area" value={boardView} onChange={e => setBoardView(e.target.value as BoardView)}>{tabs.map(tab => <option value={tab.view} key={tab.view}>{tab.label}{counts[tab.view] ? ` (${counts[tab.view]})` : ""}</option>)}</select></label><div className="board-tabs" aria-label="Board areas">
+      {tabs.map((tab) =>
         boardView === tab.view ? (
           <h2 key={tab.view}>{tab.label}</h2>
         ) : (
@@ -362,6 +371,7 @@ function BoardTabs() {
 const BOARD_TABS: { view: BoardView; label: string; title: string }[] = [
   { view: "tasks", label: "Tasks", title: "Back to the task board" },
   { view: "ide", label: "IDE", title: "Edit workspace files and manage Git" },
+  { view: "remote", label: "Remote control", title: "See and control this PC" },
   { view: "notes", label: "Notes", title: "Branches, PRs and reminders waiting on you" },
   { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },
   { view: "goals", label: "Goals", title: "Goal-directed tasks: standing objectives the director keeps working on until they are met" },

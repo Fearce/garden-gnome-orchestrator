@@ -6,12 +6,13 @@ import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/mod
 import { effortLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { FreeProviders } from "./FreeProviders.js";
+import { RemoteControlSetup } from "./remote/RemoteControlSetup.js";
 import { ThemePicker } from "./ThemePicker.js";
 import { FontPicker } from "./FontPicker.js";
 import { DISPLAY_FONTS, MONO_FONTS, UI_FONTS } from "../lib/font.js";
 import { useSwipeDismiss } from "../lib/swipe.js";
 
-type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "voice-alerts" | "office" | "appearance" | "interface";
+type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "voice-alerts" | "remote-control" | "office" | "appearance" | "interface";
 
 interface SettingsCategory {
   id: SettingsCategoryId;
@@ -28,6 +29,7 @@ const SETTINGS_CATEGORIES = [
   { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits.", keywords: "claude anthropic codex openai chatgpt grok xai zai glm api keys accounts models effort weekly safety" },
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
   { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
+  { id: "remote-control", section: "Workspace", label: "Remote control", description: "Set up controlling this PC from the console, e.g. from a tablet.", keywords: "remote desktop control screen stream mouse keyboard tablet anydesk vnc rdp display monitor ffmpeg nvenc" },
   { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles.", keywords: "relay collaboration coworkers team machine url password presence chatroom" },
   { id: "appearance", section: "Workspace", label: "Appearance", description: "Choose how the console looks on this browser.", keywords: "theme themes look dark colours colors palette classic nocturne skin style font fonts font size director chat transcript typeface typefaces typography interface monospace mono serif sans display heading headings headline title titles card header ligatures inter geist plex fira grotesk bricolage instrument animation screensaver idle afk gnomes scene away timeout" },
   { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed.", keywords: "composer board completed drag reorder output model picker recent repositories ui hard deadline banner" },
@@ -466,6 +468,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             <SettingsCategoryPanel id="office" active={!isSearching && activeCategoryId === "office"}>
               <Group label="Online office">
                 <OnlineOfficeSection />
+              </Group>
+            </SettingsCategoryPanel>
+
+            <SettingsCategoryPanel id="remote-control" active={!isSearching && activeCategoryId === "remote-control"}>
+              <Group label="Remote control">
+                <RemoteControlSetup onOpenViewer={() => { useStore.getState().setBoardView("remote"); onClose(); }} />
               </Group>
             </SettingsCategoryPanel>
 
