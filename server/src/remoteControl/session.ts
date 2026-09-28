@@ -1,23 +1,15 @@
-import { spawn, type ChildProcessByStdio } from "node:child_process";
-import type { Readable } from "node:stream";
 import type { WebSocket } from "ws";
 import { z } from "zod";
 import type { DesktopHelper, DisplayInfo, MouseButton } from "./desktop.js";
-import { QUALITY_PRESETS, explainEncoderError, streamArgs, type EncoderId, type QualityId } from "./ffmpeg.js";
-import { FlvDemuxer, type FlvPacket } from "./flv.js";
+import { Capture, type ConfigPacket, type FramePacket } from "./capture.js";
+import { QUALITY_PRESETS, explainEncoderError, streamArgs, type EncoderId, type QualityId, type QualityPreset } from "./ffmpeg.js";
+import { AdaptiveRate, FrameFlow } from "./flowControl.js";
 import { scanKeyFor } from "./keymap.js";
 
 /** Binary video message: kind, flags, sequence, timestamp, then the AVCC access unit. */
 export const FRAME_HEADER_BYTES = 12;
 const FRAME_KIND_VIDEO = 1;
 const FLAG_KEY = 1;
-// Frames the viewer may be behind before we stop sending and wait for the next keyframe. A quarter
-// second of video is the most lag worth queueing; past that, skipping ahead beats catching up.
-const MAX_BEHIND_SECONDS = 0.25;
-// Frames still unacknowledged when a keyframe arrives, at or below which sending resumes.
-const RESUME_BEHIND_SECONDS = 0.1;
-// The socket's own buffer is the backstop for a viewer that stopped acknowledging altogether.
-const MAX_SOCKET_BUFFER_BYTES = 8 * 1024 * 1024;
 const IDLE_CLOSE_MS = 15_000;
 const RESTART_DELAYS_MS = [300, 1_000, 2_000, 5_000];
 
@@ -30,6 +22,7 @@ const clientMessageSchema = z.discriminatedUnion("t", [
   z.object({ t: z.literal("release") }),
   z.object({ t: z.literal("ack"), seq: z.number().int().nonnegative() }),
   z.object({ t: z.literal("ping"), ts: z.number().finite() }),
+  z.object({ t: z.literal("keyframe") }),
   z.object({ t: z.literal("display"), index: z.number().int().min(0).max(15) }),
   z.object({ t: z.literal("quality"), id: z.enum(["sharp", "smooth", "saver"]) }),
   z.object({ t: z.literal("clipget"), id: z.string().max(40) }),
@@ -52,14 +45,18 @@ export interface SessionOptions {
  * One viewer's live session: an ffmpeg capture piped through the FLV demuxer to the socket, with the
  * socket's input messages injected through the desktop helper. Everything the viewer holds down is
  * tracked so a dropped connection can never leave a key or button stuck on the PC.
+ *
+ * A settings change (display, quality, or the bitrate the link can carry) starts a second capture and
+ * switches over at its first keyframe, so the viewer keeps the old picture moving instead of waiting
+ * out ffmpeg's start-up.
  */
 export class RemoteSession {
-  private ffmpeg: ChildProcessByStdio<null, Readable, Readable> | null = null;
+  private live: Capture | null = null;
+  private incoming: { capture: Capture; config: ConfigPacket | null } | null = null;
   private display: DisplayInfo;
   private quality: QualityId;
-  private seq = 0;
-  private ackedSeq = 0;
-  private dropping = false;
+  private readonly flow = new FrameFlow();
+  private readonly rate = new AdaptiveRate();
   private dropped = 0;
   private restartAttempt = 0;
   private restartTimer: NodeJS.Timeout | null = null;
@@ -67,7 +64,6 @@ export class RemoteSession {
   private heldKeys = new Set<string>();
   private heldButtons = new Set<MouseButton>();
   private closed = false;
-  private framesThisRun = 0;
   private readonly offBlocked: () => void;
 
   constructor(private readonly socket: WebSocket, private readonly helper: DesktopHelper, private readonly options: SessionOptions) {
@@ -110,41 +106,75 @@ export class RemoteSession {
       qualities: Object.values(QUALITY_PRESETS).map(({ id, label, fps }) => ({ id, label, fps })),
       encoder: this.options.encoder,
       elevated: this.options.elevated,
+      bitrateKbps: this.preset().bitrateKbps,
+      rateReduced: this.rate.factor < 1,
     });
   }
 
+  /** The chosen quality at the bitrate the link currently carries. */
+  private preset(): QualityPreset {
+    const preset = QUALITY_PRESETS[this.quality];
+    return { ...preset, bitrateKbps: Math.round(preset.bitrateKbps * this.rate.factor) };
+  }
+
+  private spawnCapture(): Capture {
+    const { args, size } = streamArgs(this.options.encoder, this.display.index, { width: this.display.width, height: this.display.height }, this.preset());
+    return new Capture(this.options.ffmpegPath, args, this.display, size, {
+      onConfig: (capture, packet) => this.onConfig(capture, packet),
+      onFrame: (capture, packet) => this.onFrame(capture, packet),
+      onExit: (capture, stderr) => this.onCaptureExit(capture, stderr),
+    });
+  }
+
+  /** Cold start: nothing is on screen yet, or the last capture died. */
   private startCapture(): void {
     if (this.closed) return;
-    const preset = QUALITY_PRESETS[this.quality];
-    const { args, size } = streamArgs(this.options.encoder, this.display.index, { width: this.display.width, height: this.display.height }, preset);
-    const child = spawn(this.options.ffmpegPath, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    this.ffmpeg = child;
-    this.framesThisRun = 0;
-    this.dropping = false;
-    this.ackedSeq = this.seq;
-    const demuxer = new FlvDemuxer();
-    let stderr = "";
+    this.flow.restart();
     this.sendJson({ t: "status", state: "starting" });
-    child.stdout.on("data", (chunk: Buffer) => {
-      try {
-        for (const packet of demuxer.push(chunk)) this.onPacket(packet, size);
-      } catch (error) {
-        stderr += `\n${(error as Error).message}`;
-        child.kill();
-      }
-    });
-    child.stderr.on("data", (chunk: Buffer) => { stderr = (stderr + chunk.toString()).slice(-4000); });
-    child.on("error", (error) => { stderr += `\n${error.message}`; });
-    child.on("close", () => {
-      if (this.ffmpeg !== child) return;
-      this.ffmpeg = null;
-      this.scheduleRestart(stderr);
-    });
+    this.live = this.spawnCapture();
   }
 
-  private scheduleRestart(stderr: string): void {
+  /** Warm switch to the current settings: the live capture keeps streaming until the new one has a keyframe. */
+  private handover(): void {
     if (this.closed) return;
-    if (this.framesThisRun > 0) this.restartAttempt = 0;
+    if (!this.live) return this.restartCapture();
+    this.incoming?.capture.stop();
+    this.incoming = { capture: this.spawnCapture(), config: null };
+  }
+
+  private onConfig(capture: Capture, packet: ConfigPacket): void {
+    if (capture === this.live) this.sendConfig(capture, packet);
+    else if (capture === this.incoming?.capture) this.incoming.config = packet;
+  }
+
+  private onFrame(capture: Capture, packet: FramePacket): void {
+    if (capture === this.incoming?.capture) this.promoteIncoming();
+    if (capture !== this.live) return;
+    if (capture.frames === 1) this.sendJson({ t: "status", state: "streaming" });
+    this.sendFrame(packet);
+  }
+
+  private promoteIncoming(): void {
+    const { capture, config } = this.incoming!;
+    this.incoming = null;
+    this.live?.stop();
+    this.live = capture;
+    this.flow.restart();
+    if (config) this.sendConfig(capture, config);
+  }
+
+  private onCaptureExit(capture: Capture, stderr: string): void {
+    // A second encoder can fail where one works (NVENC session limits); starting afresh needs only one.
+    if (capture === this.incoming?.capture) return this.restartCapture();
+    if (capture !== this.live) return;
+    const ranFrames = capture.frames > 0;
+    this.stopCapture();
+    this.scheduleRestart(stderr, ranFrames);
+  }
+
+  private scheduleRestart(stderr: string, ranFrames: boolean): void {
+    if (this.closed) return;
+    if (ranFrames) this.restartAttempt = 0;
     const delay = RESTART_DELAYS_MS[Math.min(this.restartAttempt, RESTART_DELAYS_MS.length - 1)]!;
     this.restartAttempt++;
     this.sendJson({ t: "status", state: "retrying", message: stderr.trim() ? explainEncoderError(stderr) : "The capture stopped; restarting it." });
@@ -155,9 +185,10 @@ export class RemoteSession {
   }
 
   private stopCapture(): void {
-    const child = this.ffmpeg;
-    this.ffmpeg = null;
-    if (child && child.exitCode === null) child.kill();
+    this.live?.stop();
+    this.incoming?.capture.stop();
+    this.live = null;
+    this.incoming = null;
   }
 
   private restartCapture(): void {
@@ -170,36 +201,36 @@ export class RemoteSession {
     this.startCapture();
   }
 
-  private onPacket(packet: FlvPacket, size: { width: number; height: number }): void {
-    if (packet.kind === "config") {
-      this.sendJson({ t: "config", codec: packet.codec, description: packet.avcc.toString("base64"), width: size.width, height: size.height, display: this.display.index });
-      return;
-    }
-    if (this.framesThisRun++ === 0) this.sendJson({ t: "status", state: "streaming" });
-    if (this.shouldDrop(packet.key)) {
+  private sendConfig(capture: Capture, packet: ConfigPacket): void {
+    const { width, height } = capture.size;
+    this.sendJson({ t: "config", codec: packet.codec, description: packet.avcc.toString("base64"), width, height, display: capture.display.index });
+  }
+
+  private sendFrame(packet: FramePacket): void {
+    const admitted = this.flow.admit(packet.key, this.socket.bufferedAmount);
+    this.adaptRate();
+    if (!admitted) {
       this.dropped++;
       return;
     }
     const header = Buffer.alloc(FRAME_HEADER_BYTES);
     header[0] = FRAME_KIND_VIDEO;
     header[1] = packet.key ? FLAG_KEY : 0;
-    header.writeUInt32BE(++this.seq >>> 0, 2);
+    header.writeUInt32BE(this.flow.sent() >>> 0, 2);
     header.writeUInt32BE(packet.timestampMs >>> 0, 6);
     // Video does not compress; skipping permessage-deflate saves a copy and a few ms per frame.
     this.socket.send(Buffer.concat([header, packet.data]), { binary: true, compress: false });
   }
 
-  /** Drop-to-keyframe flow control: a viewer that falls behind skips ahead instead of lagging more. */
-  private shouldDrop(key: boolean): boolean {
-    const fps = QUALITY_PRESETS[this.quality].fps;
-    const behind = this.seq - this.ackedSeq;
-    if (this.socket.bufferedAmount > MAX_SOCKET_BUFFER_BYTES || behind > fps * MAX_BEHIND_SECONDS) this.dropping = true;
-    if (!this.dropping) return false;
-    if (key && behind <= fps * RESUME_BEHIND_SECONDS && this.socket.bufferedAmount < MAX_SOCKET_BUFFER_BYTES) {
-      this.dropping = false;
-      return false;
-    }
-    return true;
+  /** The viewer lost its decoder; a fresh encoder brings a new config and keyframe. One is enough. */
+  private requestKeyframe(): void {
+    if (!this.incoming) this.handover();
+  }
+
+  private adaptRate(): void {
+    if (!this.rate.observe(this.flow.backlogMs(), this.flow.skipping)) return;
+    this.sendHello();
+    this.handover();
   }
 
   private onMessage(raw: Buffer): void {
@@ -223,10 +254,9 @@ export class RemoteSession {
       case "key": return this.key(message.code, message.down);
       case "text": return this.helper.text(message.text);
       case "release": return this.releaseHeld();
-      case "ack":
-        if (message.seq <= this.seq && message.seq > this.ackedSeq) this.ackedSeq = message.seq;
-        return;
+      case "ack": return this.flow.acked(message.seq);
       case "ping": return this.sendJson({ t: "pong", ts: message.ts, dropped: this.dropped });
+      case "keyframe": return this.requestKeyframe();
       case "display": return this.switchDisplay(message.index);
       case "quality": return this.switchQuality(message.id);
       case "clipget":
@@ -244,10 +274,14 @@ export class RemoteSession {
     }
   }
 
-  /** Coordinates arrive as fractions of the streamed image, so they survive any scaling on the way. */
+  /**
+   * Coordinates arrive as fractions of the streamed image, so they survive any scaling on the way. They
+   * map onto the display the viewer is looking at, which lags a display switch until the handover lands.
+   */
   private move(x: number, y: number): void {
+    const shown = this.live?.display ?? this.display;
     const clamp = (v: number) => Math.min(1, Math.max(0, v));
-    this.helper.move(this.display.x + clamp(x) * (this.display.width - 1), this.display.y + clamp(y) * (this.display.height - 1));
+    this.helper.move(shown.x + clamp(x) * (shown.width - 1), shown.y + clamp(y) * (shown.height - 1));
   }
 
   private button(button: MouseButton, down: boolean): void {
@@ -275,15 +309,16 @@ export class RemoteSession {
     this.display = next;
     this.options.onChoice({ display: index });
     this.sendHello();
-    this.restartCapture();
+    this.handover();
   }
 
   private switchQuality(id: QualityId): void {
     if (id === this.quality) return;
     this.quality = id;
+    this.rate.reset();
     this.options.onChoice({ quality: id });
     this.sendHello();
-    this.restartCapture();
+    this.handover();
   }
 
   /** A viewer that stops pinging (tab frozen, network gone) is closed so the capture does not run on. */

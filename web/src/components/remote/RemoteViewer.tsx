@@ -104,7 +104,16 @@ function LiveViewer() {
         <span className={`rc-status rc-status-${phase}`} title={state?.message ?? undefined}>
           <span className="rc-dot" aria-hidden />
           {PHASE_LABEL[phase]}
-          {phase === "streaming" && state ? <span className="rc-metrics mono">{state.rttMs ?? "–"} ms · {state.fps} fps</span> : null}
+          {phase === "streaming" && state ? (
+            <span className="rc-metrics mono">
+              {state.rttMs ?? "–"} ms · {state.fps} fps
+              {state.rateReduced && state.bitrateKbps ? (
+                <span className="rc-rate-reduced" title="Lowered automatically: this connection can't carry the chosen quality right now. It rises again once the connection keeps up.">
+                  {" "}· {(state.bitrateKbps / 1000).toFixed(1)} Mb/s
+                </span>
+              ) : null}
+            </span>
+          ) : null}
         </span>
         <div className="rc-bar-controls">
           {state && state.displays.length > 1 ? (

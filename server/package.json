@@ -35,6 +35,8 @@
     "screensaver-lab": "node scripts/screensaver-lab.cjs",
     "remote-access": "node scripts/remote-access.cjs",
     "remote-access-lab": "node scripts/remote-access-lab.cjs",
+    "remote-stream-lab": "tsx scripts/remote-stream-lab.ts",
+    "remote-viewer-lab": "node scripts/remote-viewer-lab.cjs",
     "deploy": "node scripts/deploy.cjs",
     "notes-lab": "node scripts/notes-lab.cjs",
     "patch-notes-lab": "node scripts/patch-notes-lab.cjs",

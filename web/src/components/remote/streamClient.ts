@@ -3,8 +3,10 @@ import { remoteRequest, streamUrl, type DisplayInfo, type EncoderId, type Qualit
 const FRAME_HEADER_BYTES = 12;
 const FLAG_KEY = 1;
 const PING_MS = 1_000;
-// Decoded-but-unpainted work past this means the device cannot keep up; skip to the next keyframe.
-const MAX_DECODE_QUEUE = 6;
+// Undecoded work past this means the device cannot keep up; skip to the next keyframe. A network stall
+// delivers its backlog as one burst that a working decoder clears in a moment, so this is set above
+// the server's own backlog bound (it paces on our paint acks) and only catches a decoder that is stuck.
+const MAX_DECODE_QUEUE = 60;
 const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000];
 
 export type Phase = "connecting" | "starting" | "streaming" | "retrying" | "reconnecting" | "replaced" | "failed" | "closed";
@@ -22,6 +24,9 @@ export interface StreamState {
   rttMs: number | null;
   fps: number;
   dropped: number;
+  bitrateKbps: number | null;
+  /** The PC lowered the bitrate below the chosen quality's because this connection can't carry it. */
+  rateReduced: boolean;
 }
 
 export type ClientMessage =
@@ -34,11 +39,12 @@ export type ClientMessage =
   | { t: "display"; index: number }
   | { t: "quality"; id: QualityId }
   | { t: "ack"; seq: number }
+  | { t: "keyframe" }
   | { t: "ping"; ts: number };
 
 const INITIAL: StreamState = {
   phase: "connecting", message: null, displays: [], display: 0, quality: "smooth", encoder: null,
-  elevated: false, inputBlocked: false, videoSize: null, rttMs: null, fps: 0, dropped: 0,
+  elevated: false, inputBlocked: false, videoSize: null, rttMs: null, fps: 0, dropped: 0, bitrateKbps: null, rateReduced: false,
 };
 
 /** Can this browser decode the stream at all? WebCodecs exists only on a secure (HTTPS) page. */
@@ -58,7 +64,7 @@ export class StreamClient {
   private context: CanvasRenderingContext2D | null = null;
   private decoder: VideoDecoder | null = null;
   private awaitingKey = true;
-  private pendingSeqs: number[] = [];
+  private pending: { seq: number; timestamp: number }[] = [];
   private state: StreamState = { ...INITIAL };
   private stopped = false;
   private reconnectAttempt = 0;
@@ -179,6 +185,8 @@ export class StreamClient {
           quality: message.quality as QualityId,
           encoder: message.encoder as EncoderId,
           elevated: message.elevated === true,
+          bitrateKbps: typeof message.bitrateKbps === "number" ? message.bitrateKbps : null,
+          rateReduced: message.rateReduced === true,
         });
       case "status":
         return this.update({ phase: message.state as Phase, message: (message.message as string | undefined) ?? null });
@@ -205,8 +213,17 @@ export class StreamClient {
   }
 
   private configure(codec: string, descriptionBase64: string, width: number, height: number): void {
-    this.resetDecoder();
     const description = Uint8Array.from(atob(descriptionBase64), (c) => c.charCodeAt(0));
+    const config: VideoDecoderConfig = { codec, description, codedWidth: width, codedHeight: height, optimizeForLatency: true, hardwareAcceleration: "no-preference" };
+    // The PC hands over to a new encoder mid-stream (quality, display, bitrate). Reconfiguring in place
+    // still decodes the old encoder's frames already queued, so the picture keeps moving until the new keyframe.
+    if (this.decoder?.state === "configured") this.decoder.configure(config);
+    else this.decoder = this.createDecoder(config);
+    this.awaitingKey = true;
+  }
+
+  private createDecoder(config: VideoDecoderConfig): VideoDecoder {
+    this.resetDecoder();
     const decoder = new VideoDecoder({
       output: (frame) => this.paint(frame),
       error: (error) => {
@@ -214,16 +231,12 @@ export class StreamClient {
         this.update({ message: `Decoder error: ${error.message}` });
         this.awaitingKey = true;
         this.decoder = null;
+        this.ackPending();
+        this.send({ t: "keyframe" });
       },
     });
-    decoder.configure({ codec, description, codedWidth: width, codedHeight: height, optimizeForLatency: true, hardwareAcceleration: "no-preference" });
-    this.decoder = decoder;
-    this.awaitingKey = true;
-    if (this.canvas.width !== width || this.canvas.height !== height) {
-      this.canvas.width = width;
-      this.canvas.height = height;
-    }
-    this.update({ videoSize: { width, height } });
+    decoder.configure(config);
+    return decoder;
   }
 
   private onFrame(buffer: ArrayBuffer): void {
@@ -240,23 +253,47 @@ export class StreamClient {
       return this.ack(seq);
     }
     this.awaitingKey = false;
-    this.pendingSeqs.push(seq);
+    const timestamp = timestampMs * 1000;
+    this.pending.push({ seq, timestamp });
     try {
-      decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: timestampMs * 1000, data: new Uint8Array(buffer, FRAME_HEADER_BYTES) }));
+      decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp, data: new Uint8Array(buffer, FRAME_HEADER_BYTES) }));
     } catch {
-      this.pendingSeqs.pop();
+      this.pending.pop();
       this.awaitingKey = true;
       this.ack(seq);
     }
   }
 
   private paint(frame: VideoFrame): void {
+    // Resized here, not on the config: resizing clears the canvas, and the old stream is still showing then.
+    if (this.canvas.width !== frame.displayWidth || this.canvas.height !== frame.displayHeight) {
+      this.canvas.width = frame.displayWidth;
+      this.canvas.height = frame.displayHeight;
+      this.update({ videoSize: { width: frame.displayWidth, height: frame.displayHeight } });
+    }
     this.context ??= this.canvas.getContext("2d", { alpha: false, desynchronized: true });
     this.context?.drawImage(frame, 0, 0, this.canvas.width, this.canvas.height);
+    this.ackPainted(frame.timestamp);
     frame.close();
-    const seq = this.pendingSeqs.shift();
-    if (seq !== undefined) this.ack(seq);
     this.countFrame();
+  }
+
+  /**
+   * Acks the painted frame and any decoded before it that never produced a picture: matching by position
+   * would shift every later ack by one, and the PC reads an unacked frame as the link falling behind.
+   */
+  private ackPainted(timestamp: number): void {
+    const index = this.pending.findIndex((entry) => entry.timestamp === timestamp);
+    const done = this.pending.splice(0, index + 1 || 1);
+    const last = done.at(-1);
+    if (last) this.ack(last.seq);
+  }
+
+  /** The PC only moves past acked frames, so frames a failed decoder will never paint are acked as done. */
+  private ackPending(): void {
+    const last = this.pending.at(-1);
+    this.pending = [];
+    if (last) this.ack(last.seq);
   }
 
   private ack(seq: number): void {
@@ -287,7 +324,7 @@ export class StreamClient {
   private resetDecoder(): void {
     const decoder = this.decoder;
     this.decoder = null;
-    this.pendingSeqs = [];
+    this.pending = [];
     this.awaitingKey = true;
     if (decoder && decoder.state !== "closed") decoder.close();
   }
