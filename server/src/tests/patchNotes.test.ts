@@ -32,6 +32,38 @@ function commit(repo: string, message: string): void {
   git(repo, "commit", "-q", "-m", message);
 }
 
+function commitPath(repo: string, path: string, message: string): string {
+  mkdirSync(join(repo, path, ".."), { recursive: true });
+  writeFileSync(join(repo, path), `${++counter}
+`);
+  git(repo, "add", path);
+  git(repo, "commit", "-q", "-m", message);
+  return git(repo, "rev-parse", "HEAD");
+}
+
+/** "Not live yet" means the running build lacks the change, so it is keyed on WHAT a commit touched: a web
+ *  fix the auto-builder already bundled, or a docs commit, is live even though the server was not rebuilt. */
+async function pendingByPath(): Promise<void> {
+  const repo = join(root, "pending");
+  mkdirSync(repo);
+  git(repo, "init", "-q", "-b", "master");
+  const built = commitPath(repo, "server/src/a.ts", "feat: built into both");
+  const web = commitPath(repo, "web/src/b.tsx", "fix(web): bundled by the auto-builder");
+  const docs = commitPath(repo, "docs/c.md", "docs: no build needed");
+  const serverTest = commitPath(repo, "server/src/tests/d.test.ts", "test: compiled but never run");
+  const server = commitPath(repo, "server/src/e.ts", "fix: needs a deploy");
+  const webLater = commitPath(repo, "web/src/f.tsx", "fix(web): not bundled yet");
+
+  const page = await readPatchNotes({ cwd: repo, serverBuild: built, webBuild: server });
+  assert.deepEqual(new Set(page.pending), new Set([server, webLater]), "only runtime changes above their own build are pending");
+  for (const live of [built, web, docs, serverTest]) assert.ok(!page.pending.includes(live), "a change the running build already has, or needs no build, is live");
+
+  const unknown = await readPatchNotes({ cwd: repo, serverBuild: null, webBuild: "0000000000000000000000000000000000000000" });
+  assert.deepEqual(unknown.pending, [], "no stamp, or one git cannot reach, reads as unknown rather than everything pending");
+  assert.deepEqual((await readPatchNotes({ cwd: repo, skip: 1, serverBuild: built, webBuild: built })).pending, [], "pending rides the first page only");
+  console.log("  ok  \"not live yet\" is keyed on the build each commit's paths feed");
+}
+
 function classification(): void {
   const feat = classifyCommit("feat(web): dock the header under the composer", "Body line.\n\nCo-Authored-By: Someone <x@y>\nSigned-off-by: A <a@b>");
   assert.deepEqual(feat, { kind: "feature", type: "feat", scope: "web", breaking: false, summary: "Dock the header under the composer", body: "Body line." });
@@ -97,6 +129,7 @@ try {
   classification();
   await historyAndUpcoming();
   await notACheckout();
+  await pendingByPath();
   console.log("patch notes: all checks passed");
 } finally {
   await stopChildRunner();

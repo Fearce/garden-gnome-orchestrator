@@ -163,11 +163,16 @@ async function upcomingPass(browser, dataDir) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
   const now = Date.now();
+  let pendingSummary = null;
   const note = (sha, kind, type, summary) => ({ sha: sha.repeat(40).slice(0, 40), short: sha.repeat(7).slice(0, 7), at: now, kind, type, scope: "web", breaking: false, summary, body: "" });
   await page.route("**/api/patch-notes?skip=0", async (route) => {
     const res = await route.fetch();
     const json = await res.json();
     json.upcoming = [note("a", "feature", "feat", "Upstream feature for the lab"), note("b", "internal", "docs", "Upstream docs for the lab")];
+    // "Not live yet" is whatever the server lists as pending — never inferred from row order in the view.
+    const target = json.entries.find((e) => e.kind !== "internal");
+    pendingSummary = target?.summary ?? null;
+    json.pending = target ? [target.sha] : [];
     await route.fulfill({ response: res, json });
   });
   await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
@@ -184,6 +189,9 @@ async function upcomingPass(browser, dataDir) {
     check("...with the update action one click away", await page.isVisible('.pn-upcoming button:has-text("Update now")'));
     await section.screenshot({ path: path.join(shotDir(dataDir), "patch-notes-upcoming.png") });
   }
+  await waitForRows(page);
+  const flagged = await page.$$eval(".pn-day .pn-row:has(.pn-flag.pending) .pn-summary", (els) => els.map((e) => e.textContent.trim()));
+  check("\"Not live yet\" marks exactly the commits the server lists as pending", flagged.length === 1 && flagged[0] === pendingSummary, JSON.stringify(flagged));
   await ctx.close();
 }
 

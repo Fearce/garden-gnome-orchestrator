@@ -10,7 +10,7 @@ import "./patchNotes.css";
  * next update, so the Update badge's "N new commits" finally says what those commits are.
  */
 export function PatchNotes() {
-  const { entries, upcoming, running, hasMore, loading, error, seenSha, load, loadOlder, markSeen } = usePatchNotes();
+  const { entries, upcoming, pending, hasMore, loading, error, seenSha, load, loadOlder, markSeen } = usePatchNotes();
   const [filter, setFilter] = useState<Filter>("all");
   const [showInternal, setShowInternal] = useState(false);
   // Snapshot what was unseen when the area opened, so this visit still marks it after it is recorded as seen.
@@ -21,11 +21,10 @@ export function PatchNotes() {
   }, [load, markSeen]);
 
   const newCount = newerThan(entries, seenAtOpen);
-  const liveCut = running ? entries.findIndex((e) => e.sha === running) : -1;
-  const annotated = useMemo(
-    () => entries.map((note, i) => ({ note, isNew: i < newCount, notLive: i < liveCut })),
-    [entries, newCount, liveCut],
-  );
+  const annotated = useMemo(() => {
+    const unbuilt = new Set(pending);
+    return entries.map((note, i) => ({ note, isNew: i < newCount, notLive: unbuilt.has(note.sha) }));
+  }, [entries, newCount, pending]);
   const visible = annotated.filter(({ note }) => shows(note, filter, showInternal));
   const internalCount = entries.filter((e) => e.kind === "internal").length;
 
@@ -173,7 +172,7 @@ function NoteRow({ note, isNew, notLive }: Row) {
           {note.breaking ? <span className="pn-flag breaking">Breaking</span> : null}
           {isNew ? <span className="pn-flag new">New to you</span> : null}
           {notLive ? (
-            <span className="pn-flag pending" title="Committed after the running server was built. It goes live with the next deploy or restart.">
+            <span className="pn-flag pending" title="This change is committed but not built into what is running yet. A server change goes live with the next deploy, a web change with the next web build and a reload.">
               Not live yet
             </span>
           ) : null}

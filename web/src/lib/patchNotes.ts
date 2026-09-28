@@ -23,6 +23,8 @@ export interface PatchNote {
 interface PatchNotesPage {
   head: string | null;
   running: string | null;
+  /** Commits whose server or web change is not built into what is running yet (first page only). */
+  pending: string[];
   branch: string | null;
   upcoming: PatchNote[];
   entries: PatchNote[];
@@ -33,6 +35,7 @@ interface PatchNotesPage {
 interface PatchNotesState {
   head: string | null;
   running: string | null;
+  pending: string[];
   upcoming: PatchNote[];
   entries: PatchNote[];
   hasMore: boolean;
@@ -82,7 +85,7 @@ export const usePatchNotes = create<PatchNotesState>((set, get) => {
         writeSeen(page.head);
         set({ seenSha: page.head });
       }
-      set({ running: page.running, upcoming: page.upcoming, error: page.error });
+      set({ running: page.running, pending: page.pending ?? [], upcoming: page.upcoming, error: page.error });
       // Same HEAD: keep what is loaded, so a refresh does not collapse the older pages the operator opened.
       if (page.head !== get().head || get().entries.length === 0) set({ head: page.head, entries: page.entries, hasMore: page.hasMore });
     } catch (e) {
@@ -95,6 +98,7 @@ export const usePatchNotes = create<PatchNotesState>((set, get) => {
   return {
     head: null,
     running: null,
+    pending: [],
     upcoming: [],
     entries: [],
     hasMore: false,
