@@ -2363,16 +2363,27 @@ export class ThreadManager implements OrchestratorApi {
     for (const thread of this.db.listThreads()) {
       const open = this.reviewInjections.listOpen(thread.id);
       if (!open.length) continue;
-      const qa = open.filter((row) => row.lane === "qa");
-      if (qa.length) {
+      // Only a row claiming a recipient run has a claim to withdraw. An 'accepted' or implementor-queued
+      // row is already where the restart would put it; re-announcing it spammed every boot (54 lines on one
+      // parked task), and pulling a queued row back to QA stranded it on a task no QA will ever run for.
+      const qaClaimed = open.filter((row) => row.lane === "qa" && (row.status === "delivered_reviewer" || row.status === "acknowledged_reviewer"));
+      if (qaClaimed.length) {
         const requeued = this.reviewInjections.requeueForReviewer(
-          qa.map((row) => row.id),
+          qaClaimed.map((row) => row.id),
           "The server restarted before the QA-directed instruction reached a terminal state; the next QA run must acknowledge it again.",
           null,
         );
         for (const row of requeued) {
           this.reviewInjectionFeed(thread.id, `↪ ${reviewInjectionLabel(row.id)} survived the server restart; prior QA delivery is no longer claimed, and the next QA run will receive it with its attachments.`);
         }
+      }
+      const qaImplementorClaimed = open.filter((row) => row.lane === "qa" && row.status === "delivered_implementor");
+      if (qaImplementorClaimed.length) {
+        const queued = this.reviewInjections.queueForImplementor(
+          qaImplementorClaimed.map((row) => row.id),
+          "The server restarted before the implementor finished this QA-lane instruction; it is retained for the next implementor run.",
+        );
+        for (const row of queued) this.reviewInjectionFeed(thread.id, `⧗ ${reviewInjectionLabel(row.id)} survived the server restart and is queued for the next implementor run; it is not claimed as delivered to the dead one.`);
       }
 
       const reviewer = open.filter((row) => row.lane === "reviewer");
@@ -10659,7 +10670,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
       // A queue-mode finish directive intentionally waits for the current QA turn. Do its queued work
       // now, but do not promise another reviewer to that implementor: the durable owner override wins.
-      if (this.qaBypassedByOwner(thread.id) && this.queuedForImplementor.get(thread.id)?.length && res && !res.isError) {
+      if (this.qaBypassedByOwner(thread.id) && this.hasQueuedImplementorWork(thread.id) && res && !res.isError) {
         res = await this.drainQueuedImplementor(thread, effort, kickoff, res, false);
       }
       if (this.settleOwnerQaBypass(thread, res)) return;
@@ -10763,7 +10774,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         } else {
           // A user-queued follow-up is still implementor work. Preserve the existing hand-off contract,
           // then begin a fresh editing-QA cycle for that new work rather than accepting it unreviewed.
-          if (this.queuedForImplementor.get(thread.id)?.length && res && !res.isError && !this.cancelled(thread.id)) {
+          if (this.hasQueuedImplementorWork(thread.id) && res && !res.isError && !this.cancelled(thread.id)) {
             res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
             if (this.cancelled(thread.id)) return;
             if (this.settleOwnerQaBypass(thread, res)) return;
@@ -10795,7 +10806,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         // A follow-up queued during QA (routed to queuedForImplementor)? The implementor does it before
         // we call the task done — the Queue button promises delivery at the hand-off, and a QA pass is
         // one. At the round cap we still run the queued work but accept it without another QA pass.
-        if (this.queuedForImplementor.get(thread.id)?.length && res && !res.isError && !this.cancelled(thread.id)) {
+        if (this.hasQueuedImplementorWork(thread.id) && res && !res.isError && !this.cancelled(thread.id)) {
           res = await this.drainQueuedImplementor(thread, effort, kickoff, res, true);
           if (this.cancelled(thread.id)) return;
           if (this.settleOwnerQaBypass(thread, res)) return;
@@ -10927,6 +10938,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.integrateSubTasks(thread, effort, kickoff, res, qaFollows);
   }
 
+  /** Implementor work owed at a hand-off: the in-memory Queue, or a durable instruction queued for the
+   *  implementor. Only the durable half survives a restart, which empties the in-memory queue. */
+  private hasQueuedImplementorWork(threadId: string): boolean {
+    return !!this.queuedForImplementor.get(threadId)?.length || this.reviewInjections.pendingImplementor(threadId).length > 0;
+  }
+
   /** The Queue button's half of the hand-off boundary (see drainQueuedImplementor). */
   private async drainQueuedFollowUps(
     thread: Thread,
@@ -10935,14 +10952,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     res: ResultEvent | undefined,
     qaFollows: boolean,
   ): Promise<ResultEvent | undefined> {
-    while (this.queuedForImplementor.get(thread.id)?.length && !this.cancelled(thread.id) && res && !res.isError) {
-      const queued = this.queuedForImplementor.get(thread.id)!;
+    while (this.hasQueuedImplementorWork(thread.id) && !this.cancelled(thread.id) && res && !res.isError) {
+      const queued = this.queuedForImplementor.get(thread.id) ?? [];
       this.queuedForImplementor.delete(thread.id);
       const durableRows = this.reviewInjections.pendingImplementor(thread.id);
       const durableBlock = durableRows.length
-        ? `\n\nDurable owner instruction(s):\n${durableRows.map((row) => `${reviewInjectionLabel(row.id)}: ${row.instruction}`).join("\n\n")}`
+        ? `Durable owner instruction(s):\n${durableRows.map((row) => `${reviewInjectionLabel(row.id)}: ${row.instruction}`).join("\n\n")}`
         : "";
-      const msg = acknowledgedInjection(`[Queued follow-up from ${config.ownerName} — do this too before you finish and hand off]\n${queued.join("\n\n")}${durableBlock}`);
+      const body = [queued.join("\n\n"), durableBlock].filter(Boolean).join("\n\n");
+      const msg = acknowledgedInjection(`[Queued follow-up from ${config.ownerName} — do this too before you finish and hand off]\n${body}`);
       // End the just-finished run before relaunching so only one implementor ever holds the slot (the
       // same ordering QA fix-rounds use); the session id survives for the warm resume.
       await this.stopLive(thread.id);
@@ -11351,7 +11369,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!stoppedByOwner) this.reportSelfImproveOutcome(thread.id, start.run, res, { timedOut, silent, wrapUpSent: wrapUp.sent() });
     // A queued owner instruction is separate task work and must run even if this optional bonus
     // failed or timed out. Close the bonus identity before the normal implementor resume.
-    if (this.queuedForImplementor.get(thread.id)?.length && !this.cancelled(thread.id)) {
+    if (this.hasQueuedImplementorWork(thread.id) && !this.cancelled(thread.id)) {
       this.db.updateThreadStageOutputs(thread.id, { selfImproving: false });
       this.selfImproving.delete(thread.id);
       const followUp = await this.drainQueuedImplementor(

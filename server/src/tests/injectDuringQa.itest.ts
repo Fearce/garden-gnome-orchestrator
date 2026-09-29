@@ -1050,6 +1050,103 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Test M: boot reconcile withdraws only real QA delivery claims, and says so once -----------------
+  // A task parked in review with QA-lane rows already 'accepted' or queued for the implementor has no
+  // delivery claim to withdraw. Re-announcing them on every boot spammed 54 identical lines onto one task.
+  console.log("\nTest M — boot reconcile touches only claimed QA rows and is silent on the next boot");
+  {
+    const h = makeHarness();
+    const reboots: Array<{ capSupervisor?: NodeJS.Timeout }> = [];
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "review" });
+      const store = h.internals.reviewInjections;
+      const accepted = store.create({ threadId: id, lane: "qa", mode: "append", instruction: "already waiting for QA" });
+      const queued = store.create({ threadId: id, lane: "qa", mode: "append", instruction: "queued for the implementor", status: "queued_implementor" });
+      const claimed = store.create({ threadId: id, lane: "qa", mode: "append", instruction: "delivered to a QA run that died" });
+      store.markReviewerDelivered([claimed.id], "dead-qa-run");
+      const implClaimed = store.create({ threadId: id, lane: "qa", mode: "interrupt", instruction: "delivered to an implementor that died", status: "queued_implementor" });
+      store.markImplementorDelivered([implClaimed.id], "dead-impl-run");
+
+      const reboot = (): void => {
+        reboots.push(new ThreadManager(h.db, new EventHub(), new FileMemoryService(join(h.dir, `memory-reboot-${reboots.length}`)), new StubAccounts() as unknown as AccountManager) as unknown as { capSupervisor?: NodeJS.Timeout });
+      };
+      const restartLines = (): string[] => h.db.listMessages(id).map((m) => m.content).filter((c) => c.includes("restart"));
+      reboot();
+      check("an already-accepted QA row stays accepted", store.get(accepted.id)?.status === "accepted", store.get(accepted.id)?.status);
+      check("a row queued for the implementor is not pulled back to QA", store.get(queued.id)?.status === "queued_implementor", store.get(queued.id)?.status);
+      check("a row claimed by a dead QA run is requeued for QA", store.get(claimed.id)?.status === "accepted" && store.get(claimed.id)?.reviewerRunId == null, JSON.stringify(store.get(claimed.id)));
+      check("a row claimed by a dead implementor is queued for the next implementor", store.get(implClaimed.id)?.status === "queued_implementor", store.get(implClaimed.id)?.status);
+      const first = restartLines();
+      check("the first boot announced exactly the two withdrawn claims", first.length === 2, JSON.stringify(first));
+      reboot();
+      reboot();
+      check("later boots add no restart lines", restartLines().length === first.length, JSON.stringify(restartLines()));
+    } finally {
+      for (const r of reboots) if (r.capSupervisor) clearInterval(r.capSupervisor);
+      h.dispose();
+    }
+  }
+
+  // -- Test N: a durable instruction queued for the implementor is drained at QA pass --------------------
+  // The in-memory queue is gone after a restart; the durable row alone must still reach an implementor
+  // before a passing QA settles the task, or it sits open forever on a finished task.
+  console.log("\nTest N — a QA pass drains a durable implementor-queued instruction with an empty memory queue");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const row = h.internals.reviewInjections.create({
+        threadId: id,
+        lane: "qa",
+        mode: "append",
+        instruction: "send the alert as a direct message",
+        status: "queued_implementor",
+      });
+      delete h.internals.drainQueuedImplementor;
+      let drainedBeforeQa = false;
+      const agents = stubQaRunRole(h, async () => {
+        drainedBeforeQa = h.resumes.some((m) => m.includes("send the alert as a direct message"));
+      });
+      await runLoop(h, id);
+      check("the queued instruction reached a resumed implementor", h.resumes.some((m) => m.includes("send the alert as a direct message")), JSON.stringify(h.resumes));
+      check("the durable row settled handled", h.internals.reviewInjections.get(row.id)?.status === "handled", h.internals.reviewInjections.get(row.id)?.status);
+      check("QA reviewed only after the instruction was implemented", agents.length === 1 && drainedBeforeQa, `qaRuns=${agents.length} drainedBeforeQa=${drainedBeforeQa}`);
+      check("the task settled done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest N2 — a durable instruction queued during QA is implemented and re-checked before QA's pass settles");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      delete h.internals.drainQueuedImplementor;
+      let rowId = "";
+      const agents = stubQaRunRole(h, async () => {
+        if (rowId) return;
+        rowId = h.internals.reviewInjections.create({
+          threadId: id,
+          lane: "qa",
+          mode: "append",
+          instruction: "notify me on discord when it errors",
+          status: "queued_implementor",
+        }).id;
+      });
+      await runLoop(h, id);
+      check("the instruction queued during QA reached a resumed implementor", h.resumes.some((m) => m.includes("notify me on discord")), JSON.stringify(h.resumes));
+      check("that durable row settled handled", h.internals.reviewInjections.get(rowId)?.status === "handled", h.internals.reviewInjections.get(rowId)?.status);
+      check("QA re-checked the drained work before settling", agents.length === 2, `qaRuns=${agents.length}`);
+      check("the task settled done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Parked task: explicit owner acceptance should not spawn an implementor just to mark it done -----
   console.log("\nOwner override D - a parked task is accepted directly");
   {
