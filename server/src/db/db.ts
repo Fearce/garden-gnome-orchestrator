@@ -135,6 +135,7 @@ function rowToThreadFields(r: Row, manualDeploymentRaw: unknown): Thread {
     // The state a closed task came from: kept for restore, and surfaced so the UI can mark tasks that
     // finished correctly (closed_prev_state === 'done') with a checkmark. Null on never-closed rows.
     closedPrevState: (r.closed_prev_state as ThreadState | null) ?? null,
+    pinnedAt: (r.pinned_at as number | null) ?? null,
     // Dispatch lane: null = normal pipeline, 'read' = the read-only reader lane. A small scalar the UI
     // reads for the READ badge, so it belongs on the DTO (unlike the heavy stage_outputs blob).
     lane: (r.lane as ThreadLane | null) ?? null,
@@ -202,7 +203,7 @@ function summaryOfThread(thread: Thread, r: Row): ThreadSummary {
  *  represented only by its extracted `manual_deployment_raw` sub-field (see `rowToThreadFromListing`).
  *  Shared by every bulk listing query so they stay in sync with `rowToThreadFields`. */
 const THREAD_LISTING_COLUMNS = `id, title, state, workspace, brief, raw_prompt, error, effort_override,
-  model_request, role_toggles, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
+  model_request, role_toggles, closed_at, closed_prev_state, pinned_at, lane, baseline_head, duration_ms, deadline_at,
   active_deadline_at, agent_count, parent_id, assignment, sub_task, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
 
@@ -237,7 +238,7 @@ const LATEST_PREVIEW_BACKFILL_CHUNK = 12;
 const THREAD_SUMMARY_COLUMNS = `id, title, state, workspace, error, effort_override,
   substr(brief, 1, ${BRIEF_PREVIEW_CHARS}) AS brief_preview,
   latest_message_preview,
-  model_request, role_toggles, closed_at, closed_prev_state, lane, baseline_head, duration_ms, deadline_at,
+  model_request, role_toggles, closed_at, closed_prev_state, pinned_at, lane, baseline_head, duration_ms, deadline_at,
   active_deadline_at, agent_count, parent_id, assignment, sub_task, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
 
@@ -894,6 +895,7 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN role_toggles TEXT",
       "ALTER TABLE threads ADD COLUMN closed_at INTEGER",
       "ALTER TABLE threads ADD COLUMN closed_prev_state TEXT",
+      "ALTER TABLE threads ADD COLUMN pinned_at INTEGER",
       "ALTER TABLE threads ADD COLUMN baseline_head TEXT",
       "ALTER TABLE threads ADD COLUMN duration_ms INTEGER",
       "ALTER TABLE threads ADD COLUMN deadline_at INTEGER",
@@ -2267,6 +2269,12 @@ export class Db {
     const result = this.raw.prepare(
       "UPDATE threads SET title = ?, updated_at = ? WHERE id = ? AND owner_title_locked = 0 AND title <> ?",
     ).run(title, now(), id, title);
+    return result.changes ? this.getThread(id) : null;
+  }
+
+  /** Pin or unpin a task on the board. Leaves updated_at alone: pinning is not activity on the task. */
+  setThreadPinned(id: string, pinned: boolean): Thread | null {
+    const result = this.raw.prepare("UPDATE threads SET pinned_at = ? WHERE id = ?").run(pinned ? now() : null, id);
     return result.changes ? this.getThread(id) : null;
   }
 

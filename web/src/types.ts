@@ -159,6 +159,7 @@ export interface Thread {
   roleToggles?: RoleToggles | null;
   closedAt?: number | null;
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' marks a successful close
+  pinnedAt?: number | null; // when the owner pinned it to the front of the board; null = not pinned
   lane?: ThreadLane | null; // 'read' = the read-only reader lane — drives the card's READ badge
   // Timed task: the wall-clock work window. `deadlineAt` is absolute once work starts, so the card's
   // countdown is just (deadlineAt - now) and survives reload/restart. Null also covers a queued window.
@@ -1437,6 +1438,7 @@ export type ClientCommand =
   | { type: "thread.autoReview"; threadId: string }
   | { type: "thread.close"; threadId: string }
   | { type: "thread.restore"; threadId: string }
+  | { type: "thread.pin"; threadId: string; pinned: boolean }
   | { type: "thread.dismiss"; threadId: string }
   | { type: "thread.history"; threadId: string; before?: MessageCursor }
   | { type: "thread.approve"; threadId: string; approved: boolean; feedback?: string }

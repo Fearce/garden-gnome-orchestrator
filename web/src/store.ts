@@ -430,6 +430,8 @@ interface State {
   autoReview: (threadId: string) => void;
   close: (threadId: string) => void;
   restore: (threadId: string) => void;
+  /** Pin a task to the front of the board (ahead of every sort, and shown even when completed tasks are hidden). */
+  setPinned: (threadId: string, pinned: boolean) => void;
   dismiss: (threadId: string) => void;
   setApproval: (on: boolean) => void;
   setSettings: (patch: SettingsPatch) => void;
@@ -1634,6 +1636,7 @@ export const useStore = create<State>((set) => ({
   autoReview: (threadId) => sendCommand({ type: "thread.autoReview", threadId }),
   close: (threadId) => sendCommand({ type: "thread.close", threadId }),
   restore: (threadId) => sendCommand({ type: "thread.restore", threadId }),
+  setPinned: (threadId, pinned) => sendCommand({ type: "thread.pin", threadId, pinned }),
   dismiss: (threadId) => sendCommand({ type: "thread.dismiss", threadId }),
   setApproval: (on) => sendCommand({ type: "approval.set", on }),
   // Optimistic: reflect the change locally at once, then send it. The server's `settings` broadcast

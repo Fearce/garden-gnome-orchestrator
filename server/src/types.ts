@@ -181,6 +181,7 @@ export interface Thread {
   effortOverride?: Effort | null; // operator-pinned implementor effort, snapshotted at a skip-director dispatch — beats the planner's pick
   closedAt?: number | null; // when soft-closed (state === "closed"); drives the 30-day auto-purge clock
   closedPrevState?: ThreadState | null; // the state a closed task came from — 'done' means it finished correctly (drives the closed-card checkmark)
+  pinnedAt?: number | null; // when the owner pinned it to the front of the board; null = not pinned
   lane?: ThreadLane | null; // dispatch lane: null = normal pipeline, 'read' = the read-only reader lane (drives the card's READ badge)
   baselineHead?: string | null; // repo HEAD sha captured at dispatch — the "before" point for scoping the Changes chip to this task's own diff; null when not a repo / legacy rows
   // ---- Timed task: a single task with a wall-clock work window (orchestrator/timedTasks.ts) ----

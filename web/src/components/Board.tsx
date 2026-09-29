@@ -65,6 +65,7 @@ interface SortFacts {
   rank: number;
   workspace: string;
   title: string;
+  pinned: boolean;
 }
 type BoardItem = SortFacts & ({ kind: "task"; thread: Thread } | { kind: "cowork"; session: CoworkSession });
 
@@ -100,12 +101,19 @@ const COWORK_RANK: Record<CoworkSession["state"], number> = { running: 2, stoppi
 
 const taskItem = (thread: Thread): BoardItem => ({
   kind: "task", thread, id: thread.id, createdAt: thread.createdAt, updatedAt: thread.updatedAt,
-  rank: STATUS_RANK[thread.state], workspace: thread.workspace, title: thread.title,
+  rank: STATUS_RANK[thread.state], workspace: thread.workspace, title: thread.title, pinned: isPinned(thread),
 });
 const coworkItem = (session: CoworkSession): BoardItem => ({
   kind: "cowork", session, id: `cowork:${session.id}`, createdAt: session.createdAt, updatedAt: session.updatedAt,
-  rank: COWORK_RANK[session.state], workspace: session.workspace, title: session.name,
+  rank: COWORK_RANK[session.state], workspace: session.workspace, title: session.name, pinned: false,
 });
+
+const isPinned = (thread: Thread) => thread.pinnedAt != null;
+
+// Pinned cards lead the board under every sort and in the manual drag order; each group keeps the chosen
+// order inside it, so dragging an unpinned card above a pinned one just settles it back below.
+const pinnedFirst = (cmp: (a: SortFacts, b: SortFacts) => number) => (a: SortFacts, b: SortFacts) =>
+  Number(b.pinned) - Number(a.pinned) || cmp(a, b);
 
 // The repo folder (last path segment), lower-cased and sans separator — the key the user scans by when
 // sorting "by project". splitWorkspace keeps the leading slash for display, so strip it here.
@@ -121,7 +129,7 @@ const SORT_OPTIONS: { value: TaskSort; label: string; cmp: (a: SortFacts, b: Sor
   { value: "workspace", label: "Project", cmp: (a, b) => repoKey(a).localeCompare(repoKey(b)) || byRecency(a, b) },
   { value: "title", label: "Alphabetical", cmp: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }) || byRecency(a, b) },
 ];
-const sortComparator = (sort: TaskSort) => (SORT_OPTIONS.find((o) => o.value === sort) ?? SORT_OPTIONS[0]!).cmp;
+const sortComparator = (sort: TaskSort) => pinnedFirst((SORT_OPTIONS.find((o) => o.value === sort) ?? SORT_OPTIONS[0]!).cmp);
 
 // The primary discriminator of each sort, WITHOUT the byRecency tiebreaker. Under drag-and-drop the board
 // is regrouped by this key while equal-rank cards keep their manual order — so a real key change (a status
@@ -165,12 +173,13 @@ export function Board() {
   // threads we already subscribe to — no extra store read — and mirrors the server's cap-park scan.
   const frozen = all.some((t) => isCapParked(t));
   // Closed tasks are pulled out of the main board into the Closed holding area below; completed tasks
-  // are hidden too when the owner turned that off in settings.
-  const hiddenCompleted = !showCompleted ? all.filter((t) => COMPLETED_STATES.has(t.state)).length : 0;
+  // are hidden too when the owner turned that off in settings — except pinned ones, which always stay.
+  const hiddenByCompletion = (t: Thread) => !showCompleted && COMPLETED_STATES.has(t.state) && !isPinned(t);
+  const hiddenCompleted = all.filter(hiddenByCompletion).length;
   // A shotgun COLLABORATOR is part of another task, not a task of its own: showing N of them beside
   // their lead is exactly the card clutter the compact-UX brief rules out, and the lead's own card
   // already reports their progress. They stay fully selectable — the lead's detail panel links to them.
-  const activeThreads = all.filter((t) => !t.parentId && t.state !== "closed" && (showCompleted || !COMPLETED_STATES.has(t.state)));
+  const activeThreads = all.filter((t) => !t.parentId && t.state !== "closed" && !hiddenByCompletion(t));
   // Open Co-work sessions ride in the same list as the tasks; closed ones join closed tasks below.
   const active = [...activeThreads.map(taskItem), ...cowork.open.map(coworkItem)];
   // The id of the card currently being dragged (null when idle); declared here so `list` can freeze its
@@ -184,7 +193,7 @@ export function Board() {
   const list = useMemo(() => {
     if (!dndEnabled) return [...active].sort(sortComparator(taskSort));
     const manual = orderByManual(active, taskOrder);
-    return activeId ? manual : [...manual].sort(PRIMARY_CMP[taskSort]);
+    return activeId ? manual : [...manual].sort(pinnedFirst(PRIMARY_CMP[taskSort]));
   }, [dndEnabled, active, taskOrder, taskSort, activeId]);
 
   // Picking a sort always persists the choice. With DnD off the `list` memo re-sorts on it directly.
@@ -648,7 +657,7 @@ const Card = memo(function Card({
     <div
       ref={innerRef}
       data-thread-id={thread.id}
-      className={"card" + (selected ? " sel" : "") + (live ? " live" : "") + (capParked ? " frozen" : "") + (dragging ? " dragging" : "") + (draggableCard ? " draggable" : "")}
+      className={"card" + (selected ? " sel" : "") + (isPinned(thread) ? " pinned" : "") + (live ? " live" : "") + (capParked ? " frozen" : "") + (dragging ? " dragging" : "") + (draggableCard ? " draggable" : "")}
       style={{ "--state-color": stateColor(thread.state), ...style } as CSSProperties}
       // A frozen card is frosted but still fully OPENABLE — clicking it selects/opens the detail pane
       // like any other card, where the mutating live-controls (inject/interrupt) are the parts that get
@@ -767,6 +776,7 @@ const Card = memo(function Card({
           ) : null}
         </span>
         <span className="foot-right">
+          <PinButton thread={thread} />
           {chatRoom ? (
             <button
               className="card-chatroom"
@@ -796,6 +806,39 @@ const Card = memo(function Card({
     </div>
   );
 });
+
+/** The card's pin toggle. Unpinned it stays out of the way until the card is hovered; pinned it stays
+ *  lit, so a glance down the board tells which cards are held at the front and why. */
+export function PinButton({ thread }: { thread: Thread }) {
+  const pinned = isPinned(thread);
+  const label = pinned ? "Unpin — let this task follow the sort again" : "Pin — keep this task at the front of the board";
+  return (
+    <button
+      className={"card-pin" + (pinned ? " on" : "")}
+      title={label}
+      aria-label={pinned ? "Unpin task" : "Pin task"}
+      aria-pressed={pinned}
+      // Swallow the pointerdown so pressing the pin on a draggable card never arms a drag.
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        useStore.getState().setPinned(thread.id, !pinned);
+      }}
+    >
+      <PinIcon />
+    </button>
+  );
+}
+
+/** Lucide's pin, drawn in currentColor; the pinned state fills the head. */
+function PinIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 17v5" />
+      <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+    </svg>
+  );
+}
 
 /** A board Card made sortable. dnd-kit's transform/transition drive the live shuffle; the active slot
  *  dims to a placeholder (the lifted clone lives in the board's DragOverlay). The WHOLE card is the

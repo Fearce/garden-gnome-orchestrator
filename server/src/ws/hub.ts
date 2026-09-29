@@ -23,7 +23,7 @@ import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./pro
 import { isAuthed } from "../auth.js";
 import { logCrash } from "../crashLog.js";
 import { CHAT_PAGE_SIZE, THREAD_HISTORY_PAGE_SIZE } from "../types.js";
-import type { Message, OrchestratorSettings } from "../types.js";
+import type { Message, OrchestratorSettings, Thread, ThreadSummary } from "../types.js";
 import { injectThreadWithReceipt } from "./threadInjectionReceipt.js";
 
 /** Owner-facing rewrite for CLI structured-role walls (Grok multi-turn QA especially). Idempotent
@@ -152,7 +152,9 @@ function buildHello(ctx: WsContext): ServerEvent {
  *    the number of sockets in it.
  *
  * The trade is explicit: on a BUSY server a connecting client can receive a board up to `ttlMs` stale,
- * which the live subscription it opens immediately afterwards corrects.
+ * which the live subscription it opens immediately afterwards corrects. Owner edits are the exception:
+ * Co-work sessions and existing task cards are patched into the cached snapshot from their events, so
+ * a pin or close followed by a reload never comes back undone (only a card's two text previews can lag).
  */
 export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs: number = HELLO_CACHE_MS): () => ServerEvent {
   let cached: { at: number; event: ServerEvent } | null = null;
@@ -173,6 +175,8 @@ export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs:
           cached.event = { ...cached.event, coworkSessions: [event.session, ...sessions.filter((session) => session.id !== event.session.id)] };
         } else if (cached?.event.type === "hello" && event.type === "cowork.removed") {
           cached.event = { ...cached.event, coworkSessions: (cached.event.coworkSessions ?? []).filter((session) => session.id !== event.sessionId) };
+        } else if (cached?.event.type === "hello" && cached.event.threads && event.type === "thread.upsert") {
+          cached.event = { ...cached.event, threads: withThreadCard(cached.event.threads, event.thread) };
         }
         // A streaming delta is not durable board state — it cannot change any field of the snapshot,
         // and it is by far the most frequent event, so letting it dirty the snapshot would mean an
@@ -187,6 +191,18 @@ export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs:
     dirty = false;
     return event;
   };
+}
+
+/** The board rows with one task's card brought up to date. The upsert is a full Thread, so its heavy
+ *  fields stay out of the slim row and the row keeps its own previews. A task not yet in the snapshot is
+ *  left to the next rebuild: its card needs previews only the database query produces. */
+function withThreadCard(rows: ThreadSummary[], thread: Thread): ThreadSummary[] {
+  const at = rows.findIndex((row) => row.id === thread.id);
+  if (at < 0) return rows;
+  const { brief: _brief, rawPrompt: _rawPrompt, ...card } = thread;
+  const next = [...rows];
+  next[at] = { ...rows[at]!, ...card };
+  return next;
 }
 
 /** A cached connect snapshot with the settings read fresh. The console adopts `hello.settings` wholesale,
@@ -369,6 +385,9 @@ export async function handleCommand(
       break;
     case "thread.restore":
       sendThreadAction(socket, cmd.threadId, "restore", ctx.manager.restoreThread(cmd.threadId));
+      break;
+    case "thread.pin":
+      sendThreadAction(socket, cmd.threadId, "pin", ctx.manager.setThreadPinned(cmd.threadId, cmd.pinned));
       break;
     case "thread.dismiss":
       ctx.manager.dismissThread(cmd.threadId);

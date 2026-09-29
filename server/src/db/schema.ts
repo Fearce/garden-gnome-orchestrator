@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS threads (
   stage_outputs TEXT,
   closed_at         INTEGER,
   closed_prev_state TEXT,
+  -- When the owner pinned this task to the front of the board; NULL = not pinned. Never bumps updated_at,
+  -- which the card's age/elapsed read and the "Last updated" sort ranks by.
+  pinned_at         INTEGER,
   -- Dispatch lane. NULL = the normal task-aware implementation route (planner/QA optional); 'read' = the cheap single-agent
   -- read-only reader lane (dispatch_read) — one Sonnet reader that answers a lookup and escalates
   -- rather than half-answering, no QA. Drives the card's READ badge and runPipeline's short-circuit.

@@ -292,7 +292,15 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   `closed_at` (`CLOSED_TTL_MS`): `purgeExpiredClosed` sweeps on boot and daily, deleting expired rows
   and broadcasting `thread.removed`. `closed_at`/`closed_prev_state` are written only by
   `closeThread`/`restoreThread` (never the generic `updateThread` SQL), so a normal state change can't
-  clobber them; `closed_prev_state` stays off the `Thread` DTO.
+  clobber them; `closedPrevState` rides on the `Thread` DTO so a closed card can show its ✓.
+- **Pinned tasks lead the board.** The pin on a card's footer → `thread.pin` → `setThreadPinned`
+  stamps `threads.pinned_at` (null = unpinned; `pinnedAt` on the DTO) and broadcasts
+  `thread.upsert`. The pin is server-side so it holds on every console, and it never bumps
+  `updated_at` — pinning is not activity, and the card's age and the "Last updated" sort read it.
+  `Board.tsx`'s `pinnedFirst` wraps every sort and the drag-and-drop regroup, so pinned cards come
+  first in the chosen order and unpinned ones follow; a pinned task also stays on the board when
+  "Show completed tasks" is off. Closing keeps the pin, so Restore brings it back to the front.
+  Collaborators and sub-tasks can't be pinned — they render inside their lead. Gate: `test:pinned-tasks`.
 - **Agent-routed and task-aware.** `runPipeline` has no fixed mandatory sequence — the selected
   stages decide the next. Whether the planner and/or QA run at all for a given task is itself a
   decision, computed once per pipeline episode by `orchestrator/routeSelection.ts`'s

@@ -9630,7 +9630,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const deadlineAt = Date.now() + thread.durationMs;
     const activated = { ...thread, deadlineAt };
     this.db.setTimedWindow(thread.id, thread.durationMs, deadlineAt);
-    this.hub.publish({ type: "thread.upsert", thread: activated });
+    // Broadcast the stored row: `thread` was read before the slot was won, and an owner edit since (a pin) must not revert on every console.
+    this.hub.publish({ type: "thread.upsert", thread: this.db.getThread(thread.id) ?? activated });
     this.hub.log("info", `Timed task ${thread.id.slice(0, 8)} began its ${formatDuration(thread.durationMs)} work window.`);
     return activated;
   }
@@ -13922,6 +13923,19 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     this.hub.log("info", `Restored task ${threadId.slice(0, 8)} → ${updated?.state ?? "review"}.`);
     return { ok: true, state: updated?.state ?? "review" };
+  }
+
+  /** Pin a task to the front of the board, or unpin it. Collaborators and sub-tasks never sit on the
+   *  board themselves — they render inside their lead — so there is nothing of theirs to pin. */
+  setThreadPinned(threadId: string, pinned: boolean): ThreadActionResult {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (thread.parentId) return { ok: false, error: "Only a board task can be pinned — this one lives inside its lead task." };
+    // Already so: re-send the card anyway, since a click that disagrees with the server came from a stale board.
+    const updated = (thread.pinnedAt != null) === pinned ? thread : this.db.setThreadPinned(threadId, pinned);
+    if (!updated) return { ok: false, error: "No such task." };
+    this.hub.publish({ type: "thread.upsert", thread: updated });
+    return { ok: true, state: updated.state };
   }
 
   /** Permanently delete closed tasks whose 30-day window has elapsed. Runs on boot (after

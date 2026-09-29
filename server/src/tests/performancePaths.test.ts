@@ -315,6 +315,21 @@ try {
   assert.deepEqual(afterDelete.coworkSessions, [], "deleting a closed conversation also survives reconnect");
   assert.equal(builds, afterFirst, "Co-work writes preserve the expensive snapshot rate limit");
 
+  // So must a task card change — a pin clicked just before a reload came back unpinned, and a second
+  // click was a no-op on the server, so the card stayed wrong.
+  const boardRow = { id: "card", title: "Old title", briefPreview: "first line", latestMessagePreview: "last said", pinnedAt: null };
+  const withBoard = createHelloCache(() => ({ type: "hello", threads: [boardRow] }) as unknown as ServerEvent, hub, 10_000);
+  const servedBoard = withBoard();
+  hub.publish({ type: "thread.upsert", thread: { ...boardRow, title: "New title", pinnedAt: 123, brief: "the full brief", rawPrompt: "the ask" } as never });
+  const reloaded = withBoard();
+  assert.ok(reloaded.type === "hello");
+  assert.deepEqual(
+    reloaded.threads,
+    [{ id: "card", title: "New title", briefPreview: "first line", latestMessagePreview: "last said", pinnedAt: 123 }],
+    "a reconnect sees the changed card, still slim, with its previews intact",
+  );
+  assert.notEqual(reloaded, servedBoard, "an already served snapshot is not mutated");
+
   finished = true;
   console.log("Performance paths OK — board summary is slim, task history keyset-pages through its composite index, and the connect snapshot survives a reconnect storm.");
 } finally {

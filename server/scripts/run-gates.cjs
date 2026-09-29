@@ -138,6 +138,7 @@ const GATES = [
   "test:shotgun",
   "test:task-modes",
   "test:title-ownership",
+  "test:pinned-tasks",
   "test:subtasks",
   "test:jev-client",
   "test:zai-cap",
