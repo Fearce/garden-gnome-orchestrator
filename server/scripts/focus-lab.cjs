@@ -153,7 +153,10 @@ async function main() {
       // On the page, not the context: these survive the reload below, and a listener attached per-page
       // after each navigation would miss whatever threw during the one navigation being tested.
       page.on("pageerror", (error) => errors.push(String(error)));
-      page.on("console", (message) => message.type() === "error" && errors.push(message.text()));
+      // The voice bridge 502s whenever the external voice-gateway isn't running; the UI tolerates that,
+      // and the lab doesn't boot one, so it is not this surface's error.
+      const voiceBridge = (message) => message.text().startsWith("Failed to load resource") && message.location().url.includes("/api/voice/");
+      page.on("console", (message) => message.type() === "error" && !voiceBridge(message) && errors.push(message.text()));
 
       /* ---- 1. the full bar, at the width where the strip wraps ------------------------------------ */
       check("a fresh console opens with the full bar", (await focusOn(page)) === false);
