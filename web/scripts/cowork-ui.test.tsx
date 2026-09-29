@@ -111,7 +111,8 @@ const ready = render();
 assert.match(ready, /class="scrim cowork-popup-scrim"/, "a selected session opens as a popup over the board");
 assert.match(ready, /role="dialog" aria-modal="true" aria-label="Co-work: Polish persistent chat"/, "the popup is a named modal dialog");
 assert.match(ready, /title="Close \(Esc\)" aria-label="Close conversation"/, "the popup has a visible close control");
-assert.match(ready, /class="gnome cowork-chat-gnome"/, "the popup header carries the Co-worker gnome");
+// Any gnome can roll a rare skin, which adds its own classes; this checks the gnome, not its skin.
+assert.match(ready, /class="gnome(?: [^"]*)? cowork-chat-gnome"/, "the popup header carries the Co-worker gnome");
 assert.match(ready, /Polish persistent chat/, "session name remains visible");
 assert.match(ready, /garden/, "workspace identity remains visible");
 assert.match(ready, /codex.*gpt-5\.6-sol/s, "resolved provider/model remains visible");
