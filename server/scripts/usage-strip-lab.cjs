@@ -14,7 +14,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
+const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir, isVoiceBridgeNoise } = require("./lab-harness.cjs");
 
 const PORT = 4523;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -86,9 +86,7 @@ async function main() {
       const page = await openConsole(context);
       const errors = [];
       page.on("pageerror", (error) => errors.push(String(error)));
-      // The voice bridge 502s whenever the external voice-gateway isn't running; not this surface's error.
-      const voiceBridge = (message) => message.text().startsWith("Failed to load resource") && message.location().url.includes("/api/voice/");
-      page.on("console", (message) => message.type() === "error" && !voiceBridge(message) && errors.push(message.text()));
+      page.on("console", (message) => message.type() === "error" && !isVoiceBridgeNoise(message) && errors.push(message.text()));
 
       /* ---- 1. the desktop default: strip and its switch both on screen ---------------------------- */
       check("the gauge button is on the desktop bar", await laidOut(page, TOGGLE));

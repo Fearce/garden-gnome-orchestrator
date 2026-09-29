@@ -351,4 +351,12 @@ function shotDir(dataDir) {
   return chosen;
 }
 
-module.exports = { SERVER_ROOT, loadChromium, allowConcurrentContexts, authPassword, labWebDist, labChildEnv, requireBuild, requireFreshWebBuild, boot, waitForPersisted, waitForSettingsReloadSafe, killInstance, createChecks, boxBounds, shotDir };
+/**
+ * A console error the lab should ignore: the /api/voice/* bridge 502s whenever the external voice-gateway
+ * isn't running, which no lab boots, and the UI tolerates it. Every other failed load still counts.
+ */
+function isVoiceBridgeNoise(message) {
+  return message.text().startsWith("Failed to load resource") && message.location().url.includes("/api/voice/");
+}
+
+module.exports = { SERVER_ROOT, loadChromium, allowConcurrentContexts, authPassword, labWebDist, labChildEnv, requireBuild, requireFreshWebBuild, boot, waitForPersisted, waitForSettingsReloadSafe, killInstance, createChecks, boxBounds, shotDir, isVoiceBridgeNoise };
