@@ -1015,7 +1015,8 @@ export class ThreadManager implements OrchestratorApi {
   // reply to that message, so awaitImplementorCompletion continues it once instead of reading it as done.
   private readonly implementorSteeredAt = new Map<string, number>();
   // Asked at every turn-ceiling continuation: a reason the task should wrap up instead, or null to continue.
-  private continuationGuard: ((threadId: string) => string | null) | null = null;
+  // `provider` is the backend the task's implementor is running on right now.
+  private continuationGuard: ((threadId: string, provider: ImplementorProvider) => string | null) | null = null;
   // During QA the implementor is fully stopped (the slot is exclusive — one agent at a time), so the
   // QA agent is the only thing running. Append steering reaches THAT QA agent; interrupt steering stops
   // or supersedes it and resumes the implementor. Either path must never wake/spawn an implementor beside
@@ -6707,7 +6708,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   /** Lets another component end a long task at its next turn ceiling (goals: paused, or over its burn rate). */
-  setContinuationGuard(guard: (threadId: string) => string | null): void {
+  setContinuationGuard(guard: (threadId: string, provider: ImplementorProvider) => string | null): void {
     this.continuationGuard = guard;
   }
 
@@ -9212,7 +9213,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // steering, and a silent run (the session came back without producing anything). They differ only
       // in the nudge, and in whether the dead session may be resumed again.
       const turnLimit = this.isTurnLimitStop(res);
-      if (turnLimit && !wrapUp) wrapUp = this.continuationWrapUp(thread);
+      if (turnLimit && !wrapUp) wrapUp = this.continuationWrapUp(thread, this.providerForRun(current));
       const steered = steeringReply && !silent;
       if (steered) this.implementorSteeredAt.delete(thread.id);
       const reason = wrapUp
@@ -9556,10 +9557,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   /** Why a task stopped at its turn ceiling should wrap up instead of continuing, posted once as a finding. */
-  private continuationWrapUp(thread: Thread): string | null {
+  private continuationWrapUp(thread: Thread, provider: ImplementorProvider): string | null {
     let reason: string | null = null;
     try {
-      reason = this.continuationGuard?.(thread.id) ?? null;
+      reason = this.continuationGuard?.(thread.id, provider) ?? null;
     } catch (e) {
       this.hub.log("warn", `Continuation guard failed for "${thread.title}": ${(e as Error).message}`);
     }

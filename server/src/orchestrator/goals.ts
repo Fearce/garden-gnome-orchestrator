@@ -239,14 +239,22 @@ export function checkBurnRate(goal: GoalPin & GoalPace, roster: ModelCandidate[]
  * Why a goal's running step should wrap up at its next turn ceiling instead of continuing, or null. A step
  * runs for hours across many turn ceilings, so checking the pace only before a step starts let one step
  * spend a whole night's quota; a paused or ended goal likewise wants no more work put into its step.
+ * `provider` is the backend the step is running on now: a step dispatched on automatic routing records
+ * no provider, and one that failed over mid-task runs on another pool than the one it was dispatched to.
  */
-export function stepWrapUpReason(goal: Goal, step: GoalStep, roster: ModelCandidate[], now: number): string | null {
+export function stepWrapUpReason(
+  goal: Goal,
+  step: GoalStep,
+  roster: ModelCandidate[],
+  now: number,
+  provider: ImplementorProvider | null = step.provider,
+): string | null {
   if (goal.status !== "active") {
     const why = goal.statusReason?.trim().replace(/\.+$/, "");
     return `the goal "${goal.title}" is ${goal.status}${why ? ` (${why})` : ""}`;
   }
-  if (!goal.burnConservation || !step.provider) return null;
-  for (const candidate of roster.filter((c) => c.provider === step.provider)) {
+  if (!goal.burnConservation || !provider) return null;
+  for (const candidate of roster.filter((c) => c.provider === provider)) {
     const pace = poolOverPace(candidate, goal.burnRatePct, now);
     if (pace) {
       return `the goal "${goal.title}" is spending faster than its burn rate: ${pace.pool} has used ${Math.round(pace.usedPct)}% of its weekly window, ${Math.round(pace.budgetPct)}% allowed by now at ${goal.burnRatePct}% pace`;
@@ -597,10 +605,10 @@ export class GoalRunner {
   }
 
   /** ThreadManager's continuation guard: why this goal step should wrap up at its turn ceiling, or null. */
-  wrapUpReason(threadId: string): string | null {
+  wrapUpReason(threadId: string, provider?: ImplementorProvider | null): string | null {
     const step = this.db.listOpenGoalSteps().find((s) => s.threadId === threadId);
     const goal = step ? this.db.getGoal(step.goalId) : null;
-    return step && goal ? stepWrapUpReason(goal, step, this.host.roster(), this.now()) : null;
+    return step && goal ? stepWrapUpReason(goal, step, this.host.roster(), this.now(), provider ?? step.provider) : null;
   }
 
   create(input: GoalInput): GoalResult {

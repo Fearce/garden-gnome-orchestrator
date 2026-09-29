@@ -594,6 +594,9 @@ async function runningStepWrapUp(): Promise<void> {
   const unpinned = { ...h.db.getGoal(g.id)!, status: "active" as const, burnConservation: true };
   const step = { ...h.db.getGoal(g.id)!.steps[0]!, provider: null };
   check("a step with no recorded provider continues", stepWrapUpReason(unpinned, step, h.roster, h.clock.t) === null);
+  check("an auto-routed step is checked against the pool it runs on", /Claude has used 70%/.test(stepWrapUpReason(unpinned, step, h.roster, h.clock.t, "claude") ?? ""));
+  const movedOff = { ...step, provider: "claude" as const };
+  check("a step that failed over is checked against its new pool", stepWrapUpReason(unpinned, movedOff, h.roster, h.clock.t, ROSTER[1]!.provider) === null);
   const ended = stepWrapUpReason({ ...unpinned, status: "abandoned", statusReason: "Abandoned by the owner." }, step, h.roster, h.clock.t);
   check("an ended goal's step wraps up with its reason", ended === 'the goal "Night" is abandoned (Abandoned by the owner)');
 }

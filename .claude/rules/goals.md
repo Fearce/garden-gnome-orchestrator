@@ -81,7 +81,8 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   pace could run on for hours past it, and a goal the owner paused kept spending until its step ended
   (2026-09-29: two ~7h steps took 36% of a weekly window overnight, and both kept running after the pause). ThreadManager asks `continuationGuard` (installed in `index.ts`
   as `goals.wrapUpReason`) at every turn-ceiling continuation; `stepWrapUpReason` answers when the goal is
-  no longer `active`, or the step's own pool is over pace. The step is then told to commit and report
+  no longer `active`, or the pool the step is running on NOW is over pace (the guard is handed the live
+  run's provider: an auto-routed step records none, and a failed-over step left its dispatch pool). The step is then told to commit and report
   instead of continuing, finishes `done`, and the goal's own hold takes over. It never interrupts a turn.
   Gate: `test:goals` (`stepWrapUpReason`) + `test:continuation-guard` (the loop sends the wrap-up nudge,
   once, and settles on the wrap-up report).
