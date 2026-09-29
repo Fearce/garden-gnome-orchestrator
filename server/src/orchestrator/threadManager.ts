@@ -3918,7 +3918,7 @@ export class ThreadManager implements OrchestratorApi {
     const off = agent.onEvent((e) => {
       if (e.type === "rate_limit" && target.provider === "claude") this.accounts.updateFromRateLimit(target.accountId, e.info);
     });
-    agent.start(`${prompt}\n\nReturn exactly one JSON object matching the supplied schema.`);
+    agent.start(directorJsonKickoff(target, prompt, schema));
     const result = await agent.result().catch(() => undefined);
     off();
     await agent.stop().catch(() => {});
@@ -3931,11 +3931,18 @@ export class ThreadManager implements OrchestratorApi {
    *  reports what it cost so the supervisor can keep a visible, bounded budget. Kept as its own method
    *  (rather than widening askDirectorJson's return shape) so every other caller's contract is untouched. */
   async supervisorJudge(prompt: string, schema: JsonSchemaLike): Promise<SupervisorJudgement | null> {
+    const answer = await this.directorJudgement(prompt, schema);
+    return "failure" in answer ? null : answer;
+  }
+
+  /** supervisorJudge's call, but a failed one says why (no target, a run error, an answer off the schema),
+   *  so a goal waiting on the director can show the owner the actual cause. */
+  async directorJudgement(prompt: string, schema: JsonSchemaLike): Promise<SupervisorJudgement | { failure: string }> {
     // New unattended/chat judgements are refused at their admission points. This second boundary closes
     // the race where a queued item reaches the model at the same instant a drain is committed.
-    if (this.restartDrainActive()) return null;
+    if (this.restartDrainActive()) return { failure: "GGO is restarting, so the director was not asked." };
     const target = this.preferredDirectorTarget();
-    if (!target) return null;
+    if (!target) return { failure: "no director model is available; every director target is usage-capped, disabled or signed out." };
     const conciseCommunication = this.settingBool("setting_concise_agent_communication", true);
     mkdirSync(join(config.dataDir, "director-sandbox"), { recursive: true });
     const cfg: AgentRunConfig = {
@@ -3957,15 +3964,24 @@ export class ThreadManager implements OrchestratorApi {
     const off = agent.onEvent((e) => {
       if (e.type === "rate_limit" && target.provider === "claude") this.accounts.updateFromRateLimit(target.accountId, e.info);
     });
-    agent.start(withCommunicationTurnPolicy(
-      `${prompt}\n\nReturn exactly one JSON object matching the supplied schema.`,
-      conciseCommunication,
-    ));
-    const result = await agent.result().catch(() => undefined);
+    agent.start(withCommunicationTurnPolicy(directorJsonKickoff(target, prompt, schema), conciseCommunication));
+    let thrown: unknown;
+    const result = await agent.result().catch((e: unknown) => {
+      thrown = e;
+      return undefined;
+    });
     off();
     await agent.stop().catch(() => {});
-    if (this.directorRunCapped(target, agent)) this.noteDirectorProviderCap(target);
-    if (!result || result.isError) return null;
+    const capped = this.directorRunCapped(target, agent);
+    if (capped) this.noteDirectorProviderCap(target);
+    const label = `${target.model} (${target.provider})`;
+    if (capped && (!result || result.isError)) return { failure: `${label} hit its usage cap.` };
+    if (!result) return { failure: `${label} did not finish: ${failureText(thrown ?? "no result")}` };
+    if (result.isError) return { failure: `${label} failed: ${failureText(result.result || result.subtype)}` };
+    if (result.structuredOutput == null) {
+      const detail = "lastStructuredError" in agent && typeof agent.lastStructuredError === "string" ? ` ${failureText(agent.lastStructuredError)}` : "";
+      return { failure: `${label} answered, but not in the required JSON format.${detail}` };
+    }
     return {
       output: result.structuredOutput ?? null,
       costUsd: result.costUsd ?? 0,
@@ -15831,6 +15847,20 @@ function reviewerRecheckKickoff(out: ReviewerOutput, standingDirectives?: string
   const directives = renderStandingDirectives(standingDirectives);
   if (directives) lines.push("", directives);
   return lines.join("\n");
+}
+
+/** A no-tools director JSON call's kickoff. Claude and z.ai (outputFormat) and Grok (--json-schema) hold
+ *  the answer to the schema natively; the Codex CLI only parses its final message, so it must be shown the
+ *  schema or it guesses the shape and the answer is dropped. */
+export function directorJsonKickoff(target: Pick<DirectorTarget, "provider">, prompt: string, schema: JsonSchemaLike): string {
+  const ask = `${prompt}\n\nReturn exactly one JSON object matching the supplied schema.`;
+  return target.provider === "codex" ? `${ask}\n\n${jsonContractInstruction(schema)}` : ask;
+}
+
+/** A failed run's error text, flattened and clipped to fit a one-line waiting reason. */
+function failureText(e: unknown): string {
+  const text = (e instanceof Error ? e.message : String(e)).replace(/\s+/g, " ").trim();
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
 }
 
 /** The reviewer's issue list, rendered for the finding's detail. Empty string when it raised none (an

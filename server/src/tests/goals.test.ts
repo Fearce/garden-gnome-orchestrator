@@ -3,7 +3,8 @@
 // Run: `npm run test:goals`.
 //
 // What it pins: the two-voice ending (agent claim AND director verdict), the verification step when only
-// the director thinks it is done, the step-in-flight gate, the backoff when no director answers, the three
+// the director thinks it is done, the step-in-flight gate, the backoff when no director answers (with the
+// director's actual failure as the waiting reason, and a pin change planning again at once), the three
 // runaway guards (cancel, failed streak) and the absence of any step budget, the step-budget column's
 // removal from an old database, orphan adoption after a crash, the owner pausing mid-judgement, the hub
 // wake-up when a step task settles, the weekly burn-rate hold, and parallel steps (slots, the director's
@@ -152,6 +153,8 @@ interface Harness {
   runner: GoalRunner;
   dispatched: DispatchInput[];
   answers: unknown[];
+  /** Why the director could not answer, used when `answers` runs dry. */
+  failures: string[];
   judged: string[];
   notices: string[];
   clock: { t: number };
@@ -163,7 +166,7 @@ interface Harness {
 function harness(): Harness {
   const db = new Db(join(mkdtempSync(join(tmpdir(), "goals-test-")), "t.sqlite"));
   const hub = new EventHub();
-  const h = { db, hub, dispatched: [], answers: [], judged: [], schemas: [], notices: [], clock: { t: Date.now() }, roster: ROSTER } as unknown as Harness;
+  const h = { db, hub, dispatched: [], answers: [], failures: [], judged: [], schemas: [], notices: [], clock: { t: Date.now() }, roster: ROSTER } as unknown as Harness;
   const host: GoalHost = {
     dispatch: async (input) => {
       h.dispatched.push(input);
@@ -176,7 +179,8 @@ function harness(): Harness {
       h.schemas.push(schema);
       h.onJudge?.();
       const next = h.answers.shift();
-      return next === undefined || next === null ? null : { output: next, model: "claude-opus-5-5", provider: "claude" };
+      if (next === undefined || next === null) return { failure: h.failures.shift() ?? "no director model is available." };
+      return { output: next, model: "claude-opus-5-5", provider: "claude" };
     },
     roster: () => h.roster,
     notify: (kind, title) => h.notices.push(`${kind}:${title}`),
@@ -567,6 +571,44 @@ async function resumedMidJudge(): Promise<void> {
   check("a later tick still starts nothing", h.dispatched.length === 2 && h.db.listOpenGoalSteps(g.id).length === 2);
 }
 
+/** The Tilebreaker goal (2026-09-29): a Codex director's answer missed the schema, the goal said only "no
+ *  director model returned a usable decision", and a pin change afterwards sat out the 5-minute backoff. */
+async function directorFailure(): Promise<void> {
+  const ws = process.cwd();
+  console.log("goals: a failed director call says why, and a pin change plans again at once");
+  const h = harness();
+  const miss = "gpt-6-astra (codex) answered, but not in the required JSON format. Your JSON didn't match the required schema: result.reason is required but missing.";
+  h.failures.push(miss);
+  const g = h.runner.create({ title: "Demo", objective: "The demo runs to the first fractalization.", workspace: ws }).goal!;
+  await h.runner.idle();
+  let goal = h.db.getGoal(g.id)!;
+  check("the waiting reason carries the director's actual failure", goal.statusReason === `Waiting for the director: ${miss}`);
+  check("the failed call backs off without a step", h.dispatched.length === 0 && goal.nextCheckAt === h.clock.t + 300_000);
+
+  h.answers.push({ ...answer("continue"), next: { ...answer("continue").next, brief: "" } });
+  h.clock.t += 300_001;
+  await h.runner.evaluate(g.id);
+  goal = h.db.getGoal(g.id)!;
+  check("an answer without a brief names the model that gave it", goal.statusReason === "Waiting for the director: claude-opus-5-5 (claude) returned a decision without a verdict, step title or brief.");
+
+  h.runner.update(g.id, { title: "Demo ready" });
+  await h.runner.idle();
+  check("a title edit keeps the backoff", h.judged.length === 2 && h.db.getGoal(g.id)!.nextCheckAt === h.clock.t + 300_000);
+
+  h.answers.push(answer("continue", "Reach the first fractalization", { provider: "claude", model: "claude-opus-5-5", effort: "medium" }));
+  h.runner.update(g.id, { provider: "claude", model: "claude-opus-5-5" });
+  await h.runner.idle();
+  goal = h.db.getGoal(g.id)!;
+  check("a pin change asks the director again without waiting out the backoff", h.judged.length === 3);
+  check("that judgement starts exactly one step on the new pin", h.dispatched.length === 1 && h.dispatched[0]!.requestedModel === "claude-opus-5-5");
+  check("the stale waiting reason is gone", goal.statusReason === null && goal.nextCheckAt === null);
+  check("the goal keeps its id and objective", goal.id === g.id && goal.objective === "The demo runs to the first fractalization." && goal.status === "active");
+
+  h.runner.update(g.id, { effort: "low" });
+  await h.runner.idle();
+  check("a pin change while the step runs starts nothing more", h.judged.length === 3 && h.dispatched.length === 1);
+}
+
 async function runningStepWrapUp(): Promise<void> {
   const ws = process.cwd();
   console.log("goals: a running step wraps up at its turn ceiling");
@@ -610,6 +652,7 @@ async function main(): Promise<void> {
   await parallel();
   await resumedStep();
   await resumedMidJudge();
+  await directorFailure();
   await runningStepWrapUp();
   legacyMigration();
   if (failures) {

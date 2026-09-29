@@ -176,7 +176,7 @@ async function main(): Promise<void> {
   // every step's outcome and picking the next step's model and effort from the live roster.
   const goals = new GoalRunner(db, hub, {
     dispatch: (input) => manager.dispatch(input),
-    judge: (prompt, schema) => manager.supervisorJudge(prompt, schema),
+    judge: (prompt, schema) => manager.directorJudgement(prompt, schema),
     roster: () => manager.goalModelRoster(),
     notify: (kind, title, detail, repo) => manager.notifyGoal(kind, title, detail, repo),
   }, { ownerName: config.ownerName });

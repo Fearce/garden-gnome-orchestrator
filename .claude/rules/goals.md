@@ -31,9 +31,13 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   marker mid-sentence), AND the director's verdict must be `complete`. A lone director verdict dispatches a
   VERIFICATION step; a lone agent claim just gets the next step. Revert-checked: dropping `&& agentClaimed`
   turns `test:goals` red.
-- **The director call is `supervisorJudge`**, the bounded no-tools, capacity-aware judgement ThreadManager
-  already has. It returns null during a restart drain or when nothing can answer, and the goal then WAITS
-  (`nextCheckAt` + a visible `statusReason`). It must never dispatch blind.
+- **The director call is `directorJudgement`**, the bounded no-tools, capacity-aware judgement behind
+  `supervisorJudge`, which also says WHY it failed (restart drain, no target, a run error, an answer off the
+  schema). The goal then WAITS (`nextCheckAt`) with that cause as its `statusReason`, never a generic line,
+  and must never dispatch blind. A Codex director only parses its final message, so `directorJsonKickoff`
+  puts the schema into its prompt; without it Codex guessed the shape, left out `reason`, and the
+  Tilebreaker goal waited forever on "no director model returned a usable decision" (2026-09-29).
+  Gates: `test:director-provider` (the kickoff and the reason) + `test:goals` (`directorFailure`).
 - **The pick is checked against `goalModelRoster()`** (= `implementorModelRoster`, the auto-selection
   roster). An undispatchable model falls back to automatic routing, with the reason written into the
   step's rationale, rather than pinning a step to a model that cannot run.
@@ -73,7 +77,8 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   up, so it sets `nextCheckAt` (≥ the retry backoff, ≤ 30 min) and keeps the goal `active`. It runs BEFORE
   the director call, so a held goal spends nothing. An unpinned goal holds only when every pool is over
   pace; `pinWithinBurnRate` keeps an unplaceable pick off automatic routing, which could pick an
-  over-pace pool. Changing `maxConcurrent`/`burnConservation`/`burnRatePct` clears `nextCheckAt` and evaluates at once.
+  over-pace pool. Changing `maxConcurrent`/`burnConservation`/`burnRatePct`, the objective or the model/effort
+  pin clears `nextCheckAt` and evaluates at once; a title edit keeps the backoff.
 - **Re-read the goal after the judge returns.** The owner may pause, end or delete it while the director
   is thinking; a judgement that lands afterwards must dispatch nothing.
 - **The burn rate and a pause also bind the RUNNING step, at its turn ceilings.** Steps run for hours and

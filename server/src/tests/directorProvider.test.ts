@@ -10,7 +10,7 @@ import type { OperatorNotes } from "../orchestrator/notes.js";
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
-const { ThreadManager } = await import("../orchestrator/threadManager.js");
+const { ThreadManager, directorJsonKickoff } = await import("../orchestrator/threadManager.js");
 const { Director } = await import("../orchestrator/director.js");
 const { executeDirectorCliAction } = await import("../orchestrator/directorCliBridge.js");
 const { directorSafetyArgs } = await import("../agents/codexRunner.js");
@@ -98,6 +98,39 @@ try {
   internals.createDirectorAgent = originalCreateDirectorAgent;
   check("supervisor judgement uses its bounded eight-turn ceiling", supervisorTurns === SUPERVISOR_JUDGE_MAX_TURNS, String(supervisorTurns));
   check("generic director JSON calls keep the cheaper two-turn ceiling", genericTurns === 2, String(genericTurns));
+
+  // The Tilebreaker goal (2026-09-29): the Codex CLI only parses its final message, and the judgement
+  // kickoff never showed it the schema, so its answer left out a required field and was dropped as
+  // "no director model returned a usable decision".
+  const goalSchema = { type: "object", additionalProperties: false, required: ["verdict", "reason"], properties: { verdict: { type: "string" }, reason: { type: "string" } } };
+  const kickoffs: string[] = [];
+  internals.createDirectorAgent = () => ({
+    rateLimited: false,
+    lastStructuredError: "Your JSON didn't match the required schema: result.reason is required but missing.",
+    onEvent: () => () => {},
+    start: (text: string) => { kickoffs.push(text); },
+    result: async () => ({ isError: false, subtype: "success", costUsd: 0 }),
+    stop: async () => {},
+  });
+  const missed = await mgr.directorJudgement("plan the goal", goalSchema);
+  await mgr.askDirectorJson("pick a model", goalSchema, configured[0]);
+  internals.createDirectorAgent = originalCreateDirectorAgent;
+  check("a Codex director judgement is shown the required schema", kickoffs.length === 2 && kickoffs.every((k) => k.includes('"required": [') && k.includes('"reason"')), kickoffs[0]?.slice(-400));
+  check(
+    "an answer off the schema reports the model and the parser's reason",
+    "failure" in missed && missed.failure === "gpt-director (codex) answered, but not in the required JSON format. Your JSON didn't match the required schema: result.reason is required but missing.",
+    JSON.stringify(missed),
+  );
+  check(
+    "providers that enforce the schema natively get no inline copy",
+    (["claude", "zai", "grok"] as const).every((provider) => !directorJsonKickoff({ provider }, "plan", goalSchema).includes('"required"')),
+  );
+  check("supervisorJudge keeps its null contract for the same miss", (await (async () => {
+    internals.createDirectorAgent = () => ({ rateLimited: false, onEvent: () => () => {}, start: () => {}, result: async () => ({ isError: false, subtype: "success" }), stop: async () => {} });
+    const out = await mgr.supervisorJudge("inspect", goalSchema);
+    internals.createDirectorAgent = originalCreateDirectorAgent;
+    return out;
+  })()) === null);
 
   // Auto model selection is implementor-only. It once also let a judge pick the director from the
   // whole roster ("the least expensive model you trust"), which put the director on Sonnet 5 while the

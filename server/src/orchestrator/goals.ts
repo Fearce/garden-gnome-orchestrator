@@ -75,11 +75,14 @@ const BURN_RECHECK_MAX_MS = 30 * 60_000;
 export const GOAL_PROVIDERS: ImplementorProvider[] = ["claude", "codex", "grok", "zai"];
 const POOL_LABEL: Record<ImplementorProvider, string> = { claude: "Claude", codex: "Codex", grok: "Grok", zai: "z.ai" };
 
+/** The director's raw answer, or the reason it could not give one, shown to the owner while the goal waits. */
+export type GoalJudgeAnswer = { output: unknown; model: string; provider: ImplementorProvider } | { failure: string };
+
 /** What the runner needs from the rest of GGO. ThreadManager provides all of it; tests fake it. */
 export interface GoalHost {
   dispatch(input: DispatchInput): Promise<string>;
-  /** One bounded no-tools director judgement; null when no director model could answer. */
-  judge(prompt: string, schema: JsonSchemaLike): Promise<{ output: unknown; model: string; provider: ImplementorProvider } | null>;
+  /** One bounded no-tools director judgement, or why no director model gave one. */
+  judge(prompt: string, schema: JsonSchemaLike): Promise<GoalJudgeAnswer>;
   /** Every (provider, model) pair a task could be dispatched to right now, with its efforts. */
   roster(): ModelCandidate[];
   notify?(kind: "done" | "input", title: string, detail?: string, repo?: string): void;
@@ -318,6 +321,13 @@ export function goalJudgeSchema(goal: GoalPin, roster: ModelCandidate[], running
 
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s);
 const tail = (s: string, n: number): string => (s.length > n ? `…${s.slice(-n)}` : s);
+
+/** Why a judgement could not be used, as one sentence for the goal's waiting reason. */
+function unusableAnswer(answer: GoalJudgeAnswer): string {
+  const why = "failure" in answer ? answer.failure : `${answer.model} (${answer.provider}) returned a decision without a verdict, step title or brief.`;
+  const text = clip(why.replace(/\s+/g, " ").trim(), 600);
+  return /[.!?…]$/.test(text) ? text : `${text}.`;
+}
 
 /** Validates the director's raw answer. Null means "unusable" — the caller retries later. */
 export function parseGoalJudgement(raw: unknown): GoalJudgement | null {
@@ -650,16 +660,19 @@ export class GoalRunner {
     const pinError = validateGoalPin(pin);
     if (pinError) return { ok: false, error: pinError };
     const pace = paceChanges(current, patch);
+    // A new objective or pin changes what the director is asked, and a burn-rate hold or a full slot may no
+    // longer apply, so any backoff is stale: look again now instead of at the next check.
+    const replan = !!pace || planChanged(current, objective, pin);
     const goal = this.db.updateGoal(id, {
       ...(title ? { title } : {}),
       ...(objective ? { objective } : {}),
       ...(pin.effort !== undefined ? { effort: pin.effort } : {}),
       ...(pin.model !== undefined ? { provider: pin.provider ?? null, model: pin.model } : {}),
-      // A burn-rate hold or a full slot may no longer apply, so look again now instead of at the next check.
-      ...(pace ? { ...pace, nextCheckAt: null } : {}),
+      ...(pace ?? {}),
+      ...(replan ? { nextCheckAt: null } : {}),
     });
     this.broadcast();
-    if (pace && goal?.status === "active") this.evaluate(id);
+    if (replan && goal?.status === "active") this.evaluate(id);
     return { ok: true, goal: goal ?? undefined };
   }
 
@@ -860,8 +873,10 @@ export class GoalRunner {
       overPace: burn.over,
       ownerName: this.options.ownerName,
     });
-    const answer = await this.host.judge(prompt, goalJudgeSchema(goal, burn.roster, running.length)).catch(() => null);
-    const judgement = answer ? parseGoalJudgement(answer.output) : null;
+    const answer = await this.host
+      .judge(prompt, goalJudgeSchema(goal, burn.roster, running.length))
+      .catch((e): GoalJudgeAnswer => ({ failure: `the director call failed: ${String(e)}` }));
+    const judgement = "failure" in answer ? null : parseGoalJudgement(answer.output);
     // The owner may have paused, ended or deleted the goal while the director was thinking.
     const fresh = this.db.getGoal(goalId);
     if (!fresh || fresh.status !== "active") return;
@@ -871,7 +886,7 @@ export class GoalRunner {
       if (this.running.has(goalId)) this.running.set(goalId, true);
       return;
     }
-    if (!judgement) return this.wait(fresh, "Waiting for the director: no director model returned a usable decision.");
+    if (!judgement) return this.wait(fresh, `Waiting for the director: ${unusableAnswer(answer)}`);
 
     const agentClaimed = settled.at(-1)?.agentClaimedComplete === true;
     const held = running.length > 0 && judgement.verdict !== "continue";
@@ -1017,6 +1032,13 @@ function paceChanges(current: Goal, patch: GoalPaceInput): Partial<Pick<Goal, "m
   };
   const changed = (Object.keys(next) as (keyof typeof next)[]).some((k) => current[k] !== next[k]);
   return changed ? next : null;
+}
+
+/** Whether an edit changes what the director is asked to plan: the objective, or the owner's model/effort pin. */
+function planChanged(current: Goal, objective: string | undefined, pin: GoalPinInput): boolean {
+  if (objective && objective !== current.objective) return true;
+  if (pin.effort !== undefined && pin.effort !== current.effort) return true;
+  return pin.model !== undefined && (pin.model !== current.model || (pin.provider ?? null) !== current.provider);
 }
 
 /** A blank model is no pin. Undefined fields stay undefined so a patch leaves them unchanged. */
