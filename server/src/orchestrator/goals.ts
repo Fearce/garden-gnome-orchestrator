@@ -880,6 +880,15 @@ export class GoalRunner {
     // The owner may have paused, ended or deleted the goal while the director was thinking.
     const fresh = this.db.getGoal(goalId);
     if (!fresh || fresh.status !== "active") return;
+    // An owner edit during the call queues another evaluation. Do not dispatch a step planned from
+    // the old objective, pin, capacity or burn policy before that fresh evaluation runs.
+    if (planChanged(goal, fresh.objective, fresh) ||
+        goal.maxConcurrent !== fresh.maxConcurrent ||
+        goal.burnConservation !== fresh.burnConservation ||
+        goal.burnRatePct !== fresh.burnRatePct) {
+      if (this.running.has(goalId)) this.running.set(goalId, true);
+      return;
+    }
     // A settled step's task came back while the director was thinking (a cap reset both resumes it and
     // frees capacity for this judgement). The slot count above is stale, so plan again with it in view.
     if (this.reopenResumedSteps(fresh)) {

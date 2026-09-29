@@ -609,6 +609,23 @@ async function directorFailure(): Promise<void> {
   check("a pin change while the step runs starts nothing more", h.judged.length === 3 && h.dispatched.length === 1);
 }
 
+async function editedMidJudge(): Promise<void> {
+  console.log("goals: an edit during judgement discards the old plan");
+  const h = harness();
+  h.answers.push(answer("continue", "Old objective step"), answer("continue", "New objective step"));
+  h.onJudge = () => {
+    h.onJudge = undefined;
+    const id = h.db.listGoals()[0]!.id;
+    h.runner.update(id, { objective: "New objective", provider: "codex", model: "gpt-5.6", maxConcurrent: 1 });
+  };
+  const g = h.runner.create({ title: "Edited", objective: "Old objective", workspace: process.cwd() }).goal!;
+  await h.runner.idle();
+  const steps = h.db.listGoalSteps(g.id);
+  check("the stale judgement creates no step", steps.length === 1 && steps[0]!.title === "New objective step");
+  check("the current objective and pin reach the fresh judgement", h.judged.length === 2 && h.judged[1]!.includes("New objective") && h.dispatched[0]!.brief.includes("New objective") && h.dispatched[0]!.requestedModel === "gpt-5.6");
+  check("the existing goal has exactly one linked task", h.db.getGoal(g.id)!.currentThreadId === steps[0]!.threadId && steps[0]!.threadId != null);
+}
+
 async function runningStepWrapUp(): Promise<void> {
   const ws = process.cwd();
   console.log("goals: a running step wraps up at its turn ceiling");
@@ -653,6 +670,7 @@ async function main(): Promise<void> {
   await resumedStep();
   await resumedMidJudge();
   await directorFailure();
+  await editedMidJudge();
   await runningStepWrapUp();
   legacyMigration();
   if (failures) {
