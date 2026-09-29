@@ -11,7 +11,7 @@ Node/Fastify API in `server/`, React/Vite console in `web/`, one origin. The imp
 
 ## Shared worktree
 - Other agents may edit this checkout at the same time. Coordinate in the office when another task shares the repo. Recheck `git status`, `git diff`, and `git diff --cached` before committing.
-- Use Conventional Commits. Never use `git add -A`, `git add .`, a bare `git commit`, `--no-verify`, or force-push main/master. For separate files use `python C:/Users/theke/.claude/scripts/safe_commit.py -m "type: summary" -- path/to/file`. A NEW (untracked) file must be `git add -- <that file>` first, or safe_commit fails with "pathspec did not match" — a missing add, not the shell-quoting problem the hook reports it as. For overlapping files use `stage_my_hunks.py` as described in the archived shared-worktree section.
+- Use Conventional Commits. Never use `git add -A`, `git add .`, a bare `git commit`, `--no-verify`, or force-push main/master. For separate files use the safe-commit helper; for overlapping files, the hunk splitter (archived shared-worktree section). Their location differs per machine, so find them with `python ~/.claude/scripts/findtool.py safe commit` (or `stage hunks`) instead of guessing a path. A NEW (untracked) file must be `git add -- <that file>` first, or the commit fails with "pathspec did not match" — a missing add, not the shell-quoting problem the hook reports it as.
 - Surface generated owner-facing files as deliverables using an absolute path inside the task workspace. Ordinary source/config edits are not deliverables. See the archived deliverables section for containment and verification details.
 
 ## Topic rules
