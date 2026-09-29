@@ -124,6 +124,11 @@ function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => v
           <ClockIcon />
           {describeCron(sched.cron)}
         </span>
+        {sched.runOnce ? (
+          <span className="effort-badge" title="Fires on the next matching time only, then switches itself off">
+            once
+          </span>
+        ) : null}
         {sched.effort ? (
           <span className={"effort-badge eff-" + sched.effort} title="Implementor effort for each run">
             {sched.effort}
@@ -146,6 +151,8 @@ function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => v
           </span>
         ) : sched.enabled ? (
           <span className="faint">Updating next run…</span>
+        ) : sched.runOnce && sched.lastRunAt ? (
+          <span className="faint">Ran once — switched off</span>
         ) : (
           <span className="faint">Paused — no next run</span>
         )}
@@ -194,6 +201,7 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
   const [prompt, setPrompt] = useState(initial?.prompt ?? "");
   const [effort, setEffort] = useState<Effort | "">(initial?.effort ?? "");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
+  const [runOnce, setRunOnce] = useState(initial?.runOnce ?? false);
   const [rec, setRec] = useState<Recurrence>(initial ? cronToRecurrence(initial.cron) : DEFAULT_RECURRENCE);
 
   const settings = useStore((s) => s.settings);
@@ -232,6 +240,7 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
       cron,
       effort: effort || null,
       enabled,
+      runOnce,
       model: pinned ? model : null,
       provider: pinned && provider !== AS_REQUESTED ? provider : null,
     };
@@ -282,6 +291,13 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
             <label className="sched-field sched-field-inline sched-enable">
               <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
               <span>Enabled</span>
+            </label>
+            <label
+              className="sched-field sched-field-inline sched-enable"
+              title="Fire on the next matching time only, then switch itself off. Use it for a one-off reminder on a date, which would otherwise repeat every year."
+            >
+              <input type="checkbox" checked={runOnce} onChange={(e) => setRunOnce(e.target.checked)} />
+              <span>Run once</span>
             </label>
           </div>
 

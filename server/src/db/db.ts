@@ -569,6 +569,7 @@ function rowToScheduledTask(r: Row): ScheduledTask {
     effort: (r.effort as Effort | null) ?? null,
     model: (r.model as string | null) ?? null,
     provider: (r.provider as ImplementorProvider | null) ?? null,
+    runOnce: Boolean(r.run_once),
     lastRunAt: (r.last_run_at as number | null) ?? null,
     nextRunAt: (r.next_run_at as number | null) ?? null,
     lastThreadId: (r.last_thread_id as string | null) ?? null,
@@ -929,6 +930,7 @@ export class Db {
       "ALTER TABLE auto_review_episodes ADD COLUMN unattended_streak INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE scheduled_tasks ADD COLUMN model TEXT",
       "ALTER TABLE scheduled_tasks ADD COLUMN provider TEXT",
+      "ALTER TABLE scheduled_tasks ADD COLUMN run_once INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE threads ADD COLUMN latest_message_preview TEXT",
       "ALTER TABLE goals ADD COLUMN effort TEXT",
       "ALTER TABLE goals ADD COLUMN provider TEXT",
@@ -3588,6 +3590,7 @@ export class Db {
     effort?: Effort | null;
     model?: string | null;
     provider?: ImplementorProvider | null;
+    runOnce?: boolean;
     nextRunAt?: number | null;
   }): ScheduledTask {
     const t: ScheduledTask = {
@@ -3600,6 +3603,7 @@ export class Db {
       effort: input.effort ?? null,
       model: input.model ?? null,
       provider: input.provider ?? null,
+      runOnce: input.runOnce ?? false,
       lastRunAt: null,
       nextRunAt: input.nextRunAt ?? null,
       lastThreadId: null,
@@ -3608,10 +3612,10 @@ export class Db {
     };
     this.raw
       .prepare(
-        `INSERT INTO scheduled_tasks(id, title, workspace, prompt, cron, enabled, effort, model, provider, last_run_at, next_run_at, last_thread_id, created_at, updated_at)
-         VALUES(@id, @title, @workspace, @prompt, @cron, @enabled, @effort, @model, @provider, @lastRunAt, @nextRunAt, @lastThreadId, @createdAt, @updatedAt)`,
+        `INSERT INTO scheduled_tasks(id, title, workspace, prompt, cron, enabled, effort, model, provider, run_once, last_run_at, next_run_at, last_thread_id, created_at, updated_at)
+         VALUES(@id, @title, @workspace, @prompt, @cron, @enabled, @effort, @model, @provider, @runOnce, @lastRunAt, @nextRunAt, @lastThreadId, @createdAt, @updatedAt)`,
       )
-      .run({ ...t, enabled: t.enabled ? 1 : 0 });
+      .run({ ...t, enabled: t.enabled ? 1 : 0, runOnce: t.runOnce ? 1 : 0 });
     return t;
   }
 
@@ -3626,7 +3630,7 @@ export class Db {
 
   updateScheduledTask(
     id: string,
-    patch: Partial<Pick<ScheduledTask, "title" | "workspace" | "prompt" | "cron" | "enabled" | "effort" | "model" | "provider" | "lastRunAt" | "nextRunAt" | "lastThreadId">>,
+    patch: Partial<Pick<ScheduledTask, "title" | "workspace" | "prompt" | "cron" | "enabled" | "effort" | "model" | "provider" | "runOnce" | "lastRunAt" | "nextRunAt" | "lastThreadId">>,
   ): ScheduledTask | null {
     const current = this.getScheduledTask(id);
     if (!current) return null;
@@ -3641,6 +3645,7 @@ export class Db {
       effort: "effort",
       model: "model",
       provider: "provider",
+      runOnce: "run_once",
       lastRunAt: "last_run_at",
       nextRunAt: "next_run_at",
       lastThreadId: "last_thread_id",
@@ -3649,7 +3654,7 @@ export class Db {
       if (k in patch) {
         sets.push(`${col} = @${k}`);
         const v = (patch as Row)[k];
-        params[k] = k === "enabled" ? (v ? 1 : 0) : (v ?? null);
+        params[k] = k === "enabled" || k === "runOnce" ? (v ? 1 : 0) : (v ?? null);
       }
     }
     sets.push("updated_at = @updatedAt");

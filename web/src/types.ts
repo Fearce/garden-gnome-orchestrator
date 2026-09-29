@@ -193,6 +193,7 @@ export interface ScheduledTask {
   effort?: Effort | null;
   model?: string | null;
   provider?: ImplementorProvider | null;
+  runOnce?: boolean;
   lastRunAt?: number | null;
   nextRunAt?: number | null;
   lastThreadId?: string | null;
@@ -1463,8 +1464,8 @@ export type ClientCommand =
   | { type: "director.search"; query: string }
   | { type: "chat.history"; room: string; before?: ChatCursor }
   | { type: "chat.post"; room: string; body: string; clientId?: string }
-  | { type: "schedule.create"; title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null; model?: string | null; provider?: ImplementorProvider | null }
-  | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null; model?: string | null; provider?: ImplementorProvider | null } }
+  | { type: "schedule.create"; title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null; model?: string | null; provider?: ImplementorProvider | null; runOnce?: boolean }
+  | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null; model?: string | null; provider?: ImplementorProvider | null; runOnce?: boolean } }
   | { type: "schedule.delete"; id: string }
   | { type: "schedule.run"; id: string }
   | ({ type: "goal.create"; title: string; objective: string; workspace: string } & GoalOptions)

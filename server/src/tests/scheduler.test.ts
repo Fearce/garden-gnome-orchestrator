@@ -183,6 +183,38 @@ async function main(): Promise<void> {
   scheduler.start();
   check("start moved a stale nextRunAt into the future", (db.getScheduledTask(id)!.nextRunAt ?? 0) > Date.now());
 
+  console.log("scheduler: run once");
+  // A one-off reminder ("3 November at 12:00") written as cron would otherwise fire again every year.
+  const once = scheduler.create({ title: "One-off", workspace: ws, prompt: "remind", cron: "0 12 3 11 *", runOnce: true });
+  check("create keeps runOnce", once.ok && once.schedule?.runOnce === true);
+  check("a reload reads runOnce back", db.getScheduledTask(once.schedule!.id)?.runOnce === true);
+  check("a recurring schedule defaults to runOnce=false", db.getScheduledTask(id)?.runOnce === false);
+  const onceId = once.schedule!.id;
+  const beforeManual = dispatched.length;
+  await scheduler.runNow(onceId);
+  await settle();
+  check("Run now on a run-once schedule leaves it armed", dispatched.length === beforeManual + 1 && db.getScheduledTask(onceId)!.enabled === true);
+  // The manual run's thread id is a fake with no row, so it never counts as a busy predecessor.
+  const manualThread = db.getScheduledTask(onceId)!.lastThreadId;
+  db.updateScheduledTask(onceId, { nextRunAt: Date.now() - 1000 });
+  const beforeOnce = dispatched.length;
+  tick();
+  await settle();
+  check("a due run-once schedule fires", dispatched.length === beforeOnce + 1);
+  check("after firing it disables itself", db.getScheduledTask(onceId)!.enabled === false);
+  check("after firing it has no next run", db.getScheduledTask(onceId)!.nextRunAt == null);
+  check("the fire is recorded", db.getScheduledTask(onceId)!.lastThreadId !== manualThread);
+  tick();
+  await settle();
+  check("a disabled run-once schedule never fires again", dispatched.length === beforeOnce + 1);
+  scheduler.start();
+  check("start() keeps a fired run-once schedule off", db.getScheduledTask(onceId)!.nextRunAt == null);
+  scheduler.update(onceId, { enabled: true });
+  check("re-enabling re-arms it at the next cron slot", (db.getScheduledTask(onceId)!.nextRunAt ?? 0) > Date.now());
+  scheduler.update(onceId, { runOnce: false });
+  check("runOnce can be switched off", db.getScheduledTask(onceId)!.runOnce === false);
+  scheduler.remove(onceId);
+
   console.log("scheduler: delete");
   check("delete ok", scheduler.remove(id).ok);
   check("list empty after delete", scheduler.list().length === 0);

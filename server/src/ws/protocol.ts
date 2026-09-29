@@ -613,6 +613,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     // provider) and is what makes the pair an exact id rather than wording to re-interpret each fire.
     model: z.string().trim().min(1).max(100).nullable().optional(),
     provider: z.enum(["claude", "codex", "grok", "zai"]).nullable().optional(),
+    // Fire once on the next matching slot, then disable (a one-off reminder rather than a yearly repeat).
+    runOnce: z.boolean().optional(),
   }),
   z.object({
     type: z.literal("schedule.update"),
@@ -627,6 +629,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       effort: z.enum(["low", "medium", "high", "max"]).nullish(),
       model: z.string().trim().min(1).max(100).nullable().optional(),
       provider: z.enum(["claude", "codex", "grok", "zai"]).nullable().optional(),
+      runOnce: z.boolean().optional(),
     }),
   }),
   z.object({ type: z.literal("schedule.delete"), id: z.string() }),

@@ -555,6 +555,7 @@ export async function handleCommand(
         effort: cmd.effort ?? null,
         model: cmd.model ?? null,
         provider: cmd.provider ?? null,
+        runOnce: cmd.runOnce ?? false,
       });
       break;
     case "schedule.update":

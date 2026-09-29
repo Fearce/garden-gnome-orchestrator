@@ -39,6 +39,8 @@ export interface ScheduleInput {
   model?: string | null;
   /** The backend that model belongs to. Only meaningful beside `model`; see `sanitize`. */
   provider?: ImplementorProvider | null;
+  /** Fire once on the next matching slot, then disable. */
+  runOnce?: boolean;
 }
 export type SchedulePatch = Partial<ScheduleInput>;
 
@@ -100,6 +102,7 @@ export class Scheduler {
       effort: input.effort ?? null,
       model: clean.model,
       provider: clean.provider,
+      runOnce: input.runOnce ?? false,
       nextRunAt: enabled ? nextRun(clean.cron, Date.now()) : null,
     });
     this.broadcast();
@@ -129,6 +132,7 @@ export class Scheduler {
       effort,
       model: merged.model,
       provider: merged.provider,
+      runOnce: patch.runOnce ?? current.runOnce ?? false,
       // Re-anchor the next fire on any change to the cadence or the enabled flag; a pure metadata edit
       // (prompt/title) keeps the existing slot so it doesn't drift.
       nextRunAt: enabled ? (patch.cron || patch.enabled !== undefined ? nextRun(merged.cron, Date.now()) : current.nextRunAt) : null,
@@ -172,6 +176,9 @@ export class Scheduler {
         this.hub.log("info", `Scheduled task "${s.title}" skipped this fire: its previous run is still ${busy}.`);
         continue;
       }
+      // A run-once schedule is consumed by the fire itself, disabled before the dispatch awaits so no
+      // later tick can see it armed.
+      if (s.runOnce) this.db.updateScheduledTask(s.id, { enabled: false, nextRunAt: null });
       void this.dispatchRun(s);
     }
     if (due) this.broadcast();

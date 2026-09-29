@@ -254,6 +254,8 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   -- for weeks. Both NULL = ordinary automatic routing.
   model          TEXT,
   provider       TEXT,
+  -- 1 = fire once on the next matching cron slot, then disable itself (a one-off reminder).
+  run_once       INTEGER NOT NULL DEFAULT 0,
   last_run_at    INTEGER,
   next_run_at    INTEGER,
   last_thread_id TEXT,

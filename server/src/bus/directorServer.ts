@@ -342,6 +342,10 @@ export function createDirectorServer(
         .enum(["claude", "codex", "grok", "zai"])
         .optional()
         .describe("The backend that model belongs to. Set it whenever you know it: with a provider the pair is pinned as an exact id, so the schedule cannot drift onto another backend's similarly named model as rosters change. Ignored without `model`."),
+      runOnce: z
+        .boolean()
+        .optional()
+        .describe("Fire only on the next matching cron slot, then disable itself. Use it for a one-off reminder on a specific date (e.g. cron '0 12 3 11 *' = 3 November at 12:00), which would otherwise repeat every year."),
     },
     async (args) => {
       if (!existsSync(args.workspace)) {
@@ -356,6 +360,7 @@ export function createDirectorServer(
         effort: args.effort,
         model: args.model,
         provider: args.provider,
+        runOnce: args.runOnce,
       });
       if (!r.ok || !r.schedule) return { content: [{ type: "text", text: `Could not create the scheduled task: ${r.error}` }], isError: true };
       const next = r.schedule.nextRunAt ? new Date(r.schedule.nextRunAt).toLocaleString() : "—";
@@ -371,7 +376,7 @@ export function createDirectorServer(
       const list = scheduler.list();
       if (!list.length) return { content: [{ type: "text", text: "No scheduled tasks." }] };
       const text = list
-        .map((s) => `- ${s.id} ${s.enabled ? "[on]" : "[off]"} "${s.title}" (${s.cron}) @ ${s.workspace}${s.nextRunAt ? ` — next ${new Date(s.nextRunAt).toLocaleString()}` : ""}`)
+        .map((s) => `- ${s.id} ${s.enabled ? "[on]" : "[off]"}${s.runOnce ? " [once]" : ""} "${s.title}" (${s.cron}) @ ${s.workspace}${s.nextRunAt ? ` — next ${new Date(s.nextRunAt).toLocaleString()}` : ""}`)
         .join("\n");
       return { content: [{ type: "text", text }] };
     },
@@ -394,6 +399,7 @@ export function createDirectorServer(
         .nullable()
         .optional()
         .describe("The backend the pinned model belongs to. Send it with `model`; changing `model` alone clears it, so the pin can never keep a stale backend."),
+      runOnce: z.boolean().optional().describe("true = fire on the next matching slot only, then disable itself."),
     },
     async (args) => {
       const { id, ...patch } = args;

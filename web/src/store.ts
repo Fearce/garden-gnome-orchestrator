@@ -519,6 +519,7 @@ interface State {
     effort?: Effort | null;
     model?: string | null;
     provider?: ImplementorProvider | null;
+    runOnce?: boolean;
   }) => boolean;
   updateSchedule: (
     id: string,
@@ -531,6 +532,7 @@ interface State {
       effort?: Effort | null;
       model?: string | null;
       provider?: ImplementorProvider | null;
+      runOnce?: boolean;
     },
   ) => boolean;
   deleteSchedule: (id: string) => boolean;
@@ -1192,6 +1194,7 @@ function projectScheduleMutation(cmd: ScheduleMutation): void {
               // Mirror the scheduler's own rule (a lone provider pins nothing and is dropped), so the
               // projected row is what the authoritative list will replace it with, not a brief flicker.
               provider: cmd.model ? (cmd.provider ?? null) : null,
+              runOnce: cmd.runOnce ?? false,
               lastRunAt: null,
               nextRunAt: null,
               lastThreadId: null,

@@ -237,6 +237,9 @@ export interface ScheduledTask {
    *  together with `model` and never alone: the pair is resolved as an exact id, so a schedule cannot
    *  drift onto another provider's similarly named model as rosters change. */
   provider?: ImplementorProvider | null;
+  /** Fire on the next matching cron slot only, then disable itself: a one-off reminder instead of a
+   *  yearly repeat. "Run now" does not consume it. */
+  runOnce?: boolean;
   lastRunAt?: number | null; // epoch ms of the last fire, or null if it hasn't run yet
   nextRunAt?: number | null; // epoch ms of the next fire while enabled, else null
   lastThreadId?: string | null; // the task id created by the most recent fire (jump target in the UI)
