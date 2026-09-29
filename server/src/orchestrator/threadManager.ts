@@ -9555,7 +9555,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return !(cap > 0) || (this.autoResumes.get(threadId) ?? 0) < cap;
   }
 
-  /** Log each continuation in the task feed. `reason` distinguishes cutoff, stall and empty resume. */
   /** Why a task stopped at its turn ceiling should wrap up instead of continuing, posted once as a finding. */
   private continuationWrapUp(thread: Thread): string | null {
     let reason: string | null = null;
@@ -9576,6 +9575,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return reason;
   }
 
+  /** Log each continuation in the task feed. `reason` distinguishes cutoff, stall and empty resume. */
   private logAutoResume(threadId: string, n: number, reason: string, idleStreak = 0): void {
     const count = config.maxAutoResumes > 0 ? `${n}/${config.maxAutoResumes}` : `${n}`;
     const idle = idleStreak > 0 ? `; no new work in ${idleStreak}/${config.implementorNoProgressLimit} session(s)` : "";
