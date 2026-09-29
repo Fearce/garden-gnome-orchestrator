@@ -29,4 +29,8 @@ The probe's drift check flags any run whose DB figure exceeds its transcript. Ol
 - Goal steps aim at one long task (`f9c0d63`).
 - A resume past 200k context reseeds from a compressed handoff (`fcce590`).
 - GGO-driven sessions compact at 300k, not ~1M (`952ea45`).
+- A goal step over its burn rate, or whose goal was paused, wraps up at its next turn ceiling instead of
+  running on for hours (`stepWrapUpReason`). After the two fixes above, the 09-29 overnight burn was VOLUME,
+  not a leak: context per call 169k, 0% above 300k, but two Opus goal steps ran ~2,800 calls in 7h. To size
+  a goal's spend, join `goal_steps.thread_id` to the probe's runs; the per-thread table already ranks them.
 - Every Claude role runs Opus 5.5 by design (`claudeOpusFloor.ts`), so a "use a cheaper model" proposal must first read `token-conservation-mode.md` and `model-backend-economics.md`.

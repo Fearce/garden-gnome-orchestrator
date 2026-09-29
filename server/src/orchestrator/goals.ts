@@ -48,7 +48,9 @@ import {
  * that can proceed beside the running steps, or answers `wait` until one of them ends. With
  * `burnConservation` on (the default), no new step starts while every pool the goal could use has spent
  * more of its weekly window than `burnRatePct` of an even pace allows; the goal holds until the pace
- * catches up or the window resets.
+ * catches up or the window resets. A running step is asked to wrap up at its next turn ceiling once its
+ * pool is over pace or the goal is no longer active (`stepWrapUpReason`), so one long step cannot
+ * outrun the guard.
  */
 
 export const GOAL_TICK_MS = 60_000;
@@ -231,6 +233,26 @@ export function checkBurnRate(goal: GoalPin & GoalPace, roster: ModelCandidate[]
   const pools = [...over.values()];
   const held = pinned ? pools.length > 0 : pools.length > 0 && within.length === 0;
   return { roster: pinned ? roster : within, over: pools, hold: held ? burnHold(goal.burnRatePct, pools, !pinned, now) : null };
+}
+
+/**
+ * Why a goal's running step should wrap up at its next turn ceiling instead of continuing, or null. A step
+ * runs for hours across many turn ceilings, so checking the pace only before a step starts let one step
+ * spend a whole night's quota; a paused or ended goal likewise wants no more work put into its step.
+ */
+export function stepWrapUpReason(goal: Goal, step: GoalStep, roster: ModelCandidate[], now: number): string | null {
+  if (goal.status !== "active") {
+    const why = goal.statusReason?.trim().replace(/\.+$/, "");
+    return `the goal "${goal.title}" is ${goal.status}${why ? ` (${why})` : ""}`;
+  }
+  if (!goal.burnConservation || !step.provider) return null;
+  for (const candidate of roster.filter((c) => c.provider === step.provider)) {
+    const pace = poolOverPace(candidate, goal.burnRatePct, now);
+    if (pace) {
+      return `the goal "${goal.title}" is spending faster than its burn rate: ${pace.pool} has used ${Math.round(pace.usedPct)}% of its weekly window, ${Math.round(pace.budgetPct)}% allowed by now at ${goal.burnRatePct}% pace`;
+    }
+  }
+  return null;
 }
 
 function burnHold(burnRatePct: number, pools: PoolOverPace[], anyPoolFrees: boolean, now: number): { reason: string; until: number } {
@@ -574,6 +596,13 @@ export class GoalRunner {
     return this.db.listGoals();
   }
 
+  /** ThreadManager's continuation guard: why this goal step should wrap up at its turn ceiling, or null. */
+  wrapUpReason(threadId: string): string | null {
+    const step = this.db.listOpenGoalSteps().find((s) => s.threadId === threadId);
+    const goal = step ? this.db.getGoal(step.goalId) : null;
+    return step && goal ? stepWrapUpReason(goal, step, this.host.roster(), this.now()) : null;
+  }
+
   create(input: GoalInput): GoalResult {
     const title = input.title.trim().slice(0, 200);
     const objective = input.objective.trim();
@@ -627,9 +656,9 @@ export class GoalRunner {
   }
 
   /**
-   * The owner's lifecycle controls. Pausing or ending never touches the step task in flight — it
-   * finishes normally, and simply no further step follows. Resuming clears any backoff and evaluates
-   * at once. `achieved` here is the owner's own override and needs no agent or director agreement.
+   * The owner's lifecycle controls. Pausing or ending never interrupts the step task in flight: at its
+   * next turn ceiling it is asked to commit and report instead of continuing, and no further step
+   * follows. Resuming clears any backoff and evaluates at once. `achieved` here is the owner's own override and needs no agent or director agreement.
    */
   setStatus(id: string, status: GoalStatus, reason?: string): GoalResult {
     const current = this.db.getGoal(id);

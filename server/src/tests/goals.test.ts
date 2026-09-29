@@ -7,7 +7,7 @@
 // runaway guards (cancel, failed streak) and the absence of any step budget, the step-budget column's
 // removal from an old database, orphan adoption after a crash, the owner pausing mid-judgement, the hub
 // wake-up when a step task settles, the weekly burn-rate hold, and parallel steps (slots, the director's
-// `wait`, and reports of several steps that ended together).
+// `wait`, and reports of several steps that ended together), and when a running step must wrap up.
 
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +26,7 @@ import {
   parseGoalJudgement,
   resolveStepPin,
   stepTitle,
+  stepWrapUpReason,
   type GoalHost,
   type GoalJudgement,
 } from "../orchestrator/goals.js";
@@ -566,6 +567,37 @@ async function resumedMidJudge(): Promise<void> {
   check("a later tick still starts nothing", h.dispatched.length === 2 && h.db.listOpenGoalSteps(g.id).length === 2);
 }
 
+async function runningStepWrapUp(): Promise<void> {
+  const ws = process.cwd();
+  console.log("goals: a running step wraps up at its turn ceiling");
+  const h = harness();
+  h.answers.push(answer("continue", "Long step", { provider: "claude", model: "claude-opus-5-5", effort: "medium" }));
+  const g = h.runner.create({ title: "Night", objective: "o", workspace: ws }).goal!;
+  await h.runner.idle();
+  const threadId = h.db.getGoal(g.id)!.currentThreadId!;
+  h.roster = [paced(ROSTER[0]!, 20, h.clock.t), paced(ROSTER[1]!, 80, h.clock.t)];
+  check("a step on a pool within pace continues", h.runner.wrapUpReason(threadId) === null);
+  check("another pool over pace does not stop it", h.runner.wrapUpReason(threadId) === null);
+  h.roster = [paced(ROSTER[0]!, 70, h.clock.t), paced(ROSTER[1]!, 20, h.clock.t)];
+  const over = h.runner.wrapUpReason(threadId) ?? "";
+  check("its own pool over pace wraps it up, saying why", /burn rate/.test(over) && over.includes("Claude has used 70%") && over.includes('"Night"'));
+  h.runner.update(g.id, { burnConservation: false });
+  check("with conservation off it continues over pace", h.runner.wrapUpReason(threadId) === null);
+  h.runner.setStatus(g.id, "paused");
+  check("a paused goal's step wraps up", /is paused/.test(h.runner.wrapUpReason(threadId) ?? ""));
+  check("a task that is no goal step always continues", h.runner.wrapUpReason("not-a-goal-thread") === null);
+  h.runner.setStatus(g.id, "active");
+  settle(h, threadId, "done", "Stopped.\nGOAL STATUS: CONTINUE — more");
+  await h.runner.evaluate(g.id);
+  check("a settled step is no longer asked about", h.runner.wrapUpReason(threadId) === null);
+
+  const unpinned = { ...h.db.getGoal(g.id)!, status: "active" as const, burnConservation: true };
+  const step = { ...h.db.getGoal(g.id)!.steps[0]!, provider: null };
+  check("a step with no recorded provider continues", stepWrapUpReason(unpinned, step, h.roster, h.clock.t) === null);
+  const ended = stepWrapUpReason({ ...unpinned, status: "abandoned", statusReason: "Abandoned by the owner." }, step, h.roster, h.clock.t);
+  check("an ended goal's step wraps up with its reason", ended === 'the goal "Night" is abandoned (Abandoned by the owner)');
+}
+
 async function main(): Promise<void> {
   pure();
   burnRate();
@@ -575,6 +607,7 @@ async function main(): Promise<void> {
   await parallel();
   await resumedStep();
   await resumedMidJudge();
+  await runningStepWrapUp();
   legacyMigration();
   if (failures) {
     console.error(`\n${failures} check(s) failed`);

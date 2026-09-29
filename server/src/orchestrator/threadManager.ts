@@ -651,6 +651,12 @@ const STEERING_REPLY_NUDGE =
   `the task, and ending your turn is read as the whole task being finished. Go back to the ORIGINAL task. If it ` +
   `is not fully complete, continue it now and finish it. If it genuinely is complete and verified, reply with ` +
   `your final completion report for the whole task (not just the answer to that message) and end.`;
+// The nudge sent instead of "continue" when the continuation guard asks a turn-ceiling-stopped task to stop.
+const wrapUpNudge = (reason: string): string =>
+  `You stopped at a turn limit, and this task must now wrap up rather than continue: ${reason}. Do not start ` +
+  `new work. Finish only the change you are in the middle of, commit it so the working tree is clean, then end ` +
+  `with your final report: what this session got done, what still remains, and the concrete next step, so a ` +
+  `later task can pick it up from there.`;
 // The nudge sent when a resume came back having produced NOTHING. The agent never saw the previous nudge —
 // that session returned without ever reaching the model — so this one has to re-state the whole situation
 // from scratch rather than referring back to it.
@@ -1008,6 +1014,8 @@ export class ThreadManager implements OrchestratorApi {
   // When steering last reached each thread's live implementor. A voluntary finish after it is often just the
   // reply to that message, so awaitImplementorCompletion continues it once instead of reading it as done.
   private readonly implementorSteeredAt = new Map<string, number>();
+  // Asked at every turn-ceiling continuation: a reason the task should wrap up instead, or null to continue.
+  private continuationGuard: ((threadId: string) => string | null) | null = null;
   // During QA the implementor is fully stopped (the slot is exclusive — one agent at a time), so the
   // QA agent is the only thing running. Append steering reaches THAT QA agent; interrupt steering stops
   // or supersedes it and resumes the implementor. Either path must never wake/spawn an implementor beside
@@ -6698,6 +6706,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.db.kvGet("require_plan_approval") === "1";
   }
 
+  /** Lets another component end a long task at its next turn ceiling (goals: paused, or over its burn rate). */
+  setContinuationGuard(guard: (threadId: string) => string | null): void {
+    this.continuationGuard = guard;
+  }
+
   setApprovalMode(on: boolean): void {
     this.db.kvSet("require_plan_approval", on ? "1" : "0");
     this.hub.publish({ type: "approval.mode", on });
@@ -9163,6 +9176,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     let idleStreak = 0;
     let wedged = false;
     let steeringReply = this.endedOnSteeringReply(thread, res, attemptFrom);
+    let wrapUp: string | null = null;
     while (
       (this.isTurnLimitStop(res) || this.implementorStalled(thread.id, res) || steeringReply || silent) &&
       !this.cancelled(thread.id) &&
@@ -9171,6 +9185,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // may use that text to avoid a redundant continuation.
       (this.isTurnLimitStop(res) || silent || !this.implementorLooksDone(thread.id))
     ) {
+      // Once told to wrap up, a voluntary finish is the wrap-up report, whatever its last words sound like.
+      if (wrapUp && !this.isTurnLimitStop(res) && !silent) break;
       const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
       if (!session) break; // no session to resume from — fall through to the QA/review handling
       const gitAfter = await workspaceGitFingerprint(thread.workspace);
@@ -9196,26 +9212,31 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // steering, and a silent run (the session came back without producing anything). They differ only
       // in the nudge, and in whether the dead session may be resumed again.
       const turnLimit = this.isTurnLimitStop(res);
+      if (turnLimit && !wrapUp) wrapUp = this.continuationWrapUp(thread);
       const steered = steeringReply && !silent;
       if (steered) this.implementorSteeredAt.delete(thread.id);
-      const reason = silent
-        ? "resumed session produced nothing"
-        : turnLimit
-          ? "turn limit hit"
-          : steered
-            ? "answered a mid-task message, task not confirmed finished"
-            : "ended its turn without finishing";
+      const reason = wrapUp
+        ? `turn limit hit, wrapping up: ${wrapUp}`
+        : silent
+          ? "resumed session produced nothing"
+          : turnLimit
+            ? "turn limit hit"
+            : steered
+              ? "answered a mid-task message, task not confirmed finished"
+              : "ended its turn without finishing";
       this.logAutoResume(thread.id, n, reason, idleStreak);
-      const nudge = silent
-        ? SILENT_RESUME_NUDGE
-        : turnLimit
-          ? "You haven't finished — you stopped at a turn limit, not because the work is done. Continue exactly " +
-            "where you left off and complete the task. " +
-            (qaFollows ? "A QA agent" : config.ownerName) +
-            " will review your work when you're genuinely done."
-          : steered && !this.implementorStalled(thread.id, res)
-            ? STEERING_REPLY_NUDGE
-            : STALL_NUDGE;
+      const nudge = wrapUp
+        ? wrapUpNudge(wrapUp)
+        : silent
+          ? SILENT_RESUME_NUDGE
+          : turnLimit
+            ? "You haven't finished — you stopped at a turn limit, not because the work is done. Continue exactly " +
+              "where you left off and complete the task. " +
+              (qaFollows ? "A QA agent" : config.ownerName) +
+              " will review your work when you're genuinely done."
+            : steered && !this.implementorStalled(thread.id, res)
+              ? STEERING_REPLY_NUDGE
+              : STALL_NUDGE;
       // Close the turn-maxed query before resuming so we never run two implementors on one workspace;
       // startImplementor's onEnd guard tolerates the relaunch replacing `this.live` first either way.
       await current.stop();
@@ -9535,6 +9556,26 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   /** Log each continuation in the task feed. `reason` distinguishes cutoff, stall and empty resume. */
+  /** Why a task stopped at its turn ceiling should wrap up instead of continuing, posted once as a finding. */
+  private continuationWrapUp(thread: Thread): string | null {
+    let reason: string | null = null;
+    try {
+      reason = this.continuationGuard?.(thread.id) ?? null;
+    } catch (e) {
+      this.hub.log("warn", `Continuation guard failed for "${thread.title}": ${(e as Error).message}`);
+    }
+    if (reason) {
+      this.postFinding({
+        threadId: thread.id,
+        fromRole: "implementor",
+        summary: "Wrapping up at the turn limit instead of continuing",
+        detail: `${reason}. The implementor was asked to commit what it has and report what remains.`,
+        severity: "note",
+      });
+    }
+    return reason;
+  }
+
   private logAutoResume(threadId: string, n: number, reason: string, idleStreak = 0): void {
     const count = config.maxAutoResumes > 0 ? `${n}/${config.maxAutoResumes}` : `${n}`;
     const idle = idleStreak > 0 ? `; no new work in ${idleStreak}/${config.implementorNoProgressLimit} session(s)` : "";

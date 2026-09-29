@@ -76,6 +76,14 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   over-pace pool. Changing `maxConcurrent`/`burnConservation`/`burnRatePct` clears `nextCheckAt` and evaluates at once.
 - **Re-read the goal after the judge returns.** The owner may pause, end or delete it while the director
   is thinking; a judgement that lands afterwards must dispatch nothing.
-- Pausing/ending never touches the running step task: it finishes, and no step follows.
+- **The burn rate and a pause also bind the RUNNING step, at its turn ceilings.** Steps run for hours and
+  auto-continue through ~10 turn ceilings each, so with a check only before dispatch a step started within
+  pace could run on for hours past it, and a goal the owner paused kept spending until its step ended
+  (2026-09-29: two ~7h steps took 36% of a weekly window overnight, and both kept running after the pause). ThreadManager asks `continuationGuard` (installed in `index.ts`
+  as `goals.wrapUpReason`) at every turn-ceiling continuation; `stepWrapUpReason` answers when the goal is
+  no longer `active`, or the step's own pool is over pace. The step is then told to commit and report
+  instead of continuing, finishes `done`, and the goal's own hold takes over. It never interrupts a turn.
+  Gate: `test:goals` (`stepWrapUpReason`) + `test:continuation-guard` (the loop sends the wrap-up nudge,
+  once, and settles on the wrap-up report).
 
 Verify: `npm run test:goals --prefix server` (server loop + the web store/view gate), then typecheck.

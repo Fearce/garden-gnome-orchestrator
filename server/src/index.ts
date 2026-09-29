@@ -180,6 +180,7 @@ async function main(): Promise<void> {
     roster: () => manager.goalModelRoster(),
     notify: (kind, title, detail, repo) => manager.notifyGoal(kind, title, detail, repo),
   }, { ownerName: config.ownerName });
+  manager.setContinuationGuard((threadId) => goals.wrapUpReason(threadId));
   const director = new Director(manager, db, hub, scheduler, notes, goals);
   // The repo-level Git console (fetch/pull/push/branch/commit over any repo the console knows about).
   // Standalone: Db only, so it never entangles with the pipeline. It always offers the orchestrator's
