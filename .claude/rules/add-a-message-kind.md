@@ -27,6 +27,9 @@ Server:
    block, emitted UNTRIMMED so it equals the `thinking_delta` stream co-work dedupes against.
    Codex does it per completed reasoning summary. A live-only `thinking_delta` with no commit
    leaves a draft pinned to the feed bottom that vanishes on reload. Gate: `test:narration-persist`.
+   Claude narration from before 2026-09-30 is recovered from the SDK session transcripts by
+   `npm run backfill:thinking --prefix server` (dry run by default, `-- --apply` writes;
+   idempotent; gate `test:backfill-thinking`).
 
 Web:
 6. `web/src/types.ts` — mirror `Message.kind`, the `ServerEvent`, AND add a `FeedItem` variant.
