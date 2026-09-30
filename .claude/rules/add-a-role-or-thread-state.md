@@ -61,7 +61,11 @@ Sets, the free-text role arrays, and the pipeline gates, which all compile fine 
    `live<Role>` handle (set/cleared in `runRole`, cleared in `cancelThread`/`retryThread`/
    `forceStopThreadRuns`) and steer it via `steerStructuredRole` — never `interrupt()`, **nor
    `priority: "now"`, which IS one**: either aborts a schema-bound role into a verdict-less result the
-   pipeline reads as "could not complete" and parks on (`test:inject-qa`).
+   pipeline reads as "could not complete" and parks on (`test:inject-qa`). The one sanctioned exception
+   is the injection pickup watch's `interrupt()` of a run stuck in a tool call behind an unread append.
+   It is safe only because the verdict loop awaits via `awaitTurnResult`, which skips the aborted turn and
+   reads the queued append's turn instead. A new role's verdict loop must await the same way
+   (`test:injection-pickup`).
 4. Web mirror: `web/src/types.ts`, `Board.tsx` `STATUS_RANK` (a `Record` — the build catches this
    one), and `lib/format.ts` `stateColor` / `stateLabel` / `threadRunning` / `isTerminal` /
    `isDoneable` / `isClosable` (switches with a `default` — all silent).

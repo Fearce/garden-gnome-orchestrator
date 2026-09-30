@@ -340,6 +340,85 @@ async function wiringCases(): Promise<void> {
     run.end();
   });
 
+  // The bug (task f11e4764, 2026-09-30): the owner appended while QA sat inside a 580s test-suite Bash call.
+  // The QA lane delivered the message and posted "[delivered]", but only the implementor lane was watched,
+  // so the instruction stayed unread for 10 minutes and the owner reported the task as ignoring them.
+  console.log("\ninjectThread — the live QA and auto-review lanes");
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const seedReviewLane = (h: { db: InstanceType<typeof Db>; internals: any }, lane: "qa" | "reviewer") => {
+    const t = h.db.createThread({ title: `pickup ${lane} task`, workspace: tmpdir(), rawPrompt: "review the thing" });
+    h.db.updateThreadStageOutputs(t.id, { kickoff: "KICKOFF", planDone: true, approved: true });
+    h.db.updateThread(t.id, { state: lane === "qa" ? "qa" : "reviewing" });
+    const run = new FakeSdkRun();
+    const row = h.db.createRun({ threadId: t.id, role: lane, model: "claude-opus-5-5", account: "acct-a" });
+    if (lane === "qa") {
+      h.internals.liveQa.set(t.id, run);
+      h.internals.liveQaRunId.set(t.id, row.id);
+    } else {
+      h.internals.liveReviewer.set(t.id, run);
+      h.internals.liveReviewerRunId.set(t.id, row.id);
+    }
+    return { id: t.id, run, runId: row.id };
+  };
+  await withManager(async ({ mgr, db, internals }) => {
+    const { id, run } = seedReviewLane({ db, internals }, "qa");
+    run.blockInTool();
+    const r = await mgr.injectThread(id, "heal me first, then the party", "append");
+    check("the QA append was accepted and delivered as a plain send", r.ok && run.sends.length === 1 && run.sends[0]?.opts === undefined, JSON.stringify({ r, sends: run.sends }));
+    await sleep(350);
+    check("QA blocked in one long tool call is interrupted once the owner's message sat unread", run.interrupts === 1, String(run.interrupts));
+    const notes = pickupNotes(db, id);
+    check("the owner is told QA's tool call was stopped to deliver their message", notes.length === 1 && notes[0]!.content.includes("QA"), JSON.stringify(notes));
+  });
+  await withManager(async ({ mgr, db, internals }) => {
+    const { id, run } = seedReviewLane({ db, internals }, "reviewer");
+    run.blockInTool();
+    const r = await mgr.injectThread(id, "also check the migration", "append");
+    check("the auto-review append was accepted", r.ok && run.sends.length === 1, JSON.stringify(r));
+    await sleep(350);
+    check("an auto-reviewer blocked in one long tool call is interrupted the same way", run.interrupts === 1 && pickupNotes(db, id).length === 1, `${run.interrupts} / ${pickupNotes(db, id).length}`);
+  });
+  await withManager(async ({ mgr, db, internals }) => {
+    const { id, run } = seedReviewLane({ db, internals }, "qa");
+    run.blockInTool();
+    await mgr.injectThread(id, "answer me", "append");
+    internals.liveQa.set(id, new FakeSdkRun());
+    await sleep(350);
+    check("a QA run a failover replaced is not interrupted", run.interrupts === 0, String(run.interrupts));
+  });
+  await withManager(async ({ mgr, db, internals }) => {
+    const { id, run } = seedReviewLane({ db, internals }, "qa");
+    run.blockInTool();
+    await mgr.injectThread(id, "answer me", "append");
+    db.updateThread(id, { state: "awaiting_user" });
+    await sleep(350);
+    check("a QA run waiting on its own question is not interrupted", run.interrupts === 0, String(run.interrupts));
+  });
+  await withManager(async ({ mgr, db, internals }) => {
+    const { id, run, runId } = seedReviewLane({ db, internals }, "qa");
+    run.blockInTool();
+    const verdict = internals.awaitStructuredReviewResult(db.getThread(id), "qa", run, runId);
+    await mgr.injectThread(id, "swap to the amethyst staff", "append");
+    await sleep(350);
+    const label = `RI-${String(internals.reviewInjections.listThread(id)[0]?.id).slice(0, 8)}`;
+    // What the CLI does after interrupt() (`probe:sdk-steer -- --mode pickup --schema`, 2026-09-30): the
+    // stopped turn closes as an error-shaped, verdict-less result, then the queued owner message runs as
+    // the next turn and answers with the acknowledged verdict.
+    run.fire({ type: "result", subtype: "error_during_execution", isError: true, aborted: true, terminalReason: "aborted_tools" });
+    await sleep(20);
+    run.fire({ type: "result", subtype: "success", isError: false, structuredOutput: { pass: true, summary: `ACK ${label}: staff swap verified` } });
+    const res = await verdict;
+    const waiting = db.listMessages(id).filter((m) => m.content.startsWith("[waiting]"));
+    check("the turn the pickup watch aborted is not read as QA's verdict", (res?.structuredOutput as { summary?: string } | undefined)?.summary?.startsWith(`ACK ${label}`) === true, JSON.stringify(res));
+    check("…nor reported to the owner as a verdict that skipped their instruction", waiting.length === 0, JSON.stringify(waiting.map((m) => m.content)));
+    const row = internals.reviewInjections.listThread(id)[0] as { status: string; reviewerAcknowledgedAt?: number | null } | undefined;
+    check(
+      "…and the instruction is recorded as acknowledged, not failed",
+      row?.reviewerAcknowledgedAt != null && row.status !== "failed",
+      JSON.stringify(row),
+    );
+  });
+
   console.log("\ninjectThread — no agent running (cold inject)");
   await withManager(async ({ mgr, db, internals, seedLive }) => {
     const { id } = seedLive();

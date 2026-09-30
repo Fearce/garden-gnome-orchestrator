@@ -123,6 +123,6 @@ The general rule: **stubbing a ThreadManager method does not stub a module-level
   CLI semantics live in the minified binary, so anchor on a string literal: `claude-cli-grep '("now")'`
   (Bash tool; PowerShell eats inner quotes — `--pattern-file`), free and ~0.3s. What a RUN does needs
   quota: `probe:sdk-resume` (`out: 0` on success = silent resume, ~$0.10); what STEERING one does:
-  `probe:sdk-steer [-- --mode now|next|interrupt]`, ~$0.03 — read `terminal_reason`, never the shape
+  `probe:sdk-steer [-- --mode now|next|interrupt|pickup] [--schema]`, ~$0.03–0.09 — read `terminal_reason`, never the shape
   (a `"now"` abort is success-shaped, a bare `interrupt()` is `error_during_execution`).
 - Register the gate in BOTH `server/package.json` and `GATES` in `scripts/run-gates.cjs`, else the nightly sweep never runs it; `test:gate-registration` red-flags either omission. Verify with `npm run typecheck && npm run test:gates --prefix server` — but FIRST, when you touched a shared seam, `npm run gates:touching --prefix server -- <symbol>` (`--list` to look) runs every gate whose test file names it. The suite is ~5min here, so discovering a broken gate one suite at a time is the expensive mistake: adding a `this.accounts.select()` call to `startResumedImplementor` crashed every itest whose StubAccounts had only `dispatchPreview`, and the hand-rolled version of this grep ran a subset of its own answer and missed one (2026-09-17).

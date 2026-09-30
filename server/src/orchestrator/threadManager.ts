@@ -939,6 +939,8 @@ export function providerServesRole(role: Role, provider: ImplementorProvider): b
 }
 /** The roles `runRole` drives: every non-implementor agent, each one-shot and schema-bound. */
 type StructuredRole = "planner" | "researcher" | "qa" | "reader" | "reviewer";
+/** A lane whose live run an owner append can sit unread behind (see injectionPickup.ts). */
+type PickupLane = "implementor" | "qa" | "reviewer";
 type QaStopOutcome =
   | { status: "stopped" }
   | { status: "no-live-handle" }
@@ -7405,7 +7407,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * the stages already done — feeding their saved outputs forward — instead of starting over. A
    * fresh dispatch simply finds no saved stages and runs them all.
    */
-  private async runPipeline(threadId: string, directorNote?: string): Promise<void> {
+  private async runPipeline(threadId: string, directorNote?: string, noteAttachments?: AttachmentRef[]): Promise<void> {
     let thread = this.db.getThread(threadId);
     if (!thread || this.cancelled(threadId)) return;
     thread = this.ensureThreadModelRequest(thread);
@@ -7434,7 +7436,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         const buffered = this.directorNotes.get(threadId);
         this.directorNotes.delete(threadId);
         const rawNote = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n");
-        const note = rawNote ? acknowledgedInjection(rawNote) : undefined;
+        const note = rawNote && !this.holdNoteForQaRetry(thread, rawNote, noteAttachments) ? acknowledgedInjection(rawNote) : undefined;
         await this.runImplementorQa(thread, saved.kickoff ?? thread.brief, this.implementorEffort(threadId), this.latestImplementorSession(threadId), note, {
           qaEnabled: true,
           maxQaRounds: settings.maxQaRounds,
@@ -7632,7 +7634,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const buffered = this.directorNotes.get(threadId);
       this.directorNotes.delete(threadId);
       const rawNote = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n");
-      const note = rawNote ? acknowledgedInjection(rawNote) : undefined;
+      const note = rawNote && !this.holdNoteForQaRetry(thread, rawNote, noteAttachments) ? acknowledgedInjection(rawNote) : undefined;
       // Pick the implementor model only when implementation will actually run. A capped or
       // restart-interrupted QA retry has durable completed implementation, so an extra model-selection
       // call would waste a provider turn and could itself derail the handoff.
@@ -9327,7 +9329,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return `the prior session's live context is ${Math.round(tokens / 1000)}k tokens (over ${Math.round(limit / 1000)}k), which every call of a full resume would re-read`;
   }
 
-  /** The implementor's next real turn outcome — skipping any turn the owner's steering ABORTED.
+  /** A run's next real turn outcome — skipping any turn the owner's steering ABORTED. The implementor
+   *  awaits this, and so does the QA/auto-review verdict loop, which the injection pickup watch interrupts.
    *
    *  Steering a live implementor (an office-chat post, "Interrupt & inject", Pause) aborts its turn in
    *  flight, and the CLI ends an aborted turn with a success-shaped, empty result. Accepting that as the
@@ -11316,6 +11319,25 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return res;
   }
 
+  /** A cap- or restart-interrupted QA pass will be retried directly, without relaunching the implementor:
+   *  `runImplementorQaLoop`'s `qaOnlyRetry`, answered before the pipeline re-enters it. */
+  private qaRetryPending(thread: Thread): boolean {
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    if (stage.qaSuperseded || stage.qaFixHandoff) return false;
+    if (stage.qaCapRetryRound == null && stage.qaInterruptedRetryRound == null) return false;
+    return stage.ownerStartedQa ? !this.qaBypassedByOwner(thread.id) : this.qaRoutedFor(thread, this.settings(), stage.routeDecision);
+  }
+
+  /** An owner note bound for a pipeline that is about to retry QA directly. That retry never starts the
+   *  implementor, so an implementor note was silently dropped; the durable QA-lane instruction is instead
+   *  prepended to the retry's kickoff, fences its verdict until acknowledged, and then queues for the
+   *  implementor. Returns false (the note stays an implementor note) when no such retry is pending. */
+  private holdNoteForQaRetry(thread: Thread, note: string | undefined, attachments?: AttachmentRef[]): boolean {
+    if (!note?.trim() || !this.qaRetryPending(thread)) return false;
+    this.acceptReviewInjection(thread.id, "qa", "append", note.trim(), attachments);
+    return true;
+  }
+
   private qaSuperseded(threadId: string): boolean {
     return !!this.db.getThreadStageOutputs(threadId).qaSuperseded;
   }
@@ -11830,6 +11852,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       contentWithImages(reviewInjectionPrompt([row]), this.reviewInjectionImages([row])),
       injectionSendOptions(run, "append"),
     );
+    this.watchInjectionPickup(row.threadId, run, "append", lane);
     if (!runId) {
       this.reviewInjectionFeed(
         row.threadId,
@@ -12034,7 +12057,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     agent: AgentRunLike,
     runId: string,
   ): Promise<ResultEvent | undefined> {
-    let result = await agent.result();
+    let result = await this.awaitTurnResult(agent, false);
     let acknowledgementMisses = 0;
     while (!this.cancelled(thread.id)) {
       let pending = this.pendingReviewInjectionsForRun(thread.id, lane);
@@ -12107,7 +12130,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           injectionSendOptions(agent, "append"),
         );
       }
-      result = await agent.nextResult();
+      result = await this.awaitTurnResult(agent, true);
     }
     return result;
   }
@@ -12153,26 +12176,75 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.reviewing.has(threadId) || this.db.getAutoReviewEpisode(threadId)?.status === "running";
   }
 
-  /** Interrupt a live implementor that is still inside one blocking tool call when an appended injection
-   *  has waited `config.injectionPickupMs` unread. A task waiting on its own question is left alone. */
-  private watchInjectionPickup(threadId: string, run: AgentRunLike, mode: "append" | "interrupt"): void {
+  /** Interrupt a live implementor, QA or auto-reviewer that is still inside one blocking tool call when an
+   *  appended injection has waited `config.injectionPickupMs` unread. A task waiting on its own question
+   *  is left alone. */
+  private watchInjectionPickup(threadId: string, run: AgentRunLike, mode: "append" | "interrupt", lane: PickupLane = "implementor"): void {
     if (!injectionNeedsPickupWatch(run, mode) || this.injectionPickupWatches.has(threadId)) return;
     this.injectionPickupWatches.add(threadId);
     watchInjectionPickup(run, {
       timeoutMs: config.injectionPickupMs,
-      mayInterrupt: () => this.live.get(threadId)?.run === run && this.db.getThread(threadId)?.state === "implementing",
-      onInterrupt: (waitedMs) => this.noteInjectionPickupInterrupt(threadId, waitedMs),
+      mayInterrupt: () => this.pickupLaneOwnsRun(threadId, run, lane),
+      onInterrupt: (waitedMs) => this.noteInjectionPickupInterrupt(threadId, waitedMs, lane),
       onSettled: () => this.injectionPickupWatches.delete(threadId),
     });
   }
 
-  private noteInjectionPickupInterrupt(threadId: string, waitedMs: number): void {
+  /** The run is still its lane's live handle and the task is still in that lane's working state. */
+  private pickupLaneOwnsRun(threadId: string, run: AgentRunLike, lane: PickupLane): boolean {
+    const state = this.db.getThread(threadId)?.state;
+    if (lane === "qa") return this.liveQa.get(threadId) === run && state === "qa";
+    if (lane === "reviewer") return this.liveReviewer.get(threadId) === run && state === "reviewing";
+    return this.live.get(threadId)?.run === run && state === "implementing";
+  }
+
+  /** "Interrupt & inject" (or an owner QA bypass) while QA has no live handle: a failover relaunch or a
+   *  restart respawn is between QA processes, and a pipeline is already running to launch the next one.
+   *  Persist the supersede, so that pipeline ignores the review's verdict and resumes implementation with
+   *  the instruction exactly once. Refusing it left the owner's instruction with no agent at all. */
+  private supersedeQaBetweenRuns(
+    threadId: string,
+    qaState: Thread["state"],
+    message: string,
+    refs: AttachmentRef[] | undefined,
+    imageCount: number,
+    qaBypassRequested: boolean,
+  ): ThreadActionResult {
+    const reviewRow = this.acceptReviewInjection(threadId, "qa", "interrupt", message, refs, true);
+    this.queueReviewInjectionsForImplementor(
+      [reviewRow],
+      qaBypassRequested
+        ? "The owner bypassed QA during a runner transition; the in-flight verdict is superseded and this instruction returns to implementation."
+        : "The owner stopped QA while it was between runs; the in-flight verdict is superseded and this instruction returns to implementation.",
+      true,
+    );
+    this.rememberQaSupersede(threadId, message, refs);
+    const images = imageCount ? ` [+${imageCount} image(s)]` : "";
+    this.reviewInjectionFeed(
+      threadId,
+      qaBypassRequested
+        ? `Owner disabled QA. The in-flight review result will be ignored and the task will finish without another QA run: ${message}${images}`
+        : `↪ interrupt requested (QA was between runs; its verdict will be ignored and the task returns to the implementor): ${message}${images}`,
+      refs,
+    );
+    const label = reviewInjectionLabel(reviewRow.id);
+    return {
+      ok: true,
+      state: qaState,
+      message: qaBypassRequested
+        ? `${label} recorded the QA bypass; the in-flight verdict will be ignored and implementation is queued.`
+        : `${label} recorded while QA was between runs; its verdict will be ignored and the implementor resumes with this instruction.`,
+    };
+  }
+
+  private noteInjectionPickupInterrupt(threadId: string, waitedMs: number, lane: PickupLane): void {
     const seconds = Math.round(waitedMs / 1000);
+    const agent = lane === "qa" ? "QA" : lane === "reviewer" ? "The auto-reviewer" : "The implementor";
     const m = this.db.addMessage({
       threadId,
       role: "director",
       kind: "system",
-      content: `⏱ The implementor hadn't read your message after ${seconds}s. It was stuck in one long tool call, so that call was stopped and your message was delivered.`,
+      content: `⏱ ${agent} hadn't read your message after ${seconds}s. It was stuck in one long tool call, so that call was stopped and your message was delivered.`,
     });
     this.hub.publish({ type: "thread.message", threadId, message: m });
     this.hub.log("info", `Injection pickup on ${threadId.slice(0, 8)}: unread after ${seconds}s, interrupted the blocking tool call.`);
@@ -12308,37 +12380,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       }
       if (mode === "interrupt" || qaBypassRequested) {
         if (!qa) {
-          if (qaBypassRequested) {
-            const refs = injectRefs();
-            const reviewRow = this.acceptReviewInjection(threadId, "qa", "interrupt", message, refs, true);
-            this.queueReviewInjectionsForImplementor(
-              [reviewRow],
-              "The owner bypassed QA during a runner transition; the in-flight verdict is superseded and this instruction returns to implementation.",
-              true,
-            );
-            // The handle can disappear briefly during provider failover. Persist the supersede instruction
-            // anyway so the loop ignores that review result and resumes implementation exactly once.
-            this.rememberQaSupersede(threadId, message, refs);
-            const m = this.db.addMessage({
-              threadId,
-              role: "director",
-              kind: "system",
-              content: `Owner disabled QA. The in-flight review result will be ignored and the task will finish without another QA run: ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
-              attachments: refs,
-            });
-            this.hub.publish({ type: "thread.message", threadId, message: m });
-            this.touchThread(threadId);
+          // A plain stop with no pipeline behind it has nothing that would ever read the supersede marker.
+          if (!qaBypassRequested && !this.activePipelines.has(threadId)) {
             return {
-              ok: true,
+              ok: false,
               state: qaState,
-              message: `${reviewInjectionLabel(reviewRow.id)} recorded the QA bypass; the in-flight verdict will be ignored and implementation is queued.`,
+              error: "QA has no live stop handle right now. The task is likely between QA runner processes; retry the interrupt when QA is visible again or when the implementor starts.",
             };
           }
-          return {
-            ok: false,
-            state: qaState,
-            error: "QA has no live stop handle right now. The task is likely between QA runner processes; retry the interrupt when QA is visible again or when the implementor starts.",
-          };
+          return this.supersedeQaBetweenRuns(threadId, qaState, message, injectRefs(), images?.length ?? 0, qaBypassRequested);
         }
         this.hub.log("info", "[INJECT] QA in progress - superseding QA and returning to the implementor");
         const refs = injectRefs();
@@ -12681,7 +12731,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (qaBypassRequested && thread && DONEABLE.has(thread.state)) {
       return this.markDone(threadId);
     }
-    return this.resumeThread(threadId, message, true);
+    return this.resumeThread(threadId, message, true, injectRefs());
   }
 
   /** Give a skip-director task a real board title (short → verbatim, longer → a ≤8-word Haiku summary)
@@ -12843,7 +12893,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return { ok: true, state: "paused" };
   }
 
-  async resumeThread(threadId: string, message?: string, operatorInitiated = false): Promise<ThreadActionResult> {
+  async resumeThread(
+    threadId: string,
+    message?: string,
+    operatorInitiated = false,
+    messageAttachments?: AttachmentRef[],
+  ): Promise<ThreadActionResult> {
     let thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
     if (this.db.getThreadStageOutputs(threadId).manualProceed) {
@@ -12991,10 +13046,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         );
         return { ok: true, state: "implementing" };
       }
+      // A pipeline that already re-entered this task (boot recovery's auto-resume, or an earlier inject)
+      // leaves it `failed` until its first stage runs, which took 20s on 2026-09-30. Starting another
+      // here would put two agents on one workspace; hand the note to the one already coming up.
+      if (this.activePipelines.has(threadId)) {
+        if (note && !this.holdNoteForQaRetry(thread, note, messageAttachments)) this.bufferDirectorNote(threadId, note);
+        return { ok: true, state: thread.state };
+      }
       // Thread the steering note INTO the pipeline so the implementor actually receives it — not just
       // the UI feed. The feed echo is owned by the caller (injectThread echoes before resuming); a
       // direct resume carries no message, so nothing is dropped from the history.
-      void this.runPipeline(threadId, note);
+      void this.runPipeline(threadId, note, messageAttachments);
       return { ok: true, state: "planning" };
     }
     // A resume is already materializing (compressing the prior session on the cold path) — treat a

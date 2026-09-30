@@ -1183,6 +1183,126 @@ async function main(): Promise<void> {
     }
   }
 
+  // -- Interrupt while QA is between runner processes (failover relaunch, restart respawn) ------------
+  // The handle is briefly absent while runRole swaps accounts/providers or boot recovery respawns QA.
+  // "Interrupt & inject" in that window used to be refused with "retry the interrupt", so the owner's
+  // instruction never reached any agent unless they noticed and re-sent it.
+  console.log("\nTest N4 — 'Interrupt & inject' while QA is between runs is kept and returns the task to implementation");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      // The loop runs inside runPipeline in production, which holds this reservation for its whole life.
+      h.internals.activePipelines.add(id);
+      let injected = false;
+      const agents = stubQaRunRole(h, async () => {
+        if (injected) return;
+        injected = true;
+        h.internals.liveQa.delete(id);
+        h.internals.liveQaRunId.delete(id);
+        const r = await h.mgr.injectThread(id, "stop healing enemies", "interrupt", [IMG]);
+        check("the interrupt was accepted, not refused for a missing QA handle", r.ok, JSON.stringify(r));
+        check("the instruction is durably recorded for the implementor", (h.db.getThreadStageOutputs(id).qaSuperseded?.messages ?? []).includes("stop healing enemies"), JSON.stringify(h.db.getThreadStageOutputs(id).qaSuperseded));
+      });
+      await runLoop(h, id);
+      check("the resumed implementor received the instruction", h.resumes.some((m) => m.includes("stop healing enemies")), JSON.stringify(h.resumes));
+      check("…with its image", h.resumeImages.some((n) => n === 1), JSON.stringify(h.resumeImages));
+      check("a fresh QA pass re-checked the work", agents.length === 2, `qaRuns=${agents.length}`);
+      check("the task settled done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      const feed = h.db.listMessages(id).filter((m) => m.content.includes("stop healing enemies"));
+      check("the owner sees one line carrying the instruction and its image", feed.length === 1 && feed[0]?.attachments?.length === 1, JSON.stringify(feed.map((m) => m.content)));
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+  // -- The restart gap (task f11e4764, 2026-09-30) -----------------------------------------------------
+  // A restart during QA leaves the task `failed` with qaInterruptedRetryRound set, and boot recovery's
+  // auto-resume re-enters runPipeline 4s later — but the task stays `failed` until QA actually starts, 20s
+  // on the day. An inject in that window started a SECOND pipeline, and each one's QA-only retry skipped
+  // the implementor that was the only reader of the owner's note, so the note reached no agent at all.
+  console.log("\nTest N5 — an inject while boot recovery re-enters a QA-interrupted task joins that QA retry instead of starting a second pipeline");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "failed", error: "Interrupted by a server restart" });
+      h.db.updateThreadStageOutputs(id, { qaRoundsUsed: 1, qaInterruptedRetryRound: 1 });
+      h.internals.activePipelines.add(id);
+      let pipelines = 0;
+      h.internals.runPipeline = async (): Promise<void> => {
+        pipelines++;
+      };
+      const r = await h.mgr.injectThread(id, "make it swap staffs", "append", [IMG]);
+      const rows = h.internals.reviewInjections.listThread(id) as Array<{ lane: string; status: string; instruction: string; attachmentIds: string[] }>;
+      check("the inject was accepted", r.ok, JSON.stringify(r));
+      check("no second pipeline was started on the workspace", pipelines === 0, `pipelines=${pipelines}`);
+      check(
+        "the instruction is held for the QA retry the running pipeline will launch",
+        rows.length === 1 && rows[0]?.lane === "qa" && rows[0].status === "accepted" && rows[0].instruction.includes("make it swap staffs"),
+        JSON.stringify(rows),
+      );
+      check("…with its image", rows[0]?.attachmentIds.length === 1, JSON.stringify(rows[0]));
+      check("…and not parked for an implementor that retry never starts", !h.internals.directorNotes.get(id)?.length, JSON.stringify(h.internals.directorNotes.get(id)));
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest N6 — a QA-only retry hands the owner's resume note to QA, which acknowledges it");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "failed", error: "Interrupted by a server restart" });
+      h.db.updateThreadStageOutputs(id, { qaRoundsUsed: 1, qaInterruptedRetryRound: 1 });
+      h.internals.gateImplementorProvider = () => true;
+      h.internals.autoSelectModel = async (): Promise<void> => {};
+      const agents = stubQaRunRole(h, async () => {});
+      const stubbedRunRole = h.internals.runRole;
+      // What the real runRole prepends to QA's start message, read at the same moment it would read it.
+      const startInstructions: string[][] = [];
+      h.internals.runRole = (t: Thread, role: string, ...rest: unknown[]): Promise<unknown> => {
+        const pending = h.internals.pendingReviewInjectionsForRun(t.id, "qa") as Array<{ instruction: string }>;
+        startInstructions.push(pending.map((row) => row.instruction));
+        return stubbedRunRole(t, role, ...rest);
+      };
+      await h.internals.runPipeline(id, "make it swap staffs");
+      const rows = h.internals.reviewInjections.listThread(id) as Array<{ lane: string; status: string; reviewerAcknowledgedAt: number | null }>;
+      check("the note became a QA instruction", rows.length === 1 && rows[0]?.lane === "qa", JSON.stringify(rows));
+      check("the retried QA pass was started with it", startInstructions[0]?.some((m) => m.includes("make it swap staffs")) === true, JSON.stringify(startInstructions));
+      check("QA acknowledged it", rows[0]?.reviewerAcknowledgedAt != null && rows[0]?.status !== "failed", JSON.stringify(rows[0]));
+      check("the acknowledged instruction reached the implementor", h.drained.some((q) => q.some((m) => m.includes("make it swap staffs"))), JSON.stringify(h.drained));
+      check("…and QA re-checked that work", agents.length === 2, `qaRuns=${agents.length}`);
+      check("the task settled done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state} error=${h.db.getThread(id)?.error}`);
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest N7 — without a QA retry pending, the same resume note still reaches the implementor");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      h.db.updateThread(id, { state: "failed", error: "Interrupted by a server restart" });
+      h.internals.gateImplementorProvider = () => true;
+      h.internals.autoSelectModel = async (): Promise<void> => {};
+      let note: string | undefined;
+      h.internals.runImplementorQa = async (_t: Thread, _k: string, _e: unknown, _s: unknown, directorNote?: string): Promise<void> => {
+        note = directorNote;
+      };
+      await h.internals.runPipeline(id, "make it swap staffs");
+      check("the implementor received the note", note?.includes("make it swap staffs") === true, String(note));
+      check("no QA instruction was created for it", h.internals.reviewInjections.listThread(id).length === 0, JSON.stringify(h.internals.reviewInjections.listThread(id)));
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Parked task: explicit owner acceptance should not spawn an implementor just to mark it done -----
   console.log("\nOwner override D - a parked task is accepted directly");
   {

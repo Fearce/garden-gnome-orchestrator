@@ -11,6 +11,11 @@
  *   npm run probe:sdk-steer --prefix server
  *   npm run probe:sdk-steer --prefix server -- --mode next
  *   npm run probe:sdk-steer --prefix server -- --mode interrupt --at 8000 --model claude-haiku-4-5-20251001
+ *   npm run probe:sdk-steer --prefix server -- --mode pickup --schema
+ *
+ * `pickup` is what the injection pickup watch does to a run blocked in a tool call (injectionPickup.ts): a
+ * plain append, then `interrupt()` while it is still unread. `--schema` gives the run a structured-output
+ * contract like QA and the auto-reviewer, whose verdict loop must discard the aborted turn too.
  *
  * COSTS REAL QUOTA — it spawns a real `claude` subprocess on a real subscription. Defaults are cheap
  * (Haiku, one run, one steer ≈ $0.06).
@@ -27,13 +32,14 @@ import { join } from "node:path";
 import { AgentRun, type ResultEvent } from "../agents/runner.js";
 import { config } from "../config.js";
 
-type Mode = "now" | "next" | "interrupt";
+type Mode = "now" | "next" | "interrupt" | "pickup";
 
 interface Args {
   mode: Mode;
   atMs: number;
   model: string;
   account: string | undefined;
+  schema: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -44,10 +50,11 @@ function parseArgs(argv: string[]): Args {
   const mode = get("--mode");
   const at = Number(get("--at"));
   return {
-    mode: mode === "next" || mode === "interrupt" ? mode : "now",
+    mode: mode === "next" || mode === "interrupt" || mode === "pickup" ? mode : "now",
     atMs: Number.isFinite(at) && at > 0 ? at : 12_000,
     model: get("--model") ?? "claude-haiku-4-5-20251001",
     account: get("--account"),
+    schema: argv.includes("--schema"),
   };
 }
 
@@ -57,6 +64,14 @@ const BUSY_PROMPT =
   "before you run it. Do not batch them into one command.";
 /** Steering whose effect is unmistakable in the result text, so a continuation can't be confused for a finish. */
 const STEER_TEXT = "Stop the sleeps. Reply with the single word BANANA and finish.";
+
+/** A minimal schema-bound verdict, standing in for QA's and the auto-reviewer's. */
+const VERDICT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary"],
+  properties: { summary: { type: "string" } },
+};
 
 /** Best-effort: a just-exited `claude` child can still hold the temp cwd on Windows. Never fatal. */
 async function cleanup(cwd: string): Promise<void> {
@@ -84,7 +99,8 @@ function describe(r: ResultEvent, at: number): string {
   return (
     `  [${String(at).padStart(6)}ms] subtype=${String(r.subtype).padEnd(9)} is_error=${String(r.isError).padEnd(5)} ` +
     `terminal_reason=${(r.terminalReason ?? "—").padEnd(18)} aborted=${String(!!r.aborted).padEnd(5)} ` +
-    `turns=${String(r.numTurns ?? "—").padEnd(3)} result=${JSON.stringify(text)}`
+    `turns=${String(r.numTurns ?? "—").padEnd(3)} result=${JSON.stringify(text)}` +
+    (r.structuredOutput === undefined ? "" : ` structured=${JSON.stringify(r.structuredOutput).slice(0, 60)}`)
   );
 }
 
@@ -111,6 +127,7 @@ async function main(): Promise<void> {
     settingSources: [],
     includePartialMessages: false,
     oauthToken: acct.token,
+    ...(args.schema ? { outputFormat: { type: "json_schema" as const, schema: VERDICT_SCHEMA } } : {}),
   });
 
   const startedAt = Date.now();
@@ -125,6 +142,12 @@ async function main(): Promise<void> {
     if (args.mode === "interrupt") {
       // The Pause control: abort with NOTHING queued behind it.
       void run.interrupt();
+    } else if (args.mode === "pickup") {
+      run.send(STEER_TEXT);
+      setTimeout(() => {
+        console.log(`  [${String(Date.now() - startedAt).padStart(6)}ms] → interrupt (the append is still unread)`);
+        void run.interrupt();
+      }, 1_000);
     } else {
       run.send(STEER_TEXT, { priority: args.mode });
     }
