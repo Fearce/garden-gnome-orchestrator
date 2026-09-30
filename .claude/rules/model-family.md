@@ -40,6 +40,11 @@ no manual step. A different line is a choice: Sonnet beside Opus, Luna/Spark bes
 - **The web never merges its built-in suggestions into a server list** (`web/src/lib/models.ts`). The
   server lists are already curated + live + saved and family-filtered, and re-merging `CODEX_MODELS`
   re-offered `gpt-6-sol` beside `gpt-6.1-sol`. Built-ins only stand in before the server list arrives.
+- **Verifying on prod: `agent_runs.ended_at IS NULL` is NOT "running".** It returns orphaned rows of long-done
+  tasks (`claude-opus-4-8`, `claude-fable-5`, … on 2026-09-30) that read as live illegal agents. Join
+  `threads` and keep only non-terminal states. A pin's `requested` keeps the owner's old wording by design;
+  only `model` must be current. The live roster proof is the bus `list_subagent_models` tool (served by the
+  running build), and a sub-agent spawned with an old id replies with the `old → new` note.
 - **Revert-check:** removing either `migrateSupersededModels()` from the constructor or the
   `latestFamilyModel` line in `AgentRun`'s constructor turns `test:model-family` red (13 assertions,
   verified 2026-09-30).
