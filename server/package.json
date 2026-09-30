@@ -26,6 +26,7 @@
     "layout-memory-lab": "node scripts/layout-memory-lab.cjs",
     "panel-scroll-lab": "node scripts/panel-scroll-lab.cjs",
     "run-attribution-lab": "node scripts/run-attribution-lab.cjs",
+    "tools-filter-lab": "node scripts/tools-filter-lab.cjs",
     "collaborator-feed-lab": "node scripts/collaborator-feed-lab.cjs",
     "subtask-lab": "node scripts/subtask-lab.cjs",
     "deliverables-lab": "node scripts/deliverables-lab.cjs",
