@@ -44,7 +44,8 @@ owner, never by process name). A "lab" is a committed script on top of it that s
 drives one surface — copy the closest of `chip-lab.cjs` (accounts strip), `git-console-lab.cjs` (Git
 console + fixture repo), `tablet-lab.cjs` (both tablet orientations in a TOUCH context),
 `model-select-lab.cjs` (a Settings toggle's round-trip + a server-fed table), `inject-lab.cjs`
-(state-conditional button labels + a click that must not kill the task), `focus-lab.cjs` (the top bar's
+(state-conditional button labels + a click that must not kill the task), `tools-filter-lab.cjs`
+(the feed's ⛏ tools toggle: tool rows leave, narration stays, across a reload), `focus-lab.cjs` (the top bar's
 focus toggle, both themes), `usage-strip-lab.cjs` (the gauge button folding the burn strip on desktop vs
 its phone pop-over), `task-model-lab.cjs` (the per-task exact provider/model pin on desktop +
 phone, including persistence, Auto, and the running-task guard), `code-nav-lab.cjs` (the contextual
