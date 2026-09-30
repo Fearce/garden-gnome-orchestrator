@@ -654,6 +654,16 @@ for (const [where, copy] of COPY) {
   }
 }
 
+// A handwriting face is illegible at the console's 10-12px label sizes (the agent-name label shipped in
+// Brush Script MT until 2026-09-30). None is bundled, so one could only ever fall through to the OS.
+const SCRIPT_FACE = /\b(cursive|fantasy)\b|\bscript\b|brush|comic sans|segoe print/i;
+const SHEETS = ["src/styles.css", "src/fonts.css", ...fs.readdirSync(path.join(WEB, "src/themes")).map((f) => `src/themes/${f}`)];
+for (const sheet of SHEETS) {
+  for (const [, family] of read(sheet).matchAll(/font-family\s*:\s*([^;}]+)/g)) {
+    assert.doesNotMatch(family, SCRIPT_FACE, `${sheet} sets font-family: ${family.trim()} — use --font-sans or --font-mono`);
+  }
+}
+
 console.log(
   `Fonts gate passed: ${UI_FONTS.length} interface, ${MONO_FONTS.length} monospace and ${DISPLAY_FONTS.length} heading ` +
     `face(s), each scoped, bundled, pre-painted, persisted and selectable. The heading tier covers ${TIER.length} ` +

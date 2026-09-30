@@ -125,7 +125,8 @@ reports the ANIMATED value (that is what `settled()` waits out, not a product bu
 
 For a typeface: `npm run test:fonts --prefix server` (free, no browser: scoping both ways, the
 stack match, the pre-paint lists, `persistView`, the bundled-family check, the heading tier's
-coverage and its specificity against the theme, all three rendered pickers), then
+coverage and its specificity against the theme, all three rendered pickers, and no cursive/script
+`font-family` in any sheet — illegible at label sizes; use `--font-sans`/`--font-mono`), then
 `npm run appearance-lab --prefix server -- --shots data/appearance-lab-shots`, whose typeface
 pass picks a face in each of the three pickers, proves the other two did not move, checks that
 `document.fonts` actually LOADED the face (a computed `font-family` only echoes the stack), and
