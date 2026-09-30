@@ -2376,20 +2376,22 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .fi > * { min-width: 0; }
 .fi .head { display: flex; align-items: center; gap: 8px; }
 .fi .role-tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; font-weight: 600; }
+/* The agent's name after the uppercase mono role word: a neutral secondary line in the UI face, so the
+ * role colour stays the one accent in the header and the name reads as plain text beside it. */
 .role-name {
-  margin-left: 4px;
-  font-family: "Brush Script MT", "Segoe Script", cursive;
-  font-size: 1.18em;
-  font-weight: 400;
+  margin-left: 5px;
+  font-family: var(--font-sans);
+  font-size: 1.15em;
+  font-weight: 500;
   letter-spacing: 0;
   text-transform: none;
-  opacity: 0.58;
+  color: var(--text-dim);
 }
-/* The model+effort sits inside the parens after the script-font name — render it in the mono UI face
- * (not the handwriting one) so it reads as a technical tag, at the label's base size. */
+/* Model + effort is data, so it goes back to the mono face at the role word's size. */
 .role-model {
   font-family: var(--font-mono);
-  font-size: 0.72em;
+  font-size: 0.87em;
+  font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
 }
