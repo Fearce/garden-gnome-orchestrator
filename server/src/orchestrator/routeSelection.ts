@@ -10,9 +10,10 @@
 // only when the task is confidently small — everything else, including genuine ambiguity, keeps both.
 
 import type { Effort, ImplementorModelPolicy, RouteDecision, RouteEvidence, RouteScope } from "../types.js";
+import { AUTOMATIC_EFFORT_CEILING } from "./automaticEffort.js";
 import { DEFAULT_FLAGSHIP_MODEL } from "./modelRoutingPolicy.js";
 
-export const ROUTE_POLICY_VERSION = 2;
+export const ROUTE_POLICY_VERSION = 3;
 
 export interface RouteInput {
   title: string;
@@ -47,10 +48,13 @@ const RISK_SIGNALS: Signal[] = [
     // therefore has to spell its own inflections. Real briefs say "users cannot authenticate",
     // "credentials", "permissions", "sessions expire"; a trailing \b on a bare stem silently drops all
     // of them, and a missed security signal is the expensive direction of this classifier.
-    re: /\b(?:security|vulnerab(?:le|les|ility|ilities)|exploit(?:s|ed|ing|able)?|xss|csrf|sql injection|auth(?:\b|n\b|z\b|entic\w*|oris\w*|oriz\w*)|logins?|logouts?|sessions?|oauth|jwt|2fa|mfa|credentials?|secrets?|passwords?|encrypt(?:s|ed|ing|ion)?|decrypt(?:s|ed|ing|ion)?|permissions?|access[- ]control|privileg(?:e|ed|es|ing)?)\b/i,
+    // A bare "session" is usually an agent/SDK/RDP session in these briefs, so it counts only beside a
+    // word that makes it a user's authenticated session.
+    re: /\b(?:security|vulnerab(?:le|les|ility|ilities)|exploit(?:s|ed|ing|able)?|xss|csrf|sql injection|auth(?:\b|n\b|z\b|entic\w*|oris\w*|oriz\w*)|logins?|logouts?|(?:user|login|auth|browser|cookie) sessions?|sessions? (?:cookies?|tokens?|expir\w*|hijack\w*|fixation|timeouts?)|oauth|jwt|2fa|mfa|credentials?|secrets?|passwords?|encrypt(?:s|ed|ing|ion)?|decrypt(?:s|ed|ing|ion)?|permissions?|access[- ]control|privileg(?:e|ed|es|ing)?)\b/i,
     flagship: true,
   },
-  { name: "money/finance", re: /\b(?:payment|billing|invoice|financial|real[- ]money|trading|wallet|refund|checkout|pricing)\b/i, flagship: true },
+  // "checkout" alone is almost always a git working copy here; a purchase checkout names its flow.
+  { name: "money/finance", re: /\b(?:payment|billing|invoice|financial|real[- ]money|trading|wallet|refund|checkout (?:page|flow|form|process|step|button)|pricing)\b/i, flagship: true },
   {
     name: "data migration/backfill",
     // Same inflection rule as security/auth: "run the migrations" and "backfilling rows" are the plain
@@ -108,6 +112,18 @@ function matches(text: string, signals: Signal[]): string[] {
   return signals.filter((s) => s.re.test(text)).map((s) => s.name);
 }
 
+// A guardrail names a risk in order to forbid it ("Never force-push", "do not touch the database"), and
+// the Director closes nearly every brief with one — it is not evidence the task does that work. Each
+// prohibition is cut from its cue to the end of its clause; "but"/"instead"/"unless"/"rather" end it
+// early, so the work named after the contrast still counts. "No" is a cue only where it opens a sentence,
+// because mid-sentence it usually describes the bug ("there is no auth check"). "Respect existing auth
+// boundaries" is the same kind of guardrail, phrased as a keep instead of a don't.
+const PROHIBITION = /(?:\b(?:never|do not|don['’]t|must not|mustn['’]t|should not|shouldn['’]t|(?:preserve|respect|honou?r|keep|leave) (?:the |all |any )?(?:existing|current))\b|(?:^|[.!?(]\s*)no\b)[^.;:!?\n]*?(?=\s(?:but|instead|unless|rather)\b|[.;:!?\n]|$)/gim;
+
+function riskMatches(text: string): string[] {
+  return matches(text.replace(PROHIBITION, " "), RISK_SIGNALS);
+}
+
 /** Coarse, over-counting-safe file/path mention count — not a real path parser. Over-counting only pushes
  *  toward the fuller route, which is the safe direction for a false positive here. */
 function countFileMentions(text: string): number {
@@ -132,27 +148,36 @@ function countWords(text: string): number {
   return t ? t.split(/\s+/).length : 0;
 }
 
-/** Evidence that the work is big, independent of what it touches — shared by the model floor and effort. */
+/** Evidence that the work is big, independent of what it touches — the flagship model floor. */
 function scaleSignals(riskHits: string[], structural: string[], evidence: RouteEvidence): string[] {
   const scale: string[] = [];
   if (evidence.wordCount >= 120 && evidence.compoundCount >= 2) {
     scale.push(`long multi-part brief (${evidence.wordCount} words)`);
   }
-  if (evidence.fileCount >= 4 && evidence.compoundCount >= 2) {
-    scale.push(`multi-file compound change (${evidence.fileCount} files)`);
-  }
   if (riskHits.length >= 2 && evidence.wordCount >= 60) {
     scale.push(`multiple risk dimensions (${riskHits.length})`);
   }
+  return [...scale, ...complexitySignals(riskHits, structural, evidence)];
+}
+
+/** Evidence that the work itself is hard — what earns the implementor `high` effort. Brief length and a
+ *  count of risk words are deliberately absent: the Director writes several hundred words even for a
+ *  contained fix, and names deploy/test/regression steps in nearly every brief. */
+function complexitySignals(riskHits: string[], structural: string[], evidence: RouteEvidence): string[] {
+  const complexity: string[] = [];
+  if (riskHits.includes("broad scope")) complexity.push("broad scope");
+  if (evidence.fileCount >= 4 && evidence.compoundCount >= 2) {
+    complexity.push(`multi-file compound change (${evidence.fileCount} files)`);
+  }
   for (const signal of structural) {
-    if (/multi-agent|multi-hour|operator pinned (?:xhigh|max|ultra)/i.test(signal)) scale.push(signal);
+    if (/multi-agent|multi-hour|operator pinned (?:xhigh|max|ultra)/i.test(signal)) complexity.push(signal);
   }
   // Ambiguity alone can describe a small diagnostic. It becomes flagship work only when the brief also
   // carries real scale evidence; this keeps a short, bounded investigation eligible for cheaper routing.
   if (riskHits.includes("open-ended/ambiguous") && (evidence.compoundCount >= 2 || evidence.wordCount >= 80)) {
-    scale.push("open-ended investigation at substantial scope");
+    complexity.push("open-ended investigation at substantial scope");
   }
-  return scale;
+  return complexity;
 }
 
 function implementorModelPolicy(
@@ -179,21 +204,23 @@ function implementorModelPolicy(
   };
 }
 
-// A wrong answer here costs correctness, not just time, so these are the risks that earn `max` — but only
-// with real scale behind them: a one-line "sessions expire early" is flagship work at `high`.
+// A wrong answer here costs correctness, not just time, so any of these earns `high` on its own.
 const CORRECTNESS_CRITICAL = new Set(["security/auth", "money/finance", "data migration/backfill"]);
 
+interface EffortChoice {
+  effort: Effort;
+  reason: string;
+}
+
 /**
- * The implementor effort this route implies — the fallback used only when no owner pin, auto-selected
- * pick, or planner judgement exists (with the planner off or skipped, that is most tasks). Without it an
- * unset effort resolves to `high` for everything, including a typo fix.
+ * The implementor effort this route implies — the fallback when no owner pin, auto-selected pick, or
+ * planner judgement exists (with the planner off or skipped, that is most tasks), and the automatic
+ * model pick's starting point. Without it an unset effort resolves to `high` for everything.
  *
- * Current models are strong enough that `medium` is the right default for the bulk of real work, not
- * just the narrow/standard tiers — `high`/`max` are reserved for tasks that are genuinely correctness-
- * critical (security/auth, money, destructive data migration) or that carry real scale/complexity
- * evidence (`scaleSignals`), not merely "broad" by a single keyword hit. A `broad` task that hits one
- * risk or structural signal without either of those still runs at `medium`; `high` needs one of them,
- * `max` needs both.
+ * `medium` is the default for ordinary work: bug fixes, UI tweaks, contained features, multi-part briefs.
+ * `high` needs a correctness-critical risk (security/auth, money, destructive data migration) or real
+ * complexity evidence (`complexitySignals`). Nothing here reaches past `AUTOMATIC_EFFORT_CEILING`:
+ * xhigh/max run only when the owner names them.
  */
 function routeImplementorEffort(
   scope: RouteScope,
@@ -201,28 +228,36 @@ function routeImplementorEffort(
   riskHits: string[],
   structural: string[],
   evidence: RouteEvidence,
-): Effort {
-  if (scope === "narrow") return narrowHinted ? "low" : "medium";
-  if (scope === "standard") return "medium";
-  const critical = riskHits.some((name) => CORRECTNESS_CRITICAL.has(name));
-  const hasScale = scaleSignals(riskHits, structural, evidence).length > 0;
-  if (critical && hasScale) return "max";
-  if (critical || hasScale) return "high";
-  return "medium";
+): EffortChoice {
+  if (scope === "narrow") {
+    return narrowHinted
+      ? { effort: "low", reason: "small, contained change" }
+      : { effort: "medium", reason: "short, contained change" };
+  }
+  if (scope === "standard") return { effort: "medium", reason: "ordinary contained work" };
+  const critical = riskHits.filter((name) => CORRECTNESS_CRITICAL.has(name));
+  const complexity = complexitySignals(riskHits, structural, evidence);
+  const hard = [...critical.map((name) => `${name} risk`), ...complexity];
+  if (hard.length) {
+    return { effort: AUTOMATIC_EFFORT_CEILING, reason: `${hard.join("; ")} — max only when the owner asks for it` };
+  }
+  return { effort: "medium", reason: "ordinary work — no correctness-critical risk or complexity evidence" };
 }
 
 function completeDecision(
-  decision: Omit<RouteDecision, "modelPolicy" | "evidence" | "policyVersion" | "implementorEffort">,
+  decision: Omit<RouteDecision, "modelPolicy" | "evidence" | "policyVersion" | "implementorEffort" | "effortReason">,
   riskHits: string[],
   structural: string[],
   evidence: RouteEvidence,
   narrowHinted = false,
 ): RouteDecision {
+  const effort = routeImplementorEffort(decision.scope, narrowHinted, riskHits, structural, evidence);
   return {
     ...decision,
     modelPolicy: implementorModelPolicy(riskHits, structural, evidence),
     evidence,
-    implementorEffort: routeImplementorEffort(decision.scope, narrowHinted, riskHits, structural, evidence),
+    implementorEffort: effort.effort,
+    effortReason: effort.reason,
     policyVersion: ROUTE_POLICY_VERSION,
   };
 }
@@ -255,8 +290,8 @@ const NARROW_FILE_LIMIT = 2;
  * Deterministic and explainable: identical input always yields the identical decision, and every decision
  * carries the matched signal names (`signals`) behind its one-line `reason`. Each tier also carries the
  * implementor effort it implies (`routeImplementorEffort`): narrow → low/medium, standard → medium, broad →
- * medium by default too, rising to high only when the task is correctness-critical or shows real scale/
- * complexity evidence, and max only when both are true.
+ * medium by default too, rising to high only when the task is correctness-critical or shows real complexity
+ * evidence — never max, which is the owner's call alone.
  */
 export function selectRoute(input: RouteInput): RouteDecision {
   const text = `${input.title}\n${input.brief}`;
@@ -270,7 +305,7 @@ export function selectRoute(input: RouteInput): RouteDecision {
       wordCount: countWords(text),
       fileCount: countFileMentions(evidenceText),
       compoundCount: countCompoundMarkers(evidenceText),
-      riskCount: matches(evidenceText, RISK_SIGNALS).length,
+      riskCount: riskMatches(evidenceText).length,
     };
     return completeDecision({
       usePlanner: true,
@@ -278,10 +313,10 @@ export function selectRoute(input: RouteInput): RouteDecision {
       scope: "broad",
       reason: "multiple agents requested — decomposing the work and reviewing the combined result both matter",
       signals: ["multi-agent split"],
-    }, matches(evidenceText, RISK_SIGNALS), ["multi-agent split"], evidence);
+    }, riskMatches(evidenceText), ["multi-agent split"], evidence);
   }
 
-  const riskHits = matches(evidenceText, RISK_SIGNALS);
+  const riskHits = riskMatches(evidenceText);
   const fileCount = countFileMentions(evidenceText);
   const compoundCount = countCompoundMarkers(evidenceText);
   const wordCount = countWords(text);

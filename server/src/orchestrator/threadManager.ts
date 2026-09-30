@@ -129,6 +129,7 @@ import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverabl
 import { deliverableRefusal, resolveDeliverable } from "./deliverablePath.js";
 import { buildGitProgressBlock, workspaceGitFingerprint } from "./gitProgress.js";
 import { ROUTE_POLICY_VERSION, selectRoute } from "./routeSelection.js";
+import { AUTOMATIC_EFFORT_CEILING, automaticEffortOptions, capAutomaticEffort } from "./automaticEffort.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, runGit, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
 import { titleFromBrief } from "./titleFromInjection.js";
@@ -3863,7 +3864,7 @@ export class ThreadManager implements OrchestratorApi {
         const saving = savingFor(CODEX_SUB_ID);
         // conserve:false — see the Claude branch above; this freezes as the session's strict pin too.
         model = currentCodexModel(saving?.model ?? model ?? this.providerRoleModel("codex", "implementor", undefined, { conserve: false }));
-        const effort = (saving?.effort ?? session.effort ?? this.codexEffort(model)) as CodexEffort;
+        const effort = (saving?.effort ?? clampEffort(session.effort ?? this.codexEffort(model), this.codexEffort(model))) as CodexEffort;
         target = { provider, model, effort, accountId: "openai-codex", accountLabel: `codex:${model}` };
         const fresh = coworkFreshKickoff(this.db, history, prompt);
         agent = new CodexAgentRun({
@@ -3878,7 +3879,7 @@ export class ThreadManager implements OrchestratorApi {
       } else if (provider === "grok") {
         const saving = savingFor(GROK_SUB_ID);
         model = saving?.model ?? model ?? this.grokModel();
-        const effort = (saving?.effort ?? session.effort ?? this.grokEffort(model)) as GrokEffort;
+        const effort = (saving?.effort ?? clampEffort(session.effort ?? this.grokEffort(model), this.grokEffort(model))) as GrokEffort;
         target = { provider, model, effort, accountId: "xai-grok", accountLabel: `grok:${model}` };
         const fresh = coworkFreshKickoff(this.db, history, prompt);
         agent = new GrokAgentRun({
@@ -3892,7 +3893,7 @@ export class ThreadManager implements OrchestratorApi {
       } else {
         const saving = savingFor(ZAI_SUB_ID);
         model = saving?.model ?? model ?? this.zaiModel();
-        const effort = resolveZaiEffort(model, saving?.effort ?? session.effort ?? this.zaiEffort(model));
+        const effort = resolveZaiEffort(model, saving?.effort ?? clampEffort(session.effort ?? this.zaiEffort(model), this.zaiEffort(model)));
         const cfg = coworkerRunOptions(session.workspace, {
           resume,
           effort,
@@ -4238,7 +4239,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.blockFlagshipModelPolicy(thread, demand, candidates, policy!);
       return null;
     }
-    const eligible = policySet.eligible;
+    // The pick is an automatic choice, so it stays under the automatic ceiling; an owner pin beats it anyway.
+    const eligible = policySet.eligible.map((candidate) => ({ ...candidate, efforts: automaticEffortOptions(candidate.efforts) }));
     const workspace = normalizeWorkspace(thread.workspace);
     const preferredEffort = thread.effortOverride ?? plan?.effort ?? stage.plan?.effort ?? stage.routeDecision?.implementorEffort;
     const selection = {
@@ -7526,7 +7528,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       ? {
           ...existing,
           ...(sameStages ? { reason: classified.reason, signals: classified.signals } : {}),
-          ...(sameStages && !this.implementorHasRun(thread.id) ? { implementorEffort: classified.implementorEffort } : {}),
+          // Effort is not a stage: a task whose implementor has not started yet takes the current policy's
+          // effort even when its sticky stages differ; one already running keeps the effort it runs at.
+          ...(!this.implementorHasRun(thread.id) ? { implementorEffort: classified.implementorEffort, effortReason: classified.effortReason } : {}),
           modelPolicy: classified.modelPolicy,
           evidence: classified.evidence,
           policyVersion: ROUTE_POLICY_VERSION,
@@ -7542,7 +7546,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  and must resume at it, not switch effort under its own session. */
   private backfillRouteEffort(threadId: string, existing: RouteDecision, classified: RouteDecision): RouteDecision {
     if (existing.scope !== classified.scope || this.implementorHasRun(threadId)) return existing;
-    const decision = { ...existing, implementorEffort: classified.implementorEffort };
+    const decision = { ...existing, implementorEffort: classified.implementorEffort, effortReason: classified.effortReason };
     this.db.updateThreadStageOutputs(threadId, { routeDecision: decision });
     return decision;
   }
@@ -7595,7 +7599,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       settings.plannerEnabled && decision.usePlanner ? "the planner" : undefined,
       settings.autoModelSelection ? "automatic model selection" : undefined,
     ].filter(Boolean);
-    return `Implementor effort: ${decision.implementorEffort}${refiners.length ? ` unless ${refiners.join(" or ")} picks another` : ""}.`;
+    const why = decision.effortReason ? ` (${decision.effortReason})` : "";
+    return `Implementor effort: ${decision.implementorEffort}${why}${refiners.length ? ` unless ${refiners.join(" or ")} picks another, never above ${AUTOMATIC_EFFORT_CEILING}` : ""}.`;
   }
 
   /** The most recent implementor run's SDK session id for a thread, or undefined if none has one.
@@ -8248,7 +8253,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (resume) cfg.resume = resume;
       return cfg;
     });
-    return res?.structuredOutput as PlanOutput | undefined;
+    return withAutomaticPlanEffort(res?.structuredOutput as PlanOutput | undefined);
   }
 
   private async runResearcher(thread: Thread, plan: PlanOutput | undefined): Promise<ResearchOutput | undefined> {
@@ -16236,6 +16241,12 @@ function modelCapacityNote(
  *  until the provider branch is known; every other value goes through the xhigh gate. */
 function implementorPlannerEffort(effort: Effort | undefined): Effort {
   return effort === "ultra" ? "ultra" : resolveEffort(effort);
+}
+
+/** The planner's effort is an automatic judgement: its schema offers only the automatic tiers, and a
+ *  provider that ignores the schema is capped here before the plan is persisted. */
+function withAutomaticPlanEffort(plan: PlanOutput | undefined): PlanOutput | undefined {
+  return plan?.effort ? { ...plan, effort: capAutomaticEffort(plan.effort) } : plan;
 }
 
 /** Whether two model ids name the same model, tolerating a catalog date suffix — the live roster

@@ -109,7 +109,7 @@ export function createDirectorServer(
         .enum(["low", "medium", "high", "max"])
         .optional()
         .describe(
-          `Pins the implementor's effort for this task. Set it whenever ${config.ownerName} asked for an effort, in this message ("with high effort", "a max effort task") or in their standing directives — and ONLY then. Omit otherwise; the pipeline then picks the effort per task.`,
+          `Pins the implementor's effort for this task. Set it whenever ${config.ownerName} asked for an effort, in this message ("with high effort", "a max effort task") or in their standing directives — and ONLY then. Words like "max", "high" or "thorough" elsewhere in the task are not an effort ask. Omit otherwise; the pipeline then picks the effort per task (medium for ordinary work, high for hard or risky work, never max).`,
         ),
       duration: z
         .string()
@@ -336,7 +336,7 @@ export function createDirectorServer(
       prompt: z.string().describe(`The brief handed to the pipeline on each run — write it as a complete standalone task, since it runs unattended with no further clarification from ${config.ownerName}.`),
       cron: z.string().describe(`The cron schedule. ${cronHelp}`),
       enabled: z.boolean().default(true).describe("Whether it starts active (default true)."),
-      effort: z.enum(["low", "medium", "high", "max"]).optional().describe("Optional implementor effort for each run; omit to let the planner decide."),
+      effort: z.enum(["low", "medium", "high", "max"]).optional().describe(`Implementor effort for each run, ONLY when ${config.ownerName} named one. Omit otherwise; the pipeline then picks per run (never above high).`),
       model: z.string().optional().describe("Exact model requested by the owner. This is a strict pin for every run; omit unless explicitly requested."),
       provider: z
         .enum(["claude", "codex", "grok", "zai"])

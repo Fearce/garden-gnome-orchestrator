@@ -35,7 +35,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
-const { selectRoute } = await import("../orchestrator/routeSelection.js");
+const { ROUTE_POLICY_VERSION, selectRoute } = await import("../orchestrator/routeSelection.js");
 
 let passed = 0;
 let failed = 0;
@@ -422,6 +422,32 @@ async function main(): Promise<void> {
     }
   }
 
+  // The pick is an automatic choice, so it stays under the automatic ceiling (automaticEffort.ts) even
+  // when every model offers max and the judge asks for it; only an owner pin reaches past high.
+  console.log("\nTest B3 — an automatic pick never reaches past high");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ autoModelSelection: true });
+      const id = h.seed();
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [
+        { ...policyCandidate(SONNET_5), efforts: ["low", "medium", "high", "max"] },
+        { ...policyCandidate(OPUS_5), efforts: ["low", "medium", "high", "xhigh", "max"] },
+      ];
+      h.reply(pickReply(OPUS_5, "max"));
+      const pick = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick;
+      check("the judge was consulted", h.calls() === 1, String(h.calls()));
+      check("a judge asking for max gets the route's effort instead", pick?.model === OPUS_5 && pick.effort === "medium", JSON.stringify(pick));
+
+      const heavyOnly = h.seed();
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(OPUS_5)];
+      const floor = (await h.internals.autoSelectModel(thread(h, heavyOnly))) as ModelPick;
+      check("a model offering only high and above is picked at high, not max", floor?.effort === "high", JSON.stringify(floor));
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- C: an unusable answer must never route a task --------------------------------------------------
   console.log("\nTest C — an unusable answer falls back to normal routing, once");
   {
@@ -599,7 +625,7 @@ async function main(): Promise<void> {
       h.internals.stopLive = async (): Promise<void> => {};
       await h.internals.resumeImplementorOnly(thread(h, id));
       const upgraded = h.db.getThreadStageOutputs(id);
-      check("paused resume upgrades the persisted legacy route", upgraded.routeDecision?.policyVersion === 2 && upgraded.routeDecision.modelPolicy?.tier === "flagship", JSON.stringify(upgraded.routeDecision));
+      check("paused resume upgrades the persisted legacy route", upgraded.routeDecision?.policyVersion === ROUTE_POLICY_VERSION && upgraded.routeDecision.modelPolicy?.tier === "flagship", JSON.stringify(upgraded.routeDecision));
       check("paused resume replaces Sonnet before the hard routing gate", modelSeenByGate === OPUS_5 && upgraded.modelPick?.model === OPUS_5, JSON.stringify({ modelSeenByGate, pick: upgraded.modelPick }));
     } finally {
       h.dispose();

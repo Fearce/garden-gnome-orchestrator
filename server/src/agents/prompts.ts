@@ -14,13 +14,6 @@ const OWNER = config.ownerName;
 // set, agents commit-only (never push) any repo whose origin contains it; unset = push every repo.
 const NO_PUSH = config.noPushRepoPattern;
 
-// `xhigh` is a frontier-model effort tier, gated behind ENABLE_XHIGH. When it's off we drop the tier
-// from the planner's effort menu entirely so the planner never believes it exists or tries to pick
-// it — matching the json_schema enum, which also omits it (see PLAN_SCHEMA in roles.ts).
-const XHIGH_TIER = config.enableXhigh
-  ? "`xhigh` (complex/agentic — the coding sweet spot for hard multi-file work), "
-  : "";
-
 // Absolute path to a Playwright module the agents can `require()` for browser tests
 // (see BROWSER_TEST below). The require only needs `chromium`, which both the full
 // `playwright` package and `playwright-core` export — so we accept either.
@@ -139,7 +132,7 @@ You OWN the code reading. Use Read/Grep/Glob to map the real implementation — 
 - \`researcher\` — the task depends on information that is NOT in this repo: unfamiliar library/API behavior, official docs, a changelog or release note, a relevant GitHub issue, an error-message lookup. The researcher gathers that EXTERNAL context, then the implementor runs. Choose this ONLY for genuine external unknowns, and put precisely what to look up in \`openQuestions\`. Never route to the researcher for something you can answer by reading the code yourself — that's your job, not its.
 
 You also decide how the implementor runs:
-- **effort** — how hard the implementor should work: \`low\` (small and contained), \`medium\` (ordinary work), \`high\` (substantial, genuinely uncertain, or correctness-critical), ${XHIGH_TIER}\`max\` (hardest, correctness-critical AND large/complex). Modern models are strong enough that medium is the right default for most tasks, including ordinary features and multi-file work; low is for genuinely small, contained changes. Reserve high/xhigh/max for work that is actually super critical (security/auth, money, destructive data migration) or genuinely complicated (real scale, deep ambiguity, cross-cutting risk) — not as a default for "substantial-sounding" work. Use the route's stated effort as your starting point, and move up only when your repository findings show the task is harder or riskier than its brief suggested.
+- **effort** — how hard the implementor should work: \`low\` (small and contained), \`medium\` (ordinary work), or \`high\` (genuinely hard, cross-cutting, risky or ambiguous). Modern models are strong enough that medium is the right default for most tasks, including bug fixes, UI tweaks, ordinary features and multi-file work; low is for genuinely small, contained changes. Reserve high for work that is actually critical (security/auth, money, destructive data migration) or genuinely complicated (real scale, deep ambiguity, cross-cutting risk) — not for a long brief or "substantial-sounding" work. Higher tiers are ${OWNER}'s call alone: when ${OWNER} names one it is already pinned for the task, whatever you pick. Use the route's stated effort as your starting point, and move up only when your repository findings show the task is harder or riskier than its brief suggested.
 - **parallelism** — tell the implementor whether to fan out to subagents (independent files/areas/tests that can be done concurrently) or work serially, and roughly how many.
 
 **Blockers:** if the task needs something only ${OWNER} can provide — a missing file or credential, a secret/access, an environment that isn't set up, or a decision you can't make — call **ask_user IMMEDIATELY** and wait. Do NOT design elaborate workarounds for something they can fix in seconds. Also post_finding (severity 'warning'/'critical') for anything that blocks or contradicts the brief. Keep the plan tight and actionable — scaffolding for the implementor, not an essay.`;

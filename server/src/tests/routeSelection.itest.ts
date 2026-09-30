@@ -27,6 +27,7 @@ const { AccountManager } = await import("../accounts/accountManager.js");
 const { ResetStagger } = await import("../accounts/resetStagger.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { config } = await import("../config.js");
+const { ROUTE_POLICY_VERSION } = await import("../orchestrator/routeSelection.js");
 
 let passed = 0;
 let failed = 0;
@@ -311,7 +312,7 @@ Handle existing data and future updates with a safe migration or backfill, then 
       });
       const decision = h.manager.resolveRoute(h.db.getThread(legacy.id), h.manager.settings());
       check("legacy planner/QA execution stays sticky", decision.usePlanner === true && decision.useQa === true && decision.scope === "broad", JSON.stringify(decision));
-      check("legacy task gains the flagship Opus 5.5 floor", decision.policyVersion === 2 && decision.modelPolicy?.tier === "flagship" && decision.modelPolicy.preferredModel === "claude-opus-5-5", JSON.stringify(decision));
+      check("legacy task gains the flagship Opus 5.5 floor", decision.policyVersion === ROUTE_POLICY_VERSION &&decision.modelPolicy?.tier === "flagship" && decision.modelPolicy.preferredModel === "claude-opus-5-5", JSON.stringify(decision));
       check("the stale authoritative/auth false-positive is removed", !decision.signals.includes("security/auth"), JSON.stringify(decision.signals));
       check("the owner receives one actionable route update", h.db.listMessages(legacy.id).some((message: { content: string }) => /Route updated/i.test(message.content) && /flagship implementor required/i.test(message.content) && /claude-opus-5-5/i.test(message.content)), JSON.stringify(h.db.listMessages(legacy.id)));
     } finally {
@@ -359,8 +360,19 @@ Handle existing data and future updates with a safe migration or backfill, then 
       const planned = await h.manager.dispatch({ title: "2fa", workspace: process.cwd(), brief: BROAD_BRIEF });
       await h.pollTerminal(planned);
       await h.waitIdle(planned);
-      check("the planner's effort beats the route's", efforts.at(-1) === "max", JSON.stringify(efforts));
-      check("a resume (no plan argument) keeps the planner's effort instead of the route's", h.manager.implementorEffort(planned) === "max", String(h.manager.implementorEffort(planned)));
+      // The planner's schema offers only low/medium/high; a provider that ignores it still can't reach max.
+      check("the planner's effort beats the route's, capped at high", efforts.at(-1) === "high", JSON.stringify(efforts));
+      check("a resume (no plan argument) keeps the planner's capped effort", h.manager.implementorEffort(planned) === "high", String(h.manager.implementorEffort(planned)));
+      check("the persisted plan carries the capped effort", h.db.getThreadStageOutputs(planned).plan?.effort === "high", JSON.stringify(h.db.getThreadStageOutputs(planned).plan));
+
+      // Only the owner reaches max: a pin (the Director's `effort`, a "with max effort" ask) beats the
+      // automatic ceiling and reaches the implementor; the per-subscription cap still bounds it at start.
+      const ownerMax = await h.manager.dispatch({ title: "2fa", workspace: process.cwd(), brief: BROAD_BRIEF, effort: "max" });
+      await h.pollTerminal(ownerMax);
+      await h.waitIdle(ownerMax);
+      check("an owner-pinned max beats the planner and reaches the implementor", efforts.at(-1) === "max", JSON.stringify(efforts));
+      check("the route note names the owner pin", h.db.listMessages(ownerMax).some((m: { kind: string; content: string }) => m.kind === "system" && /effort: max \(owner pin\)/i.test(m.content)));
+      check("the route note explains an automatic effort", h.db.listMessages(planned).some((m: { kind: string; content: string }) => m.kind === "system" && /route selected/i.test(m.content) && /effort: high \(security\/auth risk/i.test(m.content) && /never above high/i.test(m.content)), JSON.stringify(h.db.listMessages(planned).map((m: { content: string }) => m.content)));
 
       // A route persisted before this field existed: a task whose implementor already ran keeps the effort
       // it ran at (the old default), while one that has not started yet gains the route's effort.
@@ -376,6 +388,26 @@ Handle existing data and future updates with a safe migration or backfill, then 
       h.manager.resolveRoute(h.db.getThread(fresh.id), h.manager.settings());
       check("an in-flight legacy task keeps the effort it already ran at", h.manager.implementorEffort(started.id) === undefined, String(h.manager.implementorEffort(started.id)));
       check("a not-yet-started legacy task gains the route's effort", h.manager.implementorEffort(fresh.id) === "low", String(h.manager.implementorEffort(fresh.id)));
+
+      // A policy-v2 route that chose max for a routine brief (a "Never force-push" guardrail read as
+      // data-migration risk). A queued task takes the v3 effort even though its sticky stages differ; a
+      // running one keeps the effort its session runs at.
+      const routine = "Fix the tooltip overlap on the task card so the title stays readable. Commit and push. Never force-push, never --no-verify.";
+      const staleV2 = {
+        usePlanner: true, useQa: true, scope: "broad", reason: "broad", signals: ["data migration/backfill"],
+        implementorEffort: "max", policyVersion: 2,
+        modelPolicy: { tier: "flagship", preferredModel: "claude-opus-5-5", reason: "risk", signals: ["data migration/backfill"] },
+        evidence: { wordCount: 20, fileCount: 0, compoundCount: 0, riskCount: 1 },
+      };
+      const queuedV2 = h.db.createThread({ title: "tooltip", workspace: process.cwd(), rawPrompt: routine, brief: routine });
+      const runningV2 = h.db.createThread({ title: "tooltip", workspace: process.cwd(), rawPrompt: routine, brief: routine });
+      for (const t of [queuedV2, runningV2]) h.db.updateThreadStageOutputs(t.id, { routeDecision: staleV2 });
+      h.db.createRun({ threadId: runningV2.id, role: "implementor", model: "claude-opus-5-5", effort: "max" });
+      const upgradedQueued = h.manager.resolveRoute(h.db.getThread(queuedV2.id), h.manager.settings());
+      h.manager.resolveRoute(h.db.getThread(runningV2.id), h.manager.settings());
+      check("a queued task's stale v2 max is replaced by the current policy's effort", h.manager.implementorEffort(queuedV2.id) === "medium" && !!upgradedQueued.effortReason, `${h.manager.implementorEffort(queuedV2.id)} — ${upgradedQueued.effortReason}`);
+      check("its sticky planner/QA stages survive the upgrade", upgradedQueued.usePlanner && upgradedQueued.useQa && upgradedQueued.scope === "broad", JSON.stringify(upgradedQueued));
+      check("a running task keeps the effort it already runs at", h.manager.implementorEffort(runningV2.id) === "max", String(h.manager.implementorEffort(runningV2.id)));
     } finally {
       h.dispose();
     }

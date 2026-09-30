@@ -757,6 +757,8 @@ export interface RouteDecision {
    *  it existed lack it — `resolveRoute` fills it in only while no implementor has run yet, so a task
    *  mid-episode keeps the effort it was already running at. */
   implementorEffort?: Effort;
+  /** Why the route chose `implementorEffort` — shown in the Route selected note. Absent before policy v3. */
+  effortReason?: string;
   policyVersion?: number;
 }
 

@@ -210,12 +210,10 @@ console.log("\nAmbiguous/unclear cases default to the full route (bias conservat
 }
 
 // ---- implementor effort: the fallback when neither an owner pin, a model pick nor a planner sets one ---
-// With the planner off (or skipped by this very route) and auto-selection idle, nothing else sizes the
-// implementor's effort, and an unset effort resolves to `medium` for every task that isn't correctness-
-// critical or genuinely large/complex. Current models are strong enough that medium is the right default
-// for the bulk of real work; high/max are reserved for tasks that actually need them (see
-// `routeImplementorEffort`'s doc comment). The route is the one per-task judgement that ALWAYS exists, so
-// it must carry an effort that fits the work it classified.
+// With the planner off (or skipped by this very route), nothing else sizes the implementor's effort, and
+// the automatic model pick starts from it. Medium is the default for ordinary work; high is earned by a
+// correctness-critical risk or real complexity evidence; max is never chosen automatically — only an
+// owner pin reaches it (see `routeImplementorEffort`'s doc comment).
 console.log("\nImplementor effort fits the classified work");
 {
   const effortOf = (brief: string, extra: Partial<RouteInput> = {}) => route(brief, extra).implementorEffort;
@@ -229,19 +227,78 @@ console.log("\nImplementor effort fits the classified work");
   check("a small multi-part request gets medium, not high", effortOf("Add a loading spinner to the dashboard.\n- Also add a retry button.\n- Also add an error banner.") === "medium", String(effortOf("Add a loading spinner to the dashboard.\n- Also add a retry button.\n- Also add an error banner.")));
   check("production/infra work without correctness-critical scale gets medium", effortOf("Update the production deploy pipeline config to add a new CI/CD stage.") === "medium", String(effortOf("Update the production deploy pipeline config to add a new CI/CD stage.")));
   check("a new-design-surface mention alone gets medium", effortOf("Introduce a new integration with the calendar API.") === "medium", String(effortOf("Introduce a new integration with the calendar API.")));
-  check("a short security phrase is flagship but not automatically max — it is high, not medium", effortOf("Sessions expire far too early.") === "high", String(effortOf("Sessions expire far too early.")));
+  check("a short security phrase is correctness-critical: high, not medium", effortOf("User sessions expire far too early.") === "high", String(effortOf("User sessions expire far too early.")));
   const critical = `Investigate why stale business records remain visible to users and implement a durable end-to-end fix.
 
 Trace the full lifecycle across ingestion sources, stored status timestamps, refresh jobs, query filters,
 ranking, caches, and user-facing results. Handle existing data and future updates with a safe migration or
 backfill, preserve auditability, and add realistic regressions for open, closed, temporary, and unknown states.`;
-  check("substantial correctness-critical data work gets max", effortOf(critical) === "max", String(effortOf(critical)));
+  check("substantial correctness-critical data work gets high — never max without an owner pin", effortOf(critical) === "high", String(effortOf(critical)));
   const bigNonCritical = `Refactor the reporting dashboard across the codebase.
 - Update charts.tsx, widgets.tsx, dashboard.ts and layout.css.
 - Also rework the export pipeline in exporter.ts.`;
-  check("a large non-critical multi-file rewrite still gets high (real scale evidence, no correctness-critical risk)", effortOf(bigNonCritical) === "high", String(effortOf(bigNonCritical)));
-  check("a multi-agent split gets at least high", ["high", "max"].includes(String(effortOf("Improve things.", { shotgun: true }))));
+  check("a large non-critical multi-file rewrite gets high (real complexity evidence)", effortOf(bigNonCritical) === "high", String(effortOf(bigNonCritical)));
+  check("a multi-agent split gets high", effortOf("Improve things.", { shotgun: true }) === "high", String(effortOf("Improve things.", { shotgun: true })));
+  check("a multi-hour timed window gets high", effortOf("Keep working on polishing the UI.", { timedHours: 8 }) === "high", String(effortOf("Keep working on polishing the UI.", { timedHours: 8 })));
+  check("an owner-pinned max does not turn the route's own effort into max", effortOf("Small cleanup in one file.", { effortOverride: "max" }) === "high", String(effortOf("Small cleanup in one file.", { effortOverride: "max" })));
   check("every route carries an effort", ["", "Improve things.", "Rename foo to bar in a.ts."].every((b) => typeof effortOf(b) === "string"));
+  check("every route explains its effort", ["", "Improve things.", critical, bigNonCritical].every((b) => !!route(b).effortReason));
+}
+
+// ---- the owner's real briefs: routine work must not escalate ---------------------------------------
+// The Director closes almost every brief with the same guardrails ("Never force-push, never --no-verify",
+// "deploy per the repo's process") and writes several hundred words even for a contained fix. Neither is
+// evidence that the work is hard.
+console.log("\nRoutine Director briefs stay at medium");
+{
+  // Task a1460046 (2026-09-30): a contained UI classification bug plus a regression test. It ran at MAX
+  // because "Never force-push" read as data-migration risk and its length read as scale.
+  const narration = `BUG: In the GGO task detail view, implementor narration and thinking messages get classified as "tools" noise. When Kevin filters tools out using the "TOOLS" toggle, prose messages that are clearly the implementor talking disappear along with the raw tool calls. They should stay visible.
+
+SCREENSHOT (Kevin attached): The task panel for "Auto-deploy gnomerang.com on every push to main" (task 86e05fa7, 3m 54s, MAX effort, IMPLEMENTING). The filter chips read "ALL 29", "DIRECTOR DIR 3", "IMPLEMENTOR IMPL 26", and a "TOOLS" toggle button. The feed shows:
+- A tool-result block with memory file content ("name: Shipping a change means DEPLOYING it to production…").
+- IMPLEMENTOR (Pipewright Pim, Opus 5.5 Max) 02:06:19 PM: a Bash tool call.
+- IMPLEMENTOR 02:06:22 PM: an ssh Bash tool call.
+- IMPLEMENTOR, circled in red by Kevin: an entry with a thought-bubble icon, in italic text: "I found two manual deploy scripts in the repo. Before writing the workflow, I'll verify which host is currently serving gnomerang.com."
+Kevin: "this message should not have been hidden under 'TOOLS' - this reads like an actual implementor message that should be visible even with tools filtered out."
+
+WHAT TO DO:
+- Find how feed entries are classified for the TOOLS filter (client and/or server event typing). Classify them by the real message kind: assistant prose/narration/thinking stays visible when tools are hidden. Only actual tool calls and tool results get hidden.
+- Check every agent role (planner, researcher, implementor, QA, director) and both providers (Claude and Codex event shapes), so narration is never hidden by the tools filter. That includes messages that were persisted before the fix and are replayed from history, not just live streams.
+- Add a regression test covering the classification.
+- No stubs or half-measures. Keep the existing visual style.
+
+DONE: With TOOLS filtered out, messages like the circled one stay visible and tool calls/results stay hidden. The test passes, the build succeeds, and the fix is deployed/restarted per the repo's own process so the live GGO shows it. Commit and push. Never force-push, never --no-verify. Work on the active branch, no worktrees.`;
+  const d = selectRoute({ title: "Show implementor narration when tool messages are filtered", brief: narration });
+  check("the a1460046 UI bug-fix brief runs at medium", d.implementorEffort === "medium", `${d.implementorEffort} — ${d.effortReason} — ${d.signals.join("; ")}`);
+  check("its 'Never force-push' guardrail is not data-migration risk", !d.signals.includes("data migration/backfill"), d.signals.join("; "));
+
+  const words = route("Raise the max retry count for the uploader and lower the high-water mark on the queue; show the maximum in the status bar.");
+  check("a brief that merely says 'max'/'high'/'maximum' is not escalated", words.implementorEffort !== "high" && words.implementorEffort !== "max", `${words.implementorEffort} — ${words.effortReason}`);
+  const thorough = route("Be thorough: fix the date picker so it keeps the selected month after closing, and add a test for it. High priority.");
+  check("'thorough' and 'high priority' in a brief are not an effort request", thorough.implementorEffort === "medium", `${thorough.implementorEffort} — ${thorough.effortReason}`);
+
+  const guardrails = route("Fix the tooltip overlap on the task card.\nDo not touch the database or run migrations. Never force-push or use rm -rf.");
+  check("prohibitions ('do not touch the database', 'never force-push') are not risk evidence", !guardrails.signals.includes("data migration/backfill"), guardrails.signals.join("; "));
+  const realMigration = route("Migrate the users table to the new schema and backfill the display names. Never force-push.");
+  check("a real migration still reads as data-migration risk beside a guardrail", realMigration.signals.includes("data migration/backfill") && realMigration.implementorEffort === "high", `${realMigration.implementorEffort} — ${realMigration.signals.join("; ")}`);
+  const contrast = route("Don't touch the UI but migrate the settings table to the new schema.");
+  check("a prohibition ends at 'but' — the work after it still counts", contrast.signals.includes("data migration/backfill"), contrast.signals.join("; "));
+
+  const checkout = route("Another agent shares this checkout, so commit only your own hunks after fixing the sidebar width.");
+  check("a git 'checkout' is not money/finance", !checkout.signals.includes("money/finance"), checkout.signals.join("; "));
+  check("a real checkout flow still is", route("The checkout page double-charges on refresh.").signals.includes("money/finance"));
+  const agentSession = route("A new step starts a fresh session that must re-read the plan before editing the sidebar.");
+  check("an agent/SDK 'session' is not security/auth", !agentSession.signals.includes("security/auth"), agentSession.signals.join("; "));
+  check("a login session still is", route("Login sessions expire after five minutes.").signals.includes("security/auth"));
+
+  // Task 86e05fa7: a CI deploy workflow that handles SSH secrets — risky, so high is fair; never max.
+  const deploy = route(`GOAL: Set up CI/CD (GitHub Actions) so gnomerang.com automatically deploys on every push to main.
+- Work out how gnomerang.com is deployed today and mirror the existing manual deploy path in CI.
+- Secrets (SSH key, host, tokens) go in GitHub repo secrets. Never commit them.
+- The workflow must end with a verification step that proves the live site serves the new commit.
+Commit and push. Never force-push main, never --no-verify.`);
+  check("the 86e05fa7 deploy-workflow brief runs at high at most", deploy.implementorEffort === "medium" || deploy.implementorEffort === "high", `${deploy.implementorEffort} — ${deploy.effortReason}`);
 }
 
 // ---- determinism --------------------------------------------------------------------------------

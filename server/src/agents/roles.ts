@@ -34,9 +34,9 @@ export const PLAN_SCHEMA: Record<string, unknown> = {
     },
     risks: { type: "array", items: { type: "string" } },
     openQuestions: { type: "array", items: { type: "string" } },
-    // `xhigh` is offered to the planner when enabled for this machine; otherwise
-    // the json_schema enum omits it entirely, so the planner's structured output literally cannot emit it.
-    effort: { type: "string", enum: config.enableXhigh ? ["low", "medium", "high", "xhigh", "max"] : ["low", "medium", "high", "max"] },
+    // Only the automatic tiers (automaticEffort.ts): xhigh/max run only when the owner names them, so the
+    // planner's structured output literally cannot emit them.
+    effort: { type: "string", enum: ["low", "medium", "high"] },
     parallelism: { type: "string" },
     // The planner routes the pipeline: 'researcher' to gather external info first, else straight
     // to the implementor. Absent ⇒ implementor (don't burn a researcher unless asked for).

@@ -159,10 +159,18 @@ right default for most work, so the deterministic route starts narrow edits at
 low or medium and ordinary contained work at medium — including most
 broad-scoped or multi-part work, unless it is either genuinely correctness-
 critical (security/auth, money, destructive data migration) or shows real
-scale/complexity evidence, which raises it to high; only work that is both
-raises it to max. The planner can refine that baseline, and automatic model
-selection can choose a supported tier using the same route/planner effort as
-its starting point. A specific effort selected for the run reaches the
+complexity evidence (a broad-scope ask, many files, multi-agent/multi-hour
+work, open-ended investigation at scale), which raises it to high. The route
+never picks xhigh or max, and it states its reason in the task's "Route
+selected" note. Two things deliberately do NOT count as risk or scale: a
+guardrail sentence ("never force-push", "don't touch the migration") is
+stripped before the risk scan, and a long brief is not a hard task. The
+planner can refine that baseline, and automatic model selection can choose a
+supported tier using the same route/planner effort as its starting point;
+both are bounded by `AUTOMATIC_EFFORT_CEILING` (high, `orchestrator/
+automaticEffort.ts`), so xhigh/max run only when the owner names them. Replay
+the route over the owner's real briefs with `probe:route-effort`; gates
+`test:route-selection` and `test:effort-ceiling`. A specific effort selected for the run reaches the
 provider setting and the implementor prompt. Precedence is `effort_override` >
 automatic model pick > planner > route. `effort_override` is the owner's pin: the
 skip-director composer pick, the director's dispatch `effort`, or an effort the

@@ -150,6 +150,7 @@ const GATES = [
   "test:provider-toolchain",
   "test:structured",
   "test:effort",
+  "test:effort-ceiling",
   "test:reader",
   "test:vanilla-lane",
   "test:route-selection",
