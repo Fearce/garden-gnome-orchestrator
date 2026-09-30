@@ -138,6 +138,15 @@ function pure(): void {
     { tier: "flagship", preferredModel: "claude-opus-5-5" } as never,
   );
   check("the flagship policy admits a newer member of an approved line", flagship.eligible.some((c) => c.model === "claude-opus-6"), JSON.stringify(flagship.eligible));
+  const staleRoute = applyImplementorModelPolicy(
+    [{ provider: "codex", model: "gpt-6.1-sol" }, { provider: "claude", model: "claude-opus-5-5" }],
+    { tier: "flagship", preferredModel: "claude-opus-5" } as never,
+  );
+  check(
+    "a route stored before a release prefers its line's newest member",
+    staleRoute.mode === "preferred" && staleRoute.eligible.map((c) => c.model).join() === "claude-opus-5-5",
+    JSON.stringify(staleRoute),
+  );
   check("pre-GPT-6 ids still map onto their GPT-6 line", currentCodexModel("gpt-5.6-sol") === "gpt-6-sol");
   check("a Codex catalog never offers both members of a line", currentCodexModels(["gpt-6-sol", "gpt-6.1-sol"]).join() === "gpt-6.1-sol");
 }

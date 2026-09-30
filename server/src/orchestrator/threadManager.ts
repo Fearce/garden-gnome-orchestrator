@@ -4304,7 +4304,7 @@ export class ThreadManager implements OrchestratorApi {
     candidates: ModelCandidate[],
     policy: NonNullable<RouteDecision["modelPolicy"]>,
   ): void {
-    const preferred = policy.preferredModel ?? DEFAULT_FLAGSHIP_MODEL;
+    const preferred = latestFamilyModel(policy.preferredModel ?? DEFAULT_FLAGSHIP_MODEL);
     const available = candidates.length ? candidates.map((candidate) => candidate.model).join(", ") : "none";
     const detail = [
       `This task's persisted route requires a flagship implementor (${policy.signals.join("; ") || policy.reason}).`,
@@ -4494,7 +4494,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         `Eligible models considered: ${eligible.map((candidate) => candidate.model).join(", ")}.`,
         policySet.excluded.length
           ? policySet.mode === "preferred"
-            ? `Not considered because the preferred ${policy?.preferredModel ?? DEFAULT_FLAGSHIP_MODEL} was available: ${policySet.excluded.map((candidate) => candidate.model).join(", ")}.`
+            ? `Not considered because the preferred ${latestFamilyModel(policy?.preferredModel ?? DEFAULT_FLAGSHIP_MODEL)} was available: ${policySet.excluded.map((candidate) => candidate.model).join(", ")}.`
             : `Excluded by the ${policy?.tier} policy: ${policySet.excluded.map((candidate) => candidate.model).join(", ")}.`
           : undefined,
         this.liveBench.note(pick.model) ? `Benchmark evidence used: ${this.liveBench.note(pick.model)}.` : undefined,
@@ -7746,7 +7746,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       : !settings.autoModelSelection
         ? "automatic model selection disabled; the configured implementor model remains authoritative"
         : decision.modelPolicy?.tier === "flagship"
-          ? `flagship implementor required; ${decision.modelPolicy.preferredModel ?? DEFAULT_FLAGSHIP_MODEL} first, otherwise only a policy-approved flagship fallback`
+          ? `flagship implementor required; ${latestFamilyModel(decision.modelPolicy.preferredModel ?? DEFAULT_FLAGSHIP_MODEL)} first, otherwise only a policy-approved flagship fallback`
           : "adaptive cheapest-capable implementor selection";
     const effort = this.routeEffortNote(threadId, decision, settings);
     const m = this.db.addMessage({
