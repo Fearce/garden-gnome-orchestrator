@@ -1,10 +1,11 @@
-// Self-chosen office names: normalisation and live-collision resolution (there is no default name pool).
+// Office names: normalisation, the generated name every agent starts with, and live-collision resolution.
 // Run: npx tsx src/tests/officeNames.test.ts
 
 import assert from "node:assert/strict";
 import {
   cleanOfficeName,
   firstFreeName,
+  generatedAgentName,
   NAME_REUSE_WINDOW_MS,
   OFFICE_NAME_MAX,
   pruneNameUses,
@@ -19,7 +20,7 @@ assert.equal(cleanOfficeName('**"Nettle"**'), "Nettle");
 assert.equal(cleanOfficeName("   "), "");
 assert.equal(cleanOfficeName("x".repeat(40)).length, OFFICE_NAME_MAX);
 
-// An unnamed agent goes by its role, not an invented default.
+// The fallback for a (thread, role) that never ran: its role label.
 assert.equal(unnamedAgentLabel("implementor"), "Implementor");
 assert.equal(unnamedAgentLabel("qa"), "QA");
 
@@ -87,6 +88,27 @@ assert.ok(firstFreeName(long, new Set([long])).endsWith(" 2"));
   assert.equal(recentNameHolder("Fern", "newest::planner", uses.slice(2), now), null);
   assert.equal(recentNameHolder("Bramble", "me::implementor", uses, now), null);
   assert.deepEqual(pruneNameUses(uses, now).map((u) => u.agentKey), ["recent::implementor", "newest::planner"]);
+}
+
+// Generated names: deterministic per agent, "Given Family", within the max, skipping held names.
+{
+  const key = "0a8b41bf-fb01-4cef-8204-a72a6655bccd::qa";
+  const first = generatedAgentName(key, new Set());
+  assert.match(first, /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  assert.equal(generatedAgentName(key, new Set()), first, "the same agent always starts from the same name");
+  assert.notEqual(generatedAgentName("other::qa", new Set()), first);
+  const next = generatedAgentName(key, new Set([first.toUpperCase()]));
+  assert.notEqual(next, first, "a held name is skipped case-insensitively");
+  assert.equal(next, generatedAgentName(key, new Set([first])));
+  // Walk the whole pool: every pair is reachable, unique and fits the max length.
+  const seen = new Set<string>();
+  for (let i = 0; i < 96 * 96; i++) {
+    const name = generatedAgentName(key, seen);
+    assert.ok(!seen.has(name) && name.length <= OFFICE_NAME_MAX, name);
+    seen.add(name);
+  }
+  assert.equal(seen.size, 96 * 96);
+  assert.equal(generatedAgentName(key, seen), `${first} 2`, "an exhausted pool still yields a free name");
 }
 
 console.log("All officeNames checks passed.");

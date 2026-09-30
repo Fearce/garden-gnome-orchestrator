@@ -333,8 +333,8 @@ interface State {
   // doesn't fire duplicate fetches). Absent room => not yet loaded / unknown.
   roomHasMore: Record<string, boolean>;
   roomLoading: Record<string, boolean>;
-  // Self-picked office names keyed by agentKey(thread, role) — each role is a distinct agent; an agent
-  // that hasn't named itself yet goes by its role. Resolve via agentName().
+  // Office names keyed by agentKey(thread, role) — each role is a distinct agent, named by the server when
+  // its first run is created and renamed when it picks its own. Resolve via agentName().
   nameOverrides: Record<string, string>;
   // Office panel UI: which room is open (room key) — null = closed. The strip, the task buttons, and
   // the card chips all drive this so one panel serves every entry point.

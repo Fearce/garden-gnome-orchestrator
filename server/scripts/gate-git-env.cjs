@@ -6,7 +6,8 @@ const path = require("node:path");
 const GATES_GITCONFIG = path.join(__dirname, "gates.gitconfig");
 
 function gateEnv(base = process.env) {
-  return { ...base, GIT_CONFIG_GLOBAL: GATES_GITCONFIG };
+  // GGO_STRICT_AGENT_NAMES: an agent started without a name throws in a gate instead of being named + logged.
+  return { ...base, GIT_CONFIG_GLOBAL: GATES_GITCONFIG, GGO_STRICT_AGENT_NAMES: "1" };
 }
 
 module.exports = { GATES_GITCONFIG, gateEnv };

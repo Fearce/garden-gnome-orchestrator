@@ -58,7 +58,7 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
 
   const setName = tool(
     "office_set_name",
-    "Name yourself: set the name you go by in the office (how the owner and coworkers address you, and what shows on your gnome). There are no default names — invent your own, whatever you like, short (1–3 words). Names are unique: a name any other agent went by in the last 30 days is refused, and you must pick another. Until you do, you show up as just your role.",
+    "Name yourself: set the name you go by in the office (how the owner and coworkers address you, and what shows on your gnome). There are no default names — invent your own, whatever you like, short (1–3 words). Names are unique: a name any other agent went by in the last 30 days is refused, and you must pick another. Until you do, you go by the placeholder name the orchestrator generated for you.",
     { name: z.string().min(1).max(24).describe("The office name you invented for yourself.") },
     async (args) => {
       const result = api.setOfficeName(ctx.threadId, ctx.role, args.name);

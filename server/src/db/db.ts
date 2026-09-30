@@ -851,6 +851,7 @@ export class Db {
   /** Null until migrate() finishes, so a migration always reads the file as it is at that moment. */
   private threadListing: ThreadListingMirror | null = null;
   private kv: KvMirror | null = null;
+  private runCreatedListeners: Array<(run: AgentRun) => void> = [];
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true });
@@ -2449,7 +2450,17 @@ export class Db {
          VALUES(@id, @threadId, @role, @model, @account, @effort, @sessionId, @state, @costUsd, @numTurns, @error, @startedAt, @endedAt)`,
       )
       .run(r);
+    for (const listener of this.runCreatedListeners) listener(r);
     return r;
+  }
+
+  /** Called synchronously after every agent run row is written — the one point every agent start passes
+   *  through, whichever role, provider or code path created it. Returns the unsubscribe. */
+  onRunCreated(listener: (run: AgentRun) => void): () => void {
+    this.runCreatedListeners.push(listener);
+    return () => {
+      this.runCreatedListeners = this.runCreatedListeners.filter((l) => l !== listener);
+    };
   }
 
   updateRun(
@@ -2520,6 +2531,12 @@ export class Db {
       )
       .all(since - 7 * 24 * 60 * 60 * 1000, now, since) as { thread_id: string; role: string; last: number }[];
     return new Map(rows.map((r) => [`${r.thread_id}::${r.role}`, r.last]));
+  }
+
+  /** Every (thread, role) agent that has ever run, as agentKeys. */
+  agentKeysWithRuns(): string[] {
+    const rows = this.raw.prepare("SELECT DISTINCT thread_id, role FROM agent_runs").all() as { thread_id: string; role: string }[];
+    return rows.map((r) => `${r.thread_id}::${r.role}`);
   }
 
   /** All runs (ASC), or — for the connect snapshot — the most recent `limit` (still returned ASC) so

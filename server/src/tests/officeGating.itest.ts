@@ -125,12 +125,13 @@ async function main(): Promise<void> {
       const a = h.thread("A", REPO_A);
       h.seedLive(a.id, "implementor", { implementor: true });
       check("solo → officeNote returns undefined", h.internals.officeNote(a, "implementor", true) === undefined);
-      // No default names: an unnamed agent's kickoff asks it to invent one, through the channel its backend has.
+      // An agent still on its generated placeholder is asked at kickoff to invent its own name, through the
+      // channel its backend has.
       const unnamed = h.internals.withOfficeNote(a, "implementor", "KICKOFF", true) as string;
-      check("unnamed → kickoff asks the agent to name itself via office_set_name", unnamed.startsWith("KICKOFF\n\n🏷️ NAME YOURSELF") && unnamed.includes("office_set_name"), unnamed);
+      check("placeholder → kickoff asks the agent to name itself via office_set_name", unnamed.startsWith("KICKOFF\n\n🏷️ NAME YOURSELF") && unnamed.includes("office_set_name"), unnamed);
       const unnamedCli = h.internals.withOfficeNote(a, "implementor", "KICKOFF", false) as string;
-      check("unnamed CLI → kickoff asks for an OFFICE[name] line", unnamedCli.includes("OFFICE[name]:") && !unnamedCli.includes("office_set_name"), unnamedCli);
-      check("unnamed → the agent goes by its role", h.mgr.officeName(a.id, "implementor") === "Implementor");
+      check("placeholder CLI → kickoff asks for an OFFICE[name] line", unnamedCli.includes("OFFICE[name]:") && !unnamedCli.includes("office_set_name"), unnamedCli);
+      check("placeholder → the agent goes by its generated name, never its bare role", /^[A-Z][a-z]+ [A-Z][a-z]+$/.test(h.mgr.officeName(a.id, "implementor")), h.mgr.officeName(a.id, "implementor"));
       check("named → setOfficeName keeps the agent's own pick", h.mgr.setOfficeName(a.id, "implementor", "  Marigold  ").name === "Marigold");
       check("solo + named → withOfficeNote leaves the kickoff untouched", h.internals.withOfficeNote(a, "implementor", "KICKOFF", true) === "KICKOFF");
 
@@ -338,10 +339,11 @@ async function main(): Promise<void> {
       h.seedLive(b.id, "implementor", { implementor: true });
 
       check("a fresh name is accepted", h.mgr.setOfficeName(a.id, "implementor", "Fern").ok);
+      const placeholder = h.mgr.officeName(b.id, "implementor");
       const clash = h.mgr.setOfficeName(b.id, "implementor", "fern");
       check("a live coworker's name is refused, case-insensitively", !clash.ok, JSON.stringify(clash));
       check("the refusal asks for another name and names the rule", !clash.ok && /30 days/.test(clash.reason) && /different/.test(clash.reason), JSON.stringify(clash));
-      check("a refused agent keeps its role label, not the name", h.mgr.officeName(b.id, "implementor") === "Implementor");
+      check("a refused agent keeps its generated name, not the refused one", h.mgr.officeName(b.id, "implementor") === placeholder && placeholder !== "fern", placeholder);
       check("a name last used 29 days ago is still refused", !h.mgr.setOfficeName(b.id, "implementor", "Pine").ok);
       check("a name last used 31 days ago is free again", h.mgr.setOfficeName(b.id, "implementor", "Oak").ok && h.mgr.officeName(b.id, "implementor") === "Oak");
 

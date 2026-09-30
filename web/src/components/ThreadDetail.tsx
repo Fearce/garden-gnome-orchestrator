@@ -100,7 +100,7 @@ function GavelIcon() {
 }
 
 function RoleLabel({ role, name: rawName, model, modelTitle }: { role: Role; name?: string; model?: string; modelTitle?: string }) {
-  // An agent that hasn't named itself yet goes by its role label (agentName) — don't echo the role twice.
+  // A (thread, role) with no name on record resolves to its role label (agentName) — don't echo the role twice.
   const name = rawName && rawName.toLowerCase() !== role.toLowerCase() ? rawName : undefined;
   return (
     <>

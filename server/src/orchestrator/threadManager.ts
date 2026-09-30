@@ -88,6 +88,7 @@ import { OperatorNotes } from "./notes.js";
 import {
   cleanOfficeName,
   firstFreeName,
+  generatedAgentName,
   NAME_REUSE_WINDOW_MS,
   nameReuseRefusal,
   pruneNameUses,
@@ -1191,6 +1192,8 @@ export class ThreadManager implements OrchestratorApi {
     readonly freeProviders?: FreeProviderService,
   ) {
     this.reviewInjections = new ReviewInjectionStore(db);
+    this.db.onRunCreated((run) => this.ensureAgentName(run.threadId, run.role));
+    this.backfillAgentNames();
     this.subTasks = new SubTaskService(this.subTaskHost());
     // Token-reset recovery is unconditional now. Remove obsolete persisted controls so an upgraded DB
     // cannot silently retain an "off" value that strands work, and settings snapshots have no dead data.
@@ -14994,11 +14997,22 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   // ---- the office: cross-agent chat + grouping ----
 
-  /** Self-picked office names live in one kv JSON map keyed by agentKey(thread, role) — each role in a
-   *  task is a distinct agent with its own name. An unlisted agent hasn't named itself yet. */
+  /** Office names live in one kv JSON map keyed by agentKey(thread, role) — each role in a task is a
+   *  distinct agent with its own name. Every agent gets a generated name when its first run is created
+   *  (ensureAgentName); a name the agent picks itself then replaces it. */
   private officeNameMap(): Record<string, string> {
+    return this.kvNameMap("office_names");
+  }
+
+  /** The names ensureAgentName generated, keyed by agentKey — how a placeholder is told from a name
+   *  the agent chose itself, which is still asked for at kickoff. */
+  private generatedNameMap(): Record<string, string> {
+    return this.kvNameMap("office_names_generated");
+  }
+
+  private kvNameMap(kvKey: string): Record<string, string> {
     try {
-      const v = this.db.kvGet("office_names");
+      const v = this.db.kvGet(kvKey);
       return v ? (JSON.parse(v) as Record<string, string>) : {};
     } catch {
       return {};
@@ -15011,8 +15025,70 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.officeNameMap()[agentKey(threadId, role)] || unnamedAgentLabel(role);
   }
 
-  private hasOfficeName(threadId: string, role: Role): boolean {
-    return role === "director" || !!this.officeNameMap()[agentKey(threadId, role)];
+  private hasSelfPickedName(threadId: string, role: Role): boolean {
+    if (role === "director") return true;
+    const key = agentKey(threadId, role);
+    const name = this.officeNameMap()[key];
+    return !!name && this.generatedNameMap()[key] !== name;
+  }
+
+  /** Give an agent a generated name unless it already has one. Runs for every agent run row the moment it
+   *  is written (Db.onRunCreated), so a name exists before any header, chat post or kickoff reads it, on
+   *  every role, provider, retry and resume. The name is persisted, so it stays the agent's across restarts. */
+  ensureAgentName(threadId: string, role: Role): string {
+    if (role === "director") return this.directorName();
+    const key = agentKey(threadId, role);
+    return this.officeNameMap()[key] ?? this.assignGeneratedNames([key]).get(key)!;
+  }
+
+  /** Name each of `keys` (all currently unnamed) in one pass: one read of the names already taken, one
+   *  write of each map, one chat.name broadcast per agent. */
+  private assignGeneratedNames(keys: readonly string[]): Map<string, string> {
+    const names = this.officeNameMap();
+    const generated = this.generatedNameMap();
+    const recent = this.recentNameUses(Date.now());
+    const assigned = new Map<string, string>();
+    for (const key of keys) {
+      const threadPrefix = key.slice(0, key.indexOf("::") + 2);
+      const taken = new Set([
+        ...recent.filter((u) => u.agentKey !== key).map((u) => u.name),
+        ...Object.entries(names).filter(([k]) => k.startsWith(threadPrefix)).map(([, v]) => v),
+        ...assigned.values(),
+      ]);
+      const name = generatedAgentName(key, taken);
+      names[key] = name;
+      generated[key] = name;
+      assigned.set(key, name);
+    }
+    if (!assigned.size) return assigned;
+    this.db.kvSet("office_names", JSON.stringify(names));
+    this.db.kvSet("office_names_generated", JSON.stringify(generated));
+    for (const [key, name] of assigned) {
+      const [threadId, role] = key.split("::") as [string, Role];
+      this.hub.publish({ type: "chat.name", threadId, role, name });
+    }
+    return assigned;
+  }
+
+  /** The guard behind Db.onRunCreated: an agent reaching wireRun without a name means some path created
+   *  its run around that hook. The gate suite (GGO_STRICT_AGENT_NAMES=1) fails loudly; production names
+   *  the agent and logs it, so a header never renders without one. */
+  private requireAgentName(threadId: string, role: Role): void {
+    if (role === "director" || this.officeNameMap()[agentKey(threadId, role)]) return;
+    const problem = `Agent ${threadId.slice(0, 8)} ${role} started without a name`;
+    if (process.env.GGO_STRICT_AGENT_NAMES === "1") throw new Error(problem);
+    this.hub.log("warn", `${problem}; assigned "${this.ensureAgentName(threadId, role)}".`);
+  }
+
+  /** One-time: agents that ran before names were generated at creation get one now, so an old task's
+   *  headers stop showing a bare role. Later agents are named by the onRunCreated hook. */
+  private backfillAgentNames(): void {
+    if (this.db.kvGet("office_names_backfill_v1")) return;
+    const names = this.officeNameMap();
+    const unnamed = this.db.agentKeysWithRuns().filter((key) => !key.endsWith("::director") && !names[key]);
+    const assigned = this.assignGeneratedNames(unnamed);
+    this.db.kvSet("office_names_backfill_v1", String(Date.now()));
+    if (assigned.size) this.hub.log("info", `Named ${assigned.size} agent(s) that ran before names were generated at creation.`);
   }
 
   /** Guarantee no two CURRENTLY-LIVE agents share an office name. Two tasks whose agents picked the same
@@ -15028,15 +15104,19 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const liveKeys = new Set(live.map((l) => agentKey(l.threadId, l.role)));
     const reserved = new Set(this.recentNameUses(Date.now()).filter((u) => !liveKeys.has(u.agentKey)).map((u) => u.name));
     const changes = resolveLiveNameCollisions(live, map, reserved);
+    const generated = this.generatedNameMap();
     for (const l of live) {
       const key = agentKey(l.threadId, l.role);
       const renamed = changes.get(key);
       if (!renamed) continue;
-      this.recordNameRelease(key, map[key]!);
+      // A renumbered placeholder stays a placeholder: the agent is still asked to pick its own name.
+      if (generated[key] === map[key]) generated[key] = renamed;
+      else this.recordNameRelease(key, map[key]!);
       map[key] = renamed;
       this.hub.publish({ type: "chat.name", threadId: l.threadId, role: l.role, name: renamed });
     }
     this.db.kvSet("office_names", JSON.stringify(map));
+    this.db.kvSet("office_names_generated", JSON.stringify(generated));
   }
 
   /** Names an agent went by before renaming, dated by the rename — the current map alone forgets them. */
@@ -15078,9 +15158,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (holder) return { ok: false, name: this.officeName(threadId, role), reason: nameReuseRefusal(clean, holder, now) };
     const map = this.officeNameMap();
     const previous = map[key];
-    if (previous && previous !== clean) this.recordNameRelease(key, previous);
+    const generated = this.generatedNameMap();
+    // A generated placeholder is not the agent's own pick, so it is not held for the reuse window.
+    if (previous && previous !== clean && generated[key] !== previous) this.recordNameRelease(key, previous);
     map[key] = clean;
     this.db.kvSet("office_names", JSON.stringify(map));
+    if (key in generated) {
+      delete generated[key];
+      this.db.kvSet("office_names_generated", JSON.stringify(generated));
+    }
     // Legacy data can still hold a live clash the refusal above never saw; the uniqueness pass walks this
     // agent to a free variant then and broadcasts it. Return the RESOLVED name so the confirmation matches
     // what everyone else sees, and broadcast ourselves only when the pass left the name untouched.
@@ -15445,7 +15531,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!this.repoPeers(t).length) return;
     this.checkedIn.add(key);
     const name = this.officeName(threadId, role);
-    const who = this.hasOfficeName(threadId, role) ? `${name} (${role})` : `A new ${role}`;
+    const who = `${name} (${role})`;
     const leaf = t.workspace.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || t.workspace;
     const m = this.db.addChatMessage({
       room: GENERAL_ROOM,
@@ -15498,10 +15584,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return notes.length ? `${text}\n\n${notes.join("\n\n")}` : text;
   }
 
-  /** Gnomes have no default names: an agent that hasn't named itself is asked to invent one at kickoff.
-   *  `withTools` is false for the CLI backends, which name themselves through the `OFFICE[name]:` bridge. */
+  /** Gnomes invent their own names: an agent still going by its generated placeholder is asked to pick one
+   *  at kickoff. `withTools` is false for the CLI backends, which name themselves through `OFFICE[name]:`. */
   private namingNote(threadId: string, role: Role, withTools: boolean): string | undefined {
-    if (this.hasOfficeName(threadId, role)) return undefined;
+    if (this.hasSelfPickedName(threadId, role)) return undefined;
     const how = withTools
       ? "set it with `office_set_name` as your first action"
       : "announce it with a standalone `OFFICE[name]: <your name>` line in your first response";
@@ -15604,6 +15690,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   private wireRun(agent: AgentRunLike, threadId: string, runId: string, role: Role, accountId: string): void {
+    this.requireAgentName(threadId, role);
     let leftStarting = false;
     // A finalized run (endedAt set) is immutable. finishRun/finalizeRun run OUTSIDE this listener — from
     // runRole's explicit finishRun and the implementor's onEnd — and can land while the SDK is still

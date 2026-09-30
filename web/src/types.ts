@@ -515,8 +515,8 @@ export function agentKey(threadId: string, role: Role): string {
   return `${threadId}::${role}`;
 }
 
-/** Mirror of the server's unnamedAgentLabel: agents invent their own names, and go by their role until
- *  they have. */
+/** Mirror of the server's unnamedAgentLabel: the fallback for a (thread, role) the server never named,
+ *  which is one that never ran — every agent gets a generated name when its first run is created. */
 const UNNAMED_AGENT_LABEL: Record<Role, string> = {
   director: "Director",
   planner: "Planner",
@@ -527,7 +527,7 @@ const UNNAMED_AGENT_LABEL: Record<Role, string> = {
   reviewer: "Reviewer",
 };
 
-/** The office name to show for one of a task's agents: the name it picked (arriving via
+/** The office name to show for one of a task's agents: its generated or self-picked name (arriving via
  *  `nameOverrides`/chat.name), else its role. The single place the UI resolves a name. */
 export function agentName(overrides: Record<string, string>, threadId: string, role: Role): string {
   return overrides[agentKey(threadId, role)] ?? UNNAMED_AGENT_LABEL[role];

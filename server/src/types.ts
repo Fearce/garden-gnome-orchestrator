@@ -530,8 +530,9 @@ export function agentKey(threadId: string, role: Role): string {
   return `${threadId}::${role}`;
 }
 
-/** There is no pool of default gnome names: every agent invents its own at kickoff (office_set_name, or
- *  the `OFFICE[name]:` line on a CLI backend). Until it has, it goes by its role. Mirrored in web/src/types.ts. */
+/** What `officeName` falls back to for an agent with no name on record. Every agent is given a generated
+ *  name when its first run is created (and invents its own at kickoff), so this is only reached for a
+ *  (thread, role) that never ran. Mirrored in web/src/types.ts. */
 const UNNAMED_AGENT_LABEL: Record<Role, string> = {
   director: "Director",
   planner: "Planner",

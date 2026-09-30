@@ -57,6 +57,8 @@ each board tab restoring its own toggles, across a reload) and `panel-scroll-lab
 viewports x both header states — scrollport usable, composer pinned, nothing sideways, no clipping shell
 taller than its own box), `director-phone-lab.cjs` (the Director pane at 320–430px: the
 conversation's share of the pane, 44px targets, the pipeline menu, search, the options sheet, a send),
+`agent-names-lab.cjs` (a fresh QA run and a backfilled legacy one both show "QA (Name, model)" in the
+feed header, across a boot that runs the one-time name backfill),
 `mobile-chunk-lab.cjs` (the phone's stale-tab recovery — it 404s a lazy chunk
 the way a rebuild deletes it; `-- --no-fault` is its own negative control)
 and `appearance-lab.cjs` (the theme picker + the computed-style diff that is

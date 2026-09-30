@@ -125,6 +125,7 @@ const GATES = [
   "test:recovery-features",
   "test:office-bridge",
   "test:office-names",
+  "test:agent-names",
   "test:office-gating",
   "test:office-health",
   "test:online-office",

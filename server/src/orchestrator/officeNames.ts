@@ -70,6 +70,61 @@ export function firstFreeName(preferred: string, taken: ReadonlySet<string>): st
   }
 }
 
+// The two halves of a generated name. 96 × 96 = 9,216 pairs: enough that a month of agents (the reuse
+// window) cannot exhaust it, so a generated name never needs a numbered variant in practice.
+const GIVEN = [
+  "Acorn", "Alder", "Amber", "Aster", "Barley", "Basil", "Birch", "Bracken", "Bramble", "Brindle",
+  "Bumble", "Burdock", "Button", "Cinder", "Clover", "Cobble", "Copper", "Cress", "Crumpet", "Dapple",
+  "Dunnock", "Ember", "Fennel", "Fern", "Finch", "Flax", "Flint", "Foxglove", "Gorse", "Hazel",
+  "Heather", "Hemlock", "Holly", "Hops", "Ivy", "Juniper", "Kestrel", "Lark", "Laurel", "Lichen",
+  "Linden", "Linnet", "Loam", "Lupin", "Madder", "Mallow", "Maple", "Marjoram", "Medlar", "Millet",
+  "Mint", "Moss", "Mugwort", "Nettle", "Nutmeg", "Oakum", "Ochre", "Parsnip", "Pebble", "Pewter",
+  "Pip", "Plover", "Poppy", "Quince", "Radish", "Reed", "Robin", "Rowan", "Rue", "Russet",
+  "Rye", "Saffron", "Sage", "Sedge", "Sloe", "Sorrel", "Speckle", "Spindle", "Starling", "Sumac",
+  "Tallow", "Tansy", "Teasel", "Thimble", "Thistle", "Thyme", "Tinder", "Turnip", "Umber", "Vetch",
+  "Walnut", "Willow", "Woad", "Wren", "Yarrow", "Yew",
+] as const;
+const FAMILY = [
+  "Almanac", "Anvil", "Barrow", "Basket", "Bellows", "Bobbin", "Bristle", "Brook", "Bucket", "Burrow",
+  "Candle", "Carter", "Chandler", "Chimney", "Cobbler", "Cobweb", "Combe", "Cooper", "Croft", "Dell",
+  "Dewdrop", "Drummer", "Fen", "Fiddle", "Fletcher", "Ford", "Gable", "Hedge", "Hinge", "Hob",
+  "Hollow", "Holt", "Hummock", "Inkwell", "Kettle", "Knoll", "Ladle", "Lantern", "Latch", "Ledger",
+  "Mason", "Mead", "Miller", "Mitten", "Nook", "Oddment", "Pannier", "Piper", "Pocket", "Potter",
+  "Puddle", "Quill", "Rafter", "Rake", "Riddle", "Satchel", "Sawyer", "Shingle", "Sickle", "Skein",
+  "Spade", "Spoke", "Sprocket", "Stile", "Stitch", "Tanner", "Thatcher", "Thorpe", "Tinker", "Toggle",
+  "Trowel", "Truckle", "Tuck", "Tumbler", "Turner", "Tussock", "Twine", "Wainwright", "Weaver", "Whistle",
+  "Wick", "Wicket", "Wold", "Woodruff", "Yardley", "Bodkin", "Cask", "Dibber", "Firkin", "Gimlet",
+  "Hamper", "Jigger", "Mallet", "Noggin", "Tankard", "Wimble",
+] as const;
+
+/** A stable 32-bit FNV-1a hash — the generated name must not depend on process or platform. */
+function hash32(text: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}
+
+/**
+ * The name the orchestrator gives an agent the moment it is created, so no agent ever runs nameless: a
+ * "Given Family" pair derived from its agentKey, so the same agent always starts from the same name.
+ * Walks the pair space from that start until it finds one nobody in `taken` holds (case-insensitively).
+ * The agent may still invent its own name later; this one is only what it goes by until then.
+ */
+export function generatedAgentName(key: string, taken: ReadonlySet<string>): string {
+  const lower = new Set([...taken].map((n) => n.toLowerCase()));
+  const total = GIVEN.length * FAMILY.length;
+  const start = hash32(key) % total;
+  for (let step = 0; step < total; step++) {
+    const i = (start + step * 97) % total; // 97 is coprime with 96², so the walk visits every pair once
+    const name = `${GIVEN[Math.floor(i / FAMILY.length)]} ${FAMILY[i % FAMILY.length]}`;
+    if (!lower.has(name.toLowerCase())) return name;
+  }
+  return firstFreeName(`${GIVEN[Math.floor(start / FAMILY.length)]} ${FAMILY[start % FAMILY.length]}`, taken);
+}
+
 /**
  * Re-derive name uniqueness across the live set: walking in seniority order (earliest start first) so
  * whoever has used a name longest keeps it, a later agent whose self-picked name is already held by a
