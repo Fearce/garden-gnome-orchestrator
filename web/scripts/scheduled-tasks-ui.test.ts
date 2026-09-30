@@ -92,6 +92,18 @@ assert.deepEqual(socket.sent, [{ type: "schedule.update", id: "schedule-1", patc
 assert.equal(useStore.getState().schedules[0]?.enabled, false, "the switch updates without waiting for the server");
 assert.equal(useStore.getState().schedules[0]?.nextRunAt, null);
 
+// Run once travels with the command and the projection, so the card shows the badge in the same click.
+socket.sent.length = 0;
+assert.equal(useStore.getState().updateSchedule("schedule-1", { runOnce: true }), true);
+assert.deepEqual(socket.sent, [{ type: "schedule.update", id: "schedule-1", patch: { runOnce: true } }]);
+assert.equal(useStore.getState().schedules[0]?.runOnce, true, "the run-once toggle projects immediately");
+
+socket.sent.length = 0;
+assert.equal(useStore.getState().createSchedule({ ...input, title: "Reminder", cron: "0 12 3 11 *", runOnce: true }), true);
+assert.equal(socket.sent[0]?.runOnce, true, "create sends runOnce");
+assert.equal(useStore.getState().schedules.find((s) => s.title === "Reminder")?.runOnce, true, "the pending card carries runOnce");
+useStore.setState((s) => ({ schedules: s.schedules.filter((x) => x.title !== "Reminder") }));
+
 socket.sent.length = 0;
 assert.equal(useStore.getState().deleteSchedule("schedule-1"), true);
 assert.deepEqual(socket.sent.map((frame) => frame.type), ["schedule.delete"]);

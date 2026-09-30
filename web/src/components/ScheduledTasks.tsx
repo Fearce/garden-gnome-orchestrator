@@ -151,8 +151,8 @@ function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => v
           </span>
         ) : sched.enabled ? (
           <span className="faint">Updating next run…</span>
-        ) : sched.runOnce && sched.lastRunAt ? (
-          <span className="faint">Ran once — switched off</span>
+        ) : sched.runOnce ? (
+          <span className="faint">Run once — off, no next run</span>
         ) : (
           <span className="faint">Paused — no next run</span>
         )}

@@ -181,8 +181,8 @@ export interface Thread {
   updatedAt: number;
 }
 
-/** A recurring dispatch: a prompt that runs in a target repo on a cron schedule. Mirrors the server's
- *  ScheduledTask. Each fire creates a normal task through the standard pipeline. */
+/** A recurring dispatch: a prompt that runs in a target repo on a cron schedule. Each fire creates a
+ *  normal task through the standard pipeline. Mirrors ScheduledTask byte-for-byte (server/src/types.ts). */
 export interface ScheduledTask {
   id: string;
   title: string;

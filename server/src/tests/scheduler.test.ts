@@ -211,9 +211,71 @@ async function main(): Promise<void> {
   check("start() keeps a fired run-once schedule off", db.getScheduledTask(onceId)!.nextRunAt == null);
   scheduler.update(onceId, { enabled: true });
   check("re-enabling re-arms it at the next cron slot", (db.getScheduledTask(onceId)!.nextRunAt ?? 0) > Date.now());
+  const armedNext = db.getScheduledTask(onceId)!.nextRunAt;
+  scheduler.update(onceId, { runOnce: true });
+  check("toggling runOnce alone keeps the armed slot", db.getScheduledTask(onceId)!.nextRunAt === armedNext);
   scheduler.update(onceId, { runOnce: false });
   check("runOnce can be switched off", db.getScheduledTask(onceId)!.runOnce === false);
   scheduler.remove(onceId);
+
+  console.log("scheduler: run once is never pushed a year out");
+  // A date cron has no year, so "roll to the next match" means next year: exactly the repeat run-once
+  // exists to prevent. A slot missed while GGO was down (deploys restart it) must still fire, late.
+  const missed = scheduler.create({ title: "Missed", workspace: ws, prompt: "remind", cron: "0 12 3 11 *", runOnce: true }).schedule!.id;
+  db.updateScheduledTask(missed, { nextRunAt: Date.now() - 60_000 });
+  scheduler.start();
+  check("start() keeps a missed run-once slot due instead of rolling a year", (db.getScheduledTask(missed)!.nextRunAt ?? Infinity) <= Date.now());
+  const beforeMissed = dispatched.length;
+  tick();
+  await settle();
+  check("the missed run-once fires late on the next tick", dispatched.length === beforeMissed + 1 && db.getScheduledTask(missed)!.enabled === false);
+  scheduler.remove(missed);
+
+  // A busy predecessor (e.g. a Run now test still working) must delay the fire, not move it a year.
+  const waits = scheduler.create({ title: "Waits", workspace: ws, prompt: "remind", cron: "0 12 3 11 *", runOnce: true }).schedule!.id;
+  db.updateThread(prev.id, { state: "implementing" });
+  db.updateScheduledTask(waits, { lastThreadId: prev.id, nextRunAt: Date.now() - 1000 });
+  const beforeBusy = dispatched.length;
+  tick();
+  await settle();
+  check("a busy predecessor holds a run-once fire", dispatched.length === beforeBusy);
+  check("a held run-once stays due, not a year out", (db.getScheduledTask(waits)!.nextRunAt ?? Infinity) <= Date.now() && db.getScheduledTask(waits)!.enabled === true);
+  db.updateThread(prev.id, { state: "done" });
+  tick();
+  await settle();
+  check("it fires once the predecessor finishes", dispatched.length === beforeBusy + 1 && db.getScheduledTask(waits)!.enabled === false);
+  scheduler.remove(waits);
+
+  // A failed dispatch must not use up the only fire the schedule has.
+  let failNext = true;
+  const flaky = new Scheduler(db, hub, async (input) => {
+    if (failNext) throw new Error("provider down");
+    dispatched.push(input);
+    return `thread-${nextThreadId++}`;
+  });
+  const retried = flaky.create({ title: "Retried", workspace: ws, prompt: "remind", cron: "0 12 3 11 *", runOnce: true }).schedule!.id;
+  db.updateScheduledTask(retried, { nextRunAt: Date.now() - 1000 });
+  (flaky as unknown as { tick(): void }).tick();
+  await settle();
+  const afterFail = db.getScheduledTask(retried)!;
+  check("a failed run-once dispatch re-arms it", afterFail.enabled === true && afterFail.nextRunAt != null && afterFail.nextRunAt - Date.now() < 15 * 60_000);
+  check("a failed run-once dispatch records no run", afterFail.lastRunAt == null);
+  failNext = false;
+  db.updateScheduledTask(retried, { nextRunAt: Date.now() - 1000 });
+  const beforeRetry = dispatched.length;
+  (flaky as unknown as { tick(): void }).tick();
+  await settle();
+  check("the retry fires and then disables it", dispatched.length === beforeRetry + 1 && db.getScheduledTask(retried)!.enabled === false);
+  failNext = true;
+  const exhausted = flaky.create({ title: "Exhausted", workspace: ws, prompt: "remind", cron: "0 12 3 11 *", runOnce: true }).schedule!.id;
+  for (let i = 0; i < 5; i++) {
+    db.updateScheduledTask(exhausted, { nextRunAt: Date.now() - 1000 });
+    (flaky as unknown as { tick(): void }).tick();
+    await settle();
+  }
+  check("retries are capped, then it stays off", db.getScheduledTask(exhausted)!.enabled === false);
+  flaky.remove(retried);
+  flaky.remove(exhausted);
 
   console.log("scheduler: delete");
   check("delete ok", scheduler.remove(id).ok);

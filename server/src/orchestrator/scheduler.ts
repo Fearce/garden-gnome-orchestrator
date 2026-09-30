@@ -54,6 +54,10 @@ export interface ScheduleResult {
 // slot) without busy-waking. A missed tick (server asleep) simply fires on the next wake — nextRunAt is
 // recomputed from `now`, so a downtime never stacks up a backlog of catch-up runs.
 const TICK_MS = 30_000;
+// A run-once schedule has no next slot to fall back on (a date cron's next match is a year away), so a
+// failed dispatch re-arms it a few times rather than silently spending its only fire.
+const ONCE_RETRY_MS = 5 * 60_000;
+const ONCE_RETRIES = 3;
 
 /**
  * Fires recurring dispatches on their cron schedules. Deliberately standalone — it depends only on a
@@ -66,6 +70,10 @@ export class Scheduler {
   /** Schedules whose dispatch is awaiting its thread id. `lastThreadId` is written only after dispatch
    *  resolves, so without this a fire started in that window would not see its own predecessor. */
   private readonly dispatching = new Set<string>();
+  /** Failed dispatch attempts per run-once schedule, bounded by ONCE_RETRIES. */
+  private readonly onceFailures = new Map<string, number>();
+  /** Run-once schedules already logged as waiting on a busy predecessor, so a long wait logs once. */
+  private readonly onceWaitLogged = new Set<string>();
 
   constructor(
     private readonly db: Db,
@@ -78,7 +86,10 @@ export class Scheduler {
   start(): void {
     const now = Date.now();
     for (const s of this.db.listScheduledTasks()) {
-      const next = s.enabled ? nextRun(s.cron, now) : null;
+      // A run-once slot missed during downtime stays due and fires late: rolling it forward would move a
+      // date reminder a full year.
+      const missedOnce = s.enabled && s.runOnce && s.nextRunAt != null && s.nextRunAt <= now;
+      const next = !s.enabled ? null : missedOnce ? s.nextRunAt : nextRun(s.cron, now);
       if (next !== s.nextRunAt) this.db.updateScheduledTask(s.id, { nextRunAt: next });
     }
     this.broadcast();
@@ -167,6 +178,10 @@ export class Scheduler {
     for (const s of this.db.listScheduledTasks()) {
       if (!s.enabled || s.nextRunAt == null || s.nextRunAt > now) continue;
       due = true;
+      if (s.runOnce) {
+        this.fireOnce(s);
+        continue;
+      }
       // Roll the next fire forward BEFORE dispatching (which awaits): if a dispatch is ever slow, the
       // following tick must see a future nextRunAt, never this same past slot — so a schedule can never
       // double-fire. Recompute from `now` so downtime skips missed slots instead of stacking a backlog.
@@ -176,12 +191,42 @@ export class Scheduler {
         this.hub.log("info", `Scheduled task "${s.title}" skipped this fire: its previous run is still ${busy}.`);
         continue;
       }
-      // A run-once schedule is consumed by the fire itself, disabled before the dispatch awaits so no
-      // later tick can see it armed.
-      if (s.runOnce) this.db.updateScheduledTask(s.id, { enabled: false, nextRunAt: null });
       void this.dispatchRun(s);
     }
     if (due) this.broadcast();
+  }
+
+  /** A due run-once schedule. A busy predecessor holds it due (it fires as soon as that run ends) rather
+   *  than rolling it to the next cron match; otherwise it is disabled BEFORE the dispatch awaits, so no
+   *  later tick can see it armed, and re-armed a bounded number of times if the dispatch fails. */
+  private fireOnce(s: ScheduledTask): void {
+    const busy = this.previousRunBusy(s);
+    if (busy) {
+      if (!this.onceWaitLogged.has(s.id)) {
+        this.onceWaitLogged.add(s.id);
+        this.hub.log("warn", `Run-once task "${s.title}" is due but waits: its previous run is still ${busy}. It fires when that run ends.`);
+      }
+      return;
+    }
+    this.onceWaitLogged.delete(s.id);
+    this.db.updateScheduledTask(s.id, { enabled: false, nextRunAt: null });
+    void this.dispatchRun(s).then((ok) => {
+      if (ok) {
+        this.onceFailures.delete(s.id);
+        return;
+      }
+      if (!this.db.getScheduledTask(s.id)) return;
+      const attempt = (this.onceFailures.get(s.id) ?? 0) + 1;
+      if (attempt > ONCE_RETRIES) {
+        this.onceFailures.delete(s.id);
+        this.hub.log("error", `Run-once task "${s.title}" failed to dispatch ${ONCE_RETRIES + 1} times and is now switched off without having run.`);
+      } else {
+        this.onceFailures.set(s.id, attempt);
+        this.db.updateScheduledTask(s.id, { enabled: true, nextRunAt: Date.now() + ONCE_RETRY_MS });
+        this.hub.log("warn", `Run-once task "${s.title}" did not start; retrying in ${ONCE_RETRY_MS / 60_000} minutes (retry ${attempt} of ${ONCE_RETRIES}).`);
+      }
+      this.broadcast();
+    });
   }
 
   /** Describes why the schedule's previous fire still counts as running (e.g. "dispatching", "qa (task
@@ -194,13 +239,14 @@ export class Scheduler {
   }
 
   /** Dispatch one run of a schedule through the normal pipeline and record the last-run bookkeeping.
-   *  Best-effort: a missing workspace or a dispatch error is logged and swallowed, so one bad fire never
+   *  Returns whether a task was dispatched, which only the run-once retry reads.
+ *  Best-effort: a missing workspace or a dispatch error is logged and swallowed, so one bad fire never
    *  wedges the schedule. Does NOT touch nextRunAt — the cron cadence is advanced by the tick (or left
    *  alone for a manual runNow). */
-  private async dispatchRun(s: ScheduledTask): Promise<void> {
+  private async dispatchRun(s: ScheduledTask): Promise<boolean> {
     if (!existsSync(s.workspace)) {
       this.hub.log("warn", `Scheduled task "${s.title}" skipped — workspace ${s.workspace} does not exist.`);
-      return;
+      return false;
     }
     this.dispatching.add(s.id);
     try {
@@ -215,8 +261,10 @@ export class Scheduler {
       this.db.updateScheduledTask(s.id, { lastRunAt: Date.now(), lastThreadId: threadId });
       this.hub.log("info", `Scheduled task "${s.title}" fired → task ${threadId.slice(0, 8)}`);
       this.broadcast();
+      return true;
     } catch (e) {
       this.hub.log("error", `Scheduled task "${s.title}" failed to dispatch: ${String(e)}`);
+      return false;
     } finally {
       this.dispatching.delete(s.id);
     }
