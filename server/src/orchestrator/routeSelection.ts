@@ -122,9 +122,10 @@ function matches(text: string, signals: Signal[]): string[] {
 // a bullet, after ";"/":"/"(", or a comma-chained repeat like ", never --no-verify"). Mid-sentence the same
 // words describe the defect itself ("the admin API never checks permissions", "sessions must not outlive
 // logout"), and cutting those would drop a real security signal — the expensive direction here, since a
-// risk-free short brief routes narrow and skips QA.
+// risk-free short brief routes narrow and skips QA. "You" may lead a guardrail ("you must not push"), but
+// "we" may not: "We never validate the JWT signature" is the product's voice describing the defect.
 const PROHIBITION_CUE = String.raw`(?:never|do not|don['’]t|must not|mustn['’]t|should not|shouldn['’]t|(?:preserve|respect|honou?r|keep|leave) (?:the |all |any )?(?:existing|current))`;
-const CLAUSE_LEAD = String.raw`\s*(?:[-*•]\s*|\d+[.)]\s*)?(?:(?:and|but|also|please|so|then|you|we)\s+)*`;
+const CLAUSE_LEAD = String.raw`\s*(?:[-*•]\s*|\d+[.)]\s*)?(?:(?:and|but|also|please|so|then|you)\s+)*`;
 const PROHIBITION = new RegExp(
   String.raw`(?:(?:^|[.!?;:(])${CLAUSE_LEAD}(?:${PROHIBITION_CUE}|no)|,${CLAUSE_LEAD}${PROHIBITION_CUE})\b[^.;:!?\n]*?(?=\s(?:but|instead|unless|rather)\b|[.;:!?\n]|$)`,
   "gim",

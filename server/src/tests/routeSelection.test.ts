@@ -298,6 +298,10 @@ DONE: With TOOLS filtered out, messages like the circled one stay visible and to
   check("a mid-sentence 'never' describing a security bug keeps the security signal", authzBug.signals.includes("security/auth") && authzBug.useQa && authzBug.implementorEffort === "high", `${authzBug.scope}/${authzBug.implementorEffort} — ${authzBug.signals.join("; ")}`);
   const logoutBug = route("After logout the old session token must not still work, but today it does.");
   check("a mid-sentence 'must not' requirement keeps the security signal", logoutBug.signals.includes("security/auth"), logoutBug.signals.join("; "));
+  const weBug = route("We never validate the JWT signature, so anyone can forge a token.");
+  check("a 'we never …' defect description keeps the security signal", weBug.signals.includes("security/auth") && weBug.useQa, `${weBug.scope}/${weBug.implementorEffort} — ${weBug.signals.join("; ")}`);
+  const youGuard = route("Fix the date picker alignment. You must not touch the auth middleware.");
+  check("a 'you must not …' guardrail is still stripped", !youGuard.signals.includes("security/auth"), youGuard.signals.join("; "));
   const bulleted = route("Fix the sidebar width on narrow screens.\n- Never touch the auth middleware or the login form.\n- Keep the existing session cookies as they are.\n1) Don't run the database migrations.");
   check("bulleted and numbered guardrails are still stripped", !bulleted.signals.includes("security/auth") && !bulleted.signals.includes("data migration/backfill"), bulleted.signals.join("; "));
   const chained = route("Tidy the settings panel spacing. Commit and push, never force-push the migration branch, never --no-verify.");
