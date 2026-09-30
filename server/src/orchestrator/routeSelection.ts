@@ -118,7 +118,17 @@ function matches(text: string, signals: Signal[]): string[] {
 // early, so the work named after the contrast still counts. "No" is a cue only where it opens a sentence,
 // because mid-sentence it usually describes the bug ("there is no auth check"). "Respect existing auth
 // boundaries" is the same kind of guardrail, phrased as a keep instead of a don't.
-const PROHIBITION = /(?:\b(?:never|do not|don['’]t|must not|mustn['’]t|should not|shouldn['’]t|(?:preserve|respect|honou?r|keep|leave) (?:the |all |any )?(?:existing|current))\b|(?:^|[.!?(]\s*)no\b)[^.;:!?\n]*?(?=\s(?:but|instead|unless|rather)\b|[.;:!?\n]|$)/gim;
+// A cue counts only where it OPENS a clause — the imperative position a guardrail takes (sentence start,
+// a bullet, after ";"/":"/"(", or a comma-chained repeat like ", never --no-verify"). Mid-sentence the same
+// words describe the defect itself ("the admin API never checks permissions", "sessions must not outlive
+// logout"), and cutting those would drop a real security signal — the expensive direction here, since a
+// risk-free short brief routes narrow and skips QA.
+const PROHIBITION_CUE = String.raw`(?:never|do not|don['’]t|must not|mustn['’]t|should not|shouldn['’]t|(?:preserve|respect|honou?r|keep|leave) (?:the |all |any )?(?:existing|current))`;
+const CLAUSE_LEAD = String.raw`\s*(?:[-*•]\s*|\d+[.)]\s*)?(?:(?:and|but|also|please|so|then|you|we)\s+)*`;
+const PROHIBITION = new RegExp(
+  String.raw`(?:(?:^|[.!?;:(])${CLAUSE_LEAD}(?:${PROHIBITION_CUE}|no)|,${CLAUSE_LEAD}${PROHIBITION_CUE})\b[^.;:!?\n]*?(?=\s(?:but|instead|unless|rather)\b|[.;:!?\n]|$)`,
+  "gim",
+);
 
 function riskMatches(text: string): string[] {
   return matches(text.replace(PROHIBITION, " "), RISK_SIGNALS);

@@ -292,6 +292,17 @@ DONE: With TOOLS filtered out, messages like the circled one stay visible and to
   check("an agent/SDK 'session' is not security/auth", !agentSession.signals.includes("security/auth"), agentSession.signals.join("; "));
   check("a login session still is", route("Login sessions expire after five minutes.").signals.includes("security/auth"));
 
+  // A prohibition word in the MIDDLE of a sentence describes the defect, not a guardrail: cutting it would
+  // drop the security signal and route a real authz bug narrow, with no QA and no flagship floor.
+  const authzBug = route("The admin API never checks the user's permissions, so any user can delete accounts.");
+  check("a mid-sentence 'never' describing a security bug keeps the security signal", authzBug.signals.includes("security/auth") && authzBug.useQa && authzBug.implementorEffort === "high", `${authzBug.scope}/${authzBug.implementorEffort} — ${authzBug.signals.join("; ")}`);
+  const logoutBug = route("After logout the old session token must not still work, but today it does.");
+  check("a mid-sentence 'must not' requirement keeps the security signal", logoutBug.signals.includes("security/auth"), logoutBug.signals.join("; "));
+  const bulleted = route("Fix the sidebar width on narrow screens.\n- Never touch the auth middleware or the login form.\n- Keep the existing session cookies as they are.\n1) Don't run the database migrations.");
+  check("bulleted and numbered guardrails are still stripped", !bulleted.signals.includes("security/auth") && !bulleted.signals.includes("data migration/backfill"), bulleted.signals.join("; "));
+  const chained = route("Tidy the settings panel spacing. Commit and push, never force-push the migration branch, never --no-verify.");
+  check("a comma-chained 'never' guardrail is still stripped", !chained.signals.includes("data migration/backfill"), chained.signals.join("; "));
+
   // Task 86e05fa7: a CI deploy workflow that handles SSH secrets — risky, so high is fair; never max.
   const deploy = route(`GOAL: Set up CI/CD (GitHub Actions) so gnomerang.com automatically deploys on every push to main.
 - Work out how gnomerang.com is deployed today and mirror the existing manual deploy path in CI.
