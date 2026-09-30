@@ -1,3 +1,4 @@
+import { latestFamilyModel, sameModelFamily } from "../agents/modelFamily.js";
 import type { ImplementorProvider } from "../types.js";
 
 /**
@@ -94,8 +95,9 @@ export function conservationResolvedModel(
   const cheap = TOKEN_CONSERVATION_MODEL[provider];
   if (!cheap) return model; // no economy tier roles may run on (Claude / Grok / z.ai)
   if (!conservationActive(window, now)) return model;
-  if (TOKEN_CONSERVATION_ECONOMY_MODELS[provider]?.has(model)) return model;
-  return cheap;
+  // A reviewed economy LINE stays economy in its newer releases (gpt-6.1-luna is still Luna).
+  if ([...(TOKEN_CONSERVATION_ECONOMY_MODELS[provider] ?? [])].some((economy) => model === economy || sameModelFamily(model, economy))) return model;
+  return latestFamilyModel(cheap);
 }
 
 /**

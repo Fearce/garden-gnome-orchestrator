@@ -14,14 +14,22 @@ export function mergeModelOptions(...groups: readonly (readonly string[])[]): st
   return out;
 }
 
-export function codexModelOptions(liveModels: readonly string[]): string[] {
-  return mergeModelOptions(CODEX_MODELS, liveModels);
+/** The server's list once it has arrived — it already carries the curated fallback, the live catalog and
+ *  the saved pick, with every superseded same-family model removed (server `modelFamily.ts`). Merging the
+ *  built-in suggestions back in would re-offer exactly those superseded ids, so they only stand in for a
+ *  list that has not loaded yet. */
+function serverModelsOr(fallback: readonly string[], serverModels: readonly string[]): string[] {
+  return mergeModelOptions(serverModels.length ? serverModels : fallback);
 }
 
-export function grokModelOptions(liveModels: readonly string[]): string[] {
-  return mergeModelOptions(GROK_MODELS, liveModels);
+export function codexModelOptions(serverModels: readonly string[]): string[] {
+  return serverModelsOr(CODEX_MODELS, serverModels);
 }
 
-export function zaiModelOptions(liveModels: readonly string[]): string[] {
-  return mergeModelOptions(ZAI_MODELS, liveModels);
+export function grokModelOptions(serverModels: readonly string[]): string[] {
+  return serverModelsOr(GROK_MODELS, serverModels);
+}
+
+export function zaiModelOptions(serverModels: readonly string[]): string[] {
+  return serverModelsOr(ZAI_MODELS, serverModels);
 }

@@ -1,4 +1,5 @@
 import { currentCodexModel, currentCodexModels, isGpt6Model } from "../agents/codexModelGeneration.js";
+import { familyUpgradeNote, invalidateModelFamilyRoster, latestFamilyModel, sameModelFamily, setModelFamilyRoster, withoutSupersededModels } from "../agents/modelFamily.js";
 import type { AccountDispatchPreview, AccountManager } from "../accounts/accountManager.js";
 import { bySafetyHeadroom, untilReset, weeklySafetyPool } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
@@ -806,6 +807,8 @@ export const ACTIVE_DEADLINE_PARK_PREFIX = "⏰ Hard deadline reached";
 export const ACTIVE_DEADLINE_MAX_MS = 30 * 24 * 3_600_000;
 const ACTIVE_DEADLINE_RUN_REASON = "Stopped by the active-task hard deadline; the saved session and partial work were preserved.";
 const DEADLINE_TERMINAL_STATES: ReadonlySet<Thread["state"]> = new Set(["done", "cancelled", "closed"]);
+/** Tasks whose stored model choices are history: nothing restarts them without the owner re-opening them. */
+const MODEL_MIGRATION_SKIP_STATES: ReadonlySet<Thread["state"]> = new Set(["done", "cancelled", "closed"]);
 // Shared prefix for every "a server restart killed this thread" error, so startResumedImplementor can
 // recognise a restart-triggered resume from the thread's persisted error alone.
 const RESTART_ERROR_PREFIX = "interrupted by a server restart";
@@ -1204,10 +1207,12 @@ export class ThreadManager implements OrchestratorApi {
       accounts,
       () => this.openaiApiKey(),
       () => this.zaiApiKey(),
-      () => this.hub.publish({ type: "settings", settings: this.settings() }),
+      () => this.onModelCatalogChanged(),
       (level, message) => this.hub.log(level, message),
       (provider, models) => this.news.observeModels(provider, this.pickableSubset(provider, models)),
     );
+    setModelFamilyRoster({ models: () => this.familyRoster(), signature: () => this.modelCatalog.cacheSignature() });
+    this.migrateSupersededModels();
     this.liveBench = new LiveBenchScores(db, (level, message) => this.hub.log(level, message));
     // Reads its config lazily on every notice, so flipping the toggle applies to tasks already running.
     this.discord = new DiscordNotifier(
@@ -2778,8 +2783,8 @@ export class ThreadManager implements OrchestratorApi {
         // A caller that supplies the provider chose both halves from the live roster, so the model is
         // an id, not wording — resolving it as text would re-guess a known answer and could tie.
         ? input.requestedProvider
-          ? exactModelRequest(input.requestedProvider, input.requestedModel, this.modelRequestCandidates())
-          : resolveModelRequest(input.requestedModel, this.modelRequestCandidates())
+          ? exactModelRequest(input.requestedProvider, input.requestedModel, this.modelRequestCandidates({ explicit: true }))
+          : resolveModelRequest(input.requestedModel, this.modelRequestCandidates({ explicit: true }))
         // Default mode never scans the brief text for a mentioned model/provider (the read lane's same
         // reasoning) — it only pins what the composer's own picker explicitly chose above.
         : input.lane === "vanilla"
@@ -2992,7 +2997,7 @@ export class ThreadManager implements OrchestratorApi {
     const raw = this.db.kvGet("setting_model_overrides");
     if (!raw) return {};
     try {
-      const v = JSON.parse(raw, (_key, value) => typeof value === "string" ? currentCodexModel(value) : value) as unknown;
+      const v = JSON.parse(raw, (_key, value) => typeof value === "string" ? this.currentModel(value) : value) as unknown;
       return v && typeof v === "object" && !Array.isArray(v) ? (v as ModelOverrides) : {};
     } catch {
       return {};
@@ -3004,11 +3009,154 @@ export class ThreadManager implements OrchestratorApi {
     const raw = this.db.kvGet("setting_usage_saving");
     if (!raw) return {};
     try {
-      const parsed = JSON.parse(raw, (_key, value) => typeof value === "string" ? currentCodexModel(value) : value) as UsageSavingPolicies;
+      const parsed = JSON.parse(raw, (_key, value) => typeof value === "string" ? this.currentModel(value) : value) as UsageSavingPolicies;
       return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? sanitizeUsageSaving(parsed) : {};
     } catch {
       return {};
     }
+  }
+
+  // ---- newest-in-family (owner invariant: never run an older model of a line a newer one exists in) ----
+
+  /** A model id as it must run now: pre-GPT-6 Codex ids onto their GPT-6 line, then the newest member of
+   *  its line any installed provider exposes. Ids of no known line pass through. */
+  private currentModel(model: string): string {
+    return latestFamilyModel(currentCodexModel(model));
+  }
+
+  /** Every model id the installed providers expose right now, across providers — the roster every
+   *  family resolution reads (`setModelFamilyRoster`). Reads the catalogs raw: the pickable lists would
+   *  recurse, since they include stored settings that resolve through this very roster. A curated
+   *  fallback stands in only for a provider whose live list has not loaded yet. */
+  private familyRoster(): string[] {
+    const claude = this.modelCatalog.claudeModels();
+    const codex = chatgptLoginAvailable() ? this.modelCatalog.codexCliModels().map((model) => model.id) : this.modelCatalog.codexModels();
+    const grok = this.modelCatalog.grokModels();
+    const zai = this.modelCatalog.zaiModels();
+    return [
+      ...(claude.length ? claude : CURATED_CLAUDE_MODELS),
+      ...(codex.length ? codex : CURATED_CODEX_MODELS),
+      ...(grok.length ? grok : CURATED_GROK_MODELS),
+      ...(zai.length ? zai : CURATED_ZAI_MODELS),
+    ];
+  }
+
+  /** A provider catalog changed — possibly a release. Re-resolve against it and reconfigure stored state. */
+  private onModelCatalogChanged(): void {
+    invalidateModelFamilyRoster();
+    this.migrateSupersededModels();
+    this.hub.publish({ type: "settings", settings: this.settings() });
+  }
+
+  /**
+   * Rewrite every stored model choice that names a superseded member of its line: the settings matrix,
+   * usage saving and legacy model keys, scheduled tasks, goals, open goal steps, Co-work sessions, and
+   * the pins/sub-agent specs/auto-picks of every task that can still run. Runs at boot and on every
+   * catalog change, so a new release reconfigures GGO with no manual step. Idempotent. Only the family
+   * rule is applied here — the cross-line GPT-6 mapping stays a read-time rule, so the review floor can
+   * still tell an operator's legacy pick from a current one.
+   */
+  private migrateSupersededModels(): void {
+    if (this.migratingModels) return;
+    this.migratingModels = true;
+    try {
+      this.logModelUpgrades([...this.migrateModelSettings(), ...this.migrateStoredModelPins(), ...this.migrateThreadModels()]);
+    } finally {
+      this.migratingModels = false;
+    }
+  }
+  private migratingModels = false;
+
+  private logModelUpgrades(upgrades: string[]): void {
+    if (upgrades.length) this.hub.log("info", `Moved stored model choices to newer same-family models: ${[...new Set(upgrades)].join("; ")}.`);
+  }
+
+  private migrateModelSettings(): string[] {
+    const upgrades: string[] = [];
+    const upgrade = (value: string): string => {
+      const next = latestFamilyModel(value);
+      if (next !== value) upgrades.push(familyUpgradeNote(value, next));
+      return next;
+    };
+    for (const key of ["setting_model_overrides", "setting_usage_saving"]) {
+      const raw = this.db.kvGet(key);
+      if (!raw) continue;
+      try {
+        const next = JSON.stringify(JSON.parse(raw, (_key, value) => typeof value === "string" ? upgrade(value) : value));
+        if (next !== JSON.stringify(JSON.parse(raw))) this.db.kvSet(key, next);
+      } catch { /* a corrupt value already reads as empty; leave it for the owner to see */ }
+    }
+    for (const key of ["setting_codex_model", "setting_grok_model", "setting_zai_model", "setting_default_mode_model"]) {
+      const raw = this.db.kvGet(key)?.trim();
+      const next = raw ? upgrade(raw) : raw;
+      if (raw && next && next !== raw) this.db.kvSet(key, next);
+    }
+    return upgrades;
+  }
+
+  private migrateStoredModelPins(): string[] {
+    const upgrades: string[] = [];
+    for (const model of this.db.storedModelPins()) {
+      const next = latestFamilyModel(model);
+      if (next === model) continue;
+      this.db.replaceStoredModelPin(model, next);
+      upgrades.push(familyUpgradeNote(model, next));
+    }
+    if (upgrades.length) {
+      this.hub.publish({ type: "schedules", schedules: this.db.listScheduledTasks() });
+      this.hub.publish({ type: "goals", goals: this.db.listGoals() });
+      for (const session of this.db.listCoworkSessions()) this.hub.publish({ type: "cowork.session", session });
+    }
+    return upgrades;
+  }
+
+  private migrateThreadModels(): string[] {
+    const upgrades: string[] = [];
+    for (const thread of this.db.listThreads()) {
+      if (MODEL_MIGRATION_SKIP_STATES.has(thread.state)) continue;
+      upgrades.push(...this.upgradeThreadModels(thread).upgrades);
+    }
+    return upgrades;
+  }
+
+  /** Move one task's stored model choices — its strict pin, its sub-agent spec and its auto-pick — to
+   *  the newest member of each line, persisting and announcing every change in the task's own history.
+   *  A pin to a different line is untouched: the rule orders versions, it never swaps a line. */
+  private upgradeThreadModels(thread: Thread): { thread: Thread; upgrades: string[] } {
+    const upgrades: string[] = [];
+    let current = thread;
+    const request = current.modelRequest;
+    const pinned = request?.model ? latestFamilyModel(request.model) : null;
+    if (request?.model && pinned && pinned !== request.model) {
+      current = this.db.setModelRequest(current.id, { ...request, model: pinned }) ?? current;
+      upgrades.push(this.announceFamilyUpgrade(current, request.model, pinned));
+    }
+    const spec = current.subTask;
+    const specModel = spec?.model ? latestFamilyModel(spec.model) : null;
+    if (spec?.model && specModel && specModel !== spec.model) {
+      current = this.db.setSubTask(current.id, { ...spec, model: specModel }) ?? current;
+      if (!upgrades.length) upgrades.push(this.announceFamilyUpgrade(current, spec.model, specModel));
+    }
+    const pick = this.db.getThreadStageOutputs(current.id).modelPick;
+    const picked = pick?.model ? latestFamilyModel(pick.model) : null;
+    if (pick && picked && picked !== pick.model) {
+      this.db.updateThreadStageOutputs(current.id, { modelPick: { ...pick, model: picked } });
+      upgrades.push(this.announceFamilyUpgrade(current, pick.model, picked));
+    }
+    if (current !== thread) this.hub.publish({ type: "thread.upsert", thread: current });
+    return { thread: current, upgrades };
+  }
+
+  private announceFamilyUpgrade(thread: Thread, from: string, to: string): string {
+    const note = familyUpgradeNote(from, to);
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "director",
+      summary: `Model upgraded — ${note}`,
+      detail: `${to} is the newest release of ${from}'s line that this installation can run, and GGO never runs an older model of a line when a newer one is available. The next start, resume or retry of this task uses ${to}.`,
+      severity: "info",
+    });
+    return note;
   }
 
   /** Full UI projection, including useful off/90% defaults for every currently-known subscription. */
@@ -3210,8 +3358,17 @@ export class ThreadManager implements OrchestratorApi {
     const saving = Object.entries(this.storedUsageSaving())
       .filter(([id]) => id !== CODEX_SUB_ID && id !== GROK_SUB_ID && id !== ZAI_SUB_ID)
       .map(([, policy]) => policy.model);
-    return uniq([...this.modelCatalog.claudeModels(), ...CURATED_CLAUDE_MODELS, ...Object.values(config.models), ...selected, ...saving])
-      .filter((model) => !isDisallowedClaudeModel(model));
+    return withoutSupersededModels(
+      uniq([...this.modelCatalog.claudeModels(), ...CURATED_CLAUDE_MODELS, ...Object.values(config.models), ...selected, ...saving])
+        .filter((model) => !isDisallowedClaudeModel(model)),
+    );
+  }
+
+  /** Every Claude line this installation can run, newest member each — what an EXPLICIT choice may name
+   *  (a sub-agent spawn, a strict task pin). Unlike the role pickers this keeps Sonnet, Haiku and Fable:
+   *  the Opus-only rule governs the models GGO assigns roles, not a tier an agent or the owner picks. */
+  private explicitClaudeModels(): string[] {
+    return withoutSupersededModels(uniq([...this.claudeRosterModels(), ...this.pickableClaudeModels()]));
   }
 
   /** News may only announce a model the Settings pickers offer — a catalog id the owner policy filters
@@ -3230,8 +3387,11 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Models this running installation can name without guessing. Live provider catalogs are preferred;
    * configured selections remain valid cold-start candidates, and dedicated Codex pool labels supply
-   * the canonical Spark mapping (the pool id itself is intentionally opaque). */
-  private modelRequestCandidates(): ModelRequestCandidate[] {
+   * the canonical Spark mapping (the pool id itself is intentionally opaque). `explicit` widens Claude to
+   * every line (`explicitClaudeModels`) for a model someone NAMED — a picker, a sub-agent spawn, the
+   * Director's model field; brief-text detection keeps the role list, so "use Sonnet for sub-agents" in a
+   * brief never pins the implementor itself to Sonnet. */
+  private modelRequestCandidates(opts: { explicit?: boolean } = {}): ModelRequestCandidate[] {
     const out: ModelRequestCandidate[] = [];
     const add = (provider: ImplementorProvider, model: string | null | undefined, labels: Array<string | null | undefined> = []): void => {
       if (!model?.trim() || (provider === "codex" && !isGpt6Model(model))) return;
@@ -3241,7 +3401,7 @@ export class ThreadManager implements OrchestratorApi {
     // Match the model ids published to the console's pickers. The pickable lists prefer live
     // catalogs and retain curated/configured cold-start choices, so an option shown to the owner can
     // always be resolved back into the same canonical provider/model pair here.
-    for (const model of this.pickableClaudeModels()) add("claude", model);
+    for (const model of opts.explicit ? this.explicitClaudeModels() : this.pickableClaudeModels()) add("claude", model);
     for (const model of this.pickableCodexModels()) add("codex", model);
     for (const pool of dedicatedPools(this.codexPoolSnapshot() ?? [])) {
       add("codex", pool.modelSlug, [pool.limitName]);
@@ -3255,13 +3415,14 @@ export class ThreadManager implements OrchestratorApi {
   /** Legacy tasks may predate the Director bridge's model field. Detect their direct persisted brief
    * command lazily before any selection/spawn, persist it, and supersede a stale automatic pick. */
   private ensureThreadModelRequest(thread: Thread): Thread {
-    const candidates = this.modelRequestCandidates();
+    // Every start, resume and retry passes here: a pin stored before a newer same-line release moves now.
+    thread = this.upgradeThreadModels(thread).thread;
     let request = thread.modelRequest ?? null;
     if (request && !request.model) {
-      const resolved = resolveModelRequest(request.requested, candidates);
+      const resolved = resolveModelRequest(request.requested, this.modelRequestCandidates({ explicit: true }));
       if (resolved.model) request = resolved;
     } else if (!request && thread.lane !== "read" && thread.lane !== "vanilla" && !thread.subTask) {
-      request = detectModelRequest([thread.rawPrompt, thread.brief].filter(Boolean).join("\n"), candidates);
+      request = detectModelRequest([thread.rawPrompt, thread.brief].filter(Boolean).join("\n"), this.modelRequestCandidates());
     }
     if (!request) return thread;
     if (
@@ -3285,11 +3446,14 @@ export class ThreadManager implements OrchestratorApi {
     const exact = request.model && request.provider
       ? `${request.model} on ${providerLabel(request.provider)}`
       : "not currently resolvable from the installed provider catalogs";
+    const upgraded = request.model && request.requested !== request.model && sameModelFamily(request.requested, request.model)
+      ? ` (${familyUpgradeNote(request.requested, request.model)})`
+      : "";
     this.postFinding({
       threadId: thread.id,
       fromRole: "director",
       summary: request.model
-        ? `Strict model request pinned — ${request.model}`
+        ? `Strict model request pinned — ${request.model}${upgraded}`
         : `Strict model request recorded but unresolved — ${request.requested}`,
       detail: `Requested: ${request.requested}. Resolved: ${exact}. This task will wait or fail visibly if that exact model is unavailable; automatic routing and failover may not substitute another model.`,
       severity: request.model ? "info" : "warning",
@@ -3316,8 +3480,8 @@ export class ThreadManager implements OrchestratorApi {
 
     let request: ModelRequest | null = null;
     if (provider && model) {
-      const wanted = normalizeModelId(model);
-      const candidate = this.modelRequestCandidates().find(
+      const wanted = normalizeModelId(this.currentModel(model));
+      const candidate = this.modelRequestCandidates({ explicit: true }).find(
         (item) => item.provider === provider && normalizeModelId(item.model) === wanted,
       );
       if (!candidate) {
@@ -3531,14 +3695,14 @@ export class ThreadManager implements OrchestratorApi {
    *  the CLI's local cache reports, plus the currently-selected Grok model. */
   private pickableGrokModels(): string[] {
     const selected = [this.grokModel(), this.storedUsageSaving()[GROK_SUB_ID]?.model, ...Object.values(this.modelOverrides()[GROK_SUB_ID] ?? {})].filter((x): x is string => !!x);
-    return uniq([...CURATED_GROK_MODELS, ...this.modelCatalog.grokModels(), ...selected]);
+    return withoutSupersededModels(uniq([...CURATED_GROK_MODELS, ...this.modelCatalog.grokModels(), ...selected]));
   }
 
   /** Pickable z.ai (GLM) model ids for the Settings dropdown: whatever the key can actually access,
    *  then the curated fallback and the current pick so a manual pin never vanishes. */
   private pickableZaiModels(): string[] {
     const selected = [this.zaiModel(), this.storedUsageSaving()[ZAI_SUB_ID]?.model, ...Object.values(this.modelOverrides()[ZAI_SUB_ID] ?? {})].filter((x): x is string => !!x);
-    return uniq([...this.modelCatalog.zaiModels(), ...CURATED_ZAI_MODELS, ...selected]);
+    return withoutSupersededModels(uniq([...this.modelCatalog.zaiModels(), ...CURATED_ZAI_MODELS, ...selected]));
   }
 
   // ---- auto model selection (the "Auto model selection" setting) ----
@@ -3777,7 +3941,9 @@ export class ThreadManager implements OrchestratorApi {
     const { session, prompt, history, images } = input;
     const demand = demandForRole("implementor", { effort: session.effort ?? "high" });
     let provider = session.provider ?? session.requestedProvider ?? undefined;
-    let model = session.model ?? session.requestedModel ?? undefined;
+    const stored = session.model ?? session.requestedModel ?? undefined;
+    // An exact pin, but to its line's newest member: a session begun before a release moves with it.
+    let model = stored ? this.currentModel(stored) : undefined;
 
     // A requested or already-resolved target is an exact pin. Reuse the task model gate's catalog,
     // authentication, independently-metered pool, and runway checks without ever creating a task row.
@@ -4056,7 +4222,8 @@ export class ThreadManager implements OrchestratorApi {
       effortsFor: (model: string) => Effort[],
       candidateFor: (model: string) => ProviderCandidate,
     ): void => {
-      for (const model of uniq(models)) {
+      // The selector never sees an older member of a line whose newer member this backend also lists.
+      for (const model of withoutSupersededModels(uniq(models))) {
         const candidate = candidateFor(model);
         if (candidate.hasHeadroom) entries.push({ provider, model, efforts: effortsFor(model), candidate });
       }
@@ -4352,7 +4519,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  substitution below. */
   private pinnedModel(threadId: string, provider: ImplementorProvider): string | undefined {
     const request = this.db.getThread(threadId)?.modelRequest;
-    return request?.provider === provider && request.model ? (provider === "codex" ? currentCodexModel(request.model) : request.model) : undefined;
+    return request?.provider === provider && request.model ? this.currentModel(request.model) : undefined;
   }
 
   /** The model `startImplementor` will dispatch for this task on `provider`, plus the saving policy that
@@ -4383,8 +4550,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (saving) return { model: saving.model, saving };
     const picked = this.pickedModel(threadId, provider);
     if (provider === "codex") return { model: currentCodexModel(picked ?? this.providerRoleModel("codex", "implementor")), saving };
-    if (provider === "grok") return { model: picked ?? this.grokModel(), saving };
-    if (provider === "zai") return { model: picked ?? this.zaiModel(), saving };
+    if (provider === "grok") return { model: picked ? latestFamilyModel(picked) : this.grokModel(), saving };
+    if (provider === "zai") return { model: picked ? latestFamilyModel(picked) : this.zaiModel(), saving };
     const subId = accountId ?? this.accounts.dispatchPreview().account.id;
     return { model: picked ? this.claudeOpusFloored(this.poolResolved(subId, picked)).model : this.modelFor(subId, "implementor"), saving };
   }
@@ -4712,7 +4879,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const configured = this.modelOverrides()[GROK_SUB_ID]?.implementor?.trim() || this.db.kvGet("setting_grok_model")?.trim();
     // A fresh login can expose a newer Grok model before the next release updates our curated fallback.
     // Prefer the CLI's cached default when the operator has not deliberately picked one.
-    return configured || this.modelCatalog.grokModels()[0] || config.grok.defaultModel;
+    return latestFamilyModel(configured || this.modelCatalog.grokModels()[0] || config.grok.defaultModel);
   }
 
   /** Preserve a manual model selection in Settings, but don't dispatch it after the authenticated CLI cache
@@ -4735,7 +4902,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  (zai.implementor), then the legacy `setting_zai_model` kv, then the built-in default. Never inherits a
    *  Claude/Codex/Grok default — those model ids aren't valid GLM ids for z.ai. */
   private zaiModel(): string {
-    return (
+    return latestFamilyModel(
       this.modelOverrides()[ZAI_SUB_ID]?.implementor?.trim() ||
       this.db.kvGet("setting_zai_model")?.trim() ||
       config.zai.defaultModel
@@ -5026,6 +5193,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.maxRecentRepos !== undefined) this.db.kvSet("setting_max_recent_repos", String(patch.maxRecentRepos));
     // A console from before recentRepos.remember/forget still sends the whole list.
     if (patch.recentRepos !== undefined) this.writeRecentRepos(patch.recentRepos, patch.maxRecentRepos);
+    // A patch naming a superseded model (an old console, the API) is stored as its line's newest member.
+    this.logModelUpgrades(this.migrateModelSettings());
     const settings = this.settings();
     this.hub.publish({ type: "settings", settings });
     this.pumpQueue();
@@ -10271,7 +10440,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         "no Claude subscription is enabled",
         this.providerReady("claude"),
         this.providerRoleModel("claude", "implementor"),
-        this.pickableClaudeModels(),
+        this.explicitClaudeModels(),
         (model) => cap(claudeEffortsForModel(model)),
       ),
       entry(

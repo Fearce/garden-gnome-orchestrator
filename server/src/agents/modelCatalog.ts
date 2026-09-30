@@ -251,6 +251,13 @@ export class ModelCatalog {
     return this.codexCliModels().find((entry) => entry.id.toLowerCase() === model.trim().toLowerCase())?.efforts;
   }
 
+  /** A cheap stamp of every stored catalog — it changes whenever any provider's list does. */
+  cacheSignature(): string {
+    return [CLAUDE_MODELS_KEY, CODEX_MODELS_KEY, CODEX_CLI_MODELS_KEY, GROK_MODELS_KEY, ZAI_MODELS_KEY]
+      .map((key) => this.db.kvGet(key) ?? "")
+      .join("\u0000");
+  }
+
   /** Cached live Grok model ids (empty until the first refresh reads the CLI's models cache). */
   grokModels(): string[] {
     return this.readCache(GROK_MODELS_KEY);

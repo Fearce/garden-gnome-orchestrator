@@ -35,6 +35,7 @@ import { z } from "zod";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import { evaluateJev, formatJevEvaluation, invalidJevQuestions, JEV_DEFAULT_MODEL } from "../agents/jevClient.js";
+import { familyUpgradeNote, newestInFamily } from "../agents/modelFamily.js";
 import type { DispatchInput, ThreadActionResult } from "./api.js";
 import {
   EFFORTS,
@@ -362,7 +363,9 @@ export class SubTaskService {
   ): Promise<SpawnResult> {
     const brief = input.brief?.trim();
     if (!brief) return this.refuse("A coding sub-agent needs a `brief`: the complete standalone job and what 'done' means.");
-    const model = (input.model?.trim() || entry.defaultModel || "").trim();
+    const asked = (input.model?.trim() || entry.defaultModel || "").trim();
+    // Never run an older model of a line the roster carries a newer member of (gpt-6-sol → gpt-6.1-sol).
+    const model = newestInFamily(asked, entry.models.map((m) => m.id));
     const known = entry.models.find((m) => m.id.toLowerCase() === model.toLowerCase());
     if (!model || !known) {
       return this.refuse(`${providerLabel(input.provider)} has no model "${input.model ?? "(default)"}".\nAvailable now:\n${this.rosterText()}`);
@@ -389,12 +392,13 @@ export class SubTaskService {
       subTask: spec,
     });
     const child = this.host.db.getThread(id)!;
-    this.parentFeed(parent.id, `⑂ ${spawnedByName} spawned sub-task "${child.title}" on ${subTaskRuntimeLabel(spec)}.`);
+    const upgrade = known.id.toLowerCase() === asked.toLowerCase() ? "" : ` (${familyUpgradeNote(asked, known.id)})`;
+    this.parentFeed(parent.id, `⑂ ${spawnedByName} spawned sub-task "${child.title}" on ${subTaskRuntimeLabel(spec)}${upgrade}.`);
     const waitNote = entry.hasHeadroom ? "" : `\nNote: ${providerLabel(input.provider)} has no capacity right now, so it will start when a window frees up.`;
     return {
       ok: true,
       thread: child,
-      message: `Spawned sub-task ${child.id} "${child.title}" on ${subTaskRuntimeLabel(spec)}. It works in this same repository and working tree. Its result comes back to you when it finishes — call wait_for_subtasks to block for it (about a minute per call), or keep working and it will be delivered.${waitNote}`,
+      message: `Spawned sub-task ${child.id} "${child.title}" on ${subTaskRuntimeLabel(spec)}${upgrade}. It works in this same repository and working tree. Its result comes back to you when it finishes — call wait_for_subtasks to block for it (about a minute per call), or keep working and it will be delivered.${waitNote}`,
     };
   }
 

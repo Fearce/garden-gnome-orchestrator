@@ -293,11 +293,15 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       const codex = ["gpt-6-astra", "gpt-6-sol", "gpt-5.6-terra", "gpt-6-luna", "gpt-daybreak-blue-latest", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "gpt-4.1", "o3"];
-      const grok = ["grok-4.6", "grok-4.7", "grok-4.8", "grok-4.9", "grok-4.10"];
+      // One current member per line (plain, fast, an unversioned id) plus a superseded one: every line
+      // reaches the selector, and the older member of a line the list also carries a newer one of never does.
+      const grok = ["grok-4.6", "grok-4.1-fast", "grok-code-fast-1", "grok-4.5"];
       // Deliberately NOT the curated ids: z.ai's live roster is what the key can actually reach, and a
       // curated list is only the cold-start fallback. Stubbing the picker here would assert nothing —
       // the shipped list sat four GLM releases behind the live endpoint under exactly that stub.
       const zai = ["glm-9.9-unreleased", "glm-5.3", "glm-4.7"];
+      // glm-4.7 is the plain GLM line's older member beside glm-5.3: listed live, but never dispatchable.
+      const zaiCurrent = ["glm-9.9-unreleased", "glm-5.3"];
       h.internals.codexImplementorReady = (): boolean => true;
       h.internals.codexPoolSnapshot = (): null => null;
       h.internals.codexProviderCandidate = (): { provider: "codex"; hasHeadroom: boolean } => ({ provider: "codex", hasHeadroom: true });
@@ -325,9 +329,11 @@ async function main(): Promise<void> {
       check("modern Codex models reach the selector", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
       check("legacy Codex models stay out while GPT-5.6+ options are dispatchable", codex.slice(5).every((model) => !modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
       check("Codex Ultra reaches the selector when the live model advertises it", roster.find((candidate) => candidate.model === "gpt-6-sol")?.efforts.includes("ultra") === true);
-      check("all live Grok models reach the selector", grok.every((model) => modelsFor("grok").includes(model)), JSON.stringify(modelsFor("grok")));
-      check("every live z.ai model reaches the selector", zai.every((model) => modelsFor("zai").includes(model)), JSON.stringify(modelsFor("zai")));
-      check("the z.ai roster is not padded with ids the key cannot reach", modelsFor("zai").length === zai.length, JSON.stringify(modelsFor("zai")));
+      check("every current live Grok line reaches the selector", grok.slice(0, 3).every((model) => modelsFor("grok").includes(model)), JSON.stringify(modelsFor("grok")));
+      check("a superseded Grok model stays out beside its newer line member", !modelsFor("grok").includes("grok-4.5"), JSON.stringify(modelsFor("grok")));
+      check("every current live z.ai model reaches the selector", zaiCurrent.every((model) => modelsFor("zai").includes(model)), JSON.stringify(modelsFor("zai")));
+      check("the z.ai roster is not padded with ids the key cannot reach", modelsFor("zai").length === zaiCurrent.length, JSON.stringify(modelsFor("zai")));
+      check("a superseded GLM model stays out beside its newer line member", !modelsFor("zai").includes("glm-4.7"), JSON.stringify(modelsFor("zai")));
       check("GLM-5.3 carries exactly Low, High, and Max into the selector", roster.find((candidate) => candidate.model === "glm-5.3")?.efforts.join(",") === "low,high,max", JSON.stringify(roster.find((candidate) => candidate.model === "glm-5.3")));
       check("unknown GLM models keep the conservative verified tiers", roster.find((candidate) => candidate.model === "glm-9.9-unreleased")?.efforts.join(",") === "low,medium,high", JSON.stringify(roster.find((candidate) => candidate.model === "glm-9.9-unreleased")));
       check("Grok 4.6 carries Extra High into the selector", roster.find((candidate) => candidate.model === "grok-4.6")?.efforts.includes("xhigh") === true);
@@ -693,8 +699,10 @@ async function main(): Promise<void> {
     const h = makeHarness();
     try {
       h.db.kvSet("cache_grok_models", JSON.stringify(["grok-4.6"]));
-      h.db.kvSet("setting_grok_model", "grok-4.5");
+      h.db.kvSet("setting_grok_model", "grok-code-fast-1");
       check("a CLI-cache-rejected Grok model is not ready", h.internals.grokModelAvailable() === false, String(h.internals.grokModelAvailable()));
+      h.db.kvSet("setting_grok_model", "grok-4.5");
+      check("a superseded Grok pin runs as its line's cached newer member", h.internals.grokModel() === "grok-4.6" && h.internals.grokModelAvailable() === true, String(h.internals.grokModel()));
       h.db.kvSet("setting_grok_model", "");
       check("an unpinned Grok selection follows the cached live model", h.internals.grokModel() === "grok-4.6", String(h.internals.grokModel()));
 
@@ -747,9 +755,9 @@ async function main(): Promise<void> {
       h.mgr.setSettings({ zaiEnabled: true, zaiApiKey: "test-key" });
       const crossed = h.seed();
       check("usage routing alone would pick Claude here", h.internals.gateImplementorProvider(thread(h, crossed)) === "claude", String(h.internals.implementorProvider.get(crossed)));
-      h.db.updateThreadStageOutputs(crossed, { modelPick: { provider: "zai", model: "glm-4.7", effort: "high", reason: "r" } });
+      h.db.updateThreadStageOutputs(crossed, { modelPick: { provider: "zai", model: "glm-5.3", effort: "high", reason: "r" } });
       check("a pick overrides usage routing when its backend is ready", h.internals.gateImplementorProvider(thread(h, crossed)) === "zai", String(h.internals.implementorProvider.get(crossed)));
-      check("…and that backend gets the picked model", h.internals.pickedModel(crossed, "zai") === "glm-4.7", String(h.internals.pickedModel(crossed, "zai")));
+      check("…and that backend gets the picked model", h.internals.pickedModel(crossed, "zai") === "glm-5.3", String(h.internals.pickedModel(crossed, "zai")));
     } finally {
       h.dispose();
     }

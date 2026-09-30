@@ -532,7 +532,7 @@ export function startCodexUsageMonitor(
       const now = Date.now();
       if (!lastRead || (lastRead.fiveHourReset != null && lastRead.fiveHourReset > now) || presumedReset(now) != null) return;
       if ((lastRead.sevenDay ?? 0) >= WAKE_WEEKLY_GUARD) return;
-      const models = [...new Set([WAKE_MODEL, opts.runModel?.(), config.codex.defaultModel].filter((m): m is string => !!m))];
+      const models = [...new Set([WAKE_MODEL, opts.runModel?.(), config.codex.defaultModel].filter((m): m is string => !!m).map(currentCodexModel))];
       let woke = false;
       for (const m of models) {
         if (await codexWakeTurn(opts.apiKey(), m)) {

@@ -308,10 +308,17 @@ console.log("\n=== claude opus floor — the wiring (real ThreadManager, real Db
       !(h.internals.settings().claudeModels as string[]).some((model) => /sonnet/.test(model)),
       JSON.stringify(h.internals.settings().claudeModels),
     );
+    // The newest-in-family rule (modelFamily.ts) DOES migrate stored state, but only within a line: the
+    // retired Opus becomes Opus 5.5 on disk, and the Sonnet pin moves to the newest Sonnet, not to Opus.
     check(
-      "the raw matrix is NOT rewritten — the floor is a resolution rule, not a migration",
-      h.overrides().acct1?.implementor === "claude-opus-5",
-      JSON.stringify(h.overrides().acct1),
+      "the raw matrix moves each pin to its own line's newest member",
+      h.overrides().acct1?.implementor === "claude-opus-5-5" && h.overrides().acct2?.director === "claude-sonnet-5",
+      JSON.stringify(h.overrides()),
+    );
+    check(
+      "…so the Opus floor over the Sonnet pin stays a resolution rule, not a migration",
+      h.internals.modelFor("acct2", "director") === CLAUDE_OPUS_FLOOR_MODEL && h.overrides().acct2?.director !== CLAUDE_OPUS_FLOOR_MODEL,
+      JSON.stringify(h.overrides().acct2),
     );
   } finally {
     h.dispose();

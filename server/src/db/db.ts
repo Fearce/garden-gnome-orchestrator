@@ -1928,6 +1928,40 @@ export class Db {
     return result.changes ? this.getThread(id) : null;
   }
 
+  /** Rewrite a sub-task's spawn spec (its model moved to a newer same-family id). */
+  setSubTask(id: string, subTask: SubTaskSpec): Thread | null {
+    const result = this.raw
+      .prepare("UPDATE threads SET sub_task = ?, updated_at = ? WHERE id = ? AND sub_task IS NOT NULL")
+      .run(JSON.stringify(subTask), now(), id);
+    return result.changes ? this.getThread(id) : null;
+  }
+
+  /** Every distinct model id a stored pin that can still start work names: scheduled tasks, goals,
+   *  unsettled goal steps and Co-work sessions. Settled goal steps are history of what ran. */
+  storedModelPins(): string[] {
+    const rows = this.raw.prepare(
+      `SELECT model FROM scheduled_tasks WHERE model IS NOT NULL
+       UNION SELECT model FROM goals WHERE model IS NOT NULL
+       UNION SELECT model FROM goal_steps WHERE model IS NOT NULL AND settled_at IS NULL
+       UNION SELECT model FROM cowork_sessions WHERE model IS NOT NULL
+       UNION SELECT requested_model FROM cowork_sessions WHERE requested_model IS NOT NULL`,
+    ).all() as Array<{ model: string }>;
+    return rows.map((row) => row.model).filter((model) => !!model.trim());
+  }
+
+  /** Replace one stored model id with another in every pin `storedModelPins` reads. */
+  replaceStoredModelPin(from: string, to: string): { schedules: number; goals: number; goalSteps: number; coworkSessions: number } {
+    const at = now();
+    return this.raw.transaction(() => ({
+      schedules: this.raw.prepare("UPDATE scheduled_tasks SET model = ?, updated_at = ? WHERE model = ?").run(to, at, from).changes,
+      goals: this.raw.prepare("UPDATE goals SET model = ?, updated_at = ? WHERE model = ?").run(to, at, from).changes,
+      goalSteps: this.raw.prepare("UPDATE goal_steps SET model = ? WHERE model = ? AND settled_at IS NULL").run(to, from).changes,
+      coworkSessions:
+        this.raw.prepare("UPDATE cowork_sessions SET model = ?, updated_at = ? WHERE model = ?").run(to, at, from).changes +
+        this.raw.prepare("UPDATE cowork_sessions SET requested_model = ?, updated_at = ? WHERE requested_model = ?").run(to, at, from).changes,
+    }))();
+  }
+
   /** Promote an escalated read-lane task into the normal pipeline, in place: clear `lane` (so the READ
    *  badge drops and the thread can never re-enter the read-lane branch of runPipeline again — the
    *  structural guard against an escalation loop) and replace `brief` with the reader's evidence appended.

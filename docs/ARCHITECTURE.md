@@ -192,6 +192,20 @@ substantial ambiguous or risk-bearing production/data/migration/cross-cutting wo
 implementor, prefers `claude-opus-5-5`, and lets outcome history judge only policy-approved flagship fallbacks.
 If none has task-sized runway, the card waits in `review` with the exact reason; it never silently runs a
 workhorse. A strict owner model pin remains an exact task-local exception.
+
+**Newest in family (owner invariant).** No path runs an older member of a model line (Opus, Sonnet, Sol,
+Luna, GLM, …) while a newer member is installed; a different line is a choice, never an upgrade target.
+`server/src/agents/modelFamily.ts` parses the line and version from the id (`gpt-6-sol` = Sol 6.0,
+`gpt-6.1-sol` = Sol 6.1, `claude-opus-5-5` = Opus 5.5, typed wording such as "GPT-6 Sol" too) and resolves
+against the ids the provider catalogs actually expose. ThreadManager registers those catalogs as the
+process-wide roster, cached on the stored catalogs' own signature, so a release is honoured on the next call
+with no code change. It is applied at every seam: the pickers and rosters (settings, auto-select, goal
+director, `spawn_subagent`), strict-pin resolution (`modelRequest.ts`, logged in the task feed as
+`old → new: newer same-family model available`), every read of stored settings, the dispatch target, and
+the `AgentRun`/`CodexAgentRun`/`GrokAgentRun` constructors as the last line. Stored choices are rewritten at
+boot and on every catalog change (settings, schedules, goals and open goal steps, Co-work sessions, and the
+pins, sub-agent specs and auto-picks of every task not yet finished). Gate: `test:model-family`.
+
 Every auto-selected task is graded when it settles so the next pick reads real outcomes rather than
 priors ([archived agent guide](agent-reference/CLAUDE-full.md) § "Auto model selection"). Precedence is then
 `effort_override` > the pick > the planner.

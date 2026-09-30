@@ -9,6 +9,7 @@ import { config } from "../config.js";
 import { trackBlockingSync } from "../eventLoopMonitor.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
+import { latestFamilyModel } from "./modelFamily.js";
 import { endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, endsWithOpenSubTaskMarker, extractCliBridgeMessages } from "./officeBridge.js";
 import {
   formatStructuredRoleFeed,
@@ -228,6 +229,7 @@ export class GrokAgentRun implements AgentRunLike {
   private emittedInit = false;
 
   constructor(private readonly cfg: GrokRunConfig) {
+    this.cfg = { ...cfg, model: latestFamilyModel(cfg.model) };
     this.emitter.setMaxListeners(50);
   }
 

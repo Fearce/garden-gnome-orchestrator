@@ -2106,7 +2106,7 @@ function AccountCard({
 }
 
 /** The Codex per-role model grid — one dropdown per agent role (director/planner/researcher/implementor/qa),
- *  each a live-refreshed list of the OpenAI models the key can access (curated flagships first) with a Custom
+ *  each a live-refreshed list of the OpenAI models the key can access (newest of each line only) with a Custom
  *  escape hatch. Writes into the model matrix (codex.<role>); an unset row inherits Codex's configured
  *  default. Roles run on Codex when the role layer routes them here (e.g. every Claude sub is maxed). */
 function CodexModels() {

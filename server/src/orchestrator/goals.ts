@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { JsonSchemaLike } from "../agents/structuredText.js";
+import { latestFamilyModel } from "../agents/modelFamily.js";
 import type { DispatchInput } from "./api.js";
 import type { ModelCandidate } from "./modelSelector.js";
 import { UNFINISHED_STATES } from "./scheduler.js";
@@ -387,7 +388,10 @@ export function resolveStepPin(pick: GoalJudgement["next"], roster: ModelCandida
  * dispatched as an exact pin even when it has no capacity right now (the task waits for it, as a pinned
  * schedule does); the effort still drops to the nearest tier that model offers.
  */
-export function goalStepPin(goal: GoalPin, pick: GoalJudgement["next"], roster: ModelCandidate[]): StepPin {
+export function goalStepPin(goal: GoalPin, next: GoalJudgement["next"], roster: ModelCandidate[]): StepPin {
+  // Both halves name a line, not a release: the step records and runs its line's newest member.
+  const pick = { ...next, model: latestFamilyModel(next.model) };
+  if (goal.model) goal = { ...goal, model: latestFamilyModel(goal.model) };
   const allowed = allowedEfforts(goal);
   const effort = allowed.includes(pick.effort) ? pick.effort : allowed.at(-1)!;
   const capped = !goal.effort && effort !== pick.effort ? `Capped at ${effort} effort: this goal has no effort set, so its steps run at low or medium.` : null;

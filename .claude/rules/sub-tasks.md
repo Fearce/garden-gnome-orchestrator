@@ -39,6 +39,11 @@ no bus to offer instead.
 - **The model is a strict pin.** `spawnCoding` resolves the model against `subAgentRoster()` and
   dispatches `requestedProvider` + `requestedModel`. `ensureThreadModelRequest` skips owner-wording
   detection for any `subTask`: a brief written by another agent mentioning "sonnet" is not an owner pin.
+- **The Claude roster is every line, not the role list.** It is `explicitClaudeModels()` (Opus, Sonnet,
+  Haiku, Fable, newest member each), not `pickableClaudeModels()` — the Opus-only floor governs the models
+  GGO assigns ROLES, and an agent choosing a cheap Sonnet sub-agent is a tier choice. Rostering the role
+  list left agents with "only opus-5-5" and no way to spawn Sonnet (2026-09-30). An older member of a line
+  (`gpt-6-sol` beside `gpt-6.1-sol`) spawns on the newest, and the spawner's reply says so (`modelFamily.ts`).
 - **Jev is not an agent session.** `runPipeline` short-circuits to `runJev` before route selection.
   `resumeThread` re-asks a pending question, `injectThread` turns owner text into another question
   (`ownerQuestion`), and `setThreadModel` refuses a model change. Anything that assumes a Jev

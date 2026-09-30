@@ -16,6 +16,7 @@ import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { AgentEvent, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
+import { latestFamilyModel } from "./modelFamily.js";
 import { ClaudeRunMeter } from "./sessionUsage.js";
 
 export type UserContent = string | unknown[];
@@ -314,6 +315,8 @@ export class AgentRun implements AgentRunLike {
   private latestSendId: string | undefined;
 
   constructor(private readonly cfg: AgentRunConfig) {
+    // The newest-in-family invariant's last line: whichever path chose this model, never run a superseded one.
+    this.cfg = { ...cfg, model: latestFamilyModel(cfg.model) };
     this.emitter.setMaxListeners(50);
     this.emitter.on("event", (e: AgentEvent) => this.trackToolCalls(e));
     this.usageMeter = new ClaudeRunMeter(Boolean(cfg.resume));

@@ -15,7 +15,10 @@
 //    use sonnet as a claude model". Adaptive auto-selection had put a Sonnet implementor on ordinary work.
 //  - The per-task strict owner model pin (`thread.modelRequest`) is untouched, exactly as the Codex
 //    floor leaves it: naming a model for one task must keep naming that model.
-//  - It is a MINIMUM, not a pin. A future `claude-opus-6` is already above the floor and passes through.
+//  - It is a MINIMUM, not a pin. A future `claude-opus-6` is already above the floor and passes through,
+//    and once the roster carries it every Opus resolves to it (the newest-in-family rule, modelFamily.ts).
+
+import { newestInFamily } from "../agents/modelFamily.js";
 
 /** The oldest Opus a role may run on, as a comparable number. Owner directive, 2026-09-22. */
 const MIN_OPUS_VERSION = 5.5;
@@ -87,8 +90,9 @@ function replacementFor(dispatchable: readonly string[]): string | undefined {
  * park the whole fleet.
  */
 export function claudeOpusTarget(configured: string, dispatchable: readonly string[]): ClaudeOpusTarget {
-  if (!isDisallowedClaudeModel(configured)) return { model: configured };
+  const latest = newestInFamily(configured, dispatchable);
+  if (!isDisallowedClaudeModel(latest)) return latest === configured ? { model: configured } : { model: latest, replaced: configured.trim() };
   const replacement = replacementFor(dispatchable);
   if (!replacement) return { model: configured };
-  return { model: replacement, replaced: configured.trim() };
+  return { model: newestInFamily(replacement, dispatchable), replaced: configured.trim() };
 }

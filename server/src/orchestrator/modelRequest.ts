@@ -1,4 +1,5 @@
 import { currentCodexModel } from "../agents/codexModelGeneration.js";
+import { newestInFamily } from "../agents/modelFamily.js";
 import type { ImplementorProvider, ModelRequest } from "../types.js";
 
 /** One model the running installation actually knows how to address. Labels carry provider-native
@@ -95,6 +96,12 @@ interface Match {
   mention: string;
 }
 
+/** An exact id moved to the newest same-family candidate (`gpt-6-sol` → `gpt-6.1-sol`). Wording that is
+ *  not an id passes through, and the alias scoring below reads it as before. */
+function currentRequestLabel(label: string, candidates: readonly ModelRequestCandidate[]): string {
+  return newestInFamily(currentCodexModel(label), candidates.map((candidate) => candidate.model));
+}
+
 function matchesFor(label: string, candidates: readonly ModelRequestCandidate[]): Match[] {
   const clean = cleanedCandidates(candidates);
   const wanted = normalize(label);
@@ -132,7 +139,7 @@ export function resolveModelRequest(
   candidates: readonly ModelRequestCandidate[],
 ): ModelRequest {
   const requested = label.trim().slice(0, 160);
-  const matches = matchesFor(currentCodexModel(requested), candidates);
+  const matches = matchesFor(currentRequestLabel(requested, candidates), candidates);
   const top = matches[0];
   const tied = top ? matches.filter((match) => match.score === top.score) : [];
   if (top && tied.length === 1) {
@@ -182,7 +189,7 @@ export function detectModelRequest(
   for (const clause of clauses(text)) {
     if (!directClause(clause)) continue;
     const requested = requestedFragment(clause);
-    const matches = matchesFor(currentCodexModel(requested), candidates);
+    const matches = matchesFor(currentRequestLabel(requested, candidates), candidates);
     const top = matches[0];
     const tied = top ? matches.filter((match) => match.score === top.score) : [];
     if (top && tied.length === 1) {
@@ -219,9 +226,9 @@ export function exactModelRequest(
   candidates: readonly ModelRequestCandidate[],
 ): ModelRequest {
   const requested = model.trim().slice(0, 160);
-  const match = cleanedCandidates(candidates).find(
-    (candidate) => candidate.provider === provider && normalize(candidate.model) === normalize(provider === "codex" ? currentCodexModel(requested) : requested),
-  );
+  const own = cleanedCandidates(candidates).filter((candidate) => candidate.provider === provider);
+  const wanted = normalize(currentRequestLabel(requested, own));
+  const match = own.find((candidate) => normalize(candidate.model) === wanted);
   return match
     ? { requested, provider: match.provider, model: match.model, strict: true }
     : { requested, provider, model: null, strict: true };
