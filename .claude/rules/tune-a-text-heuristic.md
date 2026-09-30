@@ -4,8 +4,12 @@ paths:
   - server/src/orchestrator/supervisorChat.ts
   - server/src/agents/prompts.ts
   - server/src/bus/directorServer.ts
+  - server/src/orchestrator/routeSelection.ts
+  - server/src/orchestrator/effortRequest.ts
   - server/src/tools/probeScheduleDetect.ts
+  - server/src/tools/probeRouteEffort.ts
   - server/src/tests/scheduleDetect.test.ts
+  - server/src/tests/routeSelection.test.ts
   - server/src/tests/directorSupervisor.test.ts
 ---
 
@@ -76,6 +80,12 @@ rule you just edited — a silent lie exactly when you need the truth.
   that TRAILS the phrase (panel/view/list/column/button…), not by the verb before it.
 - This repo IS the orchestrator, so prompts about the scheduler/office/QA features are
   common — always test your rule against "a feature request about the thing itself".
+- **A guardrail names the risk it forbids.** Director briefs end in "never force-push", "don't
+  touch the migration", "no stubs" — a keyword scan reads each as risky WORK. That routed routine
+  tasks to max effort until `routeSelection.ts` stripped prohibition clauses (`PROHIBITION`)
+  before its risk scan (2026-09-30, `c471463`). Nor is brief LENGTH difficulty: the director
+  writes long briefs for small tasks. Route/effort changes replay with
+  `npm run probe:route-effort --prefix server` (`-- --high` lists every high pick's reason).
 
 Verify: `npm run typecheck && npm run test:schedule-detect --prefix server`, then the
 probe. Server change ⇒ deploy it yourself (`docs/agent-reference/CLAUDE-full.md` § "Deploying a change").
