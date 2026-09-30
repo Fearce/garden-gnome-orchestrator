@@ -76,6 +76,10 @@ async function waitForHello(page) {
       return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: innerWidth, vh: innerHeight };
     });
     check("the panel is fully on-screen", box.left >= 0 && box.right <= box.vw && box.top >= 0 && box.bottom <= box.vh, JSON.stringify(box));
+    // The pickers live in Settings → Subscriptions (opened below); a row naming a section that doesn't exist
+    // sends the owner looking for a model where it can't be picked.
+    const where = (await page.textContent(".news-item .news-when")) ?? "";
+    check("each row points at the Settings section that holds the pickers", /Settings → Subscriptions/.test(where), where);
     const foot = (await page.textContent(".news-foot")) ?? "";
     check("the footer speaks to the CLI auto-update", /auto-update|latest release/i.test(foot), foot);
     await page.screenshot({ path: path.join(shotDir(dataDir), "news-open.png") });

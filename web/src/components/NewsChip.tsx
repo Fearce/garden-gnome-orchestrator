@@ -73,7 +73,7 @@ function NewsRow({ item }: { item: HighlightNewsItem }) {
         <span className={"news-provider " + item.provider}>{item.provider === "claude" ? "Claude" : "Codex"}</span>
         <span className="news-model">{modelLabel(item.model)}</span>
         <code className="news-id">{item.model}</code>
-        <span className="news-when">Spotted {ago(item.at)} ago · pickable in Settings → Models now</span>
+        <span className="news-when">Spotted {ago(item.at)} ago · pickable in Settings → Subscriptions now</span>
       </div>
       <button type="button" className="news-dismiss" aria-label={`Dismiss ${modelLabel(item.model)}`} title="Dismiss" onClick={() => dismiss(item.id)}>
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
