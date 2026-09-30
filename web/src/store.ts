@@ -30,6 +30,7 @@ import type {
   GitFileDiff,
   IdeTarget,
   ImageAttachment,
+  DeliverableSummary,
   ImplementationMemo,
   ImplementorProvider,
   RepoActionResult,
@@ -216,6 +217,8 @@ interface State {
   // The task a promotion created, so the console can offer to jump to it once.
   coworkPromoted: { sessionId: string; threadId: string } | null;
   implementationMemos: Record<string, ImplementationMemo[]>;
+  // The opt-in Sonnet summary that closes a finished task's feed, per thread (absent = none yet).
+  deliverableSummaries: Record<string, DeliverableSummary>;
   approvalMode: boolean;
   // Server-authoritative pipeline settings (broadcast over WS); the panel edits these via setSettings.
   settings: OrchestratorSettings;
@@ -836,6 +839,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   maxConcurrent: 3,
   maxConcurrentPerRepo: 0,
   selfImproveEnabled: false,
+  summarizeDoneDeliverables: false,
   autoModelSelection: false,
   tokenLimitEnabled: false,
   tokenLimitPercent: 80,
@@ -1361,6 +1365,7 @@ export const useStore = create<State>((set) => ({
   coworkPromoting: false,
   coworkPromoted: null,
   implementationMemos: {},
+  deliverableSummaries: {},
   approvalMode: false,
   settings: DEFAULT_SETTINGS,
   codexTest: null,
@@ -2493,6 +2498,7 @@ function applyEvent(ev: ServerEvent): void {
           threadHistoryLoaded: drop(s.threadHistoryLoaded),
           threadHistoryPages: drop(s.threadHistoryPages),
           implementationMemos: drop(s.implementationMemos),
+          deliverableSummaries: drop(s.deliverableSummaries),
           threadDrafts: drop(s.threadDrafts),
           thinkingDrafts: drop(s.thinkingDrafts),
           pendingPlans: drop(s.pendingPlans),
@@ -2533,6 +2539,8 @@ function applyEvent(ev: ServerEvent): void {
           findings: [...s.findings.filter((f) => f.threadId !== ev.threadId), ...ev.deliverables],
           questions: s.questions.filter((q) => q.threadId !== ev.threadId),
           threadFeeds: drop(s.threadFeeds),
+          // Retry wipes the server's stage outputs, the summary with them; the next finish writes a new one.
+          deliverableSummaries: drop(s.deliverableSummaries),
           threadDeliverables: {
             ...drop(s.threadDeliverables),
             ...(ev.deliverables.length ? { [ev.threadId]: mergeThreadDeliverables([], ev.deliverables) } : {}),
@@ -2626,10 +2634,14 @@ function applyEvent(ev: ServerEvent): void {
             ...s.implementationMemos,
             [ev.threadId]: mergeImplementationMemos(s.implementationMemos[ev.threadId] ?? [], ev.implementationMemos ?? []),
           },
+          ...(ev.deliverableSummary ? { deliverableSummaries: { ...s.deliverableSummaries, [ev.threadId]: ev.deliverableSummary } } : {}),
         };
       });
       break;
     }
+    case "thread.deliverableSummary":
+      useStore.setState((s) => ({ deliverableSummaries: { ...s.deliverableSummaries, [ev.threadId]: ev.summary } }));
+      break;
     case "thread.memo":
       useStore.setState((s) => ({
         implementationMemos: {

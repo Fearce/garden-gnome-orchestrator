@@ -172,6 +172,7 @@ const GATES = [
   "test:manual-deployment",
   "test:manual-deployment-probe",
   "test:implementation-memos",
+  "test:deliverable-summary",
   "test:deliverables",
   "test:run-attribution",
   "test:run-startup",

@@ -33,6 +33,7 @@ import type {
   CoworkSessionSummary,
   CoworkTurn,
   DirectorMessage,
+  DeliverableSummary,
   DirectorStatus,
   Finding,
   Goal,
@@ -205,11 +206,13 @@ export type ServerEvent =
       runs: AgentRun[];
       findings: Finding[];
       implementationMemos: ImplementationMemo[];
+      deliverableSummary: DeliverableSummary | null;
       brief: string;
       hasMoreMessages: boolean;
       before?: MessageCursor;
     }
   | { type: "thread.memo"; threadId: string; memo: ImplementationMemo }
+  | { type: "thread.deliverableSummary"; threadId: string; summary: DeliverableSummary }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
   | { type: "agent.text"; threadId: string; runId: string; role: Role; text: string; messageId: string }
@@ -420,6 +423,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         maxConcurrent: z.number().int().min(1).max(20),
         maxConcurrentPerRepo: z.number().int().min(0).max(20),
         selfImproveEnabled: z.boolean(),
+        summarizeDoneDeliverables: z.boolean(),
         autoModelSelection: z.boolean(),
         tokenLimitEnabled: z.boolean(),
         tokenLimitPercent: z.number().int().min(50).max(99),

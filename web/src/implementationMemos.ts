@@ -1,4 +1,4 @@
-import type { ImplementationMemo } from "./types.js";
+import type { DeliverableSummary, ImplementationMemo, ThreadState } from "./types.js";
 
 /** Merge authoritative history with live rows by stable memo id. `updatedAt` resolves a reconnect race:
  * a late history response must not overwrite a newer deliverable refresh that already streamed live. */
@@ -30,4 +30,24 @@ export function selectImplementationMemos(memos: readonly ImplementationMemo[]):
   const current = ordered.at(-1) ?? null;
   const latestUseful = [...ordered].reverse().find((memo) => memo.outcome === "completed" && !!memo.report?.trim()) ?? null;
   return { current, latestUseful, featured: latestUseful ?? current };
+}
+
+export interface FinalReport {
+  memo: ImplementationMemo;
+  /** The opt-in Sonnet condensation of `memo`, when the setting is on and one describes this revision. */
+  summary: DeliverableSummary | null;
+}
+
+/** What closes a finished task's feed: the implementor's own final report, so QA verdicts and the
+ * self-improvement round can never bury it. Only for done/review, where the owner reads the outcome. */
+export function finalReportFor(
+  state: ThreadState,
+  memos: readonly ImplementationMemo[],
+  summary: DeliverableSummary | null | undefined,
+  summariesEnabled: boolean,
+): FinalReport | null {
+  if (state !== "done" && state !== "review") return null;
+  const memo = selectImplementationMemos(memos).latestUseful;
+  if (!memo) return null;
+  return { memo, summary: summariesEnabled && summary?.memoId === memo.id ? summary : null };
 }

@@ -459,6 +459,18 @@ export interface ImplementationMemo {
   updatedAt: number;
 }
 
+/** The opt-in Sonnet condensation of a finished task's final implementor report ("Summarize done task
+ * deliverables"). Keyed to the memo revision and the exact inputs it condensed, so the server can tell a
+ * current summary from one a later revision, a new file or Mark done has since outdated. Mirrored in web/src/types.ts. */
+export interface DeliverableSummary {
+  text: string;
+  model: string;
+  memoId: string;
+  sourceKey: string; // hash of the exact inputs summarized; a changed report, file list or review reason outdates it
+  taskState: "done" | "review";
+  createdAt: number;
+}
+
 export type MessageKind = "text" | "tool" | "result" | "system" | "thinking";
 
 // ---- The office: cross-agent chat rooms ----
@@ -987,6 +999,7 @@ export interface StageOutputs {
   // this work is already accepted. Without it a bounce auto-resumes the task back into the pipeline and
   // spends another implementor + QA round on it; with it the restart settles it where it was headed: done.
   selfImproveAttempted?: boolean; // one bonus decision per task, even after the live marker is cleared.
+  deliverableSummary?: DeliverableSummary | null; // the opt-in owner-facing summary of the final report; see DeliverableSummary
   capacityStallResumes?: number; // continuations a usage-window rollover has already spent on THIS task after
   // it parked on a capacity-shaped implementor stop that carried no durable cap marker (a per-session turn or
   // cost ceiling, a provider session limit). Durable and never reset except by Retry, because the stall
@@ -1083,6 +1096,7 @@ export interface OrchestratorSettings {
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review
   maxReviewFixRounds: number; // implementor fix-rounds the auto-reviewer may trigger when it hands a task back (default 1; 0 = hand straight back to the owner, the pre-fix-round behavior)
   selfImproveEnabled: boolean; // off (default) → opt-in; on → after a task completes, the implementor runs one extra round building the tools/skills/memories that would have made the task easier
+  summarizeDoneDeliverables: boolean; // off (default) → a done/review task's feed ends with the implementor's own final report. on → one Sonnet call condenses that report + the surfaced files into a short owner note shown there instead (the full report stays one click away)
   autoModelSelection: boolean; // off (default) → configured models + usage-aware provider routing. on → before each implementor starts a provider-neutral judge picks its model AND effort from every backend dispatchable right now. Implementor picks are graded for the next choice. Implementor-only: the director always runs on its configured model.
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
   maxConcurrentPerRepo: number; // max pipelines running at once for a SINGLE repo (normalized workspace); 0 (default) = unlimited. Additional tasks for a repo already at its per-repo cap wait in 'queued' until one of that repo's tasks finishes — tasks in OTHER repos are unaffected (they still run up to maxConcurrent).

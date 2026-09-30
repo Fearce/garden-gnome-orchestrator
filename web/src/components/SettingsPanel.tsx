@@ -374,6 +374,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   on={settings.selfImproveEnabled}
                   onChange={(v) => setSettings({ selfImproveEnabled: v })}
                 />
+                <ToggleRow
+                  label="Summarize done task deliverables"
+                  hint="Every done or in-review task ends its feed with the implementor's final report, below the QA and self-improvement rows. On: a Sonnet 5 call condenses that report into a short note instead: the outcome, each deliverable file, what changed, how it was checked, and anything left for you. The full report stays one click away. It runs once when a task finishes, and again only if the report, its files or the review state change. A task that finished before you turned this on is summarized the first time you open it. Off by default; each summary costs one small Sonnet call on a Claude subscription."
+                  on={settings.summarizeDoneDeliverables}
+                  onChange={(v) => setSettings({ summarizeDoneDeliverables: v })}
+                />
               </Group>
               <Group label="Auto model selection">
                 <ToggleRow

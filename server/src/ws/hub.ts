@@ -404,6 +404,7 @@ export async function handleCommand(
         runs: ctx.db.listRuns(cmd.threadId),
         findings: ctx.db.listFindings(cmd.threadId),
         implementationMemos: ctx.db.listImplementationMemos(cmd.threadId),
+        deliverableSummary: ctx.manager.deliverableSummaryOnOpen(cmd.threadId),
         brief: thread?.brief ?? "",
         hasMoreMessages: page.hasMore,
         before: cmd.before,

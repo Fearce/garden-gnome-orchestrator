@@ -644,9 +644,13 @@ tables hold lightweight attachment refs; the shared `attachments` table deduplic
 implementor run (`UNIQUE(thread_id, run_id)`) with a monotonic per-task `revision`, so QA/reviewer/
 Supervisor feed traffic can never bury it. `run_id` deliberately carries no FK: a Retry deletes the runs
 and feed rows but every prior work revision stays auditable ([archived agent guide](agent-reference/CLAUDE-full.md) § "Implementor work memos").
+The console also re-renders the latest useful report as the LAST card of a done/review task's feed, and
+with "Summarize done task deliverables" on, a Sonnet summary of it (stored in
+`stage_outputs.deliverableSummary`) leads that card; same § for the trigger and freshness rules.
 `threads.stage_outputs` (JSON, nullable) holds the per-stage outputs that make a
 task resumable (§5) — kept off the WS wire (it can be multi-KB) and read only by
-the resume path, not folded into the `Thread` DTO. Schema inlined in
+the resume path, not folded into the `Thread` DTO. The one exception is `deliverableSummary`, which
+`thread.history` hands to the console. Schema inlined in
 `db/schema.ts` (no copy step on build); additive columns added via idempotent
 `ALTER TABLE … ADD COLUMN` in `migrate()`.
 
@@ -661,6 +665,8 @@ a single discriminated union (`zod`-validated). Highlights:
   `question.ask` / `question.resolved`, `plan.ready` / `approval.mode`,
   `thread.memo` (one durable implementor work memo; `thread.history` carries the
   task's full set),
+  `thread.deliverableSummary` (the opt-in Sonnet summary that closes a done/review feed;
+  `thread.history` carries the stored one),
   `thread.changes`, `director.delta` / `director.message` / `director.tool` /
   `director.busy`, `log`.
 - C→S: `prompt.new`, `question.answer`, `thread.inject`, `thread.interrupt`,

@@ -138,6 +138,15 @@ import { isCapacityStallPark, MAX_CAPACITY_STALL_RESUMES } from "./capacityStall
 import { ActionHistory, assessSessionProgress, noProgressParkText } from "./continuationProgress.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import {
+  DELIVERABLE_SUMMARY_MODEL,
+  deliverableFilesFor,
+  summarizableMemo,
+  summarizeDeliverables,
+  summaryStateFor,
+  summarySourceKey,
+  type DeliverableSummaryInput,
+} from "./deliverableSummary.js";
+import {
   declareManualDeployment,
   invalidateManualDeployment,
   MANUAL_DEPLOYMENT_HANDOFF_SUMMARY,
@@ -177,6 +186,7 @@ import type {
   CodexEffort,
   CoworkMessage,
   CoworkSession,
+  DeliverableSummary,
   Effort,
   Finding,
   GrokEffort,
@@ -986,6 +996,8 @@ export class ThreadManager implements OrchestratorApi {
   // awaited result is still in flight. A state-only check falls through in exactly that window and
   // cold-resumes a SECOND implementor onto the workspace, so those gates key on this episode instead.
   private readonly selfImproving = new Set<string>();
+  /** Source keys of deliverable summaries being written right now (summarizeDeliverablesFor). */
+  private readonly summarizingDeliverables = new Set<string>();
   private readonly acceptingBeforeBonus = new Set<string>();
   // Images attached to the original dispatch prompt. Every isolated fresh role session must see these
   // in its first SDKUserMessage; keep them separate from later injected images so a resume/inject path
@@ -2851,6 +2863,7 @@ export class ThreadManager implements OrchestratorApi {
       maxConcurrent: this.settingNum("setting_max_concurrent", config.maxConcurrent, 1, 20),
       maxConcurrentPerRepo: this.settingNum("setting_max_concurrent_per_repo", 0, 0, 20),
       selfImproveEnabled: this.settingBool("setting_self_improve_enabled", false),
+      summarizeDoneDeliverables: this.settingBool("setting_summarize_done_deliverables", false),
       autoModelSelection: this.settingBool("setting_auto_model_selection", false),
       tokenLimitEnabled: this.settingBool("setting_token_limit_enabled", false),
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
@@ -4869,6 +4882,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.maxConcurrent !== undefined) this.db.kvSet("setting_max_concurrent", String(patch.maxConcurrent));
     if (patch.maxConcurrentPerRepo !== undefined) this.db.kvSet("setting_max_concurrent_per_repo", String(patch.maxConcurrentPerRepo));
     if (patch.selfImproveEnabled !== undefined) this.db.kvSet("setting_self_improve_enabled", patch.selfImproveEnabled ? "1" : "0");
+    if (patch.summarizeDoneDeliverables !== undefined) this.db.kvSet("setting_summarize_done_deliverables", patch.summarizeDoneDeliverables ? "1" : "0");
     if (patch.autoModelSelection !== undefined) this.db.kvSet("setting_auto_model_selection", patch.autoModelSelection ? "1" : "0");
     const safetyBefore = this.settings();
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
@@ -6840,6 +6854,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.notifyOwner(`⚠ needs your review: "${t.title}"`, { kind: "input", title: t.title, detail: t.error, repo: t.workspace });
     else if (t.state === "failed")
       this.notifyOwner(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`, { kind: "failed", title: t.title, detail: t.error, repo: t.workspace });
+    if (t.state === "done" || t.state === "review") void this.summarizeDeliverablesFor(t.id);
     // Truly-terminal states never resume under the same in-memory identity, so drop the per-thread
     // bookkeeping that must outlive the pipeline LOOP (so a parked task can still resume) but has no
     // reason to outlive the process. Deliberately EXCLUDES 'failed' (a transient state the pipeline
@@ -6861,6 +6876,71 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private async announceDone(t: Thread): Promise<void> {
     const text = await completionAnnouncement(t, this.accounts.auxToken()).catch(() => null);
     if (text) this.hub.publish({ type: "voice.announce", threadId: t.id, text });
+  }
+
+  /** Opt-in ("Summarize done task deliverables"): condense a finished task's final report into the owner
+   *  note that ends its feed. One Sonnet call per distinct input, claimed synchronously before the await
+   *  so a settle racing a history open cannot pay for it twice. */
+  private async summarizeDeliverablesFor(threadId: string): Promise<void> {
+    if (!this.settings().summarizeDoneDeliverables || this.restartDrainActive()) return;
+    const target = this.deliverableSummaryTarget(threadId);
+    if (!target || this.db.getThreadStageOutputs(threadId).deliverableSummary?.sourceKey === target.sourceKey) return;
+    if (this.summarizingDeliverables.has(target.sourceKey)) return;
+    this.summarizingDeliverables.add(target.sourceKey);
+    try {
+      const text = await summarizeDeliverables(target.input, this.accounts.auxToken());
+      if (!text) {
+        this.hub.log("warn", `Deliverables summary for ${threadId.slice(0, 8)} failed; the feed keeps the implementor's own report.`);
+        return;
+      }
+      // The task can move on while Sonnet writes (Mark done, a late deliverable, a resume). Never store a
+      // summary of inputs that no longer hold; summarize the new ones instead.
+      const now = this.deliverableSummaryTarget(threadId);
+      if (now?.sourceKey !== target.sourceKey) {
+        if (now) void this.summarizeDeliverablesFor(threadId);
+        return;
+      }
+      const summary: DeliverableSummary = {
+        text,
+        model: DELIVERABLE_SUMMARY_MODEL,
+        memoId: target.memoId,
+        sourceKey: target.sourceKey,
+        taskState: target.input.state,
+        createdAt: Date.now(),
+      };
+      this.db.updateThreadStageOutputs(threadId, { deliverableSummary: summary });
+      this.hub.publish({ type: "thread.deliverableSummary", threadId, summary });
+    } finally {
+      this.summarizingDeliverables.delete(target.sourceKey);
+    }
+  }
+
+  /** What a summary of this task would condense right now, or null when it is not a finish worth one:
+   *  not done/review, a sub-task, or no implementor run produced a report. */
+  private deliverableSummaryTarget(threadId: string): { input: DeliverableSummaryInput; memoId: string; sourceKey: string } | null {
+    const t = this.db.getThread(threadId);
+    const state = t && !t.subTask ? summaryStateFor(t, CAP_PARK_PREFIX) : null;
+    const memo = state ? summarizableMemo(this.db.listImplementationMemos(threadId)) : null;
+    if (!t || !state || !memo?.report) return null;
+    const deployment = state === "done" && t.manualDeployment?.status === "verified" ? t.manualDeployment : null;
+    const input: DeliverableSummaryInput = {
+      title: t.title,
+      brief: t.brief ?? "",
+      state,
+      reviewReason: state === "review" ? t.error : null,
+      pendingDeployment: deployment ? `${deployment.environment}: ${deployment.instructions}` : null,
+      report: memo.report,
+      deliverables: deliverableFilesFor(this.db.listFindings(threadId)),
+    };
+    return { input, memoId: memo.id, sourceKey: summarySourceKey(input) };
+  }
+
+  /** thread.history hook: the stored summary for the console, plus a background (re)generation when a
+   *  finished task has none or an outdated one — a task that finished before the setting was on, or whose
+   *  settle-time call a restart dropped. The console shows the implementor's report until it lands. */
+  deliverableSummaryOnOpen(threadId: string): DeliverableSummary | null {
+    void this.summarizeDeliverablesFor(threadId);
+    return this.db.getThreadStageOutputs(threadId).deliverableSummary ?? null;
   }
 
   /** Settle a task to 'review' after an incomplete run. If the run gave up ONLY because every provider

@@ -19,6 +19,8 @@ import { TaskAgentsPicker } from "./TaskAgentsPicker.js";
 import { TaskModelPicker } from "./TaskModelPicker.js";
 import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
 import { ImplementationMemos } from "./ImplementationMemos.js";
+import { FinalReportCard } from "./FinalReport.js";
+import { finalReportFor } from "../implementationMemos.js";
 import { CodeContextBar, useCodeContext } from "./CodeContextBar.js";
 import { WorkspacePath } from "./WorkspacePath.js";
 import { useSwipeDismiss } from "../lib/swipe.js";
@@ -562,6 +564,8 @@ export function ThreadDetail() {
   const feeds = useStore((s) => s.threadFeeds);
   const threadDeliverables = useStore((s) => s.threadDeliverables);
   const implementationMemos = useStore((s) => s.implementationMemos);
+  const deliverableSummary = useStore((s) => (id ? s.deliverableSummaries[id] : undefined));
+  const summariesEnabled = useStore((s) => s.settings.summarizeDoneDeliverables);
   const drafts = useStore((s) => s.threadDrafts);
   const thinkingDrafts = useStore((s) => s.thinkingDrafts);
   const outbound = useStore((s) => s.outboundMessages);
@@ -826,6 +830,8 @@ export function ThreadDetail() {
     () => (role: Role) => (role === "director" ? directorName : agentName(nameOverrides, id, role)),
     [nameOverrides, id, directorName],
   );
+  const finalReport = finalReportFor(thread.state, taskMemos, deliverableSummary, summariesEnabled);
+  const showFinalReport = !!finalReport && (roleFilter === "all" || roleFilter === "implementor");
 
   // The model + effort that wrote each row, appended to its label when the "Show agent model" setting
   // is on. Resolved from the row's OWN run: a task that changes model mid-work (usage saving, a cap
@@ -1261,6 +1267,14 @@ export function ThreadDetail() {
               source={f.kind === "system" ? collabNameFor.get(mergedFeed.sourceOf.get(f) ?? "")?.("implementor") : undefined}
             />
           ))}
+          {showFinalReport && (thread.state === "done" || thread.state === "review") ? (
+            <FinalReportCard
+              report={finalReport}
+              state={thread.state}
+              memos={taskMemos}
+              label={<RoleLabel role="implementor" name={nameFor("implementor")} model={modelFor(finalReport.memo.runId)} />}
+            />
+          ) : null}
           {showTools && thinkingDraft && (roleFilter === "all" || thinkingDraft.role === roleFilter) && (
             <div className="fi thinking draft" style={roleVar(thinkingDraft.role)}>
               <div className="head">

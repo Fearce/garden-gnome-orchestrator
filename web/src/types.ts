@@ -393,6 +393,16 @@ export interface ImplementationMemo {
   updatedAt: number;
 }
 
+/** The opt-in Sonnet summary of a finished task's final report. Mirrors server/src/types.ts. */
+export interface DeliverableSummary {
+  text: string;
+  model: string;
+  memoId: string;
+  sourceKey: string; // hash of the exact inputs summarized; the server regenerates when it changes
+  taskState: "done" | "review";
+  createdAt: number;
+}
+
 export interface FileAttachment {
   name: string;
   mediaType: string;
@@ -683,6 +693,7 @@ export interface OrchestratorSettings {
   maxConcurrent: number;
   maxConcurrentPerRepo: number; // max pipelines running at once for a single repo; 0 (default) = unlimited (only the global maxConcurrent applies)
   selfImproveEnabled: boolean; // opt-in (off by default): completed tasks get one extra implementor round that builds the tools/skills/memories the session showed were missing
+  summarizeDoneDeliverables: boolean; // opt-in (off by default): a Sonnet summary of the final report + deliverables ends a done/review task's feed instead of the raw report
   autoModelSelection: boolean; // opt-in: smart-pick each implementor's model/effort from every dispatchable backend; implementor outcomes feed later picks. The director always runs on its configured model.
   // Token-usage safety limit: opt-in auto-stop when live utilization reaches the threshold. Disabled by
   // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.
@@ -1370,11 +1381,13 @@ export type ServerEvent =
       runs?: AgentRun[];
       findings: Finding[];
       implementationMemos?: ImplementationMemo[];
+      deliverableSummary?: DeliverableSummary | null;
       brief: string;
       hasMoreMessages?: boolean;
       before?: MessageCursor;
     }
   | { type: "thread.memo"; threadId: string; memo: ImplementationMemo }
+  | { type: "thread.deliverableSummary"; threadId: string; summary: DeliverableSummary }
   | { type: "run.upsert"; run: AgentRun }
   | { type: "agent.delta"; threadId: string; runId: string; role: Role; text: string }
   | { type: "agent.text"; threadId: string; runId: string; role: Role; text: string; messageId: string }
