@@ -364,6 +364,13 @@ async function main(): Promise<void> {
     registerRemoteControlRoutes(app, remoteControl, isAuthed);
     registerPortalLink(app, isAuthed);
 
+    // Settings → LiveBench rankings: the same cached release auto model selection reads.
+    app.get("/api/livebench", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      reply.header("cache-control", "no-store");
+      return manager.liveBenchLeaderboard();
+    });
+
     // `build` is which dist THIS process loaded, read once at boot — the fact that turns "is the live
     // server running current code?" into a comparison instead of an inference from mtimes.
     // `eventLoop` is here because this route IS the thing an external supervisor times. When it answers

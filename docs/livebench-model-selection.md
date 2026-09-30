@@ -15,7 +15,8 @@ number. The orchestrator reads the release manifest and those two source files d
 the rendered site.
 
 `LiveBenchScores` stores the newest complete release in the existing SQLite kv table and refreshes it every
-24 hours. A fetch error keeps the last good snapshot; no snapshot simply means auto-selection proceeds with
+24 hours. Settings → LiveBench rankings renders that same snapshot as a sortable table, with each model's
+organization taken from the site's own `modelLinks.js` and the rows GGO can run highlighted. A fetch error keeps the last good snapshot; no snapshot simply means auto-selection proceeds with
 local evidence only. Dispatch is never blocked by the benchmark service.
 
 ## Matching and trust

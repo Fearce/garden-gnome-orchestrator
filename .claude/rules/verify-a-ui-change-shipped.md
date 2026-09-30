@@ -43,7 +43,9 @@ boots/kills/authenticates it (bogus tokens so the boot ping can't start a real 5
 owner, never by process name). A "lab" is a committed script on top of it that seeds its own state and
 drives one surface — copy the closest of `chip-lab.cjs` (accounts strip), `git-console-lab.cjs` (Git
 console + fixture repo), `tablet-lab.cjs` (both tablet orientations in a TOUCH context),
-`model-select-lab.cjs` (a Settings toggle's round-trip + a server-fed table), `inject-lab.cjs`
+`model-select-lab.cjs` (a Settings toggle's round-trip + a server-fed table), `livebench-lab.cjs`
+(Settings → LiveBench rankings: every column sorted both ways against an independent comparator, sticky
+header + pinned rank/model columns on a phone, Nocturne), `inject-lab.cjs`
 (state-conditional button labels + a click that must not kill the task), `tools-filter-lab.cjs`
 (the feed's ⛏ tools toggle: tool rows leave, narration stays, across a reload), `focus-lab.cjs` (the top bar's
 focus toggle, both themes), `usage-strip-lab.cjs` (the gauge button folding the burn strip on desktop vs

@@ -25,6 +25,7 @@ server/.task-agents-lab-dist/
 server/.patch-notes-lab-dist/
 server/.pin-lab-dist/
 server/.agent-names-lab-dist/
+server/.livebench-lab-dist/
 server/.lab-web-dist*/
 web/dist/
 relay/dist/

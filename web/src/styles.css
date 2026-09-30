@@ -1373,6 +1373,72 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 }
 .ams-model { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Settings → LiveBench rankings. The table scrolls inside its own box on both axes so the header can
+   stay sticky while rank + model stay pinned on the left on a narrow screen. Opaque cell fills are
+   required: sticky cells otherwise show the columns scrolling underneath them. */
+.lb { --lb-rank-w: 64px; --lb-row: var(--bg-1); --lb-runnable: color-mix(in oklch, var(--accent) 7%, var(--bg-1)); padding: 6px 24px 16px; }
+.lb-meta {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px;
+  font: 11px/1.4 var(--font-mono); color: var(--text-faint);
+}
+.lb-snapshot strong { color: var(--text); font-weight: 600; }
+.lb-stale { color: var(--warn); }
+.lb-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.lb-search {
+  width: 250px; max-width: 100%; height: 28px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--text); font: 12.5px var(--font-sans); outline: none;
+}
+.lb-search:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 16%, transparent); }
+.lb-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid var(--line);
+  border-radius: var(--r-sm); background: transparent; color: var(--text-dim); font: 12px var(--font-sans); cursor: pointer;
+}
+.lb-chip:hover:not(:disabled) { border-color: var(--line-strong); color: var(--text); }
+.lb-chip.on { border-color: color-mix(in oklch, var(--accent) 55%, var(--line)); background: color-mix(in oklch, var(--accent) 10%, transparent); color: var(--text); }
+.lb-chip:disabled { opacity: 0.5; cursor: default; }
+.lb-count { font: 11px var(--font-mono); color: var(--text-faint); }
+.lb-shown { margin-left: auto; font: 11px var(--font-mono); color: var(--text-faint); }
+.lb-dot { display: inline-block; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.lb-scroll {
+  max-height: max(260px, calc(min(760px, 100dvh - 40px) - 230px)); overflow: auto; overscroll-behavior: contain;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.lb-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.lb-table th, .lb-table td { padding: 6px 10px; white-space: nowrap; border-bottom: 1px solid var(--line); background: var(--lb-row); }
+.lb-table tbody tr:last-child > * { border-bottom: 0; }
+.lb-table td { color: var(--text-dim); }
+.lb-table thead th {
+  position: sticky; top: 0; z-index: 2; padding: 0; background: var(--bg-2); border-bottom-color: var(--line-strong);
+  font: 500 9.5px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint);
+}
+.lb-table thead th.sorted { color: var(--text); }
+.lb-sort {
+  display: flex; align-items: center; gap: 5px; width: 100%; padding: 9px 10px; border: 0; background: none;
+  color: inherit; font: inherit; letter-spacing: inherit; text-transform: inherit; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.lb-sort:hover { color: var(--text); }
+.lb-sort:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.lb-arrow { flex: none; opacity: 0; color: var(--text-faint); }
+.lb-sort:hover .lb-arrow { opacity: 0.6; }
+.lb-arrow.on { opacity: 1; color: var(--accent); }
+.lb-col-num, .lb-col-rank { text-align: right; }
+.lb-table thead .lb-col-num .lb-sort, .lb-table thead .lb-col-rank .lb-sort { justify-content: flex-end; }
+.lb-col-rank { position: sticky; left: 0; z-index: 1; width: var(--lb-rank-w); min-width: var(--lb-rank-w); box-sizing: border-box; font-family: var(--font-mono); color: var(--text-faint); }
+.lb-table tbody td.lb-col-rank { color: var(--text-faint); }
+.lb-table .lb-col-model {
+  position: sticky; left: var(--lb-rank-w); z-index: 1; text-align: left; font-weight: 500; color: var(--text);
+  border-right: 1px solid var(--line);
+}
+.lb-table tbody .lb-col-model { font-family: var(--font-mono); font-size: 11.5px; font-weight: 400; }
+.lb-table tbody .lb-col-model .lb-dot { margin-right: 7px; vertical-align: 1px; }
+.lb-table thead .lb-col-rank, .lb-table thead .lb-col-model { z-index: 3; }
+.lb-table td.overall { color: var(--text); font-weight: 600; }
+.lb-table tbody tr.runnable > * { background: var(--lb-runnable); }
+.lb-table tbody tr:hover > * { background: var(--bg-2); }
+.lb-empty { margin: 0; padding: 18px 12px; font-size: 12px; color: var(--text-faint); text-align: center; }
+.lb-error { color: var(--warn); }
+
 /* toggle switch */
 .switch {
   flex: none; width: 38px; height: 22px; border-radius: 100px; padding: 0; cursor: pointer; position: relative;
@@ -2875,6 +2941,9 @@ body.dl-resizing { user-select: none; }
   }
   .settings-mobile-nav select:focus { outline: none; border-color: var(--accent); }
   .settings-mobile-nav select:focus-visible { box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent) 45%, transparent); }
+  .lb { padding: 6px 16px 16px; }
+  .lb-scroll { max-height: max(260px, calc(100dvh - 340px)); }
+  .lb-table tbody .lb-col-model { max-width: 150px; overflow: hidden; text-overflow: ellipsis; }
 
   /* single pane, toggled by the .pane-* class on the workbench. minmax(0, 1fr) (not a bare 1fr, whose
      auto minimum is min-content) so the active pane can't force the track past the viewport width. */
@@ -3875,6 +3944,7 @@ button.note-from:hover { color: var(--text-dim); }
   .stepper button { width: var(--tap); height: var(--tap); font-size: 19px; }
   .stepper-val { height: var(--tap); font-size: 16px; }
   .settings-row .text-input { height: var(--tap); font-size: 16px; }
+  .lb-search, .lb-chip { height: var(--tap-sm); font-size: 16px; }
   /* The handle straddles its pane's edge at -3px, and the pane's own overflow:hidden clips that
      half away — so a 7px strip is really ~4px of hit-testable area. A cursor finds it; a finger
      does not. Pull it fully inside and widen it. (The ::after indicator is right-anchored, so it

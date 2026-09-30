@@ -33,7 +33,7 @@ missing one typechecks fine but silently drops the value at that layer:
    — default (must match the server's) and a `ToggleRow`/`NumberRow`/`TextRow`
    in the right `Group`. The panel is CATEGORIZED: every `Group` lives inside a
    `<SettingsCategoryPanel id="…">` (`general` · `pipeline` · `usage` ·
-   `subscriptions` · `free-ai` · `voice-alerts` · `office` · `interface`), so
+   `subscriptions` · `free-ai` · `livebench` · `voice-alerts` · `office` · `interface`), so
    pick the category first, then the `Group` inside it. A `Group` placed outside
    a category panel renders on EVERY page — it typechecks and looks fine on the
    page you tested. A brand-new category also needs its `SETTINGS_CATEGORIES`

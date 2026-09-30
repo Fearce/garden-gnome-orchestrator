@@ -112,7 +112,7 @@ import { conservationResolvedCodexModel, conservationResolvedModel } from "./tok
 import { usageSavingActive } from "./usageSaving.js";
 import { providerIntent } from "./providerIntent.js";
 import { detectModelRequest, exactModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
-import { LiveBenchScores } from "./liveBenchScores.js";
+import { LiveBenchScores, type LiveBenchLeaderboard, type LiveBenchUsableModel } from "./liveBenchScores.js";
 import {
   assessCapacity,
   capacityWindowsWithFreshness,
@@ -3374,6 +3374,18 @@ export class ThreadManager implements OrchestratorApi {
    *  the Opus-only rule governs the models GGO assigns roles, not a tier an agent or the owner picks. */
   private explicitClaudeModels(): string[] {
     return withoutSupersededModels(uniq([...this.claudeRosterModels(), ...this.pickableClaudeModels()]));
+  }
+
+  /** The cached LiveBench release for Settings, each row marked with the models an enabled backend here can run. */
+  liveBenchLeaderboard(): LiveBenchLeaderboard {
+    const settings = this.settings();
+    const usable: LiveBenchUsableModel[] = [
+      ...this.explicitClaudeModels().map((model) => ({ provider: "claude", model })),
+      ...(settings.codexEnabled ? this.pickableCodexModels().map((model) => ({ provider: "codex", model })) : []),
+      ...(settings.grokEnabled ? this.pickableGrokModels().map((model) => ({ provider: "grok", model })) : []),
+      ...(settings.zaiEnabled ? this.pickableZaiModels().map((model) => ({ provider: "zai", model })) : []),
+    ];
+    return this.liveBench.leaderboard(usable);
   }
 
   /** News may only announce a model the Settings pickers offer — a catalog id the owner policy filters

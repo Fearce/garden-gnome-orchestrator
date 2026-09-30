@@ -214,7 +214,9 @@ The smart picker also reads a persistent LiveBench snapshot refreshed every 24 h
 raw release CSV/category files. Exact-model scores and published effort variants are shown to the judging
 agent; newer models may receive only an explicitly labelled older same-family prior. Live availability,
 role/tool compatibility, and this orchestrator's own accepted-task grades remain the stronger signals, and
-a failed refresh keeps the last snapshot without blocking dispatch.
+a failed refresh keeps the last snapshot without blocking dispatch. The same cached release is the Settings →
+LiveBench rankings table (`GET /api/livebench`, `LiveBenchScores.leaderboard()`); its organization column
+comes from the site's own `modelLinks.js`, read as a data literal (`jsLiteral.ts`), never executed.
 
 Those local grades are a durable learning record, not disposable task telemetry. For every auto-picked
 task the database retains quality/outcome, QA rounds, whole-pipeline dollars, turns, wall time, and normalized
