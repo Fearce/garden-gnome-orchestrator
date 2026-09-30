@@ -609,6 +609,9 @@ export class AgentRun implements AgentRunLike {
               continue;
             }
             this.emit({ type: "text", text: b.text });
+          } else if (b?.type === "thinking" && typeof b.thinking === "string" && b.thinking.trim()) {
+            // Opus 5.5 narrates its progress here; untrimmed, so it matches the thinking_delta stream it commits.
+            this.emit({ type: "thinking", text: b.thinking });
           } else if (b?.type === "tool_use") {
             this.emit({ type: "tool_use", id: b.id, name: b.name, input: b.input });
           }

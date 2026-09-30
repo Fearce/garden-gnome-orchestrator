@@ -813,7 +813,7 @@ export class CodexAgentRun implements AgentRunLike {
         }
         break;
       case "reasoning":
-        if (phase === "completed" && item.text) this.emit({ type: "thinking_delta", text: item.text });
+        if (phase === "completed" && item.text?.trim()) this.emit({ type: "thinking", text: item.text });
         break;
       case "command_execution":
         if (phase === "started") this.emit({ type: "tool_use", id, name: "shell", input: { command: item.command } });

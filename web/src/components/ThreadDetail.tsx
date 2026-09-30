@@ -24,6 +24,7 @@ import { finalReportFor } from "../implementationMemos.js";
 import { CodeContextBar, useCodeContext } from "./CodeContextBar.js";
 import { WorkspacePath } from "./WorkspacePath.js";
 import { useSwipeDismiss } from "../lib/swipe.js";
+import { isToolActivity } from "../lib/feedFilter.js";
 
 /**
  * The detail panel's workspace chip. The panel already resolves this task's code context for its
@@ -733,7 +734,7 @@ export function ThreadDetail() {
   const visible = useMemo(
     () =>
       feedItems.filter((f) => {
-        if (!showTools && (f.kind === "tool" || f.kind === "tool_result" || f.kind === "thinking")) return false;
+        if (!showTools && isToolActivity(f)) return false;
         if (roleFilter === "all") return true;
         return itemRoleOf(f, runRole) === roleFilter;
       }),
@@ -806,7 +807,7 @@ export function ThreadDetail() {
   const recipientLabel = qaStage ? "QA reviewer" : autoReviewStage ? "auto-reviewer" : "implementor";
   const impl = threadRuns.filter((r) => r.role === "implementor").sort((a, b) => b.startedAt - a.startedAt)[0];
   const totalCost = threadRuns.reduce((a, r) => a + (r.costUsd ?? 0), 0);
-  const streamingRunIds = new Set([draft?.runId, showTools ? thinkingDraft?.runId : undefined].filter((runId): runId is string => !!runId));
+  const streamingRunIds = new Set([draft?.runId, thinkingDraft?.runId].filter((runId): runId is string => !!runId));
   // An unloaded history is an empty feed, not a silent run.
   const silentRun = historyLoaded ? silentLiveRun(threadRuns, feedItems, streamingRunIds) : undefined;
   const path = pipelinePath(threadRuns);
@@ -1188,7 +1189,7 @@ export function ThreadDetail() {
               <button
                 className={"fchip tools-toggle" + (showTools ? "" : " off")}
                 onClick={() => setShowTools(!showTools)}
-                title={showTools ? "Hide tools & reasoning — show just the prose/findings" : "Show tools & reasoning"}
+                title={showTools ? "Hide tool calls and their results — narration, reasoning and findings stay" : "Show tool calls and their results"}
               >
                 ⛏ tools
               </button>
@@ -1197,7 +1198,7 @@ export function ThreadDetail() {
         )}
 
         <div className="feed">
-          {visible.length === 0 && !draft && !(showTools && thinkingDraft) && !silentRun && (
+          {visible.length === 0 && !draft && !thinkingDraft && !silentRun && (
             <div className="faint" style={{ fontSize: 13 }}>
               {feedItems.length === 0
                 ? // "Warming up" is a claim about the SERVER's state, so only make it once the server has
@@ -1212,7 +1213,7 @@ export function ThreadDetail() {
                   : "Loading conversation…"
                 : roleFilter === "all"
                   ? "Nothing to show."
-                  : `No ${roleFilter} output${showTools ? "" : " (tools & reasoning hidden)"} yet.`}
+                  : `No ${roleFilter} output${showTools ? "" : " (tool calls hidden)"} yet.`}
             </div>
           )}
           {hiddenAbove > 0 && (
@@ -1275,7 +1276,7 @@ export function ThreadDetail() {
               label={<RoleLabel role="implementor" name={nameFor("implementor")} model={modelFor(finalReport.memo.runId)} />}
             />
           ) : null}
-          {showTools && thinkingDraft && (roleFilter === "all" || thinkingDraft.role === roleFilter) && (
+          {thinkingDraft && (roleFilter === "all" || thinkingDraft.role === roleFilter) && (
             <div className="fi thinking draft" style={roleVar(thinkingDraft.role)}>
               <div className="head">
                 <span className="role-tag dim">
@@ -1302,7 +1303,7 @@ export function ThreadDetail() {
           {collabIds.map((c) => {
             const d = drafts[c];
             const t = thinkingDrafts[c]?.text.trim() ? thinkingDrafts[c] : undefined;
-            const showThinking = showTools && t && (roleFilter === "all" || t.role === roleFilter);
+            const showThinking = t && (roleFilter === "all" || t.role === roleFilter);
             const showDraft = d && (roleFilter === "all" || d.role === roleFilter);
             if (!showThinking && !showDraft) return null;
             return (

@@ -23,6 +23,10 @@ Server:
 4. `orchestrator/threadManager.ts` — the `case "<event>":` in the agent-event
    switch → `db.addMessage({ kind })` then `hub.publish(<durable ServerEvent>)`.
 5. The runner that produces it (`agents/grokRunner.ts` / `runner.ts` / `codexRunner.ts`).
+   Every runner commits `thinking` durably. Claude does it per non-empty assistant thinking
+   block, emitted UNTRIMMED so it equals the `thinking_delta` stream co-work dedupes against.
+   Codex does it per completed reasoning summary. A live-only `thinking_delta` with no commit
+   leaves a draft pinned to the feed bottom that vanishes on reload. Gate: `test:narration-persist`.
 
 Web:
 6. `web/src/types.ts` — mirror `Message.kind`, the `ServerEvent`, AND add a `FeedItem` variant.
@@ -32,8 +36,12 @@ Web:
    kind, else the live-pushed item and the re-fetched history row render TWICE.
 10. `store.ts` — if you added a per-thread draft slice, add it to the two `drop()`
     cleanups (thread.removed / thread.reset) and `DEFAULT`/initial state.
-11. `components/ThreadDetail.tsx` — `itemRoleOf`, the `visible` filter (if hideable —
-    fold verbose kinds into the `showTools` toggle), and the `FeedRow` `case "<kind>":` render.
+11. `components/ThreadDetail.tsx` — `itemRoleOf`, and the `FeedRow` `case "<kind>":` render.
+    Decide whether the ⛏ tools toggle hides it in `web/src/lib/feedFilter.ts` `isToolActivity`.
+    That covers tool MECHANICS only (`tool`, `tool_result`). Anything an agent SAYS stays
+    visible, and that includes `thinking`, because Opus 5.5 writes its progress narration inside
+    thinking blocks. Hiding reasoning with the tools made the implementor look mute
+    (2026-09-30). Gate: `test:tools-filter-narration`.
 12. `web/src/styles.css` — `.fi.<kind> .body` styling.
 
 Conventions that bite:

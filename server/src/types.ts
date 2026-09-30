@@ -1463,9 +1463,9 @@ export type AgentEvent =
   | { type: "text_delta"; text: string }
   | { type: "text"; text: string }
   | { type: "thinking_delta"; text: string }
-  // A completed reasoning segment persisted durably (kind: "thinking"). Grok's streaming-json exposes
-  // no tool events, so reasoning is the only narrative of a long agentic run — emitting it durably (not
-  // just as ephemeral thinking_delta) is what keeps a Grok transcript from looking empty after reload.
+  // A completed reasoning segment persisted durably (kind: "thinking"). Every runner commits one: Opus 5.5
+  // narrates its progress inside thinking blocks, and Grok's streaming-json exposes no tool events, so an
+  // ephemeral thinking_delta alone would leave that narrative missing after reload.
   | { type: "thinking"; text: string }
   | { type: "tool_use"; id: string; name: string; input: unknown }
   | { type: "tool_result"; id: string; content: unknown; isError: boolean }
