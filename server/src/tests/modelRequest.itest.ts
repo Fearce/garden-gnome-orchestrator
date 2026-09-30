@@ -13,6 +13,12 @@ process.env.FAST_ACCOUNT_PING_MS = "3600000";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// The Codex headroom checks below must read only their stubbed pools. Left at the defaults, the module-level
+// usage cap reads this machine's real ~/.codex, so the gate went red whenever the operator's Codex was capped.
+const codexHomes = mkdtempSync(join(tmpdir(), "model-request-codex-"));
+process.env.CODEX_HOME_DIR = join(codexHomes, "home");
+process.env.CODEX_SOURCE_HOME = join(codexHomes, "source");
 import type { AccountManager } from "../accounts/accountManager.js";
 import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
@@ -338,4 +344,5 @@ try {
   if (internals.capResumeTimer) clearTimeout(internals.capResumeTimer);
   db.raw.close();
   rmSync(dir, { recursive: true, force: true });
+  rmSync(codexHomes, { recursive: true, force: true });
 }
