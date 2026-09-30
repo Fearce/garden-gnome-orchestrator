@@ -68,6 +68,12 @@ It is red on some boxes and green on others, so it gets written off as a "known 
   `configured[0]` was `undefined`, and the file died on a TypeError with three assertions still
   unexecuted. Fix: seed the seam into the test's OWN throwaway Db (`db.kvSet("openai_api_key", ...)`).
 
+- **`test:model-request`** (2026-09-30, `f6001dd`) stubbed `codexPoolSnapshot` yet read 98%-used pools as
+  capped: `codexCapActive` falls through to the module-level `codexUsageCapped`, which scans the real
+  `~/.codex` rollouts, so the gate went red whenever the operator's own Codex weekly was spent. Fix: point
+  `CODEX_HOME_DIR` and `CODEX_SOURCE_HOME` at a temp dir BEFORE the dynamic imports — do the same in any
+  gate that reaches a `codex*ProviderCandidate`/`codexCapActive`.
+
 The general rule: **stubbing a ThreadManager method does not stub a module-level function it calls.** `codexImplementorReady` and `codexProviderCandidate` are methods and were stubbed; `codexAuthAvailable` is an import and was not, which is why the stubs looked complete and the gate still read the box. Before adding a gate, ask which of its reads leave the process: `config.*` (the real `.env`, loaded at import), `$HOME`, an auth file, a port, the clock. Each one is a machine the gate will be wrong on.
 
 **"Pre-existing, not my diff" is where both earlier sessions stopped, and it is not a stopping point.** Answer it with `git log -1 --format=%h -- <the test file>` beside `git diff HEAD -- <the source it covers>`: a gate red on an untouched pair is someone else's, and `npm run gates:touching -- <symbol>` names the rest. (An earlier version of this line cited `~/Claude/tools/gate-blame.sh` and `gate-ran.sh`, and a later one "corrected" it to say **neither exists on any machine here**. That correction is itself false on the maintainer's box, where both are present, and it is the same mistake `nightly-quality-sweep.md` has now made six times: asserting a machine-specific fact in a doc that is read on several machines. Never write either claim. **Ask instead: `python ~/.claude/scripts/findtool.py <words>`**, which searches every tool home plus the memory catalogue and answers for the box you are actually on.) Locally the suite separates ran-and-failed from never-ran itself: a red gate in the summary is tagged `[reported]`, `[crashed]` or `[silent]`. Read the tag before the tail, because for the last two the tail is actively misleading (a stack with no assertion in it, or twelve lines of PASSING output). Gate: `test:gates-driver`.
