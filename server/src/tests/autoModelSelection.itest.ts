@@ -650,7 +650,9 @@ async function main(): Promise<void> {
       // Assert the DISPATCH target, not `pickedModel`: the pin is answered by `pinnedModel` inside
       // `implementorDispatchTarget`, which is what actually spawns the run.
       const pinnedDispatch = h.internals.implementorDispatchTarget(id, "claude", "acct-a").model;
-      check("the pinned model is what runtime resolution returns", pinnedDispatch === SONNET_5, String(pinnedDispatch));
+      // The pin names the Sonnet LINE: it is never moved to Opus, but it runs that line's newest member the
+      // roster carries (the curated cold-start fallback lists claude-sonnet-5-5) — the newest-in-family rule.
+      check("the pinned model is what runtime resolution returns", pinnedDispatch === "claude-sonnet-5-5", String(pinnedDispatch));
       check("strict pins spend no automatic-selector turn", h.calls() === 0, String(h.calls()));
     } finally {
       h.dispose();

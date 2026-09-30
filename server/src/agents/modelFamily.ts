@@ -24,7 +24,7 @@ function splitSuffix(id: string): { base: string; suffix: string } {
 }
 
 const PARSERS: Array<(id: string) => ModelFamilyVersion | null> = [
-  // claude-opus-5-5, claude-opus-5, claude-opus-4-5-20251101, claude-haiku-4-5-20251001. A one- or
+  // claude-opus-5-5, claude-sonnet-5, claude-opus-4-5-20251101, claude-haiku-4-5-20251001. A one- or
   // two-digit group is a minor version; an 8-digit trailing group is a snapshot date, not a version.
   (id) => {
     const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(id);
@@ -35,7 +35,7 @@ const PARSERS: Array<(id: string) => ModelFamilyVersion | null> = [
     const m = /^claude-(\d+)(?:-(\d{1,2}))?-([a-z]+)(?:-\d{8})?$/.exec(id);
     return m ? { family: `claude-${m[3]}`, version: [Number(m[1]), Number(m[2] ?? 0)] } : null;
   },
-  // The tier-first wording an owner types for a Claude model: "Opus 5", "sonnet 5.5", "opus-4-5".
+  // The tier-first wording an owner types for a Claude model: "Sonnet 5", "sonnet 5.5", "opus-4-5".
   (id) => {
     const m = /^(opus|sonnet|haiku|fable)-(\d+)(?:[.-](\d{1,2}))?$/.exec(id);
     return m ? { family: `claude-${m[1]}`, version: [Number(m[2]), Number(m[3] ?? 0)] } : null;
