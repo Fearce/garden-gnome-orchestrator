@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { DIRECTOR_CHAT_FONT_MAX, DIRECTOR_CHAT_FONT_MIN, IDLE_MINUTES_MAX, IDLE_MINUTES_MIN, useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, claudeEffortsForModel, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type AccountDTO, type CodexEffort, type Effort, type GrokEffort, type Role, type UsageSavingPolicy, type ZaiEffort } from "../types.js";
+import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, claudeEffortsForModel, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type AccountDTO, type CliUpdateComponent, type CodexEffort, type Effort, type GrokEffort, type Role, type UsageSavingPolicy, type ZaiEffort } from "../types.js";
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
-import { effortLabel } from "../lib/format.js";
+import { ago, effortLabel, since } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { FreeProviders } from "./FreeProviders.js";
 import { RemoteControlSetup } from "./remote/RemoteControlSetup.js";
@@ -26,7 +26,7 @@ const SETTINGS_CATEGORIES = [
   { id: "general", section: "Orchestrator", label: "General", description: "Set the director's identity and how agents communicate with you.", keywords: "name wording concise detailed communication tone" },
   { id: "pipeline", section: "Orchestrator", label: "Pipeline", description: "Control task execution, reviews, concurrency, and supervision.", keywords: "planner research implementor qa review auto push git parallel workers supervisor models" },
   { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced.", keywords: "tokens quota capacity allowance polling reset spread resume budget" },
-  { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits.", keywords: "claude anthropic codex openai chatgpt grok xai zai glm api keys accounts models effort weekly safety" },
+  { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits.", keywords: "claude anthropic codex openai chatgpt grok xai zai glm api keys accounts models effort weekly safety cli update upgrade version sdk runtime new model" },
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
   { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
   { id: "remote-control", section: "Workspace", label: "Remote control", description: "Set up controlling this PC from the console, e.g. from a tablet.", keywords: "remote desktop control screen stream mouse keyboard tablet anydesk vnc rdp display monitor ffmpeg nvenc" },
@@ -453,6 +453,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
             <SettingsCategoryPanel id="subscriptions" active={!isSearching && activeCategoryId === "subscriptions"}>
               <Group label="Subscriptions">
                 <SubscriptionsSection />
+              </Group>
+              <Group label="Agent CLI updates">
+                <CliUpdatesSection />
               </Group>
             </SettingsCategoryPanel>
 
@@ -903,6 +906,66 @@ function SettingsCategoryIcon({ category }: { category: SettingsCategoryId }) {
   if (category === "office") return <svg {...common}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" /></svg>;
   if (category === "appearance") return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none" /></svg>;
   return <svg {...common}><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16M9 10h12" /></svg>;
+}
+
+const CLI_STATE_LABEL: Record<CliUpdateComponent["state"], string> = {
+  current: "Up to date",
+  updating: "Updating",
+  updated: "Updated",
+  waiting: "Waiting",
+  failed: "Failed",
+  unmanaged: "Not managed",
+  absent: "Not installed",
+  unknown: "Unknown",
+};
+
+function CliUpdatesSection() {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const checkNow = useStore((s) => s.checkCliUpdates);
+  const status = settings.cliAutoUpdate;
+  const checking = status.claude.state === "updating" || status.codex.state === "updating";
+  const nothingManaged = status.claude.state === "unmanaged" && status.codex.state === "unmanaged";
+  const sdk = status.claude.installed ? `Agent SDK ${status.claude.installed}` : "Agent SDK";
+  const claudeVersion = status.claude.runtime ? `Claude Code ${status.claude.runtime} · ${sdk}` : sdk;
+  return (
+    <>
+      <ToggleRow
+        label="Auto-update agent CLIs"
+        hint="On (default): every 6 hours GGO moves Claude and Codex to their latest release, so a newly released model runs the day it ships. Claude runs on the Claude Code runtime bundled with the Agent SDK: GGO installs the new SDK, typechecks, commits and pushes only the two package files, then restarts itself; running agents resume on it. Codex is the global npm CLI, swapped once no Codex agent is mid-turn. New models show up in the highlighted-news chip beside the usage gauge."
+        on={settings.autoUpdateClis}
+        onChange={(v) => setSettings({ autoUpdateClis: v })}
+      />
+      <div className="cli-updates">
+        <CliUpdateLine name="Claude" version={claudeVersion} component={status.claude} />
+        <CliUpdateLine name="Codex" version={status.codex.installed ? `Codex CLI ${status.codex.installed}` : "Codex CLI"} component={status.codex} />
+        <div className="cli-updates-foot">
+          <span>
+            {status.checkedAt ? `Checked ${ago(status.checkedAt)} ago` : "Not checked yet"}
+            {settings.autoUpdateClis && status.nextCheckAt > Date.now() ? ` · next check in ${since(status.nextCheckAt, Date.now())}` : ""}
+          </span>
+          <button className="sub-btn" disabled={!settings.autoUpdateClis || checking || nothingManaged} onClick={checkNow}>
+            {checking ? "Updating…" : "Check now"}
+          </button>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function CliUpdateLine({ name, version, component }: { name: string; version: string; component: CliUpdateComponent }) {
+  const behind = component.latest && component.installed && component.latest !== component.installed ? ` → ${component.latest}` : "";
+  return (
+    <div className="cli-update">
+      <span className={"cli-update-state " + component.state}>{CLI_STATE_LABEL[component.state]}</span>
+      <div className="cli-update-text">
+        <div className="cli-update-name">
+          {name} <span className="cli-update-version">{version}{behind}</span>
+        </div>
+        <div className="cli-update-detail">{component.detail}</div>
+      </div>
+    </div>
+  );
 }
 
 /**

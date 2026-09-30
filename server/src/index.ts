@@ -14,7 +14,8 @@ import websocket from "@fastify/websocket";
 import fastifyStatic from "@fastify/static";
 import { registerConsoleMount, rewriteConsoleUrl } from "./webMount.js";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, dirname, basename, extname, relative } from "node:path";
+import { isAbsolute, join, dirname, basename, extname, relative, resolve } from "node:path";
+import { restartRoute } from "./selfRestart.js";
 import { config } from "./config.js";
 import { buildInfo } from "./buildInfo.js";
 import { providerRuntimeVersions } from "./providerRuntime.js";
@@ -47,7 +48,8 @@ import { OnlineOffice } from "./office/onlineOffice.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { knownWorkspaces, revealWorkspace } from "./workspace/revealWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
-import { refreshStatus, getStatus, applyUpdate, startUpdatePoll } from "./update.js";
+import { refreshStatus, getStatus, applyUpdate, startUpdatePoll, stagedBuildStamp, claimCheckoutForRuntimeBump } from "./update.js";
+import { CliAutoUpdater } from "./toolchain/cliAutoUpdate.js";
 import { readPatchNotes } from "./patchNotes.js";
 import { registerWs } from "./ws/hub.js";
 import { FreeProviderService } from "./freeProviders/service.js";
@@ -228,6 +230,31 @@ async function main(): Promise<void> {
     onRemoteJoin: (repoLabel, workspaces, joiners) => manager.remoteTeammatesJoined(repoLabel, workspaces, joiners),
   });
   manager.attachOnlineOffice(onlineOffice);
+  // Keeps the Claude runtime (the Agent SDK's bundled Claude Code) and the global Codex CLI on their latest
+  // release so a newly shipped model is runnable without a manual upgrade. See toolchain/cliAutoUpdate.ts.
+  const cliUpdater = new CliAutoUpdater({
+    repoRoot: resolve(config.serverRoot, ".."),
+    serverRoot: config.serverRoot,
+    kvGet: (key) => db.kvGet(key),
+    kvSet: (key, value) => db.kvSet(key, value),
+    enabled: () => manager.settings().autoUpdateClis,
+    // Only the checkout's own instance: a lab or test server on a temp DATA_DIR would otherwise commit
+    // to this checkout and swap the global Codex install underneath the real one.
+    standDownReason:
+      resolve(config.dataDir) === resolve(config.serverRoot, "data") || process.env.CLI_AUTO_UPDATE === "1"
+        ? null
+        : `This instance runs on its own data directory (${config.dataDir}); only the checkout's primary instance updates the CLIs.`,
+    publish: (status) => manager.setCliAutoUpdateStatus(status),
+    log: (level, message) => hub.log(level, message),
+    codexLauncher: () => config.codex.launcher(),
+    codexBusy: () => manager.codexRunActive(),
+    loadedSdkVersion: () => providerRuntimeVersions().claudeAgentSdk,
+    upstream: () => refreshStatus(true),
+    claimCheckout: () => claimCheckoutForRuntimeBump(),
+    restartAvailable: async () => (await restartRoute()) !== "none",
+    requestRestart: (label) => restartCoordinator.request({ label, ...stagedBuildStamp() }),
+  });
+  manager.attachCliAutoUpdater((on) => cliUpdater.toggled(on));
   /**
    * None of these services is required to accept an HTTP/WebSocket connection.  In particular, some
    * immediately inspect local CLI logs, git state, or a large SQLite table; doing that before `listen()`
@@ -248,6 +275,7 @@ async function main(): Promise<void> {
       () => manager.startModelCatalog(),
       () => freeProviders.start(),
       () => startUpdatePoll(),
+      () => cliUpdater.start(),
       () => startSearchIndexBackfill(db, (message) => hub.publish({ type: "log", level: "info", message })),
       () => startLatestMessagePreviewBackfill(db, (message) => hub.publish({ type: "log", level: "info", message })),
       () =>
@@ -330,7 +358,7 @@ async function main(): Promise<void> {
         zlibDeflateOptions: { level: 3 },
       },
     } });
-    registerWs(app, { db, hub, manager, director, accounts, scheduler, goals, notes, repos, onlineOffice, cowork, codeContext });
+    registerWs(app, { db, hub, manager, director, accounts, scheduler, goals, notes, repos, onlineOffice, cowork, codeContext, cliUpdater });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
     registerIdeRoutes(app, ide, isAuthed);
     registerRemoteControlRoutes(app, remoteControl, isAuthed);

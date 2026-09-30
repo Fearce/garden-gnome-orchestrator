@@ -1196,6 +1196,35 @@ export interface OrchestratorSettings {
   grokModels: string[]; // read-only: pickable Grok model ids (curated ∪ live ∪ selected)
   // ---- Director Supervisor: a lightweight watchdog over active tasks (orchestrator/supervisor.ts) ----
   directorSupervisorEnabled: boolean; // off (default) — no background work at all. on — deterministic health checks plus an occasional cheap bounded agent check-in on tasks that look stalled, anomalous, or forgotten.
+  // ---- Agent CLI auto-update (toolchain/cliAutoUpdate.ts) ----
+  autoUpdateClis: boolean; // on (default) → every 6h GGO moves the Claude Agent SDK (which bundles the Claude Code runtime) and the global Codex CLI to their latest npm release, so newly released models run without a manual upgrade
+  cliAutoUpdate: CliAutoUpdateStatus; // read-only — what the last check found and did, per CLI
+}
+
+/** One CLI's auto-update state, as the last check left it. */
+export interface CliUpdateComponent {
+  installed: string | null; // the version on disk (for Claude: the Agent SDK; the bundled runtime is in `runtime`)
+  latest: string | null; // npm's latest stable release, when the registry answered
+  runtime?: string | null; // Claude only: the Claude Code version bundled with the installed SDK
+  state: "current" | "updating" | "updated" | "waiting" | "failed" | "unmanaged" | "absent" | "unknown";
+  detail: string; // one sentence for Settings: what happened, or why it did not
+  at: number; // when this state was set (epoch ms); 0 = never checked
+}
+
+export interface CliAutoUpdateStatus {
+  claude: CliUpdateComponent;
+  codex: CliUpdateComponent;
+  checkedAt: number; // when the last full check finished; 0 = never
+  nextCheckAt: number; // when the next one is scheduled; 0 = off
+}
+
+/** A "highlighted news" item — reserved for news important enough to interrupt: a newly released model. */
+export interface HighlightNewsItem {
+  id: string;
+  kind: "model";
+  provider: "claude" | "codex";
+  model: string; // the provider's model id, as it now appears in the pickers
+  at: number;
 }
 
 /** The implementor backend chosen at dispatch by the subscription toggles. */

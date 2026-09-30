@@ -201,6 +201,7 @@ import type {
   ModelOverrides,
   ModelPick,
   ModelRequest,
+  CliAutoUpdateStatus,
   OrchestratorSettings,
   PlanOutput,
   QaOutput,
@@ -225,6 +226,8 @@ import type { LocalAgentSnapshot, OnlineOffice } from "../office/onlineOffice.js
 import { OFFICE_ROOM as ONLINE_OFFICE_ROOM } from "../office/onlineProtocol.js";
 import type { RelayChat, RelayPresentAgent } from "../office/onlineProtocol.js";
 import { consumePlannedRestart } from "./restartCoordinator.js";
+import { HighlightNews } from "../news/highlightNews.js";
+import { emptyCliAutoUpdateStatus } from "../toolchain/cliAutoUpdate.js";
 
 // A real setup has a handful of subscriptions (Claude accounts + codex + the "default" layer); this
 // caps a LAN-reachable client from bloating the single kv blob that's re-parsed on every dispatch.
@@ -529,6 +532,7 @@ export type SettingsPatch = Partial<
     | "discordTokenPresent"
     | "discordTokenLast4"
     | "discordInboxStatus"
+    | "cliAutoUpdate"
     | "xhighEnabled"
     | "modelDefaults"
     | "claudeModels"
@@ -1166,6 +1170,10 @@ export class ThreadManager implements OrchestratorApi {
   private readonly discord: DiscordNotifier;
   /** The Discord inbox's last reported connection state, for the Settings panel. */
   private discordInboxStatus = "Off.";
+  private cliAutoUpdateStatus: CliAutoUpdateStatus = emptyCliAutoUpdateStatus();
+  private onAutoUpdateClisChanged?: (on: boolean) => void;
+  /** The top bar's "highlighted news" — newly released models, found by the model catalog. */
+  readonly news: HighlightNews;
   // The Director Supervisor watchdog (off by default) — see orchestrator/supervisor.ts. Standalone over a
   // narrow SupervisorHost view of this manager, so its logic never entangles with the pipeline internals.
   private readonly supervisor: DirectorSupervisor;
@@ -1185,6 +1193,11 @@ export class ThreadManager implements OrchestratorApi {
     this.db.kvDelete("setting_auto_resume_on_token_reset");
     this.db.kvDelete("setting_auto_resume_threshold_percent");
     this.migrateProviderDefaults();
+    this.news = new HighlightNews(
+      db,
+      (news) => this.hub.publish({ type: "news", news }),
+      (message) => this.hub.log("info", message),
+    );
     this.modelCatalog = new ModelCatalog(
       db,
       accounts,
@@ -1192,6 +1205,7 @@ export class ThreadManager implements OrchestratorApi {
       () => this.zaiApiKey(),
       () => this.hub.publish({ type: "settings", settings: this.settings() }),
       (level, message) => this.hub.log(level, message),
+      (provider, models) => this.news.observeModels(provider, models),
     );
     this.liveBench = new LiveBenchScores(db, (level, message) => this.hub.log(level, message));
     // Reads its config lazily on every notice, so flipping the toggle applies to tasks already running.
@@ -2926,6 +2940,8 @@ export class ThreadManager implements OrchestratorApi {
       ),
       grokModels: this.pickableGrokModels(),
       directorSupervisorEnabled: this.settingBool("setting_director_supervisor_enabled", false),
+      autoUpdateClis: this.settingBool("setting_auto_update_clis", true),
+      cliAutoUpdate: this.cliAutoUpdateStatus,
     };
   }
 
@@ -4777,6 +4793,23 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     };
   }
 
+  /** The CLI auto-updater lives in index.ts beside the restart coordinator it needs; it learns about the
+   *  Settings toggle through this hook so switching it on checks at once instead of at the next tick. */
+  attachCliAutoUpdater(onToggle: (on: boolean) => void): void {
+    this.onAutoUpdateClisChanged = onToggle;
+  }
+
+  setCliAutoUpdateStatus(status: CliAutoUpdateStatus): void {
+    this.cliAutoUpdateStatus = status;
+    this.hub.publish({ type: "settings", settings: this.settings() });
+  }
+
+  /** A Codex CLI process this orchestrator started is live, so replacing the global install could cut
+   *  its turn off. The run ledger is the source: every Codex run's account label is `codex:<model>`. */
+  codexRunActive(): boolean {
+    return this.db.listActiveRuns().some((run) => run.account?.startsWith("codex:"));
+  }
+
   setDiscordInboxStatus(text: string): void {
     if (text === this.discordInboxStatus) return;
     this.discordInboxStatus = text;
@@ -4967,6 +5000,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.directorSupervisorEnabled !== undefined) {
       this.db.kvSet("setting_director_supervisor_enabled", patch.directorSupervisorEnabled ? "1" : "0");
       this.supervisor.setEnabled(patch.directorSupervisorEnabled);
+    }
+    if (patch.autoUpdateClis !== undefined) {
+      this.db.kvSet("setting_auto_update_clis", patch.autoUpdateClis ? "1" : "0");
+      this.onAutoUpdateClisChanged?.(patch.autoUpdateClis);
     }
     if (patch.showComposerPickers !== undefined) this.db.kvSet("setting_show_composer_pickers", patch.showComposerPickers ? "1" : "0");
     if (patch.showAgentModel !== undefined) this.db.kvSet("setting_show_agent_model", patch.showAgentModel ? "1" : "0");

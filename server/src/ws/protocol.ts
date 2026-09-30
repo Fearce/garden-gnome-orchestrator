@@ -42,6 +42,7 @@ import type {
   Message,
   MessageCursor,
   ModelStat,
+  HighlightNewsItem,
   OperatorNote,
   OrchestratorSettings,
   Question,
@@ -117,6 +118,7 @@ export type ServerEvent =
       goals: Goal[];
       modelStats: ModelStat[];
       notes: OperatorNote[];
+      news: HighlightNewsItem[];
       onlineOffice: OnlineOfficeDTO;
       supervisor: SupervisorSnapshot;
       coworkSessions: CoworkSession[];
@@ -135,6 +137,7 @@ export type ServerEvent =
   | { type: "goals"; goals: Goal[] }
   // The owner's note list, rebroadcast whole on every post/delete (hard-capped, so it stays small).
   | { type: "notes"; notes: OperatorNote[] }
+  | { type: "news"; news: HighlightNewsItem[] }
   // The Director Supervisor's whole live state (watchdog, explicit chat, and recent audit),
   // rebroadcast on every change — small and capped like notes/schedules.
   | { type: "supervisor"; supervisor: SupervisorSnapshot }
@@ -485,6 +488,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     taskAgentCount: z.number().int().min(1).max(6),
     // Director Supervisor watchdog (off by default) — see orchestrator/supervisor.ts.
     directorSupervisorEnabled: z.boolean(),
+    autoUpdateClis: z.boolean(),
     showComposerPickers: z.boolean(),
         showAgentModel: z.boolean(),
         skipDirectorEffort: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]),
@@ -677,6 +681,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("note.create"), body: z.string().min(1).max(2000), url: z.string().max(600).optional() }),
   z.object({ type: z.literal("note.delete"), id: z.string() }),
   z.object({ type: z.literal("note.clear") }),
+  z.object({ type: z.literal("news.dismiss"), id: z.string().max(300) }),
+  z.object({ type: z.literal("news.dismissAll") }),
+  z.object({ type: z.literal("cli.update.check") }),
   // Existing-task supervision only. Empty targets means a bounded board-wide request; explicit ids are
   // re-resolved by the server and become the complete action scope for that turn.
   z.object({

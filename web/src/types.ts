@@ -780,6 +780,35 @@ export interface OrchestratorSettings {
   zaiModels: string[]; // read-only: pickable z.ai GLM model ids
   // Director Supervisor watchdog (off by default) — see server/src/orchestrator/supervisor.ts.
   directorSupervisorEnabled: boolean;
+  // Agent CLI auto-update (on by default) — see server/src/toolchain/cliAutoUpdate.ts.
+  autoUpdateClis: boolean;
+  cliAutoUpdate: CliAutoUpdateStatus; // read-only: what the last check found and did, per CLI
+}
+
+/** One CLI's auto-update state. Mirrors the server's CliUpdateComponent. */
+export interface CliUpdateComponent {
+  installed: string | null;
+  latest: string | null;
+  runtime?: string | null; // Claude only: the Claude Code version bundled with the installed Agent SDK
+  state: "current" | "updating" | "updated" | "waiting" | "failed" | "unmanaged" | "absent" | "unknown";
+  detail: string;
+  at: number;
+}
+
+export interface CliAutoUpdateStatus {
+  claude: CliUpdateComponent;
+  codex: CliUpdateComponent;
+  checkedAt: number;
+  nextCheckAt: number;
+}
+
+/** A "highlighted news" item for the top-bar chip — only a newly released model. Mirrors the server type. */
+export interface HighlightNewsItem {
+  id: string;
+  kind: "model";
+  provider: "claude" | "codex";
+  model: string;
+  at: number;
 }
 
 /** The five agent roles a model can be picked for. Mirrors the server's MODEL_ROLES. */
@@ -1000,6 +1029,7 @@ export type SettingsPatch = Partial<
     | "discordTokenPresent"
     | "discordTokenLast4"
     | "discordInboxStatus"
+    | "cliAutoUpdate"
     | "xhighEnabled"
     | "modelDefaults"
     | "claudeModels"
@@ -1311,6 +1341,7 @@ export type ServerEvent =
       goals?: Goal[];
       modelStats: ModelStat[];
       notes: OperatorNote[];
+      news?: HighlightNewsItem[];
       onlineOffice: OnlineOfficeDTO;
       supervisor: SupervisorSnapshot;
       coworkSessions: CoworkSession[];
@@ -1325,6 +1356,7 @@ export type ServerEvent =
   | { type: "schedules"; schedules: ScheduledTask[] }
   | { type: "goals"; goals: Goal[] }
   | { type: "notes"; notes: OperatorNote[] }
+  | { type: "news"; news: HighlightNewsItem[] }
   | { type: "supervisor"; supervisor: SupervisorSnapshot }
   | { type: "codex.usage"; usage: CodexUsageDTO | null }
   | { type: "grok.usage"; usage: GrokUsageDTO | null }
@@ -1491,6 +1523,9 @@ export type ClientCommand =
   | { type: "note.create"; body: string; url?: string }
   | { type: "note.delete"; id: string }
   | { type: "note.clear" }
+  | { type: "news.dismiss"; id: string }
+  | { type: "news.dismissAll" }
+  | { type: "cli.update.check" }
   | { type: "supervisor.message"; content: string; targetIds: string[]; clientId?: string }
   | { type: "supervisor.runNow" }
   | { type: "tokenSafety.bypass" }

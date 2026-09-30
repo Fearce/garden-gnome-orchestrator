@@ -64,6 +64,7 @@ const GATES = [
   "test:grok-usage",
   "test:codex-usage",
   "test:codex-launcher",
+  "test:cli-auto-update",
   "test:schedule-detect",
   "test:effort-request",
   "test:scheduler",

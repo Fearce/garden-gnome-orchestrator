@@ -1,3 +1,4 @@
+import type { CliAutoUpdater } from "../toolchain/cliAutoUpdate.js";
 import { existsSync } from "node:fs";
 import type { FastifyInstance } from "fastify";
 import type { WebSocket } from "ws";
@@ -49,6 +50,7 @@ export interface WsContext {
   codeContext: CodeContextService;
   onlineOffice: OnlineOffice;
   cowork: CoworkManager;
+  cliUpdater: CliAutoUpdater;
 }
 
 /** Banked-reset redeems in flight, by target key — see the `resetCredit.redeem` case. */
@@ -119,6 +121,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     goals: ctx.goals.list(),
     modelStats: ctx.db.modelStats(),
     notes: ctx.notes.list(),
+    news: ctx.manager.news.list(),
     onlineOffice: ctx.onlineOffice.status(),
     supervisor: ctx.manager.supervisorSnapshot(),
     coworkSessions: ctx.cowork.sessions(),
@@ -175,6 +178,8 @@ export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs:
           cached.event = { ...cached.event, coworkSessions: [event.session, ...sessions.filter((session) => session.id !== event.session.id)] };
         } else if (cached?.event.type === "hello" && event.type === "cowork.removed") {
           cached.event = { ...cached.event, coworkSessions: (cached.event.coworkSessions ?? []).filter((session) => session.id !== event.sessionId) };
+        } else if (cached?.event.type === "hello" && event.type === "news") {
+          cached.event = { ...cached.event, news: event.news };
         } else if (cached?.event.type === "hello" && cached.event.threads && event.type === "thread.upsert") {
           cached.event = { ...cached.event, threads: withThreadCard(cached.event.threads, event.thread) };
         }
@@ -622,6 +627,15 @@ export async function handleCommand(
       break;
     case "note.clear":
       ctx.notes.clear();
+      break;
+    case "news.dismiss":
+      ctx.manager.news.dismiss(cmd.id);
+      break;
+    case "news.dismissAll":
+      ctx.manager.news.dismissAll();
+      break;
+    case "cli.update.check":
+      void ctx.cliUpdater.checkNow();
       break;
     case "supervisor.message":
       ctx.manager.supervisorSendMessage(cmd.content, cmd.targetIds, cmd.clientId);

@@ -183,6 +183,8 @@ export class ModelCatalog {
     private readonly getZaiKey: () => string | undefined,
     private readonly onChange: () => void,
     private readonly log: (level: "info" | "warn" | "error", message: string) => void = () => {},
+    /** Sees each provider roster the catalog holds, so a model id never shown before can be announced. */
+    private readonly observeRoster: (provider: "claude" | "codex", models: string[]) => void = () => {},
   ) {}
 
   start(): void {
@@ -217,7 +219,7 @@ export class ModelCatalog {
       if (signature !== this.codexFileSignature) {
         const fresh = readCodexModelsFile();
         if (fresh.length) {
-          this.storeIfChanged(CODEX_CLI_MODELS_KEY, fresh);
+          if (this.storeIfChanged(CODEX_CLI_MODELS_KEY, fresh)) this.observeRoster("codex", fresh.map((m) => m.id));
           this.codexFileSignature = signature;
         }
       }
@@ -297,6 +299,8 @@ export class ModelCatalog {
     // Persist the full capability rows so settings and auto-select survive a transiently missing file.
     const codexCli = readCodexModelsFile();
     if (codexCli.length && this.storeIfChanged(CODEX_CLI_MODELS_KEY, codexCli)) changed = true;
+    this.observeRoster("claude", this.claudeModels());
+    this.observeRoster("codex", this.codexCliModels().map((m) => m.id));
     const zaiKey = this.getZaiKey();
     await collect("z.ai", ZAI_MODELS_KEY, () => (zaiKey ? fetchZaiModels(zaiKey) : undefined));
     // Grok comes from the CLI's own local cache file (no network / no auth needed).

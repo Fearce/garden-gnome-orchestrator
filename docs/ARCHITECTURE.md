@@ -668,10 +668,11 @@ a single discriminated union (`zod`-validated). Highlights:
   `thread.deliverableSummary` (the opt-in Sonnet summary that closes a done/review feed;
   `thread.history` carries the stored one),
   `thread.changes`, `director.delta` / `director.message` / `director.tool` /
-  `director.busy`, `log`.
+  `director.busy`, `news` (the highlighted-news list — new model releases), `log`.
 - C→S: `prompt.new`, `question.answer`, `thread.inject`, `thread.interrupt`,
   `thread.resume`, `thread.cancel`, `thread.close`, `thread.restore`, `thread.dismiss`,
-  `thread.history`, `thread.approve` / `approval.set`, `thread.changes`, `snapshot.request`.
+  `thread.history`, `thread.approve` / `approval.set`, `thread.changes`, `snapshot.request`,
+  `news.dismiss` / `news.dismissAll`, `cli.update.check`.
 - The Co-work lane has its own pair: S→C `cowork.session` / `cowork.removed` /
   `cowork.message` / `cowork.history` / `cowork.delta` / `cowork.thinking` /
   `cowork.action`, and C→S `cowork.create` / `cowork.send` / `cowork.steer` / `cowork.stop` /
@@ -722,6 +723,12 @@ a never-visited tab keeps the current state. Every tab switch goes through the
 store's `switchView` — `setBoardView`, `openInIde` and `returnToOrigin` alike.
 A load always opens on Tasks, so boot uses the Tasks tab's saved state.
 Browser check: `npm run layout-memory-lab --prefix server`.
+
+**Highlighted news.** `NewsChip` sits immediately before the usage gauge only
+while the server holds undismissed news — today only a newly released Claude or
+Codex model, spotted by `ModelCatalog` and kept current by the agent-CLI
+auto-updater (`server/src/toolchain/cliAutoUpdate.ts`, status under Settings →
+Subscriptions). Browser check: `npm run news-lab --prefix server`.
 
 **Themes** (Settings → Appearance) are a per-browser choice between *Classic*
 — `styles.css` itself, with no attribute on `<html>` — and *Nocturne*, whose

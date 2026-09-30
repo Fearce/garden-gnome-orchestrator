@@ -6,6 +6,7 @@ import { Board } from "./components/Board.js";
 import { ThreadDetail } from "./components/ThreadDetail.js";
 import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
+import { NewsChip } from "./components/NewsChip.js";
 import { PortalLink } from "./components/PortalLink.js";
 import { Office } from "./components/Office.js";
 import { NoticeBanner } from "./components/NoticeBanner.js";
@@ -69,7 +70,7 @@ export function App() {
   return (
     <div className="app">
       {/* Focus mode strips the bar down to what a working session might still click — the two panel
-          toggles, an update that just landed, and the socket. Everything it drops only REPORTS state
+          toggles, an update that just landed, a model release, and the socket. Everything it drops only REPORTS state
           (build tag, office gnomes, the account burn strip, the counters), and the strip is the whole
           second row on anything under 1800px, so the header stops eating the screen. */}
       <header className={"topbar" + (focusMode ? " focus" : "")}>
@@ -90,10 +91,14 @@ export function App() {
         )}
         <UpdateBadge />
         {focusMode ? (
-          <div className="spacer" />
+          <>
+            <NewsChip />
+            <div className="spacer" />
+          </>
         ) : (
           <>
             <Office />
+            <NewsChip />
             <Accounts />
             <span className="stat">
               <b>{taskCount}</b> {taskCount === 1 ? "task" : "tasks"} · <b>{coworkCount}</b> co-work · <b>{liveAgents}</b> {liveAgents === 1 ? "agent" : "agents"} live

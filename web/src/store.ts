@@ -45,6 +45,7 @@ import type {
   MessageCursor,
   ModelStat,
   OnlineOfficeDTO,
+  HighlightNewsItem,
   OperatorNote,
   OrchestratorSettings,
   Question,
@@ -362,6 +363,8 @@ interface State {
   // The owner's note list (server-authoritative): short pointers agents leave for them — a branch to
   // review, a PR to merge — shown in the Notes board view, cleared by the owner one note at a time.
   notes: OperatorNote[];
+  // Highlighted news (server-authoritative): newly released models, shown as the top-bar news chip.
+  news: HighlightNewsItem[];
   // Director Supervisor: the watchdog's live state (enabled, in-flight-pass flag, budget, recent audit
   // trail) — server-authoritative, shown in the Supervisor board view. Neutral/off until hello lands.
   supervisor: SupervisorSnapshot;
@@ -550,6 +553,9 @@ interface State {
   addNote: (body: string, url?: string) => void;
   deleteNote: (id: string) => void;
   clearNotes: () => void;
+  dismissNews: (id: string) => void;
+  dismissAllNews: () => void;
+  checkCliUpdates: () => void;
   sendSupervisorMessage: (content: string, targetIds: string[]) => boolean;
   runSupervisorNow: () => void;
   // The Online Office's three operator actions. Same optimism-free contract as everything else
@@ -896,6 +902,13 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   codexModelEfforts: {},
   grokModels: [],
   directorSupervisorEnabled: false,
+  autoUpdateClis: true,
+  cliAutoUpdate: {
+    claude: { installed: null, latest: null, runtime: null, state: "unknown", detail: "Not checked yet.", at: 0 },
+    codex: { installed: null, latest: null, state: "unknown", detail: "Not checked yet.", at: 0 },
+    checkedAt: 0,
+    nextCheckAt: 0,
+  },
 };
 
 // A server that predates the settings broadcast (or any partial payload) must never null out the
@@ -1427,6 +1440,7 @@ export const useStore = create<State>((set) => ({
   schedules: [],
   goals: [],
   notes: [],
+  news: [],
   supervisor: IDLE_SUPERVISOR,
   onlineOffice: OFFLINE_OFFICE,
   officeJoining: false,
@@ -1933,6 +1947,9 @@ export const useStore = create<State>((set) => ({
   },
   deleteNote: (id) => sendCommand({ type: "note.delete", id }),
   clearNotes: () => sendCommand({ type: "note.clear" }),
+  dismissNews: (id) => sendCommand({ type: "news.dismiss", id }),
+  dismissAllNews: () => sendCommand({ type: "news.dismissAll" }),
+  checkCliUpdates: () => sendCommand({ type: "cli.update.check" }),
   sendSupervisorMessage: (content, targetIds) => {
     const text = content.trim();
     if (!text) return false;
@@ -2159,6 +2176,7 @@ function applyEvent(ev: ServerEvent): void {
         ...(ev.goals ? { goals: ev.goals } : {}),
         ...(ev.modelStats ? { modelStats: ev.modelStats } : {}),
         ...(ev.notes ? { notes: ev.notes } : {}),
+        ...(ev.news ? { news: ev.news } : {}),
         ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}),
         ...(ev.supervisor ? { supervisor: ev.supervisor } : {}),
         // A reconnect never delivers the reply to a bypass sent on the dead socket, so release the button.
@@ -2320,6 +2338,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "notes":
       useStore.setState({ notes: ev.notes });
+      break;
+    case "news":
+      useStore.setState({ news: ev.news });
       break;
     case "schedules":
       useStore.setState({ schedules: ev.schedules });

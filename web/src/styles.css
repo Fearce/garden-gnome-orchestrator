@@ -965,6 +965,61 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
   animation: update-spin 0.7s linear infinite;
 }
 @keyframes update-spin { to { transform: rotate(360deg); } }
+
+/* Highlighted news — mounts only while a newly released model is undismissed, so it is allowed to be
+   louder than every other top-bar control: a filled accent pill with a label, next to the usage gauge. */
+.news { position: relative; display: inline-flex; flex: 0 0 auto; }
+.news-chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px 0 8px; cursor: pointer;
+  border-radius: 999px; border: 1px solid color-mix(in oklch, var(--accent) 70%, var(--line));
+  background: color-mix(in oklch, var(--accent) 18%, var(--bg-2)); color: var(--accent);
+  font-family: var(--font-mono); font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  white-space: nowrap; transition: background 0.12s, border-color 0.12s;
+  animation: news-glow 2.6s ease-in-out infinite;
+}
+.news-chip:hover, .news-chip.open { background: color-mix(in oklch, var(--accent) 28%, var(--bg-2)); border-color: var(--accent); }
+.news-chip.open { animation: none; }
+@keyframes news-glow {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--accent) 40%, transparent); }
+  50%      { box-shadow: 0 0 0 4px color-mix(in oklch, var(--accent) 12%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .news-chip { animation: none; } }
+.news-panel {
+  position: fixed; z-index: 60;
+  background: var(--bg-1); border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  box-shadow: 0 12px 32px oklch(0 0 0 / 0.45);
+  padding: 12px 12px 10px;
+}
+.news-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.news-title { font-family: var(--font-serif); font-size: 18px; color: var(--text); }
+.news-clear {
+  border: 0; background: none; cursor: pointer; padding: 0;
+  color: var(--text-faint); font-size: 11px;
+}
+.news-clear:hover { color: var(--text); }
+.news-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.news-item {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: start;
+  padding: 9px 10px; border-radius: var(--r-sm);
+  background: var(--bg-2); border: 1px solid var(--line);
+}
+.news-item-main { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; row-gap: 3px; align-items: baseline; }
+.news-provider {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--accent);
+}
+.news-provider.codex { color: var(--ok); }
+.news-model { font-size: 14px; font-weight: 600; color: var(--text); }
+.news-id, .news-when { grid-column: 1 / -1; }
+.news-id { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); overflow-wrap: anywhere; }
+.news-when { font-size: 11.5px; color: var(--text-faint); }
+.news-dismiss {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: var(--r-sm); cursor: pointer;
+  border: 1px solid transparent; background: none; color: var(--text-faint);
+}
+.news-dismiss:hover { color: var(--text); border-color: var(--line-strong); }
+.news-foot { margin: 9px 2px 0; font-size: 11px; color: var(--text-faint); line-height: 1.45; }
 @media (prefers-reduced-motion: reduce) { .update-spinner { animation-duration: 2s; } }
 .rail-toggle, .focus-toggle {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1207,6 +1262,25 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 .settings-row-hint { font-size: 11px; color: var(--text-faint); line-height: 1.4; margin-top: 2px; }
 .settings-note { margin: 4px 24px 2px; font-size: 11px; color: var(--text-faint); line-height: 1.45; }
 .settings-note.tight { margin: 2px 24px 8px; }
+/* Agent CLI updates: one line per CLI — a state tag, its versions, and what the last check did. */
+.cli-updates { margin: 0 24px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); }
+.cli-update { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 12px; padding: 10px 12px; align-items: start; }
+.cli-update + .cli-update { border-top: 1px solid var(--line); }
+.cli-update-state {
+  justify-self: start; margin-top: 1px; padding: 2px 7px; border-radius: 999px; white-space: nowrap;
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-faint); border: 1px solid var(--line);
+}
+.cli-update-state.current, .cli-update-state.updated { color: var(--ok); border-color: color-mix(in oklch, var(--ok) 45%, var(--line)); }
+.cli-update-state.updating, .cli-update-state.waiting { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 45%, var(--line)); }
+.cli-update-state.failed { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 45%, var(--line)); }
+.cli-update-name { font-size: 13px; font-weight: 500; color: var(--text); }
+.cli-update-version { margin-left: 6px; font-family: var(--font-mono); font-size: 11px; font-weight: 400; color: var(--text-dim); }
+.cli-update-detail { margin-top: 3px; font-size: 11px; line-height: 1.45; color: var(--text-faint); overflow-wrap: anywhere; }
+.cli-updates-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; border-top: 1px solid var(--line); font-size: 11px; color: var(--text-faint);
+}
 .settings-page-note {
   margin-top: 12px; padding: 11px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
 }

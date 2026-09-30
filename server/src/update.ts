@@ -65,7 +65,7 @@ function emptyStatus(): UpdateStatus {
 
 type PlannedRestart = (input: { label?: string; commit?: string; stampedAt?: number }) => RestartRequestResult;
 
-function stagedBuildStamp(): { commit?: string; stampedAt?: number } {
+export function stagedBuildStamp(): { commit?: string; stampedAt?: number } {
   try {
     const parsed = JSON.parse(readFileSync(resolve(config.serverRoot, "dist", ".build-info.json"), "utf8")) as {
       commit?: unknown;
@@ -185,6 +185,20 @@ function nowMs(): number {
 let cache: UpdateStatus = emptyStatus();
 let refreshing: Promise<UpdateStatus> | null = null;
 let applying = false;
+let runtimeBumpHeld = false;
+
+/**
+ * The CLI auto-updater takes the checkout while it swaps the Agent SDK in and commits the two package
+ * files, so an owner update can't pull or `npm install` over a half-applied bump (and vice versa).
+ * Returns the release, or null while an owner update is running.
+ */
+export function claimCheckoutForRuntimeBump(): (() => void) | null {
+  if (applying || runtimeBumpHeld) return null;
+  runtimeBumpHeld = true;
+  return () => {
+    runtimeBumpHeld = false;
+  };
+}
 
 /** Fetch the remote (throttled unless forced) then recompute ahead/behind. Concurrent calls share one
  *  in-flight fetch. Returns the freshly computed (or still-fresh cached) status. */
@@ -299,6 +313,10 @@ export async function applyUpdate(requestRestart: PlannedRestart): Promise<Apply
   };
   if (applying) {
     res.error = "an update is already in progress";
+    return res;
+  }
+  if (runtimeBumpHeld) {
+    res.error = "the Claude runtime auto-update is committing an Agent SDK bump — try again in a minute";
     return res;
   }
   applying = true;
