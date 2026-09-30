@@ -140,7 +140,7 @@ import { isCapacityStallPark, MAX_CAPACITY_STALL_RESUMES } from "./capacityStall
 import { ActionHistory, assessSessionProgress, noProgressParkText } from "./continuationProgress.js";
 import { completionAnnouncement } from "./voiceAnnounce.js";
 import {
-  DELIVERABLE_SUMMARY_MODEL,
+  deliverableSummaryModel,
   deliverableFilesFor,
   summarizableMemo,
   summarizeDeliverables,
@@ -7117,7 +7117,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       }
       const summary: DeliverableSummary = {
         text,
-        model: DELIVERABLE_SUMMARY_MODEL,
+        model: deliverableSummaryModel(),
         memoId: target.memoId,
         sourceKey: target.sourceKey,
         taskState: target.input.state,

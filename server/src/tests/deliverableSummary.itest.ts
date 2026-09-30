@@ -20,7 +20,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
-const { buildDeliverableSummaryPrompt, cleanDeliverableSummary, summarySourceKey, DELIVERABLE_SUMMARY_MODEL, OAUTH_SYSTEM_PROMPT } = await import(
+const { buildDeliverableSummaryPrompt, cleanDeliverableSummary, summarySourceKey, DELIVERABLE_SUMMARY_MODEL, deliverableSummaryModel, OAUTH_SYSTEM_PROMPT } = await import(
   "../orchestrator/deliverableSummary.js"
 );
 
@@ -146,7 +146,9 @@ priv.setState(doneTask, "done");
 await settle();
 check("exactly one Sonnet call", calls.length === 1, String(calls.length));
 check("it rides the subscription aux token", calls[0]?.auth === "Bearer aux-token");
-check("the call names the Sonnet summarizer model", calls[0]?.model === DELIVERABLE_SUMMARY_MODEL);
+check("the call names the Sonnet summarizer model", calls[0]?.model === deliverableSummaryModel(), calls[0]?.model);
+// Newest-in-family: the configured claude-sonnet-5 runs as the newest Sonnet the roster carries.
+check("the summarizer runs the newest Sonnet, never a superseded one", calls[0]?.model === "claude-sonnet-5-5", calls[0]?.model);
 // Without the Claude Code system prompt a subscription token gets 429 on every Sonnet call (measured live).
 check("it identifies as Claude Code, which an OAuth token needs for Sonnet", calls[0]?.system === OAUTH_SYSTEM_PROMPT, calls[0]?.system);
 check("the prompt holds the final report and the deliverable", !!calls[0]?.prompt.includes(FINAL_REPORT) && !!calls[0]?.prompt.includes("report.md"));

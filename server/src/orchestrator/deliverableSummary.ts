@@ -9,9 +9,18 @@
 
 import { createHash } from "node:crypto";
 import type { DeliverableSummary, Finding, ImplementationMemo, Thread } from "../types.js";
+import { latestFamilyModel } from "../agents/modelFamily.js";
 import { disputesTheWork } from "./titleFromInjection.js";
 
+/** The configured summarizer — a LINE, not a release. Always call through `deliverableSummaryModel()`. */
 export const DELIVERABLE_SUMMARY_MODEL = process.env.DELIVERABLE_SUMMARY_MODEL || "claude-sonnet-5";
+
+/** The model a summary call runs on: the configured summarizer's newest same-line member any installed
+ *  provider exposes (claude-sonnet-5 → claude-sonnet-5-5), so a Sonnet release is picked up with no
+ *  code change (the newest-in-family invariant, `agents/modelFamily.ts`). */
+export function deliverableSummaryModel(): string {
+  return latestFamilyModel(DELIVERABLE_SUMMARY_MODEL);
+}
 const MAX_OUTPUT_TOKENS = 1_200;
 const TIMEOUT_MS = 90_000;
 const BRIEF_CHARS = 4_000;
@@ -86,7 +95,7 @@ export const OAUTH_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CL
 
 async function ask(prompt: string, token: string): Promise<string | null> {
   const body = JSON.stringify({
-    model: DELIVERABLE_SUMMARY_MODEL,
+    model: deliverableSummaryModel(),
     max_tokens: MAX_OUTPUT_TOKENS,
     system: OAUTH_SYSTEM_PROMPT,
     messages: [{ role: "user", content: prompt }],
@@ -155,6 +164,8 @@ export function summaryStateFor(thread: Pick<Thread, "state" | "error">, capPark
 
 /** Identity of one summary's inputs. Any change the owner would see in the note (a new report revision,
  *  another surfaced file, a review turning into done) changes the key; a re-stamped memo does not. */
+// Keyed on the CONFIGURED line, not the resolved release: a Sonnet release must not re-summarize (and
+// re-bill) every stored summary the next time its task is opened.
 export function summarySourceKey(input: DeliverableSummaryInput): string {
   return createHash("sha256").update(`${DELIVERABLE_SUMMARY_MODEL}\n${buildDeliverableSummaryPrompt(input)}`).digest("hex").slice(0, 32);
 }
