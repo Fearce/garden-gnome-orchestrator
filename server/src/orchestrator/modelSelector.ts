@@ -100,9 +100,9 @@ export function modelNote(provider: ImplementorProvider, model: string): string 
 }
 
 function codexModelNote(id: string): string {
-  if (/^gpt-6-sol(?:[-.]|$)/i.test(id)) return `GPT-6 workhorse for complex coding and agentic workflows below Astra; ${CODEX_CLI_BRIDGE_NOTE}`;
-  if (/^gpt-6-luna(?:[-.]|$)/i.test(id)) return `budget GPT-6 tier for focused and high-volume work; prefer the smallest confident effort; ${CODEX_CLI_BRIDGE_NOTE}`;
-  if (/^gpt-6-astra(?:[-.]|$)/i.test(id)) return `highest-cost Codex frontier-tier model; reserve for work that truly needs maximum autonomous reasoning and justify the spend; ${CODEX_CLI_BRIDGE_NOTE}`;
+  if (/^gpt-6(?:\.\d+)?-sol(?:[-.]|$)/i.test(id)) return `GPT-6 workhorse for complex coding and agentic workflows below Astra; ${CODEX_CLI_BRIDGE_NOTE}`;
+  if (/^gpt-6(?:\.\d+)?-luna(?:[-.]|$)/i.test(id)) return `budget GPT-6 tier for focused and high-volume work; prefer the smallest confident effort; ${CODEX_CLI_BRIDGE_NOTE}`;
+  if (/^gpt-6(?:\.\d+)?-astra(?:[-.]|$)/i.test(id)) return `highest-cost Codex frontier-tier model; reserve for work that truly needs maximum autonomous reasoning and justify the spend; ${CODEX_CLI_BRIDGE_NOTE}`;
   if (/^gpt-5\.6-sol(?:[-.]|$)/i.test(id)) return `premium GPT-5.6 Codex tier; strong autonomous coding below Astra, suited to high-uncertainty implementation when Terra/Luna are too small; ${CODEX_CLI_BRIDGE_NOTE}`;
   if (/^gpt-5\.6-terra(?:[-.]|$)/i.test(id)) return `balanced GPT-5.6 Codex workhorse; cheaper than Sol/Astra and suitable for ordinary multi-file implementation at the smallest confident effort; ${CODEX_CLI_BRIDGE_NOTE}`;
   if (/^gpt-5\.6-luna(?:[-.]|$)/i.test(id)) return `budget GPT-5.6 Codex tier; low/medium effort should usually beat legacy GPT-5.5/5.4 on both quality and cost for small or mechanical work; ${CODEX_CLI_BRIDGE_NOTE}`;

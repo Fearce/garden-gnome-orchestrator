@@ -1205,7 +1205,7 @@ export class ThreadManager implements OrchestratorApi {
       () => this.zaiApiKey(),
       () => this.hub.publish({ type: "settings", settings: this.settings() }),
       (level, message) => this.hub.log(level, message),
-      (provider, models) => this.news.observeModels(provider, models),
+      (provider, models) => this.news.observeModels(provider, this.pickableSubset(provider, models)),
     );
     this.liveBench = new LiveBenchScores(db, (level, message) => this.hub.log(level, message));
     // Reads its config lazily on every notice, so flipping the toggle applies to tasks already running.
@@ -3211,6 +3211,13 @@ export class ThreadManager implements OrchestratorApi {
       .map(([, policy]) => policy.model);
     return uniq([...this.modelCatalog.claudeModels(), ...CURATED_CLAUDE_MODELS, ...Object.values(config.models), ...selected, ...saving])
       .filter((model) => !isDisallowedClaudeModel(model));
+  }
+
+  /** News may only announce a model the Settings pickers offer — a catalog id the owner policy filters
+   *  out (Claude tiers no role runs, non-GPT-6 Codex) would otherwise be announced as pickable when it is not. */
+  private pickableSubset(provider: "claude" | "codex", models: string[]): string[] {
+    const pickable = new Set(provider === "claude" ? this.pickableClaudeModels() : this.pickableCodexModels());
+    return models.filter((model) => pickable.has(model));
   }
 
   /** Pickable Codex model ids for the Settings dropdown: curated flagships first, then any additional

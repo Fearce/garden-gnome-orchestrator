@@ -38,7 +38,7 @@ const CODEX_MAX_EFFORTS: CodexEffort[] = ["low", "medium", "high", "xhigh", "max
 /** Cold-start mirror of server/src/types.ts; prefer settings.codexModelEfforts once connected. */
 export function codexEffortsForModel(model: string): readonly CodexEffort[] {
   const id = model.trim();
-  if (/^(?:gpt-6-(?:astra|sol)|gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
+  if (/^(?:gpt-6(?:\.\d+)?-(?:astra|sol)|gpt-5\.6-(?:sol|terra)|gpt-daybreak-blue-latest)(?:[-.]|$)/i.test(id)) return CODEX_EFFORTS;
   if (/^(?:gpt-6|gpt-5\.6|gpt-reserve|codex-auto-review)(?:[-.]|$)/i.test(id)) return CODEX_MAX_EFFORTS;
   return CODEX_PRE_MAX_EFFORTS;
 }

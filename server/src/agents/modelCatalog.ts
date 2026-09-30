@@ -219,8 +219,12 @@ export class ModelCatalog {
       if (signature !== this.codexFileSignature) {
         const fresh = readCodexModelsFile();
         if (fresh.length) {
-          if (this.storeIfChanged(CODEX_CLI_MODELS_KEY, fresh)) this.observeRoster("codex", fresh.map((m) => m.id));
+          // Stamp first: the observer and the rebroadcast read this roster back through here.
           this.codexFileSignature = signature;
+          if (this.storeIfChanged(CODEX_CLI_MODELS_KEY, fresh)) {
+            this.observeRoster("codex", fresh.map((m) => m.id));
+            this.onChange();
+          }
         }
       }
     } catch { /* retain the last-known authenticated catalog if the file is unavailable */ }

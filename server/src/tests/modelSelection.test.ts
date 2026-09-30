@@ -1,4 +1,4 @@
-import { currentCodexModel, currentCodexModels } from "../agents/codexModelGeneration.js";
+import { currentCodexModel, currentCodexModels, isGpt6Model } from "../agents/codexModelGeneration.js";
 /**
  * Unit test — auto model selection's two pure halves: the reply validator (modelSelector) and the
  * outcome score (modelGrading). No network, no DB, no quota.
@@ -25,6 +25,7 @@ import { codexTokenUsage } from "../agents/codexRunner.js";
 import { providerIntent } from "../orchestrator/providerIntent.js";
 import { applyImplementorModelPolicy, isPolicyApprovedFlagship } from "../orchestrator/modelRoutingPolicy.js";
 import type { AgentRun, Effort, ImplementorModelPolicy } from "../types.js";
+import { codexEffortsForModel } from "../types.js";
 
 let passed = 0;
 let failed = 0;
@@ -593,6 +594,11 @@ try {
 check("superseded saved and dated pins upgrade", currentCodexModel("gpt-5.6-sol") === "gpt-6-sol" && currentCodexModel("GPT-5.6-LUNA-2026-07-01") === "gpt-6-luna");
 check("Terra upgrades to GPT-6 Sol", currentCodexModel("gpt-5.6-terra") === "gpt-6-sol");
 check("catalog upgrades deduplicate", currentCodexModels(["gpt-5.6-sol", "gpt-6-sol"]).join() === "gpt-6-sol");
+check("a GPT-6 point release is GPT-6", isGpt6Model("gpt-6.1-sol") && currentCodexModels(["gpt-6.1-sol", "gpt-6-sol"]).join() === "gpt-6.1-sol,gpt-6-sol");
+check("a GPT-6 point release is not an upgrade target", currentCodexModel("gpt-6.1-sol") === "gpt-6.1-sol");
+check("a GPT-6 point-release Sol reaches Ultra before the CLI catalog loads", codexEffortsForModel("gpt-6.1-sol").includes("ultra"));
+check("a GPT-6 point-release Sol keeps its tier note", /GPT-6 workhorse/.test(modelNote("codex", "gpt-6.1-sol")));
+check("GPT-6.10 is not mistaken for anything else", isGpt6Model("gpt-6.10-luna") && !isGpt6Model("gpt-60-luna") && !isGpt6Model("gpt-6x"));
 check("retired models never return as automatic fallback", filterAutoSelectionCandidates([{provider: "codex", model: "gpt-5.6-sol"}, {provider: "codex", model: "gpt-5.6-luna"}]).length === 0);
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);

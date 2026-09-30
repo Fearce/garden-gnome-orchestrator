@@ -325,6 +325,30 @@ check("ModelCatalog hands its cached Claude roster to the news observer on refre
   assert.deepEqual(seen.find(([p]) => p === "claude")?.[1], ["claude-opus-5-5"]);
 });
 
+check("the news only announces a model the Settings pickers offer", async () => {
+  const { Db: RealDb } = await import("../db/db.js");
+  const { EventHub } = await import("../events.js");
+  const { FileMemoryService } = await import("../memory/memory.js");
+  const { ThreadManager } = await import("../orchestrator/threadManager.js");
+  const dir = mkdtempSync(join(tmpdir(), "news-pickable-"));
+  const db = new RealDb(join(dir, "orchestrator.sqlite"));
+  const accounts = { onUsageRefresh: () => {}, setPingInterval: () => {}, setSpreadUsage: () => {}, applyEnabled: () => {}, applyWeeklySafetyPct: () => {} };
+  const mgr = new ThreadManager(db, new EventHub(), new FileMemoryService(join(dir, "memory")), accounts as unknown as AccountManager);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const internals = mgr as any;
+  try {
+    db.kvSet("highlight_news_seen_claude", "[]");
+    db.kvSet("highlight_news_seen_codex", "[]");
+    internals.modelCatalog.observeRoster("claude", ["claude-haiku-4-5-20251001", "claude-opus-5-5"]);
+    internals.modelCatalog.observeRoster("codex", ["gpt-5.5", "gpt-6-sol"]);
+    assert.deepEqual(mgr.news.list().map((item) => item.model).sort(), ["claude-opus-5-5", "gpt-6-sol"]);
+  } finally {
+    if (internals.capSupervisor) clearInterval(internals.capSupervisor);
+    db.raw.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 check("a Codex CLI behind the registry is staged, swapped in, and the old copy swept", async () => {
   const r = rig({ codex: "0.156.1", latest: { [SDK]: { version: "0.3.280" }, "@openai/codex": { version: "0.159.2" } } });
   mkdirSync(join(dirname(r.codexPkg), ".codex-a1B2c3"), { recursive: true });

@@ -1,6 +1,6 @@
 /** Owner policy: Codex runs use GPT-6 only, including saved pins and recovery. */
 export function isGpt6Model(model: string): boolean {
-  return /^gpt-6(?:-|$)/i.test(model.trim());
+  return /^gpt-6(?:\.\d+)?(?:-|$)/i.test(model.trim());
 }
 
 export function currentCodexModel(model: string): string {
