@@ -2326,6 +2326,8 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 /* Header controls travel sideways; role filters stay fully visible in equal-width rows. */
 .detail-controls { scrollbar-width: none; }
 .detail-controls::-webkit-scrollbar { width: 0; height: 0; }
+/* Before the container queries: they swap these at equal specificity, so a later base rule would win. */
+.feed-filter .fchip-role-full { display: inline-flex; min-width: 0; }
 .feed-filter .fchip-role-short { display: none; }
 @container (max-width: 800px) {
   .feed-filter-roles .fchip-time { display: none; }
@@ -2359,7 +2361,6 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 }
 .feed-filter .fchip .n { font-size: 9px; opacity: 0.65; font-weight: 600; }
 .feed-filter .fchip-label { display: inline-flex; align-items: baseline; gap: 4px; min-width: 0; overflow: hidden; }
-.feed-filter .fchip-role-full { display: inline-flex; min-width: 0; }
 .feed-filter .fchip-label .role-word { flex: 0 0 auto; }
 .feed-filter .fchip-label .role-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .feed-filter .fchip .n, .feed-filter .fchip .fchip-time, .feed-filter .fchip .gnome { flex: 0 0 auto; }
