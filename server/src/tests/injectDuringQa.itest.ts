@@ -229,7 +229,12 @@ const runLoop = (h: Harness, id: string, maxQaRounds = 4, qaEnabled = true): Pro
 function stubQaRunRole(
   h: Harness,
   whileLive: (qa: FakeRun) => Promise<void>,
-  opts: { staleVerdictAfterStop?: boolean; verdicts?: Array<{ pass: boolean; summary: string; changed: boolean }> } = {},
+  opts: {
+    staleVerdictAfterStop?: boolean;
+    verdicts?: Array<{ pass: boolean; summary: string; changed: boolean }>;
+    /** Override the first result of the Nth QA run (1-based), e.g. a turn-ceiling cutoff. */
+    firstResultFor?: (runNumber: number) => unknown;
+  } = {},
 ): FakeRun[] {
   const agents: FakeRun[] = [];
   h.internals.runRole = async (t: Thread, role: string): Promise<unknown> => {
@@ -244,7 +249,7 @@ function stubQaRunRole(
     const stopped = agent.stopped || agent.aborted;
     const verdict = opts.verdicts?.[agents.length - 1] ?? { pass: true, summary: "verified", changed: false };
     const superseded = h.internals.qaSuperseded(t.id) === true;
-    const first = stopped && !opts.staleVerdictAfterStop ? ABORTED : verdictResult(verdict);
+    const first = opts.firstResultFor?.(agents.length) ?? (stopped && !opts.staleVerdictAfterStop ? ABORTED : verdictResult(verdict));
     let res: unknown = first;
     if (!superseded) {
       const pending = h.internals.reviewInjections.pendingReviewer(t.id, "qa", null) as Array<{ id: string }>;
@@ -1141,6 +1146,37 @@ async function main(): Promise<void> {
       check("that durable row settled handled", h.internals.reviewInjections.get(rowId)?.status === "handled", h.internals.reviewInjections.get(rowId)?.status);
       check("QA re-checked the drained work before settling", agents.length === 2, `qaRuns=${agents.length}`);
       check("the task settled done", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state}`);
+      await settle();
+    } finally {
+      h.dispose();
+    }
+  }
+
+  // The Vota task 23f7fecf: QA hit its 100-turn ceiling in the same second an owner append arrived. The
+  // acknowledgement fence rewrote that cutoff into "QA ended without acknowledging", which skipped the
+  // turn-ceiling continuation and parked the task the instant the owner injected.
+  console.log("\nTest N3 — QA cut off at its turn ceiling with an owner append pending continues, carrying the instruction");
+  {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      let injected = false;
+      const agents = stubQaRunRole(
+        h,
+        async () => {
+          if (injected) return;
+          injected = true;
+          await h.mgr.injectThread(id, "check every fixed crawl in the menu previewer", "append");
+        },
+        { firstResultFor: (n) => (n === 1 ? { type: "result", subtype: "error_max_turns", isError: true } : undefined) },
+      );
+      await runLoop(h, id);
+      const row = h.internals.reviewInjections.listThread(id)[0] as { status: string; resolution: string | null } | undefined;
+      check("the task was not parked on the owner", h.db.getThread(id)?.state === "done", `state=${h.db.getThread(id)?.state} error=${h.db.getThread(id)?.error}`);
+      check("the owner instruction was not marked failed", row?.status !== "failed", JSON.stringify(row));
+      check("the cut-off review was continued rather than abandoned", agents.length >= 2, `qaRuns=${agents.length}`);
+      check("the continuation received the owner instruction", agents[1]?.sends.some((s) => s.text.includes("menu previewer")) === true, JSON.stringify(agents[1]?.sends));
+      check("the acknowledged instruction reached the implementor", h.drained.some((q) => q.some((m) => m.includes("menu previewer"))), JSON.stringify(h.drained));
       await settle();
     } finally {
       h.dispose();

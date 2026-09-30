@@ -11885,6 +11885,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
       pending = this.pendingReviewInjectionsForRun(thread.id, lane);
       if (!pending.length) return result;
+      if (result?.isError) {
+        this.carryReviewInjectionsPastStop(thread.id, lane, pending, result);
+        return result;
+      }
 
       const undelivered = pending.filter((row) => row.reviewerRunId !== runId || row.reviewerDeliveredAt == null);
       if (undelivered.length) {
@@ -11896,7 +11900,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         this.markReviewInjectionsDelivered(undelivered, lane === "qa" ? "qa" : "reviewer", runId);
       }
 
-      if (result?.isError || agent.finished || acknowledgementMisses >= 2) {
+      if (agent.finished || acknowledgementMisses >= 2) {
         const labels = pending.map((row) => reviewInjectionLabel(row.id)).join(", ");
         const reason = `${lane === "qa" ? "QA" : "Auto-review"} ended without acknowledging current owner instruction(s) ${labels}; no verdict from that run was allowed to settle the task.`;
         this.reviewInjections.fail(pending.map((row) => row.id), reason);
@@ -11929,6 +11933,23 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       result = await agent.nextResult();
     }
     return result;
+  }
+
+  /** An errored run — cut off at its turn ceiling, capped, or failed — produced no verdict for the fence to
+   * hold back, and its recovery (a continuation, retry or failover run) is the review that must answer the
+   * instruction. Withdraw the dead run's delivery claim so that run receives it; failing it here instead
+   * skipped the recovery and parked the task the moment the owner injected. */
+  private carryReviewInjectionsPastStop(threadId: string, lane: ReviewInjectionLane, rows: ReviewInjection[], result: ResultEvent): void {
+    const reviewer = lane === "qa" ? "QA" : "Auto-review";
+    const stop = this.isTurnLimitStop(result) ? "stopped at its turn ceiling" : "stopped with an error";
+    const requeued = this.reviewInjections.requeueForReviewer(
+      rows.map((row) => row.id),
+      `${reviewer} ${stop} before answering this instruction; the next ${reviewer} run must acknowledge it.`,
+      this.activeReviewEpisodeToken(threadId, lane),
+    );
+    for (const row of requeued) {
+      this.reviewInjectionFeed(threadId, `↪ ${reviewInjectionLabel(row.id)}: ${reviewer} ${stop} before answering it; the next ${reviewer} run receives it.`);
+    }
   }
 
   /** Persist an explicit owner override before routing the injection anywhere. The automatic route is
