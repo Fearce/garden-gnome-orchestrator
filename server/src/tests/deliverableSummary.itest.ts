@@ -20,7 +20,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
-const { buildDeliverableSummaryPrompt, cleanDeliverableSummary, summarySourceKey, DELIVERABLE_SUMMARY_MODEL } = await import(
+const { buildDeliverableSummaryPrompt, cleanDeliverableSummary, summarySourceKey, DELIVERABLE_SUMMARY_MODEL, OAUTH_SYSTEM_PROMPT } = await import(
   "../orchestrator/deliverableSummary.js"
 );
 
@@ -57,15 +57,15 @@ type Privates = {
 };
 
 // ---- the Sonnet call, stubbed: every request is recorded; the reply text is scripted per call ----
-const calls: Array<{ model: string; prompt: string; auth: string }> = [];
+const calls: Array<{ model: string; prompt: string; auth: string; system?: string }> = [];
 let nextReply: (prompt: string) => string = () => "Shipped the fix.\n\n**Deliverables**\n- Report — `report.md`";
 let gate: Promise<void> | null = null;
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
   if (!String(url).includes("api.anthropic.com/v1/messages")) return realFetch(url, init);
-  const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> };
+  const body = JSON.parse(String(init?.body)) as { model: string; system?: string; messages: Array<{ content: string }> };
   const prompt = body.messages[0]!.content;
-  calls.push({ model: body.model, prompt, auth: String((init?.headers as Record<string, string>).Authorization) });
+  calls.push({ model: body.model, prompt, auth: String((init?.headers as Record<string, string>).Authorization), system: body.system });
   if (gate) await gate;
   return new Response(JSON.stringify({ content: [{ type: "text", text: nextReply(prompt) }] }), { status: 200 });
 }) as typeof fetch;
@@ -147,6 +147,8 @@ await settle();
 check("exactly one Sonnet call", calls.length === 1, String(calls.length));
 check("it rides the subscription aux token", calls[0]?.auth === "Bearer aux-token");
 check("the call names the Sonnet summarizer model", calls[0]?.model === DELIVERABLE_SUMMARY_MODEL);
+// Without the Claude Code system prompt a subscription token gets 429 on every Sonnet call (measured live).
+check("it identifies as Claude Code, which an OAuth token needs for Sonnet", calls[0]?.system === OAUTH_SYSTEM_PROMPT, calls[0]?.system);
 check("the prompt holds the final report and the deliverable", !!calls[0]?.prompt.includes(FINAL_REPORT) && !!calls[0]?.prompt.includes("report.md"));
 check("QA feed chatter never reaches the summarizer", !calls[0]?.prompt.includes(QA_NOISE));
 const stored = db.getThreadStageOutputs(doneTask).deliverableSummary;

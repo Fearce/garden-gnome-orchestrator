@@ -79,8 +79,18 @@ export function cleanDeliverableSummary(text: string): string | null {
   return cleaned;
 }
 
+// A subscription (OAuth) token serves Sonnet only to a request that identifies as Claude Code: without
+// this system prompt every call answers 429 rate_limit_error, however much quota is left (Haiku, which
+// the other ancillary calls use, does not need it). Measured live 2026-09-30 on both subscriptions.
+export const OAUTH_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
+
 async function ask(prompt: string, token: string): Promise<string | null> {
-  const body = JSON.stringify({ model: DELIVERABLE_SUMMARY_MODEL, max_tokens: MAX_OUTPUT_TOKENS, messages: [{ role: "user", content: prompt }] });
+  const body = JSON.stringify({
+    model: DELIVERABLE_SUMMARY_MODEL,
+    max_tokens: MAX_OUTPUT_TOKENS,
+    system: OAUTH_SYSTEM_PROMPT,
+    messages: [{ role: "user", content: prompt }],
+  });
   for (let attempt = 0; attempt < 2; attempt++) {
     let res: Response;
     try {
