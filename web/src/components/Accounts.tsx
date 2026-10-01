@@ -187,7 +187,7 @@ function UsageAccounts({ compact }: { compact: boolean }) {
 const COMPACT_MQ = "(max-width: 899.98px)";
 
 function useCompact(): boolean {
-  const [compact, setCompact] = useState(() => window.matchMedia(COMPACT_MQ).matches);
+  const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia(COMPACT_MQ).matches);
   useEffect(() => {
     const mq = window.matchMedia(COMPACT_MQ);
     const onChange = () => setCompact(mq.matches);
