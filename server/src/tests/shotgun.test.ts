@@ -2,7 +2,7 @@
  * Unit gate — SHOTGUN tasks: the ownership rules that decide whether a split is safe.
  *
  * `validateDecomposition` is the safety gate of the whole feature. Collaborators work ONE checkout on
- * ONE branch (the no-worktrees convention), so nothing merges their changes and two agents editing the
+ * ONE branch (they share their lead's checkout), so nothing merges their changes and two agents editing the
  * same file silently destroy each other's work. There is no recovery from that and no signal that it
  * happened — so a decomposition whose file sets intersect must be REFUSED, not warned about.
  *

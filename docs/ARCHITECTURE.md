@@ -591,8 +591,8 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
     that returns instantly having produced no agent messages; three consecutive ⇒ close). Finishing
     EARLY is a first-class outcome — the implementor writes a standalone `TIMED_TASK_COMPLETE: <why>`
     line and the window closes unused rather than padding the task. Every close posts its reason.
-  - **Shotgun** — "use 3 agents". The no-worktrees convention means parallelism cannot come from
-    isolating checkouts, so it comes from DISJOINT OWNERSHIP in the one shared tree: one extra planner
+  - **Shotgun** — "use 3 agents". Collaborators share their lead's checkout (the task's own worktree,
+    see "Task worktrees" below), so parallelism comes from DISJOINT OWNERSHIP in that one tree: one extra planner
     call decomposes the plan into work packages with non-overlapping file lists, the lead takes the
     first, and each other becomes a COLLABORATOR thread (`parent_id`) on the same workspace running the
     ordinary implementor path with `qaEnabled: false`. Sharing a workspace means `ensureGroup` forms
@@ -612,6 +612,20 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
     lead re-read where its children got to after a bounce. Collaborators are hidden from the board; the
     lead's detail panel fetches their histories and interleaves their rows into its feed under each
     agent's own name (`web/src/lib/collaboratorFeed.ts`).
+- **Task worktrees — one branch and one checkout per task** (`orchestrator/taskWorktree.ts`,
+  `worktreeBriefing.ts`). Before its first agent starts, `prepareTaskWorkspace` moves a new top-level
+  task in a git repo into its own linked worktree: branch `ggo/<slug>-<id8>`, folder
+  `<repo-parent>/<repo>.worktrees/<slug>`, cut from the main checkout's current branch, with ignored
+  `node_modules`/`.venv` junctioned back and `.env*` copied. `thread.workspace` becomes that folder, so
+  every existing `cwd`/git/diff/deliverable path follows unchanged. `thread.homeWorkspace` keeps the
+  dispatched folder, which grouping, office rooms and the per-repo cap key on. Sub-tasks and
+  collaborators share the parent's checkout. A non-git umbrella folder (several repos) gets the
+  `task_worktree` bus tool instead, plus discovery of hand-made `ggo/*-<id8>` worktrees. The kickoff
+  carries the branch and the integration step (rebase, fast-forward the base, push; commit-only repos
+  stay on the branch). Close/dismiss/purge retires a clean worktree, unlinking its junctions first
+  because `git worktree remove` follows them into the main checkout. Resume re-attaches a retired one.
+  The task header (`TaskBranch.tsx`) shows the branch, folder and base. Traps:
+  `.claude/rules/task-worktrees.md`.
 - **Sub-tasks — a sub-agent an agent spawned** (`orchestrator/subTasks.ts`). The implementor's
   built-in SDK Agent/Task tool is disallowed. It spawns through the bus (`spawn_subagent` and friends)
   or, on a CLI backend, a standalone `SUBTASK: {json}` line. The spawn becomes a child thread with
