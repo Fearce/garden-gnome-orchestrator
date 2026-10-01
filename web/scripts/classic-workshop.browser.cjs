@@ -78,7 +78,12 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
 
     // Persistence across reload, with the original vector art and no beta texture.
     await page.reload();
-    await page.locator('.beta-workshop[data-art="classic"] .beta-workstation[data-office-room="repo:c:/workshop"]').first().waitFor();
+    await page.locator('.beta-workshop[data-art="classic"] .beta-workstation[data-agent-id="director"]').waitFor();
+    await page.getByRole('button', { name: 'Show all 10 workshop gnomes', exact: true }).waitFor();
+    await page.waitForFunction(() => {
+      const stage = document.querySelector('.beta-workshop-stage');
+      return stage && stage.querySelectorAll('.beta-workstation').length === Math.max(1, Math.min(7, Math.floor(stage.clientWidth / 156)));
+    });
     assert.equal(await page.locator('.beta-gnome').count(), 0, 'Classic header must not mount beta artwork');
     assert.equal(artRequests.length, 0, 'Classic header must not fetch the beta atlas');
     const stations = await page.locator('.beta-workstation').count();
@@ -90,10 +95,10 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     // Same population rule as beta: as many seats as the lane fits (156px each, up to seven).
     const stageWidth = await page.locator('.beta-workshop-stage').evaluate((el) => el.clientWidth);
     assert.equal(stations, Math.max(1, Math.min(7, Math.floor(stageWidth / 156))), `Lane of ${stageWidth}px is filled (${stations} seats)`);
-    // Each seat's home sits in its own equal share of the lane, so the cast covers the whole header.
+    // Match beta's patches, including its 176px cap for quiet offices.
     const outOfShare = await page.locator('.beta-workshop-stage').evaluate((stage) => {
       const seats = [...stage.querySelectorAll('.beta-workstation')];
-      const share = stage.clientWidth / seats.length;
+      const share = Math.min(176, stage.clientWidth / seats.length);
       return seats.filter((s, i) => { const home = parseFloat(s.style.left); return home < share * i || home >= share * (i + 1); }).length;
     });
     assert.equal(outOfShare, 0, 'Every seat stands in its own share of the header');
@@ -131,7 +136,7 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     await page.getByRole('button', { name: /Show all .* workshop gnomes/ }).click();
     assert.equal(await page.locator('.beta-workshop-roster > button .gnome > svg').count(), await page.locator('.beta-workshop-roster > button').count());
     await page.getByRole('button', { name: 'Close workshop crew' }).click();
-    await page.locator('.beta-workstation[data-office-room="repo:c:/workshop"]').first().click();
+    await page.locator('.beta-workstation:not([data-agent-id="director"]):not(.beta-visitor)').first().click();
     await page.locator('.office-panel').waitFor();
     await page.locator('.office-panel').getByRole('button', { name: 'Close', exact: true }).click();
 
@@ -167,15 +172,27 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
       currentSocket.send(JSON.stringify({ ...hello, directorBusy: false, directorIdleSince: Date.now() - idleFor }));
       await page.locator(`${restingDirector}[data-rest="${rest}"] .classic-workshop-gnome[data-rest="${rest}"] .gnome > svg`).waitFor();
       assert.equal(await page.locator(`${restingDirector} .beta-rest-${rest === 'chair' ? 'chair' : 'bed'}`).count(), 1, `Classic director has the beta ${rest} furniture`);
+      // Exercise the existing cloud/aurora motion even when this mount rolled a plain skin.
+      const skinMotion = await page.locator(`${restingDirector} .gnome`).evaluate((el) => {
+        const previous = { floating: el.classList.contains('gnome-floating'), super: el.classList.contains('gnome-super') };
+        el.classList.add('gnome-floating', 'gnome-super');
+        el.querySelector('svg > path').classList.add('gnome-shimmer');
+        return previous;
+      });
       assert.deepEqual(await page.locator(restingDirector).evaluate((el) => el.getAnimations({ subtree: true }).map((a) => a.animationName).filter((n) => n !== 'beta-dream')), [], `A ${rest} director does not walk or work`);
+      await page.locator(`${restingDirector} .gnome`).evaluate((el, previous) => {
+        if (!previous.floating) el.classList.remove('gnome-floating');
+        if (!previous.super) el.classList.remove('gnome-super');
+        el.querySelector('svg > path').classList.remove('gnome-shimmer');
+      }, skinMotion);
       assert.equal(await page.locator('.beta-gnome').count(), 0);
       await page.locator(restingDirector).screenshot({ path: path.join(output, `classic-director-${rest}.png`) });
     }
     currentSocket.send(JSON.stringify(hello));
-    await page.waitForFunction(() => document.querySelectorAll('.beta-workstation').length > 2 && !document.querySelector('.beta-workstation[data-rest]'));
+    await page.waitForFunction(() => document.querySelectorAll('.beta-workstation').length >= 2 && !document.querySelector('.beta-workstation[data-rest]'));
 
     // Header controls stay usable at every width; the lane never overflows or grows.
-    for (const width of [360, 390, 768, 1024, 1440, 1920]) {
+    for (const width of [320, 360, 390, 768, 1024, 1440, 1920]) {
       await page.setViewportSize({ width, height: 900 });
       await page.waitForTimeout(150);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `Page overflows at ${width}px`);
@@ -213,7 +230,7 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     await page.reload(); await page.locator('.office-strip .office-huddle').first().waitFor();
     assert.equal(await page.locator('.beta-workshop').count(), 0, 'Off restores the existing strip after reload');
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ result: 'PASS', checks: ['default off keeps strip', 'toggle beside Beta gnomes', 'persistence across reload', 'original art, no atlas', '48px lane, no added rows', 'header populated across its width', 'walk, rendezvous, shared sheet, tool work', 'roster and room routing', 'pause and reduced motion', 'independent of beta gnomes both ways', '360-1920px: no overflow, no clipping, controls usable', 'cross-tab rollback', 'no page errors'], evidence: output }, null, 2));
+    console.log(JSON.stringify({ result: 'PASS', checks: ['default off keeps strip', 'toggle beside Beta gnomes', 'persistence across reload', 'original art, no atlas', '48px lane, no added rows', 'beta seat distribution', 'walk, rendezvous, shared sheet, tool work', 'roster and room routing', 'pause and reduced motion', 'resting director stops rare-skin motion', 'independent of beta gnomes both ways', '320-1920px: no overflow, no clipping, controls usable', 'cross-tab rollback', 'no page errors'], evidence: output }, null, 2));
     await context.close();
   } finally { await browser.close(); }
 })().catch((e) => { console.error(e); process.exitCode = 1; });

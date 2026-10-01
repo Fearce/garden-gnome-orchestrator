@@ -100,6 +100,8 @@
 .beta-workshop[data-art="classic"] .beta-workstation:not([data-rest]) .classic-workshop-gnome > .gnome { animation: beta-walk-bob 12s linear var(--seat-delay) infinite, classic-waddle 12s linear var(--seat-delay) infinite; }
 .classic-workshop-gnome[data-rest="chair"] > .gnome { transform: translateY(-9%); }
 .classic-workshop-gnome[data-rest="sleep"] > .gnome { transform: translate(-32%, 20%) rotate(-76deg) scale(.7); transform-origin: 50% 45%; }
+.classic-workshop-gnome[data-rest] > .gnome svg,
+.classic-workshop-gnome[data-rest] > .gnome svg * { animation: none; }
 .beta-workshop[data-art="classic"] .beta-workstation[data-working="true"] .gnome-prop { transform-box: view-box; transform-origin: 27.4px 38px; animation: classic-tool-work 12s linear var(--seat-delay) infinite; }
 @keyframes classic-waddle {
   0%,7%,14%,21%,28%,50%,57%,64%,71%,78%,100% { rotate: 0deg; }
