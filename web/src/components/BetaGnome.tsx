@@ -20,14 +20,31 @@ export const BetaGnome = memo(function BetaGnome({ role, size = 30, active = tru
     data-skin={skin || undefined} data-rest={rest} className={`gnome beta-gnome ${className}`}
     style={{ width: size, height: size * 1.5, "--gnome-accent": accent } as CSSProperties}>
     <span className="beta-gnome-shadow" />
+    <RestFurnitureBack rest={rest} />
+    <span className="beta-gnome-body" style={texture} />
+    <span className="beta-gnome-boot beta-boot-left" style={texture} />
+    <span className="beta-gnome-boot beta-boot-right" style={texture} />
+    <RestFurnitureFront rest={rest} />
+    {!rest && size >= 28 && <ToolRig role={role} />}
+    {skin && <span className="beta-gnome-charm">✦</span>}
+  </span>;
+});
+
+/** Director rest furniture behind the figure (chair back). Shared by the beta and classic workshop art;
+ *  both draw on the same 2:3 box, so one set of paths fits either gnome. */
+export function RestFurnitureBack({ rest }: { rest?: DirectorRest }) {
+  return <>
     {rest === "chair" && <svg className="beta-rest-chair" viewBox="0 0 100 150" fill="none">
       <path d="M15 145V76q0-7 7-7h53q7 0 7 7v69M17 110h64" stroke="#805438" strokeWidth="7" strokeLinejoin="round" />
       <path d="M24 78h49v40H24z" fill="#28585c" stroke="#c29b64" strokeWidth="2" />
       <path d="M30 82h37v29H30z" stroke="#71a194" strokeOpacity=".5" /><path d="m48 85 4 7-4 7-4-7z" fill="#c8b07b" />
     </svg>}
-    <span className="beta-gnome-body" style={texture} />
-    <span className="beta-gnome-boot beta-boot-left" style={texture} />
-    <span className="beta-gnome-boot beta-boot-right" style={texture} />
+  </>;
+}
+
+/** Director rest furniture in front of the figure: the chair seat, or the bed and its dream. */
+export function RestFurnitureFront({ rest }: { rest?: DirectorRest }) {
+  return <>
     {rest === "chair" && <svg className="beta-rest-seat" viewBox="0 0 100 150" fill="none">
       <path d="M17 120h64v9H17z" fill="#396c69" stroke="#d0a76e" strokeWidth="2" />
       <path d="M14 108h17m38 0h16M19 108v19m61-19v19" stroke="#ae7b4f" strokeWidth="5" strokeLinecap="round" />
@@ -44,10 +61,8 @@ export const BetaGnome = memo(function BetaGnome({ role, size = 30, active = tru
       </svg>
       <span className="beta-sleep-dream">z<span>z</span><span>z</span></span>
     </>}
-    {!rest && size >= 28 && <ToolRig role={role} />}
-    {skin && <span className="beta-gnome-charm">✦</span>}
-  </span>;
-});
+  </>;
+}
 
 function ToolRig({ role }: { role: GnomeRole }) {
   // A foreground work surface, hands and tool each have their own motion: typing,

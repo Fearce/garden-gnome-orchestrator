@@ -2,34 +2,46 @@ import { useSyncExternalStore } from "react";
 
 /** Deliberately browser-local and opt-in. Never becomes a server/settings default. */
 export const BETA_GNOMES_KEY = "ggo:beta-gnomes";
-const listeners = new Set<() => void>();
-function readPreference(): boolean {
-  try { return typeof localStorage !== "undefined" && localStorage.getItem(BETA_GNOMES_KEY) === "1"; }
-  catch { return false; }
-}
-let enabled = readPreference();
-function notify() { for (const listener of listeners) listener(); }
-function onStorage(event: StorageEvent) {
-  if (event.key !== null && event.key !== BETA_GNOMES_KEY) return;
-  enabled = readPreference();
-  notify();
-}
-function subscribe(listener: () => void) {
-  if (!listeners.size && typeof window !== "undefined") window.addEventListener("storage", onStorage);
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-    if (!listeners.size && typeof window !== "undefined") window.removeEventListener("storage", onStorage);
+/** The workshop header for the original gnomes. Independent of beta gnomes, which always use it. */
+export const CLASSIC_WORKSHOP_KEY = "ggo:classic-workshop";
+
+/** One default-off "1"/"0" flag in localStorage, live across tabs through the storage event. */
+function browserFlag(key: string) {
+  const listeners = new Set<() => void>();
+  const read = () => {
+    try { return typeof localStorage !== "undefined" && localStorage.getItem(key) === "1"; }
+    catch { return false; }
   };
+  let enabled = read();
+  const notify = () => { for (const listener of listeners) listener(); };
+  const onStorage = (event: StorageEvent) => {
+    if (event.key !== null && event.key !== key) return;
+    enabled = read();
+    notify();
+  };
+  const subscribe = (listener: () => void) => {
+    if (!listeners.size && typeof window !== "undefined") window.addEventListener("storage", onStorage);
+    listeners.add(listener);
+    return () => {
+      listeners.delete(listener);
+      if (!listeners.size && typeof window !== "undefined") window.removeEventListener("storage", onStorage);
+    };
+  };
+  const set = (value: boolean) => {
+    enabled = value;
+    try { localStorage.setItem(key, value ? "1" : "0"); } catch { /* Still works for this visit. */ }
+    notify();
+  };
+  const use = () => useSyncExternalStore(subscribe, () => enabled, () => false);
+  return { set, use };
 }
-export function setBetaGnomes(value: boolean) {
-  enabled = value;
-  try { localStorage.setItem(BETA_GNOMES_KEY, value ? "1" : "0"); } catch { /* Still works for this visit. */ }
-  notify();
-}
-export function useBetaGnomes() {
-  return useSyncExternalStore(subscribe, () => enabled, () => false);
-}
+
+const betaGnomes = browserFlag(BETA_GNOMES_KEY);
+export const setBetaGnomes = betaGnomes.set;
+export const useBetaGnomes = betaGnomes.use;
+const classicWorkshop = browserFlag(CLASSIC_WORKSHOP_KEY);
+export const setClassicWorkshop = classicWorkshop.set;
+export const useClassicWorkshop = classicWorkshop.use;
 
 // One observer and one visibility listener for the entire cast. No animation-frame JS,
 // per-character timers, or React updates while the gnomes move.

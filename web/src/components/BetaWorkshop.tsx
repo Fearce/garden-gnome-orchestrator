@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { ChatMessage, GnomeRole } from "../types.js";
 import { observeGnomeMotion } from "../lib/betaGnomes.js";
-import { BetaGnome } from "./BetaGnome.js";
+import { BetaGnome, RestFurnitureBack, RestFurnitureFront } from "./BetaGnome.js";
 import type { DirectorRest } from "../lib/directorRest.js";
+import { Gnome } from "./Gnome.js";
 
 export interface WorkshopSeat {
   id: string;
@@ -84,9 +85,24 @@ function seatActivity(seat: WorkshopSeat) {
   return seat.active ? verbs[seat.role] : seat.rest === "sleep" ? "Sleeping" : seat.rest === "chair" ? "Taking a seat" : "Ready";
 }
 
+/** The cast's artwork: the illustrated beta texture, or the original vector gnome (`classic`). A
+ *  classic gnome stays in full color like a beta character; the workshop CSS walks and works it. */
+function WorkshopGnome({ classic, role, size, active, rest }: { classic: boolean; role: GnomeRole; size: number; active: boolean; rest?: DirectorRest }) {
+  return classic ? <ClassicWorkshopGnome role={role} size={size} rest={rest} /> : <BetaGnome role={role} size={size} active={active} rest={rest} />;
+}
+
+/** The original gnome, wrapped so a resting director gets the same chair or bed as its beta self. */
+function ClassicWorkshopGnome({ role, size, rest }: { role: GnomeRole; size: number; rest?: DirectorRest }) {
+  return <span className="classic-workshop-gnome" data-rest={rest} style={{ width: size, height: size * 1.5 }}>
+    <RestFurnitureBack rest={rest} />
+    <Gnome role={role} size={size} />
+    <RestFurnitureFront rest={rest} />
+  </span>;
+}
+
 /** One 48px lane. Speech and the roster float over the board, never reserve header space. */
-export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
-  seats: WorkshopSeat[]; chat: ChatMessage[]; online: number; activeRoom: string | null; openOffice: (room: string) => void;
+export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, classic = false }: {
+  seats: WorkshopSeat[]; chat: ChatMessage[]; online: number; activeRoom: string | null; openOffice: (room: string) => void; classic?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const stage = useRef<HTMLDivElement>(null);
@@ -141,7 +157,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
     ? seat.remote === message.remoteInstance && (seat.name === message.senderName || seat.role === message.role)
     : !seat.remote && (seat.runId === message.runId && !!message.runId || seat.threadId === message.threadId && !!message.threadId || seat.role === "director" && message.role === "director"));
   const bubble = message && `${message.senderName || speaker?.name || message.role}${message.remoteInstance ? ` · ${message.remoteInstance}` : ""}: ${message.body.replace(/\s+/g, " ").trim()}`;
-  return <div className="beta-workshop" ref={ref} data-motion-paused={motionPaused} aria-label={`Workshop: ${totalWorking} at work, ${online} online`}>
+  return <div className="beta-workshop" ref={ref} data-art={classic ? "classic" : "beta"} data-motion-paused={motionPaused} aria-label={`Workshop: ${totalWorking} at work, ${online} online`}>
     <div className="beta-workshop-stage" ref={stage}>
       <div className="beta-workshop-cast" aria-label="Gnomes in the workshop">
         {actors.map(({ seat, home, travel, delay, partnerIndex, labelWidth, labelLeft }) => <button type="button" key={seat.id}
@@ -155,7 +171,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
           onClick={() => open(seat.room)}
           aria-label={`${seat.name}, ${seatActivity(seat)}. ${seat.group}, ${seat.remote ? `visiting from ${seat.remote}` : "local office"}. ${seat.task}. Open chat${unread.get(seat.room) ? `, ${unread.get(seat.room)} new messages` : ""}`}
           title={`${seat.name} · ${seatActivity(seat)}\n${seat.task}\n${seat.group}\n${seat.remote ? `Online office: ${seat.remote}` : "Local office"}\nClick to open chat`}>
-          <span className="beta-character"><BetaGnome role={seat.role} size={32} active={seat.active} rest={seat.rest} /></span>
+          <span className="beta-character"><WorkshopGnome classic={classic} role={seat.role} size={32} active={seat.active} rest={seat.rest} /></span>
           <span className="beta-destination" aria-hidden="true"><strong>{destination(seat).label}</strong><small>{destination(seat).office}</small></span>
           {seat.remote && <span className="beta-visitor-mark" aria-hidden="true">↗</span>}
           {(unread.get(seat.room) ?? 0) > 0 && <span className="beta-message-badge" aria-hidden="true">{Math.min(unread.get(seat.room)!, 99)}</span>}
@@ -180,7 +196,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
     </button>}
     {expanded && <div className="beta-workshop-roster" role="region" aria-label="Workshop crew">
       <div><strong>Everyone in the workshop</strong><button type="button" onClick={() => setExpanded(false)} aria-label="Close workshop crew">×</button></div>
-      {seats.map((seat) => <button key={seat.id} type="button" onClick={() => open(seat.room)} title={seat.group}><BetaGnome role={seat.role} size={24} active={seat.active} rest={seat.rest} /><span>{seat.name}<small>{destination(seat).label} · {destination(seat).office}</small><small>{seatActivity(seat)} · {seat.task}</small><small className="beta-destination-path">{seat.group}</small></span></button>)}
+      {seats.map((seat) => <button key={seat.id} type="button" onClick={() => open(seat.room)} title={seat.group}><WorkshopGnome classic={classic} role={seat.role} size={24} active={seat.active} rest={seat.rest} /><span>{seat.name}<small>{destination(seat).label} · {destination(seat).office}</small><small>{seatActivity(seat)} · {seat.task}</small><small className="beta-destination-path">{seat.group}</small></span></button>)}
     </div>}
   </div>;
 }

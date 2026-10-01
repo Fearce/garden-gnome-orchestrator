@@ -1,4 +1,5 @@
-/* The classic console never matches these selectors or requests the texture. */
+/* The classic console never requests the texture. It matches the workshop selectors only when the
+   owner opts its original gnomes into the workshop header (data-art="classic"). */
 .beta-gnome { position: relative; display: inline-block; flex: none; vertical-align: middle; isolation: isolate; line-height: 0; contain: layout style; }
 .beta-gnome-body, .beta-gnome-boot { position: absolute; inset: 0 -6%; background-size: 400% 200%; background-repeat: no-repeat; transform-origin: 50% 90%; }
 .beta-gnome-body { clip-path: inset(0 0 15%); }
@@ -89,6 +90,27 @@
 @keyframes beta-walk-right {
   0%,3.5%,10.5%,17.5%,24.5%,28%,50%,53.5%,60.5%,67.5%,74.5%,78%,100% { rotate: 0deg; translate: 0 0; }
   7%,14%,21%,57%,64%,71% { rotate: 22deg; translate: 1px -1px; }
+}
+/* Classic art on the same timeline: the original vector gnome has no separate boots, so the whole
+   figure bobs and waddles on each footfall, and a working gnome swings its own tool from its right mitt
+   during the shared-work and own-tool phases. Classic rare-skin motion stays on its svg underneath.
+   A resting classic director stands still on the beta chair or lies in the beta bed. */
+.classic-workshop-gnome { position: relative; display: block; }
+.classic-workshop-gnome > .gnome { position: relative; display: block; transform-origin: 50% 100%; }
+.beta-workshop[data-art="classic"] .beta-workstation:not([data-rest]) .classic-workshop-gnome > .gnome { animation: beta-walk-bob 12s linear var(--seat-delay) infinite, classic-waddle 12s linear var(--seat-delay) infinite; }
+.classic-workshop-gnome[data-rest="chair"] > .gnome { transform: translateY(-9%); }
+.classic-workshop-gnome[data-rest="sleep"] > .gnome { transform: translate(-32%, 20%) rotate(-76deg) scale(.7); transform-origin: 50% 45%; }
+.beta-workshop[data-art="classic"] .beta-workstation[data-working="true"] .gnome-prop { transform-box: view-box; transform-origin: 27.4px 38px; animation: classic-tool-work 12s linear var(--seat-delay) infinite; }
+@keyframes classic-waddle {
+  0%,7%,14%,21%,28%,50%,57%,64%,71%,78%,100% { rotate: 0deg; }
+  3.5%,10.5%,17.5%,24.5%,53.5%,60.5%,67.5%,74.5% { rotate: -4deg; }
+  /* the opposite foot on the off-beat, matching beta-walk-right */
+  5.25%,12.25%,19.25%,26.25%,55.25%,62.25%,69.25%,76.25% { rotate: 4deg; }
+}
+@keyframes classic-tool-work {
+  0%,28%,50%,78%,100% { rotate: 0deg; }
+  31%,37%,43%,81%,87%,93% { rotate: -16deg; }
+  34%,40%,46%,84%,90%,96% { rotate: 6deg; }
 }
 .beta-shared-project { position: absolute; top: 27px; width: 22px; height: 17px; margin-left: -11px; pointer-events: none; animation: beta-share 12s linear var(--seat-delay) infinite; }
 .beta-shared-project svg { display: block; width: 100%; height: 100%; }

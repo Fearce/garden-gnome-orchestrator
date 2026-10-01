@@ -480,8 +480,9 @@ export function Gnome({ role, size = 30, active = true, className, skin: pinnedS
             {skinOverlay(skin, hatClip)}
           </>
         )}
-        {/* role prop — the gnome's tool, drawn before the mitts so the right mitt grips its handle */}
-        {roleProp(role)}
+        {/* role prop — the gnome's tool, drawn before the mitts so the right mitt grips its handle.
+            Grouped so the classic workshop header can swing it from that mitt while the gnome works. */}
+        <g className="gnome-prop">{roleProp(role)}</g>
         {/* mitts — two little tan hands resting at the beard's sides */}
         <circle cx="8.6" cy="38" r="2.4" fill={SKIN} />
         <circle cx="27.4" cy="38" r="2.4" fill={SKIN} />

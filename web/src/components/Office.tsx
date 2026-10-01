@@ -6,7 +6,7 @@ import { agentName, CHAT_PAGE_SIZE, DIRECTORS_ROOM, GENERAL_ROOM, homeWorkspace,
 import { clock, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
-import { useBetaGnomes } from "../lib/betaGnomes.js";
+import { useBetaGnomes, useClassicWorkshop } from "../lib/betaGnomes.js";
 import { useDirectorRest } from "../lib/directorRest.js";
 import { BetaWorkshop, type WorkshopSeat } from "./BetaWorkshop.js";
 
@@ -232,6 +232,9 @@ function fittingItems(available: number, strip: HTMLElement): number {
  *  the deliberate entry point for the general office. */
 export function Office() {
   const beta = useBetaGnomes();
+  // Beta gnomes always walk the workshop; the original gnomes join it when the owner opts in.
+  const classicWorkshop = useClassicWorkshop();
+  const workshop = beta || classicWorkshop;
   const runs = useStore(useShallow((s) => Object.values(s.runs).filter((r) => r.state === "starting" || r.state === "running")));
   const threads = useStore((s) => s.threads);
   const chat = useStore((s) => s.chat);
@@ -239,7 +242,7 @@ export function Office() {
   const openOffice = useStore((s) => s.openOffice);
   const directorBusy = useStore((s) => s.directorBusy);
   const directorIdleSince = useStore((s) => s.directorIdleSince);
-  const directorRest = useDirectorRest(directorBusy, directorIdleSince, beta);
+  const directorRest = useDirectorRest(directorBusy, directorIdleSince, workshop);
   const directorStatus = useStore((s) => s.directorStatus);
   const onlineOffice = useStore((s) => s.onlineOffice);
   const nameOverrides = useStore((s) => s.nameOverrides);
@@ -290,7 +293,7 @@ export function Office() {
   }, [runs, threads, sharedByWorkspace, onlineOffice.remoteAgents]);
 
   const liveCount = groups.reduce((n, g) => n + g.workers.length, 0);
-  const now = useNow(!beta && liveCount > 0, 1000);
+  const now = useNow(!workshop && liveCount > 0, 1000);
 
   // Coworkers reached through the Online Office who are NOT already standing in one of the huddles above
   // — i.e. working repos this machine isn't. Grouped by machine, since with no shared repo that (not a
@@ -399,11 +402,11 @@ export function Office() {
 
   // A pill's width follows its crowd, so the crowd sizes are part of what forces a re-measure.
   const layoutKey = items.map((item) => item.key).join("|") + "#" + groups.map((g) => g.workers.length + g.remotes.length).join(",") +
-    "#" + remoteMachines.map((m) => m.agents.length).join(",") + `#beta:${beta}`;
+    "#" + remoteMachines.map((m) => m.agents.length).join(",") + `#workshop:${workshop}`;
   const { officeRef, stripRef, fit } = useStripFit(items.length, layoutKey);
   const hidden = items.slice(fit);
 
-  const workshopSeats: WorkshopSeat[] = beta ? [{
+  const workshopSeats: WorkshopSeat[] = workshop ? [{
     id: "director", role: "director", name: directorName, room: directorRoom,
     task: directorBusy ? "Coordinating your work" : directorRest === "sleep" ? "Asleep after eight hours off duty — a new request wakes me" : "Taking a seat until your next idea",
     group: "The office", active: directorBusy, rest: directorRest,
@@ -427,8 +430,8 @@ export function Office() {
   // when no task agents are live, so the strip never collapses (which used to let the usage chips slide
   // to the left) and the director is always one click from its chat.
   return (
-    <div className={beta ? "office office-beta" : "office"} ref={officeRef}>
-      {beta ? <BetaWorkshop seats={workshopSeats} chat={chat} online={othersOnline ? onlineOffice.directors.length : 0} activeRoom={officeRoom} openOffice={openOffice} /> : <div className="office-strip" ref={stripRef} title="The office — the director and any agents working right now. Click to open the chat.">
+    <div className={workshop ? "office office-beta" : "office"} ref={officeRef}>
+      {workshop ? <BetaWorkshop seats={workshopSeats} chat={chat} online={othersOnline ? onlineOffice.directors.length : 0} activeRoom={officeRoom} openOffice={openOffice} classic={!beta} /> : <div className="office-strip" ref={stripRef} title="The office — the director and any agents working right now. Click to open the chat.">
         <button
           className={"office-walker office-director" + (directorBusy ? " working" : "")}
           // Pace the gnome from the runtime model; cap failover can move the director between providers.
