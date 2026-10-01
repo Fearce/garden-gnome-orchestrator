@@ -236,6 +236,7 @@ const GATES = [
   "test:repo-ops",
   "test:task-worktree",
   "test:task-worktree-pipeline",
+  "test:worktree-name",
   "test:repo-console",
   "test:git-console-probe",
   "test:supervisor",

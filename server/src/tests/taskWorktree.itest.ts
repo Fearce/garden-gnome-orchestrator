@@ -7,7 +7,8 @@
  * through them. Every retire scenario therefore asserts the main checkout's node_modules survives.
  *
  * Scenarios:
- *   A. CREATE     — branch ggo/<slug>-<id8> in <repo>.worktrees/<slug>, junctioned node_modules, copied .env.
+ *   A. CREATE     — branch ggo/<slug>-<id8> in <repo>.worktrees/<slug>, junctioned node_modules, copied .env;
+ *                   a chosen name (a model's, or the agent's) beats the title for both.
  *   B. REFUSE     — a branch already checked out elsewhere is refused, naming where.
  *   C. STATE      — dirty, ahead and merged read from the real branch.
  *   D. RETIRE     — refuses dirty or deliverable-holding; removes a merged one, deletes its branch, keeps
@@ -23,7 +24,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 process.env.NO_PUSH_REPO_PATTERN = "commit-only-origin";
 const {
@@ -103,6 +104,7 @@ try {
   const wt = created.worktree;
   check("branch is ggo/<slug>-<id8>", wt.branch === "ggo/fix-the-login-form-0a1b2c3d", wt.branch);
   check("branch name helper agrees", taskBranchName("Fix the login form!", THREAD) === wt.branch);
+  check("the folder is the words, without the id suffix", basename(wt.path) === "fix-the-login-form", wt.path);
   check("folder lives in <repo>.worktrees", wt.path.toLowerCase().startsWith(realpathSync(worktreesHome(repo)).toLowerCase()), wt.path);
   check("base is the main checkout's branch", wt.base === "master", String(wt.base));
   check("baseSha is the main checkout's HEAD", wt.baseSha === git(repo, "rev-parse", "HEAD"));
@@ -113,6 +115,14 @@ try {
   check(".env is copied", readFileSync(join(wt.path, ".env"), "utf8") === "SECRET=1\n");
   check("a repo without the commit-only origin may push", wt.commitOnly === false);
   check("the main checkout stays on master", git(repo, "branch", "--show-current") === "master");
+  const NAMED = "5ec874c0-1111-2222-3333-444455556666";
+  const named = await createTaskWorktree({ repoPath: repo, threadId: NAMED, title: "We have another agent working in", name: "crawler-email-extraction" });
+  check("a chosen name names the branch, not the title", named.ok && named.worktree.branch === "ggo/crawler-email-extraction-5ec874c0", named.ok ? named.worktree.branch : named.error);
+  check("...and the folder", named.ok && basename(named.worktree.path) === "crawler-email-extraction", named.ok ? named.worktree.path : "");
+  const blank = await createTaskWorktree({ repoPath: repo, threadId: "77776666-0000-0000-0000-000000000000", title: "Tidy the docs", name: "  " });
+  check("a blank name falls back to the title", blank.ok && blank.worktree.branch === "ggo/tidy-the-docs-77776666", blank.ok ? blank.worktree.branch : blank.error);
+  if (named.ok) await retireTaskWorktree(named.worktree);
+  if (blank.ok) await retireTaskWorktree(blank.worktree);
 
   console.log("B. refuse a branch checked out elsewhere");
   const again = await createTaskWorktree({ repoPath: repo, threadId: THREAD, title: "x", branch: wt.branch });
@@ -187,19 +197,20 @@ try {
   check("a task_worktree claim works on a repo inside the umbrella", viaTool.ok && viaTool.worktree.branch === umbrellaBranch);
 
   console.log("H. briefing");
-  const own = worktreeBriefing({ threadId: THREAD, title: "Fix", workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: true });
+  const own = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: true });
   check("own: names the branch and folder", !!own && own.includes(wt.branch) && own.includes(wt.path));
   check("own: integrates by rebase + fast-forward + push", !!own && /rebase/.test(own) && /--ff-only/.test(own) && /push `master`/.test(own));
   check("own: forbids git worktree remove", !!own && own.includes("Never run `git worktree remove`"));
-  const noPush = worktreeBriefing({ threadId: THREAD, title: "Fix", workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: false });
+  const noPush = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: false });
   check("auto-push off: never says to push the base", !!noPush && !/then push/.test(noPush) && /do not push/.test(noPush));
-  const vota = worktreeBriefing({ threadId: THREAD, title: "Fix", workspace: wt.path, mode: "worktree", worktrees: [{ ...wt, commitOnly: true }], owner: "Kevin", autoPush: true });
+  const vota = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [{ ...wt, commitOnly: true }], owner: "Kevin", autoPush: true });
   check("commit-only: stays on the branch, never pushes or merges", !!vota && /Never push it and never merge it/.test(vota) && !/--ff-only/.test(vota));
-  const borrowed = worktreeBriefing({ threadId: THREAD, title: "Fix", workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: true, borrowed: true });
+  const borrowed = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: true, borrowed: true });
   check("borrowed: works in the parent's worktree without integrating", !!borrowed && borrowed.includes("parent task") && !/--ff-only/.test(borrowed));
-  const umb = worktreeBriefing({ threadId: THREAD, title: "Umbrella task", workspace: umbrella, mode: "umbrella", worktrees: [], owner: "Kevin", autoPush: true });
-  check("umbrella: points at task_worktree and the exact branch convention", !!umb && umb.includes("task_worktree") && umb.includes(umbrellaBranch));
-  check("in-place: no section", worktreeBriefing({ threadId: THREAD, title: "x", workspace: repo, mode: "in-place", worktrees: [], owner: "Kevin", autoPush: true }) === null);
+  const umb = worktreeBriefing({ threadId: THREAD, workspace: umbrella, mode: "umbrella", worktrees: [], owner: "Kevin", autoPush: true });
+  check("umbrella: points at task_worktree and the exact branch convention", !!umb && umb.includes("task_worktree") && umb.includes(`-${THREAD.slice(0, 8)}`) && umb.includes("ggo/<name>"));
+  check("umbrella: the agent names the branch itself, not from the title", !!umb && /`name`/.test(umb) && !umb.includes(umbrellaBranch));
+  check("in-place: no section", worktreeBriefing({ threadId: THREAD, workspace: repo, mode: "in-place", worktrees: [], owner: "Kevin", autoPush: true }) === null);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

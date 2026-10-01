@@ -614,13 +614,14 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
     agent's own name (`web/src/lib/collaboratorFeed.ts`).
 - **Task worktrees — one branch and one checkout per task** (`orchestrator/taskWorktree.ts`,
   `worktreeBriefing.ts`). Before its first agent starts, `prepareTaskWorkspace` moves a new top-level
-  task in a git repo into its own linked worktree: branch `ggo/<slug>-<id8>`, folder
-  `<repo-parent>/<repo>.worktrees/<slug>`, cut from the main checkout's current branch, with ignored
+  task in a git repo into its own linked worktree: branch `ggo/<name>-<id8>`, folder
+  `<repo-parent>/<repo>.worktrees/<name>`, where `<name>` is a model's 2–4-word name for the work in
+  the brief (`worktreeName.ts`; the title slug when no token), cut from the main checkout's current branch, with ignored
   `node_modules`/`.venv` junctioned back and `.env*` copied. `thread.workspace` becomes that folder, so
   every existing `cwd`/git/diff/deliverable path follows unchanged. `thread.homeWorkspace` keeps the
   dispatched folder, which grouping, office rooms and the per-repo cap key on. Sub-tasks and
   collaborators share the parent's checkout. A non-git umbrella folder (several repos) gets the
-  `task_worktree` bus tool instead, plus discovery of hand-made `ggo/*-<id8>` worktrees. The kickoff
+  `task_worktree` bus tool instead (the agent passes its own `name`), plus discovery of hand-made `ggo/*-<id8>` worktrees. The kickoff
   carries the branch and the integration step (rebase, fast-forward the base, push; commit-only repos
   stay on the branch). Close/dismiss/purge retires a clean worktree, unlinking its junctions first
   because `git worktree remove` follows them into the main checkout. Resume re-attaches a retired one.

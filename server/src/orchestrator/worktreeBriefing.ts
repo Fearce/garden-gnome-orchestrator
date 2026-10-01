@@ -1,9 +1,8 @@
 import type { TaskWorktree, WorkspaceMode } from "../types.js";
-import { taskBranchName, worktreeSlug, worktreesHome } from "./taskWorktree.js";
+import { worktreesHome } from "./taskWorktree.js";
 
 export interface BriefingInput {
   threadId: string;
-  title: string;
   workspace: string;
   mode: WorkspaceMode | undefined;
   worktrees: readonly TaskWorktree[];
@@ -53,14 +52,13 @@ function integrationLines(w: TaskWorktree, input: BriefingInput): string[] {
 }
 
 function umbrellaBriefing(input: BriefingInput): string {
-  const branch = taskBranchName(input.title, input.threadId);
-  const folder = worktreeSlug(branch.replace(/^ggo\//, ""));
+  const branch = `ggo/<name>-${input.threadId.slice(0, 8)}`;
   const example = `${input.workspace.replace(/[\\/]+$/, "")}\\<repo>`;
   return [
     "## Branch & worktree",
     `Your workspace \`${input.workspace}\` is not itself a git repository; it holds several. Other tasks and ${input.owner} use their main checkouts, so never edit, switch branches, stash or reset in them.`,
-    `- Before you change ANY repository in here, call \`task_worktree\` with that repository's path (optionally \`branch\` to continue an existing branch). It returns this task's own worktree and branch for that repo; do all edits, builds and commits there. Calling it again for the same repo returns the same worktree.`,
-    `- If you have no \`task_worktree\` tool, create it yourself with exactly this naming so GGO can find it: \`git -C "${example}" worktree add -b ${branch} "${worktreesHome(example)}\\${folder}"\`.`,
+    `- Before you change ANY repository in here, call \`task_worktree\` with that repository's path and a \`name\`: 2–4 lowercase hyphenated words naming the work you will do there (e.g. \`crawler-email-extraction\`), never the opening words of the request. Pass \`branch\` instead to continue an existing branch. It returns this task's own worktree and branch for that repo; do all edits, builds and commits there. Calling it again for the same repo returns the same worktree.`,
+    `- If you have no \`task_worktree\` tool, create it yourself with exactly this naming so GGO can find it, your own words in place of \`<name>\`: \`git -C "${example}" worktree add -b ${branch} "${worktreesHome(example)}\\<name>"\`.`,
     input.borrowed
       ? "- The worktree belongs to your parent task, which integrates it: do not switch branches, rebase, merge or push. Never run `git worktree remove` on a task worktree."
       : `- Integration follows the repository's rule: in a commit-only (never-push) repository leave the work committed on the task branch for ${input.owner}; elsewhere rebase onto the base branch, fast-forward it and push. Never run \`git worktree remove\` on a task worktree: GGO removes it when the task is closed.`,

@@ -5,6 +5,9 @@
  * Scenarios:
  *   A. FIRST START  — a dispatched task moves into its own worktree once; workspace, binding, mode,
  *                     diff baseline and feed note all follow, and a second start reuses it.
+ *   A2. NAMED       — with a model token, the branch and folder are named after the brief's work rather
+ *                     than the dispatch-time title (the prompt's first words); task_worktree takes the
+ *                     agent's own name.
  *   B. SUBFOLDER    — a task dispatched on <repo>/web keeps working in the worktree's web.
  *   C. NO WORKTREE  — sub-tasks, read lanes, pre-feature rows and the setting turned off stay in place.
  *   D. RESTORE      — a recorded worktree whose folder is gone comes back on resume.
@@ -24,7 +27,7 @@ process.env.NO_PUSH_REPO_PATTERN = "commit-only-origin";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
 import type { Thread } from "../types.js";
 
@@ -48,6 +51,8 @@ function check(label: string, cond: boolean, detail?: string): void {
   }
 }
 
+let stubToken: string | null = null;
+
 class StubAccounts {
   onUsageRefresh(_cb: () => void): void {}
   effectiveUtilization(): number | null {
@@ -65,7 +70,7 @@ class StubAccounts {
   setSpreadUsage(_on: boolean): void {}
   setProfileToken(_id: string, _token: string): void {}
   auxToken(): string | null {
-    return null;
+    return stubToken;
   }
 }
 
@@ -133,6 +138,28 @@ try {
   check("a second start reuses the same worktree", again?.worktrees?.length === 1 && again.workspace === wt?.path);
   check("the main checkout never left master", git(repo, "branch", "--show-current") === "master");
 
+  console.log("A2. named after the work");
+  const realFetch = globalThis.fetch;
+  let modelCalls = 0;
+  globalThis.fetch = (async () => {
+    modelCalls++;
+    return new Response(JSON.stringify({ content: [{ type: "text", text: "crawler-email-extraction" }] }), { status: 200 });
+  }) as typeof fetch;
+  stubToken = "stub-token";
+  try {
+    const brief = "We have another agent working in the crawler right now. The email extraction rate is too low, improve it.";
+    const namedTask = dispatch(repo, "We have another agent working in…", { brief });
+    const named = (await prepare(namedTask))?.worktrees?.[0];
+    check("the branch is named after the work", named?.branch === `ggo/crawler-email-extraction-${namedTask.id.slice(0, 8)}`, named?.branch);
+    check("...and so is the folder", !!named && basename(named.path) === "crawler-email-extraction", named?.path);
+    const callsAfterCreate = modelCalls;
+    await prepare(db.getThread(namedTask.id)!);
+    check("a later start does not ask for a name again", modelCalls === callsAfterCreate && callsAfterCreate === 1, String(modelCalls));
+  } finally {
+    globalThis.fetch = realFetch;
+    stubToken = null;
+  }
+
   console.log("B. dispatched on a subfolder");
   const sub = await prepare(dispatch(join(repo, "web"), "Web only"));
   check("works in the worktree's web folder", !!sub?.worktrees?.[0] && sub.workspace === join(sub.worktrees[0].path, "web"), sub?.workspace);
@@ -188,6 +215,9 @@ try {
   check("...without adding a second binding", db.getThread(umb.id)?.worktrees?.length === 1 && !db.getThread(helper.id)?.worktrees?.length);
   const site = await mgr.claimTaskWorktree(helper.id, { repo: "site" });
   check("a second repo is added to the parent", site.ok && db.getThread(umb.id)?.worktrees?.length === 2);
+  makeRepo(umbrella, "docs");
+  const chosen = await mgr.claimTaskWorktree(umb.id, { repo: "docs", name: "API reference refresh" });
+  check("task_worktree takes the agent's own name", chosen.ok && chosen.worktree.branch === `ggo/api-reference-refresh-${umb.id.slice(0, 8)}`, chosen.ok ? chosen.worktree.branch : chosen.error);
   const bad = await mgr.claimTaskWorktree(umb.id, { repo: "nope" });
   check("a folder that is not a repo is refused", !bad.ok);
 

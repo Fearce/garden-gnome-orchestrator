@@ -226,9 +226,10 @@ Post at most one or two per task, at the END, once the thing is actually there t
     {
       repo: z.string().min(1).describe("The repository's path — absolute, or relative to your workspace."),
       branch: z.string().min(1).optional().describe("An existing branch to continue instead of a new task branch. Omit for a fresh `ggo/…` branch cut from the repo's current branch."),
+      name: z.string().min(1).max(60).optional().describe("2–4 words naming the work you are doing in this repo (e.g. \"crawler-email-extraction\"); the new branch becomes `ggo/<name>-<id>` and the folder `<name>`. Ignored when `branch` is given; omitted, GGO names it from the brief."),
     },
     async (args) => {
-      const result = await api.claimTaskWorktree(ctx.threadId, { repo: args.repo, branch: args.branch ?? null });
+      const result = await api.claimTaskWorktree(ctx.threadId, { repo: args.repo, branch: args.branch ?? null, name: args.name ?? null });
       return result.ok
         ? { content: [{ type: "text", text: result.text }] }
         : { content: [{ type: "text", text: `No worktree: ${result.error}` }], isError: true };

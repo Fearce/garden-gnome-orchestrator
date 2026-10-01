@@ -8,8 +8,9 @@ import type { TaskWorktree } from "../types.js";
 /**
  * A task's OWN checkout of a repository: a linked git worktree on its own branch, so several tasks (and
  * the owner) can change one repo at once without sharing a working tree. It lives beside the repo in
- * `<parent>/<repo>.worktrees/<slug>` on branch `ggo/<slug>`, cut from whatever the main checkout has
- * checked out. Both share one object store, so integrating is an ordinary rebase + fast-forward.
+ * `<parent>/<repo>.worktrees/<name>` on branch `ggo/<name>-<id8>`, cut from whatever the main checkout
+ * has checked out; `<name>` names the work (worktreeName.ts, or the agent's own via `task_worktree`).
+ * Both share one object store, so integrating is an ordinary rebase + fast-forward.
  *
  * A fresh worktree has none of the repo's ignored state, so `provisionWorktree` links the heavy
  * dependency folders back to the main checkout as junctions and copies its `.env*` files. Those
@@ -47,9 +48,14 @@ export function worktreeSlug(title: string): string {
   return slug || "task";
 }
 
-/** `ggo/<title-words>-<id8>`: readable in `git branch`, and the id suffix ties it to exactly one task. */
-export function taskBranchName(title: string, threadId: string): string {
-  return `ggo/${worktreeSlug(title)}-${threadId.slice(0, 8)}`;
+/** `ggo/<words>-<id8>`: readable in `git branch`, and the id suffix ties it to exactly one task. */
+export function taskBranchName(words: string, threadId: string): string {
+  return `ggo/${worktreeSlug(words)}-${threadId.slice(0, 8)}`;
+}
+
+/** The worktree folder for `branch`: its words without the `ggo/` prefix or this task's id suffix. */
+export function worktreeFolderName(branch: string, threadId: string): string {
+  return worktreeSlug(branch.replace(/^ggo\//, "").replace(new RegExp(`-${threadId.slice(0, 8)}$`), ""));
 }
 
 /** The folder every task worktree of `mainRoot` lives under — one sibling folder per repo. */
@@ -127,6 +133,8 @@ export interface CreateTaskWorktreeInput {
   repoPath: string;
   threadId: string;
   title: string;
+  /** Words naming the work, for the new branch and folder; blank falls back to the title. */
+  name?: string | null;
   /** Check out this branch instead of creating `ggo/<slug>`; created from `startPoint` if missing. */
   branch?: string | null;
   /** Commit-ish a NEW branch starts from; defaults to the main checkout's HEAD. */
@@ -141,13 +149,13 @@ export async function createTaskWorktree(input: CreateTaskWorktreeInput): Promis
   try {
     const main = await mainCheckoutOf(root);
     const base = (await git(main, ["branch", "--show-current"])) || null;
-    const branch = input.branch?.trim() || taskBranchName(input.title, input.threadId);
+    const branch = input.branch?.trim() || taskBranchName(input.name?.trim() || input.title, input.threadId);
     const busy = (await checkedOutBranches(main)).get(branch);
     if (busy) return { ok: false, error: `Branch "${branch}" is already checked out in ${busy}. Work there only if it is yours, or give a different branch.` };
     const exists = await branchExists(main, branch);
     const startPoint = input.startPoint?.trim() || "HEAD";
     const baseSha = await git(main, ["rev-parse", exists ? branch : startPoint]);
-    const folder = freeFolder(worktreesHome(main), worktreeSlug(branch.replace(/^ggo\//, "")));
+    const folder = freeFolder(worktreesHome(main), worktreeFolderName(branch, input.threadId));
     mkdirSync(dirname(folder), { recursive: true });
     await git(main, exists ? ["worktree", "add", folder, branch] : ["worktree", "add", "-b", branch, folder, startPoint], ADD_TIMEOUT_MS);
     const links = await provisionWorktree(main, folder);

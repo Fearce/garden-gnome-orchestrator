@@ -135,6 +135,7 @@ import { AUTOMATIC_EFFORT_CEILING, automaticEffortOptions, capAutomaticEffort } 
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, runGit, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
 import { titleFromBrief } from "./titleFromInjection.js";
+import { worktreeNameFromBrief } from "./worktreeName.js";
 import { MAX_RUN_ERROR_LEN, runErrorText } from "./runError.js";
 import { tokenShiftReport, type TokenShiftReport } from "./usageWindows.js";
 import { isCapacityStallPark, MAX_CAPACITY_STALL_RESUMES } from "./capacityStall.js";
@@ -6782,7 +6783,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.db.updateThreadStageOutputs(thread.id, { workspaceMode: "in-place" });
       return thread;
     }
-    const created = await createTaskWorktree({ repoPath: thread.workspace, threadId: thread.id, title: thread.title });
+    const created = await createTaskWorktree({ repoPath: thread.workspace, threadId: thread.id, title: thread.title, name: await this.worktreeName(thread) });
     if (!created.ok) {
       // Not persisted as a mode, so the next start tries again; this run works where it was dispatched.
       this.taskFeedNote(thread.id, `⎇ ${created.error} This run works in the main checkout instead.`);
@@ -6797,6 +6798,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.hub.publish({ type: "thread.upsert", thread: updated });
     this.taskFeedNote(thread.id, `⎇ Working on branch ${worktree.branch} in its own worktree ${worktree.path} (from ${worktree.base ?? "a detached HEAD"} at ${worktree.baseSha.slice(0, 8)}).`);
     return updated;
+  }
+
+  /** Words naming the task's work for a new branch and folder. The title can't serve: at first start it is
+   *  still the prompt's truncated first line, and the Haiku retitle that replaces it is in flight. */
+  private worktreeName(thread: Thread): Promise<string | null> {
+    return worktreeNameFromBrief(thread.brief || thread.rawPrompt || thread.title, this.accounts.auxToken());
   }
 
   /** New top-level work in a git repo gets its own checkout. Sub-tasks and collaborators share their
@@ -6835,7 +6842,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   /** The `task_worktree` bus tool: this task's own worktree for one repository inside its workspace,
    *  created on first ask and returned unchanged after. A sub-task or collaborator works in its
    *  parent's checkout, so the binding is recorded on — and shared through — the parent. */
-  async claimTaskWorktree(threadId: string, input: { repo: string; branch?: string | null }): Promise<{ ok: true; worktree: TaskWorktree; text: string } | { ok: false; error: string }> {
+  async claimTaskWorktree(threadId: string, input: { repo: string; branch?: string | null; name?: string | null }): Promise<{ ok: true; worktree: TaskWorktree; text: string } | { ok: false; error: string }> {
     const caller = this.db.getThread(threadId);
     if (!caller) return { ok: false, error: "This task no longer exists." };
     const owner = (caller.parentId ? this.db.getThread(caller.parentId) : null) ?? caller;
@@ -6848,7 +6855,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const present = existsSync(existing.path) ? existing : ((await this.ensureWorktreesPresent(owner)).worktrees ?? []).find((w) => w.branch === existing.branch) ?? existing;
       return { ok: true, worktree: present, text: this.claimedWorktreeText(owner, present, repoPath) };
     }
-    const created = await createTaskWorktree({ repoPath: main, threadId: owner.id, title: owner.title, branch: input.branch ?? null });
+    const name = input.branch?.trim() ? null : input.name?.trim() || (await this.worktreeName(owner));
+    const created = await createTaskWorktree({ repoPath: main, threadId: owner.id, title: owner.title, name, branch: input.branch ?? null });
     if (!created.ok) return created;
     const updated = this.db.setThreadWorktrees(owner.id, owner.workspace, [...(owner.worktrees ?? []), created.worktree]);
     if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
@@ -6860,7 +6868,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const folder = mapIntoWorktree(repoPath, worktree);
     const rules = worktreeBriefing({
       threadId: owner.id,
-      title: owner.title,
       workspace: worktree.path,
       mode: "worktree",
       worktrees: [worktree],
@@ -6888,7 +6895,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const owner = parent ?? thread;
     return worktreeBriefing({
       threadId: owner.id,
-      title: owner.title,
       workspace: owner.workspace,
       mode: this.db.getThreadStageOutputs(owner.id).workspaceMode,
       worktrees: owner.worktrees ?? [],

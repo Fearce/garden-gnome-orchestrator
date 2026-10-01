@@ -194,5 +194,5 @@ export interface OrchestratorApi {
   autoReview(threadId: string, source?: AutoReviewSource): Promise<ThreadActionResult>;
   /** The caller's own worktree for one repository inside its workspace (the `task_worktree` bus tool),
    *  created on first ask; a sub-task's binding lives on its parent. `text` is the agent-facing answer. */
-  claimTaskWorktree(threadId: string, input: { repo: string; branch?: string | null }): Promise<{ ok: true; worktree: TaskWorktree; text: string } | { ok: false; error: string }>;
+  claimTaskWorktree(threadId: string, input: { repo: string; branch?: string | null; name?: string | null }): Promise<{ ok: true; worktree: TaskWorktree; text: string } | { ok: false; error: string }>;
 }
