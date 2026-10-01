@@ -5,7 +5,7 @@ import type { DispatchTaskMode, OrchestratorApi } from "../orchestrator/api.js";
 import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
 import { applyGoalChange, describeGoal, type GoalRunner } from "../orchestrator/goals.js";
-import { MAX_GOAL_BURN_RATE_PCT, MAX_GOAL_MAX_CONCURRENT, MIN_GOAL_BURN_RATE_PCT, NOTE_MAX_CHARS, type ImageAttachment } from "../types.js";
+import { MAX_GOAL_BURN_RATE_PCT, MAX_GOAL_MAX_CONCURRENT, MIN_GOAL_BURN_RATE_PCT, NOTE_MAX_CHARS, type ImageAttachment, type ScheduledTask } from "../types.js";
 import { DIRECTOR_SERVER } from "../agents/toolNames.js";
 import { existsSync } from "node:fs";
 import { config } from "../config.js";
@@ -327,13 +327,27 @@ export function createDirectorServer(
   const cronHelp =
     "5-field cron (minute hour day-of-month month day-of-week), server-local time. Examples: '0 9 * * *' = every day 09:00; '*/30 * * * *' = every 30 min; '0 8 * * 1-5' = 08:00 on weekdays; '0 0 1 * *' = midnight on the 1st.";
 
+  const describeCreated = (s: ScheduledTask, reminderGap: string | null): string => {
+    const next = s.nextRunAt ? new Date(s.nextRunAt).toLocaleString() : "—";
+    const what = s.prompt ? `scheduled task "${s.title}" (${s.cron}) in ${s.workspace}` : `reminder "${s.title}" (${s.cron})`;
+    const dm = s.reminder ? ` Each fire DMs ${config.ownerName} on Discord: "${s.reminder}".${reminderGap ? ` Warning: ${reminderGap}` : ""}` : "";
+    return `Created ${what}. Next run: ${next}.${dm}`;
+  };
+
   const createScheduledTask = tool(
     "create_scheduled_task",
-    `Create a RECURRING task: a prompt that runs in a target repo on a cron schedule. Each fire dispatches a normal task through the same task-aware route selection as a one-off dispatch (planner/QA are available, not forced), using whatever provider/model is active — just like a one-off dispatch, but automatic. Every fire is a full implementation task that can edit, commit and push, and a fire is skipped while the previous one is still running. NEVER use this to poll a condition or wait for an event ("shut down when all tasks finish"): each tick would dispatch another implementation task. ONLY use this when ${config.ownerName} EXPLICITLY asked to schedule a task — they said "schedule"/"scheduled task"/"cron job" in so many words. A cadence mentioned inside an ordinary request ("every morning", "nightly", "weekly") is NOT enough: dispatch that once instead. Resolve the repo path first (find_workspace) if you don't have it. ${cronHelp}`,
+    `Create a RECURRING task or a REMINDER on a cron schedule. A REMINDER ("remind me on 15 October to …", "ping me every Friday about …") is the one schedule that needs no "schedule" wording from ${config.ownerName}: set \`reminder\` to the message itself, written to them, and leave prompt and workspace out. The scheduler then DMs it to ${config.ownerName} on Discord at that time and starts no agent, so never write a "deliver this reminder" prompt. Use runOnce for a date. Set BOTH reminder and prompt only when they also want work started at that time. Otherwise it is a task: a prompt that runs in a target repo. Each fire dispatches a normal task through the same task-aware route selection as a one-off dispatch (planner/QA are available, not forced), using whatever provider/model is active — just like a one-off dispatch, but automatic. Every fire is a full implementation task that can edit, commit and push, and a fire is skipped while the previous one is still running. NEVER use this to poll a condition or wait for an event ("shut down when all tasks finish"): each tick would dispatch another implementation task. ONLY use this when ${config.ownerName} EXPLICITLY asked to schedule a task — they said "schedule"/"scheduled task"/"cron job" in so many words. A cadence mentioned inside an ordinary request ("every morning", "nightly", "weekly") is NOT enough: dispatch that once instead. Resolve the repo path first (find_workspace) if you don't have it. ${cronHelp}`,
     {
-      title: z.string().describe("Short title for each dispatched run (the board-lane label)."),
-      workspace: z.string().describe("Absolute path of the EXISTING repo/dir the prompt runs in."),
-      prompt: z.string().describe(`The brief handed to the pipeline on each run — write it as a complete standalone task, since it runs unattended with no further clarification from ${config.ownerName}.`),
+      title: z.string().describe("Short title for each dispatched run (the board-lane label), and the heading of the reminder DM."),
+      workspace: z.string().optional().describe("Absolute path of the EXISTING repo/dir the prompt runs in. Required with a prompt; omit for a reminder only."),
+      prompt: z
+        .string()
+        .optional()
+        .describe(`The brief handed to the pipeline on each run — write it as a complete standalone task, since it runs unattended with no further clarification from ${config.ownerName}. Omit for a reminder only.`),
+      reminder: z
+        .string()
+        .optional()
+        .describe(`The reminder text DMed to ${config.ownerName} on Discord on every fire, in their language and addressed to them (e.g. "Your Vota reset expires 22 October. Use it before then."). Omit for a plain task.`),
       cron: z.string().describe(`The cron schedule. ${cronHelp}`),
       enabled: z.boolean().default(true).describe("Whether it starts active (default true)."),
       effort: z.enum(["low", "medium", "high", "max"]).optional().describe(`Implementor effort for each run, ONLY when ${config.ownerName} named one. Omit otherwise; the pipeline then picks per run (never above high).`),
@@ -348,13 +362,14 @@ export function createDirectorServer(
         .describe("Fire only on the next matching cron slot, then disable itself. Use it for a one-off reminder on a specific date (e.g. cron '0 12 3 11 *' = 3 November at 12:00), which would otherwise repeat every year."),
     },
     async (args) => {
-      if (!existsSync(args.workspace)) {
+      if (args.workspace && !existsSync(args.workspace)) {
         return { content: [{ type: "text", text: `Workspace "${args.workspace}" does not exist on disk. Confirm the exact absolute path with ${config.ownerName} and retry.` }], isError: true };
       }
       const r = scheduler.create({
         title: args.title,
-        workspace: args.workspace,
-        prompt: args.prompt,
+        workspace: args.workspace ?? "",
+        prompt: args.prompt ?? "",
+        reminder: args.reminder,
         cron: args.cron,
         enabled: args.enabled,
         effort: args.effort,
@@ -363,8 +378,7 @@ export function createDirectorServer(
         runOnce: args.runOnce,
       });
       if (!r.ok || !r.schedule) return { content: [{ type: "text", text: `Could not create the scheduled task: ${r.error}` }], isError: true };
-      const next = r.schedule.nextRunAt ? new Date(r.schedule.nextRunAt).toLocaleString() : "—";
-      return { content: [{ type: "text", text: `Created scheduled task "${r.schedule.title}" (${r.schedule.cron}) in ${r.schedule.workspace}. Next run: ${next}.` }] };
+      return { content: [{ type: "text", text: describeCreated(r.schedule, scheduler.reminderGap()) }] };
     },
   );
 
@@ -376,7 +390,7 @@ export function createDirectorServer(
       const list = scheduler.list();
       if (!list.length) return { content: [{ type: "text", text: "No scheduled tasks." }] };
       const text = list
-        .map((s) => `- ${s.id} ${s.enabled ? "[on]" : "[off]"}${s.runOnce ? " [once]" : ""} "${s.title}" (${s.cron}) @ ${s.workspace}${s.nextRunAt ? ` — next ${new Date(s.nextRunAt).toLocaleString()}` : ""}`)
+        .map((s) => `- ${s.id} ${s.enabled ? "[on]" : "[off]"}${s.runOnce ? " [once]" : ""}${s.reminder ? " [reminder]" : ""} "${s.title}" (${s.cron})${s.prompt ? ` @ ${s.workspace}` : ""}${s.nextRunAt ? ` — next ${new Date(s.nextRunAt).toLocaleString()}` : ""}${s.reminder ? ` — DMs: ${s.reminder}` : ""}`)
         .join("\n");
       return { content: [{ type: "text", text }] };
     },
@@ -384,12 +398,13 @@ export function createDirectorServer(
 
   const updateScheduledTask = tool(
     "update_scheduled_task",
-    `Edit an existing scheduled task — change its prompt, schedule (cron), target repo, effort, or enable/disable it. Pass only the fields you want to change (get the id from list_scheduled_tasks). ${cronHelp}`,
+    `Edit an existing scheduled task — change its prompt, reminder, schedule (cron), target repo, effort, or enable/disable it. Pass only the fields you want to change (get the id from list_scheduled_tasks). ${cronHelp}`,
     {
       id: z.string().describe("The scheduled task id (from list_scheduled_tasks)."),
       title: z.string().optional(),
       workspace: z.string().optional(),
-      prompt: z.string().optional(),
+      prompt: z.string().optional().describe("Pass an empty string to make it a reminder only (it must then have a reminder)."),
+      reminder: z.string().nullable().optional().describe(`The text DMed to ${config.ownerName} on Discord on every fire; pass null to remove it.`),
       cron: z.string().optional().describe(cronHelp),
       enabled: z.boolean().optional(),
       effort: z.enum(["low", "medium", "high", "max"]).optional(),

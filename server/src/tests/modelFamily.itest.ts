@@ -309,7 +309,11 @@ async function spawnPaths(): Promise<void> {
     check("task dispatch: a cross-line Codex pin is respected exactly", h.db.getThread(luna)?.modelRequest?.model === "gpt-6-luna");
 
     // Scheduled fire: a row written after boot (an old console, a restore) still fires on the newest.
-    const scheduler = new Scheduler(h.db, h.hub, (input) => h.mgr.dispatch(input));
+    const scheduler = new Scheduler(h.db, h.hub, (input) => h.mgr.dispatch(input), {
+      ready: () => false,
+      send: async () => ({ ok: true }),
+      fallback: () => {},
+    });
     const schedule = h.db.createScheduledTask({ title: "fire", workspace: h.workspace, prompt: "p", cron: "0 3 * * *", enabled: true, model: "gpt-6-sol", provider: "codex" });
     await scheduler.runNow(schedule.id);
     const fired = h.db.getScheduledTask(schedule.id)?.lastThreadId;

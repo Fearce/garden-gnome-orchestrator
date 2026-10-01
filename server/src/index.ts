@@ -167,13 +167,20 @@ async function main(): Promise<void> {
     hub.log("warn", line);
     logLifecycle(line);
   });
-  // Recurring dispatches: fires a schedule's prompt through the normal pipeline on its cron cadence.
-  // Standalone (depends only on manager.dispatch), so scheduled runs use whatever provider/model is
-  // active, exactly like a hand-dispatched task. The director can also create/edit schedules via its tools.
-  const scheduler = new Scheduler(db, hub, (input) => manager.dispatch(input));
   // The owner's note list. Stateless over (db, hub), so each agent's bus server builds its own rather
   // than routing every post through this instance; they can't diverge, and the pipeline stays untouched.
   const notes = new OperatorNotes(db, hub);
+  // Recurring dispatches: fires a schedule's prompt through the normal pipeline on its cron cadence.
+  // Standalone (depends only on manager.dispatch), so scheduled runs use whatever provider/model is
+  // active, exactly like a hand-dispatched task. The director can also create/edit schedules via its tools.
+  // A schedule's reminder is DMed by the scheduler itself; the note list catches one Discord refused.
+  const scheduler = new Scheduler(db, hub, (input) => manager.dispatch(input), {
+    ready: () => manager.supervisorDiscordReady(),
+    send: (title, text) => manager.remindOwner(title, text),
+    fallback: (title, text, why) => {
+      notes.add({ body: `⏰ ${title}: ${text}`, threadTitle: `Reminder not delivered on Discord: ${why}` });
+    },
+  });
   // Goal-directed tasks: keeps one step task working on each active goal, with the director judging
   // every step's outcome and picking the next step's model and effort from the live roster.
   const goals = new GoalRunner(db, hub, {

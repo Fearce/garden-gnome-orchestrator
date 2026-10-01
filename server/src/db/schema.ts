@@ -246,6 +246,8 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   title          TEXT NOT NULL,
   workspace      TEXT NOT NULL,
   prompt         TEXT NOT NULL,
+  -- Sent to the owner's Discord DM on each fire. With an empty prompt the fire is this message alone.
+  reminder       TEXT,
   cron           TEXT NOT NULL,
   enabled        INTEGER NOT NULL DEFAULT 1,
   effort         TEXT,

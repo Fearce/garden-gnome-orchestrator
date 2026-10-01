@@ -113,11 +113,20 @@ function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => v
         </label>
       </div>
 
-      <WorkspacePath path={sched.workspace} />
+      {sched.prompt ? <WorkspacePath path={sched.workspace} /> : null}
 
-      <div className="sched-prompt" title={sched.prompt}>
-        {sched.prompt}
-      </div>
+      {sched.reminder ? (
+        <div className="sched-reminder" title={`DMed to you on Discord each time it fires: ${sched.reminder}`}>
+          <BellIcon />
+          <span>{sched.reminder}</span>
+        </div>
+      ) : null}
+
+      {sched.prompt ? (
+        <div className="sched-prompt" title={sched.prompt}>
+          {sched.prompt}
+        </div>
+      ) : null}
 
       <div className="sched-meta">
         <span className="sched-cron" title={sched.cron}>
@@ -170,7 +179,7 @@ function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => v
       </div>
 
       <div className="sched-actions">
-        <button className="btn ghost sm" disabled={pending} onClick={() => runSchedule(sched.id)} title="Dispatch a run right now (doesn't change the schedule)">
+        <button className="btn ghost sm" disabled={pending} onClick={() => runSchedule(sched.id)} title={runNowHint(sched)}>
           Run now
         </button>
         <button className="btn ghost sm" disabled={pending} onClick={onEdit} title="Edit this schedule">
@@ -199,6 +208,7 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
   const [title, setTitle] = useState(initial?.title ?? "");
   const [workspace, setWorkspace] = useState(initial?.workspace ?? "");
   const [prompt, setPrompt] = useState(initial?.prompt ?? "");
+  const [reminder, setReminder] = useState(initial?.reminder ?? "");
   const [effort, setEffort] = useState<Effort | "">(initial?.effort ?? "");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [runOnce, setRunOnce] = useState(initial?.runOnce ?? false);
@@ -219,7 +229,9 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
 
   const cron = recurrenceToCron(rec);
   const cronValid = isValidCron(cron);
-  const canSave = title.trim() && workspace.trim() && prompt.trim() && cronValid && (!provider || !!model);
+  // Mirrors Scheduler.sanitize: a prompt or a reminder, and a repo whenever there is a prompt.
+  const hasPrompt = !!prompt.trim();
+  const canSave = title.trim() && (hasPrompt || reminder.trim()) && (!hasPrompt || workspace.trim()) && cronValid && (!provider || !!model);
 
   const chooseProvider = (next: PinProvider): void => {
     setProvider(next);
@@ -237,6 +249,7 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
       title: title.trim(),
       workspace: workspace.trim(),
       prompt: prompt.trim(),
+      reminder: reminder.trim() || null,
       cron,
       effort: effort || null,
       enabled,
@@ -261,8 +274,18 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
           </label>
 
           <label className="sched-field">
+            <span className="sched-label">Reminder</span>
+            <textarea
+              className="sched-reminder-input"
+              value={reminder}
+              placeholder="Optional. Sent to your Discord DMs each time this fires, e.g. “Your Vota reset expires 22 October.”"
+              onChange={(e) => setReminder(e.target.value)}
+            />
+          </label>
+
+          <label className="sched-field">
             <span className="sched-label">Target repo</span>
-            <PathInput value={workspace} onChange={setWorkspace} placeholder="Absolute path, e.g. C:\my-project" title="The repo each run works in" />
+            <PathInput value={workspace} onChange={setWorkspace} placeholder="Absolute path, e.g. C:\my-project" title="The repo each run works in. Not needed for a reminder with no prompt." />
           </label>
 
           <label className="sched-field">
@@ -270,7 +293,7 @@ function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; o
             <textarea
               className="sched-prompt-input"
               value={prompt}
-              placeholder="What should run each time? Write it as a complete standalone task — it runs unattended."
+              placeholder="Optional with a reminder. What should run each time? Write it as a complete standalone task — it runs unattended."
               onChange={(e) => setPrompt(e.target.value)}
             />
           </label>
@@ -493,6 +516,22 @@ function PlusIcon() {
   return (
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" style={{ marginRight: 4, verticalAlign: "-2px" } as CSSProperties}>
       <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function runNowHint(s: ScheduledTask): string {
+  if (!s.prompt) return "Send the reminder to your Discord DMs right now (doesn't change the schedule)";
+  return s.reminder
+    ? "Send the reminder and dispatch a run right now (doesn't change the schedule)"
+    : "Dispatch a run right now (doesn't change the schedule)";
+}
+
+function BellIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+      <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
     </svg>
   );
 }

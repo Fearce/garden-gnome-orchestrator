@@ -556,6 +556,7 @@ export async function handleCommand(
         title: cmd.title,
         workspace: cmd.workspace,
         prompt: cmd.prompt,
+        reminder: cmd.reminder ?? null,
         cron: cmd.cron,
         enabled: cmd.enabled,
         effort: cmd.effort ?? null,

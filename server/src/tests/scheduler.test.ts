@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../db/db.js";
 import { EventHub } from "../events.js";
-import { Scheduler } from "../orchestrator/scheduler.js";
+import { Scheduler, type ReminderChannel } from "../orchestrator/scheduler.js";
 import { nextRun } from "../orchestrator/cron.js";
 import type { DispatchInput } from "../orchestrator/api.js";
 import type { ServerEvent } from "../ws/protocol.js";
@@ -39,7 +39,24 @@ hub.subscribe((e) => {
   if (e.type === "schedules") lastBroadcast = e;
 });
 
-const scheduler = new Scheduler(db, hub, dispatch);
+// The owner's Discord DM, faked: records every reminder and can be told to refuse the next sends.
+const reminded: { title: string; text: string }[] = [];
+const fallbacks: { title: string; text: string; why: string }[] = [];
+let refuseReminders = 0;
+const reminders: ReminderChannel = {
+  ready: () => true,
+  send: async (title, text) => {
+    reminded.push({ title, text });
+    if (refuseReminders > 0) {
+      refuseReminders--;
+      return { ok: false, message: "Discord refused the message (500)." };
+    }
+    return { ok: true };
+  },
+  fallback: (title, text, why) => fallbacks.push({ title, text, why }),
+};
+
+const scheduler = new Scheduler(db, hub, dispatch, reminders);
 
 async function main(): Promise<void> {
   console.log("scheduler: create");
@@ -150,7 +167,7 @@ async function main(): Promise<void> {
     dispatched.push(input);
     await new Promise<void>((r) => (release = r));
     return prev.id;
-  });
+  }, reminders);
   const n0 = dispatched.length;
   db.updateScheduledTask(guardId, { nextRunAt: Date.now() - 1000 });
   (slow as unknown as { tick(): void }).tick();
@@ -252,7 +269,7 @@ async function main(): Promise<void> {
     if (failNext) throw new Error("provider down");
     dispatched.push(input);
     return `thread-${nextThreadId++}`;
-  });
+  }, reminders);
   const retried = flaky.create({ title: "Retried", workspace: ws, prompt: "remind", cron: "0 12 3 11 *", runOnce: true }).schedule!.id;
   db.updateScheduledTask(retried, { nextRunAt: Date.now() - 1000 });
   (flaky as unknown as { tick(): void }).tick();
@@ -276,6 +293,87 @@ async function main(): Promise<void> {
   check("retries are capped, then it stays off", db.getScheduledTask(exhausted)!.enabled === false);
   flaky.remove(retried);
   flaky.remove(exhausted);
+
+  console.log("scheduler: reminders reach the owner's DMs");
+  // 2026-10-01: every "Reminder: …" schedule fired a full implementor+QA task, and the phone only ever got
+  // the generic "Done — <title>" notice, never the reminder itself (and nothing at all unless the task
+  // ended Done). A reminder is now a message the scheduler sends itself, at the moment it fires.
+  check("a schedule needs a prompt or a reminder", !scheduler.create({ title: "Empty", workspace: ws, prompt: "", cron: "0 9 * * *" }).ok);
+  const remindOnly = scheduler.create({ title: "Vota reset", workspace: "", prompt: "", reminder: "  Use your Vota reset before Oct 22.  ", cron: "0 9 15 10 *", runOnce: true });
+  check("a reminder needs no prompt and no repo", remindOnly.ok && remindOnly.schedule?.prompt === "" && remindOnly.schedule?.workspace === "");
+  check("the reminder text is stored trimmed", remindOnly.schedule?.reminder === "Use your Vota reset before Oct 22.");
+  check("a reload reads the reminder back", db.getScheduledTask(remindOnly.schedule!.id)?.reminder === "Use your Vota reset before Oct 22.");
+  check("a prompt still needs a repo", !scheduler.create({ title: "No repo", workspace: "", prompt: "audit", cron: "0 9 * * *" }).ok);
+  check("an ordinary schedule has no reminder", db.getScheduledTask(id)?.reminder == null);
+  const remindId = remindOnly.schedule!.id;
+  db.updateScheduledTask(remindId, { nextRunAt: Date.now() - 1000 });
+  const beforeRemind = dispatched.length;
+  reminded.length = 0;
+  tick();
+  await settle();
+  check("a due reminder is sent to the owner", reminded.length === 1 && reminded[0]!.text === "Use your Vota reset before Oct 22." && reminded[0]!.title === "Vota reset");
+  check("a reminder-only fire starts no agent", dispatched.length === beforeRemind);
+  check("a fired run-once reminder switches itself off", db.getScheduledTask(remindId)!.enabled === false && db.getScheduledTask(remindId)!.nextRunAt == null);
+  check("the fire is recorded as its last run", db.getScheduledTask(remindId)!.lastRunAt != null);
+  tick();
+  await settle();
+  check("it is sent exactly once", reminded.length === 1);
+  reminded.length = 0;
+  await scheduler.runNow(remindId);
+  await settle();
+  check("Run now sends the reminder too", reminded.length === 1 && dispatched.length === beforeRemind);
+
+  // A reminder beside a prompt sends the DM AND starts the work, e.g. "the VAT return is due; start on it".
+  const both = scheduler.create({ title: "VAT return", workspace: ws, prompt: "prepare the VAT return", reminder: "The Q3 VAT return is due 1 December.", cron: "0 12 3 11 *", runOnce: true }).schedule!.id;
+  db.updateScheduledTask(both, { nextRunAt: Date.now() - 1000 });
+  reminded.length = 0;
+  const beforeBoth = dispatched.length;
+  tick();
+  await settle();
+  check("a reminder with a prompt sends the DM", reminded.length === 1 && reminded[0]!.text.includes("Q3 VAT"));
+  check("…and dispatches the task", dispatched.length === beforeBoth + 1 && dispatched.at(-1)!.brief === "prepare the VAT return");
+  scheduler.remove(both);
+
+  // A recurring fire whose predecessor still works skips the TASK, never the reminder: the reminder is
+  // about the clock, and holding it back until some agent finishes would deliver it late or never.
+  const nag = scheduler.create({ title: "Stand up", workspace: ws, prompt: "check posture", reminder: "Stand up and stretch.", cron: "0 * * * *" }).schedule!.id;
+  db.updateThread(prev.id, { state: "implementing" });
+  db.updateScheduledTask(nag, { lastThreadId: prev.id, nextRunAt: Date.now() - 1000 });
+  reminded.length = 0;
+  const beforeNag = dispatched.length;
+  tick();
+  await settle();
+  check("a busy predecessor skips the task", dispatched.length === beforeNag);
+  check("…but the reminder still goes out on time", reminded.length === 1 && reminded[0]!.text === "Stand up and stretch.");
+  db.updateThread(prev.id, { state: "done" });
+  scheduler.update(nag, { reminder: null });
+  check("clearing the reminder keeps the schedule's prompt", db.getScheduledTask(nag)!.reminder == null && db.getScheduledTask(nag)!.prompt === "check posture");
+  check("a schedule cannot be emptied of both", !scheduler.update(remindId, { reminder: null }).ok && db.getScheduledTask(remindId)!.reminder != null);
+  scheduler.remove(nag);
+
+  // A DM that does not get through must still reach the owner: the note list is durable across the
+  // restarts a deploy causes, and the DM keeps being retried.
+  const retrying = new Scheduler(db, hub, dispatch, reminders, [10, 10]);
+  const lost = retrying.create({ title: "Credits", workspace: "", prompt: "", reminder: "Use the cloud credits.", cron: "0 9 29 10 *", runOnce: true }).schedule!.id;
+  db.updateScheduledTask(lost, { nextRunAt: Date.now() - 1000 });
+  reminded.length = 0;
+  fallbacks.length = 0;
+  refuseReminders = 1;
+  (retrying as unknown as { tick(): void }).tick();
+  await settle();
+  await settle();
+  check("a refused reminder lands on the note list", fallbacks.length === 1 && fallbacks[0]!.text === "Use the cloud credits." && fallbacks[0]!.why.includes("500"));
+  check("…and the DM is retried until it goes through", reminded.length === 2);
+  refuseReminders = 5;
+  reminded.length = 0;
+  fallbacks.length = 0;
+  await retrying.runNow(lost);
+  for (let i = 0; i < 5; i++) await settle();
+  check(`retries are bounded (${reminded.length} attempts)`, reminded.length === 3);
+  check("…and the note is posted once, not per attempt", fallbacks.length === 1);
+  refuseReminders = 0;
+  retrying.remove(lost);
+  scheduler.remove(remindId);
 
   console.log("scheduler: delete");
   check("delete ok", scheduler.remove(id).ok);

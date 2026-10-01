@@ -4,6 +4,7 @@ import type { EventHub } from "../events.js";
 import type { DispatchInput } from "./api.js";
 import type { Effort, ImplementorProvider, ScheduledTask, ThreadState } from "../types.js";
 import { isValidCron, nextRun } from "./cron.js";
+import type { SendResult } from "./discordNotify.js";
 
 /** States in which a schedule's previous fire still has an agent working, or one that will resume
  *  (a paused session, an open question, a plan awaiting approval). A new fire is skipped while its
@@ -27,11 +28,25 @@ export const UNFINISHED_STATES: ReadonlySet<ThreadState> = new Set<ThreadState>(
   "reviewing",
 ]);
 
+/** Where a schedule's reminder goes: the owner's Discord DM, and the note list when that DM fails. */
+export interface ReminderChannel {
+  /** Whether a DM can go out right now (Phone notifications on, token and destination set). */
+  ready(): boolean;
+  send(title: string, text: string): Promise<SendResult>;
+  /** Durable fallback when the DM did not go through. It survives the restarts a deploy causes, unlike
+   *  the in-process retries. */
+  fallback(title: string, text: string, why: string): void;
+}
+
 /** The fields a create/update accepts; everything else (timestamps, lastThreadId) is scheduler-managed. */
 export interface ScheduleInput {
   title: string;
+  /** May be empty only when `prompt` is empty too: a reminder on its own needs no repo. */
   workspace: string;
+  /** The task each fire dispatches. Empty = a reminder only: the fire sends the DM and starts no agent. */
   prompt: string;
+  /** Sent to the owner's Discord DM on every fire. null/empty = no reminder. */
+  reminder?: string | null;
   cron: string;
   enabled?: boolean;
   effort?: Effort | null;
@@ -58,6 +73,10 @@ const TICK_MS = 30_000;
 // failed dispatch re-arms it a few times rather than silently spending its only fire.
 const ONCE_RETRY_MS = 5 * 60_000;
 const ONCE_RETRIES = 3;
+// Waits before each retry of a reminder DM that did not go through (Discord down, a transient 5xx).
+const REMINDER_RETRY_MS = [60_000, 5 * 60_000, 15 * 60_000];
+// Discord allows 2000 characters per message; the title and the alarm-clock lead share it with the text.
+export const REMINDER_MAX_CHARS = 1800;
 
 /**
  * Fires recurring dispatches on their cron schedules. Deliberately standalone — it depends only on a
@@ -79,6 +98,8 @@ export class Scheduler {
     private readonly db: Db,
     private readonly hub: EventHub,
     private readonly dispatch: (input: DispatchInput) => Promise<string>,
+    private readonly reminders: ReminderChannel,
+    private readonly reminderRetryMs: readonly number[] = REMINDER_RETRY_MS,
   ) {}
 
   /** Recompute every enabled schedule's next fire from NOW (so downtime skips missed slots rather than
@@ -103,6 +124,14 @@ export class Scheduler {
     return this.db.listScheduledTasks();
   }
 
+  /** Why a reminder would NOT reach Discord right now, or null when it would. Read by the Director so it
+   *  can tell the owner at creation time instead of on the day. */
+  reminderGap(): string | null {
+    return this.reminders.ready()
+      ? null
+      : "Phone notifications (Settings) are off or missing a bot token / Discord user ID, so until that is set up the reminder will land on the note list instead of your DMs.";
+  }
+
   create(input: ScheduleInput): ScheduleResult {
     const clean = this.sanitize(input);
     if (typeof clean === "string") return { ok: false, error: clean };
@@ -117,7 +146,7 @@ export class Scheduler {
       nextRunAt: enabled ? nextRun(clean.cron, Date.now()) : null,
     });
     this.broadcast();
-    this.hub.log("info", `Created scheduled task "${schedule.title}" (${schedule.cron}) in ${schedule.workspace}`);
+    this.hub.log("info", schedule.prompt ? `Created scheduled task "${schedule.title}" (${schedule.cron}) in ${schedule.workspace}` : `Created scheduled reminder "${schedule.title}" (${schedule.cron})`);
     return { ok: true, schedule };
   }
 
@@ -128,6 +157,7 @@ export class Scheduler {
       title: patch.title ?? current.title,
       workspace: patch.workspace ?? current.workspace,
       prompt: patch.prompt ?? current.prompt,
+      reminder: patch.reminder !== undefined ? patch.reminder : current.reminder,
       cron: patch.cron ?? current.cron,
       model: patch.model !== undefined ? patch.model : current.model,
       // Follow the model: clearing the pin must clear its provider, and an edit that only names the
@@ -162,13 +192,13 @@ export class Scheduler {
   async runNow(id: string): Promise<ScheduleResult> {
     const s = this.db.getScheduledTask(id);
     if (!s) return { ok: false, error: "No such scheduled task." };
-    const busy = this.previousRunBusy(s);
+    const busy = s.prompt ? this.previousRunBusy(s) : null;
     if (busy) {
       const error = `The previous run is still ${busy}. Finish or cancel it before starting another.`;
       this.hub.log("warn", `Scheduled task "${s.title}" was not run: ${error}`);
       return { ok: false, error };
     }
-    await this.dispatchRun(s);
+    await this.fire(s);
     return { ok: true, schedule: this.db.getScheduledTask(id) ?? undefined };
   }
 
@@ -186,12 +216,14 @@ export class Scheduler {
       // following tick must see a future nextRunAt, never this same past slot — so a schedule can never
       // double-fire. Recompute from `now` so downtime skips missed slots instead of stacking a backlog.
       this.db.updateScheduledTask(s.id, { nextRunAt: nextRun(s.cron, now) });
-      const busy = this.previousRunBusy(s);
+      const busy = s.prompt ? this.previousRunBusy(s) : null;
       if (busy) {
+        // The reminder is about the clock, so only the task waits for its predecessor.
+        this.remind(s);
         this.hub.log("info", `Scheduled task "${s.title}" skipped this fire: its previous run is still ${busy}.`);
         continue;
       }
-      void this.dispatchRun(s);
+      void this.fire(s);
     }
     if (due) this.broadcast();
   }
@@ -200,7 +232,7 @@ export class Scheduler {
    *  than rolling it to the next cron match; otherwise it is disabled BEFORE the dispatch awaits, so no
    *  later tick can see it armed, and re-armed a bounded number of times if the dispatch fails. */
   private fireOnce(s: ScheduledTask): void {
-    const busy = this.previousRunBusy(s);
+    const busy = s.prompt ? this.previousRunBusy(s) : null;
     if (busy) {
       if (!this.onceWaitLogged.has(s.id)) {
         this.onceWaitLogged.add(s.id);
@@ -210,7 +242,9 @@ export class Scheduler {
     }
     this.onceWaitLogged.delete(s.id);
     this.db.updateScheduledTask(s.id, { enabled: false, nextRunAt: null });
-    void this.dispatchRun(s).then((ok) => {
+    // A re-armed retry is the same fire again; its reminder already went out the first time.
+    const retry = this.onceFailures.has(s.id);
+    void this.fire(s, { remind: !retry }).then((ok) => {
       if (ok) {
         this.onceFailures.delete(s.id);
         return;
@@ -236,6 +270,47 @@ export class Scheduler {
     if (!s.lastThreadId) return null;
     const state = this.db.getThread(s.lastThreadId)?.state;
     return state && UNFINISHED_STATES.has(state) ? `${state} (task ${s.lastThreadId.slice(0, 8)})` : null;
+  }
+
+  /** One fire: send the reminder (unless told not to) and dispatch the prompt, if the schedule has them.
+   *  Returns whether the fire did its job, which only the run-once retry reads. */
+  private async fire(s: ScheduledTask, opts: { remind?: boolean } = {}): Promise<boolean> {
+    if (opts.remind !== false) this.remind(s);
+    if (s.prompt) return this.dispatchRun(s);
+    this.db.updateScheduledTask(s.id, { lastRunAt: Date.now() });
+    this.hub.log("info", `Scheduled reminder "${s.title}" fired.`);
+    this.broadcast();
+    return true;
+  }
+
+  /** Send the schedule's reminder in the background. Delivery retries on its own clock rather than the
+   *  run-once retry's, since a reminder whose task dispatched fine must still get through. */
+  private remind(s: ScheduledTask): void {
+    if (s.reminder) void this.deliverReminder(s.title, s.reminder);
+  }
+
+  /** Send one reminder, retrying a failed DM a bounded number of times. The first failure also puts it on
+   *  the note list, so a reminder still reaches the owner if every retry fails or a restart cuts them off. */
+  private async deliverReminder(title: string, text: string): Promise<void> {
+    let noted = false;
+    for (let attempt = 0; ; attempt++) {
+      const result = await this.reminders.send(title, text).catch((e: unknown): SendResult => ({ ok: false, message: String(e) }));
+      if (result.ok) {
+        this.hub.log("info", `Reminder "${title}" sent to the owner on Discord${attempt ? ` (attempt ${attempt + 1})` : ""}.`);
+        return;
+      }
+      if (!noted) {
+        noted = true;
+        this.reminders.fallback(title, text, result.message);
+      }
+      const wait = this.reminderRetryMs[attempt];
+      if (wait === undefined) {
+        this.hub.log("error", `Reminder "${title}" could not be sent on Discord after ${attempt + 1} attempts: ${result.message} It is on the note list instead.`);
+        return;
+      }
+      this.hub.log("warn", `Reminder "${title}" was not sent on Discord: ${result.message} It is on the note list; retrying in ${Math.round(wait / 1000)}s.`);
+      await new Promise((r) => setTimeout(r, wait));
+    }
   }
 
   /** Dispatch one run of a schedule through the normal pipeline and record the last-run bookkeeping.
@@ -277,19 +352,20 @@ export class Scheduler {
   /** Trim + validate the human-supplied fields; returns the cleaned values or an error string. */
   private sanitize(
     input: ScheduleInput,
-  ): { title: string; workspace: string; prompt: string; cron: string; model: string | null; provider: ImplementorProvider | null } | string {
+  ): { title: string; workspace: string; prompt: string; reminder: string | null; cron: string; model: string | null; provider: ImplementorProvider | null } | string {
     const title = input.title.trim().slice(0, 200);
     const workspace = input.workspace.trim();
     const prompt = input.prompt.trim();
+    const reminder = input.reminder?.trim().slice(0, REMINDER_MAX_CHARS) || null;
     const cron = input.cron.trim();
     const model = input.model?.trim().slice(0, 100) || null;
     // A provider without a model pins nothing this schedule could act on, and would read on the card as
     // a pin that is silently doing nothing. Drop it rather than store a half-pin.
     const provider = model ? (input.provider ?? null) : null;
     if (!title) return "Title is required.";
-    if (!workspace) return "Workspace path is required.";
-    if (!prompt) return "Prompt is required.";
+    if (!prompt && !reminder) return "A prompt or a reminder is required.";
+    if (prompt && !workspace) return "Workspace path is required.";
     if (!isValidCron(cron)) return `Invalid cron expression: "${cron}".`;
-    return { title, workspace, prompt, cron, model, provider };
+    return { title, workspace, prompt, reminder, cron, model, provider };
   }
 }

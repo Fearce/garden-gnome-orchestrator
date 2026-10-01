@@ -104,6 +104,13 @@ assert.equal(socket.sent[0]?.runOnce, true, "create sends runOnce");
 assert.equal(useStore.getState().schedules.find((s) => s.title === "Reminder")?.runOnce, true, "the pending card carries runOnce");
 useStore.setState((s) => ({ schedules: s.schedules.filter((x) => x.title !== "Reminder") }));
 
+// A reminder-only schedule (no prompt, no repo) travels with its text, which is what the card shows.
+socket.sent.length = 0;
+assert.equal(useStore.getState().createSchedule({ title: "Vota reset", workspace: "", prompt: "", reminder: "Use it before Oct 22.", cron: "0 9 15 10 *", runOnce: true }), true);
+assert.equal(socket.sent[0]?.reminder, "Use it before Oct 22.", "create sends the reminder text");
+assert.equal(useStore.getState().schedules.find((s) => s.title === "Vota reset")?.reminder, "Use it before Oct 22.", "the pending card carries the reminder");
+useStore.setState((s) => ({ schedules: s.schedules.filter((x) => x.title !== "Vota reset") }));
+
 socket.sent.length = 0;
 assert.equal(useStore.getState().deleteSchedule("schedule-1"), true);
 assert.deepEqual(socket.sent.map((frame) => frame.type), ["schedule.delete"]);

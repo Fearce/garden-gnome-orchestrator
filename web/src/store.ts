@@ -520,6 +520,7 @@ interface State {
     title: string;
     workspace: string;
     prompt: string;
+    reminder?: string | null;
     cron: string;
     enabled?: boolean;
     effort?: Effort | null;
@@ -533,6 +534,7 @@ interface State {
       title?: string;
       workspace?: string;
       prompt?: string;
+      reminder?: string | null;
       cron?: string;
       enabled?: boolean;
       effort?: Effort | null;
@@ -1204,6 +1206,7 @@ function projectScheduleMutation(cmd: ScheduleMutation): void {
               title: cmd.title,
               workspace: cmd.workspace,
               prompt: cmd.prompt,
+              reminder: cmd.reminder ?? null,
               cron: cmd.cron,
               enabled: cmd.enabled ?? true,
               effort: cmd.effort ?? null,

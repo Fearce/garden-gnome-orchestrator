@@ -159,7 +159,7 @@ import {
   qualifyManualDeployment,
   verifyManualDeployment,
 } from "./manualDeployment.js";
-import { DiscordNotifier, parseChannelId, parseUserId, type OwnerNotice } from "./discordNotify.js";
+import { DiscordNotifier, parseChannelId, parseUserId, type OwnerNotice, type SendResult } from "./discordNotify.js";
 import type { InboxConfig } from "./discordInbox.js";
 import type { CoworkTarget, PreparedCoworkRun } from "./cowork.js";
 import { DirectorSupervisor, SUPERVISOR_JUDGE_MAX_TURNS, type SupervisorJudgement } from "./supervisor.js";
@@ -5016,6 +5016,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   discordTyping(channelId: string): void {
     this.discord.typing(channelId);
+  }
+
+  /** A scheduled reminder, DMed with the Phone notifications settings as they stand. Resolves with the
+   *  outcome so the scheduler can retry it or fall back to the note list. */
+  remindOwner(title: string, text: string): Promise<SendResult> {
+    this.notifyExternal(`⏰ reminder: ${title} — ${text}`);
+    return this.discord.remind(title, text);
   }
 
   /** Last 4 chars of the stored bot token for the masked settings field. */

@@ -226,8 +226,11 @@ export const BRIEF_PREVIEW_CHARS = 200;
 export interface ScheduledTask {
   id: string;
   title: string; // board-lane title used for each dispatched run
-  workspace: string; // target repo (absolute path) the prompt runs in
-  prompt: string; // the brief handed to the pipeline on each fire
+  workspace: string; // target repo (absolute path) the prompt runs in; "" for a reminder with no prompt
+  prompt: string; // the brief handed to the pipeline on each fire; "" = a reminder only, no task
+  /** Sent to the owner's Discord DM by the scheduler itself on every fire, so a reminder never depends on
+   *  an agent finishing. Falls back to the note list when the DM fails. null = no reminder. */
+  reminder?: string | null;
   cron: string; // 5-field cron expression (server-local time)
   enabled: boolean; // off → the schedule is kept but never fires
   effort?: Effort | null; // optional implementor effort override for each run; null = the planner decides

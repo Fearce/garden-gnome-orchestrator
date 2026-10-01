@@ -610,8 +610,12 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("schedule.create"),
     title: z.string().min(1).max(200),
-    workspace: z.string().min(1).max(600),
-    prompt: z.string().min(1).max(20000),
+    // Both may be empty for a reminder-only schedule; Scheduler.sanitize enforces "a prompt or a
+    // reminder, and a repo for a prompt".
+    workspace: z.string().max(600).default(""),
+    prompt: z.string().max(20000).default(""),
+    // DMed to the owner on Discord by the scheduler on every fire.
+    reminder: z.string().max(4000).nullable().optional(),
     cron: z.string().min(1).max(120),
     enabled: z.boolean().default(true),
     // Matches the effort options offered by the UI + director tools (xhigh is a gated tier not surfaced
@@ -630,8 +634,9 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     // A partial patch — only the supplied fields change. `effort: null` clears the override.
     patch: z.object({
       title: z.string().min(1).max(200).optional(),
-      workspace: z.string().min(1).max(600).optional(),
-      prompt: z.string().min(1).max(20000).optional(),
+      workspace: z.string().max(600).optional(),
+      prompt: z.string().max(20000).optional(),
+      reminder: z.string().max(4000).nullable().optional(),
       cron: z.string().min(1).max(120).optional(),
       enabled: z.boolean().optional(),
       effort: z.enum(["low", "medium", "high", "max"]).nullish(),

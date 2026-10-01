@@ -186,8 +186,9 @@ export interface Thread {
 export interface ScheduledTask {
   id: string;
   title: string;
-  workspace: string;
-  prompt: string;
+  workspace: string; // "" for a reminder with no prompt
+  prompt: string; // "" = a reminder only: the fire DMs the owner and starts no task
+  reminder?: string | null; // DMed to the owner on Discord by the scheduler on every fire
   cron: string;
   enabled: boolean;
   effort?: Effort | null;
@@ -1509,8 +1510,8 @@ export type ClientCommand =
   | { type: "director.search"; query: string }
   | { type: "chat.history"; room: string; before?: ChatCursor }
   | { type: "chat.post"; room: string; body: string; clientId?: string }
-  | { type: "schedule.create"; title: string; workspace: string; prompt: string; cron: string; enabled?: boolean; effort?: Effort | null; model?: string | null; provider?: ImplementorProvider | null; runOnce?: boolean }
-  | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; cron?: string; enabled?: boolean; effort?: Effort | null; model?: string | null; provider?: ImplementorProvider | null; runOnce?: boolean } }
+  | { type: "schedule.create"; title: string; workspace: string; prompt: string; reminder?: string | null; cron: string; enabled?: boolean; effort?: Effort | null; model?: string | null; provider?: ImplementorProvider | null; runOnce?: boolean }
+  | { type: "schedule.update"; id: string; patch: { title?: string; workspace?: string; prompt?: string; reminder?: string | null; cron?: string; enabled?: boolean; effort?: Effort | null; model?: string | null; provider?: ImplementorProvider | null; runOnce?: boolean } }
   | { type: "schedule.delete"; id: string }
   | { type: "schedule.run"; id: string }
   | ({ type: "goal.create"; title: string; objective: string; workspace: string } & GoalOptions)

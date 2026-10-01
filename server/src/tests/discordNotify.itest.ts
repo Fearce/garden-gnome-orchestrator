@@ -18,6 +18,7 @@
  *   C. TRANSPORT— the right URL + `Bot` auth; a 429 retries; a refusal is explained and can't mute the next one;
  *                 a user id DMs the owner (opening the DM channel once) instead of posting in the channel.
  *   D. ROUTING  — done/review/failed/ask_user post; a cap-park and ordinary pipeline chatter do NOT.
+ *   E. REMINDERS— a scheduled reminder's own text reaches the DM, and its sender learns whether it did.
  *
  * Run:  npm run test:discord-notify   (from server/)   — or:  npx tsx src/tests/discordNotify.itest.ts
  * Exits non-zero if any assertion fails. Self-contained: throwaway DB in a temp dir, removed on exit.
@@ -27,7 +28,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const { formatNotice, parseChannelId, parseUserId, DiscordNotifier } = await import("../orchestrator/discordNotify.js");
+const { formatNotice, formatReminder, parseChannelId, parseUserId, DiscordNotifier } = await import("../orchestrator/discordNotify.js");
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
@@ -337,6 +338,38 @@ async function afterTransition(run: () => void): Promise<Posted[]> {
   manager.setSettings({ discordNotify: false });
   const sent = await afterTransition(() => priv.setState(newThread("After the toggle"), "done"));
   check("turning the toggle off stops it, without a restart", sent.length === 0, `${sent.length} posted`);
+}
+
+// ---- E. scheduled reminders ------------------------------------------------------------------------
+console.log("\nE. a scheduled reminder reaches the DM with its own words");
+{
+  const msg = formatReminder("Vota reset", "Use your Vota reset before Oct 22.");
+  check("the reminder text itself is in content, where the phone preview reads it", msg.content.includes("Use your Vota reset before Oct 22."));
+  check("…under its title", msg.content.includes("Vota reset") && msg.content.indexOf("Vota reset") < msg.content.indexOf("Use your"));
+  check("…and reads as a reminder", msg.content.includes("Reminder"));
+  check("a long reminder still fits one Discord message", formatReminder("t".repeat(300), "x".repeat(5000)).content.length <= 2000);
+
+  reset();
+  const delivered = await notifierFor({ enabled: true, token: "t", userId: "111909686583828480" }).remind("Vota reset", "Use your Vota reset before Oct 22.");
+  check("a reminder is DMed to the owner", delivered.ok && posted.at(-1)?.url.endsWith("/channels/dm-111909686583828480/messages") === true);
+  check("…carrying the reminder text", posted.at(-1)?.content === msg.content);
+
+  reset();
+  const off = await notifierFor({ enabled: false, token: "t", userId: "1" }).remind("x", "y");
+  check("the phone toggle off refuses a reminder, saying why", !off.ok && off.message.includes("off") && posted.length === 0);
+  const noToken = await notifierFor({ enabled: true, userId: "1" }).remind("x", "y");
+  check("a missing token is reported to the reminder's sender", !noToken.ok && noToken.message.includes("bot token"));
+
+  reset([500]);
+  const refused = await notifierFor({ enabled: true, token: "t", channelId: "1" }).remind("x", "y");
+  check("a refused reminder is reported, not swallowed", !refused.ok && refused.message.includes("500"));
+
+  // Through the real manager, as the scheduler calls it.
+  manager.setSettings({ discordNotify: true, discordUserId: "111909686583828480" });
+  reset();
+  const live = await manager.remindOwner("Cloud credits", "Use them before Nov 5.");
+  check("the manager sends a reminder with the settings as they stand", live.ok && posted.at(-1)?.content.includes("Use them before Nov 5.") === true, live.ok ? "" : live.message);
+  manager.setSettings({ discordNotify: false, discordUserId: "" });
 }
 
 // ---- summary ----------------------------------------------------------------------------------------

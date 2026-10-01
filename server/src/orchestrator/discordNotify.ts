@@ -6,7 +6,8 @@
 // The push preview on a phone comes from `content`, NOT from an embed, so the essential line lives in
 // content and the embed only carries the detail (park reason / question / error) and the repo. Best-
 // effort end to end: no token, no destination, or the toggle off → nothing is sent and nothing throws.
-// The same bot also carries the director's replies back to a DM the owner wrote it (`discordInbox.ts`).
+// The same bot also carries the director's replies back to a DM the owner wrote it (`discordInbox.ts`),
+// and the scheduler's reminders (`remind`): the owner's own words, due at a time they chose.
 
 import { basename } from "node:path";
 
@@ -88,6 +89,13 @@ export function formatNotice(notice: OwnerNotice): DiscordMessage {
   return { content, embeds: [embed] };
 }
 
+/** A scheduled reminder. Unlike a notice, the text IS the message, so it goes in `content` where the
+ *  phone's push preview shows it, rather than in an embed the preview leaves out. */
+export function formatReminder(title: string, text: string): DiscordMessage {
+  const head = `⏰ **Reminder** — ${clip(title || "(untitled)", 200)}`;
+  return { content: clip(`${head}\n${text.trim()}`, MAX_CONTENT) };
+}
+
 /**
  * The channel id out of whatever the operator pasted. Discord's UI hands you three shapes and only one
  * of them is the bare id: "Copy Channel ID" gives the snowflake, "Copy Link" gives
@@ -158,6 +166,26 @@ export class DiscordNotifier {
     });
   }
 
+  /** Send a scheduled reminder and report whether it arrived, so the scheduler can retry it or fall back
+   *  to the note list. Rides the same serialized chain as the notices. */
+  remind(title: string, text: string): Promise<SendResult> {
+    const cfg = this.config();
+    if (!cfg.enabled) return Promise.resolve({ ok: false, message: "Phone notifications are off in Settings." });
+    if (!cfg.token) return Promise.resolve({ ok: false, message: "No Discord bot token is set." });
+    const destination = destinationOf(cfg);
+    if (!destination) return Promise.resolve({ ok: false, message: "No Discord user or channel ID is set." });
+    return new Promise<SendResult>((resolve) => {
+      const queued = this.enqueue("reminder", async () => {
+        try {
+          resolve(await this.deliver(cfg.token!, destination, formatReminder(title, text)));
+        } catch (e) {
+          resolve({ ok: false, message: e instanceof Error ? e.message : String(e) });
+        }
+      });
+      if (!queued) resolve({ ok: false, message: `${MAX_QUEUED} Discord messages are already queued.` });
+    });
+  }
+
   /** A director reply into the DM channel the owner wrote from, split to fit Discord's message limit.
    *  Rides the same serialized chain as the notices, so a long answer's parts arrive in order. */
   reply(channelId: string, text: string): void {
@@ -180,10 +208,11 @@ export class DiscordNotifier {
     if (token) void this.post(token, `channels/${encodeURIComponent(channelId)}/typing`, {});
   }
 
-  private enqueue(what: string, step: () => Promise<void>): void {
+  /** Queue one send; false when the queue is full and the send was dropped. */
+  private enqueue(what: string, step: () => Promise<void>): boolean {
     if (this.queued >= MAX_QUEUED) {
       this.log("warn", `Discord ${what} dropped — ${MAX_QUEUED} already queued.`);
-      return;
+      return false;
     }
     this.queued += 1;
     // A rejection here would poison the chain and silently mute every LATER send, so the whole step
@@ -197,6 +226,7 @@ export class DiscordNotifier {
         this.queued -= 1;
       }
     });
+    return true;
   }
 
   /** Post a one-off test message with the settings as they stand, and report what happened. */

@@ -56,6 +56,7 @@ export const DIRECTOR_CLI_SCHEMA: JsonSchemaLike = {
     url: { type: "string" },
     id: { type: "string" },
     prompt: { type: "string" },
+    reminder: { type: "string" },
     cron: { type: "string" },
     enabled: { type: "boolean" },
     all: { type: "boolean" },
@@ -89,6 +90,7 @@ export interface DirectorCliAction {
   url?: string;
   id?: string;
   prompt?: string;
+  reminder?: string;
   cron?: string;
   enabled?: boolean;
   runOnce?: boolean;
@@ -130,9 +132,9 @@ Commands and fields:
 - read_findings: threadId? (omit for all)
 - next_token_shift: all? (read-only) — when the next usage window rolls over and hands capacity back. Timestamps come back server-local with an explicit date and UTC offset; quote them as-is.
 - post_operator_note: note, url?
-- create_scheduled_task: title, workspace, prompt, cron, enabled?, effort?, model?, runOnce? (model is a strict pin when explicitly requested; runOnce=true fires on the next matching slot only, then disables itself: use it for a one-off reminder on a date). Every fire is a full implementation task that can commit; never use it to poll a condition or wait for an event.
+- create_scheduled_task: title, cron, and workspace+prompt and/or reminder; enabled?, effort?, model?, runOnce? (model is a strict pin when explicitly requested; runOnce=true fires on the next matching slot only, then disables itself). For a REMINDER ("remind me on …") set reminder to the message for ${config.ownerName} and omit workspace+prompt: the scheduler DMs it on Discord at that time and starts no agent. A prompt fire is a full implementation task that can commit; never use it to poll a condition or wait for an event.
 - list_scheduled_tasks
-- update_scheduled_task: id plus any of title/workspace/prompt/cron/enabled/effort/model/runOnce
+- update_scheduled_task: id plus any of title/workspace/prompt/reminder/cron/enabled/effort/model/runOnce
 - delete_scheduled_task: id
 - create_goal: title, objective, workspace, effort?, provider?+model?, maxConcurrent?, burnConservation?, burnRatePct? (set effort or model only when the owner named one; otherwise the director picks per step, at low or medium effort. maxConcurrent 1-8, default 1, is how many step tasks run at once. burnConservation, default true, holds new steps while every usable pool spends its weekly window faster than burnRatePct percent of an even pace, default 100; change either only when the owner asked) — a GOAL-DIRECTED TASK that GGO keeps working on around the clock until the step's agent and the director both judge the objective complete. Only when the owner asks for a goal in so many words ("make this a goal", "keep working on this until it's done").
 - list_goals
@@ -256,19 +258,20 @@ export async function executeDirectorCliAction(
         return outcome("post_operator_note", r.ok && r.note ? `Added: ${r.note.body}` : `ERROR: ${r.error}`);
       }
       case "create_scheduled_task": {
-        const workspace = required(action, "workspace");
-        if (!existsSync(workspace)) return outcome("create_scheduled_task", `ERROR: workspace "${workspace}" does not exist.`);
+        const workspace = action.workspace?.trim() ?? "";
+        if (workspace && !existsSync(workspace)) return outcome("create_scheduled_task", `ERROR: workspace "${workspace}" does not exist.`);
         const r = scheduler.create({
-          title: required(action, "title"), workspace, prompt: required(action, "prompt"),
+          title: required(action, "title"), workspace, prompt: action.prompt ?? "", reminder: action.reminder,
           cron: required(action, "cron"), enabled: action.enabled ?? true, effort: action.effort, model: action.model,
           runOnce: action.runOnce ?? false,
         });
-        return outcome("create_scheduled_task", r.ok && r.schedule ? `Created scheduled task ${r.schedule.id}.` : `ERROR: ${r.error}`);
+        const gap = r.schedule?.reminder ? scheduler.reminderGap() : null;
+        return outcome("create_scheduled_task", r.ok && r.schedule ? `Created scheduled task ${r.schedule.id}.${gap ? ` Warning: ${gap}` : ""}` : `ERROR: ${r.error}`);
       }
       case "list_scheduled_tasks": {
         const list = scheduler.list();
         return outcome("list_scheduled_tasks", list.length
-          ? list.map((s) => `- ${s.id} ${s.enabled ? "[on]" : "[off]"} "${s.title}" (${s.cron}) @ ${s.workspace}`).join("\n")
+          ? list.map((s) => `- ${s.id} ${s.enabled ? "[on]" : "[off]"}${s.reminder ? " [reminder]" : ""} "${s.title}" (${s.cron})${s.prompt ? ` @ ${s.workspace}` : ""}`).join("\n")
           : "No scheduled tasks.");
       }
       case "update_scheduled_task": {
@@ -278,6 +281,7 @@ export async function executeDirectorCliAction(
           ...(action.title != null ? { title: action.title } : {}),
           ...(action.workspace != null ? { workspace: action.workspace } : {}),
           ...(action.prompt != null ? { prompt: action.prompt } : {}),
+          ...(action.reminder != null ? { reminder: action.reminder || null } : {}),
           ...(action.cron != null ? { cron: action.cron } : {}),
           ...(action.enabled != null ? { enabled: action.enabled } : {}),
           ...(action.effort != null ? { effort: action.effort } : {}),

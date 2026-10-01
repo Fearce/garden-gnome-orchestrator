@@ -564,6 +564,7 @@ function rowToScheduledTask(r: Row): ScheduledTask {
     title: r.title as string,
     workspace: r.workspace as string,
     prompt: r.prompt as string,
+    reminder: (r.reminder as string | null) ?? null,
     cron: r.cron as string,
     enabled: Boolean(r.enabled),
     effort: (r.effort as Effort | null) ?? null,
@@ -932,6 +933,7 @@ export class Db {
       "ALTER TABLE scheduled_tasks ADD COLUMN model TEXT",
       "ALTER TABLE scheduled_tasks ADD COLUMN provider TEXT",
       "ALTER TABLE scheduled_tasks ADD COLUMN run_once INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE scheduled_tasks ADD COLUMN reminder TEXT",
       "ALTER TABLE threads ADD COLUMN latest_message_preview TEXT",
       "ALTER TABLE goals ADD COLUMN effort TEXT",
       "ALTER TABLE goals ADD COLUMN provider TEXT",
@@ -3636,6 +3638,7 @@ export class Db {
     title: string;
     workspace: string;
     prompt: string;
+    reminder?: string | null;
     cron: string;
     enabled: boolean;
     effort?: Effort | null;
@@ -3649,6 +3652,7 @@ export class Db {
       title: input.title,
       workspace: input.workspace,
       prompt: input.prompt,
+      reminder: input.reminder ?? null,
       cron: input.cron,
       enabled: input.enabled,
       effort: input.effort ?? null,
@@ -3663,8 +3667,8 @@ export class Db {
     };
     this.raw
       .prepare(
-        `INSERT INTO scheduled_tasks(id, title, workspace, prompt, cron, enabled, effort, model, provider, run_once, last_run_at, next_run_at, last_thread_id, created_at, updated_at)
-         VALUES(@id, @title, @workspace, @prompt, @cron, @enabled, @effort, @model, @provider, @runOnce, @lastRunAt, @nextRunAt, @lastThreadId, @createdAt, @updatedAt)`,
+        `INSERT INTO scheduled_tasks(id, title, workspace, prompt, reminder, cron, enabled, effort, model, provider, run_once, last_run_at, next_run_at, last_thread_id, created_at, updated_at)
+         VALUES(@id, @title, @workspace, @prompt, @reminder, @cron, @enabled, @effort, @model, @provider, @runOnce, @lastRunAt, @nextRunAt, @lastThreadId, @createdAt, @updatedAt)`,
       )
       .run({ ...t, enabled: t.enabled ? 1 : 0, runOnce: t.runOnce ? 1 : 0 });
     return t;
@@ -3681,7 +3685,7 @@ export class Db {
 
   updateScheduledTask(
     id: string,
-    patch: Partial<Pick<ScheduledTask, "title" | "workspace" | "prompt" | "cron" | "enabled" | "effort" | "model" | "provider" | "runOnce" | "lastRunAt" | "nextRunAt" | "lastThreadId">>,
+    patch: Partial<Pick<ScheduledTask, "title" | "workspace" | "prompt" | "reminder" | "cron" | "enabled" | "effort" | "model" | "provider" | "runOnce" | "lastRunAt" | "nextRunAt" | "lastThreadId">>,
   ): ScheduledTask | null {
     const current = this.getScheduledTask(id);
     if (!current) return null;
@@ -3691,6 +3695,7 @@ export class Db {
       title: "title",
       workspace: "workspace",
       prompt: "prompt",
+      reminder: "reminder",
       cron: "cron",
       enabled: "enabled",
       effort: "effort",
