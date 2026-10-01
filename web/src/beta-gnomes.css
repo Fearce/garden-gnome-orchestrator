@@ -30,54 +30,54 @@
 @keyframes beta-page { 0%,65%,100% { transform: scaleX(1); } 82% { transform: scaleX(-.88); } }
 @keyframes beta-conduct { 0%,100% { transform: rotate(-9deg); } 50% { transform: rotate(14deg); } }
 @keyframes beta-spark { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
-.topbar:has(.office-beta) { flex-wrap: wrap; row-gap: 6px; padding-top: 6px; padding-bottom: 6px; }
-.topbar:has(.office-beta) .accounts { order: 20; min-width: 0; max-width: 100%; overflow-x: auto; }
-.office.office-beta { flex: 1 1 520px; min-height: 158px; padding: 7px 0; overflow: visible; }
-.beta-workshop { position: relative; width: 100%; min-width: 0; border: 1px solid #a7804138; border-radius: 12px; color: #eadfca; background: radial-gradient(ellipse at 50% 85%, #516d582a, transparent 65%), linear-gradient(130deg,#1b2630,#20212d 55%,#2a2625); box-shadow: inset 0 1px #ffffff08; }
-.beta-workshop-heading { height: 26px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid #dcc18d13; }
-.beta-workshop-title { font-size: 9px; letter-spacing: .15em; font-weight: 700; white-space: nowrap; }
-.beta-workshop-title > span { color: #edc780; margin-right: 4px; }
-.beta-workshop-title em { font-style: normal; font-size: 7px; letter-spacing: .08em; color: #d7ba86; border: 1px solid #c29d594a; padding: 2px 3px; border-radius: 3px; margin-left: 3px; }
-.beta-workshop-count { margin-left: auto; font-size: 9px; color: #bcb5a5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.beta-motion-toggle { color: #d7c9ad; background: transparent; border: 0; padding: 3px 6px; cursor: pointer; font-size: 11px; }
-.beta-workshop-stage { position: relative; height: 103px; overflow: hidden; background: radial-gradient(ellipse at 5% 0,#ffc87018,transparent 30%),radial-gradient(ellipse at 95% 0,#ffc87018,transparent 30%); }
-.beta-workshop-stage::after { content: ""; position: absolute; bottom: 17px; height: 5px; inset-inline: 0; background: linear-gradient(#bf946351,#614631a1); border-top: 1px solid #e2ba7738; pointer-events: none; }
-.beta-festoon { position: absolute; top: -9px; inset-inline: 4%; height: 20px; border-bottom: 1px solid #a9935866; border-radius: 0 0 50% 50%; display: flex; justify-content: space-around; pointer-events: none; }
-.beta-festoon i { align-self: flex-end; width: 4px; height: 6px; border-radius: 50%; background: #edc78a; box-shadow: 0 0 6px 2px #eab65b33; transform: translateY(3px); }
-.beta-festoon i:nth-child(3n) { background: #9ed9cf; box-shadow: 0 0 6px 2px #77dccc22; }
-.beta-festoon i:nth-child(3n + 1) { background: #deabc0; }
-.beta-workshop-cast { display: flex; justify-content: safe center; gap: 6px; height: 100%; padding: 0 10px; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; scrollbar-color: #af966546 transparent; position: relative; z-index: 1; }
-.beta-workstation { position: relative; flex: 0 0 67px; display: flex; flex-direction: column; align-items: center; height: 102px; padding: 0; color: #f2e8d5; border: 0; background: transparent; cursor: pointer; border-radius: 8px; }
-.beta-workstation:hover { background: #ffe0a80b; }
-.beta-workstation[data-working="true"] .beta-gnome-body, .beta-workstation[data-working="true"] .beta-gnome-boot { animation: beta-stroll 24s ease-in-out var(--seat-delay,0s) infinite; }
-.beta-workstation[data-working="true"] .beta-boot-left { animation: beta-stroll 24s ease-in-out var(--seat-delay,0s) infinite, beta-step-left 24s linear var(--seat-delay,0s) infinite; }
-.beta-workstation[data-working="true"] .beta-boot-right { animation: beta-stroll 24s ease-in-out var(--seat-delay,0s) infinite, beta-step-right 24s linear var(--seat-delay,0s) infinite; }
-.beta-workshop[data-alone="true"] .beta-workstation { animation: beta-wander 22s ease-in-out infinite; }
-.beta-workshop[data-alone="true"] .beta-boot-left { animation: beta-step-left 22s linear infinite; }.beta-workshop[data-alone="true"] .beta-boot-right { animation: beta-step-right 22s linear infinite; }
-@keyframes beta-stroll { 0%,70%,100% { translate: 0 0; } 78% { translate: -5px -1px; } 88% { translate: 6px 0; } 94% { translate: 3px -1px; } }
-@keyframes beta-step-left { 0%,70%,78%,86%,94%,100% { rotate: 0deg; } 74%,82%,90% { rotate: -13deg; } }
-@keyframes beta-step-right { 0%,72%,80%,88%,96%,100% { rotate: 0deg; } 76%,84%,92% { rotate: 13deg; } }
-@keyframes beta-wander { 0%,70%,100% { translate: 0 0; } 78% { translate: -20px 0; } 90% { translate: 20px 0; } }
-.beta-character { height: 78px; display: flex; align-items: flex-end; transform-origin: 50% 100%; }
-.beta-workstation-name { max-width: 65px; font-size: 10px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 12px; }
-.beta-workstation-role { font-size: 8px; color: #c2b29a; line-height: 11px; }
-.beta-visitor .beta-workstation-role { color: #9bd9d4; }
-.beta-visitor::before { content: ""; position: absolute; width: 43px; height: 67px; top: 11px; border: 1px solid #78d6d450; border-radius: 50% 50% 5px 5px; background: linear-gradient(transparent,#79d8d418); }
-.beta-teammate::after { content: ""; position: absolute; bottom: 20px; left: -9px; width: 13px; height: 3px; border-radius: 50%; background: #e4c78b; opacity: .3; animation: beta-handoff 5s ease-in-out var(--seat-delay) infinite; }
-@keyframes beta-handoff { 0%,20%,85%,100% { transform: translateX(-6px); opacity: 0; } 40%,65% { opacity: .8; } 75% { transform: translateX(13px); opacity: 0; } }
-.beta-workstation[data-speaking="true"] .beta-character { animation: beta-greet 1s ease-in-out 2; }
-@keyframes beta-greet { 0%,100% { transform: rotate(0); } 35% { transform: rotate(-4deg) translateY(-2px); } 70% { transform: rotate(3deg); } }
-.beta-message-badge { position: absolute; top: 12px; right: 1px; padding: 2px 4px; border-radius: 6px 6px 6px 0; border: 1px solid #ffde99; color: #342414; background: #f4d797; font: 700 9px/1 var(--font-ui); box-shadow: 0 2px 5px #0005; }
-.beta-cast-more { align-self: center; flex: 0 0 35px; padding: 8px 2px; border: 1px solid #c6ad7950; border-radius: 9px; background: #ffffff06; color: #ead5aa; font-size: 13px; cursor: pointer; }
-.beta-cast-more span { display: block; margin-top: 4px; font-size: 8px; }
-.beta-motes { position: absolute; inset: 0; pointer-events: none; }
-.beta-motes i { position: absolute; width: 2px; height: 2px; border-radius: 50%; background: #ffe4a3; left: 12%; top: 45%; animation: beta-mote 9s ease-in-out infinite; }
-.beta-motes i:nth-child(2) { left: 30%; top: 26%; animation-delay: -4s; }.beta-motes i:nth-child(3) { left: 57%; top: 70%; animation-delay: -7s; }.beta-motes i:nth-child(4) { left: 72%; top: 35%; animation-delay: -2s; }.beta-motes i:nth-child(5) { left: 89%; top: 64%; animation-delay: -5s; }
-@keyframes beta-mote { 0%,100% { opacity: 0; transform: translate(0,8px); } 50% { opacity: .7; transform: translate(9px,-10px); } }
-.beta-workshop-message { width: 100%; height: 25px; padding: 0 9px; display: flex; align-items: center; gap: 6px; border: 0; border-top: 1px solid #ead4a617; border-radius: 0 0 12px 12px; color: #c3b79f; background: #070b1426; cursor: pointer; text-align: left; font-size: 10px; }
-.beta-workshop-message > span:nth-child(2) { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; flex: 1; }
-.beta-workshop-message.has-message { color: #f7e2b5; background: #b68e4920; }
-.beta-chat-icon { border: 1px solid #c9b07b7a; border-radius: 4px 4px 4px 0; height: 13px; min-width: 17px; line-height: 6px; text-align: center; font-size: 15px; letter-spacing: 1px; }
+
+/* Exactly one gnome-height lane. Keep the existing header/account wrapping policy. */
+.office.office-beta { height: 48px; min-height: 48px; padding: 0; align-self: center; overflow: visible; }
+.beta-workshop { position: relative; display: flex; width: 100%; height: 48px; min-width: 0; padding: 0; color: #eadfca; }
+.beta-workshop-stage { position: relative; flex: 1; min-width: 0; height: 48px; }
+.beta-workshop-cast { position: absolute; inset: 0; overflow: hidden; }
+.beta-workstation { position: absolute; top: 0; width: 32px; height: 48px; padding: 0; border: 0; border-radius: 4px; color: #eadfca; background: transparent; cursor: pointer; animation: beta-journey 12s linear var(--seat-delay) infinite; }
+.beta-character { display: block; width: 32px; height: 48px; animation: beta-facing 12s steps(1,end) var(--seat-delay) infinite; }
+.beta-workstation .beta-gnome-body { animation: beta-walk-bob 12s linear var(--seat-delay) infinite; }
+.beta-workstation .beta-boot-left { animation: beta-walk-left 12s linear var(--seat-delay) infinite; }
+.beta-workstation .beta-boot-right { animation: beta-walk-right 12s linear var(--seat-delay) infinite; }
+.beta-workstation .beta-tool { animation: beta-work-stop 12s linear var(--seat-delay) infinite; }
+.beta-workstation[data-working="false"] .beta-tool { display: none; }
+.beta-workstation .beta-gnome[data-active="false"] { filter: none; opacity: 1; }
+.beta-workstation:hover { background: #eac68b12; }
+.beta-workshop:has(.beta-workstation:hover) *, .beta-workshop:has(.beta-workstation:focus-visible) * { animation-play-state: paused !important; }
+/* 0–28%: walk to a teammate; 28–50%: shared work; 50–78%: walk home; 78–100%: own tool. */
+@keyframes beta-journey { 0%,100% { transform: translateX(0); } 28%,50% { transform: translateX(var(--journey)); } 78% { transform: translateX(0); } }
+@keyframes beta-facing { 0% { transform: scaleX(var(--out-facing)); } 50% { transform: scaleX(var(--back-facing)); } 78% { transform: scaleX(1); } }
+@keyframes beta-work-stop { 0%,25%,53%,75% { opacity: 0; } 28%,50%,78%,100% { opacity: 1; } }
+@keyframes beta-walk-bob {
+  0%,7%,14%,21%,28%,50%,57%,64%,71%,78%,100% { translate: 0 0; }
+  3.5%,10.5%,17.5%,24.5%,53.5%,60.5%,67.5%,74.5% { translate: 0 -1.5px; }
+}
+@keyframes beta-walk-left {
+  0%,7%,14%,21%,28%,50%,57%,64%,71%,78%,100% { rotate: 0deg; translate: 0 0; }
+  3.5%,10.5%,17.5%,24.5%,53.5%,60.5%,67.5%,74.5% { rotate: -22deg; translate: -1px -1px; }
+}
+@keyframes beta-walk-right {
+  0%,3.5%,10.5%,17.5%,24.5%,28%,50%,53.5%,60.5%,67.5%,74.5%,78%,100% { rotate: 0deg; translate: 0 0; }
+  7%,14%,21%,57%,64%,71% { rotate: 22deg; translate: 1px -1px; }
+}
+.beta-shared-project { position: absolute; top: 27px; width: 22px; height: 17px; margin-left: -11px; pointer-events: none; animation: beta-share 12s linear var(--seat-delay) infinite; }
+.beta-shared-project svg { display: block; width: 100%; height: 100%; }
+.beta-shared-project i { position: absolute; top: -4px; right: -2px; color: #ffdb82; font: 10px/1 sans-serif; animation: beta-spark 1.4s ease-in-out infinite; }
+.beta-shared-pencil { animation: beta-pencil .7s ease-in-out infinite alternate; }
+@keyframes beta-share { 0%,24%,56%,100% { opacity: 0; transform: translateX(-8px) rotate(-8deg); } 28% { opacity: 1; transform: translateX(-7px) rotate(-8deg); } 39% { opacity: 1; transform: translateX(7px) rotate(8deg); } 50% { opacity: 1; transform: translateX(-7px) rotate(-8deg); } }
+@keyframes beta-pencil { from { transform: translate(0,0); } to { transform: translate(-3px,2px); } }
+.beta-visitor-mark { position: absolute; bottom: 1px; right: -1px; font: 9px/1 sans-serif; color: #97e5dc; border-radius: 50%; background: #122d31; padding: 1px; }
+.beta-message-badge { position: absolute; top: 9px; right: -3px; padding: 2px 3px; border-radius: 5px 5px 5px 0; border: 1px solid #ffde99; color: #342414; background: #f4d797; font: 700 8px/1 var(--font-ui); }
+.beta-workshop-controls { flex: 0 0 24px; display: flex; flex-direction: column; justify-content: center; }
+.beta-motion-toggle, .beta-cast-more { width: 24px; height: 24px; position: relative; padding: 0; color: var(--text-dim); background: transparent; border: 0; border-radius: 4px; cursor: pointer; font-size: 10px; }
+.beta-cast-more i { position: absolute; right: 1px; top: 2px; width: 4px; height: 4px; border-radius: 50%; background: #9ad8c8; }
+.beta-motion-toggle:hover, .beta-cast-more:hover { background: var(--bg-2); color: var(--text); }
+.beta-workshop-message { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; width: max-content; max-width: min(360px, 100% + 160px, 90vw); padding: 7px 10px; display: flex; align-items: center; gap: 7px; border: 1px solid #d8b275; border-radius: 3px 10px 10px; color: #f7e2b5; background: #30291f; box-shadow: 0 3px 12px #0005; cursor: pointer; text-align: left; font-size: 11px; }
+.beta-workshop-message::before { content: ""; position: absolute; top: -5px; left: 9px; width: 7px; height: 7px; background: #30291f; border-top: 1px solid #d8b275; border-left: 1px solid #d8b275; transform: rotate(45deg); }
+.beta-workshop-message > span:nth-child(2) { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.beta-chat-icon { flex: none; border: 1px solid #c9b07b7a; border-radius: 4px 4px 4px 0; height: 13px; width: 17px; line-height: 6px; text-align: center; font-size: 15px; letter-spacing: 1px; }
 .beta-workshop button:focus-visible { outline: 2px solid #f2ce89; outline-offset: -2px; }
 .beta-workshop-roster { position: absolute; top: 100%; right: 0; z-index: 25; width: min(310px, 85vw); max-height: 320px; overflow-y: auto; border: 1px solid #a78d5c; border-radius: 10px; background: #202630; padding: 8px; box-shadow: 0 10px 30px #0008; }
 .beta-workshop-roster > div { display: flex; align-items: center; justify-content: space-between; padding: 3px 5px; font-size: 12px; }
@@ -90,4 +90,4 @@
 .beta-gnomes-preview-copy strong { display: block; color: var(--text); font-weight: 500; }
 .beta-workshop[data-paused="true"] *, .beta-gnome[data-paused="true"] *, .beta-workshop[data-motion-paused="true"] *, .beta-workshop[data-paused="true"] *::after, .beta-workshop[data-motion-paused="true"] *::after { animation-play-state: paused !important; }
 @media (prefers-reduced-motion: reduce) { .beta-workshop *, .beta-workshop *::after, .beta-gnome * { animation: none !important; } }
-@media (max-width: 599px) { .office.office-beta { flex-basis: 100%; order: 15; padding: 0; }.beta-workshop-count { font-size: 8px; }.beta-workshop-cast { justify-content: flex-start; }.beta-workstation { flex-basis: 62px; }.beta-gnomes-preview { gap: 1px; }.beta-gnomes-preview-copy { font-size: 11px; } }
+@media (max-width: 599px) { .beta-gnomes-preview { gap: 1px; }.beta-gnomes-preview-copy { font-size: 11px; } }

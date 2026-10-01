@@ -48,6 +48,8 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     const artRequests=[]; page.on('request',r=>{if(r.url().includes('workshop-cast'))artRequests.push(r.url());});
     await page.goto(base);
     await page.locator('.office-strip').waitFor();
+    await page.locator('.office-huddle').first().waitFor();
+    const classicHeight = await page.locator('.topbar').evaluate(el=>el.getBoundingClientRect().height);
     assert.equal(await page.locator('.beta-workshop').count(),0);
     assert.equal(artRequests.length,0,'Off mode must not fetch the atlas');
     await page.getByRole('button',{name:'Open settings',exact:true}).click();
@@ -62,10 +64,35 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.keyboard.press('Escape');
     await page.reload();
     await page.locator('.beta-workshop').waitFor();
-    await page.locator('.beta-workstation-name').filter({hasText:'Bram'}).waitFor();
+    await page.locator('.beta-workstation[aria-label^="Bram,"]').waitFor();
+    assert.equal(await page.locator('.beta-workshop').evaluate(el=>el.getBoundingClientRect().height),48,'Workshop must be exactly one gnome high');
+    const betaHeight=await page.locator('.topbar').evaluate(el=>el.getBoundingClientRect().height);
+    assert(betaHeight <= classicHeight + 16,`Beta must not add header rows or padding (${classicHeight}px classic, ${betaHeight}px beta)`);
     await page.screenshot({path:path.join(output,'workshop-desktop.png')});
-    assert.equal(await page.locator('.beta-workstation').count(),7,'Crowd must be bounded');
-    assert.equal(await page.locator('.beta-visitor').count(),2,'Visitors must have reserved places');
+    assert((await page.locator('.beta-workstation').count())<=7,'Crowd must be bounded');
+    assert((await page.locator('.beta-visitor').count())>=1,'Visitors must have reserved places when space permits');
+    // Verify actual travel and a synchronized rendezvous, not merely that CSS is animating.
+    const movement=await page.locator('.beta-workstation[data-partner]').first().evaluate(el=>{
+      const animation=el.getAnimations().find(a=>a.animationName==='beta-journey');
+      const timing=animation.effect.getTiming(); const previous=animation.currentTime;
+      animation.currentTime=timing.delay; const start=el.getBoundingClientRect().x;
+      animation.currentTime=timing.delay+Number(timing.duration)*.3; const meet=el.getBoundingClientRect().x;
+      animation.currentTime=previous; return Math.abs(meet-start);
+    });
+    assert(movement>=15,`Gnome must walk visibly toward its teammate (${movement}px)`);
+    assert((await page.locator('.beta-shared-project').count())>0,'Teammates need a shared work object');
+    await page.locator('.beta-workshop').evaluate(el=>{
+      window.betaTestTimelines=el.getAnimations({subtree:true}).map(animation=>({animation,time:animation.currentTime}));
+      for(const {animation} of window.betaTestTimelines){const timing=animation.effect.getTiming();animation.currentTime=timing.delay+Number(timing.duration)*.35;}
+    });
+    const meeting=await page.locator('.beta-workstation[data-partner]').first().evaluate(el=>{
+      const partner=[...document.querySelectorAll('.beta-workstation')].find(other=>other.dataset.agentId===el.dataset.partner);
+      return Math.abs(partner.getBoundingClientRect().x-el.getBoundingClientRect().x);
+    });
+    assert(Math.abs(meeting-34)<2,`Partners must meet shoulder to shoulder (${meeting}px)`);
+    assert(Number(await page.locator('.beta-shared-project').first().evaluate(el=>getComputedStyle(el).opacity))>.9,'Shared sheet must appear during the rendezvous');
+    await page.locator('.beta-workshop').screenshot({path:path.join(output,'workshop-cooperation.png')});
+    await page.evaluate(()=>{for(const {animation,time} of window.betaTestTimelines)animation.currentTime=time;delete window.betaTestTimelines;});
     await page.getByRole('button',{name:/Show all .* workshop gnomes/}).click();
     assert.equal(await page.locator('.beta-workshop-roster > button').count(),12);
     await page.getByRole('button',{name:'Close workshop crew'}).click();
@@ -98,7 +125,8 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
       const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
       assert.equal(overflow,false,`Page overflows at ${width}px`);
       const sceneWidth=await page.locator('.beta-workshop').evaluate(el=>el.clientWidth);
-      assert(sceneWidth>=300,`Workshop squeezed to ${sceneWidth}px at ${width}px`);
+      assert(sceneWidth>=65,`Workshop squeezed to ${sceneWidth}px at ${width}px`);
+      assert.equal(await page.locator('.office-beta').evaluate(el=>el.getBoundingClientRect().height),48,`Extra vertical space at ${width}px`);
       await page.screenshot({path:path.join(output,`workshop-${width}.png`)});
     }
     // Measure the running scene (not a claimed universal frame-rate guarantee).
@@ -122,7 +150,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.reload(); await page.locator('.office-strip').waitFor();
     assert.equal(await page.locator('.beta-gnome').count(),0);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({result:'PASS',checks:['default off/no atlas request','General toggle','persistence','bounded crowd and online visitors','messages and room navigation','pause/reduced motion','hidden tab and offscreen pause','390/768/1440/1920 layout','offline visitors removed','idle bubble expiry','cross-tab rollback','no browser errors'],performance,atlasRequests:artRequests.length,evidence:output},null,2));
+    console.log(JSON.stringify({result:'PASS',checks:['default off/no atlas request','General toggle','persistence','48px lane/no added header rows','visible walking and shared projects','bounded crowd and online visitors','messages and room navigation','pause/reduced motion','hidden tab and offscreen pause','390/768/1440/1920 layout','offline visitors removed','idle bubble expiry','cross-tab rollback','no browser errors'],performance,atlasRequests:artRequests.length,evidence:output},null,2));
     await context.close();
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});

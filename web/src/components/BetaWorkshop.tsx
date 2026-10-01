@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { ChatMessage, GnomeRole } from "../types.js";
 import { observeGnomeMotion } from "../lib/betaGnomes.js";
 import { BetaGnome } from "./BetaGnome.js";
@@ -28,15 +28,63 @@ export function latestWorkshopMessage(chat: ChatMessage[], seats: WorkshopSeat[]
   }, undefined);
 }
 
-/** A bounded cast on a scrollable stage; the full roster remains reachable by keyboard. */
+/** Pick a cast that fits without adding rows. Leave enough room to actually walk. */
+function visibleCast(seats: WorkshopSeat[], capacity: number) {
+  const locals = seats.filter((seat) => !seat.remote);
+  const visitors = seats.filter((seat) => seat.remote);
+  const visiting = capacity >= 4 ? Math.min(2, visitors.length, capacity - 3) : 0;
+  return [...locals.slice(0, capacity - visiting), ...visitors.slice(0, visiting + Math.max(0, capacity - visiting - locals.length))];
+}
+
+/** Positions are recomputed only on resize/cast changes. CSS runs the shared walk/work timeline. */
+function choreography(cast: WorkshopSeat[], width: number) {
+  const span = width / Math.max(1, cast.length);
+  const paired = new Set<number>();
+  return cast.map((seat, index) => {
+    const home = span * (index + .5) - 16;
+    const partner = paired.has(index) ? -1 : cast.findIndex((other, i) => i > index && !paired.has(i) && other.active && (
+      seat.active && other.group === seat.group || seat.role === "director" && !seat.remote && !other.remote
+    ));
+    if (partner >= 0) { paired.add(index); paired.add(partner); }
+    return { seat, home, partner, span };
+  }).map((actor, index, all) => {
+    const lead = all.findIndex((other) => other.partner === index);
+    const partnerIndex = actor.partner >= 0 ? actor.partner : lead;
+    const partner = all[partnerIndex];
+    const direction = partner ? Math.sign(partner.home - actor.home) : index % 2 ? -1 : 1;
+    // Partners approach to shoulder distance; solos cover most of their own patch.
+    const travel = partner ? (partner.home - actor.home) / 2 - direction * 17 : direction * Math.max(8, Math.min(35, (actor.span - 34) / 2));
+    const phase = partner ? Math.min(index, partnerIndex) : index;
+    return { ...actor, partnerIndex, travel, delay: -(phase * 2.7), meeting: partner ? (actor.home + partner.home) / 2 + 16 : null };
+  });
+}
+
+/** One 48px lane. Speech and the roster float over the board, never reserve header space. */
 export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
   seats: WorkshopSeat[]; chat: ChatMessage[]; online: number; activeRoom: string | null; openOffice: (room: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const stage = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(200);
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(Date.now);
   const [motionPaused, setMotionPaused] = useState(false);
   useEffect(() => ref.current ? observeGnomeMotion(ref.current) : undefined, []);
+  useLayoutEffect(() => {
+    const element = stage.current;
+    if (!element) return;
+    const measure = () => setWidth(element.clientWidth);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  useEffect(() => {
+    if (!expanded) return;
+    const close = (event: KeyboardEvent) => { if (event.key === "Escape") setExpanded(false); };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [expanded]);
   // Expire the current bubble even in an empty office, without an always-running ticker.
   const message = latestWorkshopMessage(chat, seats, Math.max(now, Date.now()));
   useEffect(() => {
@@ -61,43 +109,43 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
     openOffice(room);
     setExpanded(false);
   }
-  // Always reserve space for online visitors, even in a busy local office.
-  const locals = seats.filter((seat) => !seat.remote);
-  const visitors = seats.filter((seat) => seat.remote);
-  const cast = [...locals.slice(0, visitors.length ? 5 : 7), ...visitors.slice(0, 2)];
+  const cast = visibleCast(seats, Math.max(1, Math.min(7, Math.floor(width / 60))));
+  const actors = choreography(cast, width);
   const totalWorking = seats.filter((s) => s.active).length;
   const speaker = message && seats.find((seat) => message.remoteInstance
     ? seat.remote === message.remoteInstance && (seat.name === message.senderName || seat.role === message.role)
     : !seat.remote && (seat.runId === message.runId && !!message.runId || seat.threadId === message.threadId && !!message.threadId || seat.role === "director" && message.role === "director"));
   const bubble = message && `${message.senderName || speaker?.name || message.role}${message.remoteInstance ? ` · ${message.remoteInstance}` : ""}: ${message.body.replace(/\s+/g, " ").trim()}`;
-  return <div className="beta-workshop" ref={ref} data-motion-paused={motionPaused} data-alone={seats.length === 1}>
-    <div className="beta-workshop-heading">
-      <span className="beta-workshop-title"><span aria-hidden="true">✦</span> THE WORKSHOP <em>BETA</em></span>
-      <span className="beta-workshop-count">{totalWorking ? `${totalWorking} at work` : "Ready for a little magic"}{online > 0 ? ` · ${online} online` : ""}</span>
-      <button type="button" className="beta-motion-toggle" aria-label={motionPaused ? "Resume workshop animations" : "Pause workshop animations"} aria-pressed={motionPaused} onClick={() => setMotionPaused(!motionPaused)}>{motionPaused ? "▶" : "Ⅱ"}</button>
-    </div>
-    <div className="beta-workshop-stage">
-      <div className="beta-festoon" aria-hidden="true"><i /><i /><i /><i /><i /><i /><i /><i /><i /></div>
-      <div className="beta-motes" aria-hidden="true"><i /><i /><i /><i /><i /></div>
+  return <div className="beta-workshop" ref={ref} data-motion-paused={motionPaused} aria-label={`Workshop: ${totalWorking} at work, ${online} online`}>
+    <div className="beta-workshop-stage" ref={stage}>
       <div className="beta-workshop-cast" aria-label="Gnomes in the workshop">
-        {cast.map((seat, index) => <button type="button" key={seat.id}
-          className={`beta-workstation${seat.remote ? " beta-visitor" : ""}${index > 0 && seat.group === cast[index - 1]?.group ? " beta-teammate" : ""}`}
+        {actors.map(({ seat, home, travel, delay, partnerIndex }) => <button type="button" key={seat.id}
+          className={`beta-workstation${seat.remote ? " beta-visitor" : ""}`}
           data-office-room={seat.room} data-speaking={speaker?.id === seat.id} data-working={seat.active}
-          style={{ "--seat-delay": `${-(index * 0.63)}s` } as CSSProperties}
+          data-agent-id={seat.id}
+          data-partner={partnerIndex >= 0 ? cast[partnerIndex]?.id : undefined}
+          style={{ left: home, "--journey": `${travel}px`, "--seat-delay": `${delay}s`, "--out-facing": travel < 0 ? -1 : 1, "--back-facing": travel < 0 ? 1 : -1 } as CSSProperties}
           onClick={() => open(seat.room)}
           aria-label={`${seat.name}, ${seat.active ? verbs[seat.role] : "ready"}${seat.remote ? `, visiting from ${seat.remote}` : ""}. ${seat.task}. Open chat${unread.get(seat.room) ? `, ${unread.get(seat.room)} new messages` : ""}`}
           title={`${seat.name} · ${seat.active ? verbs[seat.role] : "Ready"}\n${seat.task}\n${seat.remote ? `Online office: ${seat.remote}` : seat.group}\nClick to open chat`}>
-          <span className="beta-character"><BetaGnome role={seat.role} size={55} active={seat.active} /></span>
-          <span className="beta-workstation-name">{seat.name}</span>
-          <span className="beta-workstation-role">{seat.remote ? "↗ " : ""}{seat.active ? verbs[seat.role] : "Ready"}</span>
+          <span className="beta-character"><BetaGnome role={seat.role} size={32} active={seat.active} /></span>
+          {seat.remote && <span className="beta-visitor-mark" aria-hidden="true">↗</span>}
           {(unread.get(seat.room) ?? 0) > 0 && <span className="beta-message-badge" aria-hidden="true">{Math.min(unread.get(seat.room)!, 99)}</span>}
         </button>)}
-        {seats.length > cast.length && <button type="button" className="beta-cast-more" onClick={() => setExpanded(!expanded)} aria-expanded={expanded} aria-label={`Show all ${seats.length} workshop gnomes`}>+{seats.length - cast.length}<span>crew</span></button>}
+        {actors.filter((actor) => actor.partner >= 0).map((actor) => <span key={`project:${actor.seat.id}`} className="beta-shared-project" aria-hidden="true"
+          style={{ left: actor.meeting!, "--seat-delay": `${actor.delay}s` } as CSSProperties}>
+          <svg viewBox="0 0 24 18" fill="none"><path d="M2 2h20v14H2z" fill="#ead8af" stroke="#c59855" /><path d="M6 6h7M6 9h5M6 12h9" stroke="#64787e" strokeWidth="1.4" /><path className="beta-shared-pencil" d="m17 3-4 8" stroke="#bb6953" strokeWidth="2" /></svg>
+          <i>✦</i>
+        </span>)}
       </div>
     </div>
-    <button type="button" className={`beta-workshop-message${message ? " has-message" : ""}`} onClick={() => open(message?.room ?? seats[0]?.room ?? "general")} title={bubble || "Open office chat"}>
-      <span className="beta-chat-icon" aria-hidden="true">···</span><span aria-live="polite">{bubble || (visitors.length ? "Local hands, distant friends. Open the office chat." : totalWorking ? "A little workshop. Real work in motion." : "The lanterns are lit. Your next idea starts here.")}</span><span aria-hidden="true">↗</span>
-    </button>
+    <div className="beta-workshop-controls">
+      <button type="button" className="beta-cast-more" onClick={() => setExpanded(!expanded)} aria-expanded={expanded} aria-label={`Show all ${seats.length} workshop gnomes`} title={`${seats.length} gnomes · ${online} online`}>{seats.length > cast.length ? `+${seats.length - cast.length}` : "···"}{online > 0 && <i />}</button>
+      <button type="button" className="beta-motion-toggle" aria-label={motionPaused ? "Resume workshop animations" : "Pause workshop animations"} aria-pressed={motionPaused} onClick={() => setMotionPaused(!motionPaused)}>{motionPaused ? "▶" : "Ⅱ"}</button>
+    </div>
+    {message && <button type="button" className="beta-workshop-message has-message" onClick={() => open(message.room)} title={bubble}>
+      <span className="beta-chat-icon" aria-hidden="true">···</span><span aria-live="polite">{bubble}</span><span aria-hidden="true">↗</span>
+    </button>}
     {expanded && <div className="beta-workshop-roster" role="region" aria-label="Workshop crew">
       <div><strong>Everyone in the workshop</strong><button type="button" onClick={() => setExpanded(false)} aria-label="Close workshop crew">×</button></div>
       {seats.map((seat) => <button key={seat.id} type="button" onClick={() => open(seat.room)}><BetaGnome role={seat.role} size={24} active={seat.active} /><span>{seat.name}<small>{seat.remote || seat.group} · {seat.active ? verbs[seat.role] : "Ready"}</small></span></button>)}
