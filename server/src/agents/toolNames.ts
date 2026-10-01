@@ -20,6 +20,8 @@ export const T = {
   notifyThread: `mcp__${BUS_SERVER}__notify_thread`,
   busAskUser: `mcp__${BUS_SERVER}__ask_user`,
   postNote: `mcp__${BUS_SERVER}__post_operator_note`,
+  // Registered on the bus only for the roles that edit (implementor, QA) — bus/busServer.ts.
+  taskWorktree: `mcp__${BUS_SERVER}__task_worktree`,
   // Registered on the bus only for the implementor (bus/busServer.ts subTaskTools).
   listSubagentModels: `mcp__${BUS_SERVER}__list_subagent_models`,
   spawnSubagent: `mcp__${BUS_SERVER}__spawn_subagent`,

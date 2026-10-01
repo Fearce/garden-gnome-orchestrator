@@ -73,6 +73,7 @@ import type {
   ShotgunAssignment,
   StageOutputs,
   SubTaskSpec,
+  TaskWorktree,
   SupervisorAction,
   SupervisorChatActionResult,
   SupervisorChatStatus,
@@ -125,6 +126,8 @@ function rowToThreadFields(r: Row, manualDeploymentRaw: unknown): Thread {
     title: r.title as string,
     state: r.state as ThreadState,
     workspace: r.workspace as string,
+    homeWorkspace: (r.home_workspace as string | null) ?? null,
+    worktrees: parseWorktrees(r.worktrees),
     brief: r.brief as string,
     rawPrompt: r.raw_prompt as string,
     error: (r.error as string | null) ?? null,
@@ -202,7 +205,7 @@ function summaryOfThread(thread: Thread, r: Row): ThreadSummary {
 /** Every `threads` column the DTO needs, MINUS the heavy `stage_outputs` blob — that column is
  *  represented only by its extracted `manual_deployment_raw` sub-field (see `rowToThreadFromListing`).
  *  Shared by every bulk listing query so they stay in sync with `rowToThreadFields`. */
-const THREAD_LISTING_COLUMNS = `id, title, state, workspace, brief, raw_prompt, error, effort_override,
+const THREAD_LISTING_COLUMNS = `id, title, state, workspace, home_workspace, worktrees, brief, raw_prompt, error, effort_override,
   model_request, role_toggles, closed_at, closed_prev_state, pinned_at, lane, baseline_head, duration_ms, deadline_at,
   active_deadline_at, agent_count, parent_id, assignment, sub_task, created_at, updated_at,
   json_extract(stage_outputs, '$.manualDeployment') AS manual_deployment_raw`;
@@ -215,7 +218,7 @@ const THREAD_MIRROR_COLUMNS = `rowid AS seq, ${THREAD_LISTING_COLUMNS},
  *  caller that edits one throws instead of silently changing every later listing. */
 function rowToListedThread(r: Row): ListedThread {
   const thread = rowToThreadFromListing(r);
-  for (const nested of [thread.assignment, thread.modelRequest, thread.roleToggles, thread.subTask, thread.manualDeployment]) deepFreeze(nested);
+  for (const nested of [thread.assignment, thread.modelRequest, thread.roleToggles, thread.subTask, thread.manualDeployment, thread.worktrees]) deepFreeze(nested);
   return { seq: r.seq as number, thread, summary: summaryOfThread(thread, r) };
 }
 
@@ -235,7 +238,7 @@ const PREVIEW_MESSAGE_KINDS_SQL = `'text', 'system'`;
  *  turn near 100ms even at the 8ms/read this installation's disk was measured at under load. */
 const LATEST_PREVIEW_BACKFILL_CHUNK = 12;
 
-const THREAD_SUMMARY_COLUMNS = `id, title, state, workspace, error, effort_override,
+const THREAD_SUMMARY_COLUMNS = `id, title, state, workspace, home_workspace, worktrees, error, effort_override,
   substr(brief, 1, ${BRIEF_PREVIEW_CHARS}) AS brief_preview,
   latest_message_preview,
   model_request, role_toggles, closed_at, closed_prev_state, pinned_at, lane, baseline_head, duration_ms, deadline_at,
@@ -293,6 +296,21 @@ function parseAssignment(raw: unknown): ShotgunAssignment | null {
     return v && typeof v === "object" && typeof v.objective === "string" ? { ...v, files: Array.isArray(v.files) ? v.files : [] } : null;
   } catch {
     return null;
+  }
+}
+
+/** Keeps only well-formed entries, so a hand-edited row can never hand an agent a half-described checkout. */
+function parseWorktrees(raw: unknown): TaskWorktree[] {
+  if (typeof raw !== "string" || !raw) return [];
+  try {
+    const value = JSON.parse(raw) as unknown;
+    if (!Array.isArray(value)) return [];
+    return value.filter(
+      (w): w is TaskWorktree =>
+        !!w && typeof w === "object" && typeof w.repo === "string" && typeof w.path === "string" && typeof w.branch === "string" && typeof w.baseSha === "string",
+    );
+  } catch {
+    return [];
   }
 }
 
@@ -907,6 +925,8 @@ export class Db {
       "ALTER TABLE threads ADD COLUMN parent_id TEXT",
       "ALTER TABLE threads ADD COLUMN assignment TEXT",
       "ALTER TABLE threads ADD COLUMN sub_task TEXT",
+      "ALTER TABLE threads ADD COLUMN home_workspace TEXT",
+      "ALTER TABLE threads ADD COLUMN worktrees TEXT",
       "ALTER TABLE chat_messages ADD COLUMN sender_name TEXT",
       "ALTER TABLE findings ADD COLUMN kind TEXT NOT NULL DEFAULT 'finding'",
       "ALTER TABLE findings ADD COLUMN path TEXT",
@@ -1711,6 +1731,7 @@ export class Db {
   createThread(input: {
     title: string;
     workspace: string;
+    homeWorkspace?: string | null;
     rawPrompt: string;
     brief?: string;
     effortOverride?: Effort | null;
@@ -1728,6 +1749,8 @@ export class Db {
       title: input.title,
       state: "intake",
       workspace: input.workspace,
+      homeWorkspace: input.homeWorkspace ?? null,
+      worktrees: [],
       brief: input.brief ?? "",
       rawPrompt: input.rawPrompt,
       error: null,
@@ -1748,16 +1771,17 @@ export class Db {
         // latest_message_preview starts as the empty string, not NULL: a task with no messages yet has
         // nothing to quote, and NULL is reserved to mean "a row older than the column" so the backfill
         // walk has an exact, shrinking set to work through.
-        `INSERT INTO threads(id, title, state, workspace, brief, raw_prompt, error, effort_override, model_request, lane,
+        `INSERT INTO threads(id, title, state, workspace, home_workspace, brief, raw_prompt, error, effort_override, model_request, lane,
                              duration_ms, deadline_at, agent_count, parent_id, assignment, sub_task, latest_message_preview,
                              created_at, updated_at)
-         VALUES(@id, @title, @state, @workspace, @brief, @rawPrompt, @error, @effortOverride, @modelRequest, @lane,
+         VALUES(@id, @title, @state, @workspace, @homeWorkspace, @brief, @rawPrompt, @error, @effortOverride, @modelRequest, @lane,
                 @durationMs, @deadlineAt, @agentCount, @parentId, @assignment, @subTask, '', @createdAt, @updatedAt)`,
       )
       // better-sqlite3 binds only primitives, so the assignment rides as JSON text (the mapper parses
       // it back); everything else on the DTO is already a scalar.
       .run({
         ...t,
+        worktrees: undefined,
         modelRequest: t.modelRequest ? JSON.stringify(t.modelRequest) : null,
         assignment: t.assignment ? JSON.stringify(t.assignment) : null,
         subTask: t.subTask ? JSON.stringify(t.subTask) : null,
@@ -1802,6 +1826,7 @@ export class Db {
         this.createThread({
           title: child.title,
           workspace: child.workspace,
+          homeWorkspace: lead.homeWorkspace ?? null,
           rawPrompt: "",
           brief: child.brief,
           effortOverride: child.effortOverride ?? null,
@@ -1912,6 +1937,16 @@ export class Db {
    *  change can't clobber the baseline once it's set. */
   setBaselineHead(id: string, sha: string | null): void {
     this.raw.prepare("UPDATE threads SET baseline_head = ? WHERE id = ?").run(sha, id);
+  }
+
+  /** Move a task into (or back out of) its own worktree: where its agents run, and the checkouts it owns.
+   *  Kept out of updateThread for the same reason as setBaselineHead — a routine state write must never
+   *  move a task's working directory. */
+  setThreadWorktrees(id: string, workspace: string, worktrees: TaskWorktree[]): Thread | null {
+    const result = this.raw
+      .prepare("UPDATE threads SET workspace = ?, worktrees = ?, updated_at = ? WHERE id = ?")
+      .run(workspace, worktrees.length ? JSON.stringify(worktrees) : null, now(), id);
+    return result.changes ? this.getThread(id) : null;
   }
 
   /** Persist the owner's per-task role switches; an empty set clears the column back to "follow the route". */

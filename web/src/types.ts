@@ -137,11 +137,28 @@ export interface ManualDeploymentSummary {
 export type ToggleableRole = "planner" | "researcher" | "qa" | "selfImprove";
 export type RoleToggles = Partial<Record<ToggleableRole, boolean>>;
 
+/** Mirrors server/src/types.ts: a task's own checkout of one repository, on the task's branch. */
+export interface TaskWorktree {
+  repo: string;
+  path: string;
+  branch: string;
+  base: string | null;
+  baseSha: string;
+  commitOnly?: boolean;
+  links?: string[];
+  createdAt: number;
+}
+
 export interface Thread {
   id: string;
   title: string;
   state: ThreadState;
+  /** Where the task's agents run — its own worktree once it has one. */
   workspace: string;
+  /** The folder it was dispatched against (its project); null on rows older than task worktrees. */
+  homeWorkspace?: string | null;
+  /** The task's own checkouts, one per repository it changes. */
+  worktrees?: TaskWorktree[];
   /** Loaded with task history, not the board hello snapshot. */
   brief?: string;
   /** First line of the brief, clipped — the board snapshot carries this instead of the full brief so a
@@ -566,6 +583,12 @@ export function repoRoom(workspace: string): string {
   return "repo:" + normalizeWorkspace(workspace);
 }
 
+/** The folder a task was dispatched to — its project — even while it runs in its own worktree. Grouping,
+ *  the project room and the card's folder chip key on this, as the server does. */
+export function homeWorkspace(thread: Pick<Thread, "workspace" | "homeWorkspace">): string {
+  return thread.homeWorkspace ?? thread.workspace;
+}
+
 export interface AccountDTO {
   id: string;
   label: string;
@@ -687,6 +710,7 @@ export interface OrchestratorSettings {
   differentProviderQa: boolean; // off (default) → QA runs on the default backend. on → QA is routed to a DIFFERENT enabled provider than the implementor (cross-provider review); falls back to normal QA when no other provider is enabled+ready.
   qaAppliesFixes: boolean; // off (default) → QA reports findings back to the implementor. on → QA fixes issues directly, then QA re-checks until a pass makes no code changes.
   autoPush: boolean;
+  taskWorktrees: boolean;
   directorName: string; // the director persona's display name, operator-set (default "ChangeNameInSettings")
   directorDirectives: string; // the owner's standing directives appended to the Director's system prompt (default "" = none; max MAX_DIRECTOR_DIRECTIVES_CHARS)
   maxQaRounds: number;

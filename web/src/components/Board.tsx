@@ -15,7 +15,7 @@ import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordi
 import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
 import type { AgentRun, BoardView, CoworkSession, Role, Thread, ThreadState } from "../types.js";
-import { repoRoom } from "../types.js";
+import { homeWorkspace, repoRoom } from "../types.js";
 import { activityPreview, closesInDays, formatDuration, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
@@ -101,7 +101,7 @@ const COWORK_RANK: Record<CoworkSession["state"], number> = { running: 2, stoppi
 
 const taskItem = (thread: Thread): BoardItem => ({
   kind: "task", thread, id: thread.id, createdAt: thread.createdAt, updatedAt: thread.updatedAt,
-  rank: STATUS_RANK[thread.state], workspace: thread.workspace, title: thread.title, pinned: isPinned(thread),
+  rank: STATUS_RANK[thread.state], workspace: homeWorkspace(thread), title: thread.title, pinned: isPinned(thread),
 });
 const coworkItem = (session: CoworkSession): BoardItem => ({
   kind: "cowork", session, id: `cowork:${session.id}`, createdAt: session.createdAt, updatedAt: session.updatedAt,
@@ -610,7 +610,7 @@ const Card = memo(function Card({
   // The project chatroom for this task's repo (≥2 tasks ever collaborated here, possibly in the past
   // since rooms persist) — drives the card's Chatroom chip. Repo-keyed, so a fresh task on a repo with
   // prior history shows it too; hidden on repos that never had a collaboration.
-  const chatRoom = useStore((s) => s.chatRooms.find((r) => r.room === repoRoom(thread.workspace) && r.threadIds.length >= 2));
+  const chatRoom = useStore((s) => s.chatRooms.find((r) => r.room === repoRoom(homeWorkspace(thread)) && r.threadIds.length >= 2));
   const openOffice = useStore((s) => s.openOffice);
 
   const impl = latestRun(threadRuns, "implementor");
@@ -698,7 +698,7 @@ const Card = memo(function Card({
         </span>
       ) : null}
       <div className="title">{thread.title}</div>
-      <WorkspacePath path={thread.workspace} />
+      <WorkspacePath path={homeWorkspace(thread)} />
       <div className="pips">
         {pipRoles(threadRuns, thread.lane).map((role) => {
           const roleRuns = threadRuns.filter((x) => x.role === role);

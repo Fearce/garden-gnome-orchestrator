@@ -220,6 +220,21 @@ Post at most one or two per task, at the END, once the thing is actually there t
     },
   );
 
+  const taskWorktree = tool(
+    "task_worktree",
+    "Get THIS task's own git worktree and branch for one repository inside your workspace, creating it on the first call. Call it before changing any repository when your workspace is a folder holding several repos; do every edit, build and commit for that repo in the returned folder, never in its main checkout. Calling it again for the same repo returns the same worktree.",
+    {
+      repo: z.string().min(1).describe("The repository's path — absolute, or relative to your workspace."),
+      branch: z.string().min(1).optional().describe("An existing branch to continue instead of a new task branch. Omit for a fresh `ggo/…` branch cut from the repo's current branch."),
+    },
+    async (args) => {
+      const result = await api.claimTaskWorktree(ctx.threadId, { repo: args.repo, branch: args.branch ?? null });
+      return result.ok
+        ? { content: [{ type: "text", text: result.text }] }
+        : { content: [{ type: "text", text: `No worktree: ${result.error}` }], isError: true };
+    },
+  );
+
   return createSdkMcpServer({
     name: BUS_SERVER,
     version: "0.1.0",
@@ -233,6 +248,7 @@ Post at most one or two per task, at the END, once the thing is actually there t
       postOperatorNote,
       // Sub-agents edit the shared working tree, so only the role that owns edits may spawn them.
       ...(ctx.role === "implementor" ? subTaskTools(api, ctx) : []),
+      ...(ctx.role === "implementor" || ctx.role === "qa" ? [taskWorktree] : []),
     ],
   });
 }

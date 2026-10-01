@@ -429,12 +429,35 @@ async function heldRestart(commit) {
   return status && status.pending ? status : null;
 }
 
+/** The main checkout when `repo` is a linked git worktree (a task's own checkout), else null. Deploying
+ *  from one would build its dist and then restart prod, which runs the main checkout's stale build. */
+function linkedWorktreeMain(gitDir, commonDir, repo) {
+  const own = path.resolve(repo, gitDir);
+  const common = path.resolve(repo, commonDir);
+  if (path.normalize(own).toLowerCase() === path.normalize(common).toLowerCase()) return null;
+  return path.dirname(common);
+}
+
+function refuseLinkedWorktree() {
+  let main = null;
+  try {
+    main = linkedWorktreeMain(git(["rev-parse", "--git-dir"]), git(["rev-parse", "--git-common-dir"]), REPO);
+  } catch {
+    return;
+  }
+  if (!main) return;
+  log(`✗ ${REPO} is a linked worktree; prod runs from the main checkout ${main}.`);
+  log(`  Integrate this branch there first (rebase, fast-forward), then deploy from it:  npm run deploy --prefix "${path.join(main, "server")}"`);
+  process.exit(1);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const commit = head();
   const plan = planBuild(statusLines());
 
   if (args.includes("--verify")) process.exit(await verifyOnly(commit));
+  refuseLinkedWorktree();
 
   printPlan(plan, commit);
   if (args.includes("--plan")) {
@@ -477,7 +500,7 @@ async function main() {
   process.exit(0);
 }
 
-module.exports = { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, coordinatorStatus };
+module.exports = { linkedWorktreeMain, planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, coordinatorStatus };
 
 if (require.main === module) {
   main().catch((e) => {

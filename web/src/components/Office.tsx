@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
 import type { ChatMessage, ChatRoomSummary, RelayDirector, RelayPresentAgent, Role, SharedRepo } from "../types.js";
-import { agentName, CHAT_PAGE_SIZE, DIRECTORS_ROOM, GENERAL_ROOM, isCollaborationRoom, normalizeWorkspace, repoRoom, ROLES } from "../types.js";
+import { agentName, CHAT_PAGE_SIZE, DIRECTORS_ROOM, GENERAL_ROOM, homeWorkspace, isCollaborationRoom, normalizeWorkspace, repoRoom, ROLES } from "../types.js";
 import { clock, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
@@ -259,7 +259,7 @@ export function Office() {
     for (const r of [...runs].sort((a, b) => a.startedAt - b.startedAt)) {
       const t = threads[r.threadId];
       if (!t) continue;
-      perThread.set(r.threadId, { runId: r.id, threadId: r.threadId, role: r.role, model: r.model, title: t.title, workspace: t.workspace });
+      perThread.set(r.threadId, { runId: r.id, threadId: r.threadId, role: r.role, model: r.model, title: t.title, workspace: homeWorkspace(t) });
     }
     const byRepo = new Map<string, Worker[]>();
     for (const w of perThread.values()) {
@@ -545,7 +545,8 @@ function OfficePanel() {
     ? undefined
     : rooms.find((room) => room.room === officeRoom);
   const openedWorkspace = openedProjectRoom?.workspace ?? Object.values(threads)
-    .find((thread) => repoRoom(thread.workspace) === officeRoom)?.workspace;
+    .map(homeWorkspace)
+    .find((workspace) => repoRoom(workspace) === officeRoom);
   const directProjectRoom = !repolessRoom && (!openedProjectRoom || !isCollaborationRoom(openedProjectRoom));
   const projectRooms: Array<{ room: ChatRoomSummary; direct: boolean }> = rooms
     .filter(isCollaborationRoom)

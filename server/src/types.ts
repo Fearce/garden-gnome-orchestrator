@@ -146,7 +146,7 @@ export type FindingKind = "finding" | "deliverable";
  * One collaborator's share of a SHOTGUN task: its own objective plus the files it EXCLUSIVELY owns.
  *
  * The file list is not documentation — it is the safety mechanism. Shotgun collaborators work the same
- * checkout on the same branch (the no-worktrees convention), so nothing merges their changes and two
+ * checkout on the same branch (their lead's), so nothing merges their changes and two
  * agents editing one file destroy each other's work. Disjoint ownership is what prevents that, which is
  * why a decomposition whose file sets intersect is rejected outright (orchestrator/shotgun.ts).
  *
@@ -164,11 +164,29 @@ export type ToggleableRole = "planner" | "researcher" | "qa" | "selfImprove";
 /** Per-task owner switches. A role that is absent follows the settings and the task-aware route. */
 export type RoleToggles = Partial<Record<ToggleableRole, boolean>>;
 
+/** A task's own checkout of one repository (orchestrator/taskWorktree.ts): a linked git worktree on the
+ *  task's branch. Persisted on the thread row and mirrored byte-for-byte in web/src/types.ts. */
+export interface TaskWorktree {
+  repo: string; // the MAIN checkout the worktree belongs to
+  path: string; // the worktree folder
+  branch: string; // the branch checked out there
+  base: string | null; // the main checkout's branch it was cut from; null when that was a detached HEAD
+  baseSha: string; // the commit it started from
+  commitOnly?: boolean; // the repo's origin matches the commit-only (never-push) rule: the branch is left for the owner
+  links?: string[]; // worktree-relative junctions into the main checkout, unlinked before removal
+  createdAt: number;
+}
+
 export interface Thread {
   id: string;
   title: string;
   state: ThreadState;
-  workspace: string; // target repo cwd for the implementor
+  workspace: string; // where this task's agents run: the task's own worktree once one exists, else the dispatched folder
+  /** The folder the task was dispatched against — its project. Differs from `workspace` once the task
+   *  runs in its own worktree. Null on rows created before task worktrees existed. */
+  homeWorkspace?: string | null;
+  /** The task's own checkouts, one per repository it changes. Empty when it works in place. */
+  worktrees?: TaskWorktree[];
   brief: string; // enriched brief that kicked off the pipeline
   rawPrompt: string; // the user's original ask
   error?: string | null;
@@ -931,7 +949,14 @@ export interface ModelEffortStat extends ModelStat {
  * The implementor's "output" isn't JSON — it's the working tree plus its SDK session, recovered
  * from the latest implementor agent_run's session_id, so only the upstream stages live here.
  */
+/** How a task relates to git, decided once when its pipeline first starts: its own worktree, an
+ *  umbrella folder holding several repos (the agent claims a worktree per repo it changes), or in place
+ *  (not git, a worktree the owner picked, or task worktrees switched off). */
+export type WorkspaceMode = "worktree" | "umbrella" | "in-place";
+
 export interface StageOutputs {
+  /** Decided by ThreadManager.prepareTaskWorkspace; absent until then and on older tasks. */
+  workspaceMode?: WorkspaceMode;
   /** Durable task-local restriction; retries retain it and other tasks keep their settings. */
   skipSelfImprovement?: true;
   /** Durable task-local QA opt-out set at dispatch (goal steps); forces the route's `useQa` off. */
@@ -1097,6 +1122,7 @@ export interface OrchestratorSettings {
   differentProviderQa: boolean; // off (default) → QA runs on the default backend (Claude). on → QA is routed to a DIFFERENT enabled provider than the one that implemented the task (e.g. GPT/Codex reviews Claude's work, and vice-versa), for an independent cross-provider review. Falls back to normal QA when no other provider is enabled+ready.
   qaAppliesFixes: boolean; // off (default) → QA reports issues to the implementor. on → QA fixes issues itself, then another QA pass verifies each changed working tree until a pass makes no code changes.
   autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
+  taskWorktrees: boolean; // default true → each new task in a git repo runs in its own worktree on its own branch; off → tasks share the checked-out branch
   directorName: string; // the director persona's display name, set by the operator (default "ChangeNameInSettings")
   directorDirectives: string; // the owner's standing directives: free text appended to the Director's system prompt (default "" = none). Director-only; normalized and capped at MAX_DIRECTOR_DIRECTIVES_CHARS
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review

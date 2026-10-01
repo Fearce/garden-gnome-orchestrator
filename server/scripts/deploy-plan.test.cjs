@@ -7,6 +7,7 @@
 // here without a build, a temp tree, or a restart.
 const assert = require("node:assert/strict");
 const http = require("node:http");
+const path = require("node:path");
 
 // deploy.cjs reads both endpoints at module load, so they are pointed at this file's fake servers
 // BEFORE it is required. Ports are fixed and deliberately far from :4317/:3939 — nothing here may
@@ -16,7 +17,7 @@ const HUB_PORT = 4398;
 process.env.DEPLOY_BASE = `http://127.0.0.1:${COORDINATOR_PORT}`;
 process.env.SCRIPT_HUB_URL = `http://127.0.0.1:${HUB_PORT}`;
 
-const { planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, coordinatorStatus } = require("./deploy.cjs");
+const { linkedWorktreeMain, planBuild, porcelainPath, restartLookedLikeANoop, parseStatusOutput, deployLabel, requestRestart, coordinatorStatus } = require("./deploy.cjs");
 
 let checks = 0;
 const check = (name, cond) => {
@@ -41,6 +42,16 @@ console.log("deploy plan: anything that COMPILES into dist forces the HEAD-only 
     check(`${line.trim()} → head-only`, p.server === "head-only");
     check("...and is named as excluded", p.serverBlockers.length === 1);
   }
+}
+
+console.log("deploy: a linked task worktree is refused and pointed at the main checkout");
+{
+  const main = path.resolve("/repos/app");
+  check("the main checkout itself is not a linked worktree", linkedWorktreeMain(".git", ".git", main) === null);
+  check(
+    "a worktree resolves to its main checkout",
+    linkedWorktreeMain(path.join(main, ".git", "worktrees", "fix-x"), path.join(main, ".git"), path.resolve("/repos/app.worktrees/fix-x")) === main,
+  );
 }
 
 console.log("deploy plan: a dirty file that cannot reach dist must NOT cost the slow path");

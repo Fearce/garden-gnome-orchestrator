@@ -326,6 +326,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   on={settings.autoPush}
                   onChange={(v) => setSettings({ autoPush: v })}
                 />
+                <ToggleRow
+                  label="Task worktrees"
+                  hint="On by default. Each new task in a git repo gets its own branch in its own worktree beside the repo, so several tasks can change one repo at once; the task header shows which. Off: new tasks work in the repo's checked-out branch."
+                  on={settings.taskWorktrees}
+                  onChange={(v) => setSettings({ taskWorktrees: v })}
+                />
                 <NumberRow
                   label="Max QA rounds"
                   hint="How many implementor↔QA fix-rounds before a task settles to review."

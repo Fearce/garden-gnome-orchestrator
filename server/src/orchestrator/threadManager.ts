@@ -168,7 +168,9 @@ import type { FreeProviderService } from "../freeProviders/service.js";
 import { config, fallbackModelFor } from "../config.js";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { childRepos, containingRepoRoot, createTaskWorktree, discoverTaskWorktrees, isLinkedWorktree, mainCheckoutOf, mapIntoWorktree, restoreTaskWorktree, retireTaskWorktree } from "./taskWorktree.js";
+import { worktreeBriefing } from "./worktreeBriefing.js";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import { coworkContentWithAttachments } from "../coworkAttachments.js";
 import { acknowledgedInjection, injectionNeedsPickupWatch, injectionSendOptions, neutralizeSteeringMarkers, structuredAcknowledgedInjection } from "./injection.js";
@@ -217,6 +219,7 @@ import type {
   Severity,
   StageOutputs,
   SupervisorSnapshot,
+  TaskWorktree,
   Thread,
   TokenSafetyState,
   ToggleableRole,
@@ -960,6 +963,22 @@ const ZAI_MAX_DEFAULT_MIGRATION_KV = "migration_zai_max_default_v1";
  *  replayed backlog is still recognised after a bounce; trimmed oldest-first. */
 const REMOTE_CHAT_SEEN_MAX = 500;
 
+/** States after which a CLI agent may have hand-made worktrees under an umbrella workspace worth recording. */
+const UMBRELLA_SYNC_STATES: ReadonlySet<Thread["state"]> = new Set(["qa", "review", "done", "paused"]);
+
+/** The repo a task counts against for the per-repo cap: the folder it was dispatched to, not the
+ *  worktree it runs in, so one repo's tasks still count together. */
+function repoCapKey(thread: Thread): string {
+  return normalizeWorkspace(homeWorkspaceOf(thread));
+}
+
+/** The folder a task was dispatched to — its repo's main checkout even while it runs in its own worktree.
+ *  The office, the per-repo cap and repo-level history key on this, so tasks in sibling worktrees of one
+ *  repo still count as teammates. */
+function homeWorkspaceOf(thread: Thread): string {
+  return thread.homeWorkspace ?? thread.workspace;
+}
+
 export class ThreadManager implements OrchestratorApi {
   private readonly live = new Map<string, LiveImplementor>();
   /** Sub-agents spawned into child threads (orchestrator/subTasks.ts). Built before restart
@@ -1679,7 +1698,7 @@ export class ThreadManager implements OrchestratorApi {
       // Honor the per-repo cap too (the global cap is the `slots` gate above). resumeThread reserves the
       // slot synchronously, so activeCountForRepo already counts tasks resumed earlier in THIS pass — a
       // repo at its cap is left parked for a later supervisor tick rather than reviving two at once.
-      if (this.repoAtCapacity(t.workspace)) continue;
+      if (this.repoAtCapacity(t)) continue;
       slots--;
       this.hub.log("info", `${ready[0]!.label} has viable runway — auto-resuming capacity-parked "${t.title.slice(0, 48)}".`);
       if (now - (this.capResumeNotifiedAt.get(t.id) ?? 0) > CAP_RESUME_NOTIFY_COOLDOWN_MS) {
@@ -1950,9 +1969,9 @@ export class ThreadManager implements OrchestratorApi {
     const resuming: typeof stuck = [];
     for (const t of stuck) {
       if (resuming.length >= slots) break;
-      if (this.repoAtCapacityWith(t.workspace, pending)) continue;
+      if (this.repoAtCapacityWith(t, pending)) continue;
       resuming.push(t);
-      const key = normalizeWorkspace(t.workspace);
+      const key = repoCapKey(t);
       pending.set(key, (pending.get(key) ?? 0) + 1);
     }
     if (resuming.length === 0) {
@@ -2798,6 +2817,8 @@ export class ThreadManager implements OrchestratorApi {
     const thread = this.db.createThread({
       title: input.title,
       workspace: input.workspace,
+      // A sub-task runs in its parent's checkout (a worktree, possibly) but belongs to the parent's repo.
+      homeWorkspace: (input.parentId ? this.db.getThread(input.parentId)?.homeWorkspace : null) ?? input.workspace,
       rawPrompt: "",
       brief: input.brief,
       effortOverride: input.effort ?? null,
@@ -2881,6 +2902,7 @@ export class ThreadManager implements OrchestratorApi {
       differentProviderQa: this.settingBool("setting_different_provider_qa", false),
       qaAppliesFixes: this.settingBool("setting_qa_applies_fixes", false),
       autoPush: this.settingBool("setting_auto_push", true),
+      taskWorktrees: this.settingBool("setting_task_worktrees", true),
       directorName: this.directorName(),
       directorDirectives: this.db.kvGet("setting_director_directives") ?? "",
       maxQaRounds: this.settingNum("setting_max_qa_rounds", config.maxQaRounds, 1, 12),
@@ -4425,7 +4447,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     // The pick is an automatic choice, so it stays under the automatic ceiling; an owner pin beats it anyway.
     const eligible = policySet.eligible.map((candidate) => ({ ...candidate, efforts: automaticEffortOptions(candidate.efforts) }));
-    const workspace = normalizeWorkspace(thread.workspace);
+    const workspace = normalizeWorkspace(homeWorkspaceOf(thread));
     const preferredEffort = thread.effortOverride ?? plan?.effort ?? stage.plan?.effort ?? stage.routeDecision?.implementorEffort;
     const selection = {
       title: thread.title,
@@ -4612,7 +4634,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           if (thread) {
             this.db.recordModelSelection({
               threadId,
-              workspace: normalizeWorkspace(thread.workspace),
+              workspace: normalizeWorkspace(homeWorkspaceOf(thread)),
               title: thread.title,
               provider: nextPick.provider,
               model: nextPick.model,
@@ -5106,6 +5128,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.differentProviderQa !== undefined) this.db.kvSet("setting_different_provider_qa", patch.differentProviderQa ? "1" : "0");
     if (patch.qaAppliesFixes !== undefined) this.db.kvSet("setting_qa_applies_fixes", patch.qaAppliesFixes ? "1" : "0");
     if (patch.autoPush !== undefined) this.db.kvSet("setting_auto_push", patch.autoPush ? "1" : "0");
+    if (patch.taskWorktrees !== undefined) this.db.kvSet("setting_task_worktrees", patch.taskWorktrees ? "1" : "0");
     if (patch.directorName !== undefined) this.db.kvSet("setting_director_name", patch.directorName.trim().slice(0, 40));
     if (patch.directorDirectives !== undefined) {
       this.db.kvSet("setting_director_directives", normalizeDirectorDirectives(patch.directorDirectives));
@@ -6729,6 +6752,159 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.recoverReleasedCapacity();
   }
 
+  // ---- task worktrees (orchestrator/taskWorktree.ts) ----
+
+  /** Put the task where its agents should run before any of them starts: its existing worktrees
+   *  restored if their folders are gone, else — once, on a task's first start — its own new worktree.
+   *  Returns null when the task cannot run (already settled to `failed`). */
+  private async prepareTaskWorkspace(thread: Thread): Promise<Thread | null> {
+    thread = await this.ensureWorktreesPresent(thread);
+    if (!existsSync(thread.workspace)) {
+      this.setState(thread.id, "failed", `Workspace "${thread.workspace}" does not exist on disk — agents can't run there. Re-dispatch with a valid path.`);
+      return null;
+    }
+    if (thread.worktrees?.length || !this.wantsOwnWorktree(thread)) return thread;
+    if (this.db.getThreadStageOutputs(thread.id).workspaceMode) return thread;
+    const root = await containingRepoRoot(thread.workspace);
+    if (!root) {
+      this.db.updateThreadStageOutputs(thread.id, { workspaceMode: childRepos(thread.workspace).length ? "umbrella" : "in-place" });
+      return thread;
+    }
+    if (await isLinkedWorktree(root).catch(() => false)) {
+      // The owner pointed this task at a worktree they made: that IS its own checkout.
+      this.db.updateThreadStageOutputs(thread.id, { workspaceMode: "in-place" });
+      return thread;
+    }
+    const created = await createTaskWorktree({ repoPath: thread.workspace, threadId: thread.id, title: thread.title });
+    if (!created.ok) {
+      // Not persisted as a mode, so the next start tries again; this run works where it was dispatched.
+      this.taskFeedNote(thread.id, `⎇ ${created.error} This run works in the main checkout instead.`);
+      return thread;
+    }
+    const worktree = created.worktree;
+    const updated = this.db.setThreadWorktrees(thread.id, mapIntoWorktree(thread.workspace, worktree), [worktree]);
+    if (!updated) return thread;
+    this.db.updateThreadStageOutputs(thread.id, { workspaceMode: "worktree" });
+    // The branch starts here, so this — not the dispatch-time HEAD — is the "before" of its own diff.
+    this.db.setBaselineHead(thread.id, worktree.baseSha);
+    this.hub.publish({ type: "thread.upsert", thread: updated });
+    this.taskFeedNote(thread.id, `⎇ Working on branch ${worktree.branch} in its own worktree ${worktree.path} (from ${worktree.base ?? "a detached HEAD"} at ${worktree.baseSha.slice(0, 8)}).`);
+    return updated;
+  }
+
+  /** New top-level work in a git repo gets its own checkout. Sub-tasks and collaborators share their
+   *  parent's; a read-only lookup changes nothing; rows from before this feature keep working in place. */
+  private wantsOwnWorktree(thread: Thread): boolean {
+    return thread.homeWorkspace != null && !thread.parentId && thread.lane !== "read" && this.settings().taskWorktrees;
+  }
+
+  /** Re-create any recorded worktree whose folder is gone (retired at close, deleted by hand). A failure
+   *  is reported and leaves the path missing, so the caller's own existence check explains it. */
+  private async ensureWorktreesPresent(thread: Thread): Promise<Thread> {
+    const worktrees = thread.worktrees ?? [];
+    if (!worktrees.some((w) => !existsSync(w.path))) return thread;
+    const restored: TaskWorktree[] = [];
+    for (const worktree of worktrees) {
+      const result = await restoreTaskWorktree(worktree);
+      if (result.ok) restored.push(result.worktree);
+      else {
+        restored.push(worktree);
+        this.taskFeedNote(thread.id, `⎇ ${result.error}`);
+      }
+    }
+    const updated = this.db.setThreadWorktrees(thread.id, thread.workspace, restored) ?? thread;
+    this.hub.publish({ type: "thread.upsert", thread: updated });
+    return updated;
+  }
+
+  /** The `task_worktree` bus tool: this task's own worktree for one repository inside its workspace,
+   *  created on first ask and returned unchanged after. A sub-task or collaborator works in its
+   *  parent's checkout, so the binding is recorded on — and shared through — the parent. */
+  async claimTaskWorktree(threadId: string, input: { repo: string; branch?: string | null }): Promise<{ ok: true; worktree: TaskWorktree; text: string } | { ok: false; error: string }> {
+    const caller = this.db.getThread(threadId);
+    if (!caller) return { ok: false, error: "This task no longer exists." };
+    const owner = (caller.parentId ? this.db.getThread(caller.parentId) : null) ?? caller;
+    const repoPath = isAbsolute(input.repo) ? input.repo : join(owner.workspace, input.repo);
+    const root = await containingRepoRoot(repoPath);
+    if (!root) return { ok: false, error: `"${repoPath}" is not inside a git repository.` };
+    const main = await mainCheckoutOf(root);
+    const existing = (owner.worktrees ?? []).find((w) => normalizeWorkspace(w.repo) === normalizeWorkspace(main));
+    if (existing) {
+      const present = existsSync(existing.path) ? existing : ((await this.ensureWorktreesPresent(owner)).worktrees ?? []).find((w) => w.branch === existing.branch) ?? existing;
+      return { ok: true, worktree: present, text: this.claimedWorktreeText(owner, present, repoPath) };
+    }
+    const created = await createTaskWorktree({ repoPath: main, threadId: owner.id, title: owner.title, branch: input.branch ?? null });
+    if (!created.ok) return created;
+    const updated = this.db.setThreadWorktrees(owner.id, owner.workspace, [...(owner.worktrees ?? []), created.worktree]);
+    if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
+    this.taskFeedNote(owner.id, `⎇ Claimed branch ${created.worktree.branch} in worktree ${created.worktree.path} for ${main}.`);
+    return { ok: true, worktree: created.worktree, text: this.claimedWorktreeText(owner, created.worktree, repoPath) };
+  }
+
+  private claimedWorktreeText(owner: Thread, worktree: TaskWorktree, repoPath: string): string {
+    const folder = mapIntoWorktree(repoPath, worktree);
+    const rules = worktreeBriefing({
+      threadId: owner.id,
+      title: owner.title,
+      workspace: worktree.path,
+      mode: "worktree",
+      worktrees: [worktree],
+      owner: config.ownerName,
+      autoPush: this.settings().autoPush,
+    });
+    return [`Work in \`${folder}\` from now on — every edit, build and commit for this repository.`, "", rules ?? ""].join("\n").trim();
+  }
+
+  /** Record worktrees a CLI agent created by hand under an umbrella workspace, so the header shows them. */
+  private async syncUmbrellaWorktrees(thread: Thread): Promise<void> {
+    if (thread.parentId || this.db.getThreadStageOutputs(thread.id).workspaceMode !== "umbrella") return;
+    const known = new Set((thread.worktrees ?? []).map((w) => normalizeWorkspace(w.path)));
+    const found = (await discoverTaskWorktrees(thread.workspace, thread.id)).filter((w) => !known.has(normalizeWorkspace(w.path)));
+    if (!found.length) return;
+    const fresh = this.db.getThread(thread.id);
+    if (!fresh) return;
+    const updated = this.db.setThreadWorktrees(fresh.id, fresh.workspace, [...(fresh.worktrees ?? []), ...found]);
+    if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
+  }
+
+  /** The worktree section of a kickoff, from what prepareTaskWorkspace decided for this task. */
+  private worktreeSection(thread: Thread): string | null {
+    const parent = thread.parentId ? this.db.getThread(thread.parentId) : null;
+    const owner = parent ?? thread;
+    return worktreeBriefing({
+      threadId: owner.id,
+      title: owner.title,
+      workspace: owner.workspace,
+      mode: this.db.getThreadStageOutputs(owner.id).workspaceMode,
+      worktrees: owner.worktrees ?? [],
+      owner: config.ownerName,
+      autoPush: this.settings().autoPush,
+      borrowed: !!parent,
+    });
+  }
+
+  /** Remove the folders of a task that is closing or being deleted, when nothing in them can be lost
+   *  (retireTaskWorktree's rules). Deliverable paths are read now, before a delete drops the findings. */
+  private retireWorktreesOf(thread: Thread): void {
+    const worktrees = thread.worktrees ?? [];
+    if (!worktrees.length) return;
+    const keep = this.db.listFindings(thread.id).filter((f) => f.kind === "deliverable" && f.path).map((f) => resolve(thread.workspace, f.path!));
+    void (async () => {
+      for (const worktree of worktrees) {
+        const result = await retireTaskWorktree(worktree, keep).catch((error: unknown) => ({ removed: false, branchDeleted: false, reason: String(error) }));
+        const what = result.removed
+          ? `removed worktree ${worktree.path}${result.branchDeleted ? ` and merged branch ${worktree.branch}` : `; branch ${worktree.branch} kept`}`
+          : `kept worktree ${worktree.path} (${result.reason})`;
+        this.hub.log("info", `Task ${thread.id.slice(0, 8)}: ${what}.`);
+      }
+    })();
+  }
+
+  private taskFeedNote(threadId: string, content: string): void {
+    const message = this.db.addMessage({ threadId, role: "director", kind: "system", content });
+    this.hub.publish({ type: "thread.message", threadId, message });
+  }
+
   /** Start a freshly-dispatched task's pipeline now, or hold it in 'queued' if we're at the
    *  concurrency cap. Queued tasks start (FIFO) the moment a running pipeline settles. */
   private enqueueOrRun(threadId: string): void {
@@ -6754,7 +6930,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const cap = this.settings().maxConcurrent;
     const globalFull = this.activePipelines.size >= cap;
     const coworkFull = !!thread && this.coworkWorkspaceBusy?.(thread.workspace) === true;
-    const repoFull = !!thread && this.repoAtCapacity(thread.workspace);
+    const repoFull = !!thread && this.repoAtCapacity(thread);
     if (restartFull || globalFull || repoFull) {
       if (!this.dispatchQueue.includes(threadId)) this.dispatchQueue.push(threadId);
       this.setState(threadId, "queued");
@@ -6764,7 +6940,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           : coworkFull && !globalFull
           ? "a Co-worker turn is active in this repo"
           : repoFull && !globalFull
-          ? `${this.activeCountForRepo(thread!.workspace)} task(s) already running in this repo (per-repo cap ${this.repoConcurrencyLimit()})`
+          ? `${this.activeCountForRepo(thread!)} task(s) already running in this repo (per-repo cap ${this.repoConcurrencyLimit()})`
           : `${this.activePipelines.size}/${cap} pipeline(s) at the concurrency cap`;
       this.hub.log("info", `Task ${threadId.slice(0, 8)} queued — ${reason}.`);
       return;
@@ -6780,34 +6956,33 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   /** How many currently-running pipelines target the same repo as `workspace` (matched by normalized
    *  path, so "C:\\Repo\\" and "c:/repo" count as one repo). */
-  private activeCountForRepo(workspace: string): number {
-    const key = normalizeWorkspace(workspace);
+  private activeCountForRepo(thread: Thread): number {
+    const key = repoCapKey(thread);
     let n = 0;
     for (const id of this.activePipelines) {
       const t = this.db.getThread(id);
-      if (t && normalizeWorkspace(t.workspace) === key) n++;
+      if (t && repoCapKey(t) === key) n++;
     }
     return n;
   }
 
-  /** Whether starting another pipeline for `workspace` would exceed the per-repo cap. Always false when
+  /** Whether starting another pipeline for `thread`'s repo would exceed the per-repo cap. Always false when
    *  the cap is 0 (unlimited) — the global maxConcurrent is then the only gate. */
-  private repoAtCapacity(workspace: string): boolean {
-    if (this.coworkWorkspaceBusy?.(workspace)) return true;
+  private repoAtCapacity(thread: Thread): boolean {
+    if (this.coworkWorkspaceBusy?.(thread.workspace)) return true;
     const limit = this.repoConcurrencyLimit();
-    return limit > 0 && this.activeCountForRepo(workspace) >= limit;
+    return limit > 0 && this.activeCountForRepo(thread) >= limit;
   }
 
   /** Per-repo capacity check for a batch that SELECTS tasks before starting any of them (the token-reset
    *  resume): `pending` maps normalized workspace → count already chosen this pass, standing in for tasks
    *  not yet reflected in activePipelines. Use `repoAtCapacity` instead when each task is started inside
    *  the loop (a synchronous slot reserve means activeCountForRepo already sees the earlier ones). */
-  private repoAtCapacityWith(workspace: string, pending: Map<string, number>): boolean {
-    if (this.coworkWorkspaceBusy?.(workspace)) return true;
+  private repoAtCapacityWith(thread: Thread, pending: Map<string, number>): boolean {
+    if (this.coworkWorkspaceBusy?.(thread.workspace)) return true;
     const limit = this.repoConcurrencyLimit();
     if (limit <= 0) return false;
-    const key = normalizeWorkspace(workspace);
-    return this.activeCountForRepo(workspace) + (pending.get(key) ?? 0) >= limit;
+    return this.activeCountForRepo(thread) + (pending.get(repoCapKey(thread)) ?? 0) >= limit;
   }
 
   /** Claim the thread's concurrency slot for one run and hand back its release.
@@ -6879,7 +7054,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         this.dispatchQueue.splice(i, 1); // stale entry (cancelled/dismissed while waiting) — drop it
         continue;
       }
-      if (this.repoAtCapacity(t.workspace)) {
+      if (this.repoAtCapacity(t)) {
         i++; // this repo is at its cap — leave the task queued and try the next one
         continue;
       }
@@ -7083,17 +7258,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         deployment
           ? `Complete in GGO: "${t.title}" - manual deployment to ${deployment.environment} remains pending.`
           : `✓ done: "${t.title}"`,
-        { kind: "done", title: t.title, detail: deployment ? deployment.instructions : undefined, repo: t.workspace },
+        { kind: "done", title: t.title, detail: deployment ? deployment.instructions : undefined, repo: t.homeWorkspace ?? t.workspace },
       );
       void this.announceDone(t);
     }
     // A cap-park lands in 'review' too, but it's auto-handled by the supervisor — don't ping "needs your
     // review" (misleading, and it would re-fire every time a re-capping task re-parks).
     else if (t.state === "review" && !(t.error ?? "").startsWith(CAP_PARK_PREFIX))
-      this.notifyOwner(`⚠ needs your review: "${t.title}"`, { kind: "input", title: t.title, detail: t.error, repo: t.workspace });
+      this.notifyOwner(`⚠ needs your review: "${t.title}"`, { kind: "input", title: t.title, detail: t.error, repo: t.homeWorkspace ?? t.workspace });
     else if (t.state === "failed")
-      this.notifyOwner(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`, { kind: "failed", title: t.title, detail: t.error, repo: t.workspace });
+      this.notifyOwner(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`, { kind: "failed", title: t.title, detail: t.error, repo: t.homeWorkspace ?? t.workspace });
     if (t.state === "done" || t.state === "review") void this.summarizeDeliverablesFor(t.id);
+    if (UMBRELLA_SYNC_STATES.has(t.state)) void this.syncUmbrellaWorktrees(t).catch(() => undefined);
     // Truly-terminal states never resume under the same in-memory identity, so drop the per-thread
     // bookkeeping that must outlive the pipeline LOOP (so a parked task can still resume) but has no
     // reason to outlive the process. Deliberately EXCLUDES 'failed' (a transient state the pipeline
@@ -7439,10 +7615,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // The slot above is the task's first real opportunity to work. Stamp the durable deadline here,
       // not at dispatch, so time spent queued behind other pipelines never eats an owner's work window.
       thread = this.activateTimedWindow(thread);
-      if (!existsSync(thread.workspace)) {
-        this.setState(threadId, "failed", `Workspace "${thread.workspace}" does not exist on disk — agents can't run there. Re-dispatch with a valid path.`);
-        return;
-      }
+      const placed = await this.prepareTaskWorkspace(thread);
+      if (!placed) return;
+      thread = placed;
       // A Jev sub-agent is one typed-judgement HTTP call, not an agent session: no route, no kickoff.
       if (isJevSubTask(thread)) {
         await this.subTasks.runJev(thread);
@@ -7477,7 +7652,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (thread.lane === "read") {
         const promoted = await this.handleReadLane(thread, directorNote, saved);
         if (!promoted) return; // answered / errored / unrecoverable restart — already settled by finalizeReader
-        thread = promoted;
+        // A lookup that escalated into a change now needs its own checkout, like any change task.
+        const promotedWorkspace = await this.prepareTaskWorkspace(promoted);
+        if (!promotedWorkspace) return;
+        thread = promotedWorkspace;
         if (!this.manualStage(threadId, "planning or implementation")) return;
       }
 
@@ -7572,7 +7750,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       //    when planning already happened so a re-derivation can't strip a real plan down to "no plan".
       const qaEnabled = !collaborator && this.qaRoutedFor(thread, settings, route);
       const plannerRuns = !collaborator && this.plannerRoutedFor(thread, settings, route);
-      let kickoff = saved.kickoff ?? composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled, plannerRuns, route });
+      let kickoff = saved.kickoff ?? composeKickoff(thread, plan, research, { autoPush: settings.autoPush, qaEnabled, plannerRuns, route, worktree: this.worktreeSection(thread) });
       // Ownership is what keeps parallel agents out of each other's files, so it is rebuilt here (from
       // the persisted share) rather than only at spawn time — a collaborator revived by a restart must
       // be handed exactly the same contract, not a kickoff that has quietly lost it.
@@ -8481,7 +8659,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const rawNote = [directorNote, ...(buffered ?? [])].filter((s): s is string => Boolean(s)).join("\n\n");
     const note = rawNote ? acknowledgedInjection(rawNote) : undefined;
     void saved; // no persisted stage to resume from — the raw brief IS the kickoff, every time
-    await this.runImplementorQa(thread, thread.brief, this.implementorEffort(thread.id), this.latestImplementorSession(thread.id), note, {
+    const worktree = this.worktreeSection(thread);
+    await this.runImplementorQa(thread, worktree ? `${thread.brief}\n\n${worktree}` : thread.brief,this.implementorEffort(thread.id), this.latestImplementorSession(thread.id), note, {
       qaEnabled: false,
       maxQaRounds: 0,
       vanilla: true,
@@ -8701,7 +8880,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // round — a fix-round that emits a forgotten deliverable drops it from the next round's hint.
     const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
     const standingDirectives = this.db.getThreadStageOutputs(thread.id).standingDirectives;
-    const baseKickoff = qaRoundKickoff(thread, { resume: !!resume, opts, plan, unsurfaced, standingDirectives });
+    const roundKickoff = qaRoundKickoff(thread, { resume: !!resume, opts, plan, unsurfaced, standingDirectives });
+    const worktree = resume ? null : this.worktreeSection(thread);
+    const baseKickoff = worktree
+      ? `${roundKickoff}\n\nThe implementor worked under these branch rules. Review the work in that checkout, and check it was integrated exactly as they describe:\n\n${worktree}`
+      : roundKickoff;
     const kickoff = opts.applyFixes ? `${baseKickoff}\n\n${qaFixCommitPolicy(opts.autoPush !== false)}` : baseKickoff;
     // Stamped BEFORE the run starts, so the silent-run check below can't count a message this attempt
     // emitted between spawning and the result coming back as belonging to an earlier attempt.
@@ -12960,6 +13143,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     } else if (this.settleManualDeployment(threadId)) {
       return { ok: true, state: "done", message: "Complete in GGO; the verified manual deployment remains pending." };
     }
+    thread = await this.ensureWorktreesPresent(thread);
     if (!existsSync(thread.workspace)) {
       this.setState(threadId, "failed", `Can't resume — workspace "${thread.workspace}" does not exist. Re-dispatch this task with a valid path.`);
       return { ok: false, error: `Workspace "${thread.workspace}" does not exist.` };
@@ -13377,7 +13561,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  slice, then re-enqueues through the normal concurrency gate. Cancelled-only: a live or parked
    *  task has its own controls (Interrupt/Resume/Cancel). */
   async retryThread(threadId: string): Promise<ThreadActionResult> {
-    const thread = this.db.getThread(threadId);
+    let thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
     if (thread.state !== "cancelled") {
       return { ok: false, error: `Only a cancelled task can be retried (this one is ${thread.state}).` };
@@ -13385,6 +13569,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (thread.activeDeadlineAt != null && thread.activeDeadlineAt <= Date.now()) {
       return { ok: false, state: "cancelled", error: "This task's hard deadline has passed. Clear or extend it before retrying." };
     }
+    thread = await this.ensureWorktreesPresent(thread);
     if (!existsSync(thread.workspace)) {
       this.setState(threadId, "failed", `Can't retry — workspace "${thread.workspace}" no longer exists on disk.`);
       return { ok: false, error: "Workspace does not exist." };
@@ -13491,6 +13676,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const updated = this.db.closeThread(threadId);
     if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
     this.hub.log("info", `Closed task ${threadId.slice(0, 8)} (was ${thread.state}).`);
+    this.retireWorktreesOf(thread);
     return { ok: true, state: "closed" };
   }
 
@@ -13535,7 +13721,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   /** Reopen completed implementation at QA, including tasks whose original route had QA off. */
   async startQa(threadId: string): Promise<ThreadActionResult> {
-    const thread = this.db.getThread(threadId);
+    let thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
     if (thread.state !== "done") return { ok: false, state: thread.state, error: "Start QA is available only on a Done task." };
     // runPipeline dispatches a Jev sub-task to runJev before it reads ownerStartedQa, so starting QA
@@ -13547,6 +13733,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (this.restartDrainActive()) return { ok: false, state: "done", error: "GGO is restarting now. Start QA once the console reconnects." };
     if (this.tokenLimitTripped) return { ok: false, state: "done", error: "Token safety is holding new work until the blocking usage window resets." };
     if (this.coworkWorkspaceBusy?.(thread.workspace)) return { ok: false, state: "done", error: "A Co-worker turn is using this workspace. Wait for it to finish before starting QA." };
+    thread = await this.ensureWorktreesPresent(thread);
     if (!existsSync(thread.workspace)) return { ok: false, state: "done", error: `Workspace "${thread.workspace}" does not exist.` };
     if (this.activePipelines.has(threadId) || this.hasActiveRun(threadId)) return { ok: false, state: "done", error: "An agent is still working on this task. Wait for it to finish before starting QA." };
     // The old hard stop governed the completed work episode. An expired deadline must not
@@ -13579,7 +13766,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  restricted to a genuine human-review park: a cap-parked task is mid-flight (the supervisor will resume
    *  it), so there is no finished work to judge yet. Returns immediately; the reviewer settles the task. */
   async autoReview(threadId: string, source: AutoReviewSource = "owner"): Promise<ThreadActionResult> {
-    const thread = this.db.getThread(threadId);
+    let thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
     if (source !== "owner" && this.settings().manualSupervisionEnabled) {
       return { ok: false, state: thread.state, error: "Manual supervision requires an owner click before review." };
@@ -13621,6 +13808,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         error: `${supersedingInstructions.map((row) => reviewInjectionLabel(row.id)).join(", ")} already superseded the prior Auto-review and is queued for implementation. Resume the task instead of starting another reviewer.`,
       };
     }
+    thread = await this.ensureWorktreesPresent(thread);
     if (!existsSync(thread.workspace)) {
       return { ok: false, error: `Workspace "${thread.workspace}" does not exist — the reviewer can't inspect the work.` };
     }
@@ -14347,6 +14535,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private purgeExpiredClosed(): void {
     const cutoff = Date.now() - CLOSED_TTL_MS;
     for (const t of this.db.listClosedBefore(cutoff)) {
+      this.retireWorktreesOf(t);
       this.db.deleteThread(t.id);
       this.hub.publish({ type: "thread.removed", threadId: t.id });
       this.hub.log("info", `Auto-purged closed task ${t.id.slice(0, 8)} "${t.title.slice(0, 48)}" (closed > 30 days ago).`);
@@ -14414,6 +14603,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (q.threadId === threadId) this.resolveQuestion(q.id, "(task dismissed)");
     }
     this.disarmActiveDeadline(threadId);
+    this.retireWorktreesOf(thread);
     this.db.deleteThread(threadId);
     this.hub.publish({ type: "thread.removed", threadId });
   }
@@ -15044,7 +15234,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const norm = normalizeWorkspace(workspace);
     for (const [tid, live] of this.live) {
       const t = this.db.getThread(tid);
-      if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
+      if (!t || normalizeWorkspace(homeWorkspaceOf(t)) !== norm) continue;
       this.sendCommunication(live.run, build(this.isCliOfficeBridge(live.accountId)), { priority: "next" });
     }
   }
@@ -15281,7 +15471,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   chatPost(input: ChatPostInput): ChatMessage {
     const t = this.db.getThread(input.threadId);
-    const workspace = t?.workspace ?? "";
+    const workspace = t ? homeWorkspaceOf(t) : "";
     const project = input.scope === "project";
     const m = this.db.addChatMessage({
       room: project ? repoRoom(workspace) : GENERAL_ROOM,
@@ -15327,7 +15517,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     for (const [tid, live] of this.live) {
       if (tid === m.threadId) continue; // never echo back to the sender
       const t = this.db.getThread(tid);
-      if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
+      if (!t || normalizeWorkspace(homeWorkspaceOf(t)) !== norm) continue;
       // CLI backends (Codex/Grok) have no chat_post — tell them to reply via the OFFICE text bridge.
       this.sendCommunication(
         live.run,
@@ -15351,8 +15541,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  that repo; falls back to the normalized suffix if none is known. */
   private workspaceForRoom(room: string): string {
     const norm = room.replace(/^repo:/, "");
-    const t = this.db.listThreads().find((x) => normalizeWorkspace(x.workspace) === norm);
-    return t?.workspace ?? norm;
+    const t = this.db.listThreads().find((x) => normalizeWorkspace(homeWorkspaceOf(x)) === norm);
+    return t ? homeWorkspaceOf(t) : norm;
   }
 
   /** Let the human post into a room AS THE DIRECTOR: it lands in the office chat AND is pushed into the
@@ -15398,7 +15588,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     for (const [tid, live] of this.live) {
       if (!general) {
         const t = this.db.getThread(tid);
-        if (!t || normalizeWorkspace(t.workspace) !== norm) continue;
+        if (!t || normalizeWorkspace(homeWorkspaceOf(t)) !== norm) continue;
       }
       this.sendCommunication(
         live.run,
@@ -15447,7 +15637,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   chatRead(input: ChatReadInput): ChatMessage[] {
     const t = this.db.getThread(input.threadId);
-    const ws = t?.workspace ?? "";
+    const ws = t ? homeWorkspaceOf(t) : "";
     const limit = input.limit ?? 40;
     const scope = input.scope ?? "all";
     if (scope === "general") return this.db.listRoomMessages(GENERAL_ROOM, limit);
@@ -15460,7 +15650,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   officeRoster(threadId: string): RosterEntry[] {
     const me = this.db.getThread(threadId);
-    const myNorm = normalizeWorkspace(me?.workspace ?? "");
+    const myNorm = normalizeWorkspace(me ? homeWorkspaceOf(me) : "");
     const local: RosterEntry[] = this.liveAgentThreads().map((l) => ({
       threadId: l.threadId,
       name: this.officeName(l.threadId, l.role),
@@ -15472,7 +15662,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }));
     // Coworkers on other machines. `sameRepo` is true only for the ones in the caller's repository —
     // the relay tells us that by repo IDENTITY, which is the whole point: their path is not ours.
-    const remoteInRepo = new Set(this.online?.remotePeers(me?.workspace ?? "").map((a) => `${a.instanceId}:${a.key}`) ?? []);
+    const remoteInRepo = new Set(this.online?.remotePeers(me ? homeWorkspaceOf(me) : "").map((a) => `${a.instanceId}:${a.key}`) ?? []);
     const remote: RosterEntry[] = (this.online?.status().remoteAgents ?? []).map((a) => ({
       threadId: `${a.instanceId}:${a.key}`,
       name: a.name,
@@ -15500,7 +15690,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         .filter((r) => r.state === "starting" || r.state === "running" || r.state === "idle")
         .sort((a, b) => b.startedAt - a.startedAt)[0];
       const run = active ?? runs.sort((a, b) => b.startedAt - a.startedAt)[0];
-      out.push({ threadId: tid, role: run?.role ?? "implementor", workspace: t.workspace, title: t.title, startedAt: run?.startedAt ?? 0 });
+      out.push({ threadId: tid, role: run?.role ?? "implementor", workspace: homeWorkspaceOf(t), title: t.title, startedAt: run?.startedAt ?? 0 });
     }
     return out;
   }
@@ -15509,11 +15699,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  share the working tree; ONLINE ones share only the remote, and both are peers for the purpose of
    *  switching the office on: a remote agent can land a conflicting commit just as easily. */
   private repoPeers(thread: Thread): { threadId: string; role: Role; title: string; instance?: string }[] {
-    const myNorm = normalizeWorkspace(thread.workspace);
+    const myNorm = normalizeWorkspace(homeWorkspaceOf(thread));
     const local = this.liveAgentThreads()
       .filter((l) => l.threadId !== thread.id && normalizeWorkspace(l.workspace) === myNorm)
       .map((l) => ({ threadId: l.threadId, role: l.role, title: l.title }));
-    const remote = (this.online?.remotePeers(thread.workspace) ?? []).map((a) => ({
+    const remote = (this.online?.remotePeers(homeWorkspaceOf(thread)) ?? []).map((a) => ({
       threadId: `${a.instanceId}:${a.key}`,
       role: isRole(a.role) ? a.role : ("implementor" as Role),
       title: a.title,
@@ -15535,12 +15725,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private ensureGroup(threadId: string): void {
     const t = this.db.getThread(threadId);
     if (!t) return;
-    const myNorm = normalizeWorkspace(t.workspace);
+    const myNorm = normalizeWorkspace(homeWorkspaceOf(t));
     const live = this.liveAgentThreads().filter((l) => normalizeWorkspace(l.workspace) === myNorm);
     const roleByThread = new Map(live.map((l) => [l.threadId, l.role] as const));
     const distinct = new Set(live.map((l) => l.threadId));
     if (distinct.size < 2) return;
-    const room = repoRoom(t.workspace);
+    const room = repoRoom(homeWorkspaceOf(t));
     // Members entering the room for the first time this call — the tasks the office is switching ON for.
     const joiners: Thread[] = [];
     for (const tid of distinct) {
@@ -15550,11 +15740,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const m = this.db.addChatMessage({
         room,
         scope: "project",
-        workspace: t.workspace,
+        workspace: homeWorkspaceOf(t),
         threadId: tid,
         role: "system",
         kind: "system",
-        body: `🤝 "${peer.title}" joined — ${distinct.size} agents are now working in ${t.workspace}. Coordinate here so you don't edit the same files.`,
+        body: `🤝 "${peer.title}" joined — ${distinct.size} agents are now working in ${homeWorkspaceOf(t)}. Coordinate here so you don't edit the same files.`,
       });
       this.hub.publish({ type: "chat.message", message: m });
       // A newly-grouped member may have started solo (silent, no office note): backfill its general check-in.
@@ -15587,7 +15777,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const cli = this.isCliOfficeBridge(live.accountId);
     const many = joiners.length > 1;
     const who = joiners.map((j) => `"${j.title}"`).join(", ");
-    const workspace = joiners[0]?.workspace ?? "";
+    const workspace = joiners[0] ? homeWorkspaceOf(joiners[0]) : "";
     const intro = `🤝 [Office — ${many ? "teammates" : "a teammate"} just joined this repo] ${who} ${many ? "are" : "is"} now working in ${workspace}, so you're no longer alone.`;
     const how = cli
       ? "Coordinate through the CLI office bridge from now on: write a standalone `OFFICE[team]: <short message>` line to claim the files/areas you'll touch, answer any teammate `OFFICE`/office message the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks. If a post needs multiple lines, indent each continuation by two spaces so it remains one lossless message."
@@ -15613,7 +15803,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.checkedIn.add(key);
     const name = this.officeName(threadId, role);
     const who = `${name} (${role})`;
-    const leaf = t.workspace.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || t.workspace;
+    const leaf = homeWorkspaceOf(t).replace(/[\\/]+$/, "").split(/[\\/]/).pop() || homeWorkspaceOf(t);
     const m = this.db.addChatMessage({
       room: GENERAL_ROOM,
       scope: "general",
@@ -15910,7 +16100,7 @@ function composeKickoff(
   thread: Thread,
   plan: PlanOutput | undefined,
   research: ResearchOutput | undefined,
-  opts: { autoPush: boolean; qaEnabled: boolean; plannerRuns: boolean; route?: RouteDecision },
+  opts: { autoPush: boolean; qaEnabled: boolean; plannerRuns: boolean; route?: RouteDecision; worktree?: string | null },
 ): string {
   const parts: string[] = [`# Task: ${thread.title}`, "", "## Brief", thread.brief, ""];
 
@@ -15953,6 +16143,7 @@ function composeKickoff(
     parts.push(formatResearch(research));
     parts.push("");
   }
+  if (opts.worktree) parts.push(opts.worktree, "");
   // Task-specific marching orders only. The standing doctrine (commit/push/no-push-rule, QA fix-rounds, no
   // half-measures) lives in the implementor's cache-stable system prompt — restating it here would
   // just re-bill those tokens in every per-task message. The two notes below are exceptions: they

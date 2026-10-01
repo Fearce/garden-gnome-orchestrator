@@ -1,0 +1,40 @@
+/* The task header's branch line: which branch the task commits to and which worktree folder holds it.
+   Sits directly under the title in both header states, so it stays one quiet line of metadata that
+   ellipsizes from the folder inward before the branch name ever gives way. App tokens only. */
+
+.task-branch { display: flex; flex-direction: column; gap: 2px; margin-top: 3px; min-width: 0; }
+.task-branch-line {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+  font-size: 11px; line-height: 1.6; color: var(--text-faint); white-space: nowrap;
+}
+.task-branch-line > svg { flex: 0 0 auto; color: var(--accent); }
+.task-branch-name {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--text);
+}
+.task-branch-name.detached { color: var(--warn); font-style: italic; }
+.task-branch-repo { flex: 0 0 auto; color: var(--text-dim); font-weight: 600; }
+.task-branch-repo::after { content: "/"; margin-left: 6px; color: var(--text-faint); font-weight: 400; }
+.task-branch-folder {
+  flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim);
+}
+.task-branch-base { flex: 0 0 auto; color: var(--text-faint); }
+.task-branch-base::before { content: "·"; margin-right: 6px; }
+.task-branch-tag {
+  flex: 0 0 auto; font-family: var(--font-mono); font-size: 8.5px; letter-spacing: 0.05em;
+  text-transform: uppercase; padding: 1px 6px; border-radius: 100px;
+  color: var(--accent);
+  background: color-mix(in oklch, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in oklch, var(--accent) 28%, transparent);
+}
+.task-branch-tag.shared,
+.task-branch-tag.commit-only {
+  color: var(--text-faint);
+  background: color-mix(in oklch, var(--text-faint) 12%, transparent);
+  border-color: color-mix(in oklch, var(--text-faint) 26%, transparent);
+}
+
+@media (max-width: 720px) {
+  .task-branch-folder, .task-branch-base { display: none; }
+}

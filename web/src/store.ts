@@ -840,6 +840,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   differentProviderQa: false,
   qaAppliesFixes: false,
   autoPush: true,
+  taskWorktrees: true,
   directorName: "ChangeNameInSettings",
   directorDirectives: "",
   maxQaRounds: 4,

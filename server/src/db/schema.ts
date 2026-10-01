@@ -10,6 +10,12 @@ CREATE TABLE IF NOT EXISTS threads (
   owner_title_locked INTEGER NOT NULL DEFAULT 0,
   state         TEXT NOT NULL,
   workspace     TEXT NOT NULL,
+  -- The folder the task was dispatched against (its project). \`workspace\` moves into the task's own
+  -- git worktree once one is created; this keeps the project grouping and per-repo cap on the original.
+  home_workspace TEXT,
+  -- The task's own worktrees as JSON ([{repo, path, branch, base, baseSha, links, createdAt}]), one per
+  -- repository it changes (orchestrator/taskWorktree.ts). NULL = it works in place.
+  worktrees     TEXT,
   brief         TEXT NOT NULL DEFAULT '',
   raw_prompt    TEXT NOT NULL DEFAULT '',
   error         TEXT,

@@ -1,9 +1,9 @@
 /**
  * SHOTGUN TASKS — N collaborators working one objective in one repository, at the same time.
  *
- * The hard constraint is the repo convention: no git worktrees, everyone on the active branch (the
- * owner's standing doctrine). So parallelism cannot come from isolating checkouts — it has to come from
- * DISJOINT OWNERSHIP inside the single shared tree. That is what this module enforces.
+ * The collaborators all work in the lead's checkout (its own task worktree, when it has one) so the
+ * lead can reconcile one combined tree. Parallelism therefore cannot come from isolating checkouts — it
+ * has to come from DISJOINT OWNERSHIP inside that single shared tree. That is what this module enforces.
  *
  * The shape: the planner's plan is decomposed into K work packages with non-overlapping file ownership.
  * The lead task takes the first; each other package becomes a collaborator thread on the same workspace,

@@ -23,6 +23,7 @@ import { FinalReportCard } from "./FinalReport.js";
 import { finalReportFor } from "../implementationMemos.js";
 import { CodeContextBar, useCodeContext } from "./CodeContextBar.js";
 import { WorkspacePath } from "./WorkspacePath.js";
+import { TaskBranch } from "./TaskBranch.js";
 import { useSwipeDismiss } from "../lib/swipe.js";
 import { isToolActivity } from "../lib/feedFilter.js";
 
@@ -933,6 +934,7 @@ export function ThreadDetail() {
         <div className="top">
           <div>
             <EditableTitle threadId={thread.id} title={thread.title} />
+            <TaskBranch thread={thread} />
             {!headCollapsed && <TaskWorkspacePath thread={thread} />}
           </div>
           <div className="detail-title-actions">

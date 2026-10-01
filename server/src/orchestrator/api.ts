@@ -3,7 +3,7 @@ import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
 import type { TokenShiftReport } from "./usageWindows.js";
 import type { OfficeNameResult } from "./officeNames.js";
-import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, JevJson, JevQuestion, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, SubTaskSpec, Thread, ThreadLane, ToggleableRole } from "../types.js";
+import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, JevJson, JevQuestion, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, SubTaskSpec, TaskWorktree, Thread, ThreadLane, ToggleableRole } from "../types.js";
 import type { SubTaskService } from "./subTasks.js";
 
 /** What a director dispatch falls back to when the tool call leaves a field empty. `effort` is one the
@@ -192,4 +192,7 @@ export interface OrchestratorApi {
    * Supervisor is the only caller that passes its source; authenticated/explicit owner paths default to
    * `owner` and may deliberately retry an unchanged parked outcome. */
   autoReview(threadId: string, source?: AutoReviewSource): Promise<ThreadActionResult>;
+  /** The caller's own worktree for one repository inside its workspace (the `task_worktree` bus tool),
+   *  created on first ask; a sub-task's binding lives on its parent. `text` is the agent-facing answer. */
+  claimTaskWorktree(threadId: string, input: { repo: string; branch?: string | null }): Promise<{ ok: true; worktree: TaskWorktree; text: string } | { ok: false; error: string }>;
 }
