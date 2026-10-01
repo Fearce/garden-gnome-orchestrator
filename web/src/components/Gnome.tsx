@@ -1,6 +1,8 @@
 import { useId, useState, type CSSProperties } from "react";
 import type { GnomeRole } from "../types.js";
 import { gnomeRoleColor } from "../lib/format.js";
+import { useBetaGnomes } from "../lib/betaGnomes.js";
+import { BetaGnome } from "./BetaGnome.js";
 
 // Per-gnome vibrance jitter. Each gnome is minted once (on mount) with a chroma multiplier drawn
 // from [MIN, MIN+SPAN], so every instance of a role keeps that role's exact hue + lightness but
@@ -442,6 +444,7 @@ function skinOverlay(skin: RareSkin, hatClip: string) {
  *  Now and then a gnome wears a rare skin (see `RareSkin`). Pass `skin` to pin one, or `null` for
  *  the plain gnome; leave it out to roll. */
 export function Gnome({ role, size = 30, active = true, className, skin: pinnedSkin }: { role: GnomeRole; size?: number; active?: boolean; className?: string; skin?: RareSkin | null }) {
+  const beta = useBetaGnomes();
   // Minted once per mount — random on creation but stable across re-renders, so the gnome's vibrance
   // never flickers mid-session. Only the active (coloured) branch uses it; greyed-out gnomes are neutral.
   const [chromaFactor] = useState(() => VIBRANCE_MIN + Math.random() * VIBRANCE_SPAN);
@@ -450,6 +453,7 @@ export function Gnome({ role, size = 30, active = true, className, skin: pinnedS
   const skin = pinnedSkin === undefined ? rolledSkin : pinnedSkin;
   // Every gnome on the page needs its own clip id; useId's colons are not valid inside url(#...).
   const hatClip = "gnome-hat-" + useId().replace(/[^\w-]/g, "");
+  if (beta) return <BetaGnome role={role} size={size} active={active} className={className} skin={skin} />;
   // A super rare gnome glows in its skin's color and its skin moves a little, but only while active:
   // a greyed-out gnome stays still, so the effects never draw the eye to an idle role.
   const glow = active ? superRareGlow(skin) : null;

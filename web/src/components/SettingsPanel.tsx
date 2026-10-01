@@ -12,6 +12,8 @@ import { ThemePicker } from "./ThemePicker.js";
 import { FontPicker } from "./FontPicker.js";
 import { DISPLAY_FONTS, MONO_FONTS, UI_FONTS } from "../lib/font.js";
 import { useSwipeDismiss } from "../lib/swipe.js";
+import { setBetaGnomes, useBetaGnomes } from "../lib/betaGnomes.js";
+import { BetaGnome } from "./BetaGnome.js";
 
 type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "livebench" | "voice-alerts" | "remote-control" | "office" | "appearance" | "interface";
 
@@ -24,7 +26,7 @@ interface SettingsCategory {
 }
 
 const SETTINGS_CATEGORIES = [
-  { id: "general", section: "Orchestrator", label: "General", description: "Set the director's identity and how agents communicate with you.", keywords: "name wording concise detailed communication tone" },
+  { id: "general", section: "Orchestrator", label: "General", description: "Meet your gnomes and set how agents communicate with you.", keywords: "name wording concise detailed communication tone beta gnomes workshop characters animation" },
   { id: "pipeline", section: "Orchestrator", label: "Pipeline", description: "Control task execution, reviews, concurrency, and supervision.", keywords: "planner research implementor qa review auto push git parallel workers supervisor models" },
   { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced.", keywords: "tokens quota capacity allowance polling reset spread resume budget" },
   { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits.", keywords: "claude anthropic codex openai chatgpt grok xai zai glm api keys accounts models effort weekly safety cli update upgrade version sdk runtime new model" },
@@ -60,6 +62,7 @@ interface SettingsSearchResult {
 /** The gear-icon settings dialog. Categories keep the growing collection approachable while every
  *  control remains mounted, preserving in-progress credential and text drafts as the owner moves around. */
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
+  const betaGnomes = useBetaGnomes();
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
   const showCompleted = useStore((s) => s.showCompleted);
@@ -289,6 +292,16 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               <SettingsSearchResults query={searchQuery} results={searchResults} onOpen={openSearchResult} />
             ) : null}
             <SettingsCategoryPanel id="general" active={!isSearching && activeCategoryId === "general"}>
+              <Group label="A little more magic">
+                <div className="beta-gnomes-setting">
+                  <ToggleRow label="Beta gnomes" hint="Meet the new cast: illustrated gnomes, animated workbenches, a lantern-lit office and visiting friends. Off by default. Saved on this browser; takes effect immediately."
+                    on={betaGnomes} onChange={setBetaGnomes} />
+                  {betaGnomes && <div className="beta-gnomes-preview">
+                    <BetaGnome role="implementor" size={48} /><BetaGnome role="qa" size={48} /><BetaGnome role="planner" size={48} />
+                    <span className="beta-gnomes-preview-copy"><strong>Your crew has come to life.</strong>Builders build. Inspectors inspect. Everyone has a part to play.</span>
+                  </div>}
+                </div>
+              </Group>
               <Group label="Director">
                 <TextRow
                   label="Director name"

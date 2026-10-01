@@ -28,6 +28,7 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "@fontsource/ibm-plex-mono/600.css";
 import "./styles.css";
+import "./beta-gnomes.css";
 // Every rule in here is behind [data-font…]/[data-font-mono…]/[data-font-display…], which the
 // default option of each channel never sets, so a console that never chose a typeface matches
 // nothing in this file.
