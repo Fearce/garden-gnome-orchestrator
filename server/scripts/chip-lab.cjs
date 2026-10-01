@@ -191,7 +191,10 @@ async function readStrip(page) {
           // A value, pace or countdown wider than its fixed grid column spills into its neighbour.
           spills: [".meter-v", ".meter-b", ".meter-r"].filter((sel) => {
             const el = m.querySelector(sel);
-            return !!el && el.scrollWidth > el.clientWidth + 1;
+            if (!el) return true;
+            const r = el.getBoundingClientRect(), chip = el.closest(".acct").getBoundingClientRect();
+            return !r.width || !r.height || getComputedStyle(el).visibility !== "visible" || !el.textContent.trim() ||
+              el.scrollWidth > el.clientWidth + 1 || r.top < chip.top || r.bottom > chip.bottom;
           }),
           tip: m.getAttribute("title"),
         })),

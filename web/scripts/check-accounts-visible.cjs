@@ -1,6 +1,6 @@
 /**
- * Read-only browser probe for the desktop usage line in the board's existing padding.
- * Checks short bars, zero added height, chip reachability, and header fit while reconnecting.
+ * Read-only browser probe for the desktop usage strip just above the board tabs.
+ * Checks visible burn/reset metrics, short bars, minimal added height, and header fit while reconnecting.
  * node web/scripts/check-accounts-visible.cjs [--explain]
  * ORCH_URL / ORCH_PASSWORD override the local server and server/.env password.
  */
@@ -63,20 +63,26 @@ async function measure(page) {
     if (!after.length) failures.push('zero chips rendered');
     for (const c of after) {
       if (!c.fullyVisible) failures.push(`chip "${c.label}" cannot be fully reached`);
-      if (c.height > 16.1) failures.push(`chip "${c.label}" exceeds the existing gap`);
+      if (c.height > 26.1) failures.push(`chip "${c.label}" exceeds the compact two-line height`);
     }
     for (const el of document.querySelector('.topbar')?.children ?? []) {
       const r = el.getBoundingClientRect();
       if (r.width > 0 && (r.left < -1 || r.right > vw + 1)) failures.push(`header ${el.className} pushed off-screen`);
     }
-    if (rect.top < board.top || rect.bottom > tabs.top) failures.push('usage sits outside the existing board padding');
+    if (rect.top < board.top || rect.bottom > tabs.top) failures.push('usage sits outside the space between the header and tabs');
     const positions = () => ['.topbar','.workbench','.rail','.board-head','.card'].map(s => document.querySelector(s)?.getBoundingClientRect().top);
     const before = positions();
     const host = document.querySelector('.board-usage');
     host.style.display = 'none';
     const without = positions();
     host.style.display = '';
-    if (!before.every((v,i) => v === without[i])) failures.push('usage moves the header, director, tabs or cards');
+    if (!before.slice(0,3).every((v,i) => v === without[i])) failures.push('usage moves the header or director');
+    if (Math.abs(before[3]-without[3]-10)>.1) failures.push('usage must move tabs down by only 10px');
+    if (before[4] != null && Math.abs(before[4]-without[4]-10)>.1) failures.push('usage must move cards down by only 10px');
+    for (const el of accounts.querySelectorAll('.meter-b, .meter-r')) {
+      const r=el.getBoundingClientRect(), chip=el.closest('.acct').getBoundingClientRect();
+      if (!r.width || !r.height || !el.textContent.trim() || el.scrollWidth>el.clientWidth+1 || r.top<chip.top || r.bottom>chip.bottom || getComputedStyle(el).visibility!=='visible') failures.push('burn pace or reset time is hidden or clipped');
+    }
     const tracks = [...accounts.querySelectorAll('.meter-track')].map(el => el.getBoundingClientRect().width);
     if (tracks.some(w => w < 12 || w > 20)) failures.push('usage tracks must remain short and visible');
     return { ok: !failures.length, reason: failures.join('; ') || null, vw, chipCount: after.length,
@@ -197,7 +203,7 @@ async function main() {
 function explainFit(r) {
   for (const [state, m] of [["live", r], ["reconnecting", r.worst]]) {
     if (!m || m.accountsW == null) continue;
-    console.log(`         [${state}] ${m.height}px in existing padding; ${m.contentW}px of chips / ${m.accountsW}px available; tracks ${m.tracks.join(', ')}px`);
+    console.log(`         [${state}] ${m.height}px borrowing existing padding (+10px for tabs); ${m.contentW}px of chips / ${m.accountsW}px available; tracks ${m.tracks.join(', ')}px`);
   }
 }
 

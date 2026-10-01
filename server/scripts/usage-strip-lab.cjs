@@ -1,4 +1,4 @@
-// Verify the desktop usage in existing board padding and unchanged compact popover.
+// Verify visible desktop burn/reset metrics, minimal added board height, and the compact popover.
 // Runs against a throwaway instance with bogus tokens; never touches live tasks.
 // npm run usage-strip-lab --prefix server -- --shots data/usage-strip-lab-shots
 const fs = require('node:fs');
@@ -58,6 +58,11 @@ async function main() {
           const without=positions();
           document.querySelector('.board-usage').style.display='';
           const chips=[...document.querySelectorAll('.accounts .acct')].map(el=>el.getBoundingClientRect());
+          const metrics=[...document.querySelectorAll('.accounts .meter-b, .accounts .meter-r')];
+          const metricsVisible=metrics.length===20&&metrics.every(el=>{
+            const r=el.getBoundingClientRect(),chip=el.closest('.acct').getBoundingClientRect(),css=getComputedStyle(el);
+            return r.width>0&&r.height>0&&css.visibility==='visible'&&el.textContent.trim().length>0&&el.scrollWidth<=el.clientWidth+1&&r.top>=chip.top&&r.bottom<=chip.bottom&&r.left>=chip.left&&r.right<=chip.right;
+          });
           const tracks=[...document.querySelectorAll('.accounts .meter-track')].map(el=>el.getBoundingClientRect().width);
           const strip=document.querySelector('.accounts');
           const reachable=[...strip.children].every(el=>{
@@ -66,11 +71,13 @@ async function main() {
             return r.left>=accounts.left-1&&r.right<=accounts.right+1;
           });
           strip.scrollLeft=0;
-          return {height:accounts.height,officeWidth:office.width,below:accounts.top>=office.bottom-1,withinPadding:accounts.top>=board.top&&accounts.bottom<=tabs.top,unchanged:before.every((v,i)=>v===without[i]),shortBars:tracks.length===10&&tracks.every(w=>w>=12&&w<=20),reachable,compact:chips.length===5&&chips.every(r=>r.height<=16.1),pageFits:document.documentElement.scrollWidth<=innerWidth};
+          return {height:accounts.height,officeWidth:office.width,below:accounts.top>=office.bottom-1,withinPadding:accounts.top>=board.top&&accounts.bottom<=tabs.top,shellFixed:before.slice(0,3).every((v,i)=>v===without[i]),tabsShift:before[3]-without[3],cardsShift:before[4]-without[4],metricsVisible,noScroll:strip.scrollWidth<=strip.clientWidth+1,shortBars:tracks.length===10&&tracks.every(w=>w>=12&&w<=20),reachable,compact:chips.length===5&&chips.every(r=>r.height<=26.1),pageFits:document.documentElement.scrollWidth<=innerWidth};
         });
-        check(`${width}px: usage fits inside existing padding`,geometry.below&&geometry.withinPadding,JSON.stringify(geometry));
-        check(`${width}px: usage adds zero height to header, director, tabs and cards`,geometry.unchanged,JSON.stringify(geometry));
-        check(`${width}px: five single-line chips with short bars are reachable`,geometry.compact&&geometry.shortBars&&geometry.reachable,JSON.stringify(geometry));
+        check(`${width}px: usage fits between gnomes and tabs`,geometry.below&&geometry.withinPadding,JSON.stringify(geometry));
+        check(`${width}px: header and director stay fixed; tabs/cards move only 10px`,geometry.shellFixed&&Math.abs(geometry.tabsShift-10)<.1&&Math.abs(geometry.cardsShift-10)<.1,JSON.stringify(geometry));
+        check(`${width}px: burn pace and reset times are visible and unclipped`,geometry.metricsVisible,JSON.stringify(geometry));
+        check(`${width}px: five compact two-line chips with short bars are reachable`,geometry.compact&&geometry.shortBars&&geometry.reachable,JSON.stringify(geometry));
+        if(width>=1440) check(`${width}px: all five chips fit without horizontal scrolling`,geometry.noScroll,JSON.stringify(geometry));
         check(`${width}px: gnomes retain their own space`,geometry.officeWidth>=80&&geometry.pageFits,JSON.stringify(geometry));
         check(`${width}px: no desktop usage toggle`,await page.locator(TOGGLE).count()===0);
         await page.screenshot({path:path.join(shots,`desktop-${width}.png`)});
@@ -83,7 +90,7 @@ async function main() {
       check('usage stays visible after reload',await laidOut(page,'.accounts'));
       await page.emulateMedia({colorScheme:'dark'});
       await page.evaluate(()=>document.documentElement.setAttribute('data-theme','nocturne'));
-      check('Nocturne keeps compact usage',await page.locator('.acct').evaluateAll(els=>els.every(el=>el.getBoundingClientRect().height<=16.1)));
+      check('Nocturne keeps compact usage',await page.locator('.acct').evaluateAll(els=>els.every(el=>el.getBoundingClientRect().height<=26.1)));
       await page.evaluate(()=>document.documentElement.removeAttribute('data-theme'));
       for(const width of [390,800]) {
         await page.setViewportSize({width,height:844});
@@ -103,6 +110,7 @@ async function main() {
       await page.click('[aria-label="Toggle top bar detail"]');
       await page.locator('.topbar.focus').waitFor();
       check('focus mode still hides ambient header details',await page.locator('.accounts, .office').count()===0);
+      check('focus mode adds no empty usage spacing',await page.locator('.board-usage').evaluate(el=>el.getBoundingClientRect().height===0));
       await page.click('[aria-label="Toggle top bar detail"]');
       await page.locator('.accounts .acct').first().waitFor();
       check('leaving focus mode restores usage and gnomes',await laidOut(page,'.office'));

@@ -112,7 +112,7 @@ function UsageAccounts({ compact }: { compact: boolean }) {
   // Show the z.ai chip once z.ai is configured — enabled, or an API key is stored.
   const showZai = settings.zaiEnabled || settings.zaiKeyPresent;
   const [phoneOpen, setPhoneOpen] = useState(false);
-  // Desktop usage occupies the board's existing top padding; only phones need a gauge.
+  // Desktop usage borrows the board's top padding; only phones need a gauge.
   if (!accounts.length && !showCodex && !showGrok && !showZai) return null;
   return (
     <>
@@ -756,8 +756,8 @@ function Meter({
         <div className={"meter-fill " + kind + (stale ? " stale" : "")} style={{ width: `${clamp(pct)}%` }} />
       </div>
       <span className="meter-v">{shown}</span>
-      <span className={"meter-b" + (burn && burn.pace > 1 ? " over" : "")}>{burn ? paceLabel(burn.pace) : ""}</span>
-      <span className="meter-r">{holding ? `idle ${countdown(hold, now)}` : left ? `${resetEstimated ? "~" : ""}${left}` : lapsed ? "reset" : ""}</span>
+      <span className={"meter-b" + (burn && burn.pace > 1 ? " over" : "")}>{holding ? "idle" : burn ? paceLabel(burn.pace) : "—"}</span>
+      <span className="meter-r">{holding ? countdown(hold, now) : left ? `${resetEstimated ? "~" : ""}${left}` : lapsed ? "reset" : "—"}</span>
     </div>
   );
 }

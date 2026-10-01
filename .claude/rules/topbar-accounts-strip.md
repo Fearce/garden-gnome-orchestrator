@@ -9,17 +9,21 @@ paths:
 
 # Subscription usage strip
 
-Desktop usage lives in the board's **existing 18px top padding**, directly between
-header gnomes and board tabs. The owner explicitly rejected adding a header row or
-moving the director/task panels down (2026-10-01).
+Desktop usage sits directly between header gnomes and board tabs, borrowing the
+board's **existing 18px top padding**. The owner rejected a new header row, then
+explicitly allowed moving the tabs a few pixels to keep burn rate and time-to-reset
+visible (2026-10-01). The current layout adds only 10px below that existing gap.
 
 ## Layout contract
 - At desktop widths (>=900px), `Board` mounts `<Accounts placement="desktop" />`.
-  `.board-usage` has an 18px height and -18px top margin: zero added layout height.
-  Never increase board padding or header height to make room for the chips.
-- Chips are one 16px line: account name, window labels, short **18px fixed tracks**,
-  and values. Burn pace/reset/idle details remain in meter tooltips and accessible
-  labels. Banked-reset buttons remain visible and retain their confirmation.
+  `.board-usage` has a 28px height and -18px top margin: tabs/cards move down just
+  10px, while the header and director panel stay put. Empty/focus strips take no space.
+- Chips are 26px tall with **two window rows** beside the account name. Each row
+  shows its window, short **18px fixed track**, value, **burn pace and reset time**.
+  Burn and reset are the owner's most important metrics: never hide them in a tooltip
+  or responsive variant. Their slightly larger text makes them easier to scan.
+  Idle windows show `idle` and a countdown; missing metrics show an honest dash.
+  Banked-reset buttons remain visible and retain their confirmation.
 - Desktop usage is permanent, independent of the old `orch-usage-hidden` setting.
   Focus mode still hides ambient usage/gnomes. The desktop strip never shares
   horizontal space with the gnomes.
@@ -44,19 +48,20 @@ npm run probe:chips -- --explain
 
 `usage-strip-lab` boots an isolated instance with bogus tokens and browser-only
 fixtures. It checks five subscriptions at 900/1100/1280/1440/1920/2560px, short bars,
-zero movement of the header/director/tabs/cards when usage is removed, Nocturne,
-mobile popovers, focus mode, reset buttons, and tooltip details.
+visible/unclipped burn and reset values, fixed header/director positions, only a 10px
+tabs/cards shift, Nocturne, mobile popovers, focus mode, and banked-reset buttons.
 
 `chip-lab` seeds real usage states in a temporary DATA_DIR: healthy, lapsed-weekly,
 stagger-hold, stale, capped, Grok free/metered, and Codex healthy/no-CLI. Run relevant
 scenarios after changing meter presentation. It checks reachable chips, visible
-meter-column spills, and tracks >=12px. Never point this lab at production or use
-real account tokens: a boot ping can start a real 5h window and shift its stagger.
+meter columns without spills, and tracks >=12px. Never point this lab at production
+or use real account tokens: a boot ping can start a real 5h window and shift its stagger.
 
 `probe:chips` is a read-only geometry check against an already-running instance
-(`ORCH_URL=...`). It checks usage inside existing padding, unchanged panel positions,
-chip reachability, short tracks, and topbar fit while live and reconnecting. It is
-safe for production health checks, but fixture labs are the evidence for a change.
+(`ORCH_URL=...`). It checks the 10px tab shift, unchanged header/director positions,
+visible burn/reset metrics, chip reachability, short tracks, and topbar fit while live
+and reconnecting. It is safe for production health checks, but fixture labs are the
+evidence for a change.
 
 When patching a pinned lab asset as a negative control, also remove its `.css.br`
 and `.css.gz` siblings; otherwise the server serves the old precompressed CSS.
