@@ -19,6 +19,15 @@ const threads = [
   task('manual-pause', 'paused', cap('planner')),
   task('closed-task', 'closed', cap('researcher')),
   task('active-worker', 'implementing', null),
+  task('completed-parent', 'done', null),
+  {...task('stale-gae-child', 'review', cap('implementor')), workspace:'C:\\repos\\gae', parentId:'completed-parent', subTask:{provider:'codex',model:'gpt-6.1-sol'}},
+  task('cancelled-parent', 'cancelled', null),
+  {...task('cancelled-parent-child', 'review', cap('QA')), parentId:'cancelled-parent'},
+  task('closed-parent', 'closed', null),
+  {...task('closed-parent-child', 'review', cap('planner')), parentId:'closed-parent'},
+  {...task('orphan-child', 'review', cap('researcher')), parentId:'missing-parent'},
+  {...task('middle-child', 'review', null), parentId:'completed-parent'},
+  {...task('stale-grandchild', 'review', cap('reader')), parentId:'middle-child'},
 ];
 const activeRun = {id:'live-run', threadId:'active-worker', role:'implementor', state:'running', model:'gpt-6.1-sol', startedAt:now};
 const onlineOffice = {enabled:true, joined:true, state:'online', url:'', instanceName:'Here', error:null, connectedAt:now,
@@ -75,6 +84,26 @@ const onlineOffice = {enabled:true, joined:true, state:'online', url:'', instanc
         assert.equal(await page.locator('.beta-workshop-roster [data-frozen="true"]').count(),2);
         await page.getByRole('button',{name:'Close workshop crew'}).click();
       }
+      // A still-needed subtask does freeze, then disappears when its parent finishes without
+      // changing the child's historical cap marker. Reopening the parent restores it live.
+      const child={...task('current-child','review',cap('QA')),parentId:'active-worker'};
+      socket.send(JSON.stringify({type:'thread.upsert',thread:child}));
+      const showRoster=async()=>{if(mode!=='strip') await page.getByRole('button',{name:/Show all .* workshop gnomes/}).click();};
+      const hideRoster=async()=>{if(mode!=='strip') await page.getByRole('button',{name:'Close workshop crew'}).click();};
+      const visibleIce=mode==='strip'?'.office-frozen':'.beta-workshop-roster [data-frozen="true"]';
+      await showRoster();
+      await page.waitForFunction(selector=>document.querySelectorAll(selector).length===3,visibleIce);
+      await hideRoster();
+      socket.send(JSON.stringify({type:'thread.upsert',thread:{...threads[5],state:'done'}}));
+      await showRoster();
+      await page.waitForFunction(selector=>document.querySelectorAll(selector).length===2,visibleIce);
+      await hideRoster();
+      socket.send(JSON.stringify({type:'thread.upsert',thread:threads[5]}));
+      await showRoster();
+      await page.waitForFunction(selector=>document.querySelectorAll(selector).length===3,visibleIce);
+      await hideRoster();
+      socket.send(JSON.stringify({type:'thread.upsert',thread:{...child,state:'closed'}}));
+      await page.waitForFunction(()=>document.querySelectorAll('.office [data-frozen="true"]').length===2);
       await page.locator('.office').screenshot({path:path.join(output,`${mode}-frozen.png`)});
       await frozen.first().click();
       await page.locator('.office-panel').waitFor();

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
-import type { ChatMessage, ChatRoomSummary, RelayDirector, RelayPresentAgent, Role, SharedRepo } from "../types.js";
+import type { ChatMessage, ChatRoomSummary, RelayDirector, RelayPresentAgent, Role, SharedRepo, Thread } from "../types.js";
 import { agentName, CHAT_PAGE_SIZE, DIRECTORS_ROOM, GENERAL_ROOM, homeWorkspace, isCollaborationRoom, normalizeWorkspace, repoRoom, ROLES } from "../types.js";
 import { clock, isCapParked, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
@@ -20,6 +20,20 @@ interface Worker {
   model: string; // drives the walker's pacing tempo — a more capable model struts a quicker lap
   title: string;
   workspace: string;
+}
+
+/** A stale cap marker on a hidden subtask must not make its completed project look active again. */
+function isCurrentFrozenWorker(thread: Thread, threads: Record<string, Thread>): boolean {
+  if (!isCapParked(thread)) return false;
+  const seen = new Set([thread.id]);
+  let parentId = thread.parentId;
+  while (parentId) {
+    const parent = threads[parentId];
+    if (!parent || seen.has(parentId) || parent.state === "done" || parent.state === "cancelled" || parent.state === "closed") return false;
+    seen.add(parentId);
+    parentId = parent.parentId;
+  }
+  return true;
 }
 
 // A cluster of agents in the same repo. A `room` is a real project chatroom — the gnomes stand still
@@ -298,7 +312,7 @@ export function Office() {
   // and the stage recorded by capParkMessage so a frozen QA gnome keeps its own hat.
   const frozenWorkers = useMemo(() => {
     const running = new Set(runs.map((run) => run.threadId));
-    return Object.values(threads).filter((thread) => isCapParked(thread) && !running.has(thread.id))
+    return Object.values(threads).filter((thread) => isCurrentFrozenWorker(thread, threads) && !running.has(thread.id))
       .sort((a, b) => a.updatedAt - b.updatedAt)
       .map((thread) => {
         const stage = /\((planner|researcher|implementor|qa|reader) stage\)/i.exec(thread.error ?? "");
