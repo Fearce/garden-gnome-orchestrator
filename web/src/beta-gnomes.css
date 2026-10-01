@@ -64,8 +64,6 @@
 .beta-workstation[data-rest], .beta-workstation[data-rest] .beta-character,
 .beta-workstation[data-rest] .beta-gnome-body, .beta-workstation[data-rest] .beta-gnome-boot { animation: none; }
 .beta-workstation[data-rest="sleep"] .beta-destination { left: 46px; }
-.beta-directors-table { position: absolute; top: 34px; height: 14px; pointer-events: none; }
-.beta-directors-table svg { display: block; width: 100%; height: 100%; }
 .beta-workstation:hover { background: #eac68b12; }
 .beta-destination { position: absolute; left: 36px; top: 6px; width: var(--label-width); text-align: left; line-height: 1.3; }
 .beta-workstation[data-label-side="left"] .beta-destination { left: auto; right: 36px; text-align: right; }

@@ -41,12 +41,27 @@ function visibleCast(seats: WorkshopSeat[], capacity: number) {
     rooms.add(seat.room); return true;
   });
   const locals = [...representatives, ...localSeats.filter((seat) => !representatives.includes(seat))];
-  const visitors = seats.filter((seat) => seat.remote).sort((a, b) => Number(b.role === "director") - Number(a.role === "director"));
+  const visitors = seats.filter((seat) => seat.remote);
   const visiting = capacity >= 3 ? Math.min(2, visitors.length, capacity - 2) : 0;
-  const selected = [...locals.slice(0, capacity - visiting), ...visitors.slice(0, visiting + Math.max(0, capacity - visiting - locals.length))];
-  // Neighbouring chairs share a table; keep the owner's director first and every destination labelled.
-  const chairs = selected.filter((seat) => seat.rest === "chair");
-  return selected.flatMap((seat) => seat === chairs[0] ? chairs : seat.rest === "chair" ? [] : [seat]);
+  const localCast = locals.slice(0, capacity - visiting);
+  // A remote teammate of someone on stage gets the visiting place before unrelated workers.
+  const joinsLocal = (seat: WorkshopSeat) => localCast.some((local) => local.active && local.group === seat.group);
+  visitors.sort((a, b) => Number(joinsLocal(b)) - Number(joinsLocal(a)));
+  const selected = [...localCast, ...visitors.slice(0, capacity - localCast.length)];
+  // Room representatives are chosen above, but scene order is by project, not by machine.
+  // Put a visitor next to its local teammate even when more local workers share their repo.
+  const placed = new Set<string>();
+  return selected.flatMap((seat) => {
+    if (placed.has(seat.id)) return [];
+    const team = [seat, ...selected.filter((other) => other.id !== seat.id && !placed.has(other.id) && sameProject(seat, other))
+      .sort((a, b) => Number(!!b.remote) - Number(!!a.remote))];
+    team.forEach((member) => placed.add(member.id));
+    return team;
+  });
+}
+
+function sameProject(a: WorkshopSeat, b: WorkshopSeat) {
+  return a.active && b.active && a.role !== "director" && b.role !== "director" && a.group === b.group;
 }
 
 function destination(seat: WorkshopSeat) {
@@ -56,13 +71,15 @@ function destination(seat: WorkshopSeat) {
 
 /** Positions are recomputed only on resize/cast changes. CSS runs the shared walk/work timeline. */
 function choreography(cast: WorkshopSeat[], width: number) {
-  // Quiet offices gather around a small table instead of stretching it across the whole header.
+  // Keep a small crew together instead of stretching it across the whole header.
   const span = Math.min(176, width / Math.max(1, cast.length));
   const paired = new Set<number>();
   return cast.map((seat, index) => {
     const partner = paired.has(index) ? -1 : cast.findIndex((other, i) => i === index + 1 && !paired.has(i) && (
-      seat.rest === "chair" && other.rest === "chair" ||
-      seat.active && other.active && (other.group === seat.group || seat.role === "director" && !seat.remote && !other.remote)
+      sameProject(seat, other) ||
+      // The director can help a solo worker, but never take a repository teammate's partner.
+      seat.active && other.active && seat.role === "director" && !seat.remote && !other.remote &&
+        !cast.some((candidate) => candidate.id !== other.id && sameProject(other, candidate))
     ));
     if (partner >= 0) { paired.add(index); paired.add(partner); }
     const labelWidth = Math.max(24, Math.min(92, span - (seat.rest === "sleep" ? 76 : 56)));
@@ -176,10 +193,6 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
           {seat.remote && <span className="beta-visitor-mark" aria-hidden="true">↗</span>}
           {(unread.get(seat.room) ?? 0) > 0 && <span className="beta-message-badge" aria-hidden="true">{Math.min(unread.get(seat.room)!, 99)}</span>}
         </button>)}
-        {actors.filter((actor) => actor.seat.rest === "chair" && (actor.partner >= 0 || actor.partnerIndex < 0 && actor.seat.remote)).map((actor) => <span key={`table:${actor.seat.id}`} className="beta-directors-table" aria-hidden="true"
-          style={{ left: actor.home + 24, width: actor.partner >= 0 ? actors[actor.partner]!.home - actor.home - 16 : 25 }}>
-          <svg viewBox="0 0 100 30" preserveAspectRatio="none" fill="none"><path d="m16 9-3 20m72-20 3 20M20 22h60" stroke="#a5754f" strokeWidth="5" /><path d="M3 7q47-11 94 0v8q-47 8-94 0z" fill="#69483a" stroke="#d4a36b" strokeWidth="2" /><ellipse cx="50" cy="7" rx="47" ry="6" fill="#be9060" /><path d="M18 7q28-5 62 0M28 10h38" stroke="#e0b880" strokeWidth="1" /><path d="M47 1v7q7 4 14 0V1z" fill="#ebd9b0" /><path d="M61 2q10-1 7 5h-7" stroke="#ebd9b0" strokeWidth="2" /></svg>
-        </span>)}
         {actors.filter((actor) => actor.partner >= 0 && !actor.seat.rest).map((actor) => <span key={`project:${actor.seat.id}`} className="beta-shared-project" aria-hidden="true"
           style={{ left: actor.meeting!, "--seat-delay": `${actor.delay}s` } as CSSProperties}>
           <svg viewBox="0 0 24 18" fill="none"><path d="M2 2h20v14H2z" fill="#ead8af" stroke="#c59855" /><path d="M6 6h7M6 9h5M6 12h9" stroke="#64787e" strokeWidth="1.4" /><path className="beta-shared-pencil" d="m17 3-4 8" stroke="#bb6953" strokeWidth="2" /></svg>

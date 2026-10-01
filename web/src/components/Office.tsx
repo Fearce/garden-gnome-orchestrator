@@ -419,12 +419,7 @@ export function Office() {
     return { id: `${agent.instanceId}:${agent.key}`, role: roleOf(agent.role), name: agent.name,
       room: sharedGroup ? repoRoom(sharedGroup.workspace) : GENERAL_ROOM, task: agent.title,
       group: sharedGroup?.workspace ?? agent.repoLabel, active: true, remote: agent.instanceName };
-  }) : []), ...(onlineOffice.state === "online" ? onlineOffice.directors.map((director) => ({
-    id: `visiting-director:${director.instanceId}`, role: "director" as const, name: director.name,
-    room: DIRECTORS_ROOM, task: `${director.agents} agents at work`, group: director.instanceName,
-    active: director.busy === true, remote: director.instanceName,
-    rest: director.busy === true ? undefined : "chair" as const,
-  })) : [])] : [];
+  }) : [])] : [];
 
   // The director is always "in the office": it gets a persistent walker at the head of the strip even
   // when no task agents are live, so the strip never collapses (which used to let the usage chips slide

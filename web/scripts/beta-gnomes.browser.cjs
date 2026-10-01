@@ -80,6 +80,8 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     assert.match(await page.locator('.beta-visitor .beta-destination').first().innerText(),/North studio|Moonlight office/);
     assert((await page.locator('.beta-workstation').count())<=7,'Crowd must be bounded');
     assert((await page.locator('.beta-visitor').count())>=1,'Visitors must have reserved places when space permits');
+    const visitorPartner = await page.locator('.beta-visitor').first().getAttribute('data-partner');
+    assert(visitorPartner?.startsWith('beta-fixture-'), 'A remote teammate pairs with a local worker even in a crowded repo');
     // Verify actual travel and a synchronized rendezvous, not merely that CSS is animating.
     const movement=await page.locator('.beta-workstation[data-partner]').first().evaluate(el=>{
       const animation=el.getAnimations().find(a=>a.animationName==='beta-journey');
@@ -103,7 +105,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.locator('.beta-workshop').screenshot({path:path.join(output,'workshop-cooperation.png')});
     await page.evaluate(()=>{for(const {animation,time} of window.betaTestTimelines)animation.currentTime=time;delete window.betaTestTimelines;});
     await page.getByRole('button',{name:/Show all .* workshop gnomes/}).click();
-    assert.equal(await page.locator('.beta-workshop-roster > button').count(),12);
+    assert.equal(await page.locator('.beta-workshop-roster > button').count(),11);
     assert.match(await page.locator('.beta-destination-path').allTextContents().then(xs=>xs.join('\n')),/C:\\workshop/);
     await page.getByRole('button',{name:'Close workshop crew'}).click();
     const fresh={id:'beta-message',room,scope:'project',kind:'chat',body:'The new build is ready for a careful inspection.',role:'qa',senderName:'Juniper',remoteInstance:'North studio',createdAt:Date.now()};
@@ -130,7 +132,65 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.evaluate(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'});document.dispatchEvent(new Event('visibilitychange'));});
     assert((await page.locator('.beta-workshop').evaluate(el=>el.getAnimations({subtree:true}).map(a=>a.playState))).every(s=>s==='paused'));
     await page.evaluate(()=>{delete document.visibilityState;document.dispatchEvent(new Event('visibilitychange'));});
-      for(const width of [390,768,1440,1920]) {
+    // Reproduce a local worktree + a different local repo separating its remote QA teammate.
+    // Unrelated remote workers arrive first; online directors must not take any of their places.
+    const teamThreads = [
+      {...threads[0], workspace:'C:\\workshop.worktrees\\feature', homeWorkspace:workspace},
+      {...threads[1], workspace:'C:\\garden'},
+    ];
+    const teamOffice = {...onlineOffice,
+      directors: [onlineOffice.directors[0], {...onlineOffice.directors[0], instanceId:'busy-director', busy:true}],
+      remoteAgents: [
+        {...onlineOffice.remoteAgents[0], key:'other-repo', repoKey:'other', repoLabel:'Garden elsewhere'},
+        onlineOffice.remoteAgents[0],
+      ],
+    };
+    for (const artwork of ['beta','classic']) {
+      await page.evaluate((art) => {
+        for (const [key,value] of [['ggo:classic-workshop','1'],['ggo:beta-gnomes',art==='beta'?'1':'0']]) {
+          localStorage.setItem(key,value); window.dispatchEvent(new StorageEvent('storage',{key}));
+        }
+      }, artwork);
+      for (const busy of [true,false]) {
+        currentSocket.send(JSON.stringify({...hello,threads:teamThreads,runs:runs.slice(0,2),onlineOffice:teamOffice,directorBusy:busy,directorIdleSince:busy?null:Date.now()}));
+        await page.waitForFunction(({art,busy}) => document.querySelector('.beta-workshop')?.dataset.art===art && document.querySelector('.beta-workshop')?.getAttribute('aria-label')===`Workshop: ${busy?5:4} at work, 2 online` && document.querySelector('[data-agent-id="director"]')?.dataset.working===String(busy), {art:artwork,busy});
+        for (const width of [1280,1440,1920]) {
+          await page.setViewportSize({width,height:900});
+          await page.waitForTimeout(150); // ResizeObserver must finish choosing this viewport's cast.
+          assert.equal(await page.locator('[data-agent-id^="visiting-director:"], .beta-directors-table').count(),0,'No remote director or table in the lane');
+          assert.equal(await page.locator('.beta-workshop').evaluate(el=>el.getBoundingClientRect().height),48,'Still one gnome high');
+          const capacity=await page.locator('.beta-workshop-stage').evaluate(el=>Math.floor(el.clientWidth/156));
+          if(capacity<3) continue; // Owner + two partners cannot fit; the crew roster remains available.
+          const local = page.locator(`[data-agent-id="${threads[0].id}"]`);
+          const remote = page.locator('[data-agent-id="remote-1:visitor"]');
+          await remote.waitFor();
+          await page.waitForFunction((id)=>document.querySelector(`[data-agent-id="${id}"]`)?.dataset.partner==='remote-1:visitor',threads[0].id);
+          assert.equal(await remote.getAttribute('data-partner'),threads[0].id,`${artwork}/${width}: mutual cross-office partners`);
+          assert.equal(await remote.getAttribute('data-office-room'),room,'Remote worker routes to the local project room');
+          assert.match(await remote.locator('.beta-destination').innerText(),/workshop\s+↗ North studio/);
+          await page.locator('.beta-workshop').evaluate(el=>{
+            for (const animation of el.getAnimations({subtree:true})) {const t=animation.effect.getTiming(); animation.currentTime=t.delay+Number(t.duration)*.35;}
+          });
+          const a=await local.boundingBox(),b=await remote.boundingBox();
+          assert(Math.abs(Math.abs(a.x-b.x)-34)<2,`${artwork}/${width}: remote and local meet shoulder to shoulder`);
+          await page.locator('.topbar').screenshot({path:path.join(output,`cross-office-${artwork}-${busy?'busy':'idle'}-${width}.png`)});
+        }
+      }
+      await page.getByRole('button',{name:/Show all .* workshop gnomes/}).click();
+      assert.equal(await page.locator('.beta-workshop-roster > button').count(),5,'Roster counts only owner and workers');
+      await page.getByRole('button',{name:'Close workshop crew'}).click();
+      sent.length = 0;
+      await page.locator('[data-agent-id="remote-1:visitor"]').click();
+      await page.locator('.office-panel').waitFor();
+      assert(sent.some(m=>m.type==='chat.history' && m.room===room),'Remote teammate opens shared chat');
+      await page.locator('.office-panel').getByRole('button',{name:'Close',exact:true}).click();
+    }
+    await page.evaluate(()=>{
+      for(const [key,value] of [['ggo:classic-workshop','0'],['ggo:beta-gnomes','1']]) {localStorage.setItem(key,value);window.dispatchEvent(new StorageEvent('storage',{key}));}
+    });
+    currentSocket.send(JSON.stringify(hello));
+    await page.locator('.beta-workshop[data-art="beta"]').waitFor();
+    for(const width of [390,768,1440,1920]) {
       await page.setViewportSize({width,height:900});
       const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
       assert.equal(overflow,false,`Page overflows at ${width}px`);

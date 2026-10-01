@@ -50,11 +50,11 @@ async function main() {
       if (!login.ok()) throw new Error(`login failed: ${login.status()}`);
       await page.goto(BASE);
       const owner = page.locator('.beta-workstation[data-agent-id="director"]');
-      const north = page.locator('.beta-workstation[data-agent-id="visiting-director:north"]');
+      const visitors = page.locator('.beta-workstation[data-agent-id^="visiting-director:"]');
       await owner.locator('[data-rest="chair"]').waitFor();
       check('idle owner sits in a chair', await owner.getAttribute('data-rest') === 'chair');
-      check('remote director sits despite three active workers', await north.getAttribute('data-rest') === 'chair');
-      check('idle directors share a table', await page.locator('.beta-directors-table').count() >= 1);
+      check('online directors do not consume worker places', await visitors.count() === 0 && await page.locator('.beta-workstation').count() === 1);
+      check('directors table is hidden', await page.locator('.beta-directors-table').count() === 0);
       check('seated directors have no walking animation', await page.locator('.beta-workstation[data-rest]').evaluateAll(els => els.every(el => !el.getAnimations().length)));
       const headerHeight = await page.locator('.topbar').evaluate(el => el.getBoundingClientRect().height);
       await page.locator('.beta-workshop').screenshot({ path: path.join(shots, 'chairs.png') });
@@ -69,7 +69,7 @@ async function main() {
       check('eight-hour deadline puts owner in bed without another event', await owner.getAttribute('data-rest') === 'sleep');
       check('bed and dreams are visible', await owner.locator('.beta-rest-bed').isVisible() && await owner.locator('.beta-sleep-dream').isVisible());
       check('sleeping owner stops walking', await owner.evaluate(el => !el.getAnimations().length));
-      check('other directors stay seated', await north.getAttribute('data-rest') === 'chair');
+      check('other directors remain hidden at bedtime', await visitors.count() === 0);
       check('bedtime adds no header height', await page.locator('.topbar').evaluate(el => el.getBoundingClientRect().height) === headerHeight);
       await page.locator('.beta-workshop').screenshot({ path: path.join(shots, 'bedtime.png') });
       await owner.click();
@@ -82,7 +82,7 @@ async function main() {
       check('own work wakes the director and restores work animation', await owner.getAttribute('data-working') === 'true' && await owner.locator('.beta-tool-director').isVisible());
       socket.send(JSON.stringify({ type: 'office.online', office: { ...office, directors: office.directors.map(d => ({ ...d, busy: true })) } }));
       await page.waitForFunction(() => [...document.querySelectorAll('.beta-visitor')].every(el => el.dataset.working === 'true'));
-      check('remote directors leave the table for their own work', await page.locator('.beta-directors-table').count() === 0 && await north.getAttribute('data-rest') === null);
+      check('busy remote directors stay hidden too', await page.locator('.beta-directors-table').count() === 0 && await visitors.count() === 0);
       await page.locator('.beta-workshop').screenshot({ path: path.join(shots, 'working.png') });
 
       socket.send(JSON.stringify({ type: 'director.busy', busy: false, idleSince: now + 1500 }));
@@ -91,7 +91,7 @@ async function main() {
       socket.send(JSON.stringify({ ...hello, directorIdleSince: now - BEDTIME - 1, onlineOffice: { ...office, directors: office.directors.map(({busy,...legacy}) => legacy) } }));
       await owner.locator('[data-rest="sleep"]').waitFor();
       check('reconnect restores overnight sleep from server time', await owner.getAttribute('data-rest') === 'sleep');
-      check('legacy remote presence rests instead of inventing work', await north.getAttribute('data-rest') === 'chair');
+      check('legacy remote directors also stay hidden', await visitors.count() === 0);
       for (const width of [900,1440,390]) {
         await page.setViewportSize({ width, height: 900 });
         check(`${width}px: same 48px gnome lane without page overflow`, await page.evaluate(() => document.querySelector('.office-beta').getBoundingClientRect().height === 48 && document.documentElement.scrollWidth <= innerWidth));

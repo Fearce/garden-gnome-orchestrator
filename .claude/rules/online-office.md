@@ -57,10 +57,12 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
   session. A room for people that can steer agents is not the feature.
 - **Director activity is independent of its workers.** The optional `director.busy` presence field
   reports the director's own turn and is forwarded as `RelayDirector.busy`. Never infer it from
-  `agents`: an idle director sits while its crew works. Older peers omit this field and stay seated.
+  `agents`: a director may be idle while its crew works. Older peers omit this field.
   Locally the server persists the rest clock, includes it in hello, and publishes each busy/idle
   transition; beta gnomes move from chair to bed after eight idle hours. `director-rest-lab` checks
-  the boundary, wake-up, tables, compact layout, and older peers.
+  the boundary, wake-up, compact layout, and older peers. The owner subsequently requested hiding
+  visiting directors and their table from the header (2026-10-01): only the local director and active
+  workers take places in the workshop. Online directors remain reachable through the directors' room.
 - **`server/src/office/onlineProtocol.ts` is a byte-for-byte copy of `relay/src/protocol.ts`.** Change one,
   change the other — `test:mirror-drift` fails the suite if you don't, along with every other declaration
   either side claims to mirror; bump `RELAY_PROTOCOL` only for a change that is NOT backward-compatible (an
