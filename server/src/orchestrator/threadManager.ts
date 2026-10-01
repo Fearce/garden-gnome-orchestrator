@@ -6799,6 +6799,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return thread.homeWorkspace != null && !thread.parentId && thread.lane !== "read" && this.settings().taskWorktrees;
   }
 
+  /** A Co-worker turn holds the checkout it runs in. A task that has yet to move into its own
+   *  worktree will not touch that checkout, so the turn must not queue it. */
+  private coworkBlocks(thread: Thread): boolean {
+    if (this.coworkWorkspaceBusy?.(thread.workspace) !== true) return false;
+    const movingOut = this.wantsOwnWorktree(thread) && !thread.worktrees?.length && !this.db.getThreadStageOutputs(thread.id).workspaceMode;
+    return !movingOut;
+  }
+
   /** Re-create any recorded worktree whose folder is gone (retired at close, deleted by hand). A failure
    *  is reported and leaves the path missing, so the caller's own existence check explains it. */
   private async ensureWorktreesPresent(thread: Thread): Promise<Thread> {
@@ -6930,7 +6938,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const restartFull = this.restartDrainActive();
     const cap = this.settings().maxConcurrent;
     const globalFull = this.activePipelines.size >= cap;
-    const coworkFull = !!thread && this.coworkWorkspaceBusy?.(thread.workspace) === true;
+    const coworkFull = !!thread && this.coworkBlocks(thread);
     const repoFull = !!thread && this.repoAtCapacity(thread);
     if (restartFull || globalFull || repoFull) {
       if (!this.dispatchQueue.includes(threadId)) this.dispatchQueue.push(threadId);
@@ -6970,7 +6978,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   /** Whether starting another pipeline for `thread`'s repo would exceed the per-repo cap. Always false when
    *  the cap is 0 (unlimited) — the global maxConcurrent is then the only gate. */
   private repoAtCapacity(thread: Thread): boolean {
-    if (this.coworkWorkspaceBusy?.(thread.workspace)) return true;
+    if (this.coworkBlocks(thread)) return true;
     const limit = this.repoConcurrencyLimit();
     return limit > 0 && this.activeCountForRepo(thread) >= limit;
   }
@@ -6980,7 +6988,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  not yet reflected in activePipelines. Use `repoAtCapacity` instead when each task is started inside
    *  the loop (a synchronous slot reserve means activeCountForRepo already sees the earlier ones). */
   private repoAtCapacityWith(thread: Thread, pending: Map<string, number>): boolean {
-    if (this.coworkWorkspaceBusy?.(thread.workspace)) return true;
+    if (this.coworkBlocks(thread)) return true;
     const limit = this.repoConcurrencyLimit();
     if (limit <= 0) return false;
     return this.activeCountForRepo(thread) + (pending.get(repoCapKey(thread)) ?? 0) >= limit;

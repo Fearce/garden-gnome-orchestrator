@@ -184,6 +184,16 @@ try {
   const bad = await mgr.claimTaskWorktree(umb.id, { repo: "nope" });
   check("a folder that is not a repo is refused", !bad.ok);
 
+  console.log("E2. a Co-worker turn in the main checkout");
+  const coworkBusy = internals.coworkWorkspaceBusy;
+  internals.coworkWorkspaceBusy = (w: string) => w === repo;
+  const freshTask = dispatch(repo, "Starts beside co-work");
+  check("does not hold a task that will move into its own worktree", internals.repoAtCapacity(freshTask) === false);
+  const legacyBusy = db.createThread({ title: "In place beside co-work", workspace: repo, rawPrompt: "x" });
+  check("still holds a task that works in the main checkout", internals.repoAtCapacity(legacyBusy) === true);
+  check("does not hold a task already in its worktree", internals.repoAtCapacity(db.getThread(second.id)!) === false);
+  internals.coworkWorkspaceBusy = coworkBusy;
+
   console.log("F. close retires");
   db.updateThread(task.id, { state: "review" });
   const closed = await mgr.closeThread(task.id);
