@@ -24,10 +24,16 @@ CSS moves transforms/opacity only, with one shared IntersectionObserver and visi
 
 The scaffold screensaver follows the same beta preference, including live rollback. It shares the atlas metadata with `BetaGnome` and clips the portrait into head, coat and boots; shaded sleeves and hands articulate around the existing shoulder/tool pivots. Climbing, perching, role-specific tool strokes, impact sparks, failure drops and completion poses use the existing rig solver and single animation loop. No second texture or animation timer is needed. Clip/gradient IDs are unique per worker. Hidden tabs pause both the renderer and CSS; reduced motion keeps static poses. Desktop lane counts shrink to fit the viewport so outside workers are not cropped.
 
+### Classic gnomes in the workshop header
+
+General settings exposes a second default-off browser preference, `ggo:classic-workshop` ("Workshop header for classic gnomes"), beside Beta gnomes. With beta off, it puts the original vector `Gnome` into the same `BetaWorkshop` lane (`data-art="classic"`): identical seat selection, choreography, labels, messages, roster, pause control and offscreen/reduced-motion handling. The atlas is never requested. The classic figure has no separate boots, so it bobs and waddles as a whole on each footfall and swings its role tool from the right mitt (`.gnome-prop`) in the work phases. A resting director uses the shared beta chair or bed (`RestFurnitureBack`/`RestFurnitureFront`). Beta gnomes always use the workshop, so the preference only matters while beta is off; turning it off restores the classic strip.
+
 ## Verification
 
 `node web/scripts/beta-gnomes.browser.cjs` runs against the built local console (optional URL argument for Vite). It reads the local login password without logging it and intercepts the test browser's WebSocket to use fixtures; outgoing mutations never reach the live office. Checks default-off loading, General activation, persistence, crowded/remote offices, message routing and expiry, animation pause, hidden/offscreen scenes, reduced motion, four viewport sizes and cross-tab rollback. Screenshots are written to `_beta-gnomes/`.
 
 `node web/scripts/beta-screensaver.browser.cjs` checks the default-off screensaver, General toggle, all six task-role textures, moving tools, live rollback, role handoffs that keep the same tool, hidden/reduced-motion handling, failed/done poses, responsive lane bounds and dismissal. It uses the same isolated browser-fixture approach. The header test also checks the larger director, visible destination labels and full paths in the crew list.
+
+`node web/scripts/classic-workshop.browser.cjs` covers the classic preference: default off, its place beside Beta gnomes, persistence, no atlas, the 48px lane, seats filling the header, walking/rendezvous/tool work, director chair and bed, routing, pause/reduced motion, independence from beta in both directions, varying crowd sizes, 360–1920px widths with unobstructed header controls, and cross-tab rollback. Screenshots go to `_classic-workshop/`.
 
 Existing gates: `npm run test:gnome-skins --prefix server` and `node server/node_modules/tsx/dist/cli.mjs --tsconfig web/tsconfig.json web/scripts/office-navigation.test.tsx`.

@@ -27,7 +27,7 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
   fs.mkdirSync(output, { recursive: true });
   const browser = await loadChromium().launch({ headless: true });
   try {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+    const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2 });
     const env = fs.readFileSync(path.resolve(__dirname, '../../server/.env'), 'utf8');
     const password = env.match(/^AUTH_PASSWORD=(.*)$/m)?.[1].trim().replace(/^['"]|['"]$/g, '');
     const login = await context.request.post(`${base}/api/login`, { data: { password } });
@@ -44,7 +44,7 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
       server.onMessage((raw) => {
         const msg = JSON.parse(String(raw));
         if (msg.type !== 'hello') return;
-        hello = { ...msg, threads, runs, findings: [], questions: [], director: [], chat: [], chatRooms: [], schedules: [], goals: [], notes: [], coworkSessions: [], onlineOffice, nameOverrides: Object.fromEntries(roles.map((role, i) => [`${threads[i].id}::${role}`, names[i]])), settings: { ...msg.settings, directorName: 'Merlin' }, directorStatus: null };
+        hello = { ...msg, threads, runs, findings: [], questions: [], director: [], chat: [], chatRooms: [], schedules: [], goals: [], notes: [], coworkSessions: [], onlineOffice, nameOverrides: Object.fromEntries(roles.map((role, i) => [`${threads[i].id}::${role}`, names[i]])), settings: { ...msg.settings, directorName: 'Merlin' }, directorStatus: null, directorBusy: true, directorIdleSince: null };
         socket.send(JSON.stringify(hello));
       });
     });
@@ -82,7 +82,7 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     assert.equal(await page.locator('.beta-gnome').count(), 0, 'Classic header must not mount beta artwork');
     assert.equal(artRequests.length, 0, 'Classic header must not fetch the beta atlas');
     const stations = await page.locator('.beta-workstation').count();
-    assert.equal(await page.locator('.beta-workstation .beta-character > .gnome > svg').count(), stations, 'Every seat shows the original gnome');
+    assert.equal(await page.locator('.beta-workstation .beta-character .classic-workshop-gnome > .gnome > svg').count(), stations, 'Every seat shows the original gnome');
     assert.equal(await page.locator('.beta-destination').count(), stations, 'Every seat is labeled with its destination');
     assert.equal(await page.locator('.beta-workshop').evaluate((el) => el.getBoundingClientRect().height), 48, 'Workshop is exactly one gnome high');
     const workshopHeight = await page.locator('.topbar').evaluate((el) => el.getBoundingClientRect().height);
@@ -161,8 +161,18 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
       assert.equal(await page.locator('.office-beta').evaluate((el) => el.getBoundingClientRect().height), 48, `Lane height with ${count} tasks`);
       await page.locator('.topbar').screenshot({ path: path.join(output, `classic-workshop-${count}-tasks.png`) });
     }
+    // An idle director rests like its beta self: a chair at first, the bed after eight hours off duty.
+    const restingDirector = '.beta-workstation[data-agent-id="director"]';
+    for (const [rest, idleFor] of [['chair', 60_000], ['sleep', 9 * 60 * 60 * 1000]]) {
+      currentSocket.send(JSON.stringify({ ...hello, directorBusy: false, directorIdleSince: Date.now() - idleFor }));
+      await page.locator(`${restingDirector}[data-rest="${rest}"] .classic-workshop-gnome[data-rest="${rest}"] .gnome > svg`).waitFor();
+      assert.equal(await page.locator(`${restingDirector} .beta-rest-${rest === 'chair' ? 'chair' : 'bed'}`).count(), 1, `Classic director has the beta ${rest} furniture`);
+      assert.deepEqual(await page.locator(restingDirector).evaluate((el) => el.getAnimations({ subtree: true }).map((a) => a.animationName).filter((n) => n !== 'beta-dream')), [], `A ${rest} director does not walk or work`);
+      assert.equal(await page.locator('.beta-gnome').count(), 0);
+      await page.locator(restingDirector).screenshot({ path: path.join(output, `classic-director-${rest}.png`) });
+    }
     currentSocket.send(JSON.stringify(hello));
-    await page.waitForFunction(() => document.querySelectorAll('.beta-workstation').length > 2);
+    await page.waitForFunction(() => document.querySelectorAll('.beta-workstation').length > 2 && !document.querySelector('.beta-workstation[data-rest]'));
 
     // Header controls stay usable at every width; the lane never overflows or grows.
     for (const width of [360, 390, 768, 1024, 1440, 1920]) {
