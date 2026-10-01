@@ -6766,6 +6766,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     }
     if (thread.worktrees?.length || !this.wantsOwnWorktree(thread)) return thread;
     if (this.db.getThreadStageOutputs(thread.id).workspaceMode) return thread;
+    if (this.db.listRuns(thread.id).some((run) => run.role === "implementor" || run.role === "qa")) {
+      // An agent already worked in place (the setting was off then, or creating the worktree failed): its
+      // uncommitted edits are in this checkout, and moving the task now would strand them there.
+      this.db.updateThreadStageOutputs(thread.id, { workspaceMode: "in-place" });
+      return thread;
+    }
     const root = await containingRepoRoot(thread.workspace);
     if (!root) {
       this.db.updateThreadStageOutputs(thread.id, { workspaceMode: childRepos(thread.workspace).length ? "umbrella" : "in-place" });

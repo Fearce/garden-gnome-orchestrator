@@ -145,9 +145,16 @@ try {
   const legacy = await prepare(db.createThread({ title: "Old row", workspace: repo, rawPrompt: "x" }));
   check("a row from before the feature keeps working in place", !legacy?.worktrees?.length && legacy?.workspace === repo);
   mgr.setSettings({ taskWorktrees: false });
-  const off = await prepare(dispatch(repo, "Setting off"));
+  const off = (await prepare(dispatch(repo, "Setting off")))!;
   check("with the setting off a new task works in place", !off?.worktrees?.length && off?.workspace === repo);
+  db.createRun({ threadId: off.id, role: "implementor", model: "claude-x", account: "acct" });
   mgr.setSettings({ taskWorktrees: true });
+  const offAgain = await prepare(db.getThread(off.id)!);
+  check(
+    "...and stays in place once its agent worked there, even after the setting is back on",
+    !offAgain?.worktrees?.length && offAgain?.workspace === repo && mode(off.id) === "in-place",
+    offAgain?.workspace,
+  );
   const nonRepo = join(root, "plain");
   mkdirSync(nonRepo);
   const plain = await prepare(dispatch(nonRepo, "Not a repo"));
