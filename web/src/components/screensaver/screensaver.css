@@ -410,6 +410,12 @@
 .gs-root .gs-coil { stroke: var(--gs-rope); opacity: 0; }
 .gs-root .gs-sparks circle { fill: var(--gs-spark); opacity: 0; }
 
+/* Painted beta characters share the existing pivots, tool beats and rope solver.
+   Their small shaded sleeves articulate independently of the shared texture. */
+.gs-root .gs-beta-rig .gs-limb { stroke: var(--gs-sleeve); stroke-width: 6.2; }
+.gs-root .gs-beta-rig .gs-mitt { fill: var(--gs-glove); }
+.gs-root[data-paused="true"], .gs-root[data-paused="true"] * { animation-play-state: paused !important; }
+
 /* Every part that moves declares its own pivot in viewBox units. .gs-tool is deliberately absent:
    its forearm angle lives on a wrapper <g> in the markup (a CSS pivot on top of an attribute
    rotate() composes into a rotation about twice the pivot, which throws the tool clear of the

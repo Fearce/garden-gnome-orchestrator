@@ -23,7 +23,10 @@
  * sparks fire.
  */
 
-import type { CSSProperties, ReactNode } from "react";
+import { useId, type CSSProperties, type ReactNode } from "react";
+import type { Role } from "../../types.js";
+import { useBetaGnomes } from "../../lib/betaGnomes.js";
+import { betaGnomeAtlas, betaGnomeCast } from "../../lib/betaGnomeArt.js";
 
 /** The tool a role swings. Four genuinely different motions, not one swing recoloured. */
 export type Tool = "hammer" | "wrench" | "pickaxe" | "saw" | "gavel";
@@ -133,24 +136,48 @@ function Sparks() {
 /** The worker gnome. Draw order is back-to-front and load-bearing: the rope passes behind the
  *  figure, the beard closes over the arm's shoulder so the arm emerges from under it, and the hat
  *  sits in its own group so it can lag the body (overlapping action). */
-export function Rig({ tool }: { tool: Tool }) {
+export function Rig({ tool, role }: { tool: Tool; role: Role }) {
+  const beta = useBetaGnomes();
+  // Each lane needs its own clip IDs; role changes and live toggle changes keep the
+  // rope, shoulder, grip and impact frame intact. No second animation loop.
+  const id = useId();
+  const { column, row, coat } = betaGnomeCast[role];
+  const painted = (part: string) => <g clipPath={`url(#${id}-${part})`}><use href={`#${id}-art`} /></g>;
   return (
-    <svg viewBox={`0 0 ${VB_W} ${VB_H}`} xmlns="http://www.w3.org/2000/svg" focusable="false" aria-hidden="true">
+    <svg viewBox={`0 0 ${VB_W} ${VB_H}`} xmlns="http://www.w3.org/2000/svg" focusable="false" aria-hidden="true"
+      className={beta ? "gs-beta-rig" : undefined} data-role={role}
+      style={beta ? { "--gs-sleeve": `url(#${id}-sleeve)`, "--gs-glove": `url(#${id}-glove)` } as CSSProperties : undefined}>
+      {beta && <defs>
+        <image id={`${id}-art`} href={betaGnomeAtlas} x={11 - column * 48} y={2 - row * 64} width="192" height="128" />
+        {/* Trim the resting arms out of the portrait. The rig supplies articulated
+            sleeves and hands so there are no spare hands beside the working tool. */}
+        <clipPath id={`${id}-coat`}><path d="M30 34H47L46 44L51 55H25L30 48Z" /></clipPath>
+        <clipPath id={`${id}-head`}><path d="M11 2H59V32L48 34L45 40L39 44H32L27 39L24 34H11Z" /></clipPath>
+        <clipPath id={`${id}-boots`}><rect x="11" y="54.5" width="48" height="12" /></clipPath>
+        <linearGradient id={`${id}-sleeve`} x1="0" y1="0" x2="1" y2=".7">
+          <stop stopColor={coat} /><stop offset=".45" stopColor={coat} /><stop offset="1" stopColor="#302726" />
+        </linearGradient>
+        <radialGradient id={`${id}-glove`} cx=".35" cy=".3" r=".75">
+          <stop stopColor="#ffdbb2" /><stop offset=".7" stopColor="#e9a16f" /><stop offset="1" stopColor="#b9734c" />
+        </radialGradient>
+      </defs>}
       {/* rope, behind everything, running down into the hip carabiner */}
       <path className="gs-rope-tail" d={`M${ROPE_X} 0V40.4`} />
 
       {/* legs: they hang free and kick a little, and swing forward when he perches on the beam */}
       <g className="gs-legs">
+        {beta ? painted("boots") : <>
         <path className="gs-leg" d="M31 48.6 29.4 60.4" />
         <path className="gs-leg" d="M40 48.6 42.6 59.4" />
         <ellipse className="gs-boot" cx="28.5" cy="62.7" rx="4" ry="2.8" transform="rotate(-10 28.5 62.7)" />
         <ellipse className="gs-boot" cx="43.4" cy="61.7" rx="4" ry="2.8" transform="rotate(12 43.4 61.7)" />
         <ellipse className="gs-strap-f" cx="30.6" cy="52.2" rx="3.1" ry="1.5" />
         <ellipse className="gs-strap-f" cx="41" cy="52" rx="3.1" ry="1.5" />
+        </>}
       </g>
 
       {/* robe: the console gnome's body path, translated into this taller frame */}
-      <path className="gs-robe" d="M28 32C24 35 23 43 25 50h20c2-7 1-15-3-18-3 3-11 3-14 0Z" />
+      {beta ? painted("coat") : <path className="gs-robe" d="M28 32C24 35 23 43 25 50h20c2-7 1-15-3-18-3 3-11 3-14 0Z" />}
 
       {/* harness: waist belt, two risers down to the leg loops, buckle */}
       <g className="gs-harness">
@@ -172,10 +199,10 @@ export function Rig({ tool }: { tool: Tool }) {
       <circle className="gs-mitt" cx="20.6" cy="50.6" r="2.7" />
 
       {/* hat + pom, in one group so they droop and wobble together */}
-      <g className="gs-hat">
+      {!beta && <g className="gs-hat">
         <path className="gs-hat-cloth" d="M38 7C32 13 27 23 25 33c6-1.5 16-1.5 22 0C45 23 43 13 38 7Z" />
         <circle className="gs-pom" cx="39" cy="7" r="3" />
-      </g>
+      </g>}
 
       {/* The working arm: limb, tool, then the mitt closing over the haft.
           The forearm rotation lives on a plain wrapper <g>, never on .gs-tool itself: a CSS
@@ -191,8 +218,10 @@ export function Rig({ tool }: { tool: Tool }) {
       </g>
 
       {/* beard over the shoulder, then the nose under the brim */}
-      <path className="gs-beard" d="M28 32C26 39 29 45 35 48c6-3 9-9 7-16-3 3-11 3-14 0Z" />
-      <circle className="gs-nose" cx="35" cy="34.4" r="3" />
+      {beta ? <g className="gs-hat">{painted("head")}</g> : <>
+        <path className="gs-beard" d="M28 32C26 39 29 45 35 48c6-3 9-9 7-16-3 3-11 3-14 0Z" />
+        <circle className="gs-nose" cx="35" cy="34.4" r="3" />
+      </>}
 
       {/* coiled spare rope: only visible while he is perched on the beam, waiting */}
       <g className="gs-coil">

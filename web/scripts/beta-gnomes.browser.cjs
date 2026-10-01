@@ -64,11 +64,19 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.keyboard.press('Escape');
     await page.reload();
     await page.locator('.beta-workshop').waitFor();
-    await page.locator('.beta-workstation[aria-label^="Bram,"]').waitFor();
+    await page.locator('.beta-workstation[data-office-room="repo:c:/workshop"]').first().waitFor();
     assert.equal(await page.locator('.beta-workshop').evaluate(el=>el.getBoundingClientRect().height),48,'Workshop must be exactly one gnome high');
     const betaHeight=await page.locator('.topbar').evaluate(el=>el.getBoundingClientRect().height);
     assert(betaHeight <= classicHeight + 16,`Beta must not add header rows or padding (${classicHeight}px classic, ${betaHeight}px beta)`);
     await page.screenshot({path:path.join(output,'workshop-desktop.png')});
+    const portrait=await page.locator('.director-avatar .beta-gnome').boundingBox();
+    const directorTitle=await page.locator('.rail-head-title').boundingBox();
+    assert.equal(portrait.width,44,'Director should have a larger portrait');
+    assert(directorTitle.x>=portrait.x+portrait.width,'Director text should sit to the right of its portrait');
+    await page.locator('.rail-head').screenshot({path:path.join(output,'director-larger.png')});
+    assert.equal(await page.locator('.beta-destination').count(),await page.locator('.beta-workstation').count());
+    assert.match(await page.locator('.beta-workstation[data-office-room="repo:c:/workshop"] .beta-destination').first().innerText(),/workshop/);
+    assert.match(await page.locator('.beta-visitor .beta-destination').first().innerText(),/North studio|Moonlight office/);
     assert((await page.locator('.beta-workstation').count())<=7,'Crowd must be bounded');
     assert((await page.locator('.beta-visitor').count())>=1,'Visitors must have reserved places when space permits');
     // Verify actual travel and a synchronized rendezvous, not merely that CSS is animating.
@@ -95,6 +103,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.evaluate(()=>{for(const {animation,time} of window.betaTestTimelines)animation.currentTime=time;delete window.betaTestTimelines;});
     await page.getByRole('button',{name:/Show all .* workshop gnomes/}).click();
     assert.equal(await page.locator('.beta-workshop-roster > button').count(),12);
+    assert.match(await page.locator('.beta-destination-path').allTextContents().then(xs=>xs.join('\n')),/C:\\workshop/);
     await page.getByRole('button',{name:'Close workshop crew'}).click();
     const fresh={id:'beta-message',room,scope:'project',kind:'chat',body:'The new build is ready for a careful inspection.',role:'qa',senderName:'Juniper',remoteInstance:'North studio',createdAt:Date.now()};
     currentSocket.send(JSON.stringify({type:'chat.message',message:fresh}));
@@ -150,7 +159,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.reload(); await page.locator('.office-strip').waitFor();
     assert.equal(await page.locator('.beta-gnome').count(),0);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({result:'PASS',checks:['default off/no atlas request','General toggle','persistence','48px lane/no added header rows','visible walking and shared projects','bounded crowd and online visitors','messages and room navigation','pause/reduced motion','hidden tab and offscreen pause','390/768/1440/1920 layout','offline visitors removed','idle bubble expiry','cross-tab rollback','no browser errors'],performance,atlasRequests:artRequests.length,evidence:output},null,2));
+    console.log(JSON.stringify({result:'PASS',checks:['default off/no atlas request','General toggle','persistence','larger director and shifted text','visible destination labels and full folder paths','48px lane/no added header rows','visible walking and shared projects','bounded crowd and online visitors','messages and room navigation','pause/reduced motion','hidden tab and offscreen pause','390/768/1440/1920 layout','offline visitors removed','idle bubble expiry','cross-tab rollback','no browser errors'],performance,atlasRequests:artRequests.length,evidence:output},null,2));
     await context.close();
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});

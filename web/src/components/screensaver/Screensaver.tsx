@@ -239,18 +239,21 @@ export function Screensaver() {
 
   const phone = useMediaQuery(PHONE_VIEWPORT);
   const touchOnly = useMediaQuery(TOUCH_ONLY);
+  // Six desktop cards need 6*208px + five 46px gutters + 80px margins.
+  // Keep the outside workers on screen when the board is crowded.
+  const narrowDesktop = useMediaQuery("(max-width: 1100px)");
+  const fourLanes = useMediaQuery("(max-width: 1303px)");
+  const fiveLanes = useMediaQuery("(max-width: 1557px)");
   const stackRef = useRef<HTMLDivElement>(null);
   const stage = usePhoneStage(stackRef, phone);
-  const maxLanes = stage?.lanes ?? MAX_LANES;
+  const maxLanes = stage?.lanes ?? (narrowDesktop ? 3 : fourLanes ? 4 : fiveLanes ? 5 : MAX_LANES);
 
   const tasks = useMemo(() => {
     const text: Record<string, string | undefined> = {};
     for (const [id, draft] of Object.entries(drafts)) text[id] = draft?.text;
     return sceneTasks(threads, runs, text, maxLanes, feeds);
   }, [threads, runs, drafts, feeds, maxLanes]);
-  // Only the phone says what it left off: its tower is short enough that a missing lane could
-  // otherwise read as a task that is not running.
-  const offStage = phone ? offStageActive(threads, tasks) : 0;
+  const offStage = offStageActive(threads, tasks);
 
   const reducedMotion = usePrefersReducedMotion();
   const hidden = useDocumentHidden();
@@ -347,7 +350,11 @@ export function Screensaver() {
     const scale = phoneRef.current ? PHONE.rigScale : 1;
     for (const task of tasksRef.current) {
       const lane = lanes.current.get(task.id);
-      if (!lane || !lane.geo) continue;
+      if (!lane) continue;
+      // React can reattach a moved lane's layout effects after the parent's layout
+      // pass. Measure that new registration before it joins the running scene.
+      if (!lane.geo) measure();
+      if (!lane.geo) continue;
 
       // ---- pose ----
       // Settle rather than step: one frame may cross a whole transition (a tab that was hidden for
@@ -454,7 +461,7 @@ export function Screensaver() {
         lane.applied.elapsed = text;
       }
     }
-  }, []);
+  }, [measure]);
 
   // Measure before the first paint, and again whenever the cast changes the layout.
   const laneKey = tasks.map((t) => t.id).join("\n");
@@ -504,6 +511,7 @@ export function Screensaver() {
       ref={rootRef}
       role="presentation"
       data-screensaver="on"
+      data-paused={hidden}
       style={phone ? phoneVars(stage, tasks.length) : undefined}
     >
       {/* The scaffold beam. Every rope hangs off it, and it is where a gnome sits when it has
@@ -666,7 +674,7 @@ const LaneWorker = memo(
             <div className="gs-recoil">
               <div className="gs-rope" />
               <div className="gs-rig">
-                <Rig tool={tool} />
+                <Rig tool={tool} role={role} />
               </div>
             </div>
           </div>

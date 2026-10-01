@@ -1,23 +1,17 @@
 import { memo, useEffect, useRef, type CSSProperties } from "react";
 import type { GnomeRole } from "../types.js";
 import { observeGnomeMotion } from "../lib/betaGnomes.js";
-
-const atlas = new URL("../assets/gnomes/workshop-cast.webp", import.meta.url).href;
-const cast: Record<GnomeRole, [number, number, string]> = {
-  director: [0, 0, "#c4a1ff"], planner: [1, 0, "#8abaff"], researcher: [2, 0, "#74dacb"],
-  implementor: [3, 0, "#ffd078"], qa: [0, 1, "#ffacb7"], reader: [1, 1, "#d3adff"],
-  reviewer: [2, 1, "#bcd58b"], coworker: [3, 1, "#91e2dc"],
-};
+import { betaGnomeAtlas, betaGnomeCast } from "../lib/betaGnomeArt.js";
 
 /** Artwork is a single shared texture. Only the small tool rig and transforms animate. */
 export const BetaGnome = memo(function BetaGnome({ role, size = 30, active = true, className = "", skin }: {
   role: GnomeRole; size?: number; active?: boolean; className?: string; skin?: string | null;
 }) {
   const ref = useRef<HTMLSpanElement>(null);
-  const [column, row, accent] = cast[role];
+  const { column, row, accent } = betaGnomeCast[role];
   // At avatar sizes moving tools become noise; keep the illustration crisp and still.
   const animated = active && size >= 28;
-  const texture: CSSProperties = { backgroundImage: `url("${atlas}")`, backgroundPosition: `${column * 100 / 3}% ${row * 100}%` };
+  const texture: CSSProperties = { backgroundImage: `url("${betaGnomeAtlas}")`, backgroundPosition: `${column * 100 / 3}% ${row * 100}%` };
   useEffect(() => {
     if (animated && ref.current) return observeGnomeMotion(ref.current);
   }, [animated]);

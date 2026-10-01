@@ -5,6 +5,7 @@ import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../
 import { FolderPicker } from "./FolderPicker.js";
 import { PathInput } from "./PathInput.js";
 import { Gnome } from "./Gnome.js";
+import { useBetaGnomes } from "../lib/betaGnomes.js";
 import { DirectorDirectives } from "./DirectorDirectives.js";
 import { Markdown } from "./Markdown.js";
 import { CLAUDE_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, codexEffortsForModel, type CodexEffort, type DirectorItem, type DirectorMessage, type DirectorStatus, type Effort, type OrchestratorSettings, type Role, type TaskSearchHit } from "../types.js";
@@ -65,6 +66,7 @@ export function Director() {
   const sendDirect = useStore((s) => s.sendDirect);
   const cancelDirector = useStore((s) => s.cancelDirector);
   const directorName = useStore((s) => s.settings.directorName);
+  const betaGnomes = useBetaGnomes();
   // Runtime truth from the server. The director can move between Claude, Codex, Grok and z.ai when a
   // subscription caps, so deriving this label from the default Claude setting would immediately lie.
   const directorStatus = useStore((s) => s.directorStatus);
@@ -356,8 +358,8 @@ export function Director() {
       <div className="rail-head">
         <div className="rail-head-row">
           <div className="who">
-            <span className="pip active" style={{ "--role": "var(--role-director)" } as CSSProperties}>
-              <Gnome role="director" size={28} />
+            <span className="pip active director-avatar" style={{ "--role": "var(--role-director)" } as CSSProperties}>
+              <Gnome role="director" size={betaGnomes ? 44 : 28} />
             </span>
             <div className="rail-head-title">
               <h2>{directorName}</h2>

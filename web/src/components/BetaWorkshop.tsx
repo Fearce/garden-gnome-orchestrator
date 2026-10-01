@@ -30,10 +30,22 @@ export function latestWorkshopMessage(chat: ChatMessage[], seats: WorkshopSeat[]
 
 /** Pick a cast that fits without adding rows. Leave enough room to actually walk. */
 function visibleCast(seats: WorkshopSeat[], capacity: number) {
-  const locals = seats.filter((seat) => !seat.remote);
+  const localSeats = seats.filter((seat) => !seat.remote);
+  // Give each destination a representative before filling spare places with its crew.
+  const rooms = new Set<string>();
+  const representatives = localSeats.filter((seat) => {
+    if (rooms.has(seat.room)) return false;
+    rooms.add(seat.room); return true;
+  });
+  const locals = [...representatives, ...localSeats.filter((seat) => !representatives.includes(seat))];
   const visitors = seats.filter((seat) => seat.remote);
-  const visiting = capacity >= 4 ? Math.min(2, visitors.length, capacity - 3) : 0;
+  const visiting = capacity >= 3 ? Math.min(2, visitors.length, capacity - 2) : 0;
   return [...locals.slice(0, capacity - visiting), ...visitors.slice(0, visiting + Math.max(0, capacity - visiting - locals.length))];
+}
+
+function destination(seat: WorkshopSeat) {
+  const folder = seat.group.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || seat.group;
+  return { label: folder, office: seat.remote ? `↗ ${seat.remote}` : "Local office" };
 }
 
 /** Positions are recomputed only on resize/cast changes. CSS runs the shared walk/work timeline. */
@@ -41,19 +53,21 @@ function choreography(cast: WorkshopSeat[], width: number) {
   const span = width / Math.max(1, cast.length);
   const paired = new Set<number>();
   return cast.map((seat, index) => {
-    const home = span * (index + .5) - 16;
-    const partner = paired.has(index) ? -1 : cast.findIndex((other, i) => i > index && !paired.has(i) && other.active && (
+    const partner = paired.has(index) ? -1 : cast.findIndex((other, i) => i === index + 1 && !paired.has(i) && other.active && (
       seat.active && other.group === seat.group || seat.role === "director" && !seat.remote && !other.remote
     ));
     if (partner >= 0) { paired.add(index); paired.add(partner); }
-    return { seat, home, partner, span };
+    const labelWidth = Math.max(24, Math.min(96, span - 56));
+    const labelLeft = partner >= 0;
+    const home = span * index + (labelLeft ? labelWidth + 8 : 8);
+    return { seat, home, partner, span, labelWidth, labelLeft };
   }).map((actor, index, all) => {
     const lead = all.findIndex((other) => other.partner === index);
     const partnerIndex = actor.partner >= 0 ? actor.partner : lead;
     const partner = all[partnerIndex];
-    const direction = partner ? Math.sign(partner.home - actor.home) : index % 2 ? -1 : 1;
+    const direction = partner ? Math.sign(partner.home - actor.home) : 1;
     // Partners approach to shoulder distance; solos cover most of their own patch.
-    const travel = partner ? (partner.home - actor.home) / 2 - direction * 17 : direction * Math.max(8, Math.min(35, (actor.span - 34) / 2));
+    const travel = partner ? (partner.home - actor.home) / 2 - direction * 17 : Math.max(0, Math.min(24, actor.span - actor.labelWidth - 48));
     const phase = partner ? Math.min(index, partnerIndex) : index;
     return { ...actor, partnerIndex, travel, delay: -(phase * 2.7), meeting: partner ? (actor.home + partner.home) / 2 + 16 : null };
   });
@@ -109,7 +123,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
     openOffice(room);
     setExpanded(false);
   }
-  const cast = visibleCast(seats, Math.max(1, Math.min(7, Math.floor(width / 60))));
+  const cast = visibleCast(seats, Math.max(1, Math.min(7, Math.floor(width / 156))));
   const actors = choreography(cast, width);
   const totalWorking = seats.filter((s) => s.active).length;
   const speaker = message && seats.find((seat) => message.remoteInstance
@@ -119,16 +133,18 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
   return <div className="beta-workshop" ref={ref} data-motion-paused={motionPaused} aria-label={`Workshop: ${totalWorking} at work, ${online} online`}>
     <div className="beta-workshop-stage" ref={stage}>
       <div className="beta-workshop-cast" aria-label="Gnomes in the workshop">
-        {actors.map(({ seat, home, travel, delay, partnerIndex }) => <button type="button" key={seat.id}
+        {actors.map(({ seat, home, travel, delay, partnerIndex, labelWidth, labelLeft }) => <button type="button" key={seat.id}
           className={`beta-workstation${seat.remote ? " beta-visitor" : ""}`}
           data-office-room={seat.room} data-speaking={speaker?.id === seat.id} data-working={seat.active}
           data-agent-id={seat.id}
+          data-label-side={labelLeft ? "left" : "right"}
           data-partner={partnerIndex >= 0 ? cast[partnerIndex]?.id : undefined}
-          style={{ left: home, "--journey": `${travel}px`, "--seat-delay": `${delay}s`, "--out-facing": travel < 0 ? -1 : 1, "--back-facing": travel < 0 ? 1 : -1 } as CSSProperties}
+          style={{ left: home, "--label-width": `${labelWidth}px`, "--journey": `${travel}px`, "--seat-delay": `${delay}s`, "--out-facing": travel < 0 ? -1 : 1, "--back-facing": travel < 0 ? 1 : -1 } as CSSProperties}
           onClick={() => open(seat.room)}
-          aria-label={`${seat.name}, ${seat.active ? verbs[seat.role] : "ready"}${seat.remote ? `, visiting from ${seat.remote}` : ""}. ${seat.task}. Open chat${unread.get(seat.room) ? `, ${unread.get(seat.room)} new messages` : ""}`}
-          title={`${seat.name} · ${seat.active ? verbs[seat.role] : "Ready"}\n${seat.task}\n${seat.remote ? `Online office: ${seat.remote}` : seat.group}\nClick to open chat`}>
+          aria-label={`${seat.name}, ${seat.active ? verbs[seat.role] : "ready"}. ${seat.group}, ${seat.remote ? `visiting from ${seat.remote}` : "local office"}. ${seat.task}. Open chat${unread.get(seat.room) ? `, ${unread.get(seat.room)} new messages` : ""}`}
+          title={`${seat.name} · ${seat.active ? verbs[seat.role] : "Ready"}\n${seat.task}\n${seat.group}\n${seat.remote ? `Online office: ${seat.remote}` : "Local office"}\nClick to open chat`}>
           <span className="beta-character"><BetaGnome role={seat.role} size={32} active={seat.active} /></span>
+          <span className="beta-destination" aria-hidden="true"><strong>{destination(seat).label}</strong><small>{destination(seat).office}</small></span>
           {seat.remote && <span className="beta-visitor-mark" aria-hidden="true">↗</span>}
           {(unread.get(seat.room) ?? 0) > 0 && <span className="beta-message-badge" aria-hidden="true">{Math.min(unread.get(seat.room)!, 99)}</span>}
         </button>)}
@@ -148,7 +164,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
     </button>}
     {expanded && <div className="beta-workshop-roster" role="region" aria-label="Workshop crew">
       <div><strong>Everyone in the workshop</strong><button type="button" onClick={() => setExpanded(false)} aria-label="Close workshop crew">×</button></div>
-      {seats.map((seat) => <button key={seat.id} type="button" onClick={() => open(seat.room)}><BetaGnome role={seat.role} size={24} active={seat.active} /><span>{seat.name}<small>{seat.remote || seat.group} · {seat.active ? verbs[seat.role] : "Ready"}</small></span></button>)}
+      {seats.map((seat) => <button key={seat.id} type="button" onClick={() => open(seat.room)} title={seat.group}><BetaGnome role={seat.role} size={24} active={seat.active} /><span>{seat.name}<small>{destination(seat).label} · {destination(seat).office}</small><small>{seat.active ? verbs[seat.role] : "Ready"} · {seat.task}</small><small className="beta-destination-path">{seat.group}</small></span></button>)}
     </div>}
   </div>;
 }
