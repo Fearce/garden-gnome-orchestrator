@@ -3,12 +3,13 @@ import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store.js";
 import type { ChatMessage, ChatRoomSummary, RelayDirector, RelayPresentAgent, Role, SharedRepo } from "../types.js";
 import { agentName, CHAT_PAGE_SIZE, DIRECTORS_ROOM, GENERAL_ROOM, homeWorkspace, isCollaborationRoom, normalizeWorkspace, repoRoom, ROLES } from "../types.js";
-import { clock, pacePeriodForModel, roleColor } from "../lib/format.js";
+import { clock, isCapParked, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
 import { useBetaGnomes, useClassicWorkshop } from "../lib/betaGnomes.js";
 import { useDirectorRest } from "../lib/directorRest.js";
 import { BetaWorkshop, type WorkshopSeat } from "./BetaWorkshop.js";
+import { FrozenGnome } from "./FrozenGnome.js";
 
 // One active task = one gnome in the office. The latest active run gives it its role (the gnome's hat
 // color + tool); the task gives it its repo (which decides who huddles with whom).
@@ -293,6 +294,18 @@ export function Office() {
   }, [runs, threads, sharedByWorkspace, onlineOffice.remoteAgents]);
 
   const liveCount = groups.reduce((n, g) => n + g.workers.length, 0);
+  // Parked tasks have no active run. Use the same durable marker as the frosted task cards,
+  // and the stage recorded by capParkMessage so a frozen QA gnome keeps its own hat.
+  const frozenWorkers = useMemo(() => {
+    const running = new Set(runs.map((run) => run.threadId));
+    return Object.values(threads).filter((thread) => isCapParked(thread) && !running.has(thread.id))
+      .sort((a, b) => a.updatedAt - b.updatedAt)
+      .map((thread) => {
+        const stage = /\((planner|researcher|implementor|qa|reader) stage\)/i.exec(thread.error ?? "");
+        const role = (stage?.[1]?.toLowerCase() ?? (/\bQA\b/i.test(thread.error ?? "") ? "qa" : "implementor")) as Role;
+        return { threadId: thread.id, role, workspace: homeWorkspace(thread), title: thread.title, reason: thread.error! };
+      });
+  }, [threads, runs]);
   const now = useNow(!workshop && liveCount > 0, 1000);
 
   // Coworkers reached through the Online Office who are NOT already standing in one of the huddles above
@@ -400,6 +413,21 @@ export function Office() {
     });
   }
 
+  for (const worker of frozenWorkers) {
+    const room = repoRoom(worker.workspace);
+    items.push({
+      key: `frozen:${worker.threadId}`,
+      label: `${nameOf(worker.threadId, worker.role)} in ${leaf(worker.workspace)} — waiting for reset`,
+      node: <button key={`frozen:${worker.threadId}`} className="office-frozen" data-frozen="true" data-thread-id={worker.threadId}
+        data-office-room={room} onClick={() => openOffice(room)}
+        title={`${worker.title}\n${worker.workspace}\n${worker.reason}\nClick to open project chat`}
+        aria-label={`${nameOf(worker.threadId, worker.role)}, frozen — waiting for reset. ${worker.workspace}. ${worker.title}. Open project chat`}>
+        <FrozenGnome size={24}><Gnome role={worker.role} size={24} /></FrozenGnome>
+        <span>{leaf(worker.workspace)}<small>❄ Waiting for reset</small></span>
+      </button>,
+    });
+  }
+
   // A pill's width follows its crowd, so the crowd sizes are part of what forces a re-measure.
   const layoutKey = items.map((item) => item.key).join("|") + "#" + groups.map((g) => g.workers.length + g.remotes.length).join(",") +
     "#" + remoteMachines.map((m) => m.agents.length).join(",") + `#workshop:${workshop}`;
@@ -419,7 +447,11 @@ export function Office() {
     return { id: `${agent.instanceId}:${agent.key}`, role: roleOf(agent.role), name: agent.name,
       room: sharedGroup ? repoRoom(sharedGroup.workspace) : GENERAL_ROOM, task: agent.title,
       group: sharedGroup?.workspace ?? agent.repoLabel, active: true, remote: agent.instanceName };
-  }) : [])] : [];
+  }) : []), ...frozenWorkers.map((worker) => ({
+    id: worker.threadId, role: worker.role, name: nameOf(worker.threadId, worker.role),
+    room: repoRoom(worker.workspace), task: worker.title, group: worker.workspace,
+    active: false, threadId: worker.threadId, freezeReason: worker.reason,
+  }))] : [];
 
   // The director is always "in the office": it gets a persistent walker at the head of the strip even
   // when no task agents are live, so the strip never collapses (which used to let the usage chips slide

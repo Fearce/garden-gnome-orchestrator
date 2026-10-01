@@ -4,6 +4,7 @@ import { observeGnomeMotion } from "../lib/betaGnomes.js";
 import { BetaGnome, RestFurnitureBack, RestFurnitureFront } from "./BetaGnome.js";
 import type { DirectorRest } from "../lib/directorRest.js";
 import { Gnome } from "./Gnome.js";
+import { FrozenGnome } from "./FrozenGnome.js";
 
 export interface WorkshopSeat {
   id: string;
@@ -17,6 +18,7 @@ export interface WorkshopSeat {
   threadId?: string;
   remote?: string;
   rest?: DirectorRest;
+  freezeReason?: string;
 }
 const verbs: Record<GnomeRole, string> = {
   director: "Directing", planner: "Planning", researcher: "Researching", implementor: "Building",
@@ -33,7 +35,12 @@ export function latestWorkshopMessage(chat: ChatMessage[], seats: WorkshopSeat[]
 
 /** Pick a cast that fits without adding rows. Leave enough room to actually walk. */
 function visibleCast(seats: WorkshopSeat[], capacity: number) {
-  const localSeats = seats.filter((seat) => !seat.remote);
+  const frozen = seats.filter((seat) => seat.freezeReason);
+  const available = seats.filter((seat) => !seat.freezeReason);
+  // Fill spare places with ice; in a busy wide lane reserve one without splitting a working pair.
+  const frozenCount = Math.min(frozen.length, Math.max(0, capacity - available.length, capacity >= 4 ? 1 : 0));
+  capacity -= frozenCount;
+  const localSeats = available.filter((seat) => !seat.remote);
   // Give each destination a representative before filling spare places with its crew.
   const rooms = new Set<string>();
   const representatives = localSeats.filter((seat) => {
@@ -41,7 +48,7 @@ function visibleCast(seats: WorkshopSeat[], capacity: number) {
     rooms.add(seat.room); return true;
   });
   const locals = [...representatives, ...localSeats.filter((seat) => !representatives.includes(seat))];
-  const visitors = seats.filter((seat) => seat.remote);
+  const visitors = available.filter((seat) => seat.remote);
   const visiting = capacity >= 3 ? Math.min(2, visitors.length, capacity - 2) : 0;
   const localCast = locals.slice(0, capacity - visiting);
   // A remote teammate of someone on stage gets the visiting place before unrelated workers.
@@ -51,13 +58,13 @@ function visibleCast(seats: WorkshopSeat[], capacity: number) {
   // Room representatives are chosen above, but scene order is by project, not by machine.
   // Put a visitor next to its local teammate even when more local workers share their repo.
   const placed = new Set<string>();
-  return selected.flatMap((seat) => {
+  return [...selected.flatMap((seat) => {
     if (placed.has(seat.id)) return [];
     const team = [seat, ...selected.filter((other) => other.id !== seat.id && !placed.has(other.id) && sameProject(seat, other))
       .sort((a, b) => Number(!!b.remote) - Number(!!a.remote))];
     team.forEach((member) => placed.add(member.id));
     return team;
-  });
+  }), ...frozen.slice(0, frozenCount)];
 }
 
 function sameProject(a: WorkshopSeat, b: WorkshopSeat) {
@@ -92,20 +99,21 @@ function choreography(cast: WorkshopSeat[], width: number) {
     const partner = all[partnerIndex];
     const direction = partner ? Math.sign(partner.home - actor.home) : 1;
     // Partners approach to shoulder distance; solos cover most of their own patch.
-    const travel = actor.seat.rest ? 0 : partner ? (partner.home - actor.home) / 2 - direction * 17 : Math.max(0, Math.min(24, actor.span - actor.labelWidth - 48));
+    const travel = actor.seat.rest || actor.seat.freezeReason ? 0 : partner ? (partner.home - actor.home) / 2 - direction * 17 : Math.max(0, Math.min(24, actor.span - actor.labelWidth - 48));
     const phase = partner ? Math.min(index, partnerIndex) : index;
     return { ...actor, partnerIndex, travel, delay: -(phase * 2.7), meeting: partner ? (actor.home + partner.home) / 2 + 16 : null };
   });
 }
 
 function seatActivity(seat: WorkshopSeat) {
-  return seat.active ? verbs[seat.role] : seat.rest === "sleep" ? "Sleeping" : seat.rest === "chair" ? "Taking a seat" : "Ready";
+  return seat.freezeReason ? "Frozen — waiting for reset" : seat.active ? verbs[seat.role] : seat.rest === "sleep" ? "Sleeping" : seat.rest === "chair" ? "Taking a seat" : "Ready";
 }
 
 /** The cast's artwork: the illustrated beta texture, or the original vector gnome (`classic`). A
  *  classic gnome stays in full color like a beta character; the workshop CSS walks and works it. */
-function WorkshopGnome({ classic, role, size, active, rest }: { classic: boolean; role: GnomeRole; size: number; active: boolean; rest?: DirectorRest }) {
-  return classic ? <ClassicWorkshopGnome role={role} size={size} rest={rest} /> : <BetaGnome role={role} size={size} active={active} rest={rest} />;
+function WorkshopGnome({ classic, role, size, active, rest, frozen }: { classic: boolean; role: GnomeRole; size: number; active: boolean; rest?: DirectorRest; frozen?: boolean }) {
+  const gnome = classic ? <ClassicWorkshopGnome role={role} size={size} rest={rest} /> : <BetaGnome role={role} size={size} active={active} rest={rest} />;
+  return frozen ? <FrozenGnome size={size}>{gnome}</FrozenGnome> : gnome;
 }
 
 /** The original gnome, wrapped so a resting director gets the same chair or bed as its beta self. */
@@ -170,6 +178,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
   const cast = visibleCast(seats, Math.max(1, Math.min(7, Math.floor(width / 156))));
   const actors = choreography(cast, width);
   const totalWorking = seats.filter((s) => s.active).length;
+  const totalFrozen = seats.filter((s) => s.freezeReason).length;
   const speaker = message && seats.find((seat) => message.remoteInstance
     ? seat.remote === message.remoteInstance && (seat.name === message.senderName || seat.role === message.role)
     : !seat.remote && (seat.runId === message.runId && !!message.runId || seat.threadId === message.threadId && !!message.threadId || seat.role === "director" && message.role === "director"));
@@ -181,15 +190,16 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
           className={`beta-workstation${seat.remote ? " beta-visitor" : ""}`}
           data-office-room={seat.room} data-speaking={speaker?.id === seat.id} data-working={seat.active}
           data-rest={seat.rest}
+          data-frozen={seat.freezeReason ? "true" : undefined}
           data-agent-id={seat.id}
           data-label-side={labelLeft ? "left" : "right"}
           data-partner={!seat.rest && partnerIndex >= 0 ? cast[partnerIndex]?.id : undefined}
           style={{ left: home, "--label-width": `${labelWidth}px`, "--journey": `${travel}px`, "--seat-delay": `${delay}s`, "--out-facing": travel < 0 ? -1 : 1, "--back-facing": travel < 0 ? 1 : -1 } as CSSProperties}
           onClick={() => open(seat.room)}
           aria-label={`${seat.name}, ${seatActivity(seat)}. ${seat.group}, ${seat.remote ? `visiting from ${seat.remote}` : "local office"}. ${seat.task}. Open chat${unread.get(seat.room) ? `, ${unread.get(seat.room)} new messages` : ""}`}
-          title={`${seat.name} · ${seatActivity(seat)}\n${seat.task}\n${seat.group}\n${seat.remote ? `Online office: ${seat.remote}` : "Local office"}\nClick to open chat`}>
-          <span className="beta-character"><WorkshopGnome classic={classic} role={seat.role} size={32} active={seat.active} rest={seat.rest} /></span>
-          <span className="beta-destination" aria-hidden="true"><strong>{destination(seat).label}</strong><small>{destination(seat).office}</small></span>
+          title={`${seat.name} · ${seatActivity(seat)}\n${seat.task}\n${seat.group}\n${seat.freezeReason ?? (seat.remote ? `Online office: ${seat.remote}` : "Local office")}\nClick to open chat`}>
+          <span className="beta-character"><WorkshopGnome classic={classic} role={seat.role} size={32} active={seat.active} rest={seat.rest} frozen={!!seat.freezeReason} /></span>
+          <span className="beta-destination" aria-hidden="true"><strong>{destination(seat).label}</strong><small>{seat.freezeReason ? "❄ Until reset" : destination(seat).office}</small></span>
           {seat.remote && <span className="beta-visitor-mark" aria-hidden="true">↗</span>}
           {(unread.get(seat.room) ?? 0) > 0 && <span className="beta-message-badge" aria-hidden="true">{Math.min(unread.get(seat.room)!, 99)}</span>}
         </button>)}
@@ -201,7 +211,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
       </div>
     </div>
     <div className="beta-workshop-controls">
-      <button type="button" className="beta-cast-more" onClick={() => setExpanded(!expanded)} aria-expanded={expanded} aria-label={`Show all ${seats.length} workshop gnomes`} title={`${seats.length} gnomes · ${online} online`}>{seats.length > cast.length ? `+${seats.length - cast.length}` : "···"}{online > 0 && <i />}</button>
+      <button type="button" className={`beta-cast-more${totalFrozen ? " has-frozen" : ""}`} onClick={() => setExpanded(!expanded)} aria-expanded={expanded} aria-label={`Show all ${seats.length} workshop gnomes`} title={`${seats.length} gnomes · ${online} online${totalFrozen ? ` · ${totalFrozen} waiting for reset` : ""}`}>{seats.length > cast.length ? `+${seats.length - cast.length}` : "···"}{online > 0 && <i />}</button>
       <button type="button" className="beta-motion-toggle" aria-label={motionPaused ? "Resume workshop animations" : "Pause workshop animations"} aria-pressed={motionPaused} onClick={() => setMotionPaused(!motionPaused)}>{motionPaused ? "▶" : "Ⅱ"}</button>
     </div>
     {message && <button type="button" className="beta-workshop-message has-message" onClick={() => open(message.room)} title={bubble}>
@@ -209,7 +219,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
     </button>}
     {expanded && <div className="beta-workshop-roster" role="region" aria-label="Workshop crew">
       <div><strong>Everyone in the workshop</strong><button type="button" onClick={() => setExpanded(false)} aria-label="Close workshop crew">×</button></div>
-      {seats.map((seat) => <button key={seat.id} type="button" onClick={() => open(seat.room)} title={seat.group}><WorkshopGnome classic={classic} role={seat.role} size={24} active={seat.active} rest={seat.rest} /><span>{seat.name}<small>{destination(seat).label} · {destination(seat).office}</small><small>{seatActivity(seat)} · {seat.task}</small><small className="beta-destination-path">{seat.group}</small></span></button>)}
+      {seats.map((seat) => <button key={seat.id} type="button" data-frozen={seat.freezeReason ? "true" : undefined} onClick={() => open(seat.room)} title={seat.freezeReason ?? seat.group}><WorkshopGnome classic={classic} role={seat.role} size={24} active={seat.active} rest={seat.rest} frozen={!!seat.freezeReason} /><span>{seat.name}<small>{destination(seat).label} · {destination(seat).office}</small><small>{seatActivity(seat)} · {seat.task}</small><small className="beta-destination-path">{seat.group}</small></span></button>)}
     </div>}
   </div>;
 }
