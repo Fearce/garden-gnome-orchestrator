@@ -105,6 +105,8 @@ function buildHello(ctx: WsContext): ServerEvent {
     questions: ctx.db.listOpenQuestions(),
     director: ctx.db.listDirectorMessages(SNAPSHOT_DIRECTOR_MSGS),
     directorStatus: ctx.director.status(),
+    directorBusy: ctx.director.activeWorkCount() > 0,
+    directorIdleSince: ctx.director.idleSince(),
     accounts: ctx.accounts.dto(),
     // Never block the first usable board state on a recursive scan of ~/.codex/sessions.
     codexUsage: readCodexUsageForSnapshot(),

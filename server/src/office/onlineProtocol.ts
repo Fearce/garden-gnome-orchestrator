@@ -1,6 +1,6 @@
 // The wire contract between an orchestrator instance and the Online Office relay.
 //
-// MIRRORED BYTE-FOR-BYTE from `relay/src/protocol.ts`. The two packages deliberately do not
+// MIRRORED BYTE-FOR-BYTE in `server/src/office/onlineProtocol.ts`. The two packages deliberately do not
 // import each other (the relay ships as a ~40 MB container with one dependency; the orchestrator server
 // carries the Agent SDK and a native sqlite build), so this file is copied the same way `types.ts` is
 // copied into `web/src/types.ts`. Change one, change the other, and bump PROTOCOL when the change is
@@ -55,6 +55,7 @@ export interface RelayDirector {
   name: string; // the director persona's own name on that machine
   agents: number;
   since: number; // when that instance connected
+  busy?: boolean; // The director's own turn, independent of its workers. Optional for older peers.
 }
 
 /** An agent as seen by everyone else: the reporter's own presence entry, stamped with who reported it. */
@@ -87,7 +88,7 @@ export const ROOM_HISTORY = 60;
 export type ClientFrame =
   /** `director` — when present — both names the human at this console and opts the instance into the
    *  directors' room. Optional, so a client that predates the room simply never enters it. */
-  | { t: "presence"; agents: RelayAgent[]; director?: { name: string } }
+  | { t: "presence"; agents: RelayAgent[]; director?: { name: string; busy?: boolean } }
   /** `room` is the sender's own room and stays the addressing unit. `rooms` — when present — is every
    *  room the line belongs to (the sender's whole identity group), so one post reaches a fork's room as
    *  well as the upstream's. The relay still delivers ONE message with ONE id, stamped per receiver with

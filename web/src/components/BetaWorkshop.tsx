@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import type { ChatMessage, GnomeRole } from "../types.js";
 import { observeGnomeMotion } from "../lib/betaGnomes.js";
 import { BetaGnome } from "./BetaGnome.js";
+import type { DirectorRest } from "../lib/directorRest.js";
 
 export interface WorkshopSeat {
   id: string;
@@ -14,6 +15,7 @@ export interface WorkshopSeat {
   runId?: string;
   threadId?: string;
   remote?: string;
+  rest?: DirectorRest;
 }
 const verbs: Record<GnomeRole, string> = {
   director: "Directing", planner: "Planning", researcher: "Researching", implementor: "Building",
@@ -38,9 +40,12 @@ function visibleCast(seats: WorkshopSeat[], capacity: number) {
     rooms.add(seat.room); return true;
   });
   const locals = [...representatives, ...localSeats.filter((seat) => !representatives.includes(seat))];
-  const visitors = seats.filter((seat) => seat.remote);
+  const visitors = seats.filter((seat) => seat.remote).sort((a, b) => Number(b.role === "director") - Number(a.role === "director"));
   const visiting = capacity >= 3 ? Math.min(2, visitors.length, capacity - 2) : 0;
-  return [...locals.slice(0, capacity - visiting), ...visitors.slice(0, visiting + Math.max(0, capacity - visiting - locals.length))];
+  const selected = [...locals.slice(0, capacity - visiting), ...visitors.slice(0, visiting + Math.max(0, capacity - visiting - locals.length))];
+  // Neighbouring chairs share a table; keep the owner's director first and every destination labelled.
+  const chairs = selected.filter((seat) => seat.rest === "chair");
+  return selected.flatMap((seat) => seat === chairs[0] ? chairs : seat.rest === "chair" ? [] : [seat]);
 }
 
 function destination(seat: WorkshopSeat) {
@@ -50,16 +55,18 @@ function destination(seat: WorkshopSeat) {
 
 /** Positions are recomputed only on resize/cast changes. CSS runs the shared walk/work timeline. */
 function choreography(cast: WorkshopSeat[], width: number) {
-  const span = width / Math.max(1, cast.length);
+  // Quiet offices gather around a small table instead of stretching it across the whole header.
+  const span = Math.min(176, width / Math.max(1, cast.length));
   const paired = new Set<number>();
   return cast.map((seat, index) => {
-    const partner = paired.has(index) ? -1 : cast.findIndex((other, i) => i === index + 1 && !paired.has(i) && other.active && (
-      seat.active && other.group === seat.group || seat.role === "director" && !seat.remote && !other.remote
+    const partner = paired.has(index) ? -1 : cast.findIndex((other, i) => i === index + 1 && !paired.has(i) && (
+      seat.rest === "chair" && other.rest === "chair" ||
+      seat.active && other.active && (other.group === seat.group || seat.role === "director" && !seat.remote && !other.remote)
     ));
     if (partner >= 0) { paired.add(index); paired.add(partner); }
-    const labelWidth = Math.max(24, Math.min(96, span - 56));
+    const labelWidth = Math.max(24, Math.min(92, span - (seat.rest === "sleep" ? 76 : 56)));
     const labelLeft = partner >= 0;
-    const home = span * index + (labelLeft ? labelWidth + 8 : 8);
+    const home = span * index + (labelLeft ? labelWidth + 8 : seat.rest === "sleep" ? 18 : 8);
     return { seat, home, partner, span, labelWidth, labelLeft };
   }).map((actor, index, all) => {
     const lead = all.findIndex((other) => other.partner === index);
@@ -67,10 +74,14 @@ function choreography(cast: WorkshopSeat[], width: number) {
     const partner = all[partnerIndex];
     const direction = partner ? Math.sign(partner.home - actor.home) : 1;
     // Partners approach to shoulder distance; solos cover most of their own patch.
-    const travel = partner ? (partner.home - actor.home) / 2 - direction * 17 : Math.max(0, Math.min(24, actor.span - actor.labelWidth - 48));
+    const travel = actor.seat.rest ? 0 : partner ? (partner.home - actor.home) / 2 - direction * 17 : Math.max(0, Math.min(24, actor.span - actor.labelWidth - 48));
     const phase = partner ? Math.min(index, partnerIndex) : index;
     return { ...actor, partnerIndex, travel, delay: -(phase * 2.7), meeting: partner ? (actor.home + partner.home) / 2 + 16 : null };
   });
+}
+
+function seatActivity(seat: WorkshopSeat) {
+  return seat.active ? verbs[seat.role] : seat.rest === "sleep" ? "Sleeping" : seat.rest === "chair" ? "Taking a seat" : "Ready";
 }
 
 /** One 48px lane. Speech and the roster float over the board, never reserve header space. */
@@ -136,19 +147,24 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
         {actors.map(({ seat, home, travel, delay, partnerIndex, labelWidth, labelLeft }) => <button type="button" key={seat.id}
           className={`beta-workstation${seat.remote ? " beta-visitor" : ""}`}
           data-office-room={seat.room} data-speaking={speaker?.id === seat.id} data-working={seat.active}
+          data-rest={seat.rest}
           data-agent-id={seat.id}
           data-label-side={labelLeft ? "left" : "right"}
-          data-partner={partnerIndex >= 0 ? cast[partnerIndex]?.id : undefined}
+          data-partner={!seat.rest && partnerIndex >= 0 ? cast[partnerIndex]?.id : undefined}
           style={{ left: home, "--label-width": `${labelWidth}px`, "--journey": `${travel}px`, "--seat-delay": `${delay}s`, "--out-facing": travel < 0 ? -1 : 1, "--back-facing": travel < 0 ? 1 : -1 } as CSSProperties}
           onClick={() => open(seat.room)}
-          aria-label={`${seat.name}, ${seat.active ? verbs[seat.role] : "ready"}. ${seat.group}, ${seat.remote ? `visiting from ${seat.remote}` : "local office"}. ${seat.task}. Open chat${unread.get(seat.room) ? `, ${unread.get(seat.room)} new messages` : ""}`}
-          title={`${seat.name} · ${seat.active ? verbs[seat.role] : "Ready"}\n${seat.task}\n${seat.group}\n${seat.remote ? `Online office: ${seat.remote}` : "Local office"}\nClick to open chat`}>
-          <span className="beta-character"><BetaGnome role={seat.role} size={32} active={seat.active} /></span>
+          aria-label={`${seat.name}, ${seatActivity(seat)}. ${seat.group}, ${seat.remote ? `visiting from ${seat.remote}` : "local office"}. ${seat.task}. Open chat${unread.get(seat.room) ? `, ${unread.get(seat.room)} new messages` : ""}`}
+          title={`${seat.name} · ${seatActivity(seat)}\n${seat.task}\n${seat.group}\n${seat.remote ? `Online office: ${seat.remote}` : "Local office"}\nClick to open chat`}>
+          <span className="beta-character"><BetaGnome role={seat.role} size={32} active={seat.active} rest={seat.rest} /></span>
           <span className="beta-destination" aria-hidden="true"><strong>{destination(seat).label}</strong><small>{destination(seat).office}</small></span>
           {seat.remote && <span className="beta-visitor-mark" aria-hidden="true">↗</span>}
           {(unread.get(seat.room) ?? 0) > 0 && <span className="beta-message-badge" aria-hidden="true">{Math.min(unread.get(seat.room)!, 99)}</span>}
         </button>)}
-        {actors.filter((actor) => actor.partner >= 0).map((actor) => <span key={`project:${actor.seat.id}`} className="beta-shared-project" aria-hidden="true"
+        {actors.filter((actor) => actor.seat.rest === "chair" && (actor.partner >= 0 || actor.partnerIndex < 0 && actor.seat.remote)).map((actor) => <span key={`table:${actor.seat.id}`} className="beta-directors-table" aria-hidden="true"
+          style={{ left: actor.home + 24, width: actor.partner >= 0 ? actors[actor.partner]!.home - actor.home - 16 : 25 }}>
+          <svg viewBox="0 0 100 30" preserveAspectRatio="none" fill="none"><path d="m16 9-3 20m72-20 3 20M20 22h60" stroke="#a5754f" strokeWidth="5" /><path d="M3 7q47-11 94 0v8q-47 8-94 0z" fill="#69483a" stroke="#d4a36b" strokeWidth="2" /><ellipse cx="50" cy="7" rx="47" ry="6" fill="#be9060" /><path d="M18 7q28-5 62 0M28 10h38" stroke="#e0b880" strokeWidth="1" /><path d="M47 1v7q7 4 14 0V1z" fill="#ebd9b0" /><path d="M61 2q10-1 7 5h-7" stroke="#ebd9b0" strokeWidth="2" /></svg>
+        </span>)}
+        {actors.filter((actor) => actor.partner >= 0 && !actor.seat.rest).map((actor) => <span key={`project:${actor.seat.id}`} className="beta-shared-project" aria-hidden="true"
           style={{ left: actor.meeting!, "--seat-delay": `${actor.delay}s` } as CSSProperties}>
           <svg viewBox="0 0 24 18" fill="none"><path d="M2 2h20v14H2z" fill="#ead8af" stroke="#c59855" /><path d="M6 6h7M6 9h5M6 12h9" stroke="#64787e" strokeWidth="1.4" /><path className="beta-shared-pencil" d="m17 3-4 8" stroke="#bb6953" strokeWidth="2" /></svg>
           <i>✦</i>
@@ -164,7 +180,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice }: {
     </button>}
     {expanded && <div className="beta-workshop-roster" role="region" aria-label="Workshop crew">
       <div><strong>Everyone in the workshop</strong><button type="button" onClick={() => setExpanded(false)} aria-label="Close workshop crew">×</button></div>
-      {seats.map((seat) => <button key={seat.id} type="button" onClick={() => open(seat.room)} title={seat.group}><BetaGnome role={seat.role} size={24} active={seat.active} /><span>{seat.name}<small>{destination(seat).label} · {destination(seat).office}</small><small>{seat.active ? verbs[seat.role] : "Ready"} · {seat.task}</small><small className="beta-destination-path">{seat.group}</small></span></button>)}
+      {seats.map((seat) => <button key={seat.id} type="button" onClick={() => open(seat.room)} title={seat.group}><BetaGnome role={seat.role} size={24} active={seat.active} rest={seat.rest} /><span>{seat.name}<small>{destination(seat).label} · {destination(seat).office}</small><small>{seatActivity(seat)} · {seat.task}</small><small className="beta-destination-path">{seat.group}</small></span></button>)}
     </div>}
   </div>;
 }

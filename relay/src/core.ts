@@ -43,7 +43,7 @@ interface PeerState {
   rooms: Set<string>; // office + one per repo this instance has an agent in (+ directors, once declared)
   /** The human at that console, once the instance has declared one. Null is what keeps a pre-directors
    *  client out of the room rather than merely quiet in it. */
-  director: { name: string } | null;
+  director: { name: string; busy?: boolean } | null;
   since: number;
 }
 
@@ -205,7 +205,10 @@ export class RelayCore {
     // A console that names its director is a console whose human wants to be in the room with the other
     // humans — whether or not that machine has any agent working, which is exactly when the directors'
     // room is most useful (nothing running, two people deciding what to run).
-    const director = frame.director ? { name: clip(frame.director.name, 40) || "director" } : null;
+    const director = frame.director ? {
+      name: clip(frame.director.name, 40) || "director",
+      ...(typeof frame.director.busy === "boolean" ? { busy: frame.director.busy } : {}),
+    } : null;
     const rooms = new Set<string>([OFFICE_ROOM]);
     if (director) rooms.add(DIRECTORS_ROOM);
     // An instance is in a room per identity its checkouts answer to, not just per `repoKey`: the side
@@ -374,6 +377,7 @@ export class RelayCore {
         name: st.director.name,
         agents: st.agents.length,
         since: st.since,
+        ...(st.director.busy !== undefined ? { busy: st.director.busy } : {}),
       });
     }
     return out;

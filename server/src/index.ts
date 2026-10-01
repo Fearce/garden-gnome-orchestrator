@@ -234,6 +234,7 @@ async function main(): Promise<void> {
     onRemoteChat: (msg, workspaces) => manager.receiveRemoteChat(msg, workspaces),
     onDirectorChat: (msg) => manager.receiveDirectorChat(msg),
     directorName: () => manager.directorName(),
+    directorBusy: () => director.activeWorkCount() > 0,
     onRemoteJoin: (repoLabel, workspaces, joiners) => manager.remoteTeammatesJoined(repoLabel, workspaces, joiners),
   });
   manager.attachOnlineOffice(onlineOffice);

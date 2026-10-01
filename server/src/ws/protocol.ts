@@ -105,6 +105,8 @@ export type ServerEvent =
       questions: Question[];
       director: DirectorMessage[];
       directorStatus: DirectorStatus | null;
+      directorBusy?: boolean;
+      directorIdleSince?: number | null;
       accounts: AccountDTO[];
       codexUsage: CodexUsageDTO | null;
       grokUsage: GrokUsageDTO | null;
@@ -231,7 +233,7 @@ export type ServerEvent =
   | { type: "director.delta"; text: string }
   | { type: "director.message"; message: DirectorMessage }
   | { type: "director.tool"; name: string; input: unknown }
-  | { type: "director.busy"; busy: boolean }
+  | { type: "director.busy"; busy: boolean; idleSince?: number | null }
   | { type: "director.status"; status: DirectorStatus | null }
   // Reply to a director.search: everything matching `query`, newest-first — the director-conversation
   // hits in `messages`, and in `tasks` the tasks whose title, brief or conversation matches. Echoing

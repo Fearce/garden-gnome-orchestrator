@@ -7,6 +7,7 @@ import { clock, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
 import { useBetaGnomes } from "../lib/betaGnomes.js";
+import { useDirectorRest } from "../lib/directorRest.js";
 import { BetaWorkshop, type WorkshopSeat } from "./BetaWorkshop.js";
 
 // One active task = one gnome in the office. The latest active run gives it its role (the gnome's hat
@@ -237,6 +238,8 @@ export function Office() {
   const officeRoom = useStore((s) => s.officeRoom);
   const openOffice = useStore((s) => s.openOffice);
   const directorBusy = useStore((s) => s.directorBusy);
+  const directorIdleSince = useStore((s) => s.directorIdleSince);
+  const directorRest = useDirectorRest(directorBusy, directorIdleSince, beta);
   const directorStatus = useStore((s) => s.directorStatus);
   const onlineOffice = useStore((s) => s.onlineOffice);
   const nameOverrides = useStore((s) => s.nameOverrides);
@@ -402,7 +405,8 @@ export function Office() {
 
   const workshopSeats: WorkshopSeat[] = beta ? [{
     id: "director", role: "director", name: directorName, room: directorRoom,
-    task: directorBusy ? "Coordinating your work" : "Ready for your next idea", group: "The office", active: directorBusy,
+    task: directorBusy ? "Coordinating your work" : directorRest === "sleep" ? "Asleep after eight hours off duty — a new request wakes me" : "Taking a seat until your next idea",
+    group: "The office", active: directorBusy, rest: directorRest,
   }, ...groups.flatMap((group) => group.workers.map((worker) => ({
     id: worker.threadId, role: worker.role, name: nameOf(worker.threadId, worker.role),
     room: repoRoom(worker.workspace), task: worker.title, group: group.workspace, active: true,
@@ -415,7 +419,8 @@ export function Office() {
   }) : []), ...(onlineOffice.state === "online" ? onlineOffice.directors.map((director) => ({
     id: `visiting-director:${director.instanceId}`, role: "director" as const, name: director.name,
     room: DIRECTORS_ROOM, task: `${director.agents} agents at work`, group: director.instanceName,
-    active: director.agents > 0, remote: director.instanceName,
+    active: director.busy === true, remote: director.instanceName,
+    rest: director.busy === true ? undefined : "chair" as const,
   })) : [])] : [];
 
   // The director is always "in the office": it gets a persistent walker at the head of the strip even

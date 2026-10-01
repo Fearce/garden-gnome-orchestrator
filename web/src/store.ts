@@ -168,6 +168,7 @@ interface State {
   director: DirectorItem[];
   directorDraft: string;
   directorBusy: boolean;
+  directorIdleSince: number | null;
   directorStatus: DirectorStatus | null;
   // Owner messages awaiting a durable server echo. Kept outside server-owned histories so a hello
   // snapshot can reconcile them by id without ever persisting client-only delivery state.
@@ -1353,6 +1354,7 @@ export const useStore = create<State>((set) => ({
   director: [],
   directorDraft: "",
   directorBusy: false,
+  directorIdleSince: null,
   directorStatus: null,
   // Text-only owner messages survive a reload until their durable server receipt arrives. Their
   // idempotent commands were restored into outboundCommands before this state is created.
@@ -2166,6 +2168,8 @@ function applyEvent(ev: ServerEvent): void {
         questions: ev.questions,
         director,
         directorStatus: ev.directorStatus ?? null,
+        directorBusy: ev.directorBusy ?? false,
+        directorIdleSince: ev.directorIdleSince ?? ev.director.at(-1)?.createdAt ?? null,
         accounts: ev.accounts,
         codexUsage: ev.codexUsage ?? null,
         grokUsage: ev.grokUsage ?? null,
@@ -2795,7 +2799,7 @@ function applyEvent(ev: ServerEvent): void {
       }));
       break;
     case "director.busy":
-      useStore.setState({ directorBusy: ev.busy });
+      useStore.setState({ directorBusy: ev.busy, directorIdleSince: ev.busy ? null : ev.idleSince ?? Date.now() });
       break;
     case "director.status":
       useStore.setState({ directorStatus: ev.status });

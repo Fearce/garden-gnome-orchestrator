@@ -122,7 +122,10 @@ try {
       stop: async () => {},
     };
   };
+  const overnightIdle = Date.now() - 9 * 60 * 60 * 1000;
+  db.kvSet("director_idle_since", String(overnightIdle));
   const director = new Director(mgr, db, hub, {} as Scheduler, {} as OperatorNotes);
+  assert.equal(director.idleSince(), overnightIdle, "the director's rest clock survives a restart");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const dInternals = director as any;
   dInternals.chooseTarget = async () => target;
@@ -130,6 +133,10 @@ try {
 
   director.handleUserMessage("first message");
   await settle();
+  assert.equal(director.idleSince(), null, "real director work wakes a sleeping director");
+  const restartAt = Date.now();
+  assert.ok(new Director(mgr, db, hub, {} as Scheduler, {} as OperatorNotes).idleSince()! >= restartAt,
+    "a restart during work starts a fresh rest clock instead of counting busy time as AFK");
   assert.equal(runs.length, 1);
   assert.ok(systemText(runs[0]!.cfg).includes(RULES), "a fresh session gets the directives in its system prompt");
   assert.ok(!text(runs[0]!.started).includes(`<${TAG} updated`), "…and no redundant turn block");
@@ -164,6 +171,9 @@ try {
   await settle();
   assert.ok(!text(runs[2]!.started).includes(TAG), "a resume with an unchanged version adds nothing");
   director.cancelTurn();
+  const restStarted = director.idleSince();
+  assert.ok(restStarted != null && restStarted >= overnightIdle + 8 * 60 * 60 * 1000, "finishing work starts a fresh rest period");
+  assert.equal(new Director(mgr, db, hub, {} as Scheduler, {} as OperatorNotes).idleSince(), restStarted, "the new rest period is persisted");
 
   // ---- dispatch effort: a directive naming an effort can now pin it, through both transports ----
   const dispatched: DispatchInput[] = [];

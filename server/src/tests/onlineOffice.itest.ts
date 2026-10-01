@@ -355,6 +355,7 @@ async function main(): Promise<void> {
     const chats: { msg: RelayChat; workspaces: string[] }[] = [];
     const joins: { repoLabel: string; workspaces: string[]; joiners: RelayPresentAgent[] }[] = [];
     const directorLines: RelayChat[] = [];
+    let directorBusy = false;
     forgetRepoIdentity();
 
     const office: OnlineOfficeType = new OnlineOffice({
@@ -364,6 +365,7 @@ async function main(): Promise<void> {
       onRemoteChat: (msg, workspaces) => chats.push({ msg, workspaces }),
       onDirectorChat: (msg) => directorLines.push(msg),
       directorName: () => "Kevin",
+      directorBusy: () => directorBusy,
       onRemoteJoin: (repoLabel, workspaces, joiners) => joins.push({ repoLabel, workspaces, joiners }),
     });
     try {
@@ -386,6 +388,13 @@ async function main(): Promise<void> {
       // Naming the director IS the opt-in: it is what puts this console in the room with the other
       // humans, and a client that never sends it must never be handed a line from there.
       check("…and the presence frame names the human at this console", relay.presence().at(-1)!.director?.name === "Kevin", JSON.stringify(relay.presence().at(-1)!.director));
+      check("director can rest while its agents work", relay.presence().at(-1)!.director?.busy === false);
+      directorBusy = true;
+      hub.publish({ type: "director.busy", busy: true, idleSince: null });
+      check("director activity publishes immediately without waiting for a heartbeat", await until(() => relay.presence().at(-1)?.director?.busy === true));
+      directorBusy = false;
+      hub.publish({ type: "director.busy", busy: false, idleSince: Date.now() });
+      check("director returns to its chair when its own turn ends", await until(() => relay.presence().at(-1)?.director?.busy === false));
 
       // A remote agent appears in the same repository → the caller is told, and it becomes a peer.
       relay.push({ t: "presence", agents: [remoteAgent()] });

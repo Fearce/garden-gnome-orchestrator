@@ -39,7 +39,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
       server.onMessage(raw => {
         const msg=JSON.parse(String(raw));
         if(msg.type !== 'hello') return;
-        hello={...msg,threads,runs,findings:[],questions:[],director:[],chat:[],chatRooms:[],schedules:[],goals:[],notes:[],coworkSessions:[],onlineOffice,nameOverrides:Object.fromEntries(roles.map((role,i)=>[`${threads[i].id}::${role}`,names[i]])),settings:{...msg.settings,directorName:'Merlin'},directorStatus:null};
+        hello={...msg,threads,runs,findings:[],questions:[],director:[],chat:[],chatRooms:[],schedules:[],goals:[],notes:[],coworkSessions:[],onlineOffice,nameOverrides:Object.fromEntries(roles.map((role,i)=>[`${threads[i].id}::${role}`,names[i]])),settings:{...msg.settings,directorName:'Merlin'},directorStatus:null,directorBusy:true,directorIdleSince:null};
         socket.send(JSON.stringify(hello));
       });
     });
@@ -149,7 +149,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     currentSocket.send(JSON.stringify({type:'office.online',office:{...onlineOffice,state:'off'}}));
     await page.waitForFunction(()=>document.querySelectorAll('.beta-visitor').length===0);
     // A message in an idle office still expires; no active worker interval can hide the bug.
-    currentSocket.send(JSON.stringify({...hello,threads:[],runs:[],onlineOffice:{...onlineOffice,remoteAgents:[]},chat:[{...fresh,id:'idle-message',room:'directors',scope:'directors',createdAt:Date.now()-14_000}]}));
+    currentSocket.send(JSON.stringify({...hello,threads:[],runs:[],directorBusy:false,directorIdleSince:Date.now(),onlineOffice:{...onlineOffice,remoteAgents:[]},chat:[{...fresh,id:'idle-message',room:'directors',scope:'directors',createdAt:Date.now()-14_000}]}));
     await page.locator('.beta-workshop-message.has-message').waitFor();
     await page.locator('.beta-workshop-message.has-message').waitFor({state:'detached',timeout:4000});
     // Cross-tab preference and live rollback.

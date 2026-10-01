@@ -43,6 +43,21 @@ function newCore() {
 }
 
 const chats = (frames: ServerFrame[]) => frames.filter((f) => f.t === "chat");
+
+// Director work is distinct from the crew's work, and changes without a roster change.
+{
+  const core = newCore();
+  const owner = fakePeer("rest-owner"), visitor = fakePeer("rest-visitor");
+  core.attach(owner); core.attach(visitor);
+  core.onFrame(visitor.connId, { t: "presence", agents: [agent()], director: { name: "Visitor", busy: false } });
+  assert.equal(core.directorsFor(owner.instanceId)[0]?.busy, false, "a director can sit while a worker runs");
+  owner.drain();
+  core.onFrame(visitor.connId, { t: "presence", agents: [agent()], director: { name: "Visitor", busy: true } });
+  const frame = owner.drain().find(f => f.t === "presence");
+  assert.equal(frame?.t === "presence" && frame.directors?.[0]?.busy, true, "own work wakes the director immediately");
+  core.onFrame(visitor.connId, { t: "presence", agents: [], director: { name: "Legacy" } });
+  assert.equal(core.directorsFor(owner.instanceId)[0]?.busy, undefined, "old peers remain compatible without claiming activity");
+}
 const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "presence");
 
 // A joining instance gets a welcome carrying its identity and the office backlog.

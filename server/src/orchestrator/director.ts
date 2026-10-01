@@ -24,6 +24,8 @@ import { normalizeDirectorDirectives, withDirectorDirectivesUpdate } from "../ag
 const MAX_DIRECTOR_FAILOVERS = 6;
 const MAX_CLI_ACTIONS = 20;
 const DIRECTOR_TARGET_KV = "director_target_key";
+const DIRECTOR_IDLE_KV = "director_idle_since";
+const DIRECTOR_BUSY_KV = "director_was_working";
 /** Written while auto model selection also picked the director; read by nothing now, cleared on boot. */
 const RETIRED_DIRECTOR_TARGET_AUTO_KV = "director_target_auto";
 
@@ -40,6 +42,7 @@ export class Director {
    *  session that will not see a rebuilt system prompt (a live Claude query, a resumed CLI session). */
   private readonly directivesSeen = new Map<string, string>();
   private busy = false;
+  private idleStartedAt: number;
   /** Planned restarts admit steering into this already-live turn, but never start a fresh Director
    *  process underneath a committed process-tree bounce. Attached after the coordinator exists. */
   private restartDraining: () => boolean = () => false;
@@ -81,6 +84,13 @@ export class Director {
     private readonly notes: OperatorNotes,
     private readonly goals?: GoalRunner,
   ) {
+    const savedIdle = Number(db.kvGet(DIRECTOR_IDLE_KV));
+    const lastMessage = db.listDirectorMessages(1)[0]?.createdAt ?? 0;
+    const now = Date.now();
+    this.idleStartedAt = db.kvGet(DIRECTOR_BUSY_KV) === "1" ? now
+      : Math.min(now, Math.max(Number.isFinite(savedIdle) ? savedIdle : 0, lastMessage) || now);
+    db.kvSet(DIRECTOR_IDLE_KV, String(this.idleStartedAt));
+    db.kvSet(DIRECTOR_BUSY_KV, "0");
     const key = db.kvGet(DIRECTOR_TARGET_KV);
     db.kvDelete(RETIRED_DIRECTOR_TARGET_AUTO_KV);
     if (key) {
@@ -105,6 +115,11 @@ export class Director {
   /** One long-lived Director turn is one top-level unit the restart coordinator must drain. */
   activeWorkCount(): number {
     return this.busy ? 1 : 0;
+  }
+
+  /** Durable rest clock, independent of browser input or the workers the director dispatched. */
+  idleSince(): number | null {
+    return this.busy ? null : this.idleStartedAt;
   }
 
   private restartDrainActive(): boolean {
@@ -474,7 +489,11 @@ export class Director {
   private setBusy(b: boolean): void {
     if (this.busy === b) return;
     this.busy = b;
-    this.hub.publish({ type: "director.busy", busy: b });
+    // Stamp both transitions: an interrupted turn also starts fresh after a server restart.
+    this.idleStartedAt = Date.now();
+    this.db.kvSet(DIRECTOR_IDLE_KV, String(this.idleStartedAt));
+    this.db.kvSet(DIRECTOR_BUSY_KV, b ? "1" : "0");
+    this.hub.publish({ type: "director.busy", busy: b, idleSince: this.idleSince() });
     if (!b) this.restartWorkChanged();
   }
 

@@ -2,27 +2,49 @@ import { memo, useEffect, useRef, type CSSProperties } from "react";
 import type { GnomeRole } from "../types.js";
 import { observeGnomeMotion } from "../lib/betaGnomes.js";
 import { betaGnomeAtlas, betaGnomeCast } from "../lib/betaGnomeArt.js";
+import type { DirectorRest } from "../lib/directorRest.js";
 
 /** Artwork is a single shared texture. Only the small tool rig and transforms animate. */
-export const BetaGnome = memo(function BetaGnome({ role, size = 30, active = true, className = "", skin }: {
-  role: GnomeRole; size?: number; active?: boolean; className?: string; skin?: string | null;
+export const BetaGnome = memo(function BetaGnome({ role, size = 30, active = true, className = "", skin, rest }: {
+  role: GnomeRole; size?: number; active?: boolean; className?: string; skin?: string | null; rest?: DirectorRest;
 }) {
   const ref = useRef<HTMLSpanElement>(null);
   const { column, row, accent } = betaGnomeCast[role];
   // At avatar sizes moving tools become noise; keep the illustration crisp and still.
-  const animated = active && size >= 28;
+  const animated = active && !rest && size >= 28;
   const texture: CSSProperties = { backgroundImage: `url("${betaGnomeAtlas}")`, backgroundPosition: `${column * 100 / 3}% ${row * 100}%` };
   useEffect(() => {
-    if (animated && ref.current) return observeGnomeMotion(ref.current);
-  }, [animated]);
+    if ((animated || rest) && ref.current) return observeGnomeMotion(ref.current);
+  }, [animated, rest]);
   return <span ref={ref} aria-hidden="true" data-role={role} data-active={active} data-animated={animated}
-    data-skin={skin || undefined} className={`gnome beta-gnome ${className}`}
+    data-skin={skin || undefined} data-rest={rest} className={`gnome beta-gnome ${className}`}
     style={{ width: size, height: size * 1.5, "--gnome-accent": accent } as CSSProperties}>
     <span className="beta-gnome-shadow" />
+    {rest === "chair" && <svg className="beta-rest-chair" viewBox="0 0 100 150" fill="none">
+      <path d="M15 145V76q0-7 7-7h53q7 0 7 7v69M17 110h64" stroke="#805438" strokeWidth="7" strokeLinejoin="round" />
+      <path d="M24 78h49v40H24z" fill="#28585c" stroke="#c29b64" strokeWidth="2" />
+      <path d="M30 82h37v29H30z" stroke="#71a194" strokeOpacity=".5" /><path d="m48 85 4 7-4 7-4-7z" fill="#c8b07b" />
+    </svg>}
     <span className="beta-gnome-body" style={texture} />
     <span className="beta-gnome-boot beta-boot-left" style={texture} />
     <span className="beta-gnome-boot beta-boot-right" style={texture} />
-    {size >= 28 && <ToolRig role={role} />}
+    {rest === "chair" && <svg className="beta-rest-seat" viewBox="0 0 100 150" fill="none">
+      <path d="M17 120h64v9H17z" fill="#396c69" stroke="#d0a76e" strokeWidth="2" />
+      <path d="M14 108h17m38 0h16M19 108v19m61-19v19" stroke="#ae7b4f" strokeWidth="5" strokeLinecap="round" />
+    </svg>}
+    {rest === "sleep" && <>
+      <svg className="beta-rest-bed" viewBox="0 0 160 150" fill="none">
+        <path d="M9 144V87q0-9 9-9h6v49h127v17M144 129v-26q0-7 7-7v48" stroke="#b28258" strokeWidth="7" strokeLinecap="round" />
+        <path d="M18 111h127v22H18z" fill="#e7d8b4" stroke="#976948" strokeWidth="2" />
+        <path d="M25 105q12-8 27 1l-3 14H24z" fill="#fff0cf" stroke="#d2b986" strokeWidth="2" />
+        <path className="beta-sleep-blanket" d="M58 103q44-7 82 6v22H53q6-13 5-28Z" fill="#565582" stroke="#aba0d2" strokeWidth="2" />
+        <path d="M69 108v18m21-19v20m21-18v18m21-15v15M61 116h76" stroke="#8a80b3" strokeWidth="1.5" />
+        <path d="m93 111 2 4 5 1-4 3 1 5-4-3-4 3 1-5-4-3 5-1z" fill="#e9cd8b" />
+        <path d="M17 133h130" stroke="#d4a273" strokeWidth="4" />
+      </svg>
+      <span className="beta-sleep-dream">z<span>z</span><span>z</span></span>
+    </>}
+    {!rest && size >= 28 && <ToolRig role={role} />}
     {skin && <span className="beta-gnome-charm">✦</span>}
   </span>;
 });

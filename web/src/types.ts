@@ -1330,6 +1330,7 @@ export interface RelayDirector {
   name: string;
   agents: number;
   since: number;
+  busy?: boolean; // Director's own activity; legacy peers may not report it.
 }
 
 /** A repository whose work is split across machines. `workspaces` are the LOCAL checkouts that resolve to
@@ -1353,6 +1354,8 @@ export type ServerEvent =
       questions: Question[];
       director: DirectorMessage[];
       directorStatus: DirectorStatus | null;
+      directorBusy?: boolean;
+      directorIdleSince?: number | null;
       accounts: AccountDTO[];
       codexUsage: CodexUsageDTO | null;
       grokUsage: GrokUsageDTO | null;
@@ -1458,7 +1461,7 @@ export type ServerEvent =
   | { type: "director.delta"; text: string }
   | { type: "director.message"; message: DirectorMessage }
   | { type: "director.tool"; name: string; input: unknown }
-  | { type: "director.busy"; busy: boolean }
+  | { type: "director.busy"; busy: boolean; idleSince?: number | null }
   | { type: "director.status"; status: DirectorStatus | null }
   // Reply to a director.search: everything matching `query`, newest-first — director-conversation hits
   // in `messages`, matching tasks in `tasks`. The echoed query lets the client drop a stale reply if

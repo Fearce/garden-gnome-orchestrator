@@ -52,6 +52,7 @@ export interface OnlineOfficeDeps {
   onDirectorChat: (msg: RelayChat) => void;
   /** What the director at this console is called — the name the other people in the office see. */
   directorName: () => string;
+  directorBusy?: () => boolean;
   /** The remote roster changed: agents that appeared in a repo THIS instance is also working. */
   onRemoteJoin: (repoLabel: string, workspaces: string[], joiners: RelayPresentAgent[]) => void;
 }
@@ -113,6 +114,7 @@ export class OnlineOffice {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private presenceTimer: ReturnType<typeof setInterval> | undefined;
   private disposed = false;
+  private unsubscribeActivity?: () => void;
   /** Resolved repo identity per workspace, so the (async, git-backed) lookup never blocks a chat post. */
   private readonly identities = new Map<string, RepoIdentity>();
   /** Identity resolution is async; serialize posts so two quick messages cannot overtake one another. */
@@ -124,6 +126,9 @@ export class OnlineOffice {
 
   /** Connect if the office is switched on and this instance has a device token. Safe to call always. */
   start(): void {
+    this.unsubscribeActivity = this.deps.hub.subscribe((event) => {
+      if (event.type === "director.busy") this.refreshPresence();
+    });
     this.presenceTimer = setInterval(() => void this.publishPresence(), PRESENCE_MS);
     this.presenceTimer.unref?.();
     if (this.enabled() && this.token()) this.connect();
@@ -132,6 +137,7 @@ export class OnlineOffice {
 
   dispose(): void {
     this.disposed = true;
+    this.unsubscribeActivity?.();
     if (this.presenceTimer) clearInterval(this.presenceTimer);
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.closeSocket();
@@ -529,7 +535,7 @@ export class OnlineOffice {
     this.recordLookalikes();
     // Naming the director is also what puts this console in the directors' room, so it rides on every
     // presence frame — including the one an instance with no agents at all sends.
-    const director = { name: this.deps.directorName() };
+    const director = { name: this.deps.directorName(), busy: this.deps.directorBusy?.() };
     const fingerprint = JSON.stringify({ agents, director });
     if (fingerprint === this.lastPresence) return;
     this.lastPresence = fingerprint;

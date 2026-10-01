@@ -20,6 +20,7 @@
     "token-conservation-lab": "node scripts/token-conservation-lab.cjs",
     "token-safety-lab": "node scripts/token-safety-lab.cjs",
     "usage-strip-lab": "node scripts/usage-strip-lab.cjs",
+    "director-rest-lab": "node scripts/director-rest-lab.cjs",
     "discord-lab": "node scripts/discord-lab.cjs",
     "focus-lab": "node scripts/focus-lab.cjs",
     "git-lab": "node scripts/git-console-lab.cjs",

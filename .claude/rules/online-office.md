@@ -55,6 +55,12 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
   `scope='directors'`, which is what keeps them out of `listProjectRooms`, `chat_read` (whose input type
   excludes the scope) and the console's `upsertRoom` — and `receiveDirectorChat` pushes into NO agent
   session. A room for people that can steer agents is not the feature.
+- **Director activity is independent of its workers.** The optional `director.busy` presence field
+  reports the director's own turn and is forwarded as `RelayDirector.busy`. Never infer it from
+  `agents`: an idle director sits while its crew works. Older peers omit this field and stay seated.
+  Locally the server persists the rest clock, includes it in hello, and publishes each busy/idle
+  transition; beta gnomes move from chair to bed after eight idle hours. `director-rest-lab` checks
+  the boundary, wake-up, tables, compact layout, and older peers.
 - **`server/src/office/onlineProtocol.ts` is a byte-for-byte copy of `relay/src/protocol.ts`.** Change one,
   change the other — `test:mirror-drift` fails the suite if you don't, along with every other declaration
   either side claims to mirror; bump `RELAY_PROTOCOL` only for a change that is NOT backward-compatible (an
