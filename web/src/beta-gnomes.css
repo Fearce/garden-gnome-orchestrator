@@ -48,7 +48,8 @@
 @keyframes beta-dream { 0%,100% { opacity: .45; translate: 0 1px; } 50% { opacity: 1; translate: 1px -2px; } }
 
 /* Exactly one gnome-height lane. Keep the existing header/account wrapping policy. */
-.office.office-beta { height: 48px; min-height: 48px; padding: 0; align-self: center; overflow: visible; }
+/* Reserve a director (including its bed/label) and the roster controls before other controls wrap. */
+.office.office-beta { height: 48px; min-height: 48px; min-width: 116px; padding: 0; align-self: center; overflow: visible; }
 .beta-workshop { position: relative; display: flex; width: 100%; height: 48px; min-width: 0; padding: 0; color: #eadfca; }
 .beta-workshop-stage { position: relative; flex: 1; min-width: 0; height: 48px; }
 .beta-workshop-cast { position: absolute; inset: 0; overflow: hidden; }

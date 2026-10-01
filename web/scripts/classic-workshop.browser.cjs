@@ -192,7 +192,7 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     await page.waitForFunction(() => document.querySelectorAll('.beta-workstation').length >= 2 && !document.querySelector('.beta-workstation[data-rest]'));
 
     // Header controls stay usable at every width; the lane never overflows or grows.
-    for (const width of [320, 360, 390, 768, 1024, 1440, 1920]) {
+    for (const width of [320, 360, 390, 768, 900, 940, 1024, 1440, 1920]) {
       await page.setViewportSize({ width, height: 900 });
       await page.waitForTimeout(150);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `Page overflows at ${width}px`);

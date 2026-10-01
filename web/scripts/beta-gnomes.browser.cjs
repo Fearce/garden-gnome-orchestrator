@@ -20,7 +20,8 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
   fs.mkdirSync(output, {recursive:true});
   const browser = await loadChromium().launch({headless:true});
   try {
-    const context = await browser.newContext({viewport:{width:1440,height:1000}});
+    // Leave room for the visitor/pair assertions; compact widths are exercised below.
+    const context = await browser.newContext({viewport:{width:1920,height:1000}});
     const env = fs.readFileSync(path.resolve(__dirname, '../../server/.env'),'utf8');
     const password = env.match(/^AUTH_PASSWORD=(.*)$/m)?.[1].trim().replace(/^['"]|['"]$/g,'');
     const login = await context.request.post(`${base}/api/login`,{data:{password}});
@@ -129,7 +130,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.evaluate(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'});document.dispatchEvent(new Event('visibilitychange'));});
     assert((await page.locator('.beta-workshop').evaluate(el=>el.getAnimations({subtree:true}).map(a=>a.playState))).every(s=>s==='paused'));
     await page.evaluate(()=>{delete document.visibilityState;document.dispatchEvent(new Event('visibilitychange'));});
-    for(const width of [390,768,1920]) {
+      for(const width of [390,768,1440,1920]) {
       await page.setViewportSize({width,height:900});
       const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);
       assert.equal(overflow,false,`Page overflows at ${width}px`);
