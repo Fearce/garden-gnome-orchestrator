@@ -167,8 +167,17 @@ async function readStrip(page) {
   return page.evaluate(() => {
     const strip = document.querySelector(".accounts");
     if (!strip) return { clipped: false, chips: [], reason: "no .accounts strip rendered" };
+    const bounds = strip.getBoundingClientRect();
+    // A narrow board may scroll inside its existing padding, but every chip must be reachable.
+    const reachable = [...strip.querySelectorAll(".acct")].every(el => {
+      strip.scrollLeft = el.offsetLeft - strip.offsetLeft;
+      const r = el.getBoundingClientRect();
+      return r.left >= bounds.left - 1 && r.right <= bounds.right + 1;
+    });
+    strip.scrollLeft = 0;
     return {
-      clipped: strip.scrollWidth > strip.clientWidth + 2,
+      clipped: !reachable,
+      scrollable: strip.scrollWidth > strip.clientWidth + 2,
       box: `${strip.clientWidth}/${strip.scrollWidth}`,
       chips: [...strip.querySelectorAll(".acct")].map((el) => ({
         label: (el.querySelector(".acct-label")?.textContent || "").trim(),
@@ -196,7 +205,7 @@ async function readStrip(page) {
 }
 
 function report(width, strip) {
-  const status = strip.clipped ? `CLIPPED ${strip.box}` : "fits";
+  const status = strip.clipped ? `CLIPPED ${strip.box}` : strip.scrollable ? `reachable by scrolling ${strip.box}` : "fits";
   console.log(`\n  ${width}px — ${status}`);
   for (const c of strip.chips) {
     const tags = c.tags.length ? ` [${c.tags.join(", ")}]` : "";
@@ -272,7 +281,7 @@ async function main() {
     else fs.rmSync(dataDir, { recursive: true, force: true });
   }
   if (clipped) {
-    console.error("\nFAIL — the strip is clipped at one or more widths (widen the wrap breakpoint in web/src/styles.css).");
+    console.error("\nFAIL — a chip cannot be fully reached in the usage strip at one or more widths.");
     return 1;
   }
   if (spilled) {
@@ -283,7 +292,7 @@ async function main() {
     console.error(`\nFAIL — a meter's bar track is under ${MIN_TRACK_PX}px, so its usage bar is invisible (the .meter track floor in web/src/styles.css).`);
     return 1;
   }
-  console.log("\nOK — every chip visible at every width.");
+  console.log("\nOK — every chip reachable at every width, with readable meter values and tracks.");
   return 0;
 }
 

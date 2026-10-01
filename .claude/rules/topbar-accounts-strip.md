@@ -1,83 +1,62 @@
 ---
 paths:
   - "web/src/components/Accounts.tsx"
+  - "web/src/components/Board.tsx"
   - "web/src/styles.css"
   - "web/src/App.tsx"
   - "server/src/accounts/*.ts"
 ---
 
-# Top-bar accounts strip (chips must stay on-screen)
+# Subscription usage strip
 
-When you add or widen a subscription chip (Claude / Codex / Grok), the strip can
-overflow the top bar. **WS/API "usage present" is not acceptance** — the chip
-must be *visible* at common desktop widths.
+Desktop usage lives in the board's **existing 18px top padding**, directly between
+header gnomes and board tabs. The owner explicitly rejected adding a header row or
+moving the director/task panels down (2026-10-01).
 
-## Layout rules (do not re-break)
-- `.app` uses `grid-template-columns: minmax(0, 1fr)` and `overflow: hidden`.
-- `.topbar` has `min-width: 0`.
-- `.accounts` has `min-width: 0`, `overflow-x: auto`, chips `flex: 0 0 auto`.
-- At **900–1899px** desktop, `.accounts` wraps to a **full-width second row**
-  so personal+secondary+Codex+Grok+z.ai all fit (see `eda230f`). Compact (≤899.98, which
-  since 2026-08-18 includes a portrait 800px tablet) hides the strip behind the
-  `.accounts-toggle` gauge button as a pop-over (`.accounts.phone-open`) so the second
-  topbar row belongs to the office — `probe:chips` shares that bound as `DESKTOP_MIN`
-  and does not check the strip below it. On desktop the same gauge button sits in the
-  bar (28px, counted in the single-row floor) and folds the strip away in place
-  (`.accounts.usage-hidden`, persisted as `orch-usage-hidden`); `usage-strip-lab` drives
-  both jobs, including that a desktop "hidden" never suppresses the phone pop-over. **Adding or widening a chip moves the wrap
-  bound** — don't
-  bisect it by hand, print it: `npm run probe:chips -- --explain` reports the
-  single-row floor per width (chips + fixed items + gaps + padding).
-- **Measure the bound against the bar's WIDEST state, not the one on screen.** `.conn`
-  swings 41px ("live") → 100px ("reconnecting…"), which moves the floor 1689 → **1748**.
-  The original 1700px bound sat between those two numbers, so the chips clipped on every
-  reconnect (2026-08-13). The probe now measures each width twice — live, then with the
-  socket label widened — and fails on either.
-- **Above the bound the chips must not shrink.** `@media (min-width: 1900px)` gives
-  `.accounts { flex-shrink: 0 }` — the data chips hold their size, the elastic items
-  (`.office` is `flex: 1`, basis 0; `.stat` is text) yield instead. The probe also fails
-  if that pressure pushes any top-bar child off-screen instead.
-- **Assert `getComputedStyle`, never the rule you wrote.** An equally specific declaration
-  LATER in `styles.css` beats one inside a media query, so a rule can be completely inert
-  while reading as load-bearing: the wrap block's `flex: 1 1 100%` computed as `0 1 auto`
-  at every width (the wrap has always been content-driven), and the first `flex-shrink: 0`
-  written above the base `.accounts` block did nothing at all.
+## Layout contract
+- At desktop widths (>=900px), `Board` mounts `<Accounts placement="desktop" />`.
+  `.board-usage` has an 18px height and -18px top margin: zero added layout height.
+  Never increase board padding or header height to make room for the chips.
+- Chips are one 16px line: account name, window labels, short **18px fixed tracks**,
+  and values. Burn pace/reset/idle details remain in meter tooltips and accessible
+  labels. Banked-reset buttons remain visible and retain their confirmation.
+- Desktop usage is permanent, independent of the old `orch-usage-hidden` setting.
+  Focus mode still hides ambient usage/gnomes. The desktop strip never shares
+  horizontal space with the gnomes.
+- The strip has `min-width: 0` and horizontal overflow inside the board. Five normal
+  chips fit on a wide desktop; a narrow board (director/detail open) may scroll.
+  Every individual chip must be fully reachable, with no page/header overflow.
+  The region is keyboard-focusable for arrow-key scrolling.
+- Below 900px, App mounts the gauge and the original full-size phone popover.
+  Only one Accounts instance subscribes to provider state at either breakpoint.
+- `.app` retains `grid-template-columns: minmax(0, 1fr)` and `overflow: hidden`;
+  `.topbar` retains `min-width: 0`.
+- Assert computed geometry, not the CSS declaration. Later styles and theme rules
+  can override a correct-looking rule.
 
-## Verify before claiming done
+## Verify
 ```bash
-npm run build && npm run chip-lab --prefix server        # boots its own instance, renders + asserts
-npm run chip-lab --prefix server -- --list               # healthy | lapsed-weekly | stagger-hold | stale | capped
+npm run build --prefix web
+npm run usage-strip-lab --prefix server -- --shots data/usage-strip-lab-shots
+npm run chip-lab --prefix server -- --shots data/chip-lab-shots
+npm run probe:chips -- --explain
 ```
-`chip-lab` (`server/scripts/chip-lab.cjs`) is the one-command version: temp DATA_DIR,
-**bogus account tokens** (a live token makes the boot ping START a real 5h window and
-wreck the stagger you're inspecting), seeded `account_usage_*` blobs, then a real
-browser at 1280/1440/1600/1850/1900/1920 (straddling the bound) printing every meter's
-text + tooltip. Exit 1 = clipped or a meter column spills.
-Use it for any change to a meter's *state* — an `idle`/`stale`/lapsed-reset reading
-is invisible to a typecheck and to prod (whose accounts are usually healthy).
 
-Each meter is a fixed grid (`.meter`: key · track · % · burn pace · countdown); only the
-track is `minmax(20px, 1fr)`, so it absorbs any width a new column takes. The floor matters:
-the Codex chip is `min-width: auto` (content-sized), and a bare `1fr` there resolved to 0px, so its
-bars vanished while every other check stayed green. chip-lab prints each meter's track width and
-fails with `SPILLS` when a value, pace or countdown outgrows its column, and with `COLLAPSED` when a
-track drops under 12px.
-To negative-control a CSS tweak in a pinned lab bundle, delete the asset's `.css.br`/`.css.gz`
-siblings too — the instance serves the precompressed copy, so editing only the `.css` changes nothing.
+`usage-strip-lab` boots an isolated instance with bogus tokens and browser-only
+fixtures. It checks five subscriptions at 900/1100/1280/1440/1920/2560px, short bars,
+zero movement of the header/director/tabs/cards when usage is removed, Nocturne,
+mobile popovers, focus mode, reset buttons, and tooltip details.
 
-`npm run probe:chips` (`web/scripts/check-accounts-visible.cjs`) is the geometry-only
-check against an already-running instance (`ORCH_URL=…`); it fails when a chip isn't
-fully visible, when the strip is scrollable at all on desktop, or when a top-bar child
-is pushed off-screen. Its last line is the one that doesn't depend on the sample widths:
-it bisects for the viewport where **wrapping switches off** and fails if one row doesn't
-fit there at the bar's widest. Sampling can't cover this on its own — move the bound and
-the sample widths move with it, away from the range the old bound got wrong (proved:
-after the 08-13 fix every sampled width passed against the *unfixed* CSS; only the bound
-line went red). It clicks nothing, so
-it is safe to point at prod for a **health** read (the nightly sweep does) — but prod's
-chips are whatever prod's accounts happen to be, so it is never proof of YOUR change:
-use `chip-lab`, which seeds the state. Never point `chip-lab` at prod — it wants its own
-instance, and a live token would start a real 5h window.
+`chip-lab` seeds real usage states in a temporary DATA_DIR: healthy, lapsed-weekly,
+stagger-hold, stale, capped, Grok free/metered, and Codex healthy/no-CLI. Run relevant
+scenarios after changing meter presentation. It checks reachable chips, visible
+meter-column spills, and tracks >=12px. Never point this lab at production or use
+real account tokens: a boot ping can start a real 5h window and shift its stagger.
 
-Cross-ref: project memory `grok-cli-integration-facts.md`; global
-`css_mobile_grid_column_minmax_clips.md`.
+`probe:chips` is a read-only geometry check against an already-running instance
+(`ORCH_URL=...`). It checks usage inside existing padding, unchanged panel positions,
+chip reachability, short tracks, and topbar fit while live and reconnecting. It is
+safe for production health checks, but fixture labs are the evidence for a change.
+
+When patching a pinned lab asset as a negative control, also remove its `.css.br`
+and `.css.gz` siblings; otherwise the server serves the old precompressed CSS.

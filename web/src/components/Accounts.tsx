@@ -62,7 +62,14 @@ function paceTip({ pace, msToEmpty, msToReset }: Burn, now: number): string {
   return `${head} — at this rate it runs out in ${countdown(now + msToEmpty, now)}, ${countdown(now + msToReset - msToEmpty, now)} before it resets`;
 }
 
-export function Accounts() {
+export function Accounts({ placement = "compact" }: { placement?: "compact" | "desktop" }) {
+  const compact = useCompact();
+  const focusMode = useStore((s) => s.focusMode);
+  if (focusMode || (placement === "compact") !== compact) return null;
+  return <UsageAccounts compact={compact} />;
+}
+
+function UsageAccounts({ compact }: { compact: boolean }) {
   const accounts = useStore((s) => s.accounts);
   const settings = useStore((s) => s.settings);
   const codexUsage = useStore((s) => s.codexUsage);
@@ -105,27 +112,26 @@ export function Accounts() {
   // Show the z.ai chip once z.ai is configured — enabled, or an API key is stored.
   const showZai = settings.zaiEnabled || settings.zaiKeyPresent;
   const [phoneOpen, setPhoneOpen] = useState(false);
-  const usageHidden = useStore((s) => s.usageHidden);
-  const toggleUsage = useStore((s) => s.toggleUsage);
-  // One gauge button, two jobs: a phone pops the chips over the page, a desktop folds the strip in place.
-  const compact = useCompact();
-  const shown = compact ? phoneOpen : !usageHidden;
+  // Desktop usage occupies the board's existing top padding; only phones need a gauge.
   if (!accounts.length && !showCodex && !showGrok && !showZai) return null;
   return (
     <>
-    <button
+    {compact && <button
       type="button"
-      className={"bell accounts-toggle" + (shown ? " on" : " off") + (frozen ? " frozen" : "")}
-      aria-expanded={shown}
+      className={"bell accounts-toggle" + (phoneOpen ? " on" : " off") + (frozen ? " frozen" : "")}
+      aria-expanded={phoneOpen}
       aria-label="Subscription usage"
-      title={compact ? "Subscription usage" : usageHidden ? "Show subscription usage" : "Hide subscription usage"}
-      onClick={compact ? () => setPhoneOpen((o) => !o) : toggleUsage}
+      title="Subscription usage"
+      onClick={() => setPhoneOpen((o) => !o)}
     >
       <UsageIcon />
-    </button>
+    </button>}
     {compact && phoneOpen ? <div className="accounts-scrim" onClick={() => setPhoneOpen(false)} /> : null}
     <div
-      className={"accounts" + (frozen ? " frozen" : "") + (compact && phoneOpen ? " phone-open" : "") + (!compact && usageHidden ? " usage-hidden" : "")}
+      className={"accounts" + (frozen ? " frozen" : "") + (compact && phoneOpen ? " phone-open" : "")}
+      role="region"
+      aria-label="Subscription usage"
+      tabIndex={compact ? undefined : 0}
       title={
         frozen
           ? "Token freeze — a task is parked because every account it needs is rate-limited. Parked tasks auto-resume the moment a window resets or a backend frees up."
@@ -262,12 +268,14 @@ function ZaiChip({
       <div className="acct-head">
         <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
         <span className="acct-label">z.ai</span>
-        <span className={tagCls}>{tag}</span>
-        {plan ? (
-          <span className="acct-tag ok" title={`${plan} plan`}>
-            {plan}
-          </span>
-        ) : null}
+        <span className="acct-status">
+          <span className={tagCls}>{tag}</span>
+          {plan ? (
+            <span className="acct-tag ok" title={`${plan} plan`}>
+              {plan}
+            </span>
+          ) : null}
+        </span>
       </div>
       {showMeters ? (
         <div className="acct-meters">
@@ -370,9 +378,11 @@ function CodexChip({
       <div className="acct-head">
         <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
         <span className="acct-label">Codex</span>
-        <span className={tagCls}>{tag}</span>
-        <ResetCreditBadge credits={usage?.resetCredits} provider="Codex" target={{ provider: "codex" }} now={now} />
-        {errored ? <span className="acct-tag">no usage</span> : null}
+        <span className="acct-status">
+          <span className={tagCls}>{tag}</span>
+          <ResetCreditBadge credits={usage?.resetCredits} provider="Codex" target={{ provider: "codex" }} now={now} />
+          {errored ? <span className="acct-tag">no usage</span> : null}
+        </span>
       </div>
       {showMeters ? (
         <div className="acct-meters">
@@ -408,8 +418,8 @@ function CodexChip({
  * A banked limit reset the provider has granted and we have not spent — "1 reset" on the chip.
  *
  * Deliberately renders NOTHING at zero, and nothing for a pending-only grant. The top bar is width-
- * constrained (see `.claude/rules/topbar-accounts-strip.md`: every chip that grows moves the single-row
- * wrap bound), and the owner's whole ask was to notice a reset without opening the native app — which
+ * constrained (see `.claude/rules/topbar-accounts-strip.md`), and the owner's whole ask was to notice
+ * a reset without opening the native app — which
  * is a question only worth answering when the answer is yes. `pending` and the expiry ride the hover
  * text, where they cost no width.
  *
@@ -559,13 +569,15 @@ function GrokChip({
       <div className="acct-head">
         <span className={"acct-dot" + (state === "implementing" || state === "ready" ? " on" : "")} />
         <span className="acct-label">Grok</span>
-        <span className={tagCls}>{tag}</span>
-        {plan ? (
-          <span className="acct-tag ok" title={`${plan} subscription`}>
-            {plan}
-          </span>
-        ) : null}
-        {stale ? <span className="acct-tag dim">stale</span> : null}
+        <span className="acct-status">
+          <span className={tagCls}>{tag}</span>
+          {plan ? (
+            <span className="acct-tag ok" title={`${plan} subscription`}>
+              {plan}
+            </span>
+          ) : null}
+          {stale ? <span className="acct-tag dim">stale</span> : null}
+        </span>
       </div>
       {hasMeter ? (
         <div className="acct-meters">
@@ -634,27 +646,32 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
   const errored = !!a.error && a.fiveHour == null && a.sevenDay == null;
   const cls =
     "acct" + (multi && a.active ? " active" : "") + (a.rateLimited ? " limited" : "") + (stale ? " stale" : "") + (errored ? " errored" : "");
-  const title = a.error
+  const usageTitle = a.error
     ? `usage unavailable: ${a.error}`
     : stale
       ? `${a.label} — last-known usage (no live read for this sub right now)`
       : a.label;
+  const modelLimits = (a.modelLimits ?? []).filter((ml) => ml.resetsAt > now);
+  const title = [
+    usageTitle,
+    a.rateLimited ? "rate limited" : null,
+    ...modelLimits.map((ml) => `${ml.model} pool exhausted; using ${ml.fallback} until it resets in ${countdown(ml.resetsAt, now)}`),
+  ].filter(Boolean).join(" · ");
   return (
     <div className={cls} title={title}>
       <div className="acct-head">
         {multi ? <span className={"acct-dot" + (a.active ? " on" : "")} /> : null}
-        <span className="acct-label">{a.label}</span>
-        {a.rateLimited ? (
-          <span className="acct-tag">limited</span>
-        ) : errored ? (
-          <span className="acct-tag">no usage</span>
-        ) : stale ? (
-          <span className="acct-tag dim">stale</span>
-        ) : null}
-        <ResetCreditBadge credits={a.resetCredits} provider={a.label} target={{ provider: "claude", accountId: a.id }} now={now} />
-        {(a.modelLimits ?? [])
-          .filter((ml) => ml.resetsAt > now)
-          .map((ml) => (
+        <span className="acct-label" title={a.label}>{a.label}</span>
+        <span className="acct-status">
+          {a.rateLimited ? (
+            <span className="acct-tag">limited</span>
+          ) : errored ? (
+            <span className="acct-tag">no usage</span>
+          ) : stale ? (
+            <span className="acct-tag dim">stale</span>
+          ) : null}
+          <ResetCreditBadge credits={a.resetCredits} provider={a.label} target={{ provider: "claude", accountId: a.id }} now={now} />
+          {modelLimits.map((ml) => (
             <span
               key={ml.model}
               className="acct-tag"
@@ -663,6 +680,7 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
               {familyWord(ml.model)} → {familyWord(ml.fallback)}
             </span>
           ))}
+        </span>
       </div>
       {errored ? (
         <div className="acct-err">{a.error}</div>
@@ -732,7 +750,7 @@ function Meter({
     ? `${stale ? "~" : ""}${valueLabel}`
     : `${pct != null && stale ? "~" : ""}${label(pct)}`;
   return (
-    <div className={"meter" + (valueLabel ? " meter-wide-v" : "")} title={tip}>
+    <div className={"meter" + (valueLabel ? " meter-wide-v" : "")} title={tip} role="img" aria-label={tip}>
       <span className="meter-k">{k}</span>
       <div className="meter-track">
         <div className={"meter-fill " + kind + (stale ? " stale" : "")} style={{ width: `${clamp(pct)}%` }} />

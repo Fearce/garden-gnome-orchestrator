@@ -19,6 +19,7 @@ import { homeWorkspace, repoRoom } from "../types.js";
 import { activityPreview, closesInDays, formatDuration, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
+import { Accounts } from "./Accounts.js";
 import { ChangesChip } from "./GitChanges.js";
 import { splitWorkspace, WorkspacePath } from "./WorkspacePath.js";
 import { ScheduledTasks } from "./ScheduledTasks.js";
@@ -269,6 +270,7 @@ export function Board() {
   const tasksView = boardView === "tasks";
   return (
     <main className={`board board-${boardView}${frozen ? " frozen" : ""}`}>
+      <div className="board-usage"><Accounts placement="desktop" /></div>
       <div className="board-head">
         <BoardTabs />
         {tasksView ? (

@@ -71,8 +71,8 @@ export function App() {
     <div className="app">
       {/* Focus mode strips the bar down to what a working session might still click — the two panel
           toggles, an update that just landed, a model release, and the socket. Everything it drops only REPORTS state
-          (build tag, office gnomes, the account burn strip, the counters), and the strip is the whole
-          second row on anything under 1800px, so the header stops eating the screen. */}
+          (build tag, office gnomes, the account burn strip, the counters).
+          Desktop usage lives in the board's existing top padding; compact screens use the gauge. */}
       <header className={"topbar" + (focusMode ? " focus" : "")}>
         <div className="brand">
           {focusMode ? null : <BuildTag />}

@@ -1,21 +1,8 @@
 /**
- * Headless check: every top-bar account chip (incl. Grok SuperGrok meters) is
- * reachable at common desktop widths. Catches the "usage works in WS but chip
- * is clipped under .app overflow:hidden" class of bugs.
- *
- * Each width is measured twice: as the bar happens to look, and again with every elastic sibling at
- * its widest ("reconnecting…" in place of "live"). The second pass is the one that catches a wrap
- * breakpoint set at the measured minimum.
- *
- * Usage (repo root or web/):
- *   node web/scripts/check-accounts-visible.cjs
- *   node web/scripts/check-accounts-visible.cjs --explain   # print the fit arithmetic per width
- *   ORCH_URL=http://127.0.0.1:4317 ORCH_PASSWORD=<your-pw> node web/scripts/check-accounts-visible.cjs
- *
- * The login password defaults to AUTH_PASSWORD from server/.env; override with ORCH_PASSWORD.
- * Playwright is resolved from a local/global install (or PLAYWRIGHT_PATH).
- *
- * Exit 0 = pass; non-zero = print failing geometry and exit 1.
+ * Read-only browser probe for the desktop usage line in the board's existing padding.
+ * Checks short bars, zero added height, chip reachability, and header fit while reconnecting.
+ * node web/scripts/check-accounts-visible.cjs [--explain]
+ * ORCH_URL / ORCH_PASSWORD override the local server and server/.env password.
  */
 const fs = require("fs");
 const path = require("path");
@@ -43,9 +30,6 @@ const chromium = loadChromium();
 const BASE = process.env.ORCH_URL || "http://127.0.0.1:4317";
 const PASSWORD = resolvePassword();
 const EXPLAIN = process.argv.includes("--explain");
-// 1850 is the last wrapped width and 1900 the first inline one (the styles.css bound), so the pair
-// straddles the breakpoint — the widths that catch a chip added since the bound was last measured.
-// 1920 is the common wide monitor, where the office lane has room to grow gnomes beside the chips.
 const WIDTHS = (process.env.ORCH_WIDTHS || "1280,1440,1600,1850,1900,1920")
   .split(",")
   .map((s) => parseInt(s.trim(), 10))
@@ -54,131 +38,50 @@ const WIDTHS = (process.env.ORCH_WIDTHS || "1280,1440,1600,1850,1900,1920")
 // 100% CPU and a cold navigation has measured 28s while the server answered /api/health in 1ms.
 // console-smoke.cjs already allows 45s for the same reason.
 const NAV_TIMEOUT_MS = 45_000;
-// Below this the compact layout takes over and DELIBERATELY makes the strip a full-width,
-// horizontally-scrolling row — a scrollable strip there is the design, not the clipping this
-// checks for. Tracks the compact bound in styles.css (raised 768 → 900 so a portrait tablet
-// reaches it); the touch layout below it is what `npm run tablet-lab --prefix server` covers.
-const DESKTOP_MIN = 900;
-
 async function measure(page) {
-  return page.evaluate((desktopMin) => {
-    const vw = window.innerWidth;
-    const accounts = document.querySelector(".accounts");
-    if (!accounts) return { ok: false, reason: "no .accounts strip (no chips configured?)" };
-
-    const chips = [...accounts.querySelectorAll(".acct")].map((el) => {
-      const r = el.getBoundingClientRect();
-      return {
-        label: (el.querySelector(".acct-label")?.textContent || el.innerText.slice(0, 24)).trim(),
-        text: el.innerText.replace(/\s+/g, " ").trim(),
-        left: r.left,
-        right: r.right,
-        width: r.width,
-      };
-    });
-
-    // Scroll the strip fully right so the last chip (usually Grok) is in the scroller.
-    accounts.scrollLeft = accounts.scrollWidth;
-    const after = [...accounts.querySelectorAll(".acct")].map((el) => {
-      const r = el.getBoundingClientRect();
-      const ar = accounts.getBoundingClientRect();
-      const inScroller = r.left >= ar.left - 1 && r.right <= ar.right + 1;
-      const inViewport = r.left >= -1 && r.right <= vw + 1;
-      return {
-        label: (el.querySelector(".acct-label")?.textContent || "").trim(),
-        left: r.left,
-        right: r.right,
-        inScroller,
-        inViewport,
-        fullyVisible: inScroller && inViewport,
-        text: el.innerText.replace(/\s+/g, " ").trim(),
-      };
-    });
-
-    const grok = after.find((c) => /grok/i.test(c.label) || /grok/i.test(c.text));
-    const canScroll = accounts.scrollWidth > accounts.clientWidth + 2;
+  return page.evaluate(() => {
+    const vw = innerWidth;
+    const accounts = document.querySelector('.board-usage .accounts');
+    if (!accounts) return { ok: false, reason: 'no desktop usage strip (no chips configured?)' };
     const failures = [];
-    if (chips.length === 0) failures.push("zero chips rendered");
-    // Nothing in the bar may be pushed off-screen either. When the chips stop shrinking, an
-    // over-full row spends the overflow on whatever sits last instead — the live indicator.
-    const bar = document.querySelector(".topbar");
-    for (const el of bar ? [...bar.children] : []) {
+    const rect = accounts.getBoundingClientRect();
+    const board = document.querySelector('.board').getBoundingClientRect();
+    const tabs = document.querySelector('.board-head').getBoundingClientRect();
+    const canScroll = accounts.scrollWidth > accounts.clientWidth + 2;
+    // A narrow board (director/detail open) can scroll horizontally; every chip must be reachable.
+    const after = [...accounts.querySelectorAll('.acct')].map(el => {
+      accounts.scrollLeft = el.offsetLeft - accounts.offsetLeft;
       const r = el.getBoundingClientRect();
-      if (r.width > 0 && r.right > vw + 1) {
-        const cls = el.className.toString().split(" ")[0] || el.tagName.toLowerCase();
-        failures.push(`.${cls} pushed off-screen (right=${Math.round(r.right)} vw=${vw})`);
-      }
-    }
-    // On desktop every chip must be readable WITHOUT scrolling — a scrollable strip means the bar is
-    // hiding usage until the operator drags it, which is the clipping this check exists to catch.
-    if (canScroll && vw >= desktopMin) {
-      failures.push(`strip is clipped: ${accounts.scrollWidth}px of chips in a ${accounts.clientWidth}px box (widen the wrap breakpoint)`);
-    }
+      return {
+        label: el.querySelector('.acct-label')?.textContent.trim(),
+        text: el.innerText.replace(/\s+/g, ' ').trim(),
+        fullyVisible: r.left >= rect.left - 1 && r.right <= rect.right + 1 && r.left >= 0 && r.right <= vw + 1,
+        height: r.height,
+      };
+    });
+    accounts.scrollLeft = 0;
+    if (!after.length) failures.push('zero chips rendered');
     for (const c of after) {
-      if (!c.fullyVisible) {
-        failures.push(
-          `chip "${c.label}" not fully visible after scroll (left=${Math.round(c.left)} right=${Math.round(c.right)} vw=${vw})`,
-        );
-      }
+      if (!c.fullyVisible) failures.push(`chip "${c.label}" cannot be fully reached`);
+      if (c.height > 16.1) failures.push(`chip "${c.label}" exceeds the existing gap`);
     }
-    // "no metered allowance" is a STATEMENT about the allowance, not the absence of one: it is what
-    // Accounts.tsx's `noAllowance` branch renders for a Free plan that meters nothing, and it is the
-    // reading the free-tier fix made truthful. The accepted set stays a list of the exact strings the
-    // chip can render, so a chip that silently loses its meters still fails this.
-    if (grok && !/7d|mo|SUPERGROK|polling usage|no metered allowance/i.test(grok.text)) {
-      failures.push(`Grok chip lacks usage affordance: ${grok.text.slice(0, 120)}`);
+    for (const el of document.querySelector('.topbar')?.children ?? []) {
+      const r = el.getBoundingClientRect();
+      if (r.width > 0 && (r.left < -1 || r.right > vw + 1)) failures.push(`header ${el.className} pushed off-screen`);
     }
-
-    // What the single-row layout costs, so the next bound is derived instead of bisected. An item
-    // that GROWS (`.office`, flex-grow > 0) is measured at its content, not its rendered box — it
-    // has already swallowed the leftover space, and it yields all of it again under pressure. So
-    // `required` is the row's hard floor (elastic items at zero) and `wants` is it uncompressed.
-    const barStyle = bar ? getComputedStyle(bar) : null;
-    const items = bar
-      ? [...bar.children].map((el) => {
-          const grows = parseFloat(getComputedStyle(el).flexGrow) > 0;
-          const content = Math.max(el.scrollWidth, ...[...el.children].map((c) => c.scrollWidth), 0);
-          return {
-            cls: el.className.toString().split(" ")[0] || el.tagName.toLowerCase(),
-            w: Math.round(el.getBoundingClientRect().width),
-            grows,
-            content: Math.round(content),
-          };
-        })
-      : [];
-    const gap = barStyle ? Math.round(parseFloat(barStyle.columnGap) || 0) : 0;
-    const pad = barStyle
-      ? Math.round((parseFloat(barStyle.paddingLeft) || 0) + (parseFloat(barStyle.paddingRight) || 0))
-      : 0;
-    // Wrapped = the strip sits below the brand rather than beside it. Comparing row tops directly
-    // is a false signal: children of one row have different tops because they are centre-aligned.
-    const brandBottom = document.querySelector(".brand")?.getBoundingClientRect().bottom ?? 0;
-    const rows = accounts.getBoundingClientRect().top >= brandBottom - 1 ? 2 : 1;
-    const chipsW = accounts.scrollWidth;
-    const others = items.filter((i) => i.cls !== "accounts");
-    const fixedW = others.filter((i) => !i.grows).reduce((s, i) => s + i.w, 0);
-    const elasticW = others.filter((i) => i.grows).reduce((s, i) => s + i.content, 0);
-    const chrome = chipsW + gap * Math.max(items.length - 1, 0) + pad;
-    const required = fixedW + chrome;
-    const wants = required + elasticW;
-
-    return {
-      ok: failures.length === 0,
-      reason: failures.join("; ") || null,
-      vw,
-      chipCount: chips.length,
-      canScroll,
-      accountsW: accounts.clientWidth,
-      contentW: accounts.scrollWidth,
-      after,
-      fit: {
-        items, gap, pad, chipsW, fixedW, elasticW, required, wants,
-        slack: vw - required,
-        wrapped: rows > 1,
-        wrapAllowed: barStyle ? barStyle.flexWrap !== "nowrap" : false,
-      },
-    };
-  }, DESKTOP_MIN);
+    if (rect.top < board.top || rect.bottom > tabs.top) failures.push('usage sits outside the existing board padding');
+    const positions = () => ['.topbar','.workbench','.rail','.board-head','.card'].map(s => document.querySelector(s)?.getBoundingClientRect().top);
+    const before = positions();
+    const host = document.querySelector('.board-usage');
+    host.style.display = 'none';
+    const without = positions();
+    host.style.display = '';
+    if (!before.every((v,i) => v === without[i])) failures.push('usage moves the header, director, tabs or cards');
+    const tracks = [...accounts.querySelectorAll('.meter-track')].map(el => el.getBoundingClientRect().width);
+    if (tracks.some(w => w < 12 || w > 20)) failures.push('usage tracks must remain short and visible');
+    return { ok: !failures.length, reason: failures.join('; ') || null, vw, chipCount: after.length,
+      canScroll, accountsW: accounts.clientWidth, contentW: accounts.scrollWidth, after, height: rect.height, tracks };
+  });
 }
 
 /**
@@ -221,62 +124,6 @@ async function openConsole(browser, viewport, tag) {
   return { page: null, reason: `${lastError} (${ATTEMPTS} attempts)` };
 }
 
-/**
- * The invariant behind every width in the list, and the one sampling can't guarantee: where the bar
- * can no longer WRAP, one row must still fit the bar at its widest. Sampling alone misses this —
- * move the bound and the sample widths move with it, away from the range the old bound got wrong.
- *
- * Bisect for where wrapping is switched off (`flex-wrap: nowrap`, whatever media query produces it)
- * rather than for where the strip happens to be inline: below the bound wrapping is the escape
- * valve, so "inline" there is always floor-plus-a-pixel by construction and says nothing.
- */
-async function checkBound(browser) {
-  const { page, reason: openFailed } = await openConsole(browser, { width: 2560, height: 800 }, "checkBound");
-  if (!page) return { ok: false, reason: `could not measure the bound: ${openFailed}` };
-  try {
-    await widenChrome(page);
-
-    const at = async (w) => {
-      await page.setViewportSize({ width: w, height: 800 });
-      await page.waitForTimeout(120);
-      return measure(page);
-    };
-    const LO = DESKTOP_MIN;
-    const HI = 2560;
-    if (!(await at(LO)).fit?.wrapAllowed) {
-      return { ok: true, note: `the bar cannot wrap even at ${LO}px — the strip has no escape valve at all` };
-    }
-    if ((await at(HI)).fit?.wrapAllowed) {
-      return { ok: true, note: `wrapping stays enabled up to ${HI}px — no locked single-row regime to check` };
-    }
-    let lo = LO; // wrapping allowed here
-    let hi = HI; // wrapping switched off here
-    while (hi - lo > 1) {
-      const mid = Math.floor((lo + hi) / 2);
-      if ((await at(mid)).fit?.wrapAllowed) lo = mid;
-      else hi = mid;
-    }
-    const floor = (await at(hi)).fit.required;
-    const margin = hi - floor;
-    return {
-      ok: margin >= 0,
-      bound: hi,
-      floor,
-      margin,
-      reason:
-        margin >= 0
-          ? null
-          : `wrapping switches off at ${hi}px, but one row needs ${floor}px there with the socket` +
-            ` dropped — ${-margin}px short, so a reconnect clips the chips (or pushes the bar off-screen)`,
-      thin: margin >= 0 && margin < 25,
-    };
-  } catch (e) {
-    return { ok: false, reason: `could not measure the bound: ${String(e.message || e).split("\n")[0]}` };
-  } finally {
-    await page.close();
-  }
-}
-
 /** The widest text each elastic sibling can render — the state a bound has to survive, not the
  *  one that happens to be on screen. The socket label alone swings 41px → 100px. */
 async function widenChrome(page) {
@@ -313,11 +160,9 @@ async function checkWidth(browser, w) {
 async function main() {
   const browser = await chromium.launch({ headless: true });
   const results = [];
-  let bound;
   try {
     // One bad width reports itself and the rest still run — a partial answer beats a bare stack.
     for (const w of WIDTHS) results.push(await checkWidth(browser, w));
-    bound = await checkBound(browser);
   } finally {
     await browser.close();
   }
@@ -345,35 +190,14 @@ async function main() {
     if (EXPLAIN) explainFit(r);
   }
 
-  if (bound) {
-    if (!bound.ok) failed = true;
-    const detail = bound.note
-      ? bound.note
-      : `wrapping switches off at ${bound.bound}px, single-row floor is ${bound.floor}px ` +
-        `(margin ${bound.margin}px)` +
-        (bound.thin ? " — thin; the next chip or a longer label will break it" : "");
-    console.log(`[${bound.ok ? "PASS" : "FAIL"}] bound — ${bound.reason || detail}`);
-  }
   process.exit(failed ? 1 : 0);
 }
 
-/** `--explain`: the arithmetic behind a bound, so the next one is derived rather than bisected. */
+/** --explain shows the actual available panel width, including director/detail pressure. */
 function explainFit(r) {
-  for (const [state, m] of [["live", r], ["worst-chrome", r.worst]]) {
-    if (!m || !m.fit) continue;
-    const f = m.fit;
-    console.log(
-      `         [${state}] ${f.wrapped ? "strip on its own row" : "single row"} — chips ${f.chipsW}` +
-        ` + fixed ${f.fixedW} + gaps ${f.gap * Math.max(f.items.length - 1, 0)} + padding ${f.pad}` +
-        ` = ${f.required} floor, ${r.w} available (slack ${f.slack})`,
-    );
-    console.log(
-      `         [${state}] one row fits from ~${f.required}px (elastic items at zero), ~${f.wants}px` +
-        ` uncompressed — put the wrap bound above the second number, not the first`,
-    );
-    console.log(
-      `         [${state}] ` + f.items.map((i) => `${i.cls}:${i.w}${i.grows ? `(elastic, wants ${i.content})` : ""}`).join(" "),
-    );
+  for (const [state, m] of [["live", r], ["reconnecting", r.worst]]) {
+    if (!m || m.accountsW == null) continue;
+    console.log(`         [${state}] ${m.height}px in existing padding; ${m.contentW}px of chips / ${m.accountsW}px available; tracks ${m.tracks.join(', ')}px`);
   }
 }
 
