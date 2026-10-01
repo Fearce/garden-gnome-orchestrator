@@ -2902,7 +2902,8 @@ export class ThreadManager implements OrchestratorApi {
       differentProviderQa: this.settingBool("setting_different_provider_qa", false),
       qaAppliesFixes: this.settingBool("setting_qa_applies_fixes", false),
       autoPush: this.settingBool("setting_auto_push", true),
-      taskWorktrees: this.settingBool("setting_task_worktrees", true),
+      // Off by default on a throwaway DB: gates dispatch into this very checkout and would cut real worktrees.
+      taskWorktrees: this.settingBool("setting_task_worktrees", this.db.isServerDb),
       directorName: this.directorName(),
       directorDirectives: this.db.kvGet("setting_director_directives") ?? "",
       maxQaRounds: this.settingNum("setting_max_qa_rounds", config.maxQaRounds, 1, 12),

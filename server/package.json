@@ -255,6 +255,8 @@
     "test:lazy-chunks-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/lazy-chunks-ui.test.ts",
     "test:git-progress": "tsx src/tests/gitProgress.itest.ts",
     "test:repo-ops": "tsx src/tests/repoOps.itest.ts",
+    "test:task-worktree": "tsx src/tests/taskWorktree.itest.ts",
+    "test:task-worktree-pipeline": "tsx src/tests/taskWorktreePipeline.itest.ts",
     "test:git-console-probe": "node scripts/probe-git-console.test.cjs",
     "test:supervisor": "node scripts/supervise.itest.cjs",
     "test:gate-registration": "node scripts/gate-registration.test.cjs",

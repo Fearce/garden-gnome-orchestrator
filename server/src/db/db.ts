@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
 import { KvMirror, type ListedThread, ThreadListingMirror } from "./memoryMirrors.js";
@@ -863,6 +863,8 @@ export type OwnerCommandReceiptClaim =
 
 export class Db {
   readonly raw: Database.Database;
+  /** Whether this is the server's own database (config.dbPath) rather than a gate's or lab's throwaway. */
+  readonly isServerDb: boolean;
 
   /** Latched once the trigram index covers every message; only ever flips false->true. */
   private ftsReady = false;
@@ -873,6 +875,7 @@ export class Db {
   private runCreatedListeners: Array<(run: AgentRun) => void> = [];
 
   constructor(path: string) {
+    this.isServerDb = resolve(path).toLowerCase() === resolve(config.dbPath).toLowerCase();
     mkdirSync(dirname(path), { recursive: true });
     this.raw = new Database(path);
     this.raw.pragma("journal_mode = WAL");
