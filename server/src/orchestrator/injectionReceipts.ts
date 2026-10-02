@@ -276,7 +276,8 @@ export class InjectionReceipts {
     }, true);
     if (watchable) {
       offs.push(run.onInputConsumed!(inputId!, () => {
-        this.unbind(id, run);
+        // Keep other input watches on this run: a retry may be consumed and ACKed independently.
+        // The ledger fires each watch once; ACK or run end releases the remaining subscriptions.
         this.deliver(id, target, input.marker);
       }));
     }
@@ -323,6 +324,7 @@ export class InjectionReceipts {
         if (![...tokens].some((token) => acknowledgesInput(e, token))) continue;
         ids.delete(rid);
         this.update(rid, ["delivered"], { status: "read", read_at: now, run_id: target.runId ?? null, provider: target.provider });
+        for (const run of [...(this.bound.get(rid)?.keys() ?? [])]) this.unbind(rid, run);
       }
     });
     target.run.onEnd(() => {

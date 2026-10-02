@@ -290,6 +290,23 @@ assert.ok(!carriesInstruction("please use port 4400 now", "use port 4400"), "nor
 // 8. The real CLI runners: an input is consumed only once the turn carrying it produces model output.
 {
   const t = thread();
+  const text = "Retry both sends independently.";
+  const m = echo(t, text);
+  receipts.expect(t, m, text, ["implementor"]);
+  const run = new FakeRun();
+  sendTo(run, t, "implementor", acknowledgedInjection(text));
+  const firstId = run.lastInputId!;
+  sendTo(run, t, "implementor", acknowledgedInjection(text));
+  const secondId = run.lastInputId!;
+  run.inputs.consume([firstId]);
+  run.inputs.consume([secondId]);
+  ack(run);
+  assert.equal(receiptOf(m).status, "read", "consuming the first send does not discard the retry's acknowledgement watch");
+  run.end();
+}
+
+{
+  const t = thread();
   const text = "Check persistence after restart.";
   const m = echo(t, text);
   receipts.expect(t, m, text, ["implementor"]);
