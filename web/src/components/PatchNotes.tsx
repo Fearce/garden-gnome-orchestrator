@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../store.js";
-import { DIGEST_MIN_CHANGES, digestKey, newerThan, usePatchNotes, type PatchNote, type PatchNoteKind } from "../lib/patchNotes.js";
+import { DIGEST_MIN_CHANGES, digestKey, localDay, msUntilNextDay, newerThan, usePatchNotes, type PatchNote, type PatchNoteKind } from "../lib/patchNotes.js";
 import "./patchNotes.css";
 
 /**
@@ -8,7 +8,8 @@ import "./patchNotes.css";
  * fixes and speed-ups lead; docs, tests and chores stay folded behind a toggle because nobody using the
  * console acts on them. Commits the upstream has but this checkout does not are listed on top as the
  * next update, so the Update badge's "N new commits" finally says what those commits are. A busy day
- * opens with a one-line model-written overview of its changes above the bullets.
+ * that has ended opens with a one-line model-written overview of its changes above the bullets; today
+ * gets none until midnight, since every new commit would otherwise rewrite it.
  */
 export function PatchNotes() {
   const { entries, upcoming, pending, hasMore, loading, error, seenSha, load, loadOlder, markSeen } = usePatchNotes();
@@ -27,6 +28,7 @@ export function PatchNotes() {
     return entries.map((note, i) => ({ note, isNew: i < newCount, notLive: unbuilt.has(note.sha) }));
   }, [entries, newCount, pending]);
   const internalCount = entries.filter((e) => e.kind === "internal").length;
+  const today = useToday();
 
   return (
     <div className="pn-view">
@@ -47,7 +49,7 @@ export function PatchNotes() {
           <div className="big">{loading ? "Reading the change history…" : "No changes recorded"}</div>
         </div>
       ) : (
-        <DayGroups rows={annotated} filter={filter} showInternal={showInternal} lastDayComplete={!hasMore} />
+        <DayGroups rows={annotated} filter={filter} showInternal={showInternal} lastDayComplete={!hasMore} today={today} />
       )}
 
       {hasMore ? (
@@ -59,6 +61,22 @@ export function PatchNotes() {
       ) : null}
     </div>
   );
+}
+
+/** The viewer's current `localDay`, moving on at local midnight so yesterday gets its digest (and its
+ *  "Yesterday" label) without a reload. Rechecked on return to the tab: a sleeping machine delays timers. */
+function useToday(): string {
+  const [today, setToday] = useState(() => localDay(Date.now()));
+  useEffect(() => {
+    const recheck = () => setToday(localDay(Date.now()));
+    const timer = setTimeout(recheck, msUntilNextDay(Date.now()) + 1000);
+    document.addEventListener("visibilitychange", recheck);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", recheck);
+    };
+  }, [today]);
+  return today;
 }
 
 type Filter = "all" | "feature" | "fix" | "perf";
@@ -137,18 +155,23 @@ function UpcomingUpdate({ notes }: { notes: PatchNote[] }) {
 type Row = { note: PatchNote; isNew: boolean; notLive: boolean };
 
 /** Days are grouped over every loaded change, so a day's digest and its "busy" test do not depend on
- *  the filter; the filter only decides which bullets show under it. */
-function DayGroups({ rows, filter, showInternal, lastDayComplete }: { rows: Row[]; filter: Filter; showInternal: boolean; lastDayComplete: boolean }) {
+ *  the filter; the filter only decides which bullets show under it. A digest needs the whole day: one
+ *  that has ended, and that is not cut off at the end of the loaded page. */
+function DayGroups({ rows, filter, showInternal, lastDayComplete, today }: { rows: Row[]; filter: Filter; showInternal: boolean; lastDayComplete: boolean; today: string }) {
   const days = groupByDay(rows)
-    .map((group, i, all) => ({ ...group, visible: group.rows.filter(({ note }) => shows(note, filter, showInternal)), complete: lastDayComplete || i < all.length - 1 }))
+    .map((group, i, all) => ({
+      ...group,
+      visible: group.rows.filter(({ note }) => shows(note, filter, showInternal)),
+      complete: group.key < today && (lastDayComplete || i < all.length - 1),
+    }))
     .filter((group) => group.visible.length > 0);
   if (days.length === 0) return <div className="pn-none faint">Nothing in this filter among the loaded changes.</div>;
   return (
     <>
       {days.map((group) => (
         <section className="pn-day" key={group.key}>
-          <h3 className="pn-day-head">{group.label}</h3>
-          {filter === "all" && group.complete ? <DayDigest rows={group.rows} /> : null}
+          <h3 className="pn-day-head">{dayLabel(group.key, today)}</h3>
+          {filter === "all" && group.complete ? <DayDigest day={group.key} rows={group.rows} /> : null}
           <ul className="pn-list">
             {group.visible.map((row) => (
               <NoteRow key={row.note.sha} {...row} />
@@ -162,7 +185,7 @@ function DayGroups({ rows, filter, showInternal, lastDayComplete }: { rows: Row[
 
 /** The overview above a busy day. It covers the operator-facing changes only, like the default list.
  *  The last loaded day may continue on the next page, so it waits until that page is loaded. */
-function DayDigest({ rows }: { rows: Row[] }) {
+function DayDigest({ day, rows }: { day: string; rows: Row[] }) {
   const shas = useMemo(() => rows.filter(({ note }) => note.kind !== "internal").map(({ note }) => note.sha), [rows]);
   const busy = shas.length >= DIGEST_MIN_CHANGES;
   const key = busy ? digestKey(shas) : null;
@@ -170,8 +193,8 @@ function DayDigest({ rows }: { rows: Row[] }) {
   const requestDigest = usePatchNotes((s) => s.requestDigest);
 
   useEffect(() => {
-    if (busy) requestDigest(shas);
-  }, [busy, shas, requestDigest]);
+    if (busy) requestDigest(day, shas);
+  }, [busy, day, shas, requestDigest]);
 
   if (!busy || !digest || digest.status === "failed") return null;
   if (digest.status === "loading") {
@@ -237,28 +260,29 @@ function bodyParagraphs(body: string): string[] {
     .filter(Boolean);
 }
 
-function groupByDay(rows: Row[]): { key: string; label: string; rows: Row[] }[] {
-  const groups: { key: string; label: string; rows: Row[] }[] = [];
+/** Groups by `localDay`, the same key the digest names, so "today" means one thing everywhere. */
+function groupByDay(rows: Row[]): { key: string; rows: Row[] }[] {
+  const groups: { key: string; rows: Row[] }[] = [];
   for (const row of rows) {
-    const key = new Date(row.note.at).toDateString();
+    const key = localDay(row.note.at);
     const last = groups.at(-1);
     if (last?.key === key) last.rows.push(row);
-    else groups.push({ key, label: dayLabel(row.note.at), rows: [row] });
+    else groups.push({ key, rows: [row] });
   }
   return groups;
 }
 
-function dayLabel(at: number): string {
-  const day = new Date(at);
-  const today = new Date();
-  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
-  if (day.toDateString() === today.toDateString()) return "Today";
-  if (day.toDateString() === yesterday.toDateString()) return "Yesterday";
+function dayLabel(key: string, today: string): string {
+  const [year, month, date] = key.split("-").map(Number) as [number, number, number];
+  const day = new Date(year, month - 1, date);
+  const [ty, tm, td] = today.split("-").map(Number) as [number, number, number];
+  if (key === today) return "Today";
+  if (key === localDay(new Date(ty, tm - 1, td - 1).getTime())) return "Yesterday";
   return day.toLocaleDateString(undefined, {
     weekday: "long",
     day: "numeric",
     month: "long",
-    ...(day.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }),
+    ...(year === ty ? {} : { year: "numeric" }),
   });
 }
 

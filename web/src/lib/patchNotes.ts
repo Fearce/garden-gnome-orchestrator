@@ -48,7 +48,8 @@ interface PatchNotesState {
   load: () => Promise<void>;
   loadOlder: () => Promise<void>;
   markSeen: () => void;
-  requestDigest: (shas: string[]) => void;
+  /** Ask for an ENDED day's overview; `day` is its `localDay` key. */
+  requestDigest: (day: string, shas: string[]) => void;
 }
 
 export type DayDigest = { status: "loading" } | { status: "ready"; summary: string } | { status: "failed" };
@@ -59,6 +60,23 @@ export const DIGEST_MIN_CHANGES = 5;
 export function digestKey(shas: string[]): string {
   return [...shas].sort().join(",");
 }
+
+/** The viewer's calendar day for `at`, as YYYY-MM-DD: how the view groups days and what a digest names. */
+export function localDay(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** Milliseconds until the viewer's next local midnight. */
+export function msUntilNextDay(now: number): number {
+  const d = new Date(now);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime() - now;
+}
+
+class DayInProgress extends Error {}
+
+/** How long to wait before asking again when the server's clock has not reached the viewer's midnight yet. */
+const IN_PROGRESS_RETRY_MS = 60_000;
 
 const SEEN_KEY = "ggo.patchNotesSeen";
 
@@ -84,13 +102,15 @@ async function fetchPage(skip: number): Promise<PatchNotesPage> {
   return (await res.json()) as PatchNotesPage;
 }
 
-async function fetchDigest(shas: string[]): Promise<string> {
+async function fetchDigest(day: string, shas: string[]): Promise<string> {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const res = await fetch(apiUrl("/api/patch-notes/digest"), {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ shas }),
+    body: JSON.stringify({ shas, day, timeZone }),
     cache: "no-store",
   });
+  if (res.status === 409) throw new DayInProgress();
   if (!res.ok) throw new Error(`patch notes digest failed (${res.status})`);
   return ((await res.json()) as { summary: string }).summary;
 }
@@ -150,15 +170,24 @@ export const usePatchNotes = create<PatchNotesState>((set, get) => {
     },
 
     // Asked once per day while the console stays loaded: a failure stays failed until a reload rather
-    // than retrying a model call on every render.
-    requestDigest: (shas) => {
+    // than retrying a model call on every render. The one exception is a server whose clock is a little
+    // behind the viewer's midnight: it never reached the model, so it is asked again shortly.
+    requestDigest: (day, shas) => {
       const key = digestKey(shas);
       if (get().digests[key]) return;
-      const settle = (digest: DayDigest) => set((s) => ({ digests: { ...s.digests, [key]: digest } }));
+      const settle = (digest: DayDigest | null) =>
+        set((s) => {
+          const { [key]: _, ...rest } = s.digests;
+          return { digests: digest ? { ...rest, [key]: digest } : rest };
+        });
       settle({ status: "loading" });
-      fetchDigest(shas).then(
+      fetchDigest(day, shas).then(
         (summary) => settle({ status: "ready", summary }),
-        () => settle({ status: "failed" }),
+        (e) => {
+          if (!(e instanceof DayInProgress)) return settle({ status: "failed" });
+          settle(null);
+          setTimeout(() => get().requestDigest(day, shas), IN_PROGRESS_RETRY_MS);
+        },
       );
     },
 

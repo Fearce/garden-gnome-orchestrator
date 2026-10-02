@@ -51,7 +51,7 @@ import { startWebAutoBuild } from "./webAutoBuild.js";
 import { refreshStatus, getStatus, applyUpdate, startUpdatePoll, stagedBuildStamp, claimCheckoutForRuntimeBump } from "./update.js";
 import { CliAutoUpdater } from "./toolchain/cliAutoUpdate.js";
 import { readPatchNotes } from "./patchNotes.js";
-import { digestShas, haikuDigestModel, PatchNoteDigests } from "./patchNoteDigest.js";
+import { digestRequest, haikuDigestModel, PatchNoteDigests } from "./patchNoteDigest.js";
 import { registerWs } from "./ws/hub.js";
 import { FreeProviderService } from "./freeProviders/service.js";
 import { registerFreeProviderRoutes } from "./freeProviders/routes.js";
@@ -428,14 +428,14 @@ async function main(): Promise<void> {
       return readPatchNotes({ skip, limit });
     });
 
-    // A busy day's one-line overview (Haiku, cached per commit set). The console asks per day because it
+    // An ended busy day's one-line overview (Haiku, cached per commit set). The console asks per day because it
     // groups days in the viewer's timezone; the server re-reads the commits, so no client text reaches the model.
-    app.post<{ Body: { shas?: unknown } }>("/api/patch-notes/digest", async (req, reply) => {
+    app.post<{ Body: unknown }>("/api/patch-notes/digest", async (req, reply) => {
       if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
       reply.header("cache-control", "no-store");
-      const shas = digestShas(req.body?.shas);
-      if (!shas) return reply.code(400).send({ error: "shas must be a non-empty list of full commit hashes" });
-      const result = await patchNoteDigests.digest(shas);
+      const request = digestRequest(req.body);
+      if (!request) return reply.code(400).send({ error: "send shas (full commit hashes), day (YYYY-MM-DD) and timeZone (IANA name)" });
+      const result = await patchNoteDigests.digest(request);
       return result.ok ? { summary: result.summary } : reply.code(result.status).send({ error: result.error });
     });
 

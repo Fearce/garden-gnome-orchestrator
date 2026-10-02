@@ -4,7 +4,8 @@
 // show exactly the rows they claim, a commit body expands, paging loads older changes, the next-update
 // section appears exactly when the upstream is ahead, and a phone reaches the area through the
 // All-areas picker without the page scrolling sideways, and a busy day (5+ operator-facing changes)
-// opens with its digest — asked of the server with exactly that day's shas, shown only in Everything.
+// that has ended opens with its digest — asked of the server with exactly that day's shas, shown only in
+// Everything — while today gets none until the browser's clock passes midnight.
 //
 // The throwaway instance reads THIS checkout's real history (the server reads the repo it runs from),
 // so every expectation is computed from `git log` at run time rather than hard-coded.
@@ -19,7 +20,8 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
 
-const PORT = 4391;
+// GGO_LAB_PORT moves the lab off 4391 when another task's dev server already holds it (the lab kills its port).
+const PORT = Number(process.env.GGO_LAB_PORT) || 4391;
 const REPO = path.resolve(__dirname, "..", "..");
 const SEEN_KEY = "ggo.patchNotesSeen";
 const INTERNAL = new Set(["docs", "test", "tests", "chore", "refactor", "style", "build", "ci"]);
@@ -159,40 +161,69 @@ async function phonePass(browser, dataDir) {
   await ctx.close();
 }
 
-/** Busy days in the first page, grouped by the browser's local date like the view does. The last day
- *  may continue on the next page, so it is never expected to carry a digest. */
-function busyDays(count) {
+/** The browser's local date for epoch ms, keyed like the view's `localDay` (the lab browser shares this
+ *  machine's timezone). */
+function localDay(ms) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/** The first page's commits grouped by local day, newest first, each with its operator-facing shas. */
+function daysOf(count) {
   const commits = git("log", "--no-merges", `--max-count=${count}`, "--format=%H%x1f%ct%x1f%s")
     .split("\n")
     .map((line) => {
       const [sha, seconds, subject] = line.split("\x1f");
       const m = /^([a-z]+)(?:\([^)]*\))?!?:/i.exec(subject);
-      return { sha, day: new Date(Number(seconds) * 1000).toDateString(), internal: !!m && INTERNAL.has(m[1].toLowerCase()) };
+      return { sha, day: localDay(Number(seconds) * 1000), internal: !!m && INTERNAL.has(m[1].toLowerCase()) };
     });
   const days = [];
   for (const c of commits) {
     if (days.at(-1)?.day !== c.day) days.push({ day: c.day, facing: [] });
     if (!c.internal) days.at(-1).facing.push(c.sha);
   }
-  return days.slice(0, -1).map((d) => ({ ...d, busy: d.facing.length >= 5 }));
+  return days.map((d) => ({ ...d, busy: d.facing.length >= 5 }));
+}
+
+/** Busy days that have ended. The last loaded day may continue on the next page, so it never counts. */
+function busyPastDays(count) {
+  const today = localDay(Date.now());
+  return daysOf(count)
+    .slice(0, -1)
+    .filter((d) => d.busy && d.day < today);
+}
+
+const sortedKey = (shas) => [...shas].sort().join(",");
+
+/** The group headed `label`: how many rows it shows and its digest text, if any. */
+async function groupNamed(page, label) {
+  return page.$$eval(
+    ".pn-day",
+    (els, wanted) => {
+      const el = els.find((d) => d.querySelector(".pn-day-head")?.textContent?.trim() === wanted);
+      return { rows: el ? el.querySelectorAll(".pn-row").length : 0, digest: el?.querySelector(".pn-digest")?.textContent?.trim() ?? null };
+    },
+    label,
+  );
 }
 
 /** The digest endpoint is stubbed: the lab proves what the view asks for and how it shows the answer, not
  *  what Haiku writes (test:patch-notes proves the server side against a fixture repo). The first ask is
  *  held to see the loading line; the second fails, and its day must fall back to plain bullets. */
 async function digestPass(browser, dataDir) {
-  const busy = busyDays(150).filter((d) => d.busy);
+  const busy = busyPastDays(150);
+  const todayDay = daysOf(150).find((d) => d.day === localDay(Date.now()));
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
   const asked = [];
   let release;
   const held = new Promise((r) => (release = r));
   await page.route("**/api/patch-notes/digest", async (route) => {
-    const shas = route.request().postDataJSON().shas;
-    asked.push(shas);
+    const ask = route.request().postDataJSON();
+    asked.push(ask);
     if (asked.length === 1) await held;
     if (asked.length === 2) return route.fulfill({ status: 502, json: { error: "the summary model gave no usable answer" } });
-    await route.fulfill({ json: { summary: `Lab digest of ${shas.length} changes.` } });
+    await route.fulfill({ json: { summary: `Lab digest of ${ask.shas.length} changes.` } });
   });
   await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
   await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 60000 });
@@ -200,7 +231,7 @@ async function digestPass(browser, dataDir) {
   await page.click('.board-tab:has-text("Patch notes")');
   await waitForRows(page);
   if (busy.length < 2) {
-    check("busy-day digests need two busy days in the loaded history to exercise", false, `${busy.length} busy days`);
+    check("busy-day digests need two ended busy days in the loaded history to exercise", false, `${busy.length} busy days`);
     release();
     await ctx.close();
     return;
@@ -210,15 +241,25 @@ async function digestPass(browser, dataDir) {
   release();
   await page.waitForFunction((n) => document.querySelectorAll(".pn-digest:not(.loading)").length >= n, busy.length - 1, { timeout: 15000 }).catch(() => {});
 
-  const expected = new Set(busy.map((d) => [...d.facing].sort().join(",")));
-  const askedKeys = asked.map((shas) => [...shas].sort().join(","));
-  check("the view asks once per busy day, with exactly that day's operator-facing shas", askedKeys.length === busy.length && askedKeys.every((k) => expected.has(k)), `${askedKeys.length} asks for ${busy.length} busy days`);
+  const expected = new Map(busy.map((d) => [sortedKey(d.facing), d.day]));
+  const timeZone = await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+  check(
+    "the view asks once per ended busy day, naming the day and timezone, with exactly that day's operator-facing shas",
+    asked.length === busy.length && asked.every((a) => expected.get(sortedKey(a.shas)) === a.day && a.timeZone === timeZone),
+    `${asked.length} asks for ${busy.length} busy days: ${JSON.stringify(asked.map((a) => [a.day, a.timeZone, a.shas.length]))}`,
+  );
   const shown = await page.$$eval(".pn-day", (els) => els.map((el) => el.querySelector(".pn-digest")?.textContent?.trim() ?? null));
   const withDigest = shown.filter(Boolean);
   check(
-    "every busy day opens with its digest except the failed one; quiet days have none",
+    "every ended busy day opens with its digest except the failed one; quiet days have none",
     withDigest.length === busy.length - 1 && withDigest.every((t) => /^Lab digest of \d+ changes\.$/.test(t)),
     JSON.stringify(shown.slice(0, 8)),
+  );
+  const todayGroup = await groupNamed(page, "Today");
+  check(
+    `today${todayDay ? ` (${todayDay.facing.length} operator-facing changes)` : ""} shows its bullets with no digest and is never asked about`,
+    !todayDay || (todayGroup.rows > 0 && !todayGroup.digest && !asked.some((a) => a.day === todayDay.day)),
+    JSON.stringify(todayGroup),
   );
   const first = await page.$(".pn-day:has(.pn-digest)");
   if (first) await first.screenshot({ path: path.join(shotDir(dataDir), "patch-notes-digest.png") });
@@ -231,6 +272,48 @@ async function digestPass(browser, dataDir) {
   await page.click('.board-tab:has-text("Patch notes")');
   await waitForRows(page);
   check("reopening the area does not ask again", asked.length === asksBefore, `${asked.length} vs ${asksBefore}`);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await ctx.close();
+}
+
+/** The console left open past midnight: today's group turns into "Yesterday" and is summarized then,
+ *  with no reload. The browser's clock is faked so the lab need not wait for a real midnight. */
+async function rolloverPass(browser, dataDir) {
+  const today = daysOf(150).find((d) => d.day === localDay(Date.now()));
+  if (!today?.busy) {
+    console.log(`  (rollover pass skipped: today has ${today?.facing.length ?? 0} operator-facing changes, a digest needs 5)`);
+    return;
+  }
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  await page.clock.install({ time: Date.now() });
+  const asked = [];
+  await page.route("**/api/patch-notes/digest", async (route) => {
+    const ask = route.request().postDataJSON();
+    asked.push(ask);
+    await route.fulfill({ json: { summary: `Lab digest of ${ask.day}.` } });
+  });
+  await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
+  await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 60000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 60000 });
+  await page.click('.board-tab:has-text("Patch notes")');
+  await waitForRows(page);
+  const before = await groupNamed(page, "Today");
+  check("before midnight today's busy group has no digest", before.rows > 0 && !before.digest && !asked.some((a) => a.day === today.day), JSON.stringify(before));
+
+  const untilMidnight = await page.evaluate(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime() - d.getTime();
+  });
+  await page.clock.fastForward(untilMidnight + 2000);
+  await page
+    .waitForFunction(() => [...document.querySelectorAll(".pn-day")].some((g) => g.querySelector(".pn-day-head")?.textContent?.trim() === "Yesterday" && g.querySelector(".pn-digest:not(.loading)")), null, { timeout: 15000 })
+    .catch(() => {});
+  const asks = asked.filter((a) => a.day === today.day);
+  check("after midnight the same page asks once for the day that just ended, with all its changes", asks.length === 1 && sortedKey(asks[0].shas) === sortedKey(today.facing), JSON.stringify(asked.map((a) => [a.day, a.shas.length])));
+  const after = await groupNamed(page, "Yesterday");
+  check("...and that day, now headed Yesterday, opens with its digest", after.digest === `Lab digest of ${today.day}.`, JSON.stringify(after));
+  await page.screenshot({ path: path.join(shotDir(dataDir), "patch-notes-after-midnight.png") });
   await page.unrouteAll({ behavior: "ignoreErrors" });
   await ctx.close();
 }
@@ -291,6 +374,7 @@ async function upcomingPass(browser, dataDir) {
     await desktopPass(browser, dataDir, expectedNew, local[seenIdx].sha, local);
     await upcomingPass(browser, dataDir);
     await digestPass(browser, dataDir);
+    await rolloverPass(browser, dataDir);
     await phonePass(browser, dataDir);
     await browser.close();
     console.log(`\nscreenshots: ${shotDir(dataDir)}`);

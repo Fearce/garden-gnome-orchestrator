@@ -5,7 +5,8 @@
 // docs/test/chore → internal, trailers never shown), and the upstream commits an update would bring in are
 // listed separately from what this checkout already has, with paging that never drops or repeats a commit.
 // A busy day's digest is built from the commits git holds for the shas asked about, never from client
-// text, needs five operator-facing changes, and is asked of the model once per commit set.
+// text, needs five operator-facing changes, waits until the day has ended in the viewer's timezone, and is
+// asked of the model once per commit set.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -14,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stopChildRunner } from "../childRunner.js";
 import { classifyCommit, readPatchNotes } from "../patchNotes.js";
-import { cleanDigest, digestShas, PatchNoteDigests } from "../patchNoteDigest.js";
+import { cleanDigest, dayIn, digestRequest, digestShas, PatchNoteDigests } from "../patchNoteDigest.js";
 
 const root = mkdtempSync(join(tmpdir(), "ggo-patch-notes-"));
 // The owner's global core.hooksPath runs a real validation suite on every commit and push (~3s each).
@@ -33,6 +34,17 @@ function commit(repo: string, message: string): void {
   writeFileSync(join(repo, "file.txt"), `${++counter}\n`);
   git(repo, "add", "file.txt");
   git(repo, "commit", "-q", "-m", message);
+}
+
+/** A commit stamped at `iso`, so a digest's day is fixed rather than whenever the gate happens to run. */
+function commitAt(repo: string, message: string, iso: string): string {
+  writeFileSync(join(repo, "file.txt"), `${++counter}\n`);
+  git(repo, "add", "file.txt");
+  execFileSync("git", ["-C", repo, "-c", "user.email=gate@example.com", "-c", "user.name=gate", "-c", `core.hooksPath=${noHooks}`, "commit", "-q", "-m", message], {
+    env: { ...process.env, GIT_AUTHOR_DATE: iso, GIT_COMMITTER_DATE: iso },
+    windowsHide: true,
+  });
+  return git(repo, "rev-parse", "HEAD");
 }
 
 function commitPath(repo: string, path: string, message: string): string {
@@ -128,49 +140,76 @@ async function notACheckout(): Promise<void> {
   console.log("  ok  an install outside git explains itself instead of throwing");
 }
 
-/** The digest reads the commits itself, skips internal ones, refuses a quiet day, and caches per set. */
+/** The digest reads the commits itself, skips internal ones, refuses a quiet day and a day still in
+ *  progress, and caches per set. The commits sit late on 30 September in Copenhagen (UTC+2), which is
+ *  already 1 October in Tokyo. */
 async function dayDigest(): Promise<void> {
   const repo = join(root, "digest");
   mkdirSync(repo);
   git(repo, "init", "-q", "-b", "master");
-  const facing = ["feat(board): hide done tasks", "fix: stop the chip overlap", "perf: faster board load", "feat(goals): keep one session", "fix(web): wrap the header"].map((m) => {
-    commit(repo, m);
-    return git(repo, "rev-parse", "HEAD");
-  });
-  commit(repo, "docs: write it down");
-  const internal = git(repo, "rev-parse", "HEAD");
+  const facing = ["feat(board): hide done tasks", "fix: stop the chip overlap", "perf: faster board load", "feat(goals): keep one session", "fix(web): wrap the header"].map((m, i) =>
+    commitAt(repo, m, `2026-09-30T20:0${i}:00Z`),
+  );
+  const internal = commitAt(repo, "docs: write it down", "2026-09-30T20:10:00Z");
+  const nextDay = commitAt(repo, "feat: the day after", "2026-10-01T09:00:00Z");
+  const tz = "Europe/Copenhagen";
+  const day = "2026-09-30";
+  assert.equal(dayIn(Date.parse("2026-09-30T21:59:59Z"), tz), day);
+  assert.equal(dayIn(Date.parse("2026-09-30T22:00:00Z"), tz), "2026-10-01", "a day is the viewer's calendar day, not UTC's");
 
   const kv = new Map<string, string>();
   const store = { get: (k: string) => kv.get(k) ?? null, set: (k: string, v: string) => void kv.set(k, v) };
   const asked: string[] = [];
-  const digests = new PatchNoteDigests(store, async (changes) => (asked.push(changes), "Board and goal polish with three fixes"), repo);
+  let now = Date.parse("2026-09-30T21:30:00Z");
+  const digests = new PatchNoteDigests(store, async (changes) => (asked.push(changes), "Board and goal polish with three fixes"), repo, () => now);
+  const ask = (shas: string[], on = day, timeZone = tz) => digests.digest({ shas, day: on, timeZone });
 
-  const quiet = await digests.digest([...facing.slice(0, 4), internal]);
+  const today = await ask([...facing, internal]);
+  assert.equal(today.ok ? null : today.status, 409, "today is not summarized while it is still going, however busy");
+  assert.equal(asked.length, 0, "today never reaches the model");
+  assert.equal((await ask([nextDay], "2026-10-01")).ok, false, "nor is a day after today");
+
+  // Midnight passes in Copenhagen while the same instance keeps running.
+  now = Date.parse("2026-09-30T22:00:01Z");
+  const quiet = await ask([...facing.slice(0, 4), internal]);
   assert.deepEqual(quiet.ok ? null : quiet.status, 422, "four operator-facing changes plus an internal one is not a busy day");
   assert.equal(asked.length, 0, "a quiet day never reaches the model");
 
-  const [a, b] = await Promise.all([digests.digest([...facing, internal]), digests.digest([internal, ...facing].reverse())]);
-  assert.deepEqual(a, { ok: true, summary: "Board and goal polish with three fixes." }, "the overview ends as a sentence");
+  const [a, b] = await Promise.all([ask([...facing, internal]), ask([internal, ...facing].reverse())]);
+  assert.deepEqual(a, { ok: true, summary: "Board and goal polish with three fixes." }, "the day is summarized once it has ended, without a restart");
   assert.deepEqual(b, a, "the same set in another order is the same day");
   assert.equal(asked.length, 1, "concurrent asks for one day share one model call");
   assert.match(asked[0]!, /- New \(board\): Hide done tasks/);
   assert.ok(!asked[0]!.includes("Write it down"), "internal commits stay out of the overview");
 
-  const reread = new PatchNoteDigests(store, async () => assert.fail("a cached day must not call the model again"), repo);
-  assert.deepEqual(await reread.digest([...facing, internal]), a, "the digest survives a restart via the store");
+  now = Date.parse("2026-10-05T12:00:00Z");
+  assert.deepEqual(await ask([...facing, internal]), a, "a later render or poll reuses the digest");
+  assert.equal(asked.length, 1, "...without asking the model again");
+  const reread = new PatchNoteDigests(store, async () => assert.fail("a cached day must not call the model again"), repo, () => now);
+  assert.deepEqual(await reread.digest({ shas: [...facing, internal], day, timeZone: tz }), a, "the digest survives a restart via the store");
 
-  const unknown = await digests.digest([...facing.slice(1), "0".repeat(40)]);
+  const tokyo = await ask([...facing.slice(1), internal, nextDay], day, "Asia/Tokyo");
+  assert.equal(tokyo.ok ? null : tokyo.status, 422, "commits that are not all from the named day in that timezone are refused");
+  const mixed = await ask([...facing.slice(1), nextDay]);
+  assert.equal(mixed.ok ? null : mixed.status, 422, "a set that spills into another day is refused");
+  const unknown = await ask([...facing.slice(1), "0".repeat(40)]);
   assert.equal(unknown.ok ? null : unknown.status, 422, "a sha this checkout lacks is refused");
+  assert.equal(asked.length, 1, "no refused request reaches the model");
 
-  const noAnswer = await new PatchNoteDigests({ get: () => null, set: () => assert.fail("a failure is not cached") }, async () => null, repo).digest(facing);
+  const noAnswer = await new PatchNoteDigests({ get: () => null, set: () => assert.fail("a failure is not cached") }, async () => null, repo, () => now).digest({ shas: facing, day, timeZone: tz });
   assert.equal(noAnswer.ok ? null : noAnswer.status, 502);
 
   assert.equal(digestShas([facing[0], facing[0]])?.length, 1);
   for (const bad of [[], ["HEAD"], [facing[0]!.toUpperCase()], ["--all"], "abc", [1]]) assert.equal(digestShas(bad), null, JSON.stringify(bad));
+  assert.deepEqual(digestRequest({ shas: [facing[0]], day, timeZone: tz }), { shas: [facing[0]], day, timeZone: tz });
+  const sha = facing[0];
+  for (const bad of [{ shas: [sha], day }, { shas: [sha], timeZone: tz }, { shas: [sha], day: "30/09/2026", timeZone: tz }, { shas: [sha], day, timeZone: "Mars/Olympus" }, null]) {
+    assert.equal(digestRequest(bad), null, JSON.stringify(bad));
+  }
   assert.equal(cleanDigest("I can't summarize this"), null);
   assert.equal(cleanDigest("This is not a coding task"), null);
   assert.equal(cleanDigest("Mostly fixes!"), "Mostly fixes!");
-  console.log("  ok  a busy day's digest comes from git, needs five changes and is asked once per set");
+  console.log("  ok  a busy day's digest comes from git, needs five changes, waits for the day to end and is asked once per set");
 }
 
 try {
