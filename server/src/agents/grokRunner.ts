@@ -521,7 +521,8 @@ export class GrokAgentRun implements AgentRunLike {
     this.emitInitIfNeeded(ev.sessionId);
     // Model output (or a clean end) is the proof this turn's prompt reached the model; a process that
     // only errored never read it.
-    if (ev.type === "end" || ((ev.type === "text" || ev.type === "thought") && ev.data)) this.inputs.consume(this.turnInputIds);
+    if ((ev.type === "end" && !this.capped && !this.transientApiError && !RATE_LIMIT_RE.test(ev.stopReason ?? "") && !looksLikeCapNotice(this.textBuf)) ||
+      (ev.type === "thought" && ev.data)) this.inputs.consume(this.turnInputIds);
     switch (ev.type) {
       case "text":
         // Stream the chunk live into the feed AND accumulate it — the whole message is persisted as one

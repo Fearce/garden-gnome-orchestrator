@@ -104,6 +104,16 @@ function seedStates(dbPath) {
     const browser = await chromium.launch();
     const ctx = await browser.newContext({ viewport: { width: 1500, height: 950 } });
     const page = await ctx.newPage();
+    await page.addInitScript(() => {
+      const NativeSocket = window.WebSocket;
+      window.__receiptSockets = [];
+      window.WebSocket = class extends NativeSocket {
+        constructor(...args) {
+          super(...args);
+          window.__receiptSockets.push(this);
+        }
+      };
+    });
     await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
     for (const [id, reads] of [[READING, "1"], [SILENT, "0"]]) {
       const res = await page.request.post(`http://127.0.0.1:${PORT}/api/lab/live-qa/${id}?reads=${reads}`);
@@ -129,6 +139,18 @@ function seedStates(dbPath) {
     check("the read label names the recipient and the time", /^Read by .+ \(QA\) at \d/.test(qa?.label ?? "") && qa?.label === qa?.title && qa?.role === "img", qa?.label);
     check("the waiting label says why", /Waiting for .+ \(Implementor\)\./.test(impl?.label ?? ""), impl?.label);
     check("the hat stays small", (qa?.size ?? 0) > 0 && (qa?.size ?? 99) <= 16, String(qa?.size));
+
+    // Repeating identical text is a new injection, never a receipt for the previous input.
+    await inject(page, asked, "Inject");
+    await waitForMark(page, asked, "implementor", "pending");
+    const repeatEarly = (await marksFor(page, asked))?.find((m) => m.recipient === "qa");
+    check("repeated text waits for its own delivery and ACK", repeatEarly?.status === "sent" && !repeatEarly.tick, JSON.stringify(repeatEarly));
+    await waitForMark(page, asked, "qa", "read");
+    await page.evaluate(() => window.__receiptSockets.forEach((socket) => socket.close()));
+    await page.waitForFunction(() => window.__receiptSockets.length >= 2 && window.__receiptSockets.at(-1)?.readyState === WebSocket.OPEN);
+    await waitForMark(page, asked, "qa", "read");
+    const reconnected = await marksFor(page, asked);
+    check("reconnect retains exact recipient states without duplicate receipts", reconnected?.length === 2 && reconnected.find((m) => m.recipient === "qa")?.status === "read" && reconnected.find((m) => m.recipient === "implementor")?.status === "pending", JSON.stringify(reconnected));
 
     // 2. Queue mode: held for the implementor's hand-off, so waiting and never ticked.
     const queued = "rename the export button after the review";

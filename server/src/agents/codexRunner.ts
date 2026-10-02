@@ -727,7 +727,7 @@ export class CodexAgentRun implements AgentRunLike {
         }
         break;
       case "turn.completed":
-        this.inputs.consume(this.turnInputIds);
+        if (!this.capped && !this.resumeRolloutMissing && !this.transientApiError) this.inputs.consume(this.turnInputIds);
         this.sawTerminal = true;
         // A subscription cap can arrive as the final agent_message while Codex still labels the outer
         // turn `completed`. The message is the provider's rejection, not a successful role result:
@@ -757,11 +757,11 @@ export class CodexAgentRun implements AgentRunLike {
         }
         break;
       case "item.started":
-        this.inputs.consume(this.turnInputIds);
+        if (ev.item?.type && ev.item.type !== "error" && ev.item.type !== "agent_message") this.inputs.consume(this.turnInputIds);
         this.handleItem(ev.item, "started");
         break;
       case "item.completed":
-        this.inputs.consume(this.turnInputIds);
+        if (ev.item?.type && ev.item.type !== "error" && !(ev.item.type === "agent_message" && looksLikeCapNotice(ev.item.text ?? ""))) this.inputs.consume(this.turnInputIds);
         this.handleItem(ev.item, "completed");
         break;
       default:

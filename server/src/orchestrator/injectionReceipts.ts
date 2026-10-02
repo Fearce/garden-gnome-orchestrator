@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { AgentRunLike, UserContent } from "../agents/runner.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
@@ -15,12 +16,11 @@ import type { AgentEvent, InjectionReceipt, InjectionReceiptStatus, InjectionRec
 //   sent      -> delivered  that run's provider proved the input reached the model (AgentRunLike
 //                           onInputConsumed: Claude/z.ai echo the message uuid on the turn that consumed
 //                           it; Codex/Grok/free providers produce model output for the turn carrying it)
-//   delivered -> read       the same run then answered with the `ACK:` every steering frame demands
+//   delivered -> read       the consuming run answered with this input's unique `ACK IR-…:` token
 //
-// Binding is by text: the outbound content must carry the instruction as whole lines (carriesInstruction). That is
-// what lets one tracker follow every route without each route knowing about receipts, and it keeps a
-// resend or retry on the same receipt instead of minting a duplicate. A run that ends before taking a
-// sent input returns its receipt to pending, so the retry that re-sends the text binds it again.
+// Outbound inputs name the open receipts whose instructions they carry on whole lines. For routes
+// that echo after sending, AsyncLocalStorage restricts late binding to that exact injection operation.
+// This prevents a repeated instruction borrowing an older input's proof. Retries keep the same rows.
 
 /** Thread states in which a planner can still take an instruction. */
 const PLANNER_STATES: ReadonlySet<ThreadState> = new Set([
@@ -34,7 +34,7 @@ const RECENT_INPUTS = 8;
 /** `ACK:` (or `ACK -` with any dash) at the start of a line, tolerating markdown emphasis around it. A
  *  reviewer names the instructions it answers first (`ACK RI-1a2b3c4d + RI-5e6f7a8b:`). */
 const DASHES = String.fromCharCode(0x2013, 0x2014);
-const ACK_RE = new RegExp(`(?:^|\\n)[\\s*_\`>#]*ACK\\b(?:\\s+RI-\\w+(?:\\s*\\+\\s*RI-\\w+)*)?[*_\`]*\\s*[:\\-${DASHES}]`);
+const ACK_RE = new RegExp(`(?:^|\\n)[\\s*_\`>#]*ACK\\b(?:\\s+(?:RI-\\w+|IR-[\\w-]+)(?:\\s*\\+\\s*(?:RI-\\w+|IR-[\\w-]+))*)?[*_\`]*\\s*[:\\-${DASHES}]`);
 
 export function acknowledges(text: string): boolean {
   return ACK_RE.test(text);
@@ -53,7 +53,7 @@ export function carriesInstruction(text: string, instruction: string): boolean {
   const words = instruction.trim().split(/\s+/).filter(Boolean);
   if (!words.length) return false;
   const body = words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+");
-  return new RegExp(`(?:^|\\n)[ \\t]*(?:\\d+\\.[ \\t]+|[-*][ \\t]+)?${body}[ \\t]*(?:\\r?\\n|$)`).test(text);
+  return new RegExp(`(?:^|\\n)[ \\t]*(?:\\d+\\.[ \\t]+|[-*][ \\t]+|RI-\\w+:[ \\t]*)?${body}[ \\t]*(?:\\r?\\n|$)`).test(text);
 }
 
 function contentText(content: UserContent): string {
@@ -63,11 +63,17 @@ function contentText(content: UserContent): string {
     .join("\n");
 }
 
-function ackFromEvent(e: AgentEvent): boolean {
-  if (e.type === "text") return acknowledges(e.text);
-  if (e.type !== "result") return false;
+function ackTexts(e: AgentEvent): string[] {
+  if (e.type === "text") return [e.text];
+  if (e.type !== "result") return [];
   const summary = (e.structuredOutput as { summary?: unknown } | undefined)?.summary;
-  return (typeof summary === "string" && acknowledges(summary)) || (typeof e.result === "string" && acknowledges(e.result));
+  return [summary, e.result].filter((s): s is string => typeof s === "string");
+}
+
+function acknowledgesInput(e: AgentEvent, marker: string): boolean {
+  return ackTexts(e).some((text) => text.split(/\r?\n/).some((line) =>
+    acknowledges(line) && new RegExp(`\\b${marker}\\b`).test(line.split(/[:\u2013\u2014]/, 1)[0] ?? ""),
+  ));
 }
 
 function laneKey(threadId: string, recipient: InjectionRecipient): string {
@@ -106,17 +112,43 @@ interface SentInput {
   target: ReceiptTarget;
   inputId: string | undefined;
   text: string;
+  marker?: string;
+  contextId?: string;
+  receiptIds: string[];
 }
 
 export class InjectionReceipts {
   /** receipt id -> runs it is handed to and not yet taken by, with their consumption-watch unsubscribes. */
   private readonly bound = new Map<string, Map<AgentRunLike, (() => void)[]>>();
   /** run -> receipts it has delivered and that now wait for its ACK. */
-  private readonly awaitingAck = new Map<AgentRunLike, Set<string>>();
+  private readonly awaitingAck = new Map<AgentRunLike, Map<string, Set<string>>>();
   /** thread:recipient -> recent inputs of that lane's live runs (see observe). */
   private readonly recent = new Map<string, SentInput[]>();
+  private readonly context = new AsyncLocalStorage<{ threadId: string; instruction: string; id: string }>();
+  private readonly prepared = new Map<string, { contextId?: string; receiptIds: string[] }>();
 
   constructor(private readonly db: Db, private readonly hub: EventHub) {}
+
+  /** Scope retroactive binding to this injection operation, never an earlier identical message. */
+  withInjection<T>(threadId: string, instruction: string, action: () => T): T {
+    return this.context.run({ threadId, instruction, id: randomUUID() }, action);
+  }
+
+  /** Give the actual outbound input a unique acknowledgement token. Existing review ACK contracts
+   * remain intact; structured agents put the additional receipt line in their summary. */
+  prepare(threadId: string, recipient: InjectionRecipient, run: AgentRunLike, content: UserContent): UserContent {
+    const text = contentText(content);
+    const context = this.context.getStore();
+    const current = context?.threadId === threadId && carriesInstruction(text, context.instruction) ? context : undefined;
+    const receiptIds = (this.db.raw.prepare("SELECT id, instruction FROM injection_receipts WHERE thread_id=? AND recipient=? AND status IN ('pending','sent','delivered')")
+      .all(threadId, recipient) as Row[]).filter((r) => carriesInstruction(text, String(r.instruction))).map((r) => String(r.id));
+    if (!current && !receiptIds.length) return content;
+    const marker = `IR-${randomUUID()}`;
+    this.prepared.set(marker, { contextId: current?.id, receiptIds });
+    run.onEnd(() => this.prepared.delete(marker));
+    const note = `\n\n[GGO receipt ${marker}]\nAfter taking the instruction(s) above, include a separate acknowledgement line: ACK ${marker}: followed by how you will apply them. For a structured response, include that line in the summary field. Also satisfy any existing RI acknowledgement requirements. This token acknowledges only this input.`;
+    return typeof content === "string" ? content + note : [...content, { type: "text", text: note }];
+  }
 
   list(threadId: string): InjectionReceipt[] {
     return (this.db.raw.prepare("SELECT * FROM injection_receipts WHERE thread_id=? ORDER BY created_at, recipient").all(threadId) as Row[]).map(fromRow);
@@ -165,13 +197,16 @@ export class InjectionReceipts {
   observe(threadId: string, recipient: InjectionRecipient, target: ReceiptTarget, content: UserContent): void {
     const text = contentText(content);
     if (!text.trim()) return;
-    const input: SentInput = { target, inputId: target.run.lastInputId, text };
+    const marker = text.match(/\[GGO receipt (IR-[\w-]+)\]/)?.[1];
+    const prepared = marker ? this.prepared.get(marker) : undefined;
+    const context = this.context.getStore();
+    const input: SentInput = { target, inputId: target.run.lastInputId, text, marker, contextId: prepared?.contextId ?? (context?.threadId === threadId && carriesInstruction(text, context.instruction) ? context.id : undefined), receiptIds: prepared?.receiptIds ?? [] };
     this.remember(laneKey(threadId, recipient), input);
     const open = this.db.raw
-      .prepare("SELECT * FROM injection_receipts WHERE thread_id=? AND recipient=? AND status IN ('pending','sent') ORDER BY created_at")
+      .prepare("SELECT * FROM injection_receipts WHERE thread_id=? AND recipient=? AND status IN ('pending','sent','delivered') ORDER BY created_at")
       .all(threadId, recipient) as Row[];
     for (const row of open) {
-      if (carriesInstruction(text, String(row.instruction))) this.bind(String(row.id), input);
+      if (input.receiptIds.includes(String(row.id)) || (!marker && carriesInstruction(text, String(row.instruction)))) this.bind(String(row.id), input);
     }
   }
 
@@ -201,7 +236,9 @@ export class InjectionReceipts {
   /** Bind a just-opened receipt to the newest live input of its lane that already carried the text. */
   private bindRecent(id: string, threadId: string, recipient: InjectionRecipient, instruction: string): void {
     const inputs = this.recent.get(laneKey(threadId, recipient)) ?? [];
-    const latest = [...inputs].reverse().find((input) => carriesInstruction(input.text, instruction));
+    const context = this.context.getStore();
+    if (context?.threadId !== threadId) return;
+    const latest = [...inputs].reverse().find((input) => input.contextId === context.id && carriesInstruction(input.text, instruction));
     if (latest) this.bind(id, latest);
   }
 
@@ -240,7 +277,7 @@ export class InjectionReceipts {
     if (watchable) {
       offs.push(run.onInputConsumed!(inputId!, () => {
         this.unbind(id, run);
-        this.deliver(id, target);
+        this.deliver(id, target, input.marker);
       }));
     }
     if (!firstOnRun) return;
@@ -260,8 +297,8 @@ export class InjectionReceipts {
     if (!runs.size) this.bound.delete(id);
   }
 
-  private deliver(id: string, target: ReceiptTarget): void {
-    const changed = this.update(id, ["pending", "sent"], {
+  private deliver(id: string, target: ReceiptTarget, marker?: string): void {
+    const changed = this.update(id, ["pending", "sent", "delivered"], {
       status: "delivered",
       run_id: target.runId ?? null,
       provider: target.provider,
@@ -269,19 +306,24 @@ export class InjectionReceipts {
       delivered_at: Date.now(),
     });
     if (!changed) return;
+    if (!marker) return;
     const waiting = this.awaitingAck.get(target.run);
     if (waiting) {
-      waiting.add(id);
+      const tokens = waiting.get(id) ?? new Set<string>();
+      tokens.add(marker);
+      waiting.set(id, tokens);
       return;
     }
-    this.awaitingAck.set(target.run, new Set([id]));
+    this.awaitingAck.set(target.run, new Map([[id, new Set([marker])]]));
     const off = target.run.onEvent((e) => {
-      if (!ackFromEvent(e)) return;
       const ids = this.awaitingAck.get(target.run);
       if (!ids?.size) return;
-      this.awaitingAck.set(target.run, new Set());
       const now = Date.now();
-      for (const rid of ids) this.update(rid, ["delivered"], { status: "read", read_at: now });
+      for (const [rid, tokens] of ids) {
+        if (![...tokens].some((token) => acknowledgesInput(e, token))) continue;
+        ids.delete(rid);
+        this.update(rid, ["delivered"], { status: "read", read_at: now, run_id: target.runId ?? null, provider: target.provider });
+      }
     });
     target.run.onEnd(() => {
       off();
@@ -297,7 +339,7 @@ export class InjectionReceipts {
   /** Apply `patch` only while the receipt is in one of `from`; returns whether it changed. `keepFirstSent`
    *  keeps the earliest sent_at so a resend does not move the time the owner first saw. */
   private update(id: string, from: InjectionReceiptStatus[], patch: Record<string, string | number | null>, keepFirstSent = false): boolean {
-    const sets = Object.keys(patch).map((k) => (keepFirstSent && k === "sent_at" ? "sent_at = COALESCE(sent_at, @sent_at)" : `${k} = @${k}`));
+    const sets = Object.keys(patch).map((k) => ((keepFirstSent && k === "sent_at") || k === "delivered_at" ? `${k} = COALESCE(${k}, @${k})` : `${k} = @${k}`));
     const res = this.db.raw
       .prepare(`UPDATE injection_receipts SET ${sets.join(", ")} WHERE id = @id AND status IN (${from.map((s) => `'${s}'`).join(",")})`)
       .run({ ...patch, id });

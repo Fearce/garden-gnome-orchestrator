@@ -400,6 +400,10 @@ export class AgentRun implements AgentRunLike {
 
   /** Send a follow-up user message into the live session (the inject path). */
   send(content: UserContent, opts?: { shouldQuery?: boolean; priority?: "now" | "next" | "later" }): void {
+    if (this.finished) {
+      this.inputs.drop();
+      return;
+    }
     this.input.push(this.stampedUserMessage(content, opts));
   }
 

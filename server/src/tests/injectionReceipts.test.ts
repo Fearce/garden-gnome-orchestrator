@@ -19,6 +19,7 @@ import type { AgentEvent, InjectionReceipt, InjectionRecipient } from "../types.
  *  when the provider "consumes" it, emits model events, and ends the run. */
 class FakeRun {
   readonly inputs = new InputLedger();
+  marker: string | undefined;
   private readonly listeners = new Set<(e: AgentEvent) => void>();
   private readonly endCbs: (() => void)[] = [];
   constructor(private readonly signals = true) {}
@@ -28,7 +29,8 @@ class FakeRun {
   onInputConsumed(id: string, cb: () => void): () => void {
     return this.inputs.onConsumed(id, cb);
   }
-  send(_content: UserContent): string {
+  send(content: UserContent): string {
+    this.marker = String(content).match(/\[GGO receipt (IR-[\w-]+)\]/)?.[1];
     return this.inputs.issue();
   }
   consumeLatest(): void {
@@ -76,10 +78,12 @@ function countFor(messageId: string): number {
   return (db.raw.prepare("SELECT COUNT(*) c FROM injection_receipts WHERE message_id=?").get(messageId) as { c: number }).c;
 }
 function sendTo(run: FakeRun, threadId: string, recipient: InjectionRecipient, content: UserContent, runId = "run-1"): void {
-  run.send(content);
-  receipts.observe(threadId, recipient, { run: run.asRun(), runId, provider: "claude" }, content);
+  const prepared = receipts.prepare(threadId, recipient, run.asRun(), content);
+  run.send(prepared);
+  receipts.observe(threadId, recipient, { run: run.asRun(), runId, provider: "claude" }, prepared);
 }
 function ack(run: FakeRun, text = "ACK: switching to the new clip design."): void {
+  if (acknowledges(text) && run.marker) text += `\nACK ${run.marker}: applied.`;
   run.emit({ type: "text", text } as AgentEvent);
 }
 
@@ -139,10 +143,12 @@ function ack(run: FakeRun, text = "ACK: switching to the new clip design."): voi
   const t = thread();
   const text = "Stop and revert the last migration.";
   const run = new FakeRun();
-  sendTo(run, t, "implementor", acknowledgedInjection(text));
-  run.consumeLatest();
   const m = echo(t, text);
-  receipts.expect(t, m, text, ["implementor"]);
+  receipts.withInjection(t, text, () => {
+    sendTo(run, t, "implementor", acknowledgedInjection(text));
+    run.consumeLatest();
+    receipts.expect(t, m, text, ["implementor"]);
+  });
   assert.equal(receiptOf(m).status, "delivered");
   run.end();
   const later = echo(t, text);
@@ -243,6 +249,7 @@ for (const no of ["I will ACK later", "ACKNOWLEDGED", "back: ACK: no"]) {
 assert.ok(carriesInstruction(acknowledgedInjection("ok"), "ok"), "the steering frame puts it on its own line");
 assert.ok(carriesInstruction("## Owner instructions\n1. use  port\n4400\n2. other", "use port 4400"), "a numbered standing directive, whitespace reflowed");
 assert.ok(carriesInstruction("[CURRENT OWNER INSTRUCTION -- RI-1]\nRI-1 (append):\nok\n", "ok"), "an RI prompt");
+assert.ok(carriesInstruction("QA handoff\nRI-1a2b3c4d: use port 4400\n", "use port 4400"), "an implementor's RI handoff");
 assert.ok(!carriesInstruction("Review the diff and say ok when done.", "ok"), "a short instruction does not bind to a word inside other text");
 assert.ok(!carriesInstruction("please use port 4400 now", "use port 4400"), "nor to the middle of a line");
 {
@@ -254,7 +261,65 @@ assert.ok(!carriesInstruction("please use port 4400 now", "use port 4400"), "nor
   assert.equal(receiptOf(m).status, "pending", "an unrelated input mentioning the word leaves it pending");
 }
 
+// Exact message identity: repeated owner text cannot borrow a prior input's receipt, and ACKs name
+// only their input even when multiple delivered messages wait on the same live run.
+{
+  const t = thread();
+  const text = "Keep the export dialog.";
+  const first = echo(t, text);
+  receipts.expect(t, first, text, ["implementor"]);
+  const run = new FakeRun();
+  sendTo(run, t, "implementor", acknowledgedInjection(text));
+  const firstToken = run.marker!;
+  run.consumeLatest();
+  run.emit({ type: "text", text: "ACK: unrelated earlier direction." });
+  assert.equal(receiptOf(first).status, "delivered", "a generic ACK is not exact-message proof");
+  const second = echo(t, text);
+  receipts.withInjection(t, text, () => receipts.expect(t, second, text, ["implementor"]));
+  assert.equal(receiptOf(second).status, "pending", "identical text cannot borrow an older live input");
+  sendTo(run, t, "implementor", acknowledgedInjection(text));
+  const secondToken = run.marker!;
+  run.consumeLatest();
+  run.emit({ type: "text", text: `ACK ${firstToken}: keeping it.` });
+  assert.equal(receiptOf(first).status, "read");
+  assert.equal(receiptOf(second).status, "delivered", "an old input ACK cannot read the new message");
+  run.emit({ type: "result", subtype: "success", isError: false, structuredOutput: { summary: `ACK ${secondToken}: keeping it.` } });
+  assert.equal(receiptOf(second).status, "read", "a schema-valid summary can acknowledge its exact input");
+}
+
 // 8. The real CLI runners: an input is consumed only once the turn carrying it produces model output.
+{
+  const t = thread();
+  const text = "Check persistence after restart.";
+  const m = echo(t, text);
+  receipts.expect(t, m, text, ["implementor"]);
+  const first = new FakeRun();
+  sendTo(first, t, "implementor", acknowledgedInjection(text));
+  first.consumeLatest();
+  const oldToken = first.marker!;
+  const deliveredAt = receiptOf(m).deliveredAt;
+  first.end();
+  const reopenedDb = new Db(join(dir, "orchestrator.sqlite"));
+  const recovered = new InjectionReceipts(reopenedDb, hub);
+  recovered.recoverAfterRestart();
+  assert.equal(recovered.list(t)[0]?.status, "delivered", "a new tracker loads proven delivery from disk");
+  const resumed = new FakeRun();
+  const prepared = recovered.prepare(t, "implementor", resumed.asRun(), acknowledgedInjection(text));
+  resumed.send(prepared);
+  recovered.observe(t, "implementor", { run: resumed.asRun(), runId: "resumed-run", provider: "codex" }, prepared);
+  resumed.consumeLatest();
+  resumed.emit({ type: "text", text: `ACK ${oldToken}: from the old run.` });
+  assert.equal(recovered.list(t)[0]?.status, "delivered", "a replacement run cannot borrow the old run's ACK");
+  ack(resumed);
+  const row = recovered.list(t)[0]!;
+  assert.equal(row.status, "read");
+  assert.equal(row.runId, "resumed-run");
+  assert.equal(row.deliveredAt, deliveredAt, "the original delivery time survives a resend");
+  assert.equal(recovered.list(t).length, 1);
+  resumed.end();
+  reopenedDb.raw.close();
+}
+
 {
   const ledgerOf = (run: unknown) => (run as { inputs: InputLedger }).inputs;
   const codex = new CodexAgentRun({ model: "gpt-6-sol", effort: "low", cwd: process.cwd(), apiKey: "test-key" });
@@ -269,6 +334,8 @@ assert.ok(!carriesInstruction("please use port 4400 now", "use port 4400"), "nor
   c.turnInputIds = [queuedId];
   c.handleEvent({ type: "turn.started" });
   assert.ok(!ledgerOf(codex).has(queuedId), "a spawned turn has not read anything yet");
+  c.handleEvent({ type: "item.completed", item: { type: "error", message: "Not authenticated" } });
+  assert.ok(!ledgerOf(codex).has(queuedId), "an error item does not prove delivery into model context");
   c.handleEvent({ type: "item.started", item: { id: "i1", type: "reasoning", text: "" } });
   assert.ok(ledgerOf(codex).has(queuedId), "the first model item proves the prompt was read");
 
@@ -283,7 +350,17 @@ assert.ok(!carriesInstruction("please use port 4400 now", "use port 4400"), "nor
   g.handleEvent({ type: "text", data: "" });
   assert.ok(!ledgerOf(grok).has(gid), "an empty frame is not model output");
   g.handleEvent({ type: "text", data: "ACK: ok" });
+  assert.ok(!ledgerOf(grok).has(gid), "partial text waits for a completed response so a cap notice cannot earn delivery");
+  g.handleEvent({ type: "end" });
   assert.ok(ledgerOf(grok).has(gid));
+  const rejected = new GrokAgentRun({ model: "grok-4.5", effort: "low", cwd: process.cwd() });
+  const rejectedInternal = rejected as unknown as typeof g;
+  rejectedInternal.turnActive = true;
+  rejected.send("steer");
+  const rejectedId = rejected.lastInputId!;
+  rejectedInternal.turnInputIds = [rejectedId];
+  rejectedInternal.handleEvent({ type: "end", stopReason: "rate limit exceeded" });
+  assert.ok(!ledgerOf(rejected).has(rejectedId), "a provider rejection end is not delivery");
 }
 
 db.raw.close();

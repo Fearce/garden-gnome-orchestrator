@@ -3,7 +3,7 @@ import { clock, gnomeRoleColor } from "../lib/format.js";
 
 // The gnome checkmark under an injected owner message: one small hat per recipient. The hat fills in
 // the recipient's role colour once its provider proves the message entered the agent's context, and
-// gains the tick only when the agent answered with the `ACK:` the steering frame demands. The server
+// gains the tick only when the agent answered with that input's unique `ACK IR-…:` token. The server
 // owns every transition (server/src/orchestrator/injectionReceipts.ts); this only draws them.
 
 const BEARD = "oklch(0.95 0.02 90)"; // the gnome's beard and pom, same off-white as Gnome.tsx
@@ -48,7 +48,7 @@ export function receiptTitle(r: InjectionReceipt, name: string): string {
   const who = `${name} (${RECIPIENT_LABEL[r.recipient]})`;
   switch (r.status) {
     case "read":
-      return `Read by ${who}${at(r.readAt)}: it acknowledged with ACK after ${deliveryProof(r.provider)}.`;
+      return `Read by ${who}${at(r.readAt)}: it acknowledged this input after ${deliveryProof(r.provider)}. Comprehension is not observable.`;
     case "delivered":
       return `Delivered to ${who}${at(r.deliveredAt)}: ${deliveryProof(r.provider)}. No ACK yet, so it is in the agent's context but not confirmed read.`;
     case "sent":

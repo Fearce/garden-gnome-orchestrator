@@ -482,14 +482,16 @@ class LabQaAgentRun implements AgentRunLike {
     return this.inputs.onConsumed(inputId, cb);
   }
 
-  send(_content: UserContent, _opts?: SendOpts): void {
+  send(content: UserContent, _opts?: SendOpts): void {
     const id = this.inputs.issue();
+    const text = typeof content === "string" ? content : content.filter((b) => b && typeof b === "object" && (b as { type?: string }).type === "text").map((b) => (b as { text: string }).text).join("\n");
+    const marker = text.match(/\[GGO receipt (IR-[\w-]+)\]/)?.[1];
     if (!this.reads) return;
     setTimeout(() => {
       if (this.finished) return;
       this.inputs.consume([id]);
       setTimeout(() => {
-        if (!this.finished) this.emitter.emit("event", { type: "text", text: "ACK: lab QA fixture will check this too." });
+        if (!this.finished) this.emitter.emit("event", { type: "text", text: `ACK${marker ? ` ${marker}` : ""}: lab QA fixture will check this too.` });
       }, 400);
     }, 400);
   }
@@ -3051,7 +3053,7 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.log("info", `[SELF-IMPROVE] ${bonusThread.slice(0, 8)}: withheld a message from the CLI bonus run to keep it to one launch`);
       return;
     }
-    const sent = this.communicationContent(content);
+    const sent = this.prepareRunInput(run, this.communicationContent(content));
     run.send(sent, opts);
     this.noteRunInput(run, sent);
   }
@@ -3061,6 +3063,11 @@ export class ThreadManager implements OrchestratorApi {
   private noteRunInput(run: AgentRunLike, content: UserContent): void {
     const lane = this.receiptLanes.get(run);
     if (lane) this.injectionReceipts.observe(lane.threadId, lane.recipient, { run, runId: lane.runId, provider: lane.provider }, content);
+  }
+
+  private prepareRunInput(run: AgentRunLike, content: UserContent): UserContent {
+    const lane = this.receiptLanes.get(run);
+    return lane ? this.injectionReceipts.prepare(lane.threadId, lane.recipient, run, content) : content;
   }
 
   /** Open read receipts for the feed row that echoes an injected instruction. */
@@ -8305,7 +8312,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.officeCheckIn(thread.id, role);
     this.ensureGroup(thread.id);
     if (role === "planner") this.liveRole.set(thread.id, agent);
-    const kickoffContent = this.communicationContent(kickoff);
+    const kickoffContent = this.prepareRunInput(agent, this.communicationContent(kickoff));
     agent.start(kickoffContent);
     this.noteRunInput(agent, kickoffContent);
     let result = await agent.result();
@@ -8599,7 +8606,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           this.reviewInjectionImages(pendingReviewInjections),
         );
       }
-      const startContent = this.communicationContent(startMessage);
+      const startContent = this.prepareRunInput(agent, this.communicationContent(startMessage));
       agent.start(startContent);
       this.noteRunInput(agent, startContent);
       if (pendingReviewInjections.length) {
@@ -9524,7 +9531,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Default mode skips the communication-style wrap too (the <ggo_communication_policy> preamble this
     // very harness uses) — vanilla means the model sees exactly the owner's text, nothing prepended.
     const startContent = this.implementorStartContent(thread.id, kickoff, startKickoff, !!opts?.resume, opts?.images);
-    const firstInput = vanilla ? startContent : this.communicationContent(startContent);
+    const firstInput = vanilla ? startContent : this.prepareRunInput(agent, this.communicationContent(startContent));
     agent.start(firstInput);
     this.noteRunInput(agent, firstInput);
     return { run: agent, runId, accountId };
@@ -12661,6 +12668,16 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   async injectThread(
+    threadId: string,
+    message: string,
+    mode: "append" | "interrupt" | "queue",
+    images?: ImageAttachment[],
+    options: { recipient?: "implementor" | "qa" | "reviewer"; standing?: boolean } = {},
+  ): Promise<ThreadActionResult> {
+    return this.injectionReceipts.withInjection(threadId, message, () => this.injectThreadInner(threadId, message, mode, images, options));
+  }
+
+  private async injectThreadInner(
     threadId: string,
     message: string,
     mode: "append" | "interrupt" | "queue",
