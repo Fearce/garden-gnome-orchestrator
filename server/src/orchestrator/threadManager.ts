@@ -128,7 +128,7 @@ import {
   type CapacityWindow,
 } from "./capacityRouting.js";
 import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverableCheck.js";
-import { deliverableRefusal, resolveDeliverable } from "./deliverablePath.js";
+import { deliverableRefusal, resolveTaskDeliverable } from "./deliverablePath.js";
 import { buildGitProgressBlock, workspaceGitFingerprint } from "./gitProgress.js";
 import { ROUTE_POLICY_VERSION, selectRoute } from "./routeSelection.js";
 import { AUTOMATIC_EFFORT_CEILING, automaticEffortOptions, capAutomaticEffort } from "./automaticEffort.js";
@@ -170,7 +170,7 @@ import { config, fallbackModelFor } from "../config.js";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { childRepos, containingRepoRoot, createTaskWorktree, discoverTaskWorktrees, isLinkedWorktree, mainCheckoutOf, mapIntoWorktree, restoreTaskWorktree, retireTaskWorktree } from "./taskWorktree.js";
+import { childRepos, containingRepoRoot, createTaskWorktree, discoverTaskWorktrees, enclosingRepoSync, isLinkedWorktree, isWithin, mainCheckoutOf, mapIntoWorktree, restoreTaskWorktree, retireTaskWorktree } from "./taskWorktree.js";
 import { worktreeBriefing } from "./worktreeBriefing.js";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import { coworkContentWithAttachments } from "../coworkAttachments.js";
@@ -226,6 +226,7 @@ import type {
   ToggleableRole,
   UsageSavingPolicies,
   UsageSavingPolicy,
+  WorkspaceMode,
   ZaiEffort,
 } from "../types.js";
 import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, DIRECTORS_ROOM, EFFORTS, GENERAL_ROOM, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, resolveZaiEffort, unnamedAgentLabel, zaiEffortsForModel, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
@@ -964,8 +965,8 @@ const ZAI_MAX_DEFAULT_MIGRATION_KV = "migration_zai_max_default_v1";
  *  replayed backlog is still recognised after a bounce; trimmed oldest-first. */
 const REMOTE_CHAT_SEEN_MAX = 500;
 
-/** States after which a CLI agent may have hand-made worktrees under an umbrella workspace worth recording. */
-const UMBRELLA_SYNC_STATES: ReadonlySet<Thread["state"]> = new Set(["qa", "review", "done", "paused"]);
+/** States after which a CLI agent may have hand-made worktrees worth recording (no `task_worktree` tool). */
+const HAND_MADE_WORKTREE_SYNC_STATES: ReadonlySet<Thread["state"]> = new Set(["qa", "review", "done", "paused"]);
 
 /** The repo a task counts against for the per-repo cap: the folder it was dispatched to, not the
  *  worktree it runs in, so one repo's tasks still count together. */
@@ -6756,48 +6757,27 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   // ---- task worktrees (orchestrator/taskWorktree.ts) ----
 
-  /** Put the task where its agents should run before any of them starts: its existing worktrees
-   *  restored if their folders are gone, else — once, on a task's first start — its own new worktree.
-   *  Returns null when the task cannot run (already settled to `failed`). */
+  /** Put the task where its agents should run before any of them starts: its recorded worktrees restored
+   *  if their folders are gone, and — once, on a task's first start — how it relates to git decided. A
+   *  task is never moved into a worktree here: in a repo its kickoff guides the agent to claim one with
+   *  `task_worktree` when other agents share it. Returns null when the task cannot run (already `failed`). */
   private async prepareTaskWorkspace(thread: Thread): Promise<Thread | null> {
     thread = await this.ensureWorktreesPresent(thread);
     if (!existsSync(thread.workspace)) {
       this.setState(thread.id, "failed", `Workspace "${thread.workspace}" does not exist on disk — agents can't run there. Re-dispatch with a valid path.`);
       return null;
     }
-    if (thread.worktrees?.length || !this.wantsOwnWorktree(thread)) return thread;
-    if (this.db.getThreadStageOutputs(thread.id).workspaceMode) return thread;
-    if (this.db.listRuns(thread.id).some((run) => run.role === "implementor" || run.role === "qa")) {
-      // An agent already worked in place (the setting was off then, or creating the worktree failed): its
-      // uncommitted edits are in this checkout, and moving the task now would strand them there.
-      this.db.updateThreadStageOutputs(thread.id, { workspaceMode: "in-place" });
-      return thread;
-    }
-    const root = await containingRepoRoot(thread.workspace);
-    if (!root) {
-      this.db.updateThreadStageOutputs(thread.id, { workspaceMode: childRepos(thread.workspace).length ? "umbrella" : "in-place" });
-      return thread;
-    }
-    if (await isLinkedWorktree(root).catch(() => false)) {
-      // The owner pointed this task at a worktree they made: that IS its own checkout.
-      this.db.updateThreadStageOutputs(thread.id, { workspaceMode: "in-place" });
-      return thread;
-    }
-    const created = await createTaskWorktree({ repoPath: thread.workspace, threadId: thread.id, title: thread.title, name: await this.worktreeName(thread) });
-    if (!created.ok) {
-      // Not persisted as a mode, so the next start tries again; this run works where it was dispatched.
-      this.taskFeedNote(thread.id, `⎇ ${created.error} This run works in the main checkout instead.`);
-      return thread;
-    }
-    const worktree = created.worktree;
-    const updated = this.db.setThreadWorktrees(thread.id, mapIntoWorktree(thread.workspace, worktree), [worktree]);
-    if (!updated) return thread;
-    this.db.updateThreadStageOutputs(thread.id, { workspaceMode: "worktree" });
-    // The branch starts here, so this — not the dispatch-time HEAD — is the "before" of its own diff.
-    this.db.setBaselineHead(thread.id, worktree.baseSha);
-    this.hub.publish({ type: "thread.upsert", thread: updated });
-    this.taskFeedNote(thread.id, `⎇ Working on branch ${worktree.branch} in its own worktree ${worktree.path} (from ${worktree.base ?? "a detached HEAD"} at ${worktree.baseSha.slice(0, 8)}).`);
-    return updated;
+    if (!this.wantsWorktreeGuidance(thread) || this.db.getThreadStageOutputs(thread.id).workspaceMode) return thread;
+    this.db.updateThreadStageOutputs(thread.id, { workspaceMode: await this.workspaceModeOf(thread.workspace) });
+    return thread;
+  }
+
+  /** A repo's main checkout is `guided`; a folder holding repos is an umbrella; anything else — not git,
+   *  or a worktree the owner made and pointed the task at, which IS its own checkout — works in place. */
+  private async workspaceModeOf(workspace: string): Promise<WorkspaceMode> {
+    const root = await containingRepoRoot(workspace);
+    if (!root) return childRepos(workspace).length ? "umbrella" : "in-place";
+    return (await isLinkedWorktree(root).catch(() => false)) ? "in-place" : "guided";
   }
 
   /** Words naming the task's work for a new branch and folder. The title can't serve: at first start it is
@@ -6806,18 +6786,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return worktreeNameFromBrief(thread.brief || thread.rawPrompt || thread.title, this.accounts.auxToken());
   }
 
-  /** New top-level work in a git repo gets its own checkout. Sub-tasks and collaborators share their
-   *  parent's; a read-only lookup changes nothing; rows from before this feature keep working in place. */
-  private wantsOwnWorktree(thread: Thread): boolean {
+  /** New top-level work hears the worktree guidance. Sub-tasks and collaborators follow their parent's;
+   *  a read-only lookup changes nothing; rows from before task worktrees keep working in place. */
+  private wantsWorktreeGuidance(thread: Thread): boolean {
     return thread.homeWorkspace != null && !thread.parentId && thread.lane !== "read" && this.settings().taskWorktrees;
   }
 
-  /** A Co-worker turn holds the checkout it runs in. A task that has yet to move into its own
-   *  worktree will not touch that checkout, so the turn must not queue it. */
+  /** A Co-worker turn holds the checkout it runs in, and every task starts in the checkout it was dispatched to. */
   private coworkBlocks(thread: Thread): boolean {
-    if (this.coworkWorkspaceBusy?.(thread.workspace) !== true) return false;
-    const movingOut = this.wantsOwnWorktree(thread) && !thread.worktrees?.length && !this.db.getThreadStageOutputs(thread.id).workspaceMode;
-    return !movingOut;
+    return this.coworkWorkspaceBusy?.(thread.workspace) === true;
   }
 
   /** Re-create any recorded worktree whose folder is gone (retired at close, deleted by hand). A failure
@@ -6855,6 +6832,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const present = existsSync(existing.path) ? existing : ((await this.ensureWorktreesPresent(owner)).worktrees ?? []).find((w) => w.branch === existing.branch) ?? existing;
       return { ok: true, worktree: present, text: this.claimedWorktreeText(owner, present, repoPath) };
     }
+    if (caller.parentId && this.db.getThreadStageOutputs(owner.id).workspaceMode === "guided") {
+      return { ok: false, error: `Your parent task works in the main checkout ${owner.workspace}, so you work there too: a worktree claimed now would split your work from your parent's. Coordinate in the office and commit only your own hunks.` };
+    }
     const name = input.branch?.trim() ? null : input.name?.trim() || (await this.worktreeName(owner));
     const created = await createTaskWorktree({ repoPath: main, threadId: owner.id, title: owner.title, name, branch: input.branch ?? null });
     if (!created.ok) return created;
@@ -6877,11 +6857,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return [`Work in \`${folder}\` from now on — every edit, build and commit for this repository.`, "", rules ?? ""].join("\n").trim();
   }
 
-  /** Record worktrees a CLI agent created by hand under an umbrella workspace, so the header shows them. */
-  private async syncUmbrellaWorktrees(thread: Thread): Promise<void> {
-    if (thread.parentId || this.db.getThreadStageOutputs(thread.id).workspaceMode !== "umbrella") return;
+  /** Record worktrees a CLI agent created by hand in a guided or umbrella workspace, so the header, the
+   *  Changes view and QA's kickoff follow them. */
+  private async syncHandMadeWorktrees(thread: Thread): Promise<void> {
+    if (thread.parentId) return;
+    const repos = await this.claimableRepos(thread);
+    if (!repos.length) return;
     const known = new Set((thread.worktrees ?? []).map((w) => normalizeWorkspace(w.path)));
-    const found = (await discoverTaskWorktrees(thread.workspace, thread.id)).filter((w) => !known.has(normalizeWorkspace(w.path)));
+    const found = (await discoverTaskWorktrees(repos, thread.id)).filter((w) => !known.has(normalizeWorkspace(w.path)));
     if (!found.length) return;
     const fresh = this.db.getThread(thread.id);
     if (!fresh) return;
@@ -6889,14 +6872,25 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
   }
 
+  /** The main checkouts a task may claim worktrees in: an umbrella's child repos, a guided task's one repo. */
+  private async claimableRepos(thread: Thread): Promise<string[]> {
+    const mode = this.db.getThreadStageOutputs(thread.id).workspaceMode;
+    if (mode === "umbrella") return childRepos(thread.workspace);
+    if (mode !== "guided") return [];
+    const root = await containingRepoRoot(thread.workspace);
+    return root ? [await mainCheckoutOf(root)] : [];
+  }
+
   /** The worktree section of a kickoff, from what prepareTaskWorkspace decided for this task. */
   private worktreeSection(thread: Thread): string | null {
     const parent = thread.parentId ? this.db.getThread(thread.parentId) : null;
     const owner = parent ?? thread;
+    const mode = this.db.getThreadStageOutputs(owner.id).workspaceMode;
     return worktreeBriefing({
       threadId: owner.id,
       workspace: owner.workspace,
-      mode: this.db.getThreadStageOutputs(owner.id).workspaceMode,
+      repoRoot: mode === "guided" ? enclosingRepoSync(owner.workspace) : null,
+      mode,
       worktrees: owner.worktrees ?? [],
       owner: config.ownerName,
       autoPush: this.settings().autoPush,
@@ -7290,7 +7284,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     else if (t.state === "failed")
       this.notifyOwner(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`, { kind: "failed", title: t.title, detail: t.error, repo: t.homeWorkspace ?? t.workspace });
     if (t.state === "done" || t.state === "review") void this.summarizeDeliverablesFor(t.id);
-    if (UMBRELLA_SYNC_STATES.has(t.state)) void this.syncUmbrellaWorktrees(t).catch(() => undefined);
+    if (HAND_MADE_WORKTREE_SYNC_STATES.has(t.state)) void this.syncHandMadeWorktrees(t).catch(() => undefined);
     // Truly-terminal states never resume under the same in-memory identity, so drop the per-thread
     // bookkeeping that must outlive the pipeline LOOP (so a parked task can still resume) but has no
     // reason to outlive the process. Deliberately EXCLUDES 'failed' (a transient state the pipeline
@@ -14678,42 +14672,26 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (memo) this.hub.publish({ type: "thread.memo", threadId, memo });
   }
 
-  /** Resolve an agent-supplied deliverable path to its canonical real file path, confined inside the
-   * task workspace (mirrors GET /api/deliverable/:id's containment check: symlinks resolved on both
-   * sides, no `..`/absolute/cross-drive escape, files only). Returns null rather than throwing for
+  /** Resolve an agent-supplied deliverable path to its canonical real file path, confined the way
+   * GET /api/deliverable/:id confines it (`resolveTaskDeliverable`). Returns null rather than throwing for
    * anything that doesn't resolve, since an unresolvable path is simply not a dedup candidate; the
    * finding is still recorded as-is, and the route reports the real problem once it's opened. */
-  private resolveDeliverablePath(workspace: string, artifactPath: string): string | null {
-    const candidate = isAbsolute(artifactPath) ? artifactPath : join(workspace, artifactPath);
-    let realWorkspace: string;
-    let realFile: string;
-    try {
-      realWorkspace = realpathSync(workspace);
-      realFile = realpathSync(candidate);
-    } catch {
-      return null;
-    }
-    const rel = relative(realWorkspace, realFile);
-    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) return null;
-    try {
-      if (!statSync(realFile).isFile()) return null;
-    } catch {
-      return null;
-    }
-    return realFile;
+  private resolveDeliverablePath(task: Thread, artifactPath: string): string | null {
+    const resolved = resolveTaskDeliverable(task, artifactPath);
+    return resolved.ok ? resolved.realFile : null;
   }
 
   /** Two deliverable findings that resolve to the SAME real file are the same card, however their
    * label or path spelling drifted (a restore repair, a second recovery attempt, a retried agent
    * re-posting after an earlier partial run): mirrors restore-archived-deliverables.cjs's identity
    * rule, which exists for exactly this reason. Case-insensitive on Windows, exact elsewhere. */
-  private findDuplicateDeliverable(threadId: string, workspace: string, artifactPath: string): Finding | null {
-    const real = this.resolveDeliverablePath(workspace, artifactPath);
+  private findDuplicateDeliverable(thread: Thread, artifactPath: string): Finding | null {
+    const real = this.resolveDeliverablePath(thread, artifactPath);
     if (!real) return null;
     const key = process.platform === "win32" ? real.toLowerCase() : real;
-    for (const existing of this.db.listFindings(threadId)) {
+    for (const existing of this.db.listFindings(thread.id)) {
       if (existing.kind !== "deliverable" || !existing.path) continue;
-      const existingReal = this.resolveDeliverablePath(workspace, existing.path);
+      const existingReal = this.resolveDeliverablePath(thread, existing.path);
       if (!existingReal) continue;
       const existingKey = process.platform === "win32" ? existingReal.toLowerCase() : existingReal;
       if (existingKey === key) return existing;
@@ -14730,7 +14708,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (input.kind === "deliverable" && input.path) {
       const thread = this.db.getThread(input.threadId);
       if (thread) {
-        const dup = this.findDuplicateDeliverable(input.threadId, thread.workspace, input.path);
+        const dup = this.findDuplicateDeliverable(thread, input.path);
         if (dup) {
           const updated = this.db.updateFinding(dup.id, {
             summary: input.summary,
@@ -15120,7 +15098,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * A path the route could never serve gets no card; a warning finding carries the reason instead, so
    * QA sees what to fix rather than the owner meeting a broken image. */
   private postCliDeliverable(thread: Thread, role: Role, runId: string, label: string, path: string): void {
-    const resolved = resolveDeliverable(thread.workspace, path);
+    const resolved = resolveTaskDeliverable(thread, path);
     if (!resolved.ok) {
       this.postFinding({
         threadId: thread.id,
@@ -15803,7 +15781,27 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const how = cli
       ? "Coordinate through the CLI office bridge from now on: write a standalone `OFFICE[team]: <short message>` line to claim the files/areas you'll touch, answer any teammate `OFFICE`/office message the same way, prefer non-overlapping areas, and re-check `git status`/`git diff` before committing so you only commit your own hunks. If a post needs multiple lines, indent each continuation by two spaces so it remains one lossless message."
       : "Office coordination is now ON: call `office_look` to see who's here and their names, `chat_read(scope:\"team\")` what they've posted, and `chat_post(scope:\"team\")` to claim the files/areas you're about to change before you edit — then re-check `git diff` before committing so you only commit your own hunks. Their team messages arrive straight in your session; answer with `chat_post(scope:\"team\")` and adjust.";
-    this.sendCommunication(live.run, `${intro} ${how}`, { priority: "next" });
+    const thread = this.db.getThread(tid);
+    const isolate = thread ? this.worktreeAdvice(thread, cli) : null;
+    this.sendCommunication(live.run, [intro, how, isolate].filter(Boolean).join(" "), { priority: "next" });
+  }
+
+  /** The office's worktree guidance for an editing agent still in a shared main checkout: claim its own
+   *  worktree before its first edit. Null once it has one, for any task not in `guided` mode, and for a
+   *  sub-task, whose claim would land on a parent still editing the main checkout. */
+  private worktreeAdvice(thread: Thread, cli: boolean): string | null {
+    if (thread.parentId || thread.worktrees?.length || this.db.getThreadStageOutputs(thread.id).workspaceMode !== "guided") return null;
+    const how = cli
+      ? "create your own worktree with the `git worktree add` command in your brief's \"Branch & worktree\" section"
+      : "call `task_worktree` with this repository and a short `name` for your work";
+    return `To keep out of each other's way, if you have not edited anything yet, ${how} before your first edit, and do every edit, build and commit there. If you already have uncommitted edits in this checkout, stay and commit only your own hunks.`;
+  }
+
+  /** The task (or, for a sub-task, its parent) has a worktree of its own: made at start by the retired
+   *  forced mode, or claimed with `task_worktree`. */
+  private worksInOwnWorktree(thread: Thread): boolean {
+    const owner = (thread.parentId ? this.db.getThread(thread.parentId) : null) ?? thread;
+    return !!owner.worktrees?.length;
   }
 
   /** Post a task's check-in to the general office — but only once it's actually collaborating (2+ agents
@@ -15862,10 +15860,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       ? // Only remote peers: nothing of theirs is in this working tree, so the usual "commit your own
         // hunks" warning would point at the wrong hazard. The collision is at the remote.
         "None of them are in YOUR checkout — you meet at the git remote, so pull before you push and keep your commits narrow."
-      : edits
-        ? "You share this workspace, so you can step on each other's changes."
-        : "You share this workspace.";
-    return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\n${risk} ${how}`;
+      : this.worksInOwnWorktree(thread)
+        ? "You work in your own worktree, so you meet only when integrating: rebase onto the latest base right before you fast-forward it."
+        : edits
+          ? "You share this workspace, so you can step on each other's changes."
+          : "You share this workspace.";
+    const isolate = edits && localPeers ? this.worktreeAdvice(thread, !withTools) : null;
+    return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\n${[risk, how, isolate].filter(Boolean).join(" ")}`;
   }
 
   /** Append the office note to a kickoff when — and only when — a teammate already shares the repo.
@@ -16063,14 +16064,16 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const t = this.db.getThread(threadId);
     if (!t) return { isRepo: false, repoRoot: null, branch: null, detached: false, branches: [], upstreamRef: null, pushRef: null, behind: 0, unpushed: 0, isCommitOnly: false, pushState: "no-remote", hasUncommitted: false, files: [], commits: [], hasDiffAnchor: false, error: "No such task." };
     const taskFiles = collectTaskWrittenFiles(this.db, t);
-    return getTaskGitStatus(t.workspace, { threadId, baselineHead: t.baselineHead ?? null, taskFiles });
+    const view = changesCheckout(t);
+    return getTaskGitStatus(view.workspace, { threadId, baselineHead: view.baselineHead, taskFiles });
   }
 
   async getGitSummary(threadId: string): Promise<GitSummary> {
     const t = this.db.getThread(threadId);
     if (!t) return { isRepo: false, fileCount: 0, added: 0, removed: 0, commitCount: 0, branch: null, unpushed: 0, isCommitOnly: false, pushState: "no-remote" };
     const taskFiles = collectTaskWrittenFiles(this.db, t);
-    return getTaskGitSummary(t.workspace, { threadId, baselineHead: t.baselineHead ?? null, taskFiles });
+    const view = changesCheckout(t);
+    return getTaskGitSummary(view.workspace, { threadId, baselineHead: view.baselineHead, taskFiles });
   }
 
   async getFileDiff(threadId: string, path: string): Promise<GitFileDiff> {
@@ -16079,8 +16082,17 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // device — which would render a file OUTSIDE the repo as one big addition. Confine it to a
     // repo-relative path here rather than trusting the caller to only ask for files it listed.
     if (!t || !validRepoPath(path)) return { path, binary: false, patch: "", truncated: false };
-    return getFileDiff(t.workspace, path, t.baselineHead ?? null);
+    const view = changesCheckout(t);
+    return getFileDiff(view.workspace, path, view.baselineHead);
   }
+}
+
+/** Where a task's Changes view reads: the worktree it claimed for the repo it was dispatched into (a
+ *  guided task keeps running in the main checkout, but its work is on the claimed branch), else its own
+ *  workspace. */
+export function changesCheckout(t: Thread): { workspace: string; baselineHead: string | null } {
+  const claimed = (t.worktrees ?? []).find((w) => !isWithin(t.workspace, w.path) && isWithin(t.workspace, w.repo));
+  return claimed ? { workspace: mapIntoWorktree(t.workspace, claimed), baselineHead: claimed.baseSha } : { workspace: t.workspace, baselineHead: t.baselineHead ?? null };
 }
 
 /** The researcher's structured brief as markdown, folded into the implementor's kickoff (the

@@ -32,6 +32,10 @@ machines in the same repository, so a task alone in its checkout still gets the 
    NOT mark `checkedIn`, so it can still fire later); `ensureGroup` backfills it on grouping.
 4. `ensureGroup` — forms the project room AND is the ON-switch: per member newly in the
    room it backfills the check-in, then `pushOfficeActivation` wakes live incumbents.
+5. Both `officeNote` (implementor, local peers) and `pushOfficeActivation` append `worktreeAdvice`
+   for a top-level guided task with no worktree yet: claim one with `task_worktree` before the first
+   edit. That is where worktree guidance reaches an agent once a repo becomes shared
+   (`task-worktrees.md`).
 
 ## Invariants that bite
 - **`pushOfficeActivation` targets `this.live` ONLY (live implementors).** NEVER push a

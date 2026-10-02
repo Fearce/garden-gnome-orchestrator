@@ -28,6 +28,7 @@ import { basename, join } from "node:path";
 
 process.env.NO_PUSH_REPO_PATTERN = "commit-only-origin";
 const {
+  childRepos,
   createTaskWorktree,
   discoverTaskWorktrees,
   readWorktreeState,
@@ -187,7 +188,7 @@ try {
   const umbrellaBranch = taskBranchName("Umbrella task", THREAD);
   git(api, "worktree", "add", "--quiet", "-b", umbrellaBranch, join(worktreesHome(api), "umbrella-task"));
   git(api, "worktree", "add", "--quiet", "-b", "ggo/someone-else-ffffffff", join(worktreesHome(api), "other"));
-  const found = await discoverTaskWorktrees(umbrella, THREAD);
+  const found = await discoverTaskWorktrees(childRepos(umbrella), THREAD);
   check("exactly this task's worktree is found", found.length === 1 && found[0]!.branch === umbrellaBranch, found.map((w) => w.branch).join(","));
   check("...against the right repo", found[0]?.repo === api);
   check("...flagged commit-only from its origin", found[0]?.commitOnly === true);
@@ -210,7 +211,14 @@ try {
   const umb = worktreeBriefing({ threadId: THREAD, workspace: umbrella, mode: "umbrella", worktrees: [], owner: "Kevin", autoPush: true });
   check("umbrella: points at task_worktree and the exact branch convention", !!umb && umb.includes("task_worktree") && umb.includes(`-${THREAD.slice(0, 8)}`) && umb.includes("ggo/<name>"));
   check("umbrella: the agent names the branch itself, not from the title", !!umb && /`name`/.test(umb) && !umb.includes(umbrellaBranch));
-  check("in-place: no section", worktreeBriefing({ threadId: THREAD, workspace: repo, mode: "in-place", worktrees: [], owner: "Kevin", autoPush: true }) === null);
+  const guided = worktreeBriefing({ threadId: THREAD, workspace: join(repo, "web"), repoRoot: repo, mode: "guided", worktrees: [], owner: "Kevin", autoPush: true });
+  check("guided: work here while alone, claim a worktree when the repo is shared", !!guided && /alone in this repository/.test(guided) && /another agent works in this repository/.test(guided) && guided.includes("task_worktree"));
+  check("guided: the CLI fallback names the repo root and the branch convention", !!guided && guided.includes(`git -C "${repo}" worktree add -b ggo/<name>-${THREAD.slice(0, 8)}`) && guided.includes(worktreesHome(repo)));
+  check("guided: no integration step before a claim", !!guided && !/--ff-only/.test(guided));
+  const guidedClaimed = worktreeBriefing({ threadId: THREAD, workspace: repo, repoRoot: repo, mode: "guided", worktrees: [wt], owner: "Kevin", autoPush: true });
+  check("guided + claimed: the own-worktree rules and integration", !!guidedClaimed && guidedClaimed.includes(wt.path) && /--ff-only/.test(guidedClaimed) && /never there/.test(guidedClaimed));
+  check("guided sub-task of an unclaimed parent: no section", worktreeBriefing({ threadId: THREAD, workspace: repo, mode: "guided", worktrees: [], owner: "Kevin", autoPush: true, borrowed: true }) === null);
+  check("in-place: no section",worktreeBriefing({ threadId: THREAD, workspace: repo, mode: "in-place", worktrees: [], owner: "Kevin", autoPush: true }) === null);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

@@ -949,10 +949,12 @@ export interface ModelEffortStat extends ModelStat {
  * The implementor's "output" isn't JSON — it's the working tree plus its SDK session, recovered
  * from the latest implementor agent_run's session_id, so only the upstream stages live here.
  */
-/** How a task relates to git, decided once when its pipeline first starts: its own worktree, an
- *  umbrella folder holding several repos (the agent claims a worktree per repo it changes), or in place
- *  (not git, a worktree the owner picked, or task worktrees switched off). */
-export type WorkspaceMode = "worktree" | "umbrella" | "in-place";
+/** How a task relates to git, decided once when its pipeline first starts: `guided` (a repo's main
+ *  checkout; the agent claims its own worktree with `task_worktree` when other agents share the repo), an
+ *  umbrella folder holding several repos (the agent claims a worktree per repo it changes), in place (not
+ *  git, a worktree the owner picked, or task worktrees switched off), or `worktree` — the retired forced
+ *  move into an own worktree, still carried by tasks that started before worktrees became guidance. */
+export type WorkspaceMode = "worktree" | "guided" | "umbrella" | "in-place";
 
 export interface StageOutputs {
   /** Decided by ThreadManager.prepareTaskWorkspace; absent until then and on older tasks. */
@@ -1122,7 +1124,7 @@ export interface OrchestratorSettings {
   differentProviderQa: boolean; // off (default) → QA runs on the default backend (Claude). on → QA is routed to a DIFFERENT enabled provider than the one that implemented the task (e.g. GPT/Codex reviews Claude's work, and vice-versa), for an independent cross-provider review. Falls back to normal QA when no other provider is enabled+ready.
   qaAppliesFixes: boolean; // off (default) → QA reports issues to the implementor. on → QA fixes issues itself, then another QA pass verifies each changed working tree until a pass makes no code changes.
   autoPush: boolean; // off → the implementor commits but does NOT push (overrides the push doctrine)
-  taskWorktrees: boolean; // default true → each new task in a git repo runs in its own worktree on its own branch; off → tasks share the checked-out branch
+  taskWorktrees: boolean; // default true → a new task in a git repo is guided to claim its own worktree + branch when other agents share the repo (never moved by GGO); off → no worktree guidance
   directorName: string; // the director persona's display name, set by the operator (default "ChangeNameInSettings")
   directorDirectives: string; // the owner's standing directives: free text appended to the Director's system prompt (default "" = none). Director-only; normalized and capped at MAX_DIRECTOR_DIRECTIVES_CHARS
   maxQaRounds: number; // implementor↔QA fix-rounds before a task settles to review

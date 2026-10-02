@@ -344,7 +344,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 />
                 <ToggleRow
                   label="Task worktrees"
-                  hint="On by default. Each new task in a git repo gets its own branch in its own worktree beside the repo, so several tasks can change one repo at once; the task header shows which. Off: new tasks work in the repo's checked-out branch."
+                  hint="On by default. A task starts in the repo's checked-out branch. When other agents work in the same repo, it is told to claim its own branch in its own worktree beside the repo before editing; the task header shows which. Off: tasks hear no worktree guidance."
                   on={settings.taskWorktrees}
                   onChange={(v) => setSettings({ taskWorktrees: v })}
                 />

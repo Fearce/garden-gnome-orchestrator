@@ -34,7 +34,7 @@ import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
 import { startGrokUsageMonitor } from "./agents/grokUsagePing.js";
 import { startZaiUsageMonitor } from "./agents/zaiUsagePing.js";
 import { ThreadManager } from "./orchestrator/threadManager.js";
-import { resolveDeliverable } from "./orchestrator/deliverablePath.js";
+import { resolveTaskDeliverable } from "./orchestrator/deliverablePath.js";
 import { CoworkManager } from "./orchestrator/cowork.js";
 import { Director } from "./orchestrator/director.js";
 import { startDiscordInbox } from "./orchestrator/discordInbox.js";
@@ -680,7 +680,7 @@ async function main(): Promise<void> {
       const thread = db.getThread(finding.threadId);
       if (!thread) return reply.code(404).send({ error: "not found" });
 
-      const resolved = resolveDeliverable(thread.workspace, finding.path);
+      const resolved = resolveTaskDeliverable(thread, finding.path);
       if (!resolved.ok) return reply.code(resolved.status).send({ error: resolved.error });
       const realFile = resolved.realFile;
 

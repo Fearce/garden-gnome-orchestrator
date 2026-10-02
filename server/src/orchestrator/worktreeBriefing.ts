@@ -4,6 +4,8 @@ import { worktreesHome } from "./taskWorktree.js";
 export interface BriefingInput {
   threadId: string;
   workspace: string;
+  /** The top of the repository a `guided` task was dispatched into (its workspace may be a subfolder). */
+  repoRoot?: string | null;
   mode: WorkspaceMode | undefined;
   worktrees: readonly TaskWorktree[];
   owner: string;
@@ -17,6 +19,7 @@ export interface BriefingInput {
  *  implementor, the default-mode lane and QA all read the same words. */
 export function worktreeBriefing(input: BriefingInput): string | null {
   if (input.mode === "umbrella") return umbrellaBriefing(input);
+  if (input.mode === "guided") return guidedBriefing(input);
   if (input.mode !== "worktree" || !input.worktrees.length) return null;
   if (input.borrowed) return ["## Branch & worktree", ...input.worktrees.map(borrowedLine)].join("\n");
   return ["## Branch & worktree", ...input.worktrees.flatMap((w) => ownWorktreeLines(w, input))].join("\n");
@@ -51,6 +54,30 @@ function integrationLines(w: TaskWorktree, input: BriefingInput): string[] {
   ];
 }
 
+/** A task in a repo's main checkout. A worktree is guidance for a shared repository, never a move GGO
+ *  makes; once the agent has claimed one, every later kickoff names it like an own worktree. */
+function guidedBriefing(input: BriefingInput): string | null {
+  if (input.worktrees.length) {
+    if (input.borrowed) return ["## Branch & worktree", ...input.worktrees.map(borrowedLine)].join("\n");
+    return [
+      "## Branch & worktree",
+      `Other agents shared this repository, so this task claimed its own worktree. Your session may still start in the main checkout \`${input.workspace}\`: do every edit, build and commit in the worktree below, never there.`,
+      ...input.worktrees.flatMap((w) => ownWorktreeLines(w, input)),
+    ].join("\n");
+  }
+  if (input.borrowed) return null;
+  const repo = input.repoRoot ?? input.workspace;
+  const branch = `ggo/<name>-${input.threadId.slice(0, 8)}`;
+  return [
+    "## Branch & worktree",
+    `You start in the main checkout \`${input.workspace}\` on its current branch, which other tasks and ${input.owner} may also use.`,
+    `- While you are alone in this repository (your brief has no OFFICE section and no "teammate just joined" message has arrived), work here directly.`,
+    `- When another agent works in this repository and you have not edited anything yet, call \`task_worktree\` with \`${repo}\` and a \`name\` before your first edit: 2–4 lowercase hyphenated words naming your work (e.g. \`crawler-email-extraction\`), never the opening words of the request. It returns your own branch and worktree; do every edit, build and commit there. If you already have uncommitted edits here, stay, coordinate in the office and commit only your own hunks.`,
+    `- If you have no \`task_worktree\` tool, create the worktree yourself with exactly this naming so GGO can find it, your own words in place of \`<name>\`: \`git -C "${repo}" worktree add -b ${branch} "${worktreesHome(repo)}\\<name>"\`. Never run \`git worktree remove\` on a task worktree: GGO removes it when the task is closed.`,
+    "- Read-only investigation needs no worktree. Name every branch you committed to in your final report.",
+  ].join("\n");
+}
+
 function umbrellaBriefing(input: BriefingInput): string {
   const branch = `ggo/<name>-${input.threadId.slice(0, 8)}`;
   const example = `${input.workspace.replace(/[\\/]+$/, "")}\\<repo>`;
@@ -63,5 +90,6 @@ function umbrellaBriefing(input: BriefingInput): string {
       ? "- The worktree belongs to your parent task, which integrates it: do not switch branches, rebase, merge or push. Never run `git worktree remove` on a task worktree."
       : `- Integration follows the repository's rule: in a commit-only (never-push) repository leave the work committed on the task branch for ${input.owner}; elsewhere rebase onto the base branch, fast-forward it and push. Never run \`git worktree remove\` on a task worktree: GGO removes it when the task is closed.`,
     "- Read-only investigation needs no worktree. Name every branch you committed to in your final report.",
+    ...input.worktrees.map((w) => `- Already claimed: \`${w.path}\` on branch \`${w.branch}\` for \`${w.repo}\`.`),
   ].join("\n");
 }

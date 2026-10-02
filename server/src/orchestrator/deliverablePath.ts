@@ -40,6 +40,19 @@ export function resolveDeliverable(workspace: string, artifactPath: string): Del
   return { ok: true, realFile, size: st.size };
 }
 
+/** `resolveDeliverable` for a task: its workspace, or — for an absolute path — any worktree the task
+ *  claimed, which can sit outside the workspace (a guided task's `<repo>.worktrees/<name>`). The
+ *  workspace's answer is the one reported when no root accepts the file. */
+export function resolveTaskDeliverable(task: { workspace: string; worktrees?: readonly { path: string }[] }, artifactPath: string): DeliverableResolution {
+  const inWorkspace = resolveDeliverable(task.workspace, artifactPath);
+  if (inWorkspace.ok || inWorkspace.status !== 403 || !isAbsolute(artifactPath)) return inWorkspace;
+  for (const worktree of task.worktrees ?? []) {
+    const inWorktree = resolveDeliverable(worktree.path, artifactPath);
+    if (inWorktree.ok || inWorktree.status !== 403) return inWorktree;
+  }
+  return inWorkspace;
+}
+
 /** What the posting agent reads when its deliverable is refused: the reason in its own terms and the
  *  one move that fixes it. */
 export function deliverableRefusal(workspace: string, artifactPath: string, res: Extract<DeliverableResolution, { ok: false }>): string {

@@ -76,6 +76,15 @@ export async function containingRepoRoot(path: string): Promise<string | null> {
   }
 }
 
+/** The nearest folder at or above `path` holding a `.git` entry, without spawning git — for the sync
+ *  callers (kickoff text) that only need the folder to name. */
+export function enclosingRepoSync(path: string): string | null {
+  for (let dir = resolve(path); ; dir = dirname(dir)) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    if (dirname(dir) === dir) return null;
+  }
+}
+
 /** The MAIN checkout of the repository `root` belongs to (itself, unless `root` is a linked worktree). */
 export async function mainCheckoutOf(root: string): Promise<string> {
   const common = resolve(root, await git(root, ["rev-parse", "--git-common-dir"]));
@@ -303,12 +312,12 @@ export function childRepos(umbrella: string): string[] {
   }
 }
 
-/** Worktrees an agent made by hand under an umbrella folder (a CLI backend has no `task_worktree`
- *  tool), recognised by the branch convention `ggo/<words>-<id8>`. */
-export async function discoverTaskWorktrees(umbrella: string, threadId: string): Promise<TaskWorktree[]> {
+/** Worktrees an agent made by hand off `repos` (a CLI backend has no `task_worktree` tool),
+ *  recognised by the branch convention `ggo/<words>-<id8>`. */
+export async function discoverTaskWorktrees(repos: readonly string[], threadId: string): Promise<TaskWorktree[]> {
   const suffix = `-${threadId.slice(0, 8)}`;
   const found: TaskWorktree[] = [];
-  for (const repo of childRepos(umbrella)) {
+  for (const repo of repos) {
     const branches = await checkedOutBranches(repo).catch(() => new Map<string, string>());
     for (const [branch, folder] of branches) {
       if (!branch.startsWith("ggo/") || !branch.endsWith(suffix) || normalized(folder) === normalized(repo)) continue;

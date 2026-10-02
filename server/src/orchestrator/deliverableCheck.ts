@@ -1,7 +1,7 @@
 import { isAbsolute, join, resolve } from "node:path";
 import type { Db } from "../db/db.js";
 import type { Role, Thread } from "../types.js";
-import { resolveDeliverable } from "./deliverablePath.js";
+import { resolveTaskDeliverable } from "./deliverablePath.js";
 
 // Deterministic backstop for deliverable emission. Emitting a deliverable is a discretionary
 // `post_deliverable` tool call the implementor can simply forget — so a task can produce a real
@@ -46,7 +46,7 @@ const MAX_CANDIDATES = 20;
 export function detectUnsurfacedArtifacts(db: Db, thread: Thread): string[] {
   const surfaced = new Set<string>();
   for (const f of db.listFindings(thread.id)) {
-    if (f.kind === "deliverable" && f.path && resolveDeliverable(thread.workspace, f.path).ok) {
+    if (f.kind === "deliverable" && f.path && resolveTaskDeliverable(thread, f.path).ok) {
       surfaced.add(canonicalKey(thread.workspace, f.path));
     }
   }
