@@ -552,6 +552,9 @@ async function parallel(): Promise<void> {
   const resumed = h.runner.create({ title: "Resume held goal", objective: "o", workspace: ws, maxConcurrent: 2 }).goal!;
   await h.runner.idle();
   h.runner.setStatus(resumed.id, "paused");
+  h.runner.update(resumed.id, { maxConcurrent: 3 });
+  const pausedEdit = h.db.getGoal(resumed.id)!;
+  check("a pace edit on a paused held goal keeps the owner's pause reason", pausedEdit.status === "paused" && pausedEdit.statusReason === "Paused by the owner.");
   h.answers.push({ ...answer("continue"), verdict: "wait" });
   h.runner.setStatus(resumed.id, "active");
   await h.runner.idle();

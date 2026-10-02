@@ -888,7 +888,8 @@ export class GoalRunner {
       ...(objectiveChanged ? { replanAt: at } : {}),
       ...(pinChanged ? { pinChangedAt: at } : {}),
       ...(replan ? { nextCheckAt: null } : {}),
-      ...(replan ? releaseRunningStepWait(current) : {}),
+      // Only a live goal: a paused, blocked or budget-limited goal keeps its reason, and Resume releases the wait itself.
+      ...(replan && current.status === "active" ? releaseRunningStepWait(current) : {}),
     });
     // The director is asked about the new objective instead, so a silent turn before it must not count toward a stop.
     if (objectiveChanged) this.silentTurns.delete(id);
