@@ -4378,7 +4378,8 @@ export class ThreadManager implements OrchestratorApi {
       const routedZai = zai.hasHeadroom ? zai : { ...zai, hasHeadroom: true, capacityWindows: [] };
       add("zai", models, (model) => saving ? [saving.effort] : underCap(zaiEffortsForModel(model), this.zaiEffort(model)), () => routedZai);
     }
-    const autoEntries = filterAutoSelectionCandidates(this.burningEntries(entries, demand));
+    const narrowed = this.burningEntries(entries, demand);
+    const autoEntries = filterAutoSelectionCandidates(narrowed.entries);
     const capacity = preferCapacity(autoEntries, (entry) => candidateCapacityWindows(entry.candidate), demand);
     // Usage forecasts rank model pools but never suppress one that has not actually capped.
     const selected = [
@@ -4394,6 +4395,8 @@ export class ThreadManager implements OrchestratorApi {
         note: [modelNote(entry.provider, entry.model), benchmark].filter(Boolean).join(". "),
         capacity: modelCapacityNote(entry.provider, entry.model, entry.candidate, demand),
         weekly: weeklyReading(candidateCapacityWindows(entry.candidate)),
+        // The sub being prepared for its reset: a goal's burn-rate pacing must not hold it back.
+        ...(entry.provider === narrowed.burning ? { resetBurn: true } : {}),
       };
     });
   }
@@ -6001,9 +6004,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   /** While a sub is being burned and has room, auto model selection and goal steps choose among its
    *  models only; an empty narrowing (the target can't take work) leaves the roster untouched. */
-  private burningEntries<T extends { provider: ImplementorProvider; candidate: ProviderCandidate }>(entries: T[], demand: CapacityDemand): T[] {
-    const burning = this.burningCandidate(entries.map((entry) => entry.candidate), demand);
-    return burning ? entries.filter((entry) => entry.provider === burning.provider) : entries;
+  private burningEntries<T extends { provider: ImplementorProvider; candidate: ProviderCandidate }>(entries: T[], demand: CapacityDemand): { entries: T[]; burning: ImplementorProvider | undefined } {
+    const burning = this.burningCandidate(entries.map((entry) => entry.candidate), demand)?.provider;
+    return { entries: burning ? entries.filter((entry) => entry.provider === burning) : entries, burning };
   }
 
   /** A banked reset was just spent on `subId`. If that is the burn's target, its job is done — end it now

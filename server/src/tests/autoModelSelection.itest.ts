@@ -374,15 +374,18 @@ async function main(): Promise<void> {
       h.internals.codexEffort = (): Effort => "high";
       const providersOf = (): string[] => uniqueProviders(h.internals.implementorModelRoster() as { provider: ImplementorProvider }[]);
       check("without a burn the roster spans Claude and Codex", providersOf().join(",") === "claude,codex", providersOf().join(","));
+      check("without a burn no pool is exempt from a goal's burn rate", h.mgr.goalModelRoster().every((c) => c.resetBurn === undefined));
       h.mgr.setSettings({ resetBurnSubId: "codex" });
       check("a Codex burn leaves only Codex models to choose from", providersOf().join(",") === "codex", providersOf().join(","));
       check("goal steps choose from the same narrowed roster", uniqueProviders(h.mgr.goalModelRoster()).join(",") === "codex");
+      check("the burn target is marked so a goal's burn rate does not pace it", h.mgr.goalModelRoster().every((c) => c.resetBurn === true));
       const id = h.seed();
       h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: SONNET_5, effort: "high", reason: "picked before the burn began" } });
       const demand = h.internals.capacityDemand(thread(h, id), "implementor", "high");
       check("a saved pick on another sub yields to the burn target", h.internals.routeForPick(id, "codex", demand) === "codex");
       h.internals.codexProviderCandidate = (): { provider: "codex"; hasHeadroom: boolean } => ({ provider: "codex", hasHeadroom: false });
       check("a burn target without hard headroom leaves the roster whole", providersOf().join(",") === "claude", providersOf().join(","));
+      check("…and exempts no other pool from a goal's burn rate", h.mgr.goalModelRoster().every((c) => c.resetBurn === undefined));
     } finally {
       h.dispose();
     }

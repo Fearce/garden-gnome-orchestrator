@@ -2533,7 +2533,7 @@ function ResetBurnSection() {
     <>
       <Row
         label="Burn this sub first"
-        hint="Pick a subscription with a banked reset waiting. Until it is maxed out, it takes every dispatch it can carry, including the Director. That overrides spread usage, the soonest-reset order, its weekly safety ceiling, the runway forecast, automatic model selection and its usage-saving model. A real cap, the 98% hard limit, or a model or provider you name for a task still sends work elsewhere. The burn ends by itself the moment you spend that sub's banked reset, or when its weekly window resets. Off by default."
+        hint="Pick a subscription with a banked reset waiting. Until it is maxed out, it takes every dispatch it can carry, including the Director. That overrides spread usage, the soonest-reset order, its weekly safety ceiling, the runway forecast, automatic model selection, its usage-saving model and every goal's burn rate (a goal held for burn rate starts again on it at once). A real cap, the 98% hard limit, or a model or provider you name for a task still sends work elsewhere. The burn ends by itself the moment you spend that sub's banked reset, or when its weekly window resets. Off by default."
         control={
           <select
             className="model-select reset-burn-select"

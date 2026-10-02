@@ -311,10 +311,12 @@ export function burnBudgetPct(resetAt: number, burnRatePct: number, now: number)
   return Math.min(100, burnRatePct * elapsed + GOAL_BURN_GRACE_PCT);
 }
 
-/** Null when the candidate's pool is within the burn rate, or has no fresh weekly reading to pace against. */
+/** Null when the candidate's pool is within the burn rate, has no fresh weekly reading to pace against, or
+ *  is the sub the owner is preparing for its reset (Settings → "Burn this sub first"), which goals spend
+ *  freely: its banked reset refills whatever pacing would have kept. Only hard availability holds it. */
 export function poolOverPace(candidate: ModelCandidate, burnRatePct: number, now: number): PoolOverPace | null {
   const weekly = candidate.weekly;
-  if (!weekly || weekly.resetAt <= now) return null;
+  if (!weekly || weekly.resetAt <= now || candidate.resetBurn) return null;
   const budgetPct = burnBudgetPct(weekly.resetAt, burnRatePct, now);
   if (weekly.usedPct <= budgetPct) return null;
   const elapsedNeeded = Math.max(0, (weekly.usedPct - GOAL_BURN_GRACE_PCT) / burnRatePct);
@@ -762,6 +764,8 @@ export class GoalRunner {
   private readonly uncleanTurns = new Map<string, number>();
   /** goalId → consecutive WAITING turns that did no new work, which stretch the wait before the next check. */
   private readonly idleWaits = new Map<string, number>();
+  /** The sub the last settings broadcast was burning for its reset; undefined until the first broadcast. */
+  private resetBurnSubId: string | null | undefined;
 
   constructor(
     private readonly db: Db,
@@ -778,6 +782,7 @@ export class GoalRunner {
     this.broadcast();
     if (!this.unsubscribe) {
       this.unsubscribe = this.hub.subscribe((e) => {
+        if (e.type === "settings") return this.resetBurnChanged(e.settings.resetBurn?.subId ?? null);
         if (e.type !== "thread.upsert") return;
         const goalId = this.currentThreads.get(e.thread.id);
         if (goalId && !UNFINISHED_STATES.has(e.thread.state)) this.evaluate(goalId);
@@ -917,6 +922,22 @@ export class GoalRunner {
     const existed = this.db.deleteGoal(id);
     if (existed) this.broadcast();
     return { ok: existed, error: existed ? undefined : "No such goal." };
+  }
+
+  /**
+   * The owner just aimed "prepare a sub for reset" at a sub: goals no longer pace that pool, so a goal held
+   * for usage looks again now instead of sleeping out a hold of up to half an hour. Ending a burn needs no
+   * wake-up: the next ordinary check paces the pool again.
+   */
+  private resetBurnChanged(subId: string | null): void {
+    const changed = subId !== this.resetBurnSubId;
+    this.resetBurnSubId = subId;
+    if (!changed || !subId) return;
+    for (const goal of this.db.listGoals()) {
+      if (goal.status !== "active" || goal.hold !== "usage_limited" || goal.nextCheckAt == null) continue;
+      this.db.updateGoal(goal.id, { nextCheckAt: null });
+      this.evaluate(goal.id);
+    }
   }
 
   /** Every active goal, once. Cheap when a goal's step is still running: one row read, no model call. */
