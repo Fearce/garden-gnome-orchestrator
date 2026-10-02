@@ -21,6 +21,9 @@ import { existsSync } from "node:fs";
 import { DIRECTOR_CLI_PROTOCOL, DIRECTOR_CLI_SCHEMA, executeDirectorCliAction, type DirectorCliAction } from "./directorCliBridge.js";
 import { withDirectorTurnPolicy } from "../agents/communicationPolicy.js";
 import { normalizeDirectorDirectives, withDirectorDirectivesUpdate } from "../agents/directorDirectives.js";
+import { SharedDirectorRun } from "../agents/sharedDirectorRun.js";
+import type { ShareCallResult, SharedDirectorSelection } from "../office/directorShare/client.js";
+import type { RelayShareMessage } from "../office/onlineProtocol.js";
 
 const MAX_DIRECTOR_FAILOVERS = 6;
 const MAX_CLI_ACTIONS = 20;
@@ -30,13 +33,34 @@ const DIRECTOR_BUSY_KV = "director_was_working";
 /** Written while auto model selection also picked the director; read by nothing now, cleared on boot. */
 const RETIRED_DIRECTOR_TARGET_AUTO_KV = "director_target_auto";
 
+/** The recipient side of Director sharing, as the Director needs it (DirectorShareClient). */
+export interface SharedDirectorSource {
+  selection(): SharedDirectorSelection | null;
+  call(messages: RelayShareMessage[], signal: AbortSignal): Promise<ShareCallResult>;
+}
+
+/** Capacity another online-office console shares, which the owner explicitly picked as this console's
+ *  Director. While picked it is the ONLY target: it never fails over to, or is failed over to from, a
+ *  private subscription. Its model calls go to the donor; everything else stays on this console. */
+interface SharedTarget {
+  key: string;
+  provider: "shared";
+  model: string;
+  accountLabel: string;
+  selection: SharedDirectorSelection;
+}
+
+type RunTarget = DirectorTarget | SharedTarget;
+
 /**
  * The single long-lived director the owner chats with. Claude/z.ai use native MCP tools; Codex/Grok
  * use a constrained server-command bridge. The selected target is sticky until it caps.
  */
 export class Director {
   private run: AgentRunLike | undefined;
-  private target: DirectorTarget | undefined;
+  private target: RunTarget | undefined;
+  private sharing: SharedDirectorSource | undefined;
+  private lastSharedStatus: string | undefined;
   private readonly sessions = new Map<string, string>();
   private activeSessionKey: string | undefined;
   /** The standing-directives text each provider session last received, so an owner edit reaches a
@@ -103,10 +127,41 @@ export class Director {
     }
   }
 
+  /** A picked shared Director is what the next turn runs on, so it is the status even before that turn. */
   status(): DirectorStatus | null {
-    return this.target
+    const shared = this.sharedTarget();
+    if (shared) {
+      const { donorName, instanceName, providerLabel, expiresAt } = shared.selection;
+      return { provider: "shared", model: shared.model, accountLabel: shared.accountLabel, shared: { donorName, instanceName, providerLabel, expiresAt } };
+    }
+    return this.target && this.target.provider !== "shared"
       ? { provider: this.target.provider, model: this.target.model, accountLabel: this.target.accountLabel }
       : null;
+  }
+
+  attachSharing(source: SharedDirectorSource): void {
+    this.sharing = source;
+  }
+
+  /** The owner picked (or dropped) a shared Director, or an offer changed. Offers move on every presence
+   *  tick, so the status is only republished when it actually differs. */
+  sharingChanged(): void {
+    const next = JSON.stringify(this.status());
+    if (next === this.lastSharedStatus) return;
+    this.lastSharedStatus = next;
+    this.publishStatus();
+  }
+
+  private sharedTarget(): SharedTarget | undefined {
+    const selection = this.sharing?.selection();
+    if (!selection) return undefined;
+    return {
+      key: `shared:${selection.instanceId}:${selection.shareId}`,
+      provider: "shared",
+      model: selection.model,
+      accountLabel: `${selection.donorName} on ${selection.instanceName}`,
+      selection,
+    };
   }
 
   attachRestartDrain(isDraining: () => boolean, workChanged: () => void): void {
@@ -195,7 +250,7 @@ export class Director {
     // or dispatch — the director appears to have ignored it.
     const previousRun = this.run;
     const live = previousRun && !previousRun.finished;
-    const mustReselect = !this.target || !this.api.directorTargetReady(this.target) || !this.stillConfigured(this.target);
+    const mustReselect = !this.target || !this.targetReady(this.target) || !this.stillConfigured(this.target);
     if (live && mustReselect) {
       const old = this.run!;
       this.run = undefined; // neutralize the old onEnd before stop() emits it
@@ -385,12 +440,19 @@ export class Director {
     return m;
   }
 
-  private async start(firstContent: UserContent, target?: DirectorTarget): Promise<void> {
+  private async start(firstContent: UserContent, target?: RunTarget): Promise<void> {
     const generation = ++this.startGeneration;
     const chosen = target ?? await this.chooseTarget();
     if (generation !== this.startGeneration || this.pending === undefined) return;
     if (!chosen) {
       this.postDirectorNote(this.allCappedMessage());
+      this.settleTurn();
+      return;
+    }
+    // A command loop continues on its own target; if the owner switched away from that shared Director
+    // meanwhile, the rest of the turn must not quietly move to another one (or to a private subscription).
+    if (chosen.provider === "shared" && !this.stillConfigured(chosen)) {
+      this.postDirectorNote(`I stopped this turn because the Director shared by ${chosen.selection.donorName}, which it started on, is no longer selected. Resend to continue on the current choice.`);
       this.settleTurn();
       return;
     }
@@ -407,17 +469,20 @@ export class Director {
     );
     const sessionKey = this.sessionKey(chosen);
     const resume = this.activeSessionKey === sessionKey ? this.sessions.get(sessionKey) : undefined;
-    const isCli = chosen.provider === "codex" || chosen.provider === "grok";
+    const isCli = isCliTarget(chosen);
     // A fresh session reads the directives from its system prompt. A resumed one may not (a CLI resume
     // is never re-prompted), and its history can hold an older replacement block that would outrank
     // the prompt, so it gets the turn block whenever its last-seen version differs.
     let turn = firstContent;
     if (resume) turn = this.withDirectivesUpdate(sessionKey, firstContent);
     else this.directivesSeen.set(sessionKey, normalizeDirectorDirectives(directives));
-    const run = this.api.createDirectorAgent(chosen, cfg, { resume, ...(isCli ? { cliSchema: DIRECTOR_CLI_SCHEMA } : {}) });
+    const run = chosen.provider === "shared"
+      ? new SharedDirectorRun({ call: (messages, signal) => this.sharedCall(messages, signal), schema: DIRECTOR_CLI_SCHEMA, resume })
+      : this.api.createDirectorAgent(chosen, cfg, { resume, ...(isCli ? { cliSchema: DIRECTOR_CLI_SCHEMA } : {}) });
     this.target = chosen;
     this.activeSessionKey = sessionKey;
-    this.db.kvSet(DIRECTOR_TARGET_KV, chosen.key);
+    // The persisted key is the owner's own sticky target; a shared pick has its own durable selection.
+    if (chosen.provider !== "shared") this.db.kvSet(DIRECTOR_TARGET_KV, chosen.key);
     this.run = run;
     this.publishStatus();
     this.wire(run, chosen);
@@ -439,11 +504,28 @@ export class Director {
   /** The director runs on the model configured for it; auto model selection only picks implementors.
    *  A target stops being configured when the owner changes the director model (or usage saving
    *  starts/stops), and the next message then moves to the new one instead of staying sticky. */
-  private stillConfigured(target: DirectorTarget): boolean {
-    return this.api.directorTargets().some((t) => t.key === target.key);
+  private stillConfigured(target: RunTarget): boolean {
+    const shared = this.sharedTarget();
+    if (target.provider === "shared") return shared?.key === target.key;
+    return !shared && this.api.directorTargets().some((t) => t.key === target.key);
   }
 
-  private async chooseTarget(excludeKeys: ReadonlySet<string> = new Set()): Promise<DirectorTarget | undefined> {
+  /** A shared target is always "ready" here: whether the donor will answer is the donor's decision, and
+   *  a refused call ends the turn with the donor's reason rather than a switch. */
+  private targetReady(target: RunTarget): boolean {
+    return target.provider === "shared" || this.api.directorTargetReady(target);
+  }
+
+  private sharedCall(messages: RelayShareMessage[], signal: AbortSignal): Promise<ShareCallResult> {
+    if (!this.sharing) return Promise.resolve({ ok: false, code: "not-shared", message: "Director sharing is not available on this console." });
+    return this.sharing.call(messages, signal);
+  }
+
+  private async chooseTarget(excludeKeys: ReadonlySet<string> = new Set()): Promise<RunTarget | undefined> {
+    // An explicitly picked shared Director is used exclusively, so no private subscription is a candidate.
+    const shared = this.sharedTarget();
+    if (shared) return excludeKeys.has(shared.key) ? undefined : shared;
+    const current = this.target?.provider === "shared" ? undefined : this.target;
     const available = this.api.directorTargets().filter((t) => !excludeKeys.has(t.key));
     const burn = this.api.resetBurn();
     const priorityTargets = burn
@@ -451,20 +533,21 @@ export class Director {
       : [];
     if (priorityTargets.length) {
       this.db.kvSet("director_temporary_priority_until", String(resetBurnEndsAt(burn!)));
-      return priorityTargets.find((target) => target.key === this.target?.key)
+      return priorityTargets.find((target) => target.key === current?.key)
         ?? this.api.preferredDirectorTarget(priorityTargets);
     }
     const priorityUntil = Number(this.db.kvGet("director_temporary_priority_until"));
     // A burn that ended early (its window was reset) releases the Director as surely as one that ran out.
     const priorityExpired = priorityUntil > 0 && (priorityUntil <= Date.now() || !burn);
     if (priorityExpired) this.db.kvDelete("director_temporary_priority_until");
-    const sticky = !priorityExpired && this.target && !excludeKeys.has(this.target.key) && this.api.directorTargetReady(this.target)
-      ? available.find((t) => t.key === this.target!.key)
+    const sticky = !priorityExpired && current && !excludeKeys.has(current.key) && this.api.directorTargetReady(current)
+      ? available.find((t) => t.key === current.key)
       : undefined;
     return sticky ?? this.api.preferredDirectorTarget(available);
   }
 
-  private sessionKey(target: DirectorTarget): string {
+  private sessionKey(target: RunTarget): string {
+    if (target.provider === "shared") return target.key;
     // Claude local sessions are portable between Claude subscription tokens; every other provider owns
     // a separate session namespace and must bootstrap from persisted conversation on a cross-provider move.
     return target.provider === "claude" ? "claude" : target.provider;
@@ -504,8 +587,8 @@ export class Director {
     this.hub.publish({ type: "director.status", status: this.status() });
   }
 
-  private wire(run: AgentRunLike, target: DirectorTarget): void {
-    const cli = target.provider === "codex" || target.provider === "grok";
+  private wire(run: AgentRunLike, target: RunTarget): void {
+    const cli = isCliTarget(target);
     const off = run.onEvent((e: AgentEvent) => {
       if (this.run !== run) return; // superseded by a failover switch — don't touch the new run's state
       switch (e.type) {
@@ -523,7 +606,7 @@ export class Director {
           this.hub.publish({ type: "director.tool", name: e.name, input: e.input });
           break;
         case "result":
-          if (this.api.directorRunCapped(target, run)) this.reactiveFailover(run, target);
+          if (target.provider !== "shared" && this.api.directorRunCapped(target, run)) this.reactiveFailover(run, target);
           else if (cli) void this.handleCliResult(run, target, e);
           else this.settleTurn();
           break;
@@ -560,7 +643,7 @@ export class Director {
     return m;
   }
 
-  private async handleCliResult(run: AgentRunLike, target: DirectorTarget, result: ResultEvent): Promise<void> {
+  private async handleCliResult(run: AgentRunLike, target: RunTarget, result: ResultEvent): Promise<void> {
     if (this.run !== run || this.pending === undefined) return;
     this.cliHandling.add(run);
     if (result.isError) {
@@ -586,7 +669,9 @@ export class Director {
       }
       this.cliHandling.delete(run);
       this.run = undefined;
-      this.postDirectorNote(`${providerName(target)} could not produce a valid director command. I stopped this turn; resend and another available provider will be tried.`);
+      this.postDirectorNote(target.provider === "shared"
+        ? `${providerName(target)} could not produce a valid director command. I stopped this turn; resend to try it again.`
+        : `${providerName(target)} could not produce a valid director command. I stopped this turn; resend and another available provider will be tried.`);
       this.settleTurn();
       return;
     }
@@ -630,8 +715,9 @@ export class Director {
 
   /** A real CLI/process failure before any side effect is safe to retry on a different provider. Do
    *  not mislabel it as malformed JSON, and do not wait for the owner to resend manually. */
-  private async failoverAfterCliError(run: AgentRunLike, target: DirectorTarget, reason?: string): Promise<void> {
+  private async failoverAfterCliError(run: AgentRunLike, target: RunTarget, reason?: string): Promise<void> {
     if (this.run !== run || this.pending === undefined) return;
+    if (target.provider === "shared") return this.endSharedTurn(run, target, reason);
     const pending = this.pending;
     const next = this.failovers < MAX_DIRECTOR_FAILOVERS
       ? await this.chooseTarget(new Set([target.key]))
@@ -650,8 +736,22 @@ export class Director {
     this.settleTurn();
   }
 
+  /** A shared call was refused or failed. The turn ends with the donor's reason; it is never retried on
+   *  this console's own subscriptions, because the owner chose shared capacity explicitly. */
+  private async endSharedTurn(run: AgentRunLike, target: SharedTarget, reason?: string): Promise<void> {
+    this.cliHandling.delete(run);
+    this.run = undefined;
+    await run.stop().catch(() => {});
+    const why = reason?.trim() || "it did not answer.";
+    this.postDirectorNote(
+      `${providerName(target)} could not complete this turn: ${why} Nothing was sent to your own subscriptions. `
+      + "To switch back, choose \"Use my own subscriptions\" in Settings > Director sharing.",
+    );
+    this.settleTurn();
+  }
+
   /** A completed batch CLI cannot be reused in-place: start a new process resumed onto its session. */
-  private continueCli(run: AgentRunLike, target: DirectorTarget, content: string): void {
+  private continueCli(run: AgentRunLike, target: RunTarget, content: string): void {
     if (this.run !== run || this.pending === undefined) return;
     this.cliHandling.delete(run);
     this.run = undefined; // neutralize the old runner's adjacent onEnd callback
@@ -668,7 +768,8 @@ export class Director {
    * streaming turn) and onEnd (run died) — the `this.run !== run` guards in wire() neutralize the
    * superseded run's trailing events.
    */
-  private reactiveFailover(run: AgentRunLike, target: DirectorTarget): void {
+  private reactiveFailover(run: AgentRunLike, target: RunTarget): void {
+    if (target.provider === "shared") return this.settleTurn(); // a shared run that died has no failover
     if (this.classifying) return; // an in-flight classification owns this turn's revival — don't race it
     if (run.rateLimited && this.pending !== undefined && this.failovers < MAX_DIRECTOR_FAILOVERS) {
       if (target.provider === "claude" && fallbackModelFor(target.model)) {
@@ -768,7 +869,12 @@ function isCommittedCliAction(kind: string): boolean {
   return COMMITTED_CLI_ACTIONS.has(kind);
 }
 
-function providerName(target: DirectorTarget): string {
+function isCliTarget(target: RunTarget): boolean {
+  return target.provider === "codex" || target.provider === "grok" || target.provider === "shared";
+}
+
+function providerName(target: RunTarget): string {
+  if (target.provider === "shared") return `The Director shared by ${target.selection.donorName} (${target.selection.providerLabel} ${target.model})`;
   return target.provider === "claude" ? `${target.accountLabel} (Claude)`
     : target.provider === "codex" ? "Codex"
       : target.provider === "grok" ? "Grok"

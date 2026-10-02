@@ -18,8 +18,9 @@ import { useSwipeDismiss } from "../lib/swipe.js";
 import { setBetaGnomes, setOldGnomesBeta, useBetaGnomes, useOldGnomesBeta } from "../lib/betaGnomes.js";
 import { BetaGnome } from "./BetaGnome.js";
 import { Gnome } from "./Gnome.js";
+import { DirectorShareDonorSection, DirectorShareRecipientSection } from "./DirectorSharingSettings.js";
 
-type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "livebench" | "voice-alerts" | "remote-control" | "office" | "appearance" | "interface";
+type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "director-sharing" | "free-ai" | "livebench" | "voice-alerts" | "remote-control" | "office" | "appearance" | "interface";
 
 interface SettingsCategory {
   id: SettingsCategoryId;
@@ -34,6 +35,7 @@ const SETTINGS_CATEGORIES = [
   { id: "pipeline", section: "Orchestrator", label: "Pipeline", description: "Control task execution, reviews, concurrency, and supervision.", keywords: "planner research implementor qa review auto push git parallel workers supervisor models" },
   { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced.", keywords: "tokens quota capacity allowance polling reset spread resume budget prepare burn banked max out" },
   { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits.", keywords: "claude anthropic codex openai chatgpt grok xai zai glm api keys accounts models effort weekly safety cli update upgrade version sdk runtime new model" },
+  { id: "director-sharing", section: "Providers", label: "Director sharing", description: "Lend an API-key subscription to office members as their Director, with a deadline, or use one they share.", keywords: "share sharing shared lend donate director capacity subscription api key deadline expiry expire timezone stop private public online office recipient donor usage" },
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
   { id: "livebench", section: "Providers", label: "LiveBench rankings", description: "Compare models on the newest cached LiveBench leaderboard; click any column to sort.", keywords: "livebench benchmark leaderboard rankings scores models compare reasoning coding agentic mathematics data analysis language instruction following global average organization" },
   { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
@@ -519,6 +521,15 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               </Group>
             </SettingsCategoryPanel>
 
+            <SettingsCategoryPanel id="director-sharing" active={!isSearching && activeCategoryId === "director-sharing"}>
+              <Group label="Share my Director capacity">
+                <DirectorShareDonorSection />
+              </Group>
+              <Group label="Use a shared Director">
+                <DirectorShareRecipientSection />
+              </Group>
+            </SettingsCategoryPanel>
+
             <SettingsCategoryPanel id="office" active={!isSearching && activeCategoryId === "office"}>
               <Group label="Online office">
                 <OnlineOfficeSection />
@@ -949,6 +960,7 @@ function SettingsCategoryIcon({ category }: { category: SettingsCategoryId }) {
   if (category === "pipeline") return <svg {...common}><circle cx="6" cy="6" r="2" /><circle cx="18" cy="6" r="2" /><circle cx="18" cy="18" r="2" /><path d="M8 6h8M18 8v8M6 8v7a3 3 0 0 0 3 3h7" /></svg>;
   if (category === "usage") return <svg {...common}><path d="M4.9 19a9 9 0 1 1 14.2 0" /><path d="m12 13 4-4" /><circle cx="12" cy="13" r="1.5" /></svg>;
   if (category === "subscriptions") return <svg {...common}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18M7 15h4" /></svg>;
+  if (category === "director-sharing") return <svg {...common}><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="18" cy="18" r="2.5" /><path d="m8.2 10.8 7.6-3.6M8.2 13.2l7.6 3.6" /></svg>;
   if (category === "free-ai") return <svg {...common}><path d="m12 3 1.2 4.2L17 9l-3.8 1.8L12 15l-1.2-4.2L7 9l3.8-1.8L12 3Z" /><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" /><path d="M5 14v6M2 17h6" /></svg>;
   if (category === "livebench") return <svg {...common}><path d="M4 20h16" /><rect x="5" y="11" width="3.5" height="6" rx="0.5" /><rect x="10.25" y="5" width="3.5" height="12" rx="0.5" /><rect x="15.5" y="8.5" width="3.5" height="8.5" rx="0.5" /></svg>;
   if (category === "voice-alerts") return <svg {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>;

@@ -49,6 +49,17 @@ device still needs an explicit `x-admin-token` header, so the session introduced
 | `GET /api/members` | admin token header or session cookie | List devices. |
 | `DELETE /api/members/:id` | admin token **header only** | Revoke a device. |
 
+## Director sharing frames
+
+A console may advertise up to 8 Director offers on its presence (`shares`), and members exchange
+`share.call` / `share.reply` / `share.cancel` over the same socket. The relay never sees a key or calls a
+provider: it stamps `from`, routes a reply only to the console that made that call, refuses calls to an
+offline donor, an unadvertised or expired share, an oversized request (150k chars) or a caller with 4
+calls pending, and answers every pending call when either side disconnects. It advertises the support as
+`welcome.features: ["director-sharing"]`; consoles treat a relay without it as unsupported. The protocol
+version is unchanged (every field is optional). The donor console enforces deadlines and limits itself,
+see `.claude/rules/director-sharing.md`.
+
 ## What being public actually exposes
 
 The hostname is guessable and everything above is reachable from the open internet, so the boundary is

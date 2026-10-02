@@ -28,6 +28,8 @@ server/.pin-lab-dist/
 server/.board-head-lab-dist/
 server/.agent-names-lab-dist/
 server/.livebench-lab-dist/
+server/.dshare-lab-dist/
+.dshare-shots/
 server/.lab-web-dist*/
 web/dist/
 relay/dist/
