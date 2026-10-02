@@ -1732,6 +1732,16 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 .board-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 14px; }
 .board-head h2 { margin: 0; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-faint); font-weight: 600; }
 .board-head-right { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* Both sides wrap: an open detail pane narrows the board to ~300-700px, and an unwrapped row pushed the
+   sort menu and "New Co-work" out past the board's edge, underneath the pane. */
+.board-head { flex-wrap: wrap; row-gap: 10px; }
+.board-head-right { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 12px; min-width: 0; margin-left: auto; }
+.hide-done {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+  font-size: 12px; color: var(--text-dim); white-space: nowrap;
+}
+.hide-done:hover { color: var(--text); }
+.hide-done input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 
 /* ---- board sort dropdown ---- */
 /* A solid, self-evidently-clickable select: it reads as a control (filled .btn surface, "Sort:" prefix,
@@ -3934,6 +3944,8 @@ button.note-from:hover { color: var(--text-dim); }
   .inject-bar .row .btn.sm { padding: 0 10px; }
   .inject-bar .row .inject-row-spacer, .inject-bar .row .inject-id { display: none; }
   .board-tab { min-height: var(--tap-sm); }
+  .hide-done { min-height: var(--tap); padding: 0 4px; }
+  .hide-done input { width: 24px; height: 24px; }
   .title-edit { min-height: var(--tap-sm); }
   /* The ✕ that forgets a recent repo was a 19px target beside a 20px name. The board's Closed
      disclosure was 22px. */

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { apiUrl, wsUrl } from "./lib/base.js";
+import { isHideableTab, sanitizeHiddenTabs } from "./lib/boardTabs.js";
 import type {
   AccountDTO,
   BoardView,
@@ -233,6 +234,8 @@ interface State {
   // what this browser shows, so they never round-trip to the server.
   showCompleted: boolean;
   showEmptyHardDeadline: boolean;
+  // Board areas the owner switched off in Settings. Never holds "tasks".
+  hiddenBoardTabs: BoardView[];
   verbosity: Verbosity;
   // The board's sort order while drag-and-drop is off (the dropdown in the board header drives this).
   taskSort: TaskSort;
@@ -458,6 +461,8 @@ interface State {
   setAccountProfileToken: (id: string, token: string) => boolean;
   setShowCompleted: (v: boolean) => void;
   setShowEmptyHardDeadline: (v: boolean) => void;
+  /** Show or hide one board area. Hiding the area that is open moves the board back to Tasks. */
+  setBoardTabHidden: (view: BoardView, hidden: boolean) => void;
   setVerbosity: (v: Verbosity) => void;
   setTaskSort: (v: TaskSort) => void;
   setTaskDragAndDrop: (v: boolean) => void;
@@ -722,6 +727,7 @@ const VIEW_SETTINGS_KEY = "director_settings";
 interface ViewSettings {
   showCompleted: boolean;
   showEmptyHardDeadline: boolean;
+  hiddenBoardTabs: BoardView[];
   verbosity: Verbosity;
   // Off by default: the board keeps its automatic most-recent-first ordering until the owner opts in.
   taskDragAndDrop: boolean;
@@ -742,7 +748,7 @@ interface ViewSettings {
   screensaver: boolean;
   screensaverIdleMinutes: number;
 }
-const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, showEmptyHardDeadline: true, verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, directorChatFontSize: DIRECTOR_CHAT_FONT_DEFAULT, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, displayFont: DEFAULT_DISPLAY_FONT, screensaver: true, screensaverIdleMinutes: 5 };
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, showEmptyHardDeadline: true, hiddenBoardTabs: [], verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, directorChatFontSize: DIRECTOR_CHAT_FONT_DEFAULT, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, displayFont: DEFAULT_DISPLAY_FONT, screensaver: true, screensaverIdleMinutes: 5 };
 const loadViewSettings = (): ViewSettings => {
   try {
     const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
@@ -751,6 +757,7 @@ const loadViewSettings = (): ViewSettings => {
     return {
       showCompleted: typeof v.showCompleted === "boolean" ? v.showCompleted : VIEW_DEFAULTS.showCompleted,
       showEmptyHardDeadline: typeof v.showEmptyHardDeadline === "boolean" ? v.showEmptyHardDeadline : VIEW_DEFAULTS.showEmptyHardDeadline,
+      hiddenBoardTabs: sanitizeHiddenTabs(v.hiddenBoardTabs),
       verbosity: v.verbosity === "compact" || v.verbosity === "full" ? v.verbosity : VIEW_DEFAULTS.verbosity,
       taskDragAndDrop: typeof v.taskDragAndDrop === "boolean" ? v.taskDragAndDrop : VIEW_DEFAULTS.taskDragAndDrop,
       taskSort: isTaskSort(v.taskSort) ? v.taskSort : VIEW_DEFAULTS.taskSort,
@@ -774,6 +781,7 @@ const persistView = (s: ViewSettings, patch: Partial<ViewSettings>): void =>
   saveViewSettings({
     showCompleted: s.showCompleted,
     showEmptyHardDeadline: s.showEmptyHardDeadline,
+    hiddenBoardTabs: s.hiddenBoardTabs,
     verbosity: s.verbosity,
     taskSort: s.taskSort,
     taskDragAndDrop: s.taskDragAndDrop,
@@ -1393,6 +1401,7 @@ export const useStore = create<State>((set) => ({
   discordTesting: false,
   showCompleted: loadViewSettings().showCompleted,
   showEmptyHardDeadline: loadViewSettings().showEmptyHardDeadline,
+  hiddenBoardTabs: loadViewSettings().hiddenBoardTabs,
   verbosity: loadViewSettings().verbosity,
   taskSort: loadViewSettings().taskSort,
   taskDragAndDrop: loadViewSettings().taskDragAndDrop,
@@ -1726,6 +1735,13 @@ export const useStore = create<State>((set) => ({
     set((s) => {
       persistView(s, { showCompleted: v });
       return { showCompleted: v };
+    }),
+  setBoardTabHidden: (view, hidden) =>
+    set((s) => {
+      if (!isHideableTab(view)) return {};
+      const hiddenBoardTabs = sanitizeHiddenTabs(hidden ? [...s.hiddenBoardTabs, view] : s.hiddenBoardTabs.filter((v) => v !== view));
+      persistView(s, { hiddenBoardTabs });
+      return { hiddenBoardTabs, ...(hidden && s.boardView === view ? switchView(s, "tasks") : {}) };
     }),
   setShowEmptyHardDeadline: (v) =>
     set((s) => {

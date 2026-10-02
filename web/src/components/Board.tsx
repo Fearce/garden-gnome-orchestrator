@@ -28,6 +28,7 @@ import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
 import { PatchNotes } from "./PatchNotes.js";
 import { usePatchNotesWatch, useUnseenPatchNotes } from "../lib/patchNotes.js";
+import { visibleBoardTabs } from "../lib/boardTabs.js";
 import { useRemoteControlEnabled } from "./remote/remoteApi.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { CoworkPopup, NewCoworkButton } from "./CoWork.js";
@@ -279,6 +280,7 @@ export function Board() {
               {list.length} total
               {hiddenCompleted > 0 ? ` · ${hiddenCompleted} completed hidden` : ""}
             </span>
+            <HideDoneToggle />
             {/* Always available — under DnD a pick re-seeds the manual order (applySort) instead of being hidden. */}
             <SortMenu onPick={applySort} />
             <NewCoworkButton />
@@ -351,7 +353,8 @@ function BoardTabs() {
   const remoteEnabled = useRemoteControlEnabled();
   // The tab exists only once remote control is set up; turned off elsewhere, the board falls back to tasks.
   useEffect(() => { if (!remoteEnabled && boardView === "remote") setBoardView("tasks"); }, [remoteEnabled, boardView, setBoardView]);
-  const tabs = remoteEnabled ? BOARD_TABS : BOARD_TABS.filter((tab) => tab.view !== "remote");
+  const hiddenTabs = useStore((s) => s.hiddenBoardTabs);
+  const tabs = visibleBoardTabs(hiddenTabs, remoteEnabled, boardView);
   const counts = {
     tasks: null,
     ide: null,
@@ -379,16 +382,18 @@ function BoardTabs() {
   );
 }
 
-const BOARD_TABS: { view: BoardView; label: string; title: string }[] = [
-  { view: "tasks", label: "Tasks", title: "Back to the task board" },
-  { view: "ide", label: "IDE", title: "Edit workspace files and manage Git" },
-  { view: "remote", label: "Remote control", title: "See and control this PC" },
-  { view: "notes", label: "Notes", title: "Branches, PRs and reminders waiting on you" },
-  { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },
-  { view: "goals", label: "Goals", title: "Goal-directed tasks: standing objectives the director keeps working on until they are met" },
-  { view: "supervisor", label: "Supervisor", title: "The Director Supervisor watchdog: its state, budget and recent checks/actions" },
-  { view: "patchnotes", label: "Patch notes", title: "What changed in GGO: new features, fixes and what the next update brings" },
-];
+/** The board header's quick switch for the "Show completed tasks" view setting, so hiding finished
+ *  work doesn't take a trip into Settings. Pinned done tasks stay on the board either way. */
+function HideDoneToggle() {
+  const showCompleted = useStore((s) => s.showCompleted);
+  const setShowCompleted = useStore((s) => s.setShowCompleted);
+  return (
+    <label className="hide-done" title="Hide done and cancelled tasks (pinned ones stay). Same as Settings → Interface → Show completed tasks.">
+      <input type="checkbox" checked={!showCompleted} onChange={(e) => setShowCompleted(!e.target.checked)} />
+      Hide done
+    </label>
+  );
+}
 
 /** The board sort control: a quiet trigger in the header that opens a listbox of sort options, reusing
  *  the .ws-menu/.ws-opt pattern (downward variant). Self-contained — owns its open state and closes on

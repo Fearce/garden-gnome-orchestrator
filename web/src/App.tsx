@@ -15,6 +15,7 @@ import { useIdle } from "./components/screensaver/useIdle.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
 import { useSwipePanes, type WorkbenchPane } from "./lib/swipe.js";
+import { visibleBoardTabs } from "./lib/boardTabs.js";
 import ggLogo from "./assets/gg-logo.webp";
 import type { BoardView } from "./types.js";
 import { useRemoteControlEnabled } from "./components/remote/remoteApi.js";
@@ -366,6 +367,8 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
   const boardView = useStore((s) => s.boardView);
   const setBoardView = useStore((s) => s.setBoardView);
   const remoteEnabled = useRemoteControlEnabled();
+  const hiddenTabs = useStore((s) => s.hiddenBoardTabs);
+  const areas = visibleBoardTabs(hiddenTabs, remoteEnabled, boardView);
   const openBoardView = (view: BoardView) => {
     setBoardView(view);
     setPane("board");
@@ -400,7 +403,7 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
         <span>All areas</span>
         <select aria-label="All areas" value={pane === "director" ? "" : boardView} onChange={e => openBoardView(e.target.value as BoardView)}>
           <option value="" disabled>Choose…</option>
-          <option value="tasks">Tasks</option><option value="ide">IDE</option>{remoteEnabled ? <option value="remote">Remote control</option> : null}<option value="notes">Notes</option><option value="schedules">Scheduled Tasks</option><option value="goals">Goals</option><option value="supervisor">Supervisor</option><option value="patchnotes">Patch notes</option>
+          {areas.map((tab) => <option value={tab.view} key={tab.view}>{tab.label}</option>)}
         </select>
       </label>
     </nav>

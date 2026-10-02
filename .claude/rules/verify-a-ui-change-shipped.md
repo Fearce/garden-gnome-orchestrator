@@ -59,6 +59,8 @@ each board tab restoring its own toggles, across a reload) and `panel-scroll-lab
 viewports x both header states — scrollport usable, composer pinned, nothing sideways, no clipping shell
 taller than its own box), `director-phone-lab.cjs` (the Director pane at 320–430px: the
 conversation's share of the pane, 44px targets, the pipeline menu, search, the options sheet, a send),
+`board-head-lab.cjs` (the board header's controls clear of an open detail pane at 1000–2560px,
+Hide done across a reload, Settings → Board tabs on the strip, the narrow select and the phone menu),
 `agent-names-lab.cjs` (a fresh QA run and a backfilled legacy one both show "QA (Name, model)" in the
 feed header, across a boot that runs the one-time name backfill), `schedule-reminder-lab.cjs` (a
 reminder-only schedule through the editor and card, the stored row, and Run now landing on the note list

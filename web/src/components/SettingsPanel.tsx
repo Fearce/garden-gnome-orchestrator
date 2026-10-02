@@ -8,6 +8,8 @@ import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { FreeProviders } from "./FreeProviders.js";
 import { LiveBenchRankings } from "./LiveBenchRankings.js";
 import { RemoteControlSetup } from "./remote/RemoteControlSetup.js";
+import { useRemoteControlEnabled } from "./remote/remoteApi.js";
+import { BOARD_TABS, isHideableTab } from "../lib/boardTabs.js";
 import { ThemePicker } from "./ThemePicker.js";
 import { FontPicker } from "./FontPicker.js";
 import { DISPLAY_FONTS, MONO_FONTS, UI_FONTS } from "../lib/font.js";
@@ -672,6 +674,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   on={showEmptyHardDeadline}
                   onChange={setShowEmptyHardDeadline}
                 />
+              </Group>
+              <Group label="Board tabs">
+                <BoardTabToggles />
               </Group>
             </SettingsCategoryPanel>
           </div>
@@ -2449,6 +2454,28 @@ function ModelScoreboard({ enabled }: { enabled: boolean }) {
         </div>
       ))}
     </div>
+  );
+}
+
+/** One switch per board area except Tasks, which is the board itself. Stored in this browser. */
+function BoardTabToggles() {
+  const hidden = useStore((s) => s.hiddenBoardTabs);
+  const setBoardTabHidden = useStore((s) => s.setBoardTabHidden);
+  const remoteEnabled = useRemoteControlEnabled();
+  const tabs = BOARD_TABS.filter((tab) => isHideableTab(tab.view) && (tab.view !== "remote" || remoteEnabled));
+  return (
+    <>
+      {tabs.map((tab) => (
+        <ToggleRow
+          key={tab.view}
+          label={`${tab.label} tab`}
+          hint={`${tab.title}. Off: the tab leaves the board header and the phone's area menu. Stored in this browser.`}
+          on={!hidden.includes(tab.view)}
+          onChange={(on) => setBoardTabHidden(tab.view, !on)}
+        />
+      ))}
+      <div className="settings-note tight">The Tasks tab is always shown.</div>
+    </>
   );
 }
 

@@ -329,6 +329,15 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   a flatter fill, a muted state bar and half-opacity content, so live and waiting (review / paused)
   cards carry the board. Hover, keyboard focus or opening the card restores full strength. Browser
   check: `npm run settled-card-lab --prefix server`.
+- **Board header and areas are per-browser view settings.** The header's **Hide done** checkbox is
+  the same `showCompleted` flag as Settings → Interface → "Show completed tasks" (done/cancelled leave
+  the board, pinned ones stay). Settings → Interface → **Board tabs** hides individual areas;
+  `hiddenBoardTabs` lives in the `director_settings` localStorage record and can never hold `tasks`.
+  `web/src/lib/boardTabs.ts` is the one area list behind the desktop strip, the narrow-board area
+  select, the phone's "All areas" menu and those switches. A hidden area still opens from a link
+  (Settings' remote viewer), and hiding the open area moves the board to Tasks. The header row wraps
+  so its controls drop to a second row instead of running under an open detail pane. Lab:
+  `npm run board-head-lab --prefix server`.
 - **Agent-routed and task-aware.** `runPipeline` has no fixed mandatory sequence — the selected
   stages decide the next. Whether the planner and/or QA run at all for a given task is itself a
   decision, computed once per pipeline episode by `orchestrator/routeSelection.ts`'s
