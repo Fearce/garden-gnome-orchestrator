@@ -44,6 +44,10 @@ import { RestartCoordinator } from "./orchestrator/restartCoordinator.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
 import { GoalRunner } from "./orchestrator/goals.js";
 import { OnlineOffice } from "./office/onlineOffice.js";
+import { DirectorSharing } from "./office/directorShare/sharing.js";
+import { directorShareEndpoint, directorShareSubscriptions, type DirectorShareSources } from "./office/directorShare/policy.js";
+import { chatgptLoginAvailable } from "./agents/codexRunner.js";
+import { readGrokAuth } from "./agents/grokRunner.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
 import { knownWorkspaces, revealWorkspace } from "./workspace/revealWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
@@ -225,9 +229,33 @@ async function main(): Promise<void> {
   // The Online Office: this instance's link to the shared relay, where agents on OTHER machines working
   // the same repository show up as coworkers. Standalone over (db, hub) + three callbacks into the
   // manager — off entirely until the operator joins one in Settings.
+  // Director sharing rides the online office: this console can lend an API-key subscription to other
+  // members as their Director, or use one another member lends. Off until the owner opts in per key.
+  const directorShareSources = (): DirectorShareSources => ({
+    claudeAccounts: accounts.dto().map(({ id, label }) => ({ id, label })),
+    openaiApiKey: manager.openaiApiKey(),
+    codexChatgptLogin: chatgptLoginAvailable(),
+    xaiApiKey: process.env.XAI_API_KEY?.trim() || undefined,
+    grokLogin: readGrokAuth().signedIn,
+    zaiConfigured: !!manager.zaiApiKey(),
+  });
+  const directorSharing = new DirectorSharing({
+    db,
+    hub,
+    subscriptions: () => directorShareSubscriptions(directorShareSources()),
+    endpoint: (subscriptionId) => directorShareEndpoint(subscriptionId, directorShareSources()),
+    selectionChanged: () => director.sharingChanged(),
+  });
+  director.attachSharing(directorSharing.client);
   const onlineOffice = new OnlineOffice({
     db,
     hub,
+    sharing: {
+      offers: () => directorSharing.host.offers(),
+      onFrame: (frame) => directorSharing.onFrame(frame),
+      onOffers: (offers) => directorSharing.onOffers(offers),
+      onDisconnected: () => directorSharing.onDisconnected(),
+    },
     roster: () => manager.onlineRoster(),
     onRemoteChat: (msg, workspaces) => manager.receiveRemoteChat(msg, workspaces),
     onDirectorChat: (msg) => manager.receiveDirectorChat(msg),
@@ -236,6 +264,13 @@ async function main(): Promise<void> {
     onRemoteJoin: (repoLabel, workspaces, joiners) => manager.remoteTeammatesJoined(repoLabel, workspaces, joiners),
   });
   manager.attachOnlineOffice(onlineOffice);
+  directorSharing.attachTransport({
+    send: (frame) => onlineOffice.sendShare(frame),
+    relayState: () => onlineOffice.shareRelayState(),
+    instanceOnline: (instanceId) => onlineOffice.instanceOnline(instanceId),
+    refreshPresence: () => onlineOffice.refreshPresence(),
+  });
+  process.once("exit", () => directorSharing.dispose());
   // Keeps the Claude runtime (the Agent SDK's bundled Claude Code) and the global Codex CLI on their latest
   // release so a newly shipped model is runnable without a manual upgrade. See toolchain/cliAutoUpdate.ts.
   const cliUpdater = new CliAutoUpdater({
@@ -274,6 +309,8 @@ async function main(): Promise<void> {
       // First: a durable pending restart must either claim the idle process or be cleared as already
       // deployed before the constructor's delayed auto-resumes/new queue work become eligible.
       () => restartCoordinator.start(),
+      // Before the office connects, so expired shares are settled before anything is advertised.
+      () => directorSharing.start(),
       () => onlineOffice.start(),
       () => accounts.start(),
       () => scheduler.start(),
@@ -364,7 +401,7 @@ async function main(): Promise<void> {
         zlibDeflateOptions: { level: 3 },
       },
     } });
-    registerWs(app, { db, hub, manager, director, accounts, scheduler, goals, notes, repos, onlineOffice, cowork, codeContext, cliUpdater });
+    registerWs(app, { db, hub, manager, director, accounts, scheduler, goals, notes, repos, onlineOffice, directorSharing, cowork, codeContext, cliUpdater });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
     registerIdeRoutes(app, ide, isAuthed);
     registerRemoteControlRoutes(app, remoteControl, isAuthed);

@@ -13,6 +13,7 @@ import { codexModelOptions } from "../lib/models.js";
 import { effortLabel, modelLabel, stateColor, stateLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { columnDragMax, useColumnResize } from "./useColumnResize.js";
+import { SharedDirectorStrip } from "./SharedDirectorStrip.js";
 
 // The recent-repo chips and the skip-director mode are persisted SERVER-SIDE (in OrchestratorSettings),
 // not localStorage — the console is served on both an HTTP and an HTTPS origin (the tablet Deck iframes
@@ -23,7 +24,9 @@ import { columnDragMax, useColumnResize } from "./useColumnResize.js";
 const repoLabel = (p: string): string => p.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || p;
 
 export function directorRuntimeLabel(status: DirectorStatus | null, busy: boolean): string {
-  const provider = status ? ({ claude: "Claude", codex: "Codex", grok: "Grok", zai: "z.ai" } as const)[status.provider] : "";
+  const provider = !status ? ""
+    : status.shared ? `shared by ${status.shared.donorName}`
+      : ({ claude: "Claude", codex: "Codex", grok: "Grok", zai: "z.ai", shared: "shared" } as const)[status.provider];
   const running = status ? `director · ${provider} · ${modelLabel(status.model).toLowerCase()}` : "director · selecting model";
   return busy ? `${running} · thinking…` : running;
 }
@@ -397,6 +400,7 @@ export function Director() {
             <DirectorDirectives />
           </div>
         </div>
+        <SharedDirectorStrip />
       </div>
 
       {/* A phone keeps the closed search as a header icon, so the row only exists while searching. */}

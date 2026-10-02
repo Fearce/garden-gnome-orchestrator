@@ -14,6 +14,7 @@ import type { Scheduler } from "../orchestrator/scheduler.js";
 import type { GoalRunner } from "../orchestrator/goals.js";
 import type { ThreadManager } from "../orchestrator/threadManager.js";
 import type { OnlineOffice } from "../office/onlineOffice.js";
+import type { DirectorSharing } from "../office/directorShare/sharing.js";
 import type { CoworkManager } from "../orchestrator/cowork.js";
 import { readCodexUsageForSnapshot } from "../agents/codexUsage.js";
 import { redeemCodexResetCredit } from "../agents/codexUsagePing.js";
@@ -49,6 +50,7 @@ export interface WsContext {
   repos: RepoConsole;
   codeContext: CodeContextService;
   onlineOffice: OnlineOffice;
+  directorSharing: DirectorSharing;
   cowork: CoworkManager;
   cliUpdater: CliAutoUpdater;
 }
@@ -125,6 +127,7 @@ function buildHello(ctx: WsContext): ServerEvent {
     notes: ctx.notes.list(),
     news: ctx.manager.news.list(),
     onlineOffice: ctx.onlineOffice.status(),
+    directorSharing: ctx.directorSharing.dto(),
     supervisor: ctx.manager.supervisorSnapshot(),
     coworkSessions: ctx.cowork.sessions(),
     tokenSafety: ctx.manager.tokenSafetyState(),
@@ -624,6 +627,37 @@ export async function handleCommand(
       if (cmd.instanceName !== undefined) ctx.onlineOffice.setInstanceName(cmd.instanceName);
       if (cmd.enabled !== undefined) ctx.onlineOffice.setEnabled(cmd.enabled);
       break;
+    // Director sharing. This socket is the owner's own authenticated console, so these are the owner's
+    // controls; another office member can only reach this console through relay frames the host vets.
+    case "director.share":
+    case "director.share.update": {
+      const terms = { expiresAt: cmd.expiresAt, timeZone: cmd.timeZone, maxConcurrent: cmd.maxConcurrent, maxRequestsPerHour: cmd.maxRequestsPerHour };
+      const r = cmd.type === "director.share"
+        ? ctx.directorSharing.share(cmd.subscriptionId, cmd.model, terms)
+        : ctx.directorSharing.update(cmd.subscriptionId, terms);
+      send(socket, { type: "director.sharing.result", action: cmd.type, ok: r.ok, error: r.ok ? null : r.error });
+      break;
+    }
+    case "director.share.stop": {
+      const r = ctx.directorSharing.stop(cmd.subscriptionId);
+      send(socket, { type: "director.sharing.result", action: cmd.type, ok: r.ok, error: r.ok ? null : r.error });
+      break;
+    }
+    case "director.share.models": {
+      const r = await ctx.directorSharing.host.models(cmd.subscriptionId);
+      send(socket, { type: "director.sharing.models", subscriptionId: cmd.subscriptionId, models: r.ok ? r.models : [], error: r.ok ? null : r.error });
+      break;
+    }
+    case "director.share.use": {
+      if (cmd.shareId === null) {
+        ctx.directorSharing.useOwn();
+        send(socket, { type: "director.sharing.result", action: cmd.type, ok: true, error: null });
+        break;
+      }
+      const r = ctx.directorSharing.use(cmd.instanceId, cmd.shareId);
+      send(socket, { type: "director.sharing.result", action: cmd.type, ok: r.ok, error: r.ok ? null : r.error });
+      break;
+    }
     case "note.create": {
       // The owner's own note — no task, no agent behind it (fromRole/fromName stay null).
       const result = ctx.notes.add({ body: cmd.body, url: cmd.url ?? null });
