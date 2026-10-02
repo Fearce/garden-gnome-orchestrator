@@ -330,6 +330,18 @@ try {
   );
   assert.notEqual(reloaded, servedBoard, "an already served snapshot is not mutated");
 
+  // And a goal's status: the loop stopping a goal as blocked, or the owner's Resume, followed by a reload
+  // inside the window must not bring back the old status or its Resume/Pause buttons.
+  const goalRow = { id: "goal", title: "Carry", status: "active", statusReason: null };
+  const withGoals = createHelloCache(() => ({ type: "hello", goals: [goalRow] }) as unknown as ServerEvent, hub, 10_000);
+  const servedGoals = withGoals();
+  const blocked = { ...goalRow, status: "blocked", statusReason: "The same blocker three turns running." };
+  hub.publish({ type: "goals", goals: [blocked] as never });
+  const reloadedGoals = withGoals();
+  assert.ok(reloadedGoals.type === "hello");
+  assert.deepEqual(reloadedGoals.goals, [blocked], "a reconnect sees the goal list the runner last broadcast");
+  assert.notEqual(reloadedGoals, servedGoals, "an already served snapshot is not mutated");
+
   finished = true;
   console.log("Performance paths OK — board summary is slim, task history keyset-pages through its composite index, and the connect snapshot survives a reconnect storm.");
 } finally {

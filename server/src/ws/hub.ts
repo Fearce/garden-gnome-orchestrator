@@ -158,7 +158,7 @@ function buildHello(ctx: WsContext): ServerEvent {
  *
  * The trade is explicit: on a BUSY server a connecting client can receive a board up to `ttlMs` stale,
  * which the live subscription it opens immediately afterwards corrects. Owner edits are the exception:
- * Co-work sessions and existing task cards are patched into the cached snapshot from their events, so
+ * Co-work sessions, existing task cards and the goal list are patched into the cached snapshot from their events, so
  * a pin or close followed by a reload never comes back undone (only a card's two text previews can lag).
  */
 export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs: number = HELLO_CACHE_MS): () => ServerEvent {
@@ -182,6 +182,8 @@ export function createHelloCache(build: () => ServerEvent, hub: EventHub, ttlMs:
           cached.event = { ...cached.event, coworkSessions: (cached.event.coworkSessions ?? []).filter((session) => session.id !== event.sessionId) };
         } else if (cached?.event.type === "hello" && event.type === "news") {
           cached.event = { ...cached.event, news: event.news };
+        } else if (cached?.event.type === "hello" && event.type === "goals") {
+          cached.event = { ...cached.event, goals: event.goals };
         } else if (cached?.event.type === "hello" && cached.event.threads && event.type === "thread.upsert") {
           cached.event = { ...cached.event, threads: withThreadCard(cached.event.threads, event.thread) };
         }
