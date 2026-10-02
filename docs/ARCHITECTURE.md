@@ -325,6 +325,10 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   first in the chosen order and unpinned ones follow; a pinned task also stays on the board when
   "Show completed tasks" is off. Closing keeps the pin, so Restore brings it back to the front.
   Collaborators and sub-tasks can't be pinned — they render inside their lead. Gate: `test:pinned-tasks`.
+- **Settled cards recede.** A `done` / `failed` / `cancelled` card (`isTerminal`) carries `.settled`:
+  a flatter fill, a muted state bar and half-opacity content, so live and waiting (review / paused)
+  cards carry the board. Hover, keyboard focus or opening the card restores full strength. Browser
+  check: `npm run settled-card-lab --prefix server`.
 - **Agent-routed and task-aware.** `runPipeline` has no fixed mandatory sequence — the selected
   stages decide the next. Whether the planner and/or QA run at all for a given task is itself a
   decision, computed once per pipeline episode by `orchestrator/routeSelection.ts`'s

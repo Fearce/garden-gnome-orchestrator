@@ -164,6 +164,7 @@
     "vanilla-lane-lab": "node scripts/vanilla-lane-lab.cjs",
     "deadline-lab": "node scripts/deadline-lab.cjs",
     "pin-lab": "node scripts/pin-lab.cjs",
+    "settled-card-lab": "node scripts/settled-card-lab.cjs",
     "task-agents-lab": "node scripts/task-agents-lab.cjs",
     "test:active-deadlines": "tsx src/tests/activeDeadlines.itest.ts",
     "test:timed-tasks": "tsx src/tests/timedTasks.test.ts",

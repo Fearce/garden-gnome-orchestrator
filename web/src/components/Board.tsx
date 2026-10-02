@@ -16,7 +16,7 @@ import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
 import type { AgentRun, BoardView, CoworkSession, Role, Thread, ThreadState } from "../types.js";
 import { homeWorkspace, repoRoom } from "../types.js";
-import { activityPreview, closesInDays, formatDuration, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
+import { activityPreview, closesInDays, formatDuration, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, isTerminal, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed, TaskAge } from "../lib/timing.js";
 import { Gnome } from "./Gnome.js";
 import { Accounts } from "./Accounts.js";
@@ -624,6 +624,8 @@ const Card = memo(function Card({
   const activity = activityRaw == null ? null : activityPreview(activityRaw);
 
   const live = threadRunning(thread.state);
+  // Finished work recedes so the live cards are what the eye finds on a busy board.
+  const settled = isTerminal(thread.state);
   // Token freeze: this task gave up only because every account was rate-limited and is now parked in
   // review waiting on the supervisor to auto-resume it. Detection mirrors the server's own scan (the
   // CAP_PARK marker on the error), so a plain human-review park never trips it. Only when frozen do we
@@ -659,7 +661,7 @@ const Card = memo(function Card({
     <div
       ref={innerRef}
       data-thread-id={thread.id}
-      className={"card" + (selected ? " sel" : "") + (isPinned(thread) ? " pinned" : "") + (live ? " live" : "") + (capParked ? " frozen" : "") + (dragging ? " dragging" : "") + (draggableCard ? " draggable" : "")}
+      className={"card" + (selected ? " sel" : "") + (isPinned(thread) ? " pinned" : "") + (live ? " live" : "") + (settled ? " settled" : "") + (capParked ? " frozen" : "") + (dragging ? " dragging" : "") + (draggableCard ? " draggable" : "")}
       style={{ "--state-color": stateColor(thread.state), ...style } as CSSProperties}
       // A frozen card is frosted but still fully OPENABLE — clicking it selects/opens the detail pane
       // like any other card, where the mutating live-controls (inject/interrupt) are the parts that get
