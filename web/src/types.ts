@@ -267,6 +267,7 @@ export interface GoalVerdict {
   agentClaimedComplete: boolean;
   at: number;
   settledSteps?: number;
+  waitReleased?: boolean;
 }
 
 /** A goal-directed task: a standing objective the director keeps a task working on until the step's

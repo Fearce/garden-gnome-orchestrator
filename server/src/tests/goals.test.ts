@@ -519,6 +519,61 @@ async function parallel(): Promise<void> {
   h.runner.update(r.id, { maxConcurrent: 2 });
   await h.runner.idle();
   check("the new slot is filled without waiting for the step to end", h.dispatched.length === 2);
+
+  console.log("goals: owner changes release a cached running-step wait");
+  const changes = [
+    { name: "concurrency", patch: { maxConcurrent: 3 } },
+    { name: "objective", patch: { objective: "New independent work" } },
+    { name: "pin", patch: { effort: "high" as const } },
+    { name: "burn policy", patch: { burnConservation: false } },
+    { name: "session policy", patch: { persistentSession: false } },
+    { name: "token budget", patch: { tokenBudget: 100_000 } },
+  ];
+  for (const { name, patch } of changes) {
+    h = harness();
+    h.answers.push(answer("continue", "first"), { ...answer("continue"), verdict: "wait" });
+    const held = h.runner.create({ title: name, objective: "o", workspace: ws, maxConcurrent: 2 }).goal!;
+    await h.runner.idle();
+    check(`${name}: initially held with one task`, h.dispatched.length === 1 && h.db.getGoal(held.id)!.lastVerdict?.verdict === "wait");
+    h.runner.update(held.id, { title: `${name} renamed`, maxConcurrent: 2 });
+    await h.runner.evaluate(held.id);
+    check(`${name}: title and unchanged pace retain the hold`, h.judged.length === 2);
+    h.answers.push(answer("continue", "second"), answer("continue", "third"));
+    h.runner.update(held.id, patch);
+    await h.runner.idle();
+    const expected = "maxConcurrent" in patch ? 3 : 2;
+    check(`${name}: new work fills the free slots without a settle`, h.dispatched.length === expected);
+    check(`${name}: the existing running task retains its slot`, h.db.listOpenGoalSteps(held.id).length === expected);
+    check(`${name}: previously reported endings stay reported`, !!h.judged[2] && !h.judged[2]!.includes("STEPS ENDED"));
+  }
+
+  h = harness();
+  h.answers.push(answer("continue", "first"), { ...answer("continue"), verdict: "wait" });
+  const resumed = h.runner.create({ title: "Resume held goal", objective: "o", workspace: ws, maxConcurrent: 2 }).goal!;
+  await h.runner.idle();
+  h.runner.setStatus(resumed.id, "paused");
+  h.answers.push({ ...answer("continue"), verdict: "wait" });
+  h.runner.setStatus(resumed.id, "active");
+  await h.runner.idle();
+  check("Resume audits the old wait even though no step settled", h.judged.length === 3);
+  await h.runner.evaluate(resumed.id);
+  check("a fresh wait still holds without repeated calls", h.judged.length === 3 && h.dispatched.length === 1);
+
+  h = harness();
+  h.answers.push(answer("continue", "finished"), { ...answer("continue"), verdict: "wait" });
+  const cursor = h.runner.create({ title: "Retain reports", objective: "o", workspace: ws, maxConcurrent: 2 }).goal!;
+  await h.runner.idle();
+  settle(h, h.db.getGoal(cursor.id)!.currentThreadId!, "done", "Already reported work.");
+  h.answers.push(answer("continue", "running"), { ...answer("continue"), verdict: "wait" });
+  await h.runner.evaluate(cursor.id);
+  h.onJudge = () => {
+    const saved = h.db.getGoal(cursor.id)!.lastVerdict!;
+    check("the released wait is durable and keeps its report cursor", saved.waitReleased === true && saved.settledSteps === 1 && saved.verdict === "wait");
+  };
+  h.answers.push(answer("continue", "independent"));
+  h.runner.update(cursor.id, { objective: "Add independent work" });
+  await h.runner.idle();
+  check("replanning does not repeat an already reported ending", h.judged.length === 5 && !h.judged[4]!.includes("Already reported work."));
 }
 
 /** A database from before step budgets were removed: the NOT NULL max_steps column, and a goal the budget paused. */

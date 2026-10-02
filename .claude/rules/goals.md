@@ -142,6 +142,8 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   count, NOT a timestamp: the gate's clock is frozen, and a same-millisecond settle would lift a
   timestamp hold and re-judge every tick. `complete` while steps run is stored as the same hold.
   Revert-checked: dropping `heldForRunningSteps` turns `test:goals` red.
+  Owner edits that replan and Resume release the old hold with persisted `waitReleased`, preserving its
+  reason and settled-step cursor. A new director wait holds again; title-only and unchanged edits do not release it.
 - **The burn-rate hold is a `wait`, not a `paused` status.** It must lift by itself when the pace catches
   up, so it sets `nextCheckAt` (≥ the retry backoff, ≤ 30 min) and keeps the goal `active`. It runs BEFORE
   the director call, so a held goal spends nothing. An unpinned goal holds only when every pool is over

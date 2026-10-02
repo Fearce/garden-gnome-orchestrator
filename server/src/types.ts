@@ -335,6 +335,7 @@ export interface GoalVerdict {
   agentClaimedComplete: boolean;
   at: number;
   settledSteps?: number; // how many steps had settled when this verdict was made; a `wait` holds until that grows
+  waitReleased?: boolean; // an owner edit or Resume invalidated this wait; retain the judgement and settle count
 }
 
 /**

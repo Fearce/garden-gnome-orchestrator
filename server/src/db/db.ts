@@ -577,6 +577,7 @@ function parseGoalVerdict(raw: unknown): GoalVerdict | null {
       agentClaimedComplete: v.agentClaimedComplete === true,
       at: v.at,
       ...(typeof v.settledSteps === "number" ? { settledSteps: v.settledSteps } : {}),
+      ...(v.waitReleased === true ? { waitReleased: true } : {}),
     };
   } catch {
     return null;

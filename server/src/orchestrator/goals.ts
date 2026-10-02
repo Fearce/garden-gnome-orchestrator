@@ -888,6 +888,7 @@ export class GoalRunner {
       ...(objectiveChanged ? { replanAt: at } : {}),
       ...(pinChanged ? { pinChangedAt: at } : {}),
       ...(replan ? { nextCheckAt: null } : {}),
+      ...(replan ? releaseRunningStepWait(current) : {}),
     });
     // The director is asked about the new objective instead, so a silent turn before it must not count toward a stop.
     if (objectiveChanged) this.silentTurns.delete(id);
@@ -921,6 +922,7 @@ export class GoalRunner {
       abandoned: "Abandoned by the owner.",
     };
     const goal = this.db.updateGoal(id, {
+      ...(status === "active" ? releaseRunningStepWait(current) : {}),
       status,
       statusReason: reason?.trim() || defaults[status],
       nextCheckAt: null,
@@ -1080,7 +1082,7 @@ export class GoalRunner {
   /** The director answered `wait` (or `complete`) while steps ran: plan nothing until one of them ends. */
   private heldForRunningSteps(goal: Goal): boolean {
     const verdict = goal.lastVerdict;
-    if (verdict?.verdict !== "wait" || verdict.settledSteps == null) return false;
+    if (verdict?.verdict !== "wait" || verdict.waitReleased || verdict.settledSteps == null) return false;
     return this.settledSteps(goal.id).length <= verdict.settledSteps;
   }
 
@@ -1603,6 +1605,12 @@ export class GoalRunner {
     this.refreshCurrentThreads(goals);
     this.hub.publish({ type: "goals", goals });
   }
+}
+
+/** Keep the last judgement and its report cursor, but let an owner-requested replan reach the director. */
+function releaseRunningStepWait(goal: Goal): Partial<Goal> {
+  if (goal.lastVerdict?.verdict !== "wait") return {};
+  return { lastVerdict: { ...goal.lastVerdict, waitReleased: true }, statusReason: null, hold: null };
 }
 
 type GoalPaceFields = Pick<Goal, "maxConcurrent" | "burnConservation" | "burnRatePct" | "persistentSession" | "tokenBudget">;
