@@ -853,7 +853,8 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   shows its burn pace (`Accounts.tsx` `burnPace`): used % over elapsed share of the
   window, so 1× spends it exactly by its reset — the goal burn guard's yardstick —
   and over 1× turns warn, with the run-dry time on hover. Derived in the browser from
-  the % and reset alone; blank in a window's first 5% or with no known reset.
+  the % and reset alone; blank in a window's first 5% (capped at 1h, so
+  the weekly pace shows after an hour, not 8.4h) or with no known reset.
 - **Mid-task failover** (`threadManager.ts`). The account is picked per run, but if it
   hits a 5h/weekly cap *mid-run* (`rate_limit_event` `status:"rejected"` →
   `AgentRun.rateLimited`), the task doesn't stall: `selectFailover` picks another account

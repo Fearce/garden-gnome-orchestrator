@@ -26,8 +26,10 @@ function countdown(reset: number | null | undefined, now: number): string {
 
 const HOUR_MS = 3_600_000;
 const WINDOW_MS: Record<string, number> = { "5h": 5 * HOUR_MS, "7d": 7 * 24 * HOUR_MS };
-// Before this share of a window has passed, a few percent of usage reads as a wild multiple.
+// Before this share of a window has passed, a few percent of usage reads as a wild multiple — but never
+// wait longer than an hour: 5% of a week is 8.4h of a blank weekly pace.
 const MIN_PACE_ELAPSED_SHARE = 0.05;
+const MAX_PACE_SETTLE_MS = HOUR_MS;
 
 /**
  * How fast a window is being spent, as a multiple of the even pace that uses it up exactly at its reset
@@ -37,7 +39,7 @@ const MIN_PACE_ELAPSED_SHARE = 0.05;
 function burnPace(pct: number | null, reset: number | null | undefined, windowMs: number | undefined, now: number): Burn | null {
   if (pct == null || reset == null || reset <= now || !windowMs) return null;
   const elapsed = windowMs - (reset - now);
-  if (elapsed < windowMs * MIN_PACE_ELAPSED_SHARE) return null;
+  if (elapsed < Math.min(windowMs * MIN_PACE_ELAPSED_SHARE, MAX_PACE_SETTLE_MS)) return null;
   const pace = pct / ((100 * elapsed) / windowMs);
   // At the average rate so far (pct per elapsed ms), the rest of the window lasts this long.
   const msToEmpty = pct > 0 ? ((100 - pct) * elapsed) / pct : Infinity;
