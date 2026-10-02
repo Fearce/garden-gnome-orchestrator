@@ -74,9 +74,9 @@ function declaredViews() {
 /** The desktop tab strip's own table: view -> label. The label is also how a bottom-nav button is
  *  matched, so a nav button whose text drifts from its tab shows up as an unreachable view. */
 function declaredTabs() {
-  const src = fs.readFileSync(path.join(WEB_SRC, "components", "Board.tsx"), "utf8");
+  const src = fs.readFileSync(path.join(WEB_SRC, "lib", "boardTabs.ts"), "utf8");
   const block = src.match(/const BOARD_TABS[^=]*=\s*\[([\s\S]*?)\n\];/);
-  if (!block) throw new Error("could not find BOARD_TABS in web/src/components/Board.tsx — update this parser");
+  if (!block) throw new Error("could not find BOARD_TABS in web/src/lib/boardTabs.ts — update this parser");
   const tabs = {};
   for (const m of block[1].matchAll(/\{\s*view:\s*"([^"]+)",\s*label:\s*"([^"]+)"/g)) tabs[m[1]] = m[2];
   if (!Object.keys(tabs).length) throw new Error("BOARD_TABS parsed empty — update this parser");
@@ -93,6 +93,7 @@ const PANEL_ROOT = {
   ide: ".ide",
   goals: ".goal-view",
   patchnotes: ".pn-view",
+  remote: ".rc-viewer, .rc-empty",
 };
 
 const ACCOUNT_ENV = { ACCOUNT_1_ID: "acct1", ACCOUNT_1_LABEL: "personal", ACCOUNT_2_ID: "acct2", ACCOUNT_2_LABEL: "secondary" };
@@ -312,10 +313,11 @@ function parseWidths() {
   // Coverage: the union is the source of truth, so a new board view fails here until it is wired.
   console.log(`\n════ COVERAGE — the BoardView union declares: ${views.join(", ")}`);
   for (const v of views) {
-    check(`"${v}" has a BOARD_TABS row`, !!tabs[v], "add it to BOARD_TABS in web/src/components/Board.tsx");
+    check(`"${v}" has a BOARD_TABS row`, !!tabs[v], "add it to BOARD_TABS in web/src/lib/boardTabs.ts");
     check(`"${v}" has a panel root for this lab to verify`, !!PANEL_ROOT[v], "add it to PANEL_ROOT in this file");
   }
-  const reachable = views.filter((v) => tabs[v] && PANEL_ROOT[v]);
+  // Remote control has no tab until it is set up (visibleBoardTabs), and this lab never sets it up.
+  const reachable = views.filter((v) => tabs[v] && PANEL_ROOT[v] && v !== "remote");
 
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "phone-lab-"));
   let browser;
