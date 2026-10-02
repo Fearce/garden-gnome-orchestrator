@@ -4,6 +4,7 @@
 #
 #   ./deploy.sh                      # defaults below (the Sprogbroen Hetzner box)
 #   OFFICE_RELAY_HOST=deploy@1.2.3.4 ./deploy.sh
+#   OFFICE_RELAY_RECEIVER=1 OFFICE_RELAY_KEY=~/.ssh/id_ed25519 ./deploy.sh   # relay-only key (README)
 set -euo pipefail
 
 HOST="${OFFICE_RELAY_HOST:-deploy@77.42.40.176}"
@@ -15,6 +16,14 @@ DIR="${OFFICE_RELAY_DIR:-\$HOME/gg-office-relay}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ssh_do() { ssh -i "$KEY" -o BatchMode=yes "$HOST" "$@"; }
+
+# A relay-only key (README "Relay-only deploy keys") runs deploy-receiver.py whatever command is sent, so
+# it gets the source in one call and the box's pinned Dockerfile, compose file and .env do the rest.
+if [ "${OFFICE_RELAY_RECEIVER:-0}" = 1 ]; then
+  echo "→ ${HOST} (relay-only key)"
+  tar -C "$here" -czf - package.json package-lock.json tsconfig.json src | ssh_do deploy
+  exit
+fi
 
 echo "→ ${HOST}:${DIR}"
 ssh_do "mkdir -p \"$DIR\""

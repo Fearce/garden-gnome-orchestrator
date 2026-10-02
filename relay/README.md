@@ -98,6 +98,32 @@ the Sprogbroen repository's `infra/Caddyfile` (it is git-tracked and its deploy 
 <sha>`, so editing it on the box would break Sprogbroen's next deploy). Nothing else about Sprogbroen is
 touched, and a Sprogbroen deploy never restarts the relay.
 
+### Relay-only deploy keys
+
+A collaborator who should be able to ship relay changes, but not control the box, gets a key bound to
+`deploy-receiver.py` instead of a shell. `deploy` is in the docker group, so a plain key is effectively
+root on a host that also runs Sprogbroen production. The receiver accepts only `package.json`,
+`package-lock.json`, `tsconfig.json` and `src/`; the box keeps its own `Dockerfile`, `docker-compose.yml`
+and `.env`, which decide what the container can mount and join. A deploy that fails restores the previous
+source. Every call is appended to `~/gg-office-relay-deploy/deploys.log`.
+
+Install or update the receiver with the owner's key. It lives outside the relay directory so a deploy
+cannot rewrite it:
+
+```bash
+ssh -i ~/.ssh/sprogbroen_ci deploy@77.42.40.176 'mkdir -p ~/gg-office-relay-deploy && cat > ~/gg-office-relay-deploy/receive.py' < deploy-receiver.py
+```
+
+Then bind the collaborator's key in `~deploy/.ssh/authorized_keys`:
+
+```
+restrict,command="/usr/bin/python3 /home/deploy/gg-office-relay-deploy/receive.py" ssh-ed25519 AAAA... name
+```
+
+The collaborator deploys with `OFFICE_RELAY_RECEIVER=1 OFFICE_RELAY_KEY=<their key> ./deploy.sh`. They can
+also run `ssh deploy@77.42.40.176 status` or `ssh deploy@77.42.40.176 logs`. A change to the Dockerfile
+or compose file still needs an owner deploy (plain `./deploy.sh`).
+
 ## Tests
 
 `npm test` (or, free and registered as a gate, `npm run test:relay-core --prefix server`) drives
