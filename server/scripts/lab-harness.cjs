@@ -31,8 +31,8 @@
 //   • Selectors: gear `[aria-label="Open settings"]` → `[role="dialog"][aria-label="Settings"]`; Git
 //     console `[aria-label="Open Git"]` → `.gc-window`; a task row `.card`; the top bar `.topbar`.
 //     To OPEN a task, click a card's corner (`click({ position: { x: 14, y: 10 } })`), not its centre:
-//     on a card whose title is short (or wraps at a wide viewport) the centre lands on the workspace-folder
-//     chip, which opens the folder and never selects the task, so `.detail` simply never appears.
+//     depending on the card's height its centre can land on the workspace-folder chip (task-header-lab,
+//     1440px at 175%), which opens the folder and never selects the task, so `.detail` never appears.
 //   • **Settings is CATEGORIZED — opening the dialog is not enough.** Only the active category's page is
 //     visible (the others carry `hidden`), and it opens on General. A control on any other page is in
 //     the DOM but never visible, so `waitForSelector`/`click` times out and reads as a broken selector.
