@@ -2215,8 +2215,17 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .manual-deployment-copy { margin-top: 3px; }
 .manual-deployment-copy code { color: var(--text); font-family: var(--font-mono); }
 .manual-deployment-instructions { margin-top: 5px; color: var(--text); }
-.detail-head .top { display: flex; align-items: start; gap: 10px; justify-content: space-between; }
-.detail-head h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.25; }
+/* Title and actions share the first row; the branch line and workspace path run full width beneath
+   them. A branch name never wraps, so while it sat in the title's column that column's min-content
+   was the whole branch and shoved the badges, chevron and ✕ out past the panel's edge. The title
+   block is `display: contents` so the phone's block layout below still stacks it exactly as before. */
+.detail-head .top { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; align-items: start; }
+.detail-title-block { display: contents; }
+.detail-title-block > * { grid-column: 1; justify-self: start; max-width: 100%; }
+.detail-title-block > .task-branch { grid-column: 1 / -1; justify-self: stretch; }
+.detail-title-block > .ws-path { grid-column: 1 / -1; }
+.detail-head .top > .detail-title-actions { grid-column: 2; grid-row: 1; }
+.detail-head h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
 .detail-head .meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
 /* Click-to-rename title: the h2 keeps its size, the pencil fades in on hover as the affordance. */
 .editable-title { display: inline-flex; align-items: baseline; gap: 7px; cursor: text; border-radius: 5px; }
@@ -3030,9 +3039,6 @@ body.dl-resizing { user-select: none; }
     position: absolute; top: 0; right: 0;
   }
   .detail-title-actions .head-toggle { right: 48px; }
-  /* Long titles wrap instead of shoving the close button off-screen. */
-  .detail-head .top > div:first-child { min-width: 0; }
-  .detail-head h2 { overflow-wrap: anywhere; }
   /* 44px tap target with a visible press state — the old 28px was an unreliable
      touch zone (this is the "can't exit on mobile" bug). */
   .close-x { width: 44px; height: 44px; font-size: 20px; }

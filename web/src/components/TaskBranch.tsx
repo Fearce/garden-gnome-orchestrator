@@ -31,13 +31,17 @@ function WorktreeLine({ worktree, showRepo }: { worktree: TaskWorktree; showRepo
       className="task-branch-line"
       title={`Branch ${worktree.branch} in its own worktree ${worktree.path}, cut from ${worktree.base ?? "a detached HEAD"} at ${worktree.baseSha.slice(0, 8)} of ${worktree.repo}`}
     >
-      <BranchIcon />
-      {showRepo ? <span className="task-branch-repo">{repo}</span> : null}
-      <b className="task-branch-name">{worktree.branch}</b>
-      <span className="task-branch-tag">worktree</span>
-      <span className="task-branch-folder">{folder}</span>
-      {worktree.base ? <span className="task-branch-base">from {worktree.base}</span> : null}
-      {worktree.commitOnly ? <span className="task-branch-tag commit-only">commit-only</span> : null}
+      <span className="task-branch-head">
+        <BranchIcon />
+        {showRepo ? <span className="task-branch-repo">{repo}</span> : null}
+        <b className="task-branch-name">{worktree.branch}</b>
+        <span className="task-branch-tag">worktree</span>
+        {worktree.commitOnly ? <span className="task-branch-tag commit-only">commit-only</span> : null}
+      </span>
+      <span className="task-branch-where">
+        <span className="task-branch-folder">{folder}</span>
+        {worktree.base ? <span className="task-branch-base">from {worktree.base}</span> : null}
+      </span>
     </div>
   );
 }

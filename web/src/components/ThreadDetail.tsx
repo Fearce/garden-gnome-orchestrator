@@ -932,7 +932,7 @@ export function ThreadDetail() {
       <div className="sheet-grabber" aria-hidden="true" />
       <div className={"detail-head" + (headCollapsed ? " collapsed" : "")}>
         <div className="top">
-          <div>
+          <div className="detail-title-block">
             <EditableTitle threadId={thread.id} title={thread.title} />
             <TaskBranch thread={thread} />
             {!headCollapsed && <TaskWorkspacePath thread={thread} />}
