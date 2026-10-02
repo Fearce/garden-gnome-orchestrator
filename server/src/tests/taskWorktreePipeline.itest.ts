@@ -23,6 +23,8 @@
  *   E1. HAND-MADE   — a worktree a CLI agent made by hand off a guided repo is discovered and recorded.
  *   E2. CO-WORK     — a Co-worker turn in the main checkout holds a task that starts there.
  *   F. CLOSE        — closing a task retires its clean claimed worktree and keeps the main checkout's packages.
+ *   F2. DONE        — a task reaching 'done' retires a worktree whose branch reached its base, and keeps one
+ *                     whose branch did not, saying so in the feed.
  *   G. KICKOFF      — the worktree section a sub-task carries (borrowed).
  *   H. OFFICE       — the office's worktree advice is given to an unclaimed guided task only.
  *
@@ -255,7 +257,7 @@ try {
   const umbClaim = await mgr.claimTaskWorktree(umb.id, { repo: "api" });
   check("task_worktree creates one for the named repo", umbClaim.ok && umbClaim.worktree.repo === api, umbClaim.ok ? umbClaim.worktree.repo : umbClaim.error);
   check("...commit-only from its origin", umbClaim.ok && umbClaim.worktree.commitOnly === true);
-  check("...and tells the agent where to work", umbClaim.ok && umbClaim.text.includes(umbClaim.worktree.path) && umbClaim.text.includes("Never push it"));
+  check("...and tells the agent where to work", umbClaim.ok && umbClaim.text.includes(umbClaim.worktree.path) && umbClaim.text.includes("Never push:") && umbClaim.text.includes("--ff-only"));
   check("the binding is recorded on the task", fresh(umb.id).worktrees?.length === 1);
   check("later kickoffs list the claim", umbClaim.ok && section(fresh(umb.id)).includes(`Already claimed: \`${umbClaim.worktree.path}\``));
   const helper = dispatch(umbrella, "Umbrella helper", { parentId: umb.id });
@@ -292,6 +294,35 @@ try {
   check("the task closes", closed.ok);
   check("its clean claimed worktree is removed", await settle(() => !existsSync(wt!.path)), wt?.path);
   check("...and the main checkout's packages survive", existsSync(join(repo, "node_modules", "pkg", "index.js")));
+
+  console.log("F2. done retires an integrated worktree");
+  const finishCommit = (folder: string, file: string): void => {
+    writeFileSync(join(folder, file), "work\n");
+    git(folder, "add", file);
+    git(folder, "commit", "--quiet", "-m", file);
+  };
+  const integrated = (await prepare(dispatch(repo, "Integrated task")))!;
+  const integratedClaim = await mgr.claimTaskWorktree(integrated.id, { repo, name: "integrated work" });
+  if (!integratedClaim.ok) throw new Error(integratedClaim.error);
+  finishCommit(integratedClaim.worktree.path, "integrated.txt");
+  git(repo, "merge", "--quiet", "--ff-only", integratedClaim.worktree.branch);
+  internals.setState(integrated.id, "done");
+  check("its worktree is removed once the task is done", await settle(() => !existsSync(integratedClaim.worktree.path)), integratedClaim.worktree.path);
+  check("...with its merged branch", await settle(() => !git(repo, "branch", "--list", integratedClaim.worktree.branch)));
+  check("...and the main checkout's packages survive", existsSync(join(repo, "node_modules", "pkg", "index.js")));
+  check("the Changes view reads the work from the main checkout", taskWorkCheckout(fresh(integrated.id)).workspace === repo);
+  const stranded = (await prepare(dispatch(repo, "Stranded task")))!;
+  const strandedClaim = await mgr.claimTaskWorktree(stranded.id, { repo, name: "stranded work" });
+  if (!strandedClaim.ok) throw new Error(strandedClaim.error);
+  finishCommit(strandedClaim.worktree.path, "stranded.txt");
+  internals.setState(stranded.id, "done");
+  const strandedNote = (): boolean => db.listMessages(stranded.id).some((m) => /not integrated into master/.test(m.content));
+  check("an unintegrated one is kept, and the feed says why", (await settle(strandedNote)) && existsSync(strandedClaim.worktree.path));
+  git(repo, "merge", "--quiet", "--ff-only", strandedClaim.worktree.branch);
+  const notesBefore = db.listMessages(stranded.id).length;
+  await internals.retireFinishedWorktrees();
+  check("the boot sweep retires a done task's worktree integrated after it finished", !existsSync(strandedClaim.worktree.path));
+  check("...without a new feed note", db.listMessages(stranded.id).length === notesBefore);
 
   console.log("G. kickoff section of a sub-task");
   const borrowed = section(dispatch(repo, "Second helper", { parentId: second.id }));

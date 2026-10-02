@@ -35,22 +35,25 @@ function ownWorktreeLines(w: TaskWorktree, input: BriefingInput): string[] {
     `This task has its OWN git worktree: \`${w.path}\`, on branch \`${w.branch}\`, cut from ${base} of the main checkout \`${w.repo}\`. Nobody else works in this folder, so parallel tasks cannot collide with you. The main checkout and other tasks' worktrees are not yours: never edit, switch branches, stash or reset there.`,
     "- Commit on this branch, in this folder.",
     "- Dependency folders such as `node_modules` here are junctions to the main checkout's. If you change dependencies, delete the junction first (`cmd /c rmdir node_modules`) and install a real copy, so the main checkout's packages stay untouched.",
-    `- Never run \`git worktree remove\` on this folder: git deletes the main checkout's packages through those junctions. GGO removes it safely when the task is closed.`,
+    `- Never run \`git worktree remove\` on this folder: git deletes the main checkout's packages through those junctions. GGO removes it safely once the task is done and its branch is integrated.`,
     ...integrationLines(w, input),
   ];
 }
 
 function integrationLines(w: TaskWorktree, input: BriefingInput): string[] {
-  if (w.commitOnly) {
-    return [`- When the work is done: commit on \`${w.branch}\` only. Never push it and never merge it into another branch; ${input.owner} reviews, merges and pushes it. Name the branch in your final report.`];
-  }
   if (!w.base) {
     return [`- When the work is done: commit on \`${w.branch}\` and name it in your final report; the main checkout was on a detached HEAD, so there is no base branch to integrate into.`];
   }
   const ff = `\`git -C "${w.repo}" merge --ff-only ${w.branch}\` when the main checkout has \`${w.base}\` checked out, otherwise \`git fetch . ${w.branch}:${w.base}\` from this worktree`;
+  const rebase = `commit, rebase \`${w.branch}\` onto the latest \`${w.base}\` (pull it first when it tracks a remote) and resolve any conflicts here, then fast-forward \`${w.base}\` to it with ${ff}`;
+  if (w.commitOnly) {
+    return [
+      `- When the work is done and verified, integrate it locally: ${rebase}. Never push: this repository is commit-only, and pushing \`${w.base}\` (and merging its pull request) is the one step ${input.owner} keeps. Never leave the fast-forward to ${input.owner} either: the task is not finished while its work sits only on \`${w.branch}\`. Re-run the checks that matter after the rebase, and name \`${w.base}\` and its new head commit in your final report.`,
+    ];
+  }
   const push = input.autoPush ? `, then push \`${w.base}\`` : ` (auto-push is OFF for this task, so do not push)`;
   return [
-    `- When the work is done and verified, integrate it: commit, rebase \`${w.branch}\` onto the latest \`${w.base}\` (pull it first when it tracks a remote) and resolve any conflicts here, then fast-forward \`${w.base}\` to it with ${ff}${push}. Re-run the checks that matter after the rebase. Anything that must run from the main checkout (a deploy of the running app) runs there after the fast-forward.`,
+    `- When the work is done and verified, integrate it: ${rebase}${push}. Re-run the checks that matter after the rebase. Anything that must run from the main checkout (a deploy of the running app) runs there after the fast-forward.`,
   ];
 }
 
@@ -74,7 +77,7 @@ function guidedBriefing(input: BriefingInput): string | null {
     `- If your brief or ${input.owner} names the branch to work on (e.g. "my current branch"), that wins over everything below: work on that branch where it is checked out, claim no worktree and create no branch.`,
     `- While you are alone in this repository (your brief has no OFFICE section and no "teammate just joined" message has arrived), work here directly.`,
     `- When another agent works in this repository and you have not edited anything yet, call \`task_worktree\` with \`${repo}\` and a \`name\` before your first edit: 2–4 lowercase hyphenated words naming your work (e.g. \`crawler-email-extraction\`), never the opening words of the request. It returns your own branch and worktree; do every edit, build and commit there. If you already have uncommitted edits here, stay, coordinate in the office and commit only your own hunks.`,
-    `- If you have no \`task_worktree\` tool, create the worktree yourself with exactly this naming so GGO can find it, your own words in place of \`<name>\`: \`git -C "${repo}" worktree add -b ${branch} "${worktreesHome(repo)}\\<name>"\`. Never run \`git worktree remove\` on a task worktree: GGO removes it when the task is closed.`,
+    `- If you have no \`task_worktree\` tool, create the worktree yourself with exactly this naming so GGO can find it, your own words in place of \`<name>\`: \`git -C "${repo}" worktree add -b ${branch} "${worktreesHome(repo)}\\<name>"\`. Never run \`git worktree remove\` on a task worktree: GGO removes it once the task is done and its branch is integrated.`,
     "- Read-only investigation needs no worktree. Name every branch you committed to in your final report.",
   ].join("\n");
 }
@@ -90,7 +93,7 @@ function umbrellaBriefing(input: BriefingInput): string {
     `- If your brief or ${input.owner} names the branch to work on in a repository (e.g. "my current branch"), that overrides the rules above for it: work on that branch in the checkout that already has it, or pass it as \`branch\` when no checkout has it.`,
     input.borrowed
       ? "- The worktree belongs to your parent task, which integrates it: do not switch branches, rebase, merge or push. Never run `git worktree remove` on a task worktree."
-      : `- Integration follows the repository's rule: in a commit-only (never-push) repository leave the work committed on the task branch for ${input.owner}; elsewhere rebase onto the base branch, fast-forward it and push. Never run \`git worktree remove\` on a task worktree: GGO removes it when the task is closed.`,
+      : `- When the work is done, integrate every task branch yourself: rebase it onto its base branch and fast-forward the base to it. Then push the base, except in a commit-only (never-push) repository, where pushing is the one step ${input.owner} keeps. Never leave a merge or fast-forward for ${input.owner}. Never run \`git worktree remove\` on a task worktree: GGO removes it once the task is done and its branch is integrated.`,
     "- Read-only investigation needs no worktree. Name every branch you committed to in your final report.",
     ...input.worktrees.map((w) => `- Already claimed: \`${w.path}\` on branch \`${w.branch}\` for \`${w.repo}\`.`),
   ].join("\n");

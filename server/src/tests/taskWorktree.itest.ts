@@ -13,8 +13,11 @@
  *   C. STATE      — dirty, ahead and merged read from the real branch.
  *   D. RETIRE     — refuses dirty or deliverable-holding; removes a merged one, deletes its branch, keeps
  *                   the main checkout's packages.
- *   E. RESTORE    — an unmerged worktree retires keeping its branch, and comes back on that branch.
+ *   E. RESTORE    — an unmerged worktree retires keeping its branch, and comes back on that branch; a
+ *                   finished-task retire (onlyIntegrated) keeps it instead.
  *   F. HAND-MADE  — a junction GGO never recorded is still unlinked before removal.
+ *   F2. FINISHED  — a done task's integrated worktree goes; the Changes view falls back to the main
+ *                   checkout; a reopened task restarts from the base's tip, which holds its work.
  *   G. UMBRELLA   — worktrees made by hand under a non-repo folder are discovered by the id suffix.
  *   H. BRIEFING   — own / commit-only / borrowed / umbrella / in-place kickoff sections.
  *
@@ -35,6 +38,7 @@ const {
   restoreTaskWorktree,
   retireTaskWorktree,
   taskBranchName,
+  taskWorkCheckout,
   worktreesHome,
 } = await import("../orchestrator/taskWorktree.js");
 const { worktreeBriefing } = await import("../orchestrator/worktreeBriefing.js");
@@ -148,7 +152,7 @@ try {
   writeFileSync(join(wt.path, "report.md"), "deliverable\n");
   git(wt.path, "add", "report.md");
   git(wt.path, "commit", "--quiet", "-m", "report");
-  const keptForDeliverable = await retireTaskWorktree(wt, [join(wt.path, "report.md")]);
+  const keptForDeliverable = await retireTaskWorktree(wt, { keep: [join(wt.path, "report.md")] });
   check("a worktree holding a deliverable is kept", !keptForDeliverable.removed && existsSync(wt.path), keptForDeliverable.reason);
   git(repo, "merge", "--quiet", "--ff-only", wt.branch);
   const merged = await readWorktreeState(wt);
@@ -164,6 +168,9 @@ try {
   if (!second.ok) throw new Error(second.error);
   commitIn(second.worktree.path, "second.txt", "second task work");
   const tip = git(second.worktree.path, "rev-parse", "HEAD");
+  const finishedUnmerged = await retireTaskWorktree(second.worktree, { onlyIntegrated: true });
+  check("a finished task's unintegrated worktree is kept", !finishedUnmerged.removed && existsSync(second.worktree.path), finishedUnmerged.reason);
+  check("...naming the base it never reached", /not integrated into master/.test(finishedUnmerged.reason ?? ""), finishedUnmerged.reason);
   const unmerged = await retireTaskWorktree(second.worktree);
   check("a clean unmerged worktree is removed", unmerged.removed && !existsSync(second.worktree.path), unmerged.reason);
   check("...but its branch is kept", !unmerged.branchDeleted && branchExists(repo, second.worktree.branch));
@@ -179,6 +186,27 @@ try {
   const handRetire = await retireTaskWorktree(handMade);
   check("it is removed", handRetire.removed && !existsSync(handMade.path), handRetire.reason);
   check("...and the main checkout's packages survive", packageSurvives(repo));
+
+  console.log("F2. a finished task's integrated worktree");
+  const third = await createTaskWorktree({ repoPath: repo, threadId: "55554444-0000-0000-0000-000000000000", title: "Third task" });
+  if (!third.ok) throw new Error(third.error);
+  commitIn(third.worktree.path, "third.txt", "third task work");
+  git(repo, "merge", "--quiet", "--ff-only", third.worktree.branch);
+  const finished = await retireTaskWorktree(third.worktree, { onlyIntegrated: true });
+  check("an integrated worktree is removed when the task finishes", finished.removed && !existsSync(third.worktree.path), finished.reason);
+  check("...with its merged branch", finished.branchDeleted && !branchExists(repo, third.worktree.branch));
+  check("...and the main checkout's packages survive", packageSurvives(repo));
+  const view = taskWorkCheckout({ workspace: repo, worktrees: [third.worktree] });
+  check("the Changes view falls back to the main checkout, from where the task started", view.workspace === repo && view.baselineHead === third.worktree.baseSha, JSON.stringify(view));
+  const legacy = taskWorkCheckout({ workspace: join(third.worktree.path, "web"), worktrees: [third.worktree] });
+  check("a task moved into its retired worktree (the old forced mode) reads the main checkout", legacy.workspace === join(repo, "web") && legacy.baselineHead === third.worktree.baseSha, JSON.stringify(legacy));
+  commitIn(repo, "later.txt", "someone else's later work");
+  const reopened = await restoreTaskWorktree(third.worktree);
+  check("a reopened task gets its worktree back", reopened.ok && existsSync(third.worktree.path), reopened.ok ? undefined : reopened.error);
+  const masterTip = git(repo, "rev-parse", "master");
+  check("...restarted from the base's tip, which holds its work", git(third.worktree.path, "rev-parse", "HEAD") === masterTip && existsSync(join(third.worktree.path, "third.txt")));
+  check("...with baseSha moved to that tip", reopened.ok && reopened.worktree.baseSha === masterTip);
+  if (reopened.ok) await retireTaskWorktree(reopened.worktree);
 
   console.log("G. umbrella discovery");
   const umbrella = join(root, "umbrella");
@@ -205,12 +233,15 @@ try {
   const noPush = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: false });
   check("auto-push off: never says to push the base", !!noPush && !/then push/.test(noPush) && /do not push/.test(noPush));
   const vota = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [{ ...wt, commitOnly: true }], owner: "Kevin", autoPush: true });
-  check("commit-only: stays on the branch, never pushes or merges", !!vota && /Never push it and never merge it/.test(vota) && !/--ff-only/.test(vota));
+  check("commit-only: integrates locally by rebase + fast-forward", !!vota && /rebase/.test(vota) && /--ff-only/.test(vota) && vota.includes(`git fetch . ${wt.branch}:master`));
+  check("commit-only: never pushes, and never leaves the fast-forward to the owner", !!vota && /Never push/.test(vota) && !/then push/.test(vota) && /Never leave the fast-forward to Kevin/.test(vota));
+  check("commit-only: reports the base and its new head", !!vota && /name `master` and its new head commit/.test(vota));
   const borrowed = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: true, borrowed: true });
   check("borrowed: works in the parent's worktree without integrating", !!borrowed && borrowed.includes("parent task") && !/--ff-only/.test(borrowed));
   const umb = worktreeBriefing({ threadId: THREAD, workspace: umbrella, mode: "umbrella", worktrees: [], owner: "Kevin", autoPush: true });
   check("umbrella: points at task_worktree and the exact branch convention", !!umb && umb.includes("task_worktree") && umb.includes(`-${THREAD.slice(0, 8)}`) && umb.includes("ggo/<name>"));
   check("umbrella: the agent names the branch itself, not from the title", !!umb && /`name`/.test(umb) && !umb.includes(umbrellaBranch));
+  check("umbrella: integrates every branch itself and pushes only outside commit-only repos", !!umb && /integrate every task branch yourself/.test(umb) && /except in a commit-only/.test(umb) && /Never leave a merge or fast-forward for Kevin/.test(umb));
   check("umbrella: a branch the owner named overrides the worktree rule", !!umb && /names the branch to work on in a repository/.test(umb) && /checkout that already has it/.test(umb));
   const guided = worktreeBriefing({ threadId: THREAD, workspace: join(repo, "web"), repoRoot: repo, mode: "guided", worktrees: [], owner: "Kevin", autoPush: true });
   check("guided: work here while alone, claim a worktree when the repo is shared", !!guided && /alone in this repository/.test(guided) && /another agent works in this repository/.test(guided) && guided.includes("task_worktree"));

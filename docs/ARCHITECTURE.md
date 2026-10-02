@@ -646,10 +646,12 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   WITHOUT changing `thread.workspace`, because the agent's session is keyed by its cwd. So the
   Changes view, code-context bar and progress fingerprints (`taskWorkCheckout`) and deliverable
   containment (`resolveTaskDeliverable`) follow the claim explicitly, and later kickoffs (QA rounds, resumes) name it with the integration step: rebase,
-  fast-forward the base, push; commit-only repos stay on the branch. Hand-made `ggo/*-<id8>`
-  worktrees are discovered. Sub-tasks and collaborators share the parent's checkout. Close/dismiss/purge
-  retires a clean worktree, unlinking its junctions first because `git worktree remove` follows them
-  into the main checkout. Resume re-attaches a retired one. The task header (`TaskBranch.tsx`) shows
+  fast-forward the base, push; commit-only repos fast-forward the base locally and leave only the
+  push to the owner. Hand-made `ggo/*-<id8>` worktrees are discovered. Sub-tasks and collaborators
+  share the parent's checkout. Reaching `done` retires a clean worktree whose branch is in its base
+  (an unintegrated one stays, with a feed note); close/dismiss/purge retires any clean one. Junctions
+  are unlinked first because `git worktree remove` follows them into the main checkout. Resume
+  re-attaches a retired one, from the base's tip when its branch was deleted. The task header (`TaskBranch.tsx`) shows
   the branch, folder and base. Tasks started under the retired forced mode (`worktree`, 2026-10-01 →
   10-02) keep `thread.workspace` inside their worktree. Traps: `.claude/rules/task-worktrees.md`.
 - **Sub-tasks — a sub-agent an agent spawned** (`orchestrator/subTasks.ts`). The implementor's

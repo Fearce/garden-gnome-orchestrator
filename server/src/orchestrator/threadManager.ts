@@ -1355,6 +1355,7 @@ export class ThreadManager implements OrchestratorApi {
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
+    void this.retireFinishedWorktrees();
     this.startCapSupervisor();
     // Re-arm (or fire) a token-reset auto-resume that a restart interrupted — after the cap supervisor,
     // mirroring its boot sweep. Reads the persisted wakeup epoch; the account pings needed by fireTokenResume
@@ -7302,7 +7303,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.coworkWorkspaceBusy?.(thread.workspace) === true;
   }
 
-  /** Re-create any recorded worktree whose folder is gone (retired at close, deleted by hand). A failure
+  /** Re-create any recorded worktree whose folder is gone (retired when the task finished or closed, deleted by hand). A failure
    *  is reported and leaves the path missing, so the caller's own existence check explains it. */
   private async ensureWorktreesPresent(thread: Thread): Promise<Thread> {
     const worktrees = thread.worktrees ?? [];
@@ -7411,18 +7412,38 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   /** Remove the folders of a task that is closing or being deleted, when nothing in them can be lost
    *  (retireTaskWorktree's rules). Deliverable paths are read now, before a delete drops the findings. */
   private retireWorktreesOf(thread: Thread): void {
-    const worktrees = thread.worktrees ?? [];
+    void this.retireWorktrees(thread, "close");
+  }
+
+  /** A task that reached 'done' is finished: its integrated worktrees go now rather than whenever the
+   *  owner closes the card. One whose branch never reached its base stays, with a feed note naming it. */
+  private async retireIntegratedWorktreesOf(thread: Thread, when: "done" | "boot" = "done"): Promise<void> {
+    if (thread.parentId) return;
+    await this.syncHandMadeWorktrees(thread).catch(() => undefined);
+    const fresh = this.db.getThread(thread.id);
+    if (fresh?.state === "done") await this.retireWorktrees(fresh, when);
+  }
+
+  /** Boot: done tasks whose retire never ran (finished before retire-on-done existed, or a restart
+   *  landed mid-retire). Quiet in the feed: their kept worktrees were announced when they finished. */
+  private async retireFinishedWorktrees(): Promise<void> {
+    const finished = this.db.listThreadsByStates(["done"]).filter((t) => !t.parentId && (t.worktrees ?? []).some((w) => existsSync(w.path)));
+    for (const thread of finished) await this.retireIntegratedWorktreesOf(thread, "boot").catch(() => undefined);
+  }
+
+  private async retireWorktrees(thread: Thread, when: "close" | "done" | "boot"): Promise<void> {
+    const onlyIntegrated = when !== "close";
+    const worktrees = (thread.worktrees ?? []).filter((w) => !onlyIntegrated || existsSync(w.path));
     if (!worktrees.length) return;
     const keep = this.db.listFindings(thread.id).filter((f) => f.kind === "deliverable" && f.path).map((f) => resolve(thread.workspace, f.path!));
-    void (async () => {
-      for (const worktree of worktrees) {
-        const result = await retireTaskWorktree(worktree, keep).catch((error: unknown) => ({ removed: false, branchDeleted: false, reason: String(error) }));
-        const what = result.removed
-          ? `removed worktree ${worktree.path}${result.branchDeleted ? ` and merged branch ${worktree.branch}` : `; branch ${worktree.branch} kept`}`
-          : `kept worktree ${worktree.path} (${result.reason})`;
-        this.hub.log("info", `Task ${thread.id.slice(0, 8)}: ${what}.`);
-      }
-    })();
+    for (const worktree of worktrees) {
+      const result = await retireTaskWorktree(worktree, { keep, onlyIntegrated }).catch((error: unknown) => ({ removed: false, branchDeleted: false, reason: String(error) }));
+      const what = result.removed
+        ? `removed worktree ${worktree.path}${result.branchDeleted ? ` and merged branch ${worktree.branch}` : `; branch ${worktree.branch} kept`}`
+        : `kept worktree ${worktree.path} (${result.reason})`;
+      this.hub.log("info", `Task ${thread.id.slice(0, 8)}: ${what}.`);
+      if (when === "done" && !result.removed) this.taskFeedNote(thread.id, `⎇ Finished, but ${what}.`);
+    }
   }
 
   private taskFeedNote(threadId: string, content: string): void {
@@ -7798,7 +7819,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     else if (t.state === "failed")
       this.notifyOwner(`✗ failed: "${t.title}"${t.error ? ` — ${t.error}` : ""}`, { kind: "failed", title: t.title, detail: t.error, repo: t.homeWorkspace ?? t.workspace });
     if (t.state === "done" || t.state === "review") void this.summarizeDeliverablesFor(t.id);
-    if (HAND_MADE_WORKTREE_SYNC_STATES.has(t.state)) void this.syncHandMadeWorktrees(t).catch(() => undefined);
+    if (t.state === "done") void this.retireIntegratedWorktreesOf(t).catch(() => undefined);
+    else if (HAND_MADE_WORKTREE_SYNC_STATES.has(t.state)) void this.syncHandMadeWorktrees(t).catch(() => undefined);
     // Truly-terminal states never resume under the same in-memory identity, so drop the per-thread
     // bookkeeping that must outlive the pipeline LOOP (so a parked task can still resume) but has no
     // reason to outlive the process. Deliberately EXCLUDES 'failed' (a transient state the pipeline

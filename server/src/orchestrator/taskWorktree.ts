@@ -117,7 +117,14 @@ export function mapIntoWorktree(path: string, worktree: TaskWorktree): string {
  *  into, since a guided task keeps running in the main checkout, else its own workspace. */
 export function taskWorkCheckout(t: { workspace: string; worktrees?: readonly TaskWorktree[]; baselineHead?: string | null }): { workspace: string; baselineHead: string | null } {
   const claimed = (t.worktrees ?? []).find((w) => !isWithin(t.workspace, w.path) && isWithin(t.workspace, w.repo));
-  return claimed ? { workspace: mapIntoWorktree(t.workspace, claimed), baselineHead: claimed.baseSha } : { workspace: t.workspace, baselineHead: t.baselineHead ?? null };
+  if (!claimed) {
+    const movedInto = (t.worktrees ?? []).find((w) => isWithin(t.workspace, w.path) && !existsSync(w.path));
+    if (movedInto) return { workspace: join(movedInto.repo, relative(movedInto.path, t.workspace)), baselineHead: t.baselineHead ?? movedInto.baseSha };
+    return { workspace: t.workspace, baselineHead: t.baselineHead ?? null };
+  }
+  // A retired worktree's work was fast-forwarded into the base the main checkout holds.
+  if (!existsSync(claimed.path)) return { workspace: t.workspace, baselineHead: claimed.baseSha };
+  return { workspace: mapIntoWorktree(t.workspace, claimed), baselineHead: claimed.baseSha };
 }
 
 /** Every branch currently checked out somewhere, mapped to the folder holding it. */
@@ -184,8 +191,9 @@ export async function createTaskWorktree(input: CreateTaskWorktreeInput): Promis
   }
 }
 
-/** Bring back a recorded worktree whose folder is gone (it was retired when the task closed, or
- *  deleted by hand): re-attach its branch, or recreate the branch from where it started. */
+/** Bring back a recorded worktree whose folder is gone (it was retired when the task finished, or
+ *  deleted by hand): re-attach its branch, or recreate the branch. A deleted branch was integrated, so
+ *  it restarts from its base's current tip, which holds that work; `baseSha` moves with it. */
 export async function restoreTaskWorktree(worktree: TaskWorktree): Promise<WorktreeResult> {
   if (existsSync(worktree.path)) return { ok: true, worktree };
   if (!existsSync(worktree.repo)) return { ok: false, error: `The repository ${worktree.repo} no longer exists.` };
@@ -194,15 +202,20 @@ export async function restoreTaskWorktree(worktree: TaskWorktree): Promise<Workt
     const busy = (await checkedOutBranches(worktree.repo)).get(worktree.branch);
     if (busy) return { ok: false, error: `Branch "${worktree.branch}" is now checked out in ${busy}.` };
     mkdirSync(dirname(worktree.path), { recursive: true });
-    const args = (await branchExists(worktree.repo, worktree.branch))
-      ? ["worktree", "add", worktree.path, worktree.branch]
-      : ["worktree", "add", "-b", worktree.branch, worktree.path, worktree.baseSha];
+    const exists = await branchExists(worktree.repo, worktree.branch);
+    const baseSha = exists ? worktree.baseSha : await restartPoint(worktree);
+    const args = exists ? ["worktree", "add", worktree.path, worktree.branch] : ["worktree", "add", "-b", worktree.branch, worktree.path, baseSha];
     await git(worktree.repo, args, ADD_TIMEOUT_MS);
     const links = await provisionWorktree(worktree.repo, worktree.path);
-    return { ok: true, worktree: { ...worktree, path: realpathSync(worktree.path), links } };
+    return { ok: true, worktree: { ...worktree, path: realpathSync(worktree.path), baseSha, links } };
   } catch (error) {
     return { ok: false, error: `The worktree could not be restored: ${errorText(error)}` };
   }
+}
+
+async function restartPoint(worktree: TaskWorktree): Promise<string> {
+  if (worktree.base && (await branchExists(worktree.repo, worktree.base))) return git(worktree.repo, ["rev-parse", `refs/heads/${worktree.base}`]);
+  return worktree.baseSha;
 }
 
 /** Link the main checkout's dependency folders into the worktree and copy its `.env*` files. Returns
@@ -260,15 +273,26 @@ export async function readWorktreeState(worktree: TaskWorktree): Promise<Worktre
 
 export type RetireResult = { removed: boolean; branchDeleted: boolean; reason?: string };
 
+export interface RetireOptions {
+  /** Deliverable paths: a worktree holding one is kept. */
+  keep?: string[];
+  /** Keep the worktree while its branch holds work its base lacks (a finished task that never integrated). */
+  onlyIntegrated?: boolean;
+}
+
 /**
  * Remove a task's worktree folder when nothing in it can be lost: no uncommitted or untracked file and
  * no `keep` path (deliverables) inside it. Committed work survives on the branch either way; the branch
  * itself is deleted only once it is merged into its base or never moved. Junctions go first — see the
  * module comment for why that order is the whole point.
  */
-export async function retireTaskWorktree(worktree: TaskWorktree, keep: string[] = []): Promise<RetireResult> {
+export async function retireTaskWorktree(worktree: TaskWorktree, options: RetireOptions = {}): Promise<RetireResult> {
+  const keep = options.keep ?? [];
   if (!existsSync(worktree.repo)) return { removed: false, branchDeleted: false, reason: "repository gone" };
   const state = await readWorktreeState(worktree);
+  if (options.onlyIntegrated && !state.merged && !state.untouched) {
+    return { removed: false, branchDeleted: false, reason: worktree.base ? `branch not integrated into ${worktree.base}` : "no base branch to integrate into" };
+  }
   if (state.exists) {
     if (state.dirty) return { removed: false, branchDeleted: false, reason: "uncommitted or untracked files" };
     if (keep.some((path) => isWithin(resolve(worktree.path, path), worktree.path))) {
