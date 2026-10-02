@@ -164,9 +164,9 @@ But "z.ai took 274 references across 18 files" is the real measure, and three of
 *new* work rather than a copy:
 
 1. **`buildEnv` is not yet provider-generic.** Inside the branch it hardcodes
-   `env.CLAUDE_ORCH_PROVIDER = "zai"` and `config.zai.timeoutMs` (`runner.ts:138-139`). Those two lines
-   must be parameterized before a second Anthropic-compatible backend can use the seam — small, but it
-   is a shared-path edit, not an additive one.
+   `config.zai.timeoutMs` (`runner.ts:177`). That line must be parameterized before a second
+   Anthropic-compatible backend can use the seam — small, but it is a shared-path edit, not an
+   additive one.
 2. **There is no quota API — and that breaks the usage chip and the ladder readout.** z.ai's entire chip
    + routing story hangs off `config.zai.usageUrl` returning live 5h/weekly windows. Alibaba publishes
    **no programmatic quota endpoint**; the docs say to check the Coding Plan console page. So step 4 of
