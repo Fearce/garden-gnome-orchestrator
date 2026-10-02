@@ -40,12 +40,14 @@ the capacity tier, the soft weekly ceiling and `primaryOrder` (`selectionPool` /
 `selectFailover` → `burningAmong`), and layer 2 returns its candidate first in
 `preferredProviderCandidate` (`burningCandidate`). Callers that cut by runway BEFORE layer 2
 (`nextReadyImplementor`, the two different-provider QA pickers) check `burningCandidate` first,
-and auto model selection / goal steps get a roster narrowed to the target (`burningEntries`;
+and auto model selection / unpinned goal steps get a roster narrowed to the target (`burningEntries`;
 `routeForPick` drops a saved pick on another sub). What still moves work off it: a cap or the
 98% hard limit, a disabled account, an owner model pin, and provider intent named in the brief.
 While active it also skips that sub's usage-saving model and token conservation, makes
 planner/reader skip free providers, and steers the Director (`chooseTarget`). Goals do not pace it:
 `implementorModelRoster` marks its roster entries `resetBurn`, `poolOverPace` never holds those, and
+`goalModelRoster` keeps the OTHER pools too (`checkBurnRate` narrows only an unpinned goal to the
+target), so a goal pinned to another pool, or a step that failed over onto one, is still paced; and
 `GoalRunner` re-checks goals held for usage the moment a settings broadcast names a new burn target. It ends the moment
 a redeem of that sub's banked reset succeeds (`resetCreditRedeemed`, from the hub), and as a
 backstop in `ThreadManager.resetBurn()` once the anchored weekly window passes or rolls early (a

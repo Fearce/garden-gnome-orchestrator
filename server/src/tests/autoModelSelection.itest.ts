@@ -377,8 +377,9 @@ async function main(): Promise<void> {
       check("without a burn no pool is exempt from a goal's burn rate", h.mgr.goalModelRoster().every((c) => c.resetBurn === undefined));
       h.mgr.setSettings({ resetBurnSubId: "codex" });
       check("a Codex burn leaves only Codex models to choose from", providersOf().join(",") === "codex", providersOf().join(","));
-      check("goal steps choose from the same narrowed roster", uniqueProviders(h.mgr.goalModelRoster()).join(",") === "codex");
-      check("the burn target is marked so a goal's burn rate does not pace it", h.mgr.goalModelRoster().every((c) => c.resetBurn === true));
+      // Goals keep every pool (so one pinned elsewhere is still paced) and narrow an unpinned goal in checkBurnRate.
+      check("the goal roster keeps the other pools for pacing", uniqueProviders(h.mgr.goalModelRoster()).join(",") === "claude,codex", uniqueProviders(h.mgr.goalModelRoster()).join(","));
+      check("only the burn target is marked so a goal's burn rate does not pace it", h.mgr.goalModelRoster().every((c) => (c.provider === "codex") === (c.resetBurn === true)));
       const id = h.seed();
       h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: SONNET_5, effort: "high", reason: "picked before the burn began" } });
       const demand = h.internals.capacityDemand(thread(h, id), "implementor", "high");

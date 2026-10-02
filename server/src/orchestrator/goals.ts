@@ -339,8 +339,8 @@ export interface BurnCheck {
  * whenever that model's pool is. Off, it passes the roster through untouched.
  */
 export function checkBurnRate(goal: GoalPin & GoalPace, roster: ModelCandidate[], now: number): BurnCheck {
-  if (!goal.burnConservation) return { roster, over: [], hold: null };
   const pinned = goal.provider && goal.model ? { provider: goal.provider, model: goal.model.toLowerCase() } : null;
+  if (!goal.burnConservation) return { roster: pinned ? roster : burnTargetFirst(roster), over: [], hold: null };
   const considered = pinned ? roster.filter((c) => c.provider === pinned.provider && c.model.toLowerCase() === pinned.model) : roster;
   const over = new Map<string, PoolOverPace>();
   const within = considered.filter((c) => {
@@ -350,7 +350,17 @@ export function checkBurnRate(goal: GoalPin & GoalPace, roster: ModelCandidate[]
   });
   const pools = [...over.values()];
   const held = pinned ? pools.length > 0 : pools.length > 0 && within.length === 0;
-  return { roster: pinned ? roster : within, over: pools, hold: held ? burnHold(goal.burnRatePct, pools, !pinned, now) : null };
+  return { roster: pinned ? roster : burnTargetFirst(within), over: pools, hold: held ? burnHold(goal.burnRatePct, pools, !pinned, now) : null };
+}
+
+/**
+ * While a sub is being prepared for its reset, an unpinned goal's steps choose among its models only. The
+ * host roster keeps every other pool (flagged or not) so a goal PINNED to one of them, or a step that
+ * failed over onto one, is still paced against that pool's own weekly reading.
+ */
+function burnTargetFirst(roster: ModelCandidate[]): ModelCandidate[] {
+  const target = roster.filter((c) => c.resetBurn);
+  return target.length ? target : roster;
 }
 
 /**

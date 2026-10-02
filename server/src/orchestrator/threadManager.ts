@@ -4303,9 +4303,11 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /** The roster a goal's director picks each step's model and effort from — the same one auto model
-   *  selection uses, so a goal never pins a step to a backend that cannot run it. */
+   *  selection uses, so a goal never pins a step to a backend that cannot run it. During a reset burn it
+   *  keeps the other pools too (the target's entries marked `resetBurn`): `checkBurnRate` narrows an
+   *  unpinned goal to the target, while a goal pinned to another pool is still paced against that pool. */
   goalModelRoster(): ModelCandidate[] {
-    return this.implementorModelRoster();
+    return this.implementorModelRoster(demandForRole("implementor"), { narrowToBurn: false });
   }
 
   /** Goal achieved / paused notices, over the same Discord path as every other owner notice. */
@@ -4316,7 +4318,7 @@ export class ThreadManager implements OrchestratorApi {
   /** Every (provider, model) pair a task could ACTUALLY be dispatched to right now — each backend that is
    *  enabled, authed and not usage-capped, with the models its own picker offers. A roster built from
    *  anything looser would let the selector choose a backend that then can't run. */
-  private implementorModelRoster(demand: CapacityDemand = demandForRole("implementor")): ModelCandidate[] {
+  private implementorModelRoster(demand: CapacityDemand = demandForRole("implementor"), opts: { narrowToBurn?: boolean } = {}): ModelCandidate[] {
     interface RosterEntry {
       provider: ImplementorProvider;
       model: string;
@@ -4379,7 +4381,7 @@ export class ThreadManager implements OrchestratorApi {
       add("zai", models, (model) => saving ? [saving.effort] : underCap(zaiEffortsForModel(model), this.zaiEffort(model)), () => routedZai);
     }
     const narrowed = this.burningEntries(entries, demand);
-    const autoEntries = filterAutoSelectionCandidates(narrowed.entries);
+    const autoEntries = filterAutoSelectionCandidates(opts.narrowToBurn === false ? entries : narrowed.entries);
     const capacity = preferCapacity(autoEntries, (entry) => candidateCapacityWindows(entry.candidate), demand);
     // Usage forecasts rank model pools but never suppress one that has not actually capped.
     const selected = [

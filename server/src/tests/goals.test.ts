@@ -33,7 +33,7 @@ import {
 } from "../orchestrator/goals.js";
 import type { DispatchInput } from "../orchestrator/api.js";
 import type { ModelCandidate } from "../orchestrator/modelSelector.js";
-import type { Goal, OrchestratorSettings, ThreadState } from "../types.js";
+import type { Goal, GoalStep, OrchestratorSettings, ThreadState } from "../types.js";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -152,6 +152,15 @@ function burnRate(): void {
   const burnOnly = checkBurnRate(auto, [burning, paced(ROSTER[1]!, 80, now)], now);
   check("the burn target keeps an otherwise-held goal going", burnOnly.hold === null && burnOnly.roster.map((c) => c.provider).join(",") === "claude");
   check("a goal pinned to the burn target runs", checkBurnRate({ ...auto, provider: "claude", model: "claude-opus-5-5" }, [burning], now).hold === null);
+  const withinTarget = checkBurnRate(auto, [burning, paced(ROSTER[1]!, 20, now)], now);
+  check("an unpinned goal picks only among the burn target's models", withinTarget.roster.map((c) => c.provider).join(",") === "claude");
+  check("…with conservation off too", checkBurnRate({ ...auto, burnConservation: false }, [burning, ROSTER[1]!], now).roster.map((c) => c.provider).join(",") === "claude");
+  const pinnedElsewhere = checkBurnRate({ ...auto, provider: "codex", model: "gpt-5.6" }, [burning, paced(ROSTER[1]!, 80, now)], now);
+  check("a goal pinned to another pool is still paced against that pool", pinnedElsewhere.hold !== null && pinnedElsewhere.over[0]?.pool === "Codex");
+  const otherGoal = { id: "g", title: "t", status: "active", burnConservation: true, burnRatePct: 100, tokenBudget: null, usage: { tokensUsed: 0 } } as unknown as Goal;
+  const otherStep = { provider: "codex" } as unknown as GoalStep;
+  check("a step running on another pool still wraps up over its pace", /Codex has used 80%/.test(stepWrapUpReason(otherGoal, otherStep, [burning, paced(ROSTER[1]!, 80, now)], now) ?? ""));
+  check("a step running on the burn target does not", stepWrapUpReason(otherGoal, { provider: "claude" } as unknown as GoalStep, [burning, paced(ROSTER[1]!, 80, now)], now) === null);
 }
 
 interface Harness {
