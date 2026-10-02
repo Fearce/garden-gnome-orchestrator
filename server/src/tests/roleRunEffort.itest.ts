@@ -5,6 +5,7 @@
  * entry, and implementor rows showed "Opus 5.5 High" while QA rows showed just "Opus 5.5". `runRole`
  * wrote the run's effort only for the CLI backends and usage saving; a plain Claude run sends its role
  * config's effort (QA's is "high") to the SDK but recorded NULL, so the label had nothing to show.
+ * Case D covers the one-time Db backfill that labels the Claude QA/reviewer history the same way.
  *
  * WHAT IS REAL vs. SIMULATED
  *  - REAL: `runRole` — provider routing, usage-saving resolution, run creation and the `run.upsert` it
@@ -143,6 +144,38 @@ console.log("\n=== C. usage saving's effort is what runs, so it is what is recor
   });
   check("the saving effort is recorded, not the config's", run?.effort === "low", String(run?.effort));
   check("the published run agrees", published.every((r) => r.effort === "low"), JSON.stringify(published.map((r) => r.effort)));
+}
+
+console.log("\n=== D. history: earlier Claude QA/reviewer rows get the effort they ran at, nothing else is touched ===");
+{
+  const dir = mkdtempSync(join(tmpdir(), "role-run-effort-backfill-"));
+  const path = join(dir, "orchestrator.sqlite");
+  try {
+    const before = new Db(path);
+    const t = before.createThread({ title: "history", workspace: dir, rawPrompt: "p", brief: "b" });
+    const rows = {
+      qa: before.createRun({ threadId: t.id, role: "qa", model: "claude-opus-5-5", account: "personal" }).id,
+      reviewer: before.createRun({ threadId: t.id, role: "reviewer", model: "claude-opus-5-5", account: "vota" }).id,
+      planner: before.createRun({ threadId: t.id, role: "planner", model: "claude-opus-5-5", account: "personal" }).id,
+      codexQa: before.createRun({ threadId: t.id, role: "qa", model: "gpt-5.6-sol", account: "codex:gpt-5.6-sol" }).id,
+      zaiQa: before.createRun({ threadId: t.id, role: "qa", model: "glm-5.3", account: "zai:glm-5.3" }).id,
+      savingQa: before.createRun({ threadId: t.id, role: "qa", model: "claude-opus-5-5", account: "personal", effort: "low" }).id,
+    };
+    // A fresh Db already ran the one-time backfill, so forget it to replay an upgrade over this history.
+    before.raw.prepare("DELETE FROM kv WHERE key = 'claude_review_run_effort_backfill_v1'").run();
+    before.raw.close();
+
+    const after = new Db(path);
+    const effort = (id: string) => after.getRun(id)?.effort ?? null;
+    check("a Claude QA row reads high", effort(rows.qa) === "high", String(effort(rows.qa)));
+    check("a Claude reviewer row reads high", effort(rows.reviewer) === "high", String(effort(rows.reviewer)));
+    check("a planner row is left alone (its effort varied per task)", effort(rows.planner) === null, String(effort(rows.planner)));
+    check("CLI-backend QA rows are left alone", effort(rows.codexQa) === null && effort(rows.zaiQa) === null);
+    check("a recorded usage-saving effort is kept", effort(rows.savingQa) === "low", String(effort(rows.savingQa)));
+    after.raw.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 console.log(`\n=== ${passed}/${passed + failed} checks passed ===`);

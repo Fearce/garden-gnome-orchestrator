@@ -1014,6 +1014,7 @@ export class Db {
     this.backfillAutoReviewEpisodes();
     this.repairAutoReviewBackfillFreshWork();
     this.backfillImplementationMemos();
+    this.backfillClaudeReviewRunEffort();
     this.resumeBudgetPausedGoals();
     this.baselineGoalUsage();
   }
@@ -1204,6 +1205,23 @@ export class Db {
         )
         .run();
       this.kvSet("auto_review_episode_backfill_v2", String(now()));
+    })();
+  }
+
+  /** One-time: Claude QA and reviewer runs recorded no effort before runRole stored the config's, so the
+   *  chat labelled their rows with the model alone. Both configs have sent a fixed "high" since they
+   *  existed, and usage saving always recorded its own effort, so a NULL here was "high". */
+  private backfillClaudeReviewRunEffort(): void {
+    if (this.kvGet("claude_review_run_effort_backfill_v1")) return;
+    this.raw.transaction(() => {
+      this.raw
+        .prepare(
+          `UPDATE agent_runs SET effort = 'high'
+            WHERE effort IS NULL AND role IN ('qa', 'reviewer') AND model LIKE 'claude-%'
+              AND account IS NOT NULL AND account NOT LIKE '%:%'`,
+        )
+        .run();
+      this.kvSet("claude_review_run_effort_backfill_v1", String(now()));
     })();
   }
 
