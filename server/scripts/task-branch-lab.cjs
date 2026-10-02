@@ -97,7 +97,7 @@ function readHeaderFit(page) {
     const panel = document.querySelector(".detail")?.getBoundingClientRect();
     const head = document.querySelector(".detail-head");
     if (!panel || !head) return null;
-    const controls = [...head.querySelectorAll(".detail-title-actions > *, .codectx-btn")].filter((el) => el.getBoundingClientRect().width > 0);
+    const controls = [...head.querySelectorAll(".detail-head-status > *, .detail-head-buttons > *, .codectx-btn")].filter((el) => el.getBoundingClientRect().width > 0);
     const outside = controls
       .map((el) => {
         const r = el.getBoundingClientRect();

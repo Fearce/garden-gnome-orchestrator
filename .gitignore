@@ -27,6 +27,7 @@ server/.patch-notes-lab-dist/
 server/.pin-lab-dist/
 server/.board-head-lab-dist/
 server/.agent-names-lab-dist/
+server/.task-header-lab-dist/
 server/.livebench-lab-dist/
 server/.dshare-lab-dist/
 .dshare-shots/
