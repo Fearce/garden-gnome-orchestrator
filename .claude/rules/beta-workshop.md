@@ -89,6 +89,9 @@ art). Read this before changing how gnomes are chosen, placed, walked or animate
   tick lands between them and snaps the seek back (a flaky "Gnome walks toward its teammate"). Use the
   gates' `holdClock(page, true/false)`, which sets the root's `data-paused` exactly as an off-screen
   workshop is paused. A seek and read inside one synchronous `evaluate` needs no hold.
+- **A lab that fast-forwards the page clock past the store's stale-socket watchdog gets a reconnect.**
+  `director-rest-lab.cjs` fakes `hello`, so its replay must carry the latest idle clock (`helloIdleSince`),
+  or a 30 min fast-forward reconnects into a stale boot-time pose (a flaky "reconnect restores sleep").
 
 ## Browser gates
 `node web/scripts/{beta-gnomes,classic-workshop,frozen-gnomes}.browser.cjs <base>`. `:4317` serves

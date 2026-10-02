@@ -27,6 +27,9 @@ async function main() {
           { instanceId: 'south', instanceName: 'South studio', name: 'Sage', agents: 0, busy: false, since: now },
         ] };
       let socket, hello;
+      // What the routed hello reports. A long fast-forward starves the client's stale-socket watchdog, which
+      // reconnects; the replayed hello must then carry the latest truth, not the boot-time clock.
+      let helloIdleSince = now - 3600000, helloOffice = office;
       const sent = [];
       await context.routeWebSocket('**/ws', client => {
         socket = client;
@@ -39,8 +42,8 @@ async function main() {
           const msg = JSON.parse(String(raw));
           if (msg.type !== 'hello') return;
           hello = { ...msg, threads: [], runs: [], findings: [], questions: [], director: [], directorStatus: null,
-            directorBusy: false, directorIdleSince: now - 3600000, chat: [], chatRooms: [], goals: [], schedules: [],
-            coworkSessions: [], onlineOffice: office, settings: { ...msg.settings, directorName: 'Merlin' } };
+            directorBusy: false, directorIdleSince: helloIdleSince, chat: [], chatRooms: [], goals: [], schedules: [],
+            coworkSessions: [], onlineOffice: helloOffice, settings: { ...msg.settings, directorName: 'Merlin' } };
           client.send(JSON.stringify(hello));
         });
       });
@@ -61,7 +64,8 @@ async function main() {
       await page.locator('.beta-workshop').screenshot({ path: path.join(shots, 'chairs.png') });
 
       const boundaryStart = await page.evaluate(() => Date.now());
-      socket.send(JSON.stringify({ type: 'director.busy', busy: false, idleSince: boundaryStart - BEDTIME + 1000 }));
+      helloIdleSince = boundaryStart - BEDTIME + 1000;
+      socket.send(JSON.stringify({ type: 'director.busy', busy: false, idleSince: helloIdleSince }));
       await page.waitForTimeout(50);
       await page.clock.fastForward(500);
       check('just under four hours still means chair', await owner.getAttribute('data-rest') === 'chair');
@@ -87,6 +91,7 @@ async function main() {
       await page.locator('.beta-workshop').screenshot({ path: path.join(shots, 'working.png') });
 
       const finishedAt = await page.evaluate(() => Date.now());
+      helloIdleSince = finishedAt;
       socket.send(JSON.stringify({ type: 'director.busy', busy: false, idleSince: finishedAt }));
       await page.waitForFunction(() => document.querySelector('[data-agent-id="director"]').dataset.working === 'false');
       check('a director that just finished stands', !(await owner.getAttribute('data-rest')));
@@ -96,7 +101,9 @@ async function main() {
       await page.clock.fastForward(2000);
       await owner.locator('[data-rest="chair"]').waitFor();
       check('thirty minutes AFK takes the chair without another event', await owner.getAttribute('data-rest') === 'chair');
-      socket.send(JSON.stringify({ ...hello, directorIdleSince: now - BEDTIME - 1, onlineOffice: { ...office, directors: office.directors.map(({busy,...legacy}) => legacy) } }));
+      helloIdleSince = now - BEDTIME - 1;
+      helloOffice = { ...office, directors: office.directors.map(({busy,...legacy}) => legacy) };
+      socket.send(JSON.stringify({ ...hello, directorIdleSince: helloIdleSince, onlineOffice: helloOffice }));
       await owner.locator('[data-rest="sleep"]').waitFor();
       check('reconnect restores overnight sleep from server time', await owner.getAttribute('data-rest') === 'sleep');
       check('legacy remote directors also stay hidden', await visitors.count() === 0);

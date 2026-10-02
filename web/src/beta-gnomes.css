@@ -182,8 +182,9 @@
 /* The motion clock (observeGnomeMotion) seeks these paused loops at film rate. */
 [data-motion-clock] :not(.beta-workshop-message), [data-motion-clock] *::after, [data-motion-clock] *::before { animation-play-state: paused !important; }
 .beta-workshop[data-paused="true"] *, .beta-gnome[data-paused="true"] *, .beta-workshop[data-motion-paused="true"] *, .beta-workshop[data-paused="true"] *::after, .beta-workshop[data-motion-paused="true"] *::after { animation-play-state: paused !important; }
-/* Paused, hidden or reduced motion: lane changes are instant (reduced motion fades them in). */
+/* Paused, hidden or reduced motion: lane changes are instant (reduced motion fades them in), and under
+   reduced motion a hover label appears and goes without a fade. */
 .beta-workshop:is([data-paused="true"], [data-motion-paused="true"]) :is(.beta-actor, .beta-shared-spot) { transition: none; }
 .beta-workshop:is([data-paused="true"], [data-motion-paused="true"]) .beta-workshop-message { animation: none; }
-@media (prefers-reduced-motion: reduce) { .beta-workshop *, .beta-workshop *::after, .beta-gnome * { animation: none !important; } .beta-actor, .beta-shared-spot { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .beta-workshop *, .beta-workshop *::after, .beta-gnome * { animation: none !important; } .beta-actor, .beta-shared-spot, .beta-workshop .beta-actor .beta-destination { transition: none; } }
 @media (max-width: 599px) { .beta-gnomes-preview { gap: 1px; }.beta-gnomes-preview-copy { font-size: 11px; } }
