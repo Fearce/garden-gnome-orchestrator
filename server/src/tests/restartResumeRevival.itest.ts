@@ -524,14 +524,21 @@ async function testIntakeIsRequeued(): Promise<void> {
   const finishedLead = bed.db.createThread({ title: "mock finished lead", workspace: bed.workspace, rawPrompt: "x" }).id;
   bed.db.updateThread(finishedLead, { state: "done" });
   const orphan = bed.db.createThread({ title: "mock orphan collaborator", workspace: bed.workspace, rawPrompt: "part", parentId: finishedLead, assignment: share }).id;
+  // A lead an EARLIER boot held for the owner's answer: its answer (or a Resume) resumes it, and its
+  // reconcile then launches the child. Before, the outcome depended on which of the two the scan met first.
+  const askingLead = seedAskingTask(bed, "implementor").id;
+  bed.db.updateThread(askingLead, { state: "failed", error: AWAITING_ANSWER_MSG });
+  const heldChild = bed.db.createThread({ title: "mock collaborator of a held lead", workspace: bed.workspace, rawPrompt: "part", parentId: askingLead, assignment: share }).id;
 
   const b = boot(bed);
   check("a plain intake task is queued, not failed", bed.db.getThread(plain)?.state === "queued", bed.db.getThread(plain)?.state);
   check("a collaborator whose lead is resuming stays in intake for the lead to launch", bed.db.getThread(child)?.state === "intake", bed.db.getThread(child)?.state);
+  check("a collaborator whose lead is held for an answer stays in intake for that lead", bed.db.getThread(heldChild)?.state === "intake", `${bed.db.getThread(heldChild)?.state} ${bed.db.getThread(heldChild)?.error}`);
   check("a collaborator whose lead is not coming back is handed to a person", bed.db.getThread(orphan)?.error === MANUAL_RESUME_MSG, bed.db.getThread(orphan)?.error ?? "");
   await sleep(AUTO_RESUME_DELAY_MS + 800);
   check("the queued task starts through the normal queue", b.started.includes(plain), `started=[${b.started.join(",")}]`);
   check("the collaborator is not started ahead of its lead", !b.started.includes(child) && !b.resumed.includes(child));
+  check("…nor ahead of a lead waiting on its answer", !b.started.includes(heldChild) && !b.resumed.includes(heldChild) && !b.resumed.includes(askingLead));
   b.stop();
   bed.dispose();
 }

@@ -2514,10 +2514,12 @@ export class ThreadManager implements OrchestratorApi {
     return null;
   }
 
-  /** The lead is still in flight or already promised its resume, so its reconcile will launch the child. */
+  /** The lead is still in flight or a restart already owes it its resume (automatic, or on the owner's
+   *  answer), so its reconcile will launch the child. Pending rather than auto-owed: a lead held for an
+   *  answer must keep its child in either scan order, and across a second restart. */
   private leadWillResume(leadId: string): boolean {
     const lead = this.db.getThread(leadId);
-    return !!lead && (IN_FLIGHT.has(lead.state) || restartAutoResumeOwed(lead));
+    return !!lead && (IN_FLIGHT.has(lead.state) || restartResumePending(lead));
   }
 
   /** The task was blocked inside ask_user. Its resolver died with the process; the question did not.
