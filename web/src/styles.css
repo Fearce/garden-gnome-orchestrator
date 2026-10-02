@@ -2343,6 +2343,8 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   background: color-mix(in oklch, var(--report-color) 5%, var(--bg-1));
 }
 .fi.final-report.state-review { --report-color: var(--warn); }
+/* The kicker can't wrap, so on a narrow feed it and the clock drop to a second row instead of pushing past the edge. */
+.fi.final-report .head { flex-wrap: wrap; row-gap: 4px; }
 .final-report-kicker {
   padding: 2px 7px; border-radius: 100px; color: var(--report-color);
   border: 1px solid color-mix(in oklch, var(--report-color) 40%, var(--line));
