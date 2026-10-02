@@ -35,8 +35,6 @@ export const DEPTH_DWELL_MS = 25_000;
 /** A walk covers the floor at this speed; a lane step counts as this much floor. */
 const WALK_PX_PER_MS = 0.065;
 const LANE_STEP_PX = 70;
-/** Floor a small crew spreads over per gnome; a bigger one stands across the whole header. */
-const CREW_PITCH = 64;
 /** Floor a crowd gnome gets at ease and at a squeeze, behind and between the front lane. */
 const CROWD_SLOT = 18;
 const CROWD_MIN_SLOT = 12;
@@ -51,6 +49,11 @@ const PAIR_STROLL = 10;
 /** How far a loop strolls a gnome, in screen px: the front lane passes the crowd behind it, and the
  *  further back a gnome stands the less ground it covers. */
 const STROLL = [64, 26, 16] as const;
+/** On a roomy stage a front gnome strolls up to this far (screen px) to pass a crowd gnome: an amble in
+ *  the loop's 3.4 s walk out, a little slower than a lane walk. */
+const FRONT_STROLL_MAX = 192;
+/** The least air between groups for the whole cast to stand in one evenly spaced row. */
+const EVEN_AIR = 24;
 /** Floor each front gnome keeps free to stroll on, before labels take their share; and the floor a
  *  labelled front gnome needs in all, which bounds how many stand in front. */
 const STROLL_FLOOR = 44;
@@ -184,21 +187,23 @@ export interface StageActor {
 }
 
 /** Positions for a cast whose lanes are already chosen, in floor order. Every lane stands across the
- *  same floor: the labelled front lane keeps its labels clear of each other, and the crowd further back
- *  spreads behind and between it, never hidden behind a front gnome. Each loop strolls a gnome past the
+ *  same floor. A stage with room to spare spaces every group evenly over its whole width; a fuller one
+ *  keeps the labelled front lane's labels clear of each other and spreads the crowd further back behind
+ *  and between it, never hidden behind a front gnome. Each loop strolls a gnome past the
  *  others, which is what makes the lanes read as depth. A dense crowd stands closer and smaller rather
  *  than leaving anyone out. */
 export function stageLayout(cast: readonly WorkshopSeat[], depths: ReadonlyMap<string, Depth>, width: number): StageActor[] {
   const depthOf = (index: number) => depths.get(cast[index]!.id) ?? 0;
   const partners = new Map<number, number>();
   for (const depth of [0, 1, 2] as const) pairLane(cast, cast.flatMap((_, index) => depthOf(index) === depth ? [index] : []), partners);
-  const floor = Math.min(width, 40 + cast.length * CREW_PITCH);
-  const lane = frontLane(cast, cast.flatMap((_, index) => depthOf(index) === 0 ? [index] : []), partners, width, floor);
-  const crowd = crowdPlaces(cast.flatMap((_, index) => depthOf(index) === 0 ? [] : [index]), depthOf, partners, lane, width, floor);
+  const layered = frontLane(cast, cast.flatMap((_, index) => depthOf(index) === 0 ? [index] : []), partners, width);
+  const even = evenStage(cast, depthOf, partners, layered, width);
+  const lane = even?.lane ?? layered;
+  const crowd = even?.crowd ?? crowdPlaces(cast.flatMap((_, index) => depthOf(index) === 0 ? [] : [index]), depthOf, partners, lane, width);
   const actors = cast.map((seat, index): StageActor => {
     const depth = depthOf(index);
     const place = depth === 0 ? { x: lane.x.get(index)!, scale: 1, lift: 0, z: STAGE_DEPTHS[0]!.z } : crowd.get(index)!;
-    return { seat, depth, ...place, labelWidth: lane.labelWidth(index), labelLeft: partners.get(index)! > index,
+    return { seat, depth, ...place, labelWidth: lane.labelWidth(index), labelLeft: lane.labelLeft(index),
       partner: partners.get(index) ?? -1, travel: 0, delay: 0, meeting: null };
   });
   // Further back a meeting stays short, so the crowd covers less ground than the front (parallax).
@@ -208,21 +213,25 @@ export function stageLayout(cast: readonly WorkshopSeat[], depths: ReadonlyMap<s
   }
   // The front picks its strolls first, so the crowd behind can walk the other way as it passes.
   const strolls = new Map<number, number>();
+  let escorts = new Map<number, number>();
   for (const pass of [0, 1]) {
+    if (pass === 1) escorts = escortsFor(actors, strolls);
     actors.forEach((actor, index) => {
       const partner = actors[actor.partner];
       if (Number(actor.depth > 0) !== pass) return;
       const direction = partner ? Math.sign(partner.x - actor.x) || 1 : 1;
       strolls.set(index, actor.seat.rest || actor.seat.freezeReason ? 0 : partner
         ? direction * Math.max(0, Math.abs(partner.x - actor.x) / 2 - 17 * actor.scale)
-        : stroll(actors, index, lane, width, strolls));
+        : stroll(actors, index, lane, width, strolls, escorts.get(index)));
     });
   }
+  const phaseOf = (index: number) => actors[index]!.partner >= 0 ? Math.min(index, actors[index]!.partner) : index;
   return actors.map((actor, index) => {
     const partner = actors[actor.partner];
     const still = actor.seat.rest || actor.seat.freezeReason;
     const travel = strolls.get(index)! / actor.scale;
-    const phase = partner ? Math.min(index, actor.partner) : index;
+    // An escort keeps its front gnome's beat, so the two cross mid-walk.
+    const phase = phaseOf(escorts.get(index) ?? index);
     const meeting = partner && actor.partner > index && !still ? (actor.x + partner.x) / 2 + 16 : null;
     return { ...actor, travel, delay: -(phase * 2.7), meeting };
   });
@@ -232,6 +241,7 @@ interface FrontLane {
   /** Left edge of each front gnome's body. */
   x: Map<number, number>;
   labelWidth: (index: number) => number;
+  labelLeft: (index: number) => boolean;
   /** Floor a front gnome's label takes beside its body, left and right. */
   extent: (index: number) => { left: number; right: number };
   order: number[];
@@ -239,15 +249,16 @@ interface FrontLane {
 
 /** The front lane in floor order, spread evenly over the floor so each gnome has ground to stroll
  *  across the crowd, pushed apart until no label touches a neighbour and pulled back inside the stage. */
-function frontLane(cast: readonly WorkshopSeat[], front: number[], partners: ReadonlyMap<number, number>, width: number, floor: number): FrontLane {
+function frontLane(cast: readonly WorkshopSeat[], front: number[], partners: ReadonlyMap<number, number>, width: number): FrontLane {
   const gap = (a: number, b: number) => partners.get(a) === b ? PAIR_GAP : SOLO_GAP;
   const gaps = front.slice(1).reduce((sum, index, k) => sum + gap(front[k]!, index), 0);
   const shared = Math.max(24, Math.min(92, Math.floor((width - 4 - gaps) / Math.max(1, front.length)) - 40 - STROLL_FLOOR));
   const labelWidth = (index: number) => Math.max(24, shared - (cast[index]!.rest === "sleep" ? 20 : 0));
+  const labelLeft = (index: number) => (partners.get(index) ?? -1) > index;
   const extent = (index: number) => {
     const label = labelWidth(index) + 8;
     if (cast[index]!.rest === "sleep") return { left: 10, right: label + 14 };
-    return partners.get(index)! > index ? { left: label, right: 0 } : { left: 0, right: label };
+    return labelLeft(index) ? { left: label, right: 0 } : { left: 0, right: label };
   };
   const need = (a: number, b: number) => 32 + extent(a).right + gap(a, b) + extent(b).left;
   // A pair stands together as one group; groups share the floor evenly.
@@ -260,7 +271,7 @@ function frontLane(cast: readonly WorkshopSeat[], front: number[], partners: Rea
     if (group < 0) return x.set(index, after);
     const mate = partners.get(index) === front[k + 1] ? front[k + 1]! : undefined;
     const span = extent(index).left + 32 + (mate === undefined ? extent(index).right : PAIR_GAP + 32 + extent(mate).right);
-    const share = 2 + (group + 0.5) / leads.length * (floor - 4) - span / 2 + extent(index).left;
+    const share = 2 + (group + 0.5) / leads.length * (width - 4) - span / 2 + extent(index).left;
     x.set(index, Math.max(share, extent(index).left + 2, after));
   });
   for (let k = front.length - 1; k >= 0; k--) {
@@ -268,14 +279,66 @@ function frontLane(cast: readonly WorkshopSeat[], front: number[], partners: Rea
     const limit = next === undefined ? width - 2 - 32 - extent(index).right : x.get(next)! - need(index, next);
     x.set(index, Math.max(extent(index).left + 2, Math.min(x.get(index)!, limit)));
   }
-  return { x, labelWidth, extent, order: front };
+  return { x, labelWidth, labelLeft, extent, order: front };
+}
+
+type CrowdPlace = { x: number; scale: number; lift: number; z: number };
+
+/** A roomy stage: every group (a pair counts as one) stands in floor order with the same air between
+ *  neighbours and at both ends, front labels included, so a small cast uses the whole header instead of
+ *  huddling at one end. A lone front gnome with crowd only on its right carries its label on the left,
+ *  so its stroll crosses open floor to pass them. Null when that leaves less than EVEN_AIR; then the
+ *  crowd stands behind the front. */
+function evenStage(cast: readonly WorkshopSeat[], depthOf: (index: number) => Depth, partners: ReadonlyMap<number, number>, layered: FrontLane, width: number) {
+  const groups = cast.reduce<number[][]>((all, _, index) => {
+    const last = all.at(-1);
+    if (last?.length === 1 && partners.get(last[0]!) === index) last.push(index);
+    else all.push([index]);
+    return all;
+  }, []);
+  const crowdAt = (k: number) => !!groups[k] && depthOf(groups[k]![0]!) > 0;
+  const flipped = new Set(groups.flatMap((group, k) => group.length === 1 && depthOf(group[0]!) === 0 && cast[group[0]!]!.rest !== "sleep" &&
+    crowdAt(k + 1) && !crowdAt(k - 1) ? group : []));
+  const labelLeft = (index: number) => flipped.has(index) || layered.labelLeft(index);
+  const extent = (index: number) => {
+    const { left, right } = layered.extent(index);
+    return flipped.has(index) ? { left: right, right: left } : { left, right };
+  };
+  const lane: FrontLane = { ...layered, labelLeft, extent };
+  const span = ([first, mate]: number[]) => {
+    const depth = depthOf(first!);
+    if (depth > 0) return 32 * STAGE_DEPTHS[depth]!.scale + (mate === undefined ? 0 : crowdPairReach(depth));
+    return lane.extent(first!).left + 32 + (mate === undefined ? lane.extent(first!).right : PAIR_GAP + 32 + lane.extent(mate).right);
+  };
+  const spans = groups.map(span);
+  const air = (width - 4 - spans.reduce((sum, one) => sum + one, 0)) / (groups.length + 1);
+  if (air < EVEN_AIR) return null;
+  const x = new Map<number, number>();
+  const crowd = new Map<number, CrowdPlace>();
+  let left = 2 + air;
+  groups.forEach((group, k) => {
+    const depth = depthOf(group[0]!);
+    if (depth === 0) group.forEach((index, member) => x.set(index, left + lane.extent(group[0]!).left + member * (32 + PAIR_GAP)));
+    else {
+      const { scale, lift, z } = STAGE_DEPTHS[depth]!;
+      const centre = left + spans[k]! / 2;
+      group.forEach((index, member) => crowd.set(index, { x: centre + (member - (group.length - 1) / 2) * crowdPairReach(depth) - 16, scale, lift, z }));
+    }
+    left += spans[k]! + air;
+  });
+  return { lane: { ...lane, x }, crowd };
+}
+
+/** How far apart a crowd pair's members stand at ease, centre to centre: a short walk to meet. */
+function crowdPairReach(depth: Depth) {
+  return 34 * STAGE_DEPTHS[depth]!.scale + 2 * PAIR_STROLL;
 }
 
 /** The crowd behind the front lane: spread evenly over the floor the front gnomes' bodies leave free,
  *  smaller and staggered when packed. A pair stands together as one group, so its meeting is a short
  *  walk wherever the floor puts it. */
-function crowdPlaces(crowd: number[], depthOf: (index: number) => Depth, partners: ReadonlyMap<number, number>, lane: FrontLane, width: number, floor: number) {
-  const free = freeFloor(lane, width, floor);
+function crowdPlaces(crowd: number[], depthOf: (index: number) => Depth, partners: ReadonlyMap<number, number>, lane: FrontLane, width: number) {
+  const free = freeFloor(lane, width);
   const length = free.reduce((sum, [left, right]) => sum + right - left, 0);
   const pitch = length / Math.max(1, crowd.length);
   const groups = crowd.reduce<number[][]>((all, index) => {
@@ -318,7 +381,7 @@ interface CrowdPlan { weight: number; scales: { index: number; staggered: boolea
 /** Stands each crowd group near its even share of the floor, at least a squeezed CROWD_MIN_SLOT right
  *  of the last group in its lane. `debt` is how far each lane ran out of floor for that. */
 function standCrowd(plans: readonly CrowdPlan[], fit: readonly number[], free: readonly [number, number][], share: number, width: number, depthOf: (index: number) => Depth) {
-  const places = new Map<number, { x: number; scale: number; lift: number; z: number }>();
+  const places = new Map<number, CrowdPlace>();
   // Rightmost gnome centre placed so far in each lane: a group never stands inside another one's span.
   const edge = [-Infinity, -Infinity, -Infinity];
   const debt = [0, 0, 0];
@@ -342,9 +405,9 @@ function standCrowd(plans: readonly CrowdPlan[], fit: readonly number[], free: r
 }
 
 /** Stretches of floor clear of every front gnome's body, left to right. */
-function freeFloor(lane: FrontLane, width: number, floor: number) {
+function freeFloor(lane: FrontLane, width: number) {
   const bodies = lane.order.map((index) => [lane.x.get(index)! - BODY_CLEAR, lane.x.get(index)! + 32 + BODY_CLEAR] as const);
-  const end = Math.min(width - 2, Math.max(floor - 2, ...bodies.map(([, right]) => right + 2)));
+  const end = width - 2;
   const free: [number, number][] = [];
   let from = 2;
   for (const [left, right] of bodies) {
@@ -386,28 +449,65 @@ function settle(free: readonly [number, number][], centre: number, half: number,
 
 /** How far (screen px, signed) a gnome without a partner strolls on its loop: toward the side with
  *  room, never into a front neighbour's label, never off the stage, and only halfway to a neighbour in
- *  its own lane that may be strolling toward it. A front gnome heads where it passes the most crowd;
- *  a crowd gnome in a front gnome's path walks against it, so the two visibly cross. */
-function stroll(actors: readonly StageActor[], index: number, lane: FrontLane, width: number, front: ReadonlyMap<number, number>) {
+ *  its own lane that may be strolling toward it. A front gnome heads where it passes the most crowd,
+ *  further than its usual amble when the nearest crowd gnome stands that far off; a crowd gnome in a
+ *  front gnome's path walks against it, so the two visibly cross. */
+function stroll(actors: readonly StageActor[], index: number, lane: FrontLane, width: number, front: ReadonlyMap<number, number>, escorting?: number) {
   const actor = actors[index]!;
-  const limit = STROLL[actor.depth];
+  const escorted = escorting === undefined ? undefined : actors[escorting]!;
+  const limit = (side: 1 | -1) => actor.depth === 0 ? passingStroll(actors, actor, side) : escorted
+    ? Math.max(STROLL[actor.depth], Math.min(FRONT_STROLL_MAX * actor.scale, clearance(escorted, actor) - Math.abs(front.get(escorting!)!)))
+    : STROLL[actor.depth];
   const room = actor.depth === 0 ? frontRoom(actors, index, lane, width) : crowdRoom(actors, index, width);
-  const reach = (side: 1 | -1) => Math.min(limit, side > 0 ? room.right : room.left);
+  const reach = (side: 1 | -1) => Math.min(limit(side), side > 0 ? room.right : room.left);
   const passes = (side: 1 | -1) => actor.depth > 0 ? 0 : actors.filter((behind) => {
     if (behind.depth === 0) return false;
     const centre = behind.x + 16;
     return side > 0 ? centre > actor.x + 16 && centre < actor.x + 32 + reach(1) : centre < actor.x + 16 && centre > actor.x - reach(-1);
   }).length;
   const centre = actor.x + 16;
-  const passer = actor.depth === 0 ? undefined : [...front].find(([i, travel]) => {
+  const passer = actor.depth === 0 ? undefined : escorting !== undefined ? [escorting, front.get(escorting)!] as const : [...front].find(([i, travel]) => {
     const x = actors[i]!.x;
     return travel !== 0 && centre > x + Math.min(0, travel) - 8 && centre < x + 32 + Math.max(0, travel) + 8;
   });
   const preferred: 1 | -1 = actor.depth === 0 ? passes(-1) > passes(1) ? -1 : 1
     : passer ? passer[1] > 0 ? -1 : 1 : index % 2 === 0 ? 1 : -1;
   const other = -preferred as 1 | -1;
-  const direction = passes(preferred) > 0 || reach(preferred) >= Math.min(limit, reach(other)) ? preferred : other;
+  const direction = passes(preferred) > 0 || reach(preferred) >= reach(other) ? preferred : other;
   return direction * reach(direction);
+}
+
+/** How far a front gnome strolls toward `side`: its usual amble, or far enough to carry its body clear
+ *  past the nearest crowd gnome that way, up to FRONT_STROLL_MAX. */
+function passingStroll(actors: readonly StageActor[], actor: StageActor, side: 1 | -1) {
+  const clear = actors.filter((behind) => behind.depth > 0 && sideOf(actor, behind) === side).map((behind) => clearance(actor, behind));
+  return clear.length ? Math.max(STROLL[0], Math.min(FRONT_STROLL_MAX, ...clear)) : STROLL[0];
+}
+
+/** Which way `behind` stands from a front gnome, and how far that gnome walks to carry its body clear past it. */
+function sideOf(front: StageActor, behind: StageActor) {
+  return behind.x + 16 > front.x + 16 ? 1 : -1;
+}
+function clearance(front: StageActor, behind: StageActor) {
+  const centre = behind.x + 16, half = 16 * behind.scale;
+  return sideOf(front, behind) > 0 ? centre + half + 2 - front.x : front.x + 32 + 2 - (centre - half);
+}
+
+/** On a sparse stage a front gnome's stroll may stop short of every crowd gnome. Each such stroller
+ *  takes the nearest crowd gnome ahead of it as its escort, which walks toward it on the same beat
+ *  (its scale's share of the front's reach), so the two still cross. Front index by escort index. */
+function escortsFor(actors: readonly StageActor[], strolls: ReadonlyMap<number, number>) {
+  const escorts = new Map<number, number>();
+  actors.forEach((actor, index) => {
+    const travel = strolls.get(index) ?? 0;
+    if (actor.depth > 0 || travel === 0) return;
+    const ahead = actors.flatMap((behind, k) => behind.depth > 0 && behind.partner < 0 && !behind.seat.rest && !behind.seat.freezeReason &&
+      sideOf(actor, behind) === Math.sign(travel) ? [{ k, short: clearance(actor, behind) - Math.abs(travel) }] : []);
+    if (!ahead.length || ahead.some(({ short }) => short <= 0)) return;
+    const nearest = ahead.reduce((best, one) => one.short < best.short ? one : best);
+    if (!escorts.has(nearest.k) && nearest.short <= FRONT_STROLL_MAX * actors[nearest.k]!.scale) escorts.set(nearest.k, index);
+  });
+  return escorts;
 }
 
 /** Clear floor on either side of a front gnome, up to its front neighbours' labels. A neighbour that

@@ -21,6 +21,14 @@ art). Read this before changing how gnomes are chosen, placed, walked or animate
   workers last), then visitors only while `stageCapacity(...).comfortable` has room. There is no "+N"
   overflow badge on the beta stage; a dense crowd stands closer and smaller (`CROWD_SLOT` → `CROWD_MIN_SLOT`)
   instead. Never reintroduce a cap on own gnomes to make room for visitors.
+- **A roomy stage spaces everyone evenly** (owner, 2026-10-02: "when there's free space the gnomes should
+  space out more evenly"). `evenStage` stands every group (a pair counts as one; front groups include their
+  labels) in floor order with equal air between neighbours and at both ends, over the WHOLE stage width,
+  whenever that air is at least `EVEN_AIR`. A lone gnome stands centre stage. There is no small-crew floor
+  cap any more (the old `CREW_PITCH` huddled a few gnomes at the left with the right half empty). A solo
+  front gnome whose only crowd neighbour is on its right carries its label on the left, so its stroll
+  crosses open floor instead of its own label. Only a stage too full for `EVEN_AIR` falls back to the
+  layered layout below.
 - **Three lanes on one floor** (`STAGE_DEPTHS`): 0 is the labelled front, 1 and 2 stand higher on the
   floor, smaller and dimmer (`.beta-actor[data-depth]` filter). The lanes are NOT separate strips: front
   groups (a pair counts as one) spread evenly over the floor, and the crowd fills the floor the front
@@ -30,7 +38,11 @@ art). Read this before changing how gnomes are chosen, placed, walked or animate
   it stops running off the floor) instead of piling gnomes on one spot.
 - **Depth reads from occlusion, not size alone** (owner, 2026-10-02: "big and small gnomes, not
   3-dimensional"). Each loop strolls a front gnome up to `STROLL[0]` px toward the side where it passes the
-  most crowd gnomes, so it walks in front of them; further lanes stroll less (parallax), and a crowd pair
+  most crowd gnomes, so it walks in front of them, and further (`passingStroll`, up to `FRONT_STROLL_MAX`)
+  when the nearest crowd gnome stands beyond that amble. A stroller that still clears nobody takes the nearest
+  crowd gnome ahead as its escort (`escortsFor`): it walks toward the front gnome on the SAME beat (shared
+  `delay`), covering its scale's share of the front's reach, so the two cross mid-walk. Only a very sparse,
+  very wide stage (four gnomes on ~1100 px) has more air than that amble can cross. Further lanes stroll less (parallax), and a crowd pair
   too far apart to meet within its lane's stroll is unpaired. Front strolls never reach a front
   neighbour's label. Front labels are `pointer-events: none` so a crowd gnome behind one stays clickable.
 - **Hit-test the figure, not the box.** `.beta-actor`, `.beta-workstation` and everything inside are

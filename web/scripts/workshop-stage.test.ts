@@ -11,6 +11,8 @@
  *     never puts a front label over another front gnome nor hides a crowd gnome behind a front body,
  *   · the lanes share one floor: front gnomes stroll past the crowd behind them (the owner's "walk past
  *     the gnomes in the back"), never off the stage and never into a front neighbour's label,
+ *   · a stage with room to spare spaces every group evenly over the whole width (the owner's "when
+ *     there's free space the gnomes should space out more evenly"), and still walks front past crowd,
  *   · walks take a believable time instead of a teleport.
  */
 
@@ -199,6 +201,38 @@ function frontWalksPastTheCrowd() {
   }
 }
 
+function roomyStageSpacesEvenly() {
+  for (const width of [900, 1084, 1400]) {
+    for (const count of [0, 1, 2, 3]) {
+      for (const guests of [0, 2]) {
+        const cast = stageCast([...crew(count), ...Array.from({ length: guests }, (_, i) => visitor(i))], width);
+        const capacity = stageCapacity(width, cast.length);
+        const { depths } = assignDepths(cast.map((seat, index) => entry(seat.id, index * 70_000, { guest: !!seat.remote })), new Map(), capacity, NOW);
+        const actors = stageLayout(cast, depths, width);
+        const reach = (actor: typeof actors[number]): [number, number] => actor.depth > 0
+          ? [actor.x + 16 - 16 * actor.scale, actor.x + 16 + 16 * actor.scale]
+          : actor.labelLeft ? [actor.x - actor.labelWidth - 8, actor.x + 32] : [actor.x, actor.x + 40 + actor.labelWidth];
+        const groups = actors.reduce<[number, number][]>((all, actor, index) => {
+          const span = reach(actor);
+          if (actor.partner === index - 1 && all.length) all[all.length - 1] = [Math.min(all.at(-1)![0], span[0]), Math.max(all.at(-1)![1], span[1])];
+          else all.push(span);
+          return all;
+        }, []).sort((a, b) => a[0] - b[0]);
+        const air = [...groups.map(([left], k) => left - (k ? groups[k - 1]![1] : 0)), width - groups.at(-1)![1]];
+        const label = `${width}px/${count}+${guests}: air ${air.map((gap) => gap.toFixed(0)).join(", ")}`;
+        assert(Math.min(...air) > 0 && Math.max(...air) - Math.min(...air) <= 6, `${label} — a roomy stage spaces every group evenly, ends included`);
+        const front = actors.filter((actor) => actor.depth === 0), crowd = actors.filter((actor) => actor.depth > 0);
+        if (!crowd.length) continue;
+        // A crowd gnome on the same beat walks too: they cross when their centres swap sides by the walk's end.
+        assert(front.some((actor) => crowd.some((behind) => {
+          const centre = behind.x + 16, end = centre + (behind.delay === actor.delay ? behind.travel * behind.scale : 0);
+          return Math.sign(centre - actor.x - 16) !== Math.sign(end - actor.x - 16 - actor.travel);
+        })), `${label} — a front gnome still strolls across a crowd gnome`);
+      }
+    }
+  }
+}
+
 function walksTakeTime() {
   assert.equal(walkDuration({ x: 100, depth: 0 }, { x: 100, depth: 0 }), 0, "standing still is not a walk");
   const forward = walkDuration({ x: 300, depth: 2 }, { x: 300, depth: 0 });
@@ -214,5 +248,6 @@ dwellPreventsJitter();
 spokenIsMatchedToTheRightGnome();
 layoutStaysOnStage();
 frontWalksPastTheCrowd();
+roomyStageSpacesEvenly();
 walksTakeTime();
-console.log("workshop-stage: PASS (own gnomes first, recency lanes, dwell, layout bounds, strolls past the crowd, walk timing)");
+console.log("workshop-stage: PASS (own gnomes first, recency lanes, dwell, layout bounds, strolls past the crowd, even spacing, walk timing)");
