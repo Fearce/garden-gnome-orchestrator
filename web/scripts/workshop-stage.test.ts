@@ -7,8 +7,10 @@
  *   · lanes follow recency: the freshest own gnome holds the front, quiet gnomes recede with age,
  *     the front has limited places, and a full lane pushes its stalest member back,
  *   · lane changes made for age or freed room wait out a dwell (no jitter); a new message never waits,
- *   · the layout keeps every gnome inside the stage, never puts a front label over another gnome, and
- *     draws further lanes smaller, higher and behind,
+ *   · the layout keeps every gnome inside the stage, draws further lanes smaller, higher and behind, and
+ *     never puts a front label over another front gnome nor hides a crowd gnome behind a front body,
+ *   · the lanes share one floor: front gnomes stroll past the crowd behind them (the owner's "walk past
+ *     the gnomes in the back"), never off the stage and never into a front neighbour's label,
  *   · walks take a believable time instead of a teleport.
  */
 
@@ -115,7 +117,7 @@ function spokenIsMatchedToTheRightGnome() {
 }
 
 function layoutStaysOnStage() {
-  for (const width of [120, 300, 617, 900, 1400]) {
+  for (const width of [120, 300, 617, 900, 1084, 1400]) {
     for (const count of [0, 1, 3, 8, 16, 30]) {
       const cast = stageCast(crew(count), width);
       const capacity = stageCapacity(width, cast.length);
@@ -128,25 +130,72 @@ function layoutStaysOnStage() {
         const right = left + 32 * actor.scale;
         assert(left >= -0.5 && right <= width + 0.5, `${width}px/${count}: ${actor.seat.id} stands at ${left.toFixed(1)}…${right.toFixed(1)}`);
       }
-      for (const actor of actors.filter((candidate) => candidate.depth === 0 && candidate.seat.rest !== "sleep")) {
-        const label = actor.labelLeft ? [actor.x - actor.labelWidth - 4, actor.x] : [actor.x + 32, actor.x + 36 + actor.labelWidth];
-        for (const other of actors) {
+      const body = (actor: typeof actors[number], offset = 0) => {
+        const left = actor.x + 16 - 16 * actor.scale + offset * actor.scale;
+        return [left, left + 32 * actor.scale] as const;
+      };
+      const label = (actor: typeof actors[number], offset = 0) => actor.labelLeft
+        ? [actor.x + offset - actor.labelWidth - 4, actor.x + offset] as const : [actor.x + offset + 32, actor.x + offset + 36 + actor.labelWidth] as const;
+      const apart = (a: readonly [number, number], b: readonly [number, number]) => a[1] <= b[0] + 1 || a[0] >= b[1] - 1;
+      const front = actors.filter((actor) => actor.depth === 0);
+      for (const actor of front.filter((candidate) => candidate.seat.rest !== "sleep")) {
+        for (const other of front) {
           if (other === actor) continue;
-          const left = other.x + 16 - 16 * other.scale, right = left + 32 * other.scale;
-          assert(right <= label[0]! + 1 || left >= label[1]! - 1, `${width}px/${count}: ${actor.seat.id}'s label covers ${other.seat.id}`);
+          for (const offset of [0, actor.travel]) {
+            assert(apart(label(actor, offset), body(other)) && apart(label(actor, offset), body(other, other.travel)),
+              `${width}px/${count}: ${actor.seat.id}'s label (stroll ${offset.toFixed(1)}) covers front gnome ${other.seat.id}`);
+            assert(apart(body(actor, offset), label(other)) && apart(body(actor, offset), body(other)),
+              `${width}px/${count}: ${actor.seat.id} strolls (${offset.toFixed(1)}) into front gnome ${other.seat.id}`);
+          }
         }
+      }
+      for (const actor of actors) {
+        const [left, right] = body(actor, actor.travel);
+        assert(left >= -0.5 && right <= width + 0.5, `${width}px/${count}: ${actor.seat.id} strolls off stage to ${left.toFixed(1)}…${right.toFixed(1)}`);
+        if (actor.depth === 0) continue;
+        const centre = actor.x + 16;
+        for (const near of front) assert(centre <= near.x + 2 || centre >= near.x + 30, `${width}px/${count}: ${actor.seat.id} stands hidden behind ${near.seat.id}`);
       }
       for (const actor of actors) {
         const expected = [1, 0.72, 0.54][actor.depth]!;
         assert(actor.scale <= expected + 1e-9 && (actor.depth === 0 ? actor.scale === 1 : actor.scale < 1), `${actor.seat.id}: lane ${actor.depth} scale ${actor.scale}`);
       }
       const byDepth = (depth: Depth) => actors.filter((actor) => actor.depth === depth);
+      for (const actor of actors) {
+        const partner = actors[actor.partner];
+        if (actor.depth === 0 || !partner) continue;
+        const [from, to] = [Math.min(actor.x, partner.x), Math.max(actor.x, partner.x)];
+        const between = byDepth(actor.depth).find((other) => other !== actor && other !== partner && other.x > from && other.x < to);
+        assert(!between, `${width}px/${count}: ${between?.seat.id} stands between partners ${actor.seat.id} and ${partner.seat.id} in lane ${actor.depth}`);
+      }
       for (const [near, far] of [[0, 1], [1, 2]] as const) {
         for (const a of byDepth(near)) for (const b of byDepth(far)) {
           assert(a.lift < b.lift && a.z > b.z && a.scale > b.scale, `${width}px/${count}: lane ${far} must stand higher, smaller and behind lane ${near}`);
         }
       }
     }
+  }
+}
+
+function frontWalksPastTheCrowd() {
+  for (const [width, count] of [[617, 16], [617, 30], [1100, 16], [437, 16]] as const) {
+    const cast = stageCast(crew(count), width);
+    const capacity = stageCapacity(width, cast.length);
+    const { depths } = assignDepths(cast.map((seat, index) => entry(seat.id, index * 70_000)), new Map(), capacity, NOW);
+    const actors = stageLayout(cast, depths, width);
+    const front = actors.filter((actor) => actor.depth === 0);
+    const crowd = actors.filter((actor) => actor.depth > 0);
+    assert(front.length >= 2 && crowd.length > 0, `${width}px/${count}: a front lane and a crowd`);
+    const passes = front.filter((actor) => {
+      const from = actor.x + Math.min(0, actor.travel), to = actor.x + 32 + Math.max(0, actor.travel);
+      return Math.abs(actor.travel) >= 12 && crowd.some((behind) => behind.x + 16 > from && behind.x + 16 < to);
+    });
+    assert(passes.length >= Math.ceil(front.length / 2), `${width}px/${count}: front gnomes stroll past the crowd (${passes.length}/${front.length})`);
+    const spanOf = (group: typeof actors) => [Math.min(...group.map((actor) => actor.x)), Math.max(...group.map((actor) => actor.x))];
+    const [frontLeft, frontRight] = spanOf(front), [crowdLeft, crowdRight] = spanOf(crowd);
+    assert(crowdLeft < frontRight && crowdRight > frontLeft && crowd.some((actor) => actor.x > frontLeft && actor.x < frontRight),
+      `${width}px/${count}: the crowd stands behind and between the front lane, not in a strip of its own`);
+    assert(crowd.every((actor) => Math.abs(actor.travel * actor.scale) < 27), `${width}px/${count}: further back covers less ground`);
   }
 }
 
@@ -164,5 +213,6 @@ guestsWaitUnlessTheySpoke();
 dwellPreventsJitter();
 spokenIsMatchedToTheRightGnome();
 layoutStaysOnStage();
+frontWalksPastTheCrowd();
 walksTakeTime();
-console.log("workshop-stage: PASS (own gnomes first, recency lanes, dwell, layout bounds, walk timing)");
+console.log("workshop-stage: PASS (own gnomes first, recency lanes, dwell, layout bounds, strolls past the crowd, walk timing)");

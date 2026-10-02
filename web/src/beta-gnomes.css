@@ -92,8 +92,9 @@
 .beta-workstation[data-label-side="left"] .beta-destination { left: auto; right: 36px; text-align: right; }
 .beta-destination strong, .beta-destination small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .beta-destination strong { font: 600 11px/1.4 var(--font-ui); color: var(--text); }
-/* Labels stay legible over the crowd behind them: a halo in the header's own color, like a map label. */
-.beta-actor[data-depth="0"] .beta-destination { text-shadow: 0 0 2px var(--bg-1), 0 0 4px var(--bg-1), 0 0 7px var(--bg-1); transition: opacity .2s; }
+/* Labels stay legible over the crowd behind them: a halo in the header's own color, like a map label.
+   They let clicks through, so a crowd gnome standing behind a label can still be hovered and opened. */
+.beta-actor[data-depth="0"] .beta-destination { text-shadow: 0 0 2px var(--bg-1), 0 0 4px var(--bg-1), 0 0 7px var(--bg-1); transition: opacity .2s; pointer-events: none; }
 .beta-workshop[data-bubble="right"] .beta-workstation[data-speaking="true"] .beta-destination,
 .beta-workshop[data-bubble="left"] .beta-workstation[data-speaking="true"] .beta-destination,
 .beta-workshop[data-bubble] .beta-workstation[data-speaking="true"] .beta-message-badge { opacity: 0; }
@@ -102,8 +103,12 @@
   transform: scale(calc(1 / var(--depth-scale, 1))); transform-origin: 0 0; border: 1px solid var(--line); border-radius: 4px; background: var(--bg-1); transition: opacity .15s; }
 .beta-actor:not([data-depth="0"]) .beta-workstation[data-label-side="left"] .beta-destination { transform-origin: 100% 0; }
 .beta-actor:not([data-depth="0"]):is(:hover, :focus-within) .beta-destination { opacity: 1; }
-/* A small far gnome still gets a finger-sized target. */
-.beta-actor:not([data-depth="0"]) .beta-workstation::before { content: ""; position: absolute; inset: -4px -6px 0; }
+/* Hit-test the figure, not its 32×48 box: the box reaches past the art and would bury the gnome behind it.
+   Hovering a partly hidden gnome lifts it to the front (z-index 60 above), so whatever shows is a target. */
+.beta-actor, .beta-workstation, .beta-workstation * { pointer-events: none; }
+.beta-workstation::before { content: ""; position: absolute; inset: 6% 18% 0; pointer-events: auto; }
+.beta-workstation[data-rest]::before { inset: 0; }
+.beta-workstation[data-rest="sleep"]::before { inset: 30% -24% 0; }
 .beta-destination small { font: 9px/1.4 var(--font-ui); color: var(--text-dim); }
 .beta-visitor .beta-destination small { color: #97e5dc; }
 .beta-workstation:hover .beta-destination strong { color: var(--accent); }
@@ -170,7 +175,7 @@
 .beta-gnomes-preview { display: flex; gap: 8px; align-items: center; padding: 8px 0 12px; }
 .beta-gnomes-preview-copy { padding-left: 8px; font-size: 12px; line-height: 1.5; color: var(--text-dim); }
 .beta-gnomes-preview-copy strong { display: block; color: var(--text); font-weight: 500; }
-/* The stop-motion clock (observeGnomeMotion) seeks these paused loops a few times a second. */
+/* The motion clock (observeGnomeMotion) seeks these paused loops at film rate. */
 [data-motion-clock] :not(.beta-workshop-message), [data-motion-clock] *::after, [data-motion-clock] *::before { animation-play-state: paused !important; }
 .beta-workshop[data-paused="true"] *, .beta-gnome[data-paused="true"] *, .beta-workshop[data-motion-paused="true"] *, .beta-workshop[data-paused="true"] *::after, .beta-workshop[data-motion-paused="true"] *::after { animation-play-state: paused !important; }
 /* Paused, hidden or reduced motion: lane changes are instant (reduced motion fades them in). */

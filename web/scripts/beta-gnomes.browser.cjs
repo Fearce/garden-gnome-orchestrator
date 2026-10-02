@@ -9,7 +9,7 @@ const path = require('node:path');
 const { loadChromium } = require('../../server/scripts/findPlaywright.cjs');
 const base = process.argv[2] || 'http://127.0.0.1:4317';
 // Lane changes walk (a transform transition plus a stride); timeline checks wait until every walk lands.
-// The stop-motion clock re-seeks every loop a few times a second; holding it keeps a test seek in place until it is read.
+// The motion clock re-seeks every loop 24 times a second; holding it keeps a test seek in place until it is read.
 const holdClock = (page, hold) => page.locator('.beta-workshop').evaluate((el, h) => { el.dataset.paused = String(h); }, hold);
 const settled = page => page.waitForFunction(()=>document.querySelector('.beta-workshop').getAnimations({subtree:true}).every(a=>a.effect.getTiming().iterations===Infinity));
 const output = path.resolve(__dirname, '../../_beta-gnomes');

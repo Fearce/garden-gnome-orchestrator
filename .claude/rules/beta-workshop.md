@@ -11,7 +11,7 @@ paths:
   - "web/scripts/*workshop*"
 ---
 
-# The beta workshop header (depth stage + stop-motion clock)
+# The beta workshop header (depth stage + motion clock)
 
 The header gnome strip under Beta gnomes (and Old gnomes beta, which reuses `BetaWorkshop` with the classic
 art). Read this before changing how gnomes are chosen, placed, walked or animated.
@@ -21,9 +21,22 @@ art). Read this before changing how gnomes are chosen, placed, walked or animate
   workers last), then visitors only while `stageCapacity(...).comfortable` has room. There is no "+N"
   overflow badge on the beta stage; a dense crowd stands closer and smaller (`CROWD_SLOT` → `CROWD_MIN_SLOT`)
   instead. Never reintroduce a cap on own gnomes to make room for visitors.
-- **Three lanes** (`STAGE_DEPTHS`): 0 is the labelled front, 1 and 2 stand higher on the floor, smaller and
-  dimmer (`.beta-actor[data-depth]` filter). Front capacity shrinks as the crowd grows, so labels never
-  sit over a gnome.
+- **Three lanes on one floor** (`STAGE_DEPTHS`): 0 is the labelled front, 1 and 2 stand higher on the
+  floor, smaller and dimmer (`.beta-actor[data-depth]` filter). The lanes are NOT separate strips: front
+  groups (a pair counts as one) spread evenly over the floor, and the crowd fills the floor the front
+  bodies leave free, behind and between them (behind labels too, never behind a body). Within one crowd
+  lane each group stands at least `CROWD_MIN_SLOT` right of the previous one (`standCrowd`), so no gnome
+  lands between a pair; a lane too full for that squeezes its gaps and pair walks (`fit`, refitted until
+  it stops running off the floor) instead of piling gnomes on one spot.
+- **Depth reads from occlusion, not size alone** (owner, 2026-10-02: "big and small gnomes, not
+  3-dimensional"). Each loop strolls a front gnome up to `STROLL[0]` px toward the side where it passes the
+  most crowd gnomes, so it walks in front of them; further lanes stroll less (parallax), and a crowd pair
+  too far apart to meet within its lane's stroll is unpaired. Front strolls never reach a front
+  neighbour's label. Front labels are `pointer-events: none` so a crowd gnome behind one stays clickable.
+- **Hit-test the figure, not the box.** `.beta-actor`, `.beta-workstation` and everything inside are
+  `pointer-events: none`; only the workstation's `::before` (the figure's core, `inset: 6% 18% 0`; the
+  whole box for a resting director) takes the pointer. The 32×48 box and the full-box tool SVG reach past
+  the art, and as targets they buried 4–6 visible crowd gnomes per stage. Hovering lifts a gnome to z 60.
 - **Lanes follow recency** (`assignDepths`, keyed on `lastSpoken` over office chat): quiet `FRONT_IDLE_MS`
   (3 min) steps back a lane, `MID_IDLE_MS` (15 min) joins the back row, a full lane pushes its stalest
   member back. A move made for age or freed room waits out `DEPTH_DWELL_MS` (25 s) so nobody jitters; a new
@@ -39,10 +52,11 @@ art). Read this before changing how gnomes are chosen, placed, walked or animate
 - Lanes 1–2 drop their bench motion (`.beta-actor:not([data-depth="0"]) svg * { animation: none }`):
   too small to read, and each moving part costs.
 
-## The stop-motion clock — `betaGnomes.ts` `observeGnomeMotion`
+## The motion clock — `betaGnomes.ts` `observeGnomeMotion`
 - Every root it observes gets `data-motion-clock`, whose CSS pauses all loop animations under it; one
-  shared `setInterval` (`GNOME_MOTION_FPS` = 5) seeks each root's `CSSAnimation`s to the clock time. The
-  owner chose a light console over smooth gnomes (2026-10-02). WAAPI walks and CSS transitions are not
+  shared `setInterval` (`GNOME_MOTION_FPS` = 24) seeks each root's `CSSAnimation`s to the clock time. 5 fps
+  read as lag to the owner (2026-10-02). Measured on a production build, 24 gnomes, main-thread ms per
+  2.5 s: 5 fps ~820, 24 fps ~1055, 30 fps ~1240, free-running 60 fps ~1640; all held 60 fps frames. WAAPI walks and CSS transitions are not
   `CSSAnimation`s, so walks stay smooth.
 - **Seek animations; never drive the clock through an inherited CSS variable.** A `--gnome-clock` in every
   `animation-delay` was measured at ~25 ms of style recalc per tick (it re-styles all ~500 descendants)

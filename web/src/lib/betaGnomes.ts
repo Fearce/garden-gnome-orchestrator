@@ -64,11 +64,11 @@ export const useOldGnomesBeta = oldGnomesBeta.use;
 let observer: IntersectionObserver | undefined;
 const visible = new Map<HTMLElement, boolean>();
 
-/** Gnome loops play as stop-motion: their CSS animations stay paused (`data-motion-clock`) and one
- *  shared clock seeks them this many times a second. Even composited, 60fps loops on a crowd cost the
- *  main thread every frame; the owner wants a light console over smooth gnomes. Seeking re-styles only
- *  the animated elements, where an inherited clock property would re-style the whole cast. */
-export const GNOME_MOTION_FPS = 5;
+/** Gnome loops play at film rate: their CSS animations stay paused (`data-motion-clock`) and one shared
+ *  clock seeks them this many times a second. Free-running 60fps loops on a 24-gnome crowd cost twice
+ *  the main thread of 5fps; 24 adds about a quarter and reads as smooth (5 read as lag). Seeking
+ *  re-styles only the animated elements, where an inherited clock property would re-style the cast. */
+export const GNOME_MOTION_FPS = 24;
 let clock: number | undefined;
 const clockOrigin = typeof performance === "undefined" ? 0 : performance.now();
 function advanceGnomes() {
