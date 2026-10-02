@@ -12,6 +12,11 @@ same commit as the fix. Git history keeps the record.
 
 ---
 
+## In progress
+
+- **Unpin d2r step 15 to allow Codex routing** (Bramblewick, 2026-10-02).
+  Task ef2438cb-33b8-43db-9545-6e338502e16e has a strict Claude Opus 5.5 model request; clear via the authenticated task control and resume.
+
 ## Open
 
 No open entries.
