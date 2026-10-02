@@ -24,7 +24,7 @@ assert.equal(navStep(taskA, HOME), "back", "closing the task steps back onto the
 assert.equal(navStep(taskA, { task: "A", overlay: null }), "none", "an unchanged location writes nothing");
 assert.equal(navStep(entry("A"), HOME), "replace", "a close with no entry to return to replaces, so Back cannot reopen it");
 assert.equal(navStep(taskA, { task: "B", overlay: null }), "push", "switching task pushes, so Back returns to the first");
-assert.equal(navStep(memoA, { task: "A", overlay: { kind: "memo", memoId: "m2" } }), "push", "another memo is a different location");
+assert.equal(navStep(memoA, { task: "A", overlay: { kind: "memo", memoId: "m2" } }), "replace", "revision browsing updates the memo entry without another layer");
 assert.equal(
   navStep(entry("A", { kind: "deliverable", findingId: "f1" }, taskA), { task: "A", overlay: null }),
   "back",
@@ -166,6 +166,19 @@ delete (state.threads as Record<string, unknown>).B;
 fakeHistory.forward();
 settle();
 assert.deepEqual(where(), { task: null, overlay: null }, "a deleted task reads as the board");
+
+// A second action can arrive before the browser completes Close's asynchronous traversal.
+state.select("A");
+store.setState({ taskOverlay: memo("m1") });
+store.setState({ taskOverlay: null });
+store.setState({ taskOverlay: memo("m2") });
+settle();
+assert.deepEqual(where(), { task: "A", overlay: memo("m2") }, "quick close/reopen keeps the owner's latest action");
+assert.deepEqual(readEntry((fakeHistory.state as { ggoNav: unknown }).ggoNav)?.overlay, memo("m2"));
+store.setState({ taskOverlay: null });
+state.select(null);
+settle();
+assert.deepEqual(where(), HOME, "closing both layers before popstate lands returns to the board");
 
 teardown();
 state.select("A");

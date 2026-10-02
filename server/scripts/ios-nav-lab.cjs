@@ -78,11 +78,13 @@ async function control(page, selector) {
       text: (el.innerText ?? "").replace(/\s+/g, " ").trim(),
       tappable: !!hit && (hit === el || el.contains(hit)),
       vw: innerWidth, vh: innerHeight,
+      visibleTop: visualViewport?.offsetTop ?? 0,
+      visibleBottom: (visualViewport?.offsetTop ?? 0) + (visualViewport?.height ?? innerHeight),
     };
   }, selector);
 }
 
-const onScreen = (c) => !!c && c.top >= 0 && c.left >= 0 && c.bottom <= c.vh + 0.5 && c.right <= c.vw + 0.5;
+const onScreen = (c) => !!c && c.top >= c.visibleTop && c.left >= 0 && c.bottom <= c.visibleBottom + 0.5 && c.right <= c.vw + 0.5;
 const bottomRight = (c) => !!c && c.bottom >= c.vh * 0.75 && c.right >= c.vw - 24;
 const comfortable = (c) => !!c && c.width >= 44 && c.height >= 44;
 
@@ -135,7 +137,9 @@ async function drivePhone(browser, check, dataDir, viewport, label) {
   try {
     const page = await ctx.newPage();
     const errors = [];
-    page.on("console", (m) => { if (m.type() === "error" && !isVoiceBridgeNoise(m)) errors.push(m.text()); });
+    // WebKit logs this unsupported Android viewport option as an error before the app starts.
+    // Keep Android's existing option and ignore only that exact browser diagnostic.
+    page.on("console", (m) => { if (m.type() === "error" && !isVoiceBridgeNoise(m) && m.text() !== 'Viewport argument key "interactive-widget" not recognized and ignored.') errors.push(m.text()); });
     page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
     await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
     await openConsole(page);
@@ -197,6 +201,12 @@ async function drivePhone(browser, check, dataDir, viewport, label) {
     await page.click(".implementation-memo-open");
     await page.waitForSelector(".modal.implementation-memo-modal", { timeout: 5_000 });
     await page.click('.implementation-memo-history button:has-text("Revision 1")');
+    const memoReadingBefore = await page.evaluate(() => {
+      const body = document.querySelector(".implementation-memo-body");
+      body.scrollTop = 777;
+      return body.scrollTop;
+    });
+    check(`${label}: changing memo revision updates its history entry`, (await page.evaluate(() => history.state.ggoNav.overlay.memoId)) === "inl-memo-1");
     await page.goBack();
     await settle(page);
     s = await state(page);
@@ -205,8 +215,18 @@ async function drivePhone(browser, check, dataDir, viewport, label) {
     await page.waitForSelector(".modal.implementation-memo-modal", { timeout: 5_000 });
     s = await state(page);
     check(`${label}: Forward reopens the memo`, s.memo && s.task, JSON.stringify(s));
+    check(`${label}: Forward restores the revision last read`, s.revision?.includes("revision 1"), JSON.stringify(s));
+    const memoReadingAfter = await page.evaluate(() => document.querySelector(".implementation-memo-body").scrollTop);
+    check(`${label}: Forward restores the memo reading position`, Math.abs(memoReadingAfter - memoReadingBefore) < 2, `${memoReadingBefore} -> ${memoReadingAfter}`);
     await page.goBack();
     await settle(page);
+    await page.click('.feed-filter .fchip:has-text("implementor")');
+    const readingBefore = await page.evaluate(() => {
+      const el = document.querySelector(".detail-body");
+      el.scrollTop = 350;
+      el.dispatchEvent(new Event("scroll"));
+      return el.scrollTop;
+    });
     await page.goBack();
     await settle(page);
     s = await state(page);
@@ -218,6 +238,11 @@ async function drivePhone(browser, check, dataDir, viewport, label) {
     await page.waitForSelector(".detail .implementation-memo-open", { timeout: 10_000 });
     s = await state(page);
     check(`${label}: Forward reopens the task`, s.task && !s.memo, JSON.stringify(s));
+    await settle(page);
+    check(`${label}: reopening retains the feed filter`, await page.locator('.feed-filter .fchip.on:has-text("implementor")').count() === 1);
+    const readingAfter = await page.evaluate(() => document.querySelector(".detail-body").scrollTop);
+    check(`${label}: reopening retains the feed scroll`, Math.abs(readingAfter - readingBefore) < 2, `${readingBefore} -> ${readingAfter}`);
+    await page.click('.feed-filter .fchip:has-text("all")');
 
     // ---- repeated open/close does not grow history ----
     const lengthBefore = (await state(page)).history;
@@ -230,6 +255,20 @@ async function drivePhone(browser, check, dataDir, viewport, label) {
     }
     s = await state(page);
     check(`${label}: four memo open/close rounds leave history the same length`, s.history === lengthBefore && s.task, `${lengthBefore} -> ${s.history}`);
+
+    // Close then reopen before the asynchronous browser traversal completes.
+    await page.click(".implementation-memo-open");
+    await page.waitForSelector(".implementation-memo-modal");
+    await page.evaluate(() => {
+      document.querySelector(".implementation-memo-modal .layer-close").click();
+      document.querySelector(".implementation-memo-open").click();
+    });
+    await settle(page);
+    s = await state(page);
+    check(`${label}: rapid Close/reopen preserves the newer action`, s.task && s.memo, JSON.stringify(s));
+    await page.goBack();
+    await settle(page);
+    check(`${label}: Back after rapid reopen returns directly to the task`, (await state(page)).task && !(await state(page)).memo);
 
     // ---- the final report's memo button opens the same layer ----
     await page.evaluate(() => document.querySelector(".detail .fi.final-report .final-report-open")?.scrollIntoView({ block: "center" }));
@@ -286,12 +325,18 @@ async function drivePhone(browser, check, dataDir, viewport, label) {
     if (!(await state(page)).task) await openTask(page);
     await page.click(".mobile-inject-toggle");
     await page.focus(".inject-bar textarea");
-    // interactive-widget=resizes-content shrinks the layout viewport by the keyboard's height.
-    await page.setViewportSize({ width: viewport.width, height: Math.round(viewport.height * 0.55) });
+    // Model an iOS keyboard: only the visual viewport shrinks/pans, not the layout viewport.
+    // Headless browsers cannot open a physical iPhone keyboard. Dispatch its viewport events and
+    // assert against the visible rectangle instead of resizing the whole page.
+    await page.evaluate((height) => {
+      Object.defineProperty(visualViewport, "height", { configurable: true, value: height });
+      Object.defineProperty(visualViewport, "offsetTop", { configurable: true, value: 34 });
+      visualViewport.dispatchEvent(new Event("resize"));
+      visualViewport.dispatchEvent(new Event("scroll"));
+    }, Math.round(viewport.height * 0.55));
     await settle(page);
-    // While typing, the header docked under the composer sits behind the keyboard (on iOS the keyboard
-    // overlays the page). The way out is the composer's own fold control, which stays on screen; folding
-    // it brings the task's Close back without the keyboard having to go anywhere first.
+    close = await control(page, ".detail-title-actions .task-close");
+    check(`${label}: task Close is reachable while typing above an overlay keyboard`, onScreen(close) && !!close?.tappable && comfortable(close), JSON.stringify(close));
     const fold = await control(page, '[aria-label="Hide message composer"]');
     check(`${label}: with the keyboard up the composer's fold control is on screen and tappable`, onScreen(fold) && !!fold?.tappable && comfortable(fold), JSON.stringify(fold));
     await page.screenshot({ path: path.join(shots, `ios-${viewport.width}-keyboard.png`) });
@@ -299,6 +344,17 @@ async function drivePhone(browser, check, dataDir, viewport, label) {
     await settle(page);
     close = await control(page, ".detail-title-actions .task-close");
     check(`${label}: ...and folding it brings the task's Close back on screen`, onScreen(close) && !!close?.tappable, JSON.stringify(close));
+    await page.click(".implementation-memo-open");
+    await page.waitForSelector(".modal.implementation-memo-modal");
+    layerClose = await control(page, ".modal.implementation-memo-modal .layer-close");
+    check(`${label}: memo Close stays in the visual viewport with an overlay keyboard`, onScreen(layerClose) && !!layerClose?.tappable && comfortable(layerClose), JSON.stringify(layerClose));
+    await page.click(".modal.implementation-memo-modal .layer-close");
+    await settle(page);
+    await page.evaluate(() => {
+      delete visualViewport.height;
+      delete visualViewport.offsetTop;
+      visualViewport.dispatchEvent(new Event("resize"));
+    });
 
     // Landscape: still the phone layout below 900px, and the shortest screen the header has to fit.
     await page.setViewportSize({ width: viewport.height, height: viewport.width });
@@ -307,6 +363,35 @@ async function drivePhone(browser, check, dataDir, viewport, label) {
     check(`${label}: in landscape the task's Close is on screen and tappable`, onScreen(close) && !!close?.tappable, JSON.stringify(close));
     await page.screenshot({ path: path.join(shots, `ios-${viewport.width}-landscape.png`) });
     await page.setViewportSize(viewport);
+    await settle(page);
+
+    // Stand in for nonzero notch/home-indicator insets, which headless engines report as zero.
+    const insets = await page.addStyleTag({ content: `
+      .ios-phone .detail, .ios-phone .implementation-memo-modal { padding-top: 47px; }
+      .ios-phone .detail-head { min-height: 96px; }
+      .ios-phone .detail-head .top { padding-bottom: 43px; }
+      .ios-phone .layer-bar { padding-bottom: 42px; }
+    ` });
+    await page.click(".mobile-inject-toggle");
+    await page.evaluate(() => {
+      Object.defineProperty(visualViewport, "height", { configurable: true, value: 312 });
+      visualViewport.dispatchEvent(new Event("resize"));
+    });
+    await settle(page);
+    close = await control(page, ".detail-title-actions .task-close");
+    check(`${label}: task exit clears simulated safe areas with the keyboard open`, onScreen(close) && !!close?.tappable, JSON.stringify(close));
+    await page.click('[aria-label="Hide message composer"]');
+    await page.click(".implementation-memo-open");
+    await page.waitForSelector(".implementation-memo-modal");
+    layerClose = await control(page, ".implementation-memo-modal .layer-close");
+    check(`${label}: memo exit clears simulated safe areas with the keyboard open`, onScreen(layerClose) && !!layerClose?.tappable, JSON.stringify(layerClose));
+    await page.click(".implementation-memo-modal .layer-close");
+    await settle(page);
+    await insets.evaluate((el) => el.remove());
+    await page.evaluate(() => {
+      delete visualViewport.height;
+      visualViewport.dispatchEvent(new Event("resize"));
+    });
 
     check(`${label}: no console errors`, errors.length === 0, errors.join(" | "));
   } finally {
@@ -371,6 +456,26 @@ async function driveDesktop(browser, check, dataDir) {
   }
 }
 
+async function driveIpad(browser, check) {
+  const ctx = await browser.newContext({ viewport: { width: 820, height: 1180 }, hasTouch: true, isMobile: true,
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1" });
+  try {
+    const page = await ctx.newPage();
+    await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
+    await openConsole(page);
+    const length = await page.evaluate(() => history.length);
+    await openTask(page);
+    check("ipad: no iPhone class or viewport override", await page.evaluate(() => !document.documentElement.classList.contains("ios-phone") && !document.documentElement.style.getPropertyValue("--ios-visible-height")));
+    check("ipad: task retains its original exit", (await control(page, ".task-close"))?.text === "✕");
+    await page.click(".implementation-memo-open");
+    await page.waitForSelector(".implementation-memo-modal");
+    check("ipad: memo retains its header exit", !!(await control(page, '[aria-label="Close memo"]'))?.tappable && !(await control(page, ".implementation-memo-modal .layer-close")));
+    check("ipad: task and memo write no history", await page.evaluate(() => history.length) === length);
+  } finally {
+    await ctx.close();
+  }
+}
+
 async function main() {
   requireBuild();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ios-nav-lab-"));
@@ -389,6 +494,7 @@ async function main() {
     await drivePhone(browser, check, dataDir, { width: 390, height: 664 }, "390");
     await drivePhone(browser, check, dataDir, { width: 320, height: 568 }, "320");
     await driveAndroid(browser, check, dataDir);
+    await driveIpad(browser, check);
     await driveDesktop(browser, check, dataDir);
     console.log(`\nscreenshots: ${shotDir(dataDir)}`);
   } finally {

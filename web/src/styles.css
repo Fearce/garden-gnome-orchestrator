@@ -2358,10 +2358,15 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .layer-bar,
 .task-close-label { display: none; }
 @media (max-width: 899.98px) {
+  .ios-phone .detail {
+    top: var(--ios-visible-top, 0px); bottom: auto;
+    height: var(--ios-visible-height, 100dvh);
+  }
   .ios-phone .modal.implementation-memo-modal,
   .ios-phone .modal.deliverable,
   .ios-phone .modal.changes {
-    width: 100vw; max-width: none; height: 100vh; height: 100dvh; max-height: none;
+    position: fixed; top: var(--ios-visible-top, 0px); left: 0;
+    width: 100vw; max-width: none; height: var(--ios-visible-height, 100dvh); max-height: none;
     border: 0; border-radius: 0; padding-top: env(safe-area-inset-top);
   }
   .ios-phone .changes-body { flex: 1 1 auto; min-height: 0; }
@@ -2385,10 +2390,12 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   /* Room for the wider Close plus the 44px collapse chevron beside it (4px gaps). */
   .ios-phone .detail-head .top { padding-right: 140px; }
   .ios-phone .detail-title-actions .head-toggle { right: 92px; }
+  .ios-phone .detail-head { min-height: calc(var(--tap) + 18px + env(safe-area-inset-bottom)); }
+  .ios-phone .inject-bar { flex-shrink: 1; min-height: 0; max-height: 50%; overflow-y: auto; }
   /* The header is the row that gives ground (see .detail-head), and here it carries the task's only
      visible exit. On a short screen (an SE in landscape is 320px tall) the transcript's 168px floor
-     squeezed it below the bottom edge, so the floor yields to a quarter of the screen first. */
-  .ios-phone .detail-body { min-height: min(168px, 25vh); min-height: min(168px, 25dvh); }
+     squeezed it below the bottom edge, so the floor yields to a sixth of the visible screen first. */
+  .ios-phone .detail-body { min-height: min(168px, calc(var(--ios-visible-height, 100dvh) / 6)); }
 }
 
 /* The closing card of a done/review feed. It repeats the implementor's hand-off below every QA and

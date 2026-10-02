@@ -1,9 +1,12 @@
-import { useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ImplementationMemo, ImplementationMemoHandoff, ImplementationMemoOutcome } from "../types.js";
 import { selectImplementationMemos } from "../implementationMemos.js";
 import { apiUrl } from "../lib/base.js";
 import { LayerCloseBar, useLayerEscape } from "./LayerClose.js";
 import { Markdown } from "./Markdown.js";
+import { IOS_PHONE } from "../lib/iosPhone.js";
+
+const memoReadingPositions = new Map<string, number>();
 
 const OUTCOME_LABEL: Record<ImplementationMemoOutcome, string> = {
   completed: "Completed",
@@ -65,11 +68,23 @@ export function ImplementationMemos({ memos, onOpen }: { memos: ImplementationMe
   );
 }
 
-export function ImplementationMemoModal({ memos, initialId, onClose }: { memos: ImplementationMemo[]; initialId: string; onClose: () => void }) {
+export function ImplementationMemoModal({ memos, initialId, onClose, onSelect }: { memos: ImplementationMemo[]; initialId: string; onClose: () => void; onSelect?: (memoId: string) => void }) {
   const ordered = useMemo(() => [...memos].sort((a, b) => b.revision - a.revision), [memos]);
   const [selectedId, setSelectedId] = useState(initialId);
-  const selected = ordered.find((memo) => memo.id === selectedId) ?? ordered[0]!;
+  const selected = ordered.find((memo) => memo.id === (onSelect ? initialId : selectedId)) ?? ordered[0]!;
   const currentId = ordered[0]?.id;
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!IOS_PHONE || !body) return;
+    body.scrollTop = memoReadingPositions.get(selected.id) ?? 0;
+    return () => {
+      memoReadingPositions.delete(selected.id);
+      memoReadingPositions.set(selected.id, body.scrollTop);
+      if (memoReadingPositions.size > 100) memoReadingPositions.delete(memoReadingPositions.keys().next().value!);
+    };
+  }, [selected.id]);
 
   useLayerEscape(onClose);
 
@@ -95,7 +110,7 @@ export function ImplementationMemoModal({ memos, initialId, onClose }: { memos: 
                   type="button"
                   key={memo.id}
                   className={memo.id === selected.id ? "selected" : ""}
-                  onClick={() => setSelectedId(memo.id)}
+                  onClick={() => onSelect ? onSelect(memo.id) : setSelectedId(memo.id)}
                 >
                   <span>Revision {memo.revision}{memo.id === currentId ? " · current" : ""}</span>
                   <small className={`outcome-${memo.outcome}`}>{OUTCOME_LABEL[memo.outcome]} · {memoTime(memo.completedAt)}</small>
@@ -103,7 +118,7 @@ export function ImplementationMemoModal({ memos, initialId, onClose }: { memos: 
               ))}
             </nav>
           ) : null}
-          <div className="implementation-memo-body">
+          <div className="implementation-memo-body" ref={bodyRef}>
             <div className="implementation-memo-badges">
               <span className={`implementation-memo-status outcome-${selected.outcome}`}>{OUTCOME_LABEL[selected.outcome]}</span>
               <span className="implementation-memo-handoff">{HANDOFF_LABEL[selected.handoff]}</span>

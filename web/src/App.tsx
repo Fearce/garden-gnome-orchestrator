@@ -16,7 +16,7 @@ import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
 import { useSwipePanes, type WorkbenchPane } from "./lib/swipe.js";
 import { installNavHistory } from "./lib/navHistory.js";
-import { IOS_PHONE } from "./lib/iosPhone.js";
+import { IOS_PHONE, installIosViewport } from "./lib/iosPhone.js";
 import { visibleBoardTabs } from "./lib/boardTabs.js";
 import ggLogo from "./assets/gg-logo.webp";
 import type { BoardView } from "./types.js";
@@ -68,6 +68,7 @@ export function App() {
   const [workbench, setWorkbench] = useState<HTMLDivElement | null>(null);
   useSwipePanes(workbench, mobilePane, setMobilePane, !selected);
   useEffect(() => (IOS_PHONE ? installNavHistory(useStore) : undefined), []);
+  useEffect(installIosViewport, []);
 
   if (authRequired && !authed) return <Login />;
 

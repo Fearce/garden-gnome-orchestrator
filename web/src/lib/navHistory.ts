@@ -50,11 +50,14 @@ function closes(current: NavLocation, next: NavLocation): boolean {
 
 /** The history operation that takes the browser from `current` to `next`:
  *  - back to the entry this one was pushed from, when that is where the console is going;
- *  - replace, for a close that was not opened from here (after a reload, or a deleted task), so Back
- *    never reopens something the owner just closed;
- *  - push, for anything that opens or switches. */
+ *  - replace, for revision browsing or a close that was not opened from here (after a reload or a
+ *    deleted task), so Back never reopens something the owner just closed;
+ *  - push, for anything that opens another layer or switches tasks. */
 export function navStep(current: NavEntry, next: NavLocation): NavStep {
   if (sameLocation(current, next)) return "none";
+  // A revision picker changes the content of one memo layer, not its depth. Keep its parent so
+  // Close still returns directly to the task and Forward restores the revision last read.
+  if (current.task === next.task && current.overlay?.kind === "memo" && next.overlay?.kind === "memo") return "replace";
   if (current.parent && sameLocation(current.parent, next)) return "back";
   if (closes(current, next)) return "replace";
   return "push";
@@ -110,22 +113,19 @@ export function installNavHistory(useStore: NavStore): () => void {
     else history.replaceState(state, "");
   };
 
-  // What the current history entry holds. Kept here rather than re-read from `history.state` because
-  // `history.back()` is asynchronous: until its popstate lands, `history.state` still names the layer
-  // that was just closed, and a second close in that window would be measured against it.
+  // Do not write or traverse again until a requested Back lands. Otherwise a quick reopen pushes
+  // from the entry being left, and its late popstate overwrites the owner's newer action.
   let shadow: NavEntry = { ...locationOf(useStore.getState()), parent: null };
   write(shadow, "replace");
   let applying = false;
+  let backing = false;
 
-  const unsubscribe = useStore.subscribe((s, prev) => {
-    if (applying) return;
-    if (s.selectedThreadId === prev.selectedThreadId && s.taskOverlay === prev.taskOverlay) return;
-    const next = locationOf(s);
+  const sync = (next: NavLocation) => {
     switch (navStep(shadow, next)) {
       case "none":
         return;
       case "back":
-        shadow = shadow.parent!;
+        backing = true;
         history.back();
         return;
       case "replace":
@@ -136,6 +136,11 @@ export function installNavHistory(useStore: NavStore): () => void {
         shadow = { ...next, parent: shadow };
         write(shadow, "push");
     }
+  };
+  const unsubscribe = useStore.subscribe((s, prev) => {
+    if (applying || backing) return;
+    if (s.selectedThreadId === prev.selectedThreadId && s.taskOverlay === prev.taskOverlay) return;
+    sync(locationOf(s));
   });
 
   const onPop = (event: PopStateEvent) => {
@@ -148,6 +153,13 @@ export function installNavHistory(useStore: NavStore): () => void {
       write(entry, "replace");
     }
     shadow = entry;
+    if (backing) {
+      backing = false;
+      // The store already reflects Close, and may now reflect another open/close. Reconcile the
+      // actual browser position with that latest intent instead of replaying an obsolete location.
+      sync(locationOf(store));
+      return;
+    }
     applying = true;
     try {
       if (store.selectedThreadId !== entry.task) store.select(entry.task);

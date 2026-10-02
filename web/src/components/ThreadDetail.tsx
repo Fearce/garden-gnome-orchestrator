@@ -28,6 +28,12 @@ import { TaskBranch } from "./TaskBranch.js";
 import { ReceiptMarks } from "./InjectionReceipts.js";
 import { useSwipeDismiss } from "../lib/swipe.js";
 import { isToolActivity } from "../lib/feedFilter.js";
+import { IOS_PHONE } from "../lib/iosPhone.js";
+
+// A task remounts on Close/Forward. Retain the iPhone's reading position for this page session,
+// including its rendered older rows, so reopening does not reset a filter or jump to the live tail.
+type ReadingPosition = { role: Role | "all"; count: number; top: number; stuck: boolean };
+const taskReadingPositions = new Map<string, ReadingPosition>();
 
 /**
  * The detail panel's workspace chip. The panel already resolves this task's code context for its
@@ -631,6 +637,8 @@ export function ThreadDetail() {
   }, []);
   const att = useAttachments();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const savedReading = useRef(IOS_PHONE && id ? taskReadingPositions.get(id) : undefined);
+  const restoreReading = useRef(savedReading.current);
   const lastSentRef = useRef(""); // last injected message, recalled with ↑ when the field is empty
 
   const thread = id ? threads[id] : undefined;
@@ -688,7 +696,7 @@ export function ThreadDetail() {
   const deliverables = id ? [id, ...collabIds].flatMap((t) => threadDeliverables[t] ?? []) : [];
   const feedItems = useMemo(() => feed.filter((f) => !(f.kind === "finding" && f.finding.kind === "deliverable")), [feed]);
 
-  const [roleFilter, setRoleFilter] = useState<Role | "all">("all");
+  const [roleFilter, setRoleFilter] = useState<Role | "all">(savedReading.current?.role ?? "all");
   // Persisted globally: the detail panel remounts per task (key={selected}), so without this the
   // tools toggle would reset to "shown" every time you switch tasks.
   const [showTools, setShowToolsState] = useState(() => {
@@ -724,7 +732,7 @@ export function ThreadDetail() {
     }
     setHeadCollapsedState(v);
   };
-  const stickRef = useRef(true);
+  const stickRef = useRef(savedReading.current?.stuck ?? true);
 
   const runRole = useMemo(() => {
     const m: Record<string, Role> = {};
@@ -754,7 +762,7 @@ export function ThreadDetail() {
   );
 
   // Render only the tail of the feed; grow the window when the user scrolls toward the top.
-  const [renderCount, setRenderCount] = useState(RENDER_WINDOW);
+  const [renderCount, setRenderCount] = useState(savedReading.current?.count ?? RENDER_WINDOW);
   const growAnchorRef = useRef<{ height: number; top: number } | null>(null);
   // The window always tracks the most recent rows, so live appends stay visible at the bottom.
   const windowed = useMemo(
@@ -763,7 +771,15 @@ export function ThreadDetail() {
   );
   const hiddenAbove = visible.length - windowed.length;
   // Reset the window when the viewed subset changes (task switch, filter, tools toggle).
-  useEffect(() => setRenderCount(RENDER_WINDOW), [id, roleFilter, showTools]);
+  const initialWindow = useRef(true);
+  useEffect(() => {
+    if (initialWindow.current && savedReading.current) {
+      initialWindow.current = false;
+      return;
+    }
+    initialWindow.current = false;
+    setRenderCount(RENDER_WINDOW);
+  }, [id, roleFilter, showTools]);
   // After older rows are prepended, keep the same content under the viewport (no jump). A shotgun task
   // pages several feeds at once, so hold the anchor until the last of them has answered.
   useLayoutEffect(() => {
@@ -778,10 +794,17 @@ export function ThreadDetail() {
   // Stick to the bottom only when already near it, so reading an earlier agent
   // isn't yanked down when a live agent appends below.
   useEffect(() => {
+    if (restoreReading.current) return;
     if (stickRef.current) scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [visible.length, draft, thinkingDraft, collabDraftSig]);
   // Switching filter: jump to the start of a specific agent (read top-down), or to live for "all".
+  const initialFilter = useRef(true);
   useEffect(() => {
+    if (initialFilter.current && savedReading.current) {
+      initialFilter.current = false;
+      return;
+    }
+    initialFilter.current = false;
     const el = scrollRef.current;
     if (!el) return;
     if (roleFilter === "all") {
@@ -792,6 +815,26 @@ export function ThreadDetail() {
       stickRef.current = false;
     }
   }, [roleFilter, showTools]);
+
+  useLayoutEffect(() => {
+    const saved = restoreReading.current;
+    const el = scrollRef.current;
+    if (!saved || !el || !historyLoaded || historyLoading) return;
+    el.scrollTop = saved.stuck ? el.scrollHeight : saved.top;
+    stickRef.current = saved.stuck;
+    restoreReading.current = undefined;
+  }, [historyLoaded, historyLoading, visible.length, renderCount]);
+  const readingState = useRef({ role: roleFilter, count: renderCount });
+  readingState.current = { role: roleFilter, count: renderCount };
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    return () => {
+      if (!IOS_PHONE || !id || !el) return;
+      taskReadingPositions.delete(id);
+      taskReadingPositions.set(id, { ...readingState.current, top: el.scrollTop, stuck: stickRef.current });
+      if (taskReadingPositions.size > 100) taskReadingPositions.delete(taskReadingPositions.keys().next().value!);
+    };
+  }, [id]);
 
   const [panel, setPanel] = useState<HTMLElement | null>(null);
   useSwipeDismiss(panel, () => select(null), { swipeRight: true });
@@ -1469,7 +1512,7 @@ export function ThreadDetail() {
         </div>
       </div>
       {overlay?.kind === "memo" && taskMemos.length ? (
-        <ImplementationMemoModal memos={taskMemos} initialId={overlay.memoId} onClose={closeOverlay} />
+        <ImplementationMemoModal memos={taskMemos} initialId={overlay.memoId} onClose={closeOverlay} onSelect={IOS_PHONE ? openMemo : undefined} />
       ) : null}
       {overlay?.kind === "changes" && (
         <div className="scrim" onClick={closeOverlay}>
