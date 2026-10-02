@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
@@ -7,6 +8,8 @@ import type { DispatchInput } from "./api.js";
 import type { ModelCandidate } from "./modelSelector.js";
 import { UNFINISHED_STATES } from "./scheduler.js";
 import { formatUntil } from "./capacityRouting.js";
+import { describeGoalUsage, UNMETERED_PROVIDER } from "./goalUsage.js";
+import { actionKey, assessSessionProgress } from "./continuationProgress.js";
 import {
   DEFAULT_GOAL_BURN_RATE_PCT,
   DEFAULT_GOAL_MAX_CONCURRENT,
@@ -15,11 +18,14 @@ import {
   GOAL_EFFORTS,
   MAX_GOAL_BURN_RATE_PCT,
   MAX_GOAL_MAX_CONCURRENT,
+  MAX_GOAL_TOKEN_BUDGET,
   MIN_GOAL_BURN_RATE_PCT,
   type Effort,
   type Goal,
-  type GoalStatus,
+  type GoalHold,
+  type GoalOwnerStatus,
   type GoalStep,
+  type GoalTurnActivity,
   type GoalVerdict,
   type ImplementorProvider,
   type Thread,
@@ -29,17 +35,28 @@ import {
  * GOAL-DIRECTED TASKS — a standing objective GGO keeps a task working on until it is done.
  *
  * Not a schedule (that fires the same prompt on a clock) and not a timed task (one task with a window).
- * A goal is a loop of ordinary tasks: whenever the goal has no step task in flight, the director reads
- * where the last step left things and either plans the next step — choosing its backend, model and
- * effort from what can dispatch right now — or declares the objective met.
+ * A goal is a loop of ordinary tasks. The director plans the first step — choosing its backend, model and
+ * effort from what can dispatch right now. A sequential goal (`persistentSession`, one step at a time)
+ * then CONTINUES that task in its own session at each idle turn boundary, with a short continuation
+ * instead of a fresh task and a director call: the session's context (and the provider's own compaction)
+ * carries the work forward. The director is asked again only when there is something to judge: a
+ * completion claim to audit, a changed objective or pin, or a turn that ended unclean. A parallel goal
+ * asks the director at every step, as each step is a fresh task.
  *
  * Ending takes TWO agreeing voices: the step's implementor must declare the whole objective complete
  * (`GOAL STATUS: COMPLETE` on its own line) AND the director, reading that report, must agree. A
- * director who thinks it is done without that claim dispatches a verification step instead; an agent
- * claim the director rejects just gets the next step. Neither side can end the loop alone.
+ * director who thinks it is done without that claim asks for a verification turn instead; an agent
+ * claim the director rejects just gets more work. Neither side can end the loop alone.
+ *
+ * Automatic continuation stops itself rather than spin, judged from evidence a report cannot fake (tool
+ * calls, findings, the git state): a turn with no tool call, a turn that did no new work and repeated the
+ * report before it, three turns running that did no new work, or three turns blocked on the same impasse
+ * with nothing changed move the goal to `blocked`; a spent token budget to `budget_limited`. The budget is
+ * checked between turns from finished runs' recorded usage, so a running turn may exceed it, and director
+ * judgements are outside it. Both stops wait for the owner, and an explicit resume starts a fresh audit. A turn that waits on a live job is deferred, not continued at once.
  *
  * The loop is driven by durable state only (`goals` + `goal_steps`), re-read on every evaluation, so a
- * restart simply re-evaluates. There is no step budget: a goal keeps going until it is done. Only a run
+ * restart simply re-evaluates. There is no step budget: a goal keeps going until it is done. A run
  * of failed steps or a cancelled step (the owner intervened) pauses it with a reason.
  *
  * The owner may pin a goal's effort and/or model; the director then plans steps within that pin. With no
@@ -72,12 +89,30 @@ const WEEK_MS = 7 * 24 * 60 * 60_000;
 export const GOAL_BURN_GRACE_PCT = 5;
 /** A burn-rate hold re-checks at least this often: another pool may free up before the pace catches up. */
 const BURN_RECHECK_MAX_MS = 30 * 60_000;
+/** A step whose run is only tearing down is looked at again this soon. */
+const SETTLING_RECHECK_MS = 3_000;
 
 export const GOAL_PROVIDERS: ImplementorProvider[] = ["claude", "codex", "grok", "zai"];
 const POOL_LABEL: Record<ImplementorProvider, string> = { claude: "Claude", codex: "Codex", grok: "Grok", zai: "z.ai" };
 
 /** The director's raw answer, or the reason it could not give one, shown to the owner while the goal waits. */
 export type GoalJudgeAnswer = { output: unknown; model: string; provider: ImplementorProvider } | { failure: string };
+
+/** Why a step task that stopped must not count as ended yet, or why its next turn cannot start now. */
+export interface GoalTaskHold {
+  kind: GoalHold;
+  reason: string;
+  /** Only the run's teardown is left: look again in seconds instead of waiting for the next tick. */
+  settling?: boolean;
+}
+
+/**
+ * The answer to sending a goal's next turn into a step task's own session. `hold` means not now (the task
+ * is busy, input is pending, capacity is short) and costs nothing; `fresh` means this task can never take
+ * another turn (it is gone, closed, or has no session), so a fresh task is needed; `stop` means continuing
+ * would override something only the owner can settle.
+ */
+export type GoalContinuation = { ok: true } | { ok: false; hold: GoalTaskHold } | { ok: false; fresh: string } | { ok: false; stop: string };
 
 /** What the runner needs from the rest of GGO. ThreadManager provides all of it; tests fake it. */
 export interface GoalHost {
@@ -87,6 +122,13 @@ export interface GoalHost {
   /** Every (provider, model) pair a task could be dispatched to right now, with its efforts. */
   roster(): ModelCandidate[];
   notify?(kind: "done" | "input", title: string, detail?: string, repo?: string): void;
+  /** Why a step task in a stopped state is still owed work by GGO itself (a cap park, a restart auto-resume, its
+   *  run's teardown), so its step must keep its slot instead of settling. Absent: never. */
+  taskHold?(threadId: string): GoalTaskHold | null;
+  /** Sends a goal's next turn into a finished step task's own session. Absent: every step is a fresh task. */
+  continueTask?(threadId: string, message: string): GoalContinuation;
+  /** The git state of a step task's workspace; one piece of a turn's progress evidence. Absent or null: unknown. */
+  workspaceFingerprint?(threadId: string): Promise<string | null>;
 }
 
 /** The owner's pin on a goal. `null` leaves that choice to the director; `undefined` leaves it unchanged. */
@@ -101,6 +143,11 @@ export interface GoalPaceInput {
   maxConcurrent?: number;
   burnConservation?: boolean;
   burnRatePct?: number;
+  /** One-at-a-time goals carry their task's session from turn to turn (the default). */
+  persistentSession?: boolean;
+  /** Fresh input + output tokens the goal's step-task runs may spend, checked between turns (a running turn may
+   *  exceed it); null removes the budget. */
+  tokenBudget?: number | null;
 }
 
 export interface GoalInput extends GoalPinInput, GoalPaceInput {
@@ -149,21 +196,81 @@ export interface StepPin {
 // ---- pure helpers ----
 
 const COMPLETE_LINE = /^[\s>*_`#-]*GOAL STATUS\s*:\s*[*_`]*\s*COMPLETE\s*[*_`.!]*\s*$/i;
-const CONTINUE_LINE = /^[\s>*_`#-]*GOAL STATUS\s*:\s*[*_`]*\s*CONTINUE\b/i;
+const STATUS_LINE = /^[\s>*_`#-]*GOAL STATUS\s*:\s*[*_`]*\s*(COMPLETE|CONTINUE|BLOCKED|WAITING)\b(.*)$/i;
+
+/** A turn's closing status: the whole objective done, more to do, a job still running, or an impasse. */
+export interface GoalStatusLine {
+  kind: "complete" | "continue" | "waiting" | "blocked";
+  detail: string;
+}
 
 /**
- * Whether a step's final report declares the WHOLE objective complete. The last status line wins, and a
- * COMPLETE line must stand alone: the brief quotes the marker mid-sentence, so an agent echoing its
- * instructions ("`GOAL STATUS: COMPLETE` if …") can never end a goal by accident.
+ * The status line a step's report ends on. The last status line wins, and a COMPLETE line must stand
+ * alone: the brief quotes the marker mid-sentence, so an agent echoing its instructions
+ * ("`GOAL STATUS: COMPLETE` if …") can never end a goal by accident.
  */
-export function detectGoalComplete(report: string | null | undefined): boolean {
-  if (!report) return false;
-  let claim = false;
+export function readGoalStatusLine(report: string | null | undefined): GoalStatusLine | null {
+  if (!report) return null;
+  let found: GoalStatusLine | null = null;
   for (const line of report.split(/\r?\n/)) {
-    if (COMPLETE_LINE.test(line)) claim = true;
-    else if (CONTINUE_LINE.test(line)) claim = false;
+    const m = STATUS_LINE.exec(line);
+    if (!m) continue;
+    const kind = m[1]!.toLowerCase() as GoalStatusLine["kind"];
+    if (kind === "complete" && !COMPLETE_LINE.test(line)) continue;
+    found = { kind, detail: m[2]!.replace(/^[\s*_`.!]*[—–:-]?\s*/, "").replace(/[\s*_`]+$/, "").trim() };
   }
-  return claim;
+  return found;
+}
+
+/** Whether a step's final report declares the WHOLE objective complete. */
+export function detectGoalComplete(report: string | null | undefined): boolean {
+  return readGoalStatusLine(report)?.kind === "complete";
+}
+
+/** Consecutive goal turns BLOCKED on the same impasse that stop the goal; until then each turn tries again. */
+export const GOAL_BLOCKED_TURNS = 3;
+/** Consecutive goal turns that did no new work that stop automatic continuation. */
+export const GOAL_IDLE_TURNS = 3;
+/** A turn's tool calls are compared with this many of the task's earlier ones to find what it tried anew. */
+const EARLIER_ACTIONS_COMPARED = 500;
+
+/** What a persistent goal's turn left behind that its prose cannot fake. */
+interface TurnEvidence {
+  /** The task's git state when the turn ended; the next turn's change is measured from it. */
+  fingerprint: string | null;
+  /** New work of any kind: new actions, a new finding, or a repository change. */
+  progressed: boolean;
+  /** The repository or the task's findings changed, so an impasse reported now is not the one before. */
+  moved: boolean;
+}
+
+/** A token budget from any entry point: null (none) or a positive whole number of tokens. */
+export function validateTokenBudget(budget: number | null | undefined): string | null {
+  if (budget == null) return null;
+  return Number.isInteger(budget) && budget > 0 && budget <= MAX_GOAL_TOKEN_BUDGET ? null : "A token budget must be a positive whole number of tokens.";
+}
+
+/** A budget counts tokens, and Grok reports none, so a budgeted goal never runs there. */
+function budgetPinError(budget: number | null | undefined, provider: ImplementorProvider | null | undefined): string | null {
+  return budget != null && provider === UNMETERED_PROVIDER
+    ? "Grok reports no token usage, so a goal with a token budget cannot be pinned to it."
+    : null;
+}
+
+/** The candidates a goal's steps may run on: all of them, except Grok for a goal with a token budget. */
+export function meteredRoster(goal: Pick<Goal, "tokenBudget">, roster: ModelCandidate[]): ModelCandidate[] {
+  return goal.tokenBudget == null ? roster : roster.filter((c) => c.provider !== UNMETERED_PROVIDER);
+}
+
+function noCapacityReason(goal: Pick<Goal, "tokenBudget">, roster: ModelCandidate[]): string {
+  return goal.tokenBudget != null && roster.length
+    ? "Waiting for model capacity: only Grok can take a task right now, and it reports no token usage for this goal's budget."
+    : "Waiting for model capacity: no backend can take a task right now.";
+}
+
+/** The normalised fingerprint of a report, so two turns that ended on the same words are recognised. */
+export function reportDigest(report: string): string {
+  return createHash("sha256").update(report.replace(/\s+/g, " ").trim().toLowerCase()).digest("hex").slice(0, 32);
 }
 
 export function clampMaxConcurrent(value: number | undefined): number {
@@ -257,6 +364,7 @@ export function stepWrapUpReason(
     const why = goal.statusReason?.trim().replace(/\.+$/, "");
     return `the goal "${goal.title}" is ${goal.status}${why ? ` (${why})` : ""}`;
   }
+  if (budgetSpent(goal)) return `the goal "${goal.title}" has spent its step-task token budget: ${describeGoalUsage(goal.usage, goal.tokenBudget)}`;
   if (!goal.burnConservation || !provider) return null;
   for (const candidate of roster.filter((c) => c.provider === provider)) {
     const pace = poolOverPace(candidate, goal.burnRatePct, now);
@@ -265,6 +373,16 @@ export function stepWrapUpReason(
     }
   }
   return null;
+}
+
+/** Whether the goal's metered spend has reached its budget. Unmetered runs make the spend a lower bound,
+ *  so a budget can be reached late, never early. */
+export function budgetSpent(goal: Pick<Goal, "tokenBudget" | "usage">): boolean {
+  return goal.tokenBudget != null && goal.usage.tokensUsed >= goal.tokenBudget;
+}
+
+function budgetStopReason(goal: Pick<Goal, "tokenBudget" | "usage">): string {
+  return `Its step tasks used the token budget: ${describeGoalUsage(goal.usage, goal.tokenBudget)}. Raise or remove the budget, then resume the goal.`;
 }
 
 function burnHold(burnRatePct: number, pools: PoolOverPace[], anyPoolFrees: boolean, now: number): { reason: string; until: number } {
@@ -447,6 +565,10 @@ export interface GoalJudgeContext {
   /** Pools left off the roster because they are spending faster than the goal's burn rate. */
   overPace?: PoolOverPace[];
   ownerName: string;
+  /** The last step's task can take `next` as another turn in its own session. */
+  continues?: boolean;
+  /** Why a persistent goal asks the director now, rather than continuing on its own. */
+  askedBecause?: string;
 }
 
 const pickLabel = (s: GoalStep): string => [s.provider, s.model, s.effort].filter(Boolean).join(" / ") || "auto routing";
@@ -481,8 +603,11 @@ function runningBlock(goal: Goal, running: RunningGoalStep[]): string {
 }
 
 /** The `next` instruction: one long step for a sequential goal, a disjoint long share for a parallel one. */
-function nextInstruction(goal: Goal): string {
+function nextInstruction(goal: Goal, continues: boolean): string {
   const tail = "Every step is a fresh agent session that re-reads the repository before it can work, plus another judgement from you, so many small steps waste tokens that one long step spends on the work itself. Build on what earlier steps did; if a step failed or QA rejected it, address why. The brief goes to the implementor as-is, together with the objective.";
+  if (continues) {
+    return "- `next`: what remains, as a concrete brief covering ALL the remaining work of the objective, most valuable part first. It goes into the SAME task and session that ran the last step, which keeps its context and its model, so do not re-explain what that agent already knows; name the gaps and the evidence that will close them. Your provider/model/effort pick is used only if that task cannot take another turn and a fresh task is needed.";
+  }
   if (goal.maxConcurrent <= 1) {
     return `- \`next\`: the next step, as a concrete, self-contained brief. Make it one LONG-RUNNING task covering ALL the remaining work of the objective, ordered so the most valuable part comes first. Split the remaining work only where a later part truly depends on your judging an earlier result, never just to keep a step small. ${tail}`;
   }
@@ -491,7 +616,7 @@ function nextInstruction(goal: Goal): string {
 
 function verdictInstructions(ownerName: string, running: number): string[] {
   const lines = [
-    `- verdict "complete" ONLY if the objective as ${ownerName} wrote it is fully met and the evidence shows it (not merely that a step finished). Otherwise "continue".`,
+    `- verdict "complete" ONLY if the objective as ${ownerName} wrote it is fully met and the evidence shows it (not merely that a step finished). Audit each requirement of the objective against the report's evidence; a job still being polled is not a finished one. Otherwise "continue".`,
     "- The goal ends only when you say complete AND the last step's agent declared it complete. If you believe it is complete but the agent did not declare it, still return \"complete\" and make `next` a VERIFICATION step: independently check every part of the objective, fix any gap, and declare the result.",
   ];
   if (running) {
@@ -530,10 +655,11 @@ export function buildGoalJudgePrompt(ctx: GoalJudgeContext): string {
     "",
     runningBlock(goal, running),
     "",
+    ctx.askedBecause ? `WHY YOU ARE ASKED: between your decisions the goal continues in its task's own session without you. You are asked now because ${ctx.askedBecause}.` : "",
     "DECIDE:",
     ...verdictInstructions(ctx.ownerName, running.length),
     "- `progress`: a short running summary of what is done and what remains, replacing the earlier one.",
-    nextInstruction(goal),
+    nextInstruction(goal, !!ctx.continues),
     pickInstruction(goal, ctx.ownerName),
     "",
     rosterBlock(ctx.roster, ctx.overPace),
@@ -544,7 +670,10 @@ export function buildGoalJudgePrompt(ctx: GoalJudgeContext): string {
  *  the other steps a parallel goal runs. */
 function scopeParagraph(goal: Goal, siblings: GoalStep[]): string {
   if (goal.maxConcurrent <= 1) {
-    return "This is a long-running task: finish this step completely, then keep going into the rest of the objective in this same task, committing at each coherent point. Stop only when the ENTIRE objective is achieved or you are blocked on something only the owner can resolve. Each new step starts a fresh session that must re-learn the repository, so one long task costs far fewer tokens than many short ones. Then report what you did.";
+    const carry = goal.persistentSession
+      ? "When you end a turn, GGO continues the goal in this same session, so your context carries over; a fresh task that must re-learn the repository is only started when this one cannot go on."
+      : "Each new step starts a fresh session that must re-learn the repository, so one long task costs far fewer tokens than many short ones.";
+    return `This is a long-running task: finish this step completely, then keep going into the rest of the objective in this same task, committing at each coherent point. Stop only when the ENTIRE objective is achieved or you are blocked on something only the owner can resolve. ${carry} Then report what you did.`;
   }
   const beside = siblings.length ? ` Running beside you right now: ${siblings.map((s) => `step ${s.seq} "${s.title}"`).join(", ")}.` : "";
   return `This is a long-running task: finish this step completely, committing at each coherent point. Up to ${goal.maxConcurrent} step tasks of this goal run at once in this same repository.${beside} Stay within this step's scope rather than taking on work another step owns, commit only your own changes, and coordinate through the office when your work touches theirs. Stop when this step is done or you are blocked on something only the owner can resolve. Then report what you did.`;
@@ -560,8 +689,50 @@ export function goalStepBrief(goal: Goal, seq: number, judgement: GoalJudgement,
       ? `THIS STEP IS A VERIFICATION: the director believes the objective is already met. Check every part of it against the repository and running behaviour, fix any gap you find, then report honestly.\n\n${judgement.next.brief}`
       : `THIS STEP:\n${judgement.next.brief}`,
     scopeParagraph(goal, siblings),
-    "End your final report with one status line on its own. Write `GOAL STATUS: COMPLETE` only if the ENTIRE objective, not just this step, is now fully achieved and verified. Otherwise write `GOAL STATUS: CONTINUE — <what still remains>`. The director checks your claim against the evidence; claiming complete early only earns a verification step.",
+    GOAL_STATUS_RULE,
   ].filter(Boolean).join("\n\n");
+}
+
+const GOAL_STATUS_RULE =
+  "End your final report with one status line on its own. Write `GOAL STATUS: COMPLETE` only if the ENTIRE objective, not just this step, is now fully achieved and verified. Write `GOAL STATUS: WAITING — <the live job and how you checked it>` only when the next work depends on a process, job or tool run you can show is still live; `GOAL STATUS: BLOCKED — <the blocker>` when only the owner or an outside change can unblock you; otherwise `GOAL STATUS: CONTINUE — <what still remains>`. The director checks a COMPLETE claim against the evidence; claiming complete early only earns more work.";
+
+/** What the director decided when it was asked mid-goal, for the turn it sends into the same session. */
+export interface GoalTurnDirection {
+  judgement: GoalJudgement;
+  /** The director thinks the objective is met but the agent did not say so. */
+  verification: boolean;
+  /** The agent claimed the objective complete and the director disagreed. */
+  auditRejected: boolean;
+}
+
+/**
+ * The message that opens a goal's next turn in its task's own session: the objective, where the last turn
+ * left off, and how to classify this one. Kept short, because the session already holds the work; it
+ * replaces the fresh task brief and the director call a new step would cost.
+ */
+export function goalContinuationMessage(goal: Goal, step: GoalStep, last: GoalStatusLine | null, direction?: GoalTurnDirection): string {
+  return [
+    `GOAL CONTINUATION — turn ${step.turns + 1} of the goal "${goal.title}", in this same session.`,
+    `The objective (the owner's words):\n${goal.objective}`,
+    direction ? directedTurn(direction) : `Your last turn ended: ${describeStatus(last)}.`,
+    "Start from evidence, not memory: check the repository, the tests and any running job against each part of the objective, then do the most valuable remaining work in this turn, committing at each coherent point.",
+    "Wait only on a process, job or tool run you can show is still live, and wait for it inside this turn where you can; ending a turn just to poll again is no progress. A timeout while reading a live job is not a reason to restart it.",
+    GOAL_STATUS_RULE,
+    "Automatic continuation stops after a turn that makes no tool call, after turns that do no new work (no repository change, no new finding, nothing new tried), and after the same blocker three turns running.",
+  ].join("\n\n");
+}
+
+function directedTurn({ judgement, verification, auditRejected }: GoalTurnDirection): string {
+  const brief = judgement.next.brief;
+  if (verification) return `THE DIRECTOR BELIEVES THE OBJECTIVE IS MET. Verify every part of it against the repository and running behaviour, fix any gap you find, then report honestly.\n\n${brief}`;
+  if (auditRejected) return `THE DIRECTOR AUDITED YOUR COMPLETION CLAIM AND DOES NOT AGREE YET: ${judgement.reason}\n\nWhat remains:\n${brief}`;
+  return `THE DIRECTOR'S DIRECTION FOR THIS TURN:\n${brief}`;
+}
+
+function describeStatus(last: GoalStatusLine | null): string {
+  if (!last) return "without a goal status line";
+  const detail = last.detail ? ` — ${clip(last.detail, 600)}` : "";
+  return `${last.kind.toUpperCase()}${detail}`;
 }
 
 /** The outcomes that count against the failed-step guard. `review` is not one: QA was unsatisfied but
@@ -579,6 +750,9 @@ export class GoalRunner {
   private readonly running = new Map<string, boolean>();
   /** threadId → goalId for each goal's current step, so a task settling wakes its goal at once. */
   private currentThreads = new Map<string, string>();
+  /** Step tasks that answered they can take no more turns, so the director plans a fresh task instead of
+   *  being asked to continue them again. In memory: after a restart one more attempt just gets the same answer. */
+  private readonly retiredCarriers = new Set<string>();
 
   constructor(
     private readonly db: Db,
@@ -634,7 +808,7 @@ export class GoalRunner {
     if (!workspace) return { ok: false, error: "Workspace path is required." };
     if (!existsSync(workspace)) return { ok: false, error: `Workspace "${workspace}" does not exist.` };
     const pin = trimPinModel({ effort: input.effort ?? null, provider: input.provider ?? null, model: input.model ?? null });
-    const pinError = validateGoalPin(pin);
+    const pinError = validateGoalPin(pin) ?? validateTokenBudget(input.tokenBudget) ?? budgetPinError(input.tokenBudget, pin.provider);
     if (pinError) return { ok: false, error: pinError };
     const goal = this.db.createGoal({
       title,
@@ -646,6 +820,8 @@ export class GoalRunner {
       maxConcurrent: clampMaxConcurrent(input.maxConcurrent),
       burnConservation: input.burnConservation ?? true,
       burnRatePct: clampBurnRate(input.burnRatePct),
+      persistentSession: input.persistentSession ?? true,
+      tokenBudget: input.tokenBudget ?? null,
     });
     this.hub.log("info", `Goal "${title}" created in ${workspace}.`);
     this.broadcast();
@@ -661,18 +837,27 @@ export class GoalRunner {
     if (patch.title !== undefined && !title) return { ok: false, error: "Title is required." };
     if (patch.objective !== undefined && !objective) return { ok: false, error: "Objective is required." };
     const pin = trimPinModel({ effort: patch.effort, provider: patch.provider, model: patch.model });
-    const pinError = validateGoalPin(pin);
+    const budget = patch.tokenBudget === undefined ? current.tokenBudget : patch.tokenBudget;
+    const provider = pin.model === undefined ? current.provider : pin.provider;
+    const pinError = validateGoalPin(pin) ?? validateTokenBudget(patch.tokenBudget) ?? budgetPinError(budget, provider);
     if (pinError) return { ok: false, error: pinError };
     const pace = paceChanges(current, patch);
+    const objectiveChanged = !!objective && objective !== current.objective;
+    const pinChanged = pinEdited(current, pin);
     // A new objective or pin changes what the director is asked, and a burn-rate hold or a full slot may no
     // longer apply, so any backoff is stale: look again now instead of at the next check.
-    const replan = !!pace || planChanged(current, objective, pin);
+    const replan = !!pace || objectiveChanged || pinChanged;
+    // The DB clock, like the step rows these are compared with: a changed objective asks the director again,
+    // and a changed pin ends the carried session, which runs on the old model.
+    const at = Date.now();
     const goal = this.db.updateGoal(id, {
       ...(title ? { title } : {}),
       ...(objective ? { objective } : {}),
       ...(pin.effort !== undefined ? { effort: pin.effort } : {}),
       ...(pin.model !== undefined ? { provider: pin.provider ?? null, model: pin.model } : {}),
       ...(pace ?? {}),
+      ...(objectiveChanged ? { replanAt: at } : {}),
+      ...(pinChanged ? { pinChangedAt: at } : {}),
       ...(replan ? { nextCheckAt: null } : {}),
     });
     this.broadcast();
@@ -683,17 +868,22 @@ export class GoalRunner {
   /**
    * The owner's lifecycle controls. Pausing or ending never interrupts the step task in flight: at its
    * next turn ceiling it is asked to commit and report instead of continuing, and no further step
-   * follows. Resuming clears any backoff and evaluates at once. `achieved` here is the owner's own override and needs no agent or director agreement.
+   * follows. Resuming clears any backoff and the no-progress audit, and evaluates at once. `achieved` here
+   * is the owner's own override and needs no agent or director agreement. `blocked` and `budget_limited`
+   * are only reached by the loop; resuming a goal out of its budget needs a larger budget first.
    */
-  setStatus(id: string, status: GoalStatus, reason?: string): GoalResult {
+  setStatus(id: string, status: GoalOwnerStatus, reason?: string): GoalResult {
     const current = this.db.getGoal(id);
     if (!current) return { ok: false, error: "No such goal." };
     if (current.status === status) return { ok: true, goal: current };
     if (current.status === "achieved" || current.status === "abandoned") {
       if (status !== "active") return { ok: false, error: `The goal is already ${current.status}.` };
     }
+    if (status === "active" && budgetSpent(current)) {
+      return { ok: false, error: `The goal's step tasks have used its token budget (${describeGoalUsage(current.usage, current.tokenBudget)}). Raise or remove the budget first.` };
+    }
     const terminal = status === "achieved" || status === "abandoned";
-    const defaults: Record<GoalStatus, string | null> = {
+    const defaults: Record<GoalOwnerStatus, string | null> = {
       active: null,
       paused: "Paused by the owner.",
       achieved: "Marked achieved by the owner.",
@@ -703,7 +893,10 @@ export class GoalRunner {
       status,
       statusReason: reason?.trim() || defaults[status],
       nextCheckAt: null,
+      hold: null,
       endedAt: terminal ? this.now() : null,
+      // A resume starts a fresh audit: the director judges before the session continues on its own (the DB clock, as in `update`).
+      ...(status === "active" ? { blockedStreak: 0, idleStreak: 0, lastTurnDigest: null, replanAt: Date.now() } : {}),
     });
     this.hub.log("info", `Goal "${current.title}" is now ${status}.`);
     this.broadcast();
@@ -751,33 +944,61 @@ export class GoalRunner {
     const goal = this.db.getGoal(goalId);
     if (!goal || goal.status !== "active") return;
 
-    const open = this.settleOpenSteps(goal);
-    if (open === "paused" || open === "orphan") return;
+    const open = await this.settleOpenSteps(goal);
+    if (open === "stopped" || open === "orphan") return;
     const running = open;
+    const current = this.db.getGoal(goalId)!;
 
-    if (goal.nextCheckAt && goal.nextCheckAt > this.now()) return;
-    if (running.length >= goal.maxConcurrent) return;
-    if (running.length && this.heldForRunningSteps(goal)) return;
-    if (!existsSync(goal.workspace)) return this.pause(goal, `Workspace ${goal.workspace} no longer exists.`);
+    if (current.nextCheckAt && current.nextCheckAt > this.now()) return;
+    if (running.length >= current.maxConcurrent) return;
+    if (running.length && this.heldForRunningSteps(current)) return;
+    if (!existsSync(current.workspace)) return this.pause(current, `Workspace ${current.workspace} no longer exists.`);
+    if (budgetSpent(current)) return this.stopLoop(current, "budget_limited", budgetStopReason(current));
+    if (!running.length && this.continueOnItsOwn(current)) return;
     await this.judgeAndAct(goalId, running);
   }
 
   /**
    * Records every open step whose task has ended and returns the ones still running. "orphan" means a step
-   * is recorded but its task not yet found, so nothing may dispatch; "paused" means a settle paused the goal.
+   * is recorded but its task not yet found, so nothing may dispatch; "stopped" means a settle paused or
+   * blocked the goal. A task GGO still owes work (`taskHold`) keeps its step running.
    */
-  private settleOpenSteps(goal: Goal): GoalStep[] | "orphan" | "paused" {
+  private async settleOpenSteps(goal: Goal): Promise<GoalStep[] | "orphan" | "stopped"> {
     this.reopenResumedSteps(goal);
     const running: GoalStep[] = [];
+    let held: GoalTaskHold | null = null;
     for (const open of this.db.listOpenGoalSteps(goal.id)) {
       const step = this.adoptOrphan(goal, open);
       if (step.settledAt != null) continue;
       if (!step.threadId) return "orphan";
       const thread = this.db.getThread(step.threadId);
-      if (thread && UNFINISHED_STATES.has(thread.state)) running.push(step);
-      else if (this.settleStep(goal, step, thread)) return "paused";
+      const hold = thread && !UNFINISHED_STATES.has(thread.state) ? this.host.taskHold?.(thread.id) ?? null : null;
+      if (hold) held ??= hold;
+      if (hold || (thread && UNFINISHED_STATES.has(thread.state))) {
+        running.push(step);
+        continue;
+      }
+      const settled = await this.settleStep(goal, step, thread);
+      if (settled === "stopped") return "stopped";
+      if (settled === "restarted") running.push(step);
     }
+    this.noteTaskHold(goal, held, running.length);
     return running;
+  }
+
+  /** Shows why a stopped step still holds its slot, and clears that once its task is back at work. A run
+   *  only tearing down is looked at again in seconds, not at the next tick. */
+  private noteTaskHold(goal: Goal, hold: GoalTaskHold | null, running: number): void {
+    if (hold) {
+      if (goal.hold !== hold.kind || goal.statusReason !== hold.reason) {
+        this.db.updateGoal(goal.id, { hold: hold.kind, statusReason: hold.reason });
+        this.broadcast();
+      }
+      if (hold.settling) setTimeout(() => void this.evaluate(goal.id), SETTLING_RECHECK_MS).unref?.();
+    } else if (goal.hold && running) {
+      this.db.updateGoal(goal.id, { hold: null, statusReason: null });
+      this.broadcast();
+    }
   }
 
   /**
@@ -838,35 +1059,136 @@ export class GoalRunner {
     return { ...step, outcome: "failed", agentClaimedComplete: false, settledAt: this.now() };
   }
 
-  /** Records how the step ended. Returns true when that ending paused the goal. */
-  private settleStep(goal: Goal, step: GoalStep, thread: Thread | null): boolean {
-    if (!step.threadId) return false;
-    const report = thread ? this.db.lastMessageOf(thread.id, "implementor", "text")?.content ?? null : null;
-    const claimed = detectGoalComplete(report);
+  /**
+   * Records how the step's turn ended. "stopped" means that ending paused or blocked the goal; "restarted"
+   * means the task was resumed or steered while the turn's evidence was read, so it is running again and
+   * its old report must not settle it.
+   */
+  private async settleStep(goal: Goal, step: GoalStep, thread: Thread | null): Promise<"settled" | "stopped" | "restarted"> {
+    if (!step.threadId) return "settled";
+    const turn = thread ? this.db.goalTurnActivity(thread.id, step.turnStartedAt) : null;
+    const status = readGoalStatusLine(turn?.report);
+    const claimed = status?.kind === "complete";
     const outcome = thread?.state ?? null;
-    this.db.updateGoalStep(step.id, { outcome, agentClaimedComplete: claimed, settledAt: this.now() });
+    const evidence = thread && turn && this.persistent(goal) ? await this.turnEvidence(step, thread.id) : null;
+    if (evidence && !this.turnUnchanged(step, thread!)) return "restarted";
+    this.db.updateGoalStep(step.id, {
+      outcome,
+      agentClaimedComplete: claimed,
+      settledAt: this.now(),
+      ...(evidence ? { turnFingerprint: evidence.fingerprint } : {}),
+    });
     this.hub.log("info", `Goal "${goal.title}" step ${step.seq} ended ${outcome ?? "(task missing)"}${claimed ? " — agent declared the objective complete" : ""}.`);
+    // The owner may have paused or ended the goal while the workspace was read: record the ending, act on nothing.
+    if (this.db.getGoal(goal.id)?.status !== "active") return "stopped";
     if (outcome === "cancelled") {
       this.pause(goal, `Step ${step.seq}'s task was cancelled. Resume the goal to keep going.`);
-      return true;
+      return "stopped";
     }
     const recent = this.settledSteps(goal.id).slice(-GOAL_MAX_FAILED_STEPS);
     if (recent.length >= GOAL_MAX_FAILED_STEPS && recent.every(stepFailed)) {
       this.pause(goal, `The last ${GOAL_MAX_FAILED_STEPS} steps failed. Check the latest step's task, then resume the goal.`);
-      return true;
+      return "stopped";
+    }
+    const stop = evidence && turn
+      ? this.blockerStreak(goal, status, evidence) ?? (outcome === "done" ? this.noProgress(goal, step, turn, status, evidence) : null)
+      : null;
+    if (stop) {
+      this.stopLoop(goal, "blocked", stop);
+      return "stopped";
     }
     this.broadcast();
-    return false;
+    return "settled";
+  }
+
+  /**
+   * Whether the step's task is still exactly where it was before the turn's evidence was read. The owner may
+   * resume or steer it meanwhile, and a turn that started again must not be settled, or blocked, on the
+   * report it replaced.
+   */
+  private turnUnchanged(step: GoalStep, before: Thread): boolean {
+    const now = this.db.getThread(before.id);
+    const open = this.db.listOpenGoalSteps(step.goalId).find((s) => s.id === step.id);
+    return !!now && !!open &&
+      now.state === before.state && now.updatedAt === before.updatedAt &&
+      open.turnStartedAt === step.turnStartedAt &&
+      !this.host.taskHold?.(before.id);
+  }
+
+  /**
+   * Whether a persistent goal's turn did new work, judged the way auto-continue judges a session
+   * (`continuationProgress.ts`): enough tool calls the task's earlier turns never made, a finding it never
+   * posted, or a changed git state. Prose is never evidence. `moved` is the stronger half: the repository or
+   * the task's findings changed, which trying new commands around the same impasse does not do.
+   */
+  private async turnEvidence(step: GoalStep, threadId: string): Promise<TurnEvidence> {
+    const fingerprint = (await this.host.workspaceFingerprint?.(threadId).catch(() => null)) ?? null;
+    const activity = this.db.roleActivitySince(threadId, "implementor", step.turnStartedAt);
+    const earlier = this.db.roleActionsBefore(threadId, "implementor", step.turnStartedAt, EARLIER_ACTIONS_COMPARED);
+    const earlierKeys = new Set(earlier.map(actionKey).filter((k): k is string => !!k));
+    const workspaceChanged = fingerprint != null && step.turnFingerprint != null && fingerprint !== step.turnFingerprint;
+    const progress = assessSessionProgress(activity, earlierKeys, workspaceChanged);
+    return { fingerprint, progressed: progress.progressed, moved: workspaceChanged || progress.newFindings > 0 };
+  }
+
+  /**
+   * Counts consecutive turns stuck on the same impasse; the third stops the goal. The agent's wording is never
+   * compared, so rephrasing a blocker cannot reset the count. Only evidence that the impasse moved (a
+   * repository change or a new finding) starts a new count, as a blocker that follows real work is a new one.
+   * Any ending other than BLOCKED clears it.
+   */
+  private blockerStreak(goal: Goal, status: GoalStatusLine | null, evidence: TurnEvidence): string | null {
+    const before = this.db.getGoal(goal.id)?.blockedStreak ?? 0;
+    const streak = status?.kind !== "blocked" ? 0 : before > 0 && !evidence.moved ? before + 1 : 1;
+    if (streak !== before) this.db.updateGoal(goal.id, { blockedStreak: streak });
+    if (streak < GOAL_BLOCKED_TURNS) return null;
+    return `The last ${GOAL_BLOCKED_TURNS} turns ended blocked on the same impasse with no change to the repository or new finding${status!.detail ? `, most recently: ${clip(status!.detail, 400)}` : ""}. Resolve it, then resume the goal.`;
+  }
+
+  /**
+   * Why a clean turn of a persistent goal must not be followed automatically. A turn that made no tool call
+   * (where its backend reports them) stops at once. Otherwise the turn's evidence decides: a turn that did
+   * new work always continues, whatever its report says. One that did none stops when it also repeated the
+   * report of the turn before, or when it is the GOAL_IDLE_TURNS-th such turn running. A completion claim is
+   * left to the audit, a WAITING turn may sit on a live job, and a BLOCKED one is counted by `blockerStreak`.
+   */
+  private noProgress(goal: Goal, step: GoalStep, turn: GoalTurnActivity, status: GoalStatusLine | null, evidence: TurnEvidence): string | null {
+    if (status?.kind === "complete") return null;
+    if (turn.toolCalls === 0) return `Step ${step.seq}'s last turn made no tool call, so automatic continuation is suppressed. Resume the goal to continue.`;
+    if (status?.kind === "waiting" || status?.kind === "blocked") return null;
+    const digest = turn.report ? reportDigest(turn.report) : null;
+    if (evidence.progressed) {
+      this.db.updateGoal(goal.id, { lastTurnDigest: digest, idleStreak: 0 });
+      return null;
+    }
+    const { lastTurnDigest, idleStreak } = this.db.goalLoopState(goal.id);
+    const idle = idleStreak + 1;
+    this.db.updateGoal(goal.id, { lastTurnDigest: digest, idleStreak: idle });
+    const nothingNew = "no repository change, no new finding and nothing new tried";
+    if (digest != null && digest === lastTurnDigest) {
+      return `Step ${step.seq}'s last turn repeated the report of the turn before and did no new work (${nothingNew}), so automatic continuation is suppressed. Resume the goal to continue.`;
+    }
+    if (idle >= GOAL_IDLE_TURNS) {
+      return `The last ${idle} turns did no new work (${nothingNew}), so automatic continuation is suppressed. Resume the goal to continue.`;
+    }
+    return null;
+  }
+
+  /** Whether this goal continues its task's own session between turns instead of dispatching fresh steps. */
+  private persistent(goal: Goal): boolean {
+    return goal.persistentSession && goal.maxConcurrent <= 1 && !!this.host.continueTask;
   }
 
   private async judgeAndAct(goalId: string, running: GoalStep[]): Promise<void> {
     const goal = this.db.getGoal(goalId)!;
     const all = this.db.listGoalSteps(goalId);
     const settled = this.settledSteps(goalId, all);
-    const available = this.host.roster();
-    if (!available.length) return this.wait(goal, "Waiting for model capacity: no backend can take a task right now.");
+    const roster = this.host.roster();
+    const available = meteredRoster(goal, roster);
+    if (!available.length) return this.wait(goal, noCapacityReason(goal, roster), undefined, "usage_limited");
     const burn = checkBurnRate(goal, available, this.now());
-    if (burn.hold) return this.wait(goal, burn.hold.reason, burn.hold.until);
+    if (burn.hold) return this.wait(goal, burn.hold.reason, burn.hold.until, "usage_limited");
+    const carrier = running.length ? null : this.carrier(goal, settled);
 
     const prompt = buildGoalJudgePrompt({
       goal,
@@ -876,6 +1198,8 @@ export class GoalRunner {
       roster: burn.roster,
       overPace: burn.over,
       ownerName: this.options.ownerName,
+      continues: !!carrier,
+      askedBecause: this.persistent(goal) ? this.askedBecause(goal, settled.at(-1), carrier) : undefined,
     });
     const answer = await this.host
       .judge(prompt, goalJudgeSchema(goal, burn.roster, running.length))
@@ -889,10 +1213,14 @@ export class GoalRunner {
     if (planChanged(goal, fresh.objective, fresh) ||
         goal.maxConcurrent !== fresh.maxConcurrent ||
         goal.burnConservation !== fresh.burnConservation ||
-        goal.burnRatePct !== fresh.burnRatePct) {
+        goal.burnRatePct !== fresh.burnRatePct ||
+        goal.persistentSession !== fresh.persistentSession ||
+        goal.tokenBudget !== fresh.tokenBudget) {
       if (this.running.has(goalId)) this.running.set(goalId, true);
       return;
     }
+    // Spend keeps growing while the director thinks (a step may still be reporting usage).
+    if (budgetSpent(fresh)) return this.stopLoop(fresh, "budget_limited", budgetStopReason(fresh));
     // A settled step's task came back while the director was thinking (a cap reset both resumes it and
     // frees capacity for this judgement). The slot count above is stale, so plan again with it in view.
     if (this.reopenResumedSteps(fresh)) {
@@ -907,7 +1235,104 @@ export class GoalRunner {
     if (held) return this.broadcast();
 
     if (judgement.verdict === "complete" && agentClaimed) return this.achieve(fresh, judgement.reason);
-    await this.dispatchStep(this.db.getGoal(goalId)!, judgement, judgement.verdict === "complete", burn, running);
+    const verification = judgement.verdict === "complete";
+    const latest = this.db.getGoal(goalId)!;
+    if (carrier && !this.turnCapacity(latest, carrier, available)) {
+      const message = goalContinuationMessage(latest, carrier, null, { judgement, verification, auditRejected: agentClaimed });
+      if (this.sendTurn(latest, carrier, message)) return;
+    }
+    await this.dispatchStep(this.db.getGoal(goalId)!, judgement, verification, burn, running);
+  }
+
+  /**
+   * A persistent goal's next turn without the director: its last turn ended cleanly with no completion
+   * claim and nothing about the goal changed, so it continues in the same task and session. False hands
+   * the evaluation to the director: no task to carry on, a claim to audit, a changed objective, an
+   * unclean turn, or a task that can no longer take a turn. A WAITING turn is deferred once, at no cost.
+   */
+  private continueOnItsOwn(goal: Goal): boolean {
+    const carrier = this.carrier(goal, this.settledSteps(goal.id));
+    if (!carrier || carrier.outcome !== "done" || carrier.agentClaimedComplete) return false;
+    const { replanAt } = this.db.goalLoopState(goal.id);
+    if (replanAt != null && replanAt >= carrier.turnStartedAt) return false;
+    const last = readGoalStatusLine(this.db.goalTurnActivity(carrier.threadId!, carrier.turnStartedAt).report);
+    if (last?.kind === "waiting" && goal.nextCheckAt == null) {
+      this.wait(goal, `Waiting on a live job the last turn reported${last.detail ? `: ${clip(last.detail, 300)}` : ""}. The goal continues in the same session at the next check.`);
+      return true;
+    }
+    const capacity = this.turnCapacity(goal, carrier, this.host.roster());
+    if (capacity) {
+      this.wait(goal, capacity.reason, capacity.until, "usage_limited");
+      return true;
+    }
+    return this.sendTurn(goal, carrier, goalContinuationMessage(goal, carrier, last));
+  }
+
+  /**
+   * The step whose task a persistent goal continues: the last one to end, if it ended done or review (a
+   * failed or cancelled task gets a fresh step) and the owner's pin has not changed since it was
+   * dispatched, as its session runs on the old model.
+   */
+  private carrier(goal: Goal, settled: GoalStep[]): GoalStep | null {
+    if (!this.persistent(goal)) return null;
+    const last = settled.at(-1);
+    if (!last?.threadId || (last.outcome !== "done" && last.outcome !== "review") || this.retiredCarriers.has(last.threadId)) return null;
+    if (goal.tokenBudget != null && last.provider === UNMETERED_PROVIDER) return null;
+    const { pinChangedAt } = this.db.goalLoopState(goal.id);
+    return pinChangedAt != null && pinChangedAt >= last.createdAt ? null : last;
+  }
+
+  /** Why a persistent goal asks the director now instead of continuing on its own, for the judge prompt. */
+  private askedBecause(goal: Goal, last: GoalStep | undefined, carrier: GoalStep | null): string | undefined {
+    if (!last) return undefined;
+    if (last.agentClaimedComplete) return "the last turn's agent claimed the objective complete: audit that claim against the evidence before agreeing";
+    if (!carrier) {
+      if (last.outcome === "failed" || last.outcome == null) return "the last step's task failed, so the next step is a fresh task";
+      return "the last step's task cannot carry the goal on (the owner changed the model/effort pin, its session is gone, or it runs on Grok, which this goal's token budget cannot meter), so the next step is a fresh task";
+    }
+    const { replanAt } = this.db.goalLoopState(goal.id);
+    if (replanAt != null && replanAt >= carrier.turnStartedAt) return "the owner changed the objective or resumed the goal since the last turn: check where it stands before it goes on";
+    if (last.outcome === "review") return "the last turn did not finish cleanly (its task ended in review)";
+    return "its task could not take another turn on its own";
+  }
+
+  /** Whether the carrier's pool may take another turn now: some backend has room, and the pool the
+   *  step runs on is within the goal's burn rate. Null when it may. */
+  private turnCapacity(goal: Goal, step: GoalStep, roster: ModelCandidate[]): { reason: string; until: number } | null {
+    if (!roster.length) return { reason: "Waiting for model capacity: no backend can take a task right now.", until: this.now() + this.retryMs() };
+    const pool = step.provider && step.model ? { ...goal, provider: step.provider, model: step.model } : goal;
+    return checkBurnRate(pool, roster, this.now()).hold;
+  }
+
+  /**
+   * Sends the next turn into the step's own task. On success the step holds the goal's slot again and its
+   * turn is read from now on. A hold waits without cost, a stop pauses the goal for the owner, and
+   * false means this task can take no more turns, so the caller starts a fresh step.
+   */
+  private sendTurn(goal: Goal, step: GoalStep, message: string): boolean {
+    // The DB clock, taken BEFORE the send: the host may create the turn's run row synchronously, and the turn's
+    // report, tool calls and runs are read from rows stamped at or after this boundary.
+    const turnStartedAt = Date.now();
+    const result = this.host.continueTask!(step.threadId!, message);
+    if (result.ok) {
+      this.db.updateGoalStep(step.id, { outcome: null, agentClaimedComplete: null, settledAt: null, turns: step.turns + 1, turnStartedAt });
+      if (step.settledAt != null) this.uncountSettle(goal.id, step.settledAt);
+      this.db.updateGoal(goal.id, { currentThreadId: step.threadId, hold: null, statusReason: null, nextCheckAt: null });
+      this.hub.log("info", `Goal "${goal.title}" continues in step ${step.seq}'s task ${step.threadId!.slice(0, 8)} (turn ${step.turns + 1}).`);
+      this.broadcast();
+      return true;
+    }
+    if ("hold" in result) {
+      this.wait(goal, result.hold.reason, undefined, result.hold.kind);
+      return true;
+    }
+    if ("stop" in result) {
+      this.pause(goal, result.stop);
+      return true;
+    }
+    this.retiredCarriers.add(step.threadId!);
+    this.hub.log("info", `Goal "${goal.title}" cannot continue in step ${step.seq}'s task (${result.fresh}); a fresh step follows.`);
+    return false;
   }
 
   /** The steps that ended since the director last judged, so parallel endings are all reported once. */
@@ -942,6 +1367,7 @@ export class GoalRunner {
       progress: judgement.progress || goal.progress,
       statusReason: held ? `Holding the next step until ${plural}.` : null,
       nextCheckAt: null,
+      hold: null,
     });
   }
 
@@ -968,7 +1394,7 @@ export class GoalRunner {
         skipQa: true,
       });
       this.db.updateGoalStep(step.id, { threadId });
-      this.db.updateGoal(goal.id, { currentThreadId: threadId });
+      this.db.updateGoal(goal.id, { currentThreadId: threadId, hold: null });
       this.hub.log(
         "info",
         `Goal "${goal.title}" step ${step.seq} dispatched → task ${threadId.slice(0, 8)} (${[pin.provider, pin.model, pin.effort].filter(Boolean).join(" / ") || "auto routing"}).`,
@@ -991,29 +1417,41 @@ export class GoalRunner {
   }
 
   private pause(goal: Goal, reason: string): void {
-    this.db.updateGoal(goal.id, { status: "paused", statusReason: reason, nextCheckAt: null });
+    this.db.updateGoal(goal.id, { status: "paused", statusReason: reason, nextCheckAt: null, hold: null });
     this.hub.log("warn", `Goal "${goal.title}" paused: ${reason}`);
     this.host.notify?.("input", `Goal paused: ${goal.title}`, reason, goal.workspace);
     this.broadcast();
   }
 
+  /** Stops the automatic loop in a state of its own, so the board tells an impasse or a spent budget apart
+   *  from an owner pause and from completion. Like a pause, it waits for the owner and never interrupts a turn. */
+  private stopLoop(goal: Goal, status: "blocked" | "budget_limited", reason: string): void {
+    this.db.updateGoal(goal.id, { status, statusReason: reason, nextCheckAt: null, hold: null });
+    this.hub.log("warn", `Goal "${goal.title}" ${status === "blocked" ? "blocked" : "is out of token budget"}: ${reason}`);
+    this.host.notify?.("input", `${status === "blocked" ? "Goal blocked" : "Goal out of token budget"}: ${goal.title}`, reason, goal.workspace);
+    this.broadcast();
+  }
+
   /**
-   * The step's pin, kept on a pool within the burn rate. A pick the roster cannot place would otherwise
-   * route automatically, and automatic routing may choose the very pool the burn rate left out.
+   * The step's pin, kept on a pool within the burn rate and, for a budgeted goal, on a metered one. A pick
+   * the roster cannot place would otherwise route automatically, and automatic routing may choose the very
+   * pool the burn rate left out, or Grok, whose runs a token budget cannot see.
    */
   private pinWithinBurnRate(goal: Goal, pick: GoalJudgement["next"], burn: BurnCheck): StepPin {
     const pin = goalStepPin(goal, pick, burn.roster);
     const fallback = burn.roster[0];
-    if (pin.provider || !burn.over.length || !fallback) return pin;
+    const budgeted = goal.tokenBudget != null;
+    if (pin.provider || (!burn.over.length && !budgeted) || !fallback) return pin;
     const moved = goalStepPin(goal, { ...pick, provider: fallback.provider, model: fallback.model }, burn.roster);
-    const why = `${pick.model || "The director's pick"} could not be placed, and automatic routing could land on a pool over this goal's burn rate, so this step runs on ${fallback.model}.`;
+    const risk = burn.over.length ? "a pool over this goal's burn rate" : "Grok, which reports no usage for this goal's token budget";
+    const why = `${pick.model || "The director's pick"} could not be placed, and automatic routing could land on ${risk}, so this step runs on ${fallback.model}.`;
     return { ...moved, note: [why, moved.note].filter(Boolean).join(" ") };
   }
 
   /** Stays active but backs off; the reason is shown on the goal so the wait is never silent. */
-  private wait(goal: Goal, reason: string, until = this.now() + this.retryMs()): void {
+  private wait(goal: Goal, reason: string, until = this.now() + this.retryMs(), hold: GoalHold = "waiting"): void {
     const at = Math.max(until, this.now() + Math.min(this.retryMs(), BURN_RECHECK_MAX_MS));
-    this.db.updateGoal(goal.id, { statusReason: reason, nextCheckAt: at });
+    this.db.updateGoal(goal.id, { statusReason: reason, nextCheckAt: at, hold });
     this.hub.log("info", `Goal "${goal.title}": ${reason} Checking again in ${Math.max(1, Math.round((at - this.now()) / 60_000))} min.`);
     this.broadcast();
   }
@@ -1036,22 +1474,30 @@ export class GoalRunner {
   }
 }
 
-/** The concurrency and burn-rate fields a patch actually changes, clamped; null when it changes none. */
-function paceChanges(current: Goal, patch: GoalPaceInput): Partial<Pick<Goal, "maxConcurrent" | "burnConservation" | "burnRatePct">> | null {
-  const next = {
+type GoalPaceFields = Pick<Goal, "maxConcurrent" | "burnConservation" | "burnRatePct" | "persistentSession" | "tokenBudget">;
+
+/** The concurrency, burn-rate, session and budget fields a patch actually changes, clamped; null when it changes none. */
+function paceChanges(current: Goal, patch: GoalPaceInput): Partial<GoalPaceFields> | null {
+  const next: Partial<GoalPaceFields> = {
     ...(patch.maxConcurrent !== undefined ? { maxConcurrent: clampMaxConcurrent(patch.maxConcurrent) } : {}),
     ...(patch.burnConservation !== undefined ? { burnConservation: patch.burnConservation } : {}),
     ...(patch.burnRatePct !== undefined ? { burnRatePct: clampBurnRate(patch.burnRatePct) } : {}),
+    ...(patch.persistentSession !== undefined ? { persistentSession: patch.persistentSession } : {}),
+    ...(patch.tokenBudget !== undefined ? { tokenBudget: patch.tokenBudget } : {}),
   };
-  const changed = (Object.keys(next) as (keyof typeof next)[]).some((k) => current[k] !== next[k]);
+  const changed = (Object.keys(next) as (keyof GoalPaceFields)[]).some((k) => current[k] !== next[k]);
   return changed ? next : null;
+}
+
+/** Whether an edit changes the owner's model/effort pin. */
+function pinEdited(current: Goal, pin: GoalPinInput): boolean {
+  if (pin.effort !== undefined && pin.effort !== current.effort) return true;
+  return pin.model !== undefined && (pin.model !== current.model || (pin.provider ?? null) !== current.provider);
 }
 
 /** Whether an edit changes what the director is asked to plan: the objective, or the owner's model/effort pin. */
 function planChanged(current: Goal, objective: string | undefined, pin: GoalPinInput): boolean {
-  if (objective && objective !== current.objective) return true;
-  if (pin.effort !== undefined && pin.effort !== current.effort) return true;
-  return pin.model !== undefined && (pin.model !== current.model || (pin.provider ?? null) !== current.provider);
+  return (!!objective && objective !== current.objective) || pinEdited(current, pin);
 }
 
 /** A blank model is no pin. Undefined fields stay undefined so a patch leaves them unchanged. */
@@ -1077,16 +1523,19 @@ export function describeGoal(g: Goal): string {
   const current = running.length
     ? `, running task${running.length === 1 ? "" : "s"} ${running.join(", ")}`
     : g.currentThreadId ? `, last task ${g.currentThreadId.slice(0, 8)}` : "";
+  const status = g.hold && g.status === "active" ? `${g.status}, ${g.hold.replace("_", " ")}` : g.status;
   const reason = g.statusReason ? ` (${g.statusReason})` : "";
+  const session = g.maxConcurrent <= 1 && g.persistentSession ? ", one persistent session" : "";
+  const usage = ` Step-task run usage: ${describeGoalUsage(g.usage, g.tokenBudget)}.`;
   const progress = g.progress ? ` Progress: ${clip(g.progress, 300)}` : "";
-  return `- ${g.id} [${g.status}]${reason} "${g.title}" @ ${g.workspace} — ${g.stepCount} step${g.stepCount === 1 ? "" : "s"}, ${describeGoalPin(g)}, ${describeGoalPace(g)}${current}.${progress}`;
+  return `- ${g.id} [${status}]${reason} "${g.title}" @ ${g.workspace} — ${g.stepCount} step${g.stepCount === 1 ? "" : "s"}, ${describeGoalPin(g)}, ${describeGoalPace(g)}${session}${current}.${usage}${progress}`;
 }
 
 /** The director's update_goal, shared by the MCP tool and the CLI bridge. Returns the reply text; a
  *  failure starts with "Could not". */
 export function applyGoalChange(
   goals: GoalRunner,
-  change: { id: string; title?: string; objective?: string; status?: GoalStatus } & GoalPinInput & GoalPaceInput,
+  change: { id: string; title?: string; objective?: string; status?: GoalOwnerStatus } & GoalPinInput & GoalPaceInput,
   statusReason: string,
 ): string {
   const { id, status, ...patch } = change;

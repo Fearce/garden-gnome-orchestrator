@@ -183,13 +183,17 @@ async function main(): Promise<void> {
       notes.add({ body: `⏰ ${title}: ${text}`, threadTitle: `Reminder not delivered on Discord: ${why}` });
     },
   });
-  // Goal-directed tasks: keeps one step task working on each active goal, with the director judging
-  // every step's outcome and picking the next step's model and effort from the live roster.
+  // Goal-directed tasks: keeps a step task working on each active goal. A sequential goal continues in
+  // its task's own session; the director plans the first step, audits completion claims and replans when
+  // conditions change, picking the model and effort from the live roster.
   const goals = new GoalRunner(db, hub, {
     dispatch: (input) => manager.dispatch(input),
     judge: (prompt, schema) => manager.directorJudgement(prompt, schema),
     roster: () => manager.goalModelRoster(),
     notify: (kind, title, detail, repo) => manager.notifyGoal(kind, title, detail, repo),
+    taskHold: (threadId) => manager.goalTaskHold(threadId),
+    continueTask: (threadId, message) => manager.continueGoalTask(threadId, message),
+    workspaceFingerprint: (threadId) => manager.goalWorkspaceFingerprint(threadId),
   }, { ownerName: config.ownerName });
   manager.setContinuationGuard((threadId, provider) => goals.wrapUpReason(threadId, provider));
   const director = new Director(manager, db, hub, scheduler, notes, goals);

@@ -5,7 +5,7 @@ import type { DispatchTaskMode, OrchestratorApi } from "../orchestrator/api.js";
 import type { OperatorNotes } from "../orchestrator/notes.js";
 import type { Scheduler } from "../orchestrator/scheduler.js";
 import { applyGoalChange, describeGoal, type GoalRunner } from "../orchestrator/goals.js";
-import { MAX_GOAL_BURN_RATE_PCT, MAX_GOAL_MAX_CONCURRENT, MIN_GOAL_BURN_RATE_PCT, NOTE_MAX_CHARS, type ImageAttachment, type ScheduledTask } from "../types.js";
+import { MAX_GOAL_BURN_RATE_PCT, MAX_GOAL_MAX_CONCURRENT, MAX_GOAL_TOKEN_BUDGET, MIN_GOAL_BURN_RATE_PCT, NOTE_MAX_CHARS, type ImageAttachment, type ScheduledTask } from "../types.js";
 import { DIRECTOR_SERVER } from "../agents/toolNames.js";
 import { existsSync } from "node:fs";
 import { config } from "../config.js";
@@ -453,6 +453,8 @@ export function createDirectorServer(
       maxConcurrent: z.number().int().min(1).max(MAX_GOAL_MAX_CONCURRENT).optional().describe(`How many step tasks may run at once (default 1, one after another). Set it only when ${config.ownerName} asked for several agents on the goal.`),
       burnConservation: z.boolean().optional().describe(`Hold new steps while every usable pool spends its weekly window faster than the burn rate allows (default on). Turn it off only when ${config.ownerName} asked.`),
       burnRatePct: z.number().int().min(MIN_GOAL_BURN_RATE_PCT).max(MAX_GOAL_BURN_RATE_PCT).optional().describe("The pace the burn-rate guard allows, in percent of the even pace that spends a weekly window exactly by its reset (default 100)."),
+      persistentSession: z.boolean().optional().describe(`A one-at-a-time goal continues its task's own session from turn to turn instead of starting a fresh task per step (default on). Turn it off only when ${config.ownerName} asked for a fresh task every step.`),
+      tokenBudget: z.number().int().min(1).max(MAX_GOAL_TOKEN_BUDGET).optional().describe(`Fresh input + output tokens the goal's step-task runs may spend in total (director judgements are not counted), only when ${config.ownerName} named a budget (default none). Checked between turns, so a running turn may exceed it; once spent the goal stops as budget_limited. A budgeted goal cannot be pinned to Grok, which reports no usage.`),
     },
     async (args) => {
       if (!goals) return goalsUnavailable;
@@ -464,7 +466,7 @@ export function createDirectorServer(
 
   const listGoals = tool(
     "list_goals",
-    "List every goal-directed task with its status, step count, current step task and the director's latest progress summary — to report on one or get its id before changing it.",
+    "List every goal-directed task with its status (and hold), step count, current step task, step-task run token usage against any budget (director judgements are not counted), and the director's latest progress summary — to report on one or get its id before changing it.",
     {},
     async () => {
       if (!goals) return goalsUnavailable;
@@ -475,7 +477,7 @@ export function createDirectorServer(
 
   const updateGoal = tool(
     "update_goal",
-    `Change a goal (id from list_goals): edit its title, objective, effort or model pin, parallel steps or burn-rate guard, and/or set its status — "paused" stops new steps (the running one finishes), "active" resumes, "abandoned" ends it, "achieved" marks it done on ${config.ownerName}'s say-so. Only change status when ${config.ownerName} asked for it.`,
+    `Change a goal (id from list_goals): edit its title, objective, effort or model pin, parallel steps or burn-rate guard, and/or set its status — "paused" stops new steps (the running one finishes), "active" resumes (also a goal the loop stopped as blocked or budget_limited; resuming starts a fresh director audit, and a spent budget must be raised or removed first), "abandoned" ends it, "achieved" marks it done on ${config.ownerName}'s say-so. Only change status when ${config.ownerName} asked for it.`,
     {
       id: z.string().describe("The goal id (from list_goals)."),
       title: z.string().optional(),
@@ -486,6 +488,8 @@ export function createDirectorServer(
       maxConcurrent: z.number().int().min(1).max(MAX_GOAL_MAX_CONCURRENT).optional().describe("How many step tasks may run at once from now on."),
       burnConservation: z.boolean().optional().describe("Burn-rate conservation on or off."),
       burnRatePct: z.number().int().min(MIN_GOAL_BURN_RATE_PCT).max(MAX_GOAL_BURN_RATE_PCT).optional().describe("The pace the burn-rate guard allows, in percent of the even weekly pace."),
+      persistentSession: z.boolean().optional().describe("Whether a one-at-a-time goal continues its task's own session between turns."),
+      tokenBudget: z.number().int().min(1).max(MAX_GOAL_TOKEN_BUDGET).nullable().optional().describe("Fresh input + output tokens the goal's step-task runs may spend in total (director judgements are not counted). Checked between turns, so a running turn may exceed it; null removes the budget."),
       status: z.enum(["active", "paused", "abandoned", "achieved"]).optional(),
     },
     async (args) => {

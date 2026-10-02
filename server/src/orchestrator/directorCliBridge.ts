@@ -7,7 +7,7 @@ import type { DispatchTaskMode } from "./api.js";
 import type { OperatorNotes } from "./notes.js";
 import type { Scheduler } from "./scheduler.js";
 import { applyGoalChange, describeGoal, type GoalRunner } from "./goals.js";
-import type { GoalStatus, ImplementorProvider } from "../types.js";
+import type { GoalOwnerStatus, ImplementorProvider } from "../types.js";
 import { findWorkspaces } from "../workspace/findWorkspace.js";
 import { normalizeDuration } from "./timedTasks.js";
 import { clampAgentCount } from "./shotgun.js";
@@ -66,6 +66,8 @@ export const DIRECTOR_CLI_SCHEMA: JsonSchemaLike = {
     maxConcurrent: { type: "number" },
     burnConservation: { type: "boolean" },
     burnRatePct: { type: "number" },
+    persistentSession: { type: "boolean" },
+    tokenBudget: { type: "number" },
     status: { type: "string", enum: ["active", "paused", "abandoned", "achieved"] },
   },
 };
@@ -101,7 +103,9 @@ export interface DirectorCliAction {
   maxConcurrent?: number;
   burnConservation?: boolean;
   burnRatePct?: number;
-  status?: GoalStatus;
+  persistentSession?: boolean;
+  tokenBudget?: number;
+  status?: GoalOwnerStatus;
 }
 
 export interface DirectorCliOutcome {
@@ -136,9 +140,9 @@ Commands and fields:
 - list_scheduled_tasks
 - update_scheduled_task: id plus any of title/workspace/prompt/reminder/cron/enabled/effort/model/runOnce
 - delete_scheduled_task: id
-- create_goal: title, objective, workspace, effort?, provider?+model?, maxConcurrent?, burnConservation?, burnRatePct? (set effort or model only when the owner named one; otherwise the director picks per step, at low or medium effort. maxConcurrent 1-8, default 1, is how many step tasks run at once. burnConservation, default true, holds new steps while every usable pool spends its weekly window faster than burnRatePct percent of an even pace, default 100; change either only when the owner asked) — a GOAL-DIRECTED TASK that GGO keeps working on around the clock until the step's agent and the director both judge the objective complete. Only when the owner asks for a goal in so many words ("make this a goal", "keep working on this until it's done").
+- create_goal: title, objective, workspace, effort?, provider?+model?, maxConcurrent?, burnConservation?, burnRatePct?, persistentSession?, tokenBudget? (set effort or model only when the owner named one; otherwise the director picks per step, at low or medium effort. maxConcurrent 1-8, default 1, is how many step tasks run at once. burnConservation, default true, holds new steps while every usable pool spends its weekly window faster than burnRatePct percent of an even pace, default 100; change either only when the owner asked. persistentSession, default true, continues a one-at-a-time goal in its task's own session between turns. tokenBudget, default none, is the fresh input + output tokens the goal's step-task runs may spend (director judgements are not counted), checked between turns so a running turn may exceed it, before it stops as budget_limited; set it only when the owner named one, never with a Grok pin) — a GOAL-DIRECTED TASK that GGO keeps working on around the clock until the step's agent and the director both judge the objective complete. Only when the owner asks for a goal in so many words ("make this a goal", "keep working on this until it's done").
 - list_goals
-- update_goal: id plus any of title/objective/effort/provider+model/maxConcurrent/burnConservation/burnRatePct/status (status: active|paused|abandoned|achieved — only when the owner asked)
+- update_goal: id plus any of title/objective/effort/provider+model/maxConcurrent/burnConservation/burnRatePct/persistentSession/tokenBudget/status (status: active|paused|abandoned|achieved — only when the owner asked; active also resumes a goal the loop stopped as blocked or budget_limited and starts a fresh audit; tokenBudget 0 removes the budget)
 
 Never say something was dispatched/changed until the server has returned a successful TOOL RESULT.
 `;
@@ -302,6 +306,7 @@ export async function executeDirectorCliAction(
           workspace: required(action, "workspace"),
           effort: action.effort, provider: action.provider, model: action.model,
           maxConcurrent: action.maxConcurrent, burnConservation: action.burnConservation, burnRatePct: action.burnRatePct,
+          persistentSession: action.persistentSession, tokenBudget: action.tokenBudget || undefined,
         });
         return outcome("create_goal", r.ok && r.goal ? `Created goal ${r.goal.id}; its first step is being planned now.` : `ERROR: ${r.error}`);
       }
@@ -317,6 +322,7 @@ export async function executeDirectorCliAction(
           status: action.status,
           effort: action.effort, provider: action.provider, model: action.model,
           maxConcurrent: action.maxConcurrent, burnConservation: action.burnConservation, burnRatePct: action.burnRatePct,
+          persistentSession: action.persistentSession, tokenBudget: action.tokenBudget === 0 ? null : action.tokenBudget,
         }, `Set by the director at ${config.ownerName}'s request.`);
         return outcome("update_goal", text.startsWith("Could not") ? `ERROR: ${text}` : text);
       }

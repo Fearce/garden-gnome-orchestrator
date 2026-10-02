@@ -268,10 +268,44 @@ export interface ScheduledTask {
   updatedAt: number;
 }
 
-/** A goal's lifecycle. `active` keeps a step task running; `paused` stops dispatching new steps (the
- *  running one finishes); `achieved` and `abandoned` are terminal. */
-export type GoalStatus = "active" | "paused" | "achieved" | "abandoned";
-export const GOAL_STATUSES: GoalStatus[] = ["active", "paused", "achieved", "abandoned"];
+/** A goal's lifecycle. `active` keeps a step task working; `paused` stops new turns and steps (the
+ *  running one finishes); `blocked` means GGO stopped continuing on its own (the same blocker three turns
+ *  running, a turn with no tool call, or a repeated report) and `budget_limited` that the goal used its
+ *  token budget. Both wait for the owner, and neither is completion. `achieved` and `abandoned` are terminal. */
+export type GoalStatus = "active" | "paused" | "blocked" | "budget_limited" | "achieved" | "abandoned";
+export const GOAL_STATUSES: GoalStatus[] = ["active", "paused", "blocked", "budget_limited", "achieved", "abandoned"];
+/** The statuses an owner or the director may set; `blocked` and `budget_limited` are only reached by the loop. */
+export type GoalOwnerStatus = "active" | "paused" | "achieved" | "abandoned";
+export const GOAL_OWNER_STATUSES: GoalOwnerStatus[] = ["active", "paused", "achieved", "abandoned"];
+/** Why an ACTIVE goal is not working right now. `usage_limited` lifts when capacity returns, `waiting`
+ *  when the task, the director or a live job it waits on is ready. Null while it works or has nothing to wait for. */
+export type GoalHold = "waiting" | "usage_limited";
+
+/** A goal's token spend over the agent runs of its step tasks since its metering baseline. Director judgements
+ *  have no step-task run and are not in it. `tokensUsed` is what a budget counts: fresh input plus output. Cached input is replayed context and is shown apart,
+ *  never counted as fresh. A run that reported no usage (Grok, or a run killed before reporting) makes
+ *  `tokensUsed` a lower bound; runs older than the baseline are counted but never totalled. */
+export interface GoalUsage {
+  tokensUsed: number;
+  freshInputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  runs: number;
+  unmeteredRuns: number;
+  runsBeforeBaseline: number;
+  /** Agent wall-clock across the counted runs, in seconds. */
+  agentSeconds: number;
+  /** The goal's metering baseline: runs started from here on are counted. */
+  since: number;
+}
+
+/** What a goal step's task did in one turn: its last report, its tool calls (null where the backend
+ *  reports none, so "no tool call" is never concluded there), and how many implementor runs it took. */
+export interface GoalTurnActivity {
+  report: string | null;
+  toolCalls: number | null;
+  runs: number;
+}
 
 /** One task a goal dispatched. The director picked its brief, backend, model and effort. */
 export interface GoalStep {
@@ -286,6 +320,9 @@ export interface GoalStep {
   rationale: string; // the director's reason for this step and its model/effort pick
   outcome: ThreadState | null; // the state the task settled in; null while it is still running
   agentClaimedComplete: boolean | null; // the step's implementor declared the WHOLE objective complete
+  turns: number; // goal turns this task has run: 1 for the dispatch, +1 per continuation sent into the same session
+  turnStartedAt: number; // when the current (or last) turn began; a turn's report and tool calls are read from here on
+  turnFingerprint: string | null; // the task's git state when its last turn ended, so the next turn's workspace change is seen
   createdAt: number;
   settledAt: number | null;
 }
@@ -321,6 +358,11 @@ export interface Goal {
   maxConcurrent: number; // how many step tasks may run at once; 1 = strictly one after another
   burnConservation: boolean; // hold new steps while every pool the goal could use is ahead of its weekly pace
   burnRatePct: number; // the pace allowed under burnConservation: 100 = the even pace that spends a weekly window exactly by its reset
+  persistentSession: boolean; // one-at-a-time goals continue in the same task and session instead of a fresh task per step
+  tokenBudget: number | null; // fresh input + output tokens the goal's step-task runs may spend, checked between turns (a running turn may exceed it; director judgements are not counted); null = no budget
+  usage: GoalUsage;
+  hold: GoalHold | null; // why an active goal is waiting right now
+  blockedStreak: number; // consecutive turns that reported the same blocker; 3 blocks the goal
   currentThreadId: string | null; // the step task dispatched most recently
   nextCheckAt: number | null; // backoff: when the director could not be reached or the burn rate holds, the next attempt
   stepCount: number;
@@ -341,6 +383,8 @@ export const MAX_GOAL_MAX_CONCURRENT = 8;
 export const DEFAULT_GOAL_BURN_RATE_PCT = 100;
 export const MIN_GOAL_BURN_RATE_PCT = 10;
 export const MAX_GOAL_BURN_RATE_PCT = 500;
+/** The largest per-goal token budget accepted; a sanity bound on input, not a policy. */
+export const MAX_GOAL_TOKEN_BUDGET = 1_000_000_000_000;
 
 /** The hard ceiling on a note's body, in characters. The whole point of the note list is that it can be
  *  skimmed in seconds, so this is enforced by TRUNCATION at the write boundary (never a rejection — a

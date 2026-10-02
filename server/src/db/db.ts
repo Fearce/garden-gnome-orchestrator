@@ -6,6 +6,7 @@ import { SCHEMA } from "./schema.js";
 import { KvMirror, type ListedThread, ThreadListingMirror } from "./memoryMirrors.js";
 import { config } from "../config.js";
 import { manualDeploymentSummary, parseManualDeployment, parseManualDeploymentClaim } from "../orchestrator/manualDeployment.js";
+import { providerOfRunAccount, summarizeRunUsage, type RunTokenRow } from "../orchestrator/goalUsage.js";
 import {
   BACKFILL_CHUNK,
   FTS_CURSOR_KEY,
@@ -45,7 +46,10 @@ import type {
   Finding,
   FindingKind,
   Goal,
+  GoalHold,
   GoalStatus,
+  GoalTurnActivity,
+  GoalUsage,
   GoalStep,
   GoalVerdict,
   ImplementationMemo,
@@ -554,6 +558,9 @@ function rowToGoalStep(r: Row): GoalStep {
     rationale: (r.rationale as string | null) ?? "",
     outcome: (r.outcome as ThreadState | null) ?? null,
     agentClaimedComplete: claimed == null ? null : Boolean(claimed),
+    turns: (r.turns as number | null) ?? 1,
+    turnStartedAt: (r.turn_started_at as number | null) ?? (r.created_at as number),
+    turnFingerprint: (r.turn_fingerprint as string | null) ?? null,
     createdAt: r.created_at as number,
     settledAt: (r.settled_at as number | null) ?? null,
   };
@@ -965,6 +972,19 @@ export class Db {
       "ALTER TABLE goals ADD COLUMN burn_conservation INTEGER NOT NULL DEFAULT 1",
       "ALTER TABLE goals ADD COLUMN burn_rate_pct INTEGER NOT NULL DEFAULT 100",
       "ALTER TABLE goal_steps ADD COLUMN brief TEXT NOT NULL DEFAULT ''",
+      // Existing goals adopt the persistent session too: it changes how the NEXT turn starts, never a status.
+      "ALTER TABLE goals ADD COLUMN persistent_session INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE goals ADD COLUMN token_budget INTEGER",
+      "ALTER TABLE goals ADD COLUMN usage_since INTEGER",
+      "ALTER TABLE goals ADD COLUMN hold TEXT",
+      "ALTER TABLE goals ADD COLUMN blocked_streak INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE goals ADD COLUMN last_turn_digest TEXT",
+      "ALTER TABLE goals ADD COLUMN idle_streak INTEGER NOT NULL DEFAULT 0",
+      "ALTER TABLE goals ADD COLUMN replan_at INTEGER",
+      "ALTER TABLE goals ADD COLUMN pin_changed_at INTEGER",
+      "ALTER TABLE goal_steps ADD COLUMN turns INTEGER NOT NULL DEFAULT 1",
+      "ALTER TABLE goal_steps ADD COLUMN turn_started_at INTEGER",
+      "ALTER TABLE goal_steps ADD COLUMN turn_fingerprint TEXT",
       // Goals no longer have a step budget; the NOT NULL column would reject every new goal.
       "ALTER TABLE goals DROP COLUMN max_steps",
     ]) {
@@ -995,6 +1015,14 @@ export class Db {
     this.repairAutoReviewBackfillFreshWork();
     this.backfillImplementationMemos();
     this.resumeBudgetPausedGoals();
+    this.baselineGoalUsage();
+  }
+
+  /** A goal counts token usage only from a baseline this build recorded: runs older than it may hold
+   *  session-cumulative snapshots from an earlier meter, which cannot be summed. Existing goals start
+   *  counting now; their earlier runs stay visible as a count. Touches no status. */
+  private baselineGoalUsage(): void {
+    this.raw.prepare("UPDATE goals SET usage_since = ? WHERE usage_since IS NULL").run(now());
   }
 
   /** Goals have no step budget any more, so one the old budget paused would otherwise wait forever on a
@@ -3246,6 +3274,17 @@ export class Db {
     return row.n;
   }
 
+  /** A role's last `limit` tool-call rows before `before`: what "new" is measured against when there is no
+   *  in-memory history, e.g. a goal turn compared with the turns before it. */
+  roleActionsBefore(threadId: string, role: Message["role"], before: number, limit: number): string[] {
+    const rows = this.raw
+      .prepare(
+        "SELECT substr(content, 1, 4000) AS content FROM messages WHERE thread_id = ? AND role = ? AND kind = 'tool' AND created_at < ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+      )
+      .all(threadId, role, before, limit) as { content: string }[];
+    return rows.map((r) => r.content);
+  }
+
   /** What a role did since `since`: its tool-call rows, the findings it posted, and every finding summary
    *  the task held before. Feeds the auto-continue progress check (`continuationProgress.ts`). Tool content
    *  is clipped in SQL because a row can carry a whole written file, and only the leading text is needed
@@ -3772,17 +3811,22 @@ export class Db {
     maxConcurrent: number;
     burnConservation: boolean;
     burnRatePct: number;
+    persistentSession?: boolean;
+    tokenBudget?: number | null;
   }): Goal {
     const at = now();
     const id = newId();
+    const persistentSession = input.persistentSession ?? true;
+    const tokenBudget = input.tokenBudget ?? null;
     this.raw
       .prepare(
         `INSERT INTO goals(id, title, objective, workspace, status, effort, provider, model,
-                           max_concurrent, burn_conservation, burn_rate_pct, created_at, updated_at)
+                           max_concurrent, burn_conservation, burn_rate_pct, persistent_session, token_budget, usage_since,
+                           created_at, updated_at)
          VALUES(@id, @title, @objective, @workspace, 'active', @effort, @provider, @model,
-                @maxConcurrent, @burnConservation, @burnRatePct, @at, @at)`,
+                @maxConcurrent, @burnConservation, @burnRatePct, @persistentSession, @tokenBudget, @at, @at, @at)`,
       )
-      .run({ id, ...input, burnConservation: input.burnConservation ? 1 : 0, at });
+      .run({ id, ...input, burnConservation: input.burnConservation ? 1 : 0, persistentSession: persistentSession ? 1 : 0, tokenBudget, at });
     return this.getGoal(id)!;
   }
 
@@ -3811,6 +3855,14 @@ export class Db {
       maxConcurrent: number;
       burnConservation: boolean;
       burnRatePct: number;
+      persistentSession: boolean;
+      tokenBudget: number | null;
+      hold: GoalHold | null;
+      blockedStreak: number;
+      lastTurnDigest: string | null;
+      idleStreak: number;
+      replanAt: number | null;
+      pinChangedAt: number | null;
       currentThreadId: string | null;
       nextCheckAt: number | null;
       endedAt: number | null;
@@ -3830,6 +3882,14 @@ export class Db {
       maxConcurrent: "max_concurrent",
       burnConservation: "burn_conservation",
       burnRatePct: "burn_rate_pct",
+      persistentSession: "persistent_session",
+      tokenBudget: "token_budget",
+      hold: "hold",
+      blockedStreak: "blocked_streak",
+      lastTurnDigest: "last_turn_digest",
+      idleStreak: "idle_streak",
+      replanAt: "replan_at",
+      pinChangedAt: "pin_changed_at",
       currentThreadId: "current_thread_id",
       nextCheckAt: "next_check_at",
       endedAt: "ended_at",
@@ -3840,7 +3900,7 @@ export class Db {
       if (!(k in patch)) continue;
       sets.push(`${col} = @${k}`);
       const v = (patch as Row)[k];
-      params[k] = k === "lastVerdict" ? (v ? JSON.stringify(v) : null) : k === "burnConservation" ? (v ? 1 : 0) : (v ?? null);
+      params[k] = k === "lastVerdict" ? (v ? JSON.stringify(v) : null) : k === "burnConservation" || k === "persistentSession" ? (v ? 1 : 0) : (v ?? null);
     }
     sets.push("updated_at = @updatedAt");
     this.raw.prepare(`UPDATE goals SET ${sets.join(", ")} WHERE id = @id`).run(params);
@@ -3878,13 +3938,24 @@ export class Db {
 
   updateGoalStep(
     id: string,
-    patch: Partial<{ threadId: string | null; outcome: ThreadState | null; agentClaimedComplete: boolean | null; settledAt: number | null }>,
+    patch: Partial<{
+      threadId: string | null;
+      outcome: ThreadState | null;
+      agentClaimedComplete: boolean | null;
+      settledAt: number | null;
+      turns: number;
+      turnStartedAt: number;
+      turnFingerprint: string | null;
+    }>,
   ): void {
     const map: Record<string, string> = {
       threadId: "thread_id",
       outcome: "outcome",
       agentClaimedComplete: "agent_claimed_complete",
       settledAt: "settled_at",
+      turns: "turns",
+      turnStartedAt: "turn_started_at",
+      turnFingerprint: "turn_fingerprint",
     };
     const sets: string[] = [];
     const params: Row = { id };
@@ -3929,6 +4000,52 @@ export class Db {
     return r?.brief ?? "";
   }
 
+  /** The loop's own bookkeeping on a goal, kept off `Goal` because the console has no use for it. */
+  goalLoopState(id: string): { lastTurnDigest: string | null; idleStreak: number; replanAt: number | null; pinChangedAt: number | null } {
+    const r = this.raw
+      .prepare("SELECT last_turn_digest, idle_streak, replan_at, pin_changed_at FROM goals WHERE id = ?")
+      .get(id) as Row | undefined;
+    return {
+      lastTurnDigest: (r?.last_turn_digest as string | null) ?? null,
+      idleStreak: (r?.idle_streak as number | null) ?? 0,
+      replanAt: (r?.replan_at as number | null) ?? null,
+      pinChangedAt: (r?.pin_changed_at as number | null) ?? null,
+    };
+  }
+
+  /**
+   * What a step task did in one goal turn: its implementor's last report written since `since`, the tool
+   * calls it made, and how many implementor runs it took. `toolCalls` is null when the turn ran only on a
+   * backend that does not report tool calls (Grok), so "no tool call" is concluded only where observable.
+   */
+  goalTurnActivity(threadId: string, since: number): GoalTurnActivity {
+    const report = this.raw
+      .prepare("SELECT content FROM messages WHERE thread_id = ? AND role = 'implementor' AND kind = 'text' AND created_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(threadId, since) as { content: string } | undefined;
+    const tools = (this.raw
+      .prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = ? AND role = 'implementor' AND kind = 'tool' AND created_at >= ?")
+      .get(threadId, since) as { n: number }).n;
+    const runs = this.raw
+      .prepare("SELECT account FROM agent_runs WHERE thread_id = ? AND role = 'implementor' AND started_at >= ?")
+      .all(threadId, since) as { account: string | null }[];
+    const observable = tools > 0 || !runs.length || runs.some((r) => providerOfRunAccount(r.account) !== "grok");
+    return { report: report?.content ?? null, toolCalls: observable ? tools : null, runs: runs.length };
+  }
+
+  /** A goal's token spend across the runs of its step tasks since its metering baseline (see `summarizeRunUsage`). */
+  goalUsage(goalId: string, since: number): GoalUsage {
+    const rows = this.raw
+      .prepare(
+        `SELECT account, started_at AS startedAt, ended_at AS endedAt,
+                input_tokens AS inputTokens, output_tokens AS outputTokens,
+                cache_read_input_tokens AS cacheReadInputTokens, cache_creation_input_tokens AS cacheCreationInputTokens
+           FROM agent_runs
+          WHERE thread_id IN (SELECT thread_id FROM goal_steps WHERE goal_id = ? AND thread_id IS NOT NULL)`,
+      )
+      .all(goalId) as RunTokenRow[];
+    return summarizeRunUsage(rows, since);
+  }
+
   private rowToGoal(r: Row): Goal {
     const id = r.id as string;
     const stepCount = (this.raw.prepare("SELECT COUNT(*) AS n FROM goal_steps WHERE goal_id = ?").get(id) as { n: number }).n;
@@ -3947,6 +4064,11 @@ export class Db {
       maxConcurrent: (r.max_concurrent as number | null) ?? DEFAULT_GOAL_MAX_CONCURRENT,
       burnConservation: r.burn_conservation == null ? true : Boolean(r.burn_conservation),
       burnRatePct: (r.burn_rate_pct as number | null) ?? DEFAULT_GOAL_BURN_RATE_PCT,
+      persistentSession: r.persistent_session == null ? true : Boolean(r.persistent_session),
+      tokenBudget: (r.token_budget as number | null) ?? null,
+      usage: this.goalUsage(id, (r.usage_since as number | null) ?? (r.created_at as number)),
+      hold: (r.hold as GoalHold | null) ?? null,
+      blockedStreak: (r.blocked_streak as number | null) ?? 0,
       currentThreadId: (r.current_thread_id as string | null) ?? null,
       nextCheckAt: (r.next_check_at as number | null) ?? null,
       stepCount,

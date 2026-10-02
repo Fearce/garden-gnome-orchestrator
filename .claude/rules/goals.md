@@ -21,15 +21,16 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   Gates: `test:goals` (the flag is sent) and `test:route-pipeline` §2b (QA never runs, Retry keeps it).
 - **Steps are long, not sliced.** The judge prompt asks for `next` to cover ALL the remaining work, split
   only where a later part depends on judging an earlier result; the step brief tells the agent to keep going
-  past its step into the rest of the objective. Each step is a fresh session that re-reads the repo plus a
-  director call, so many small steps burn tokens on overhead. Do not reintroduce "one slice per step"
+  past its step into the rest of the objective. A fresh step is a new session that re-reads the repo plus a
+  director call, so many small steps burn tokens on overhead (a sequential goal now avoids both, below). Do not reintroduce "one slice per step"
   wording; `test:goals` pins both texts. A goal with `maxConcurrent > 1` asks instead for a long share that
   can run beside the other steps, and its brief tells the agent to stay in its lane (`nextInstruction`,
   `scopeParagraph`).
 - **Ending takes two voices.** The step's implementor must write a standalone `GOAL STATUS: COMPLETE` line
   (`detectGoalComplete`: the last status line wins, and it must stand alone because the brief quotes the
   marker mid-sentence), AND the director's verdict must be `complete`. A lone director verdict dispatches a
-  VERIFICATION step; a lone agent claim just gets the next step. Revert-checked: dropping `&& agentClaimed`
+  VERIFICATION step (in a persistent goal, a verification turn in the same session); a lone agent claim
+  just gets the next step or turn, told the audit disagreed. Revert-checked: dropping `&& agentClaimed`
   turns `test:goals` red.
 - **The director call is `directorJudgement`**, the bounded no-tools, capacity-aware judgement behind
   `supervisorJudge`, which also says WHY it failed (restart drain, no target, a run error, an answer off the
@@ -40,20 +41,57 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   Gates: `test:director-provider` (the kickoff and the reason) + `test:goals` (`directorFailure`).
 - **The pick is checked against `goalModelRoster()`** (= `implementorModelRoster`, the auto-selection
   roster). An undispatchable model falls back to automatic routing, with the reason written into the
-  step's rationale, rather than pinning a step to a model that cannot run.
+  step's rationale, rather than pinning a step to a model that cannot run. A goal with a token budget
+  gets `meteredRoster` (no Grok: it reports no usage), and `pinWithinBurnRate` pins an unplaceable pick to
+  a metered candidate instead, since automatic routing could land on Grok.
 - **The owner's pin bounds the director's pick; `goalStepPin` is the single place that applies it.** An
   unset goal `effort` means low or medium ONLY — a 24/7 loop must not burn high-effort capacity by
   default. The judge schema's enum and the prompt already say so, but `goalStepPin` still caps the
   answer, because the CLI-bridge director and a schema-ignoring model can return anything. An owner
   model skips the roster fallback above: it is dispatched as the exact pin and waits for capacity.
   A model travels only with its provider (`validateGoalPin`); a half pin is rejected, never guessed.
+- **A sequential goal carries ONE task and session (`persistentSession`, default on).** After the first
+  step, `continueOnItsOwn` sends a clean `CONTINUE` turn back into the same task via `host.continueTask`
+  (= `ThreadManager.continueGoalTask`, the owner-Resume path) with NO director call. Do not route an ordinary
+  continuation through the director again: that call per turn is exactly the overhead this removed, and
+  `goalSession.test.ts` pins the counts (5 turns = 1 director call + 1 dispatch + 4 continuations). The
+  director is asked only for a `COMPLETE` claim (audit), an unclean/failed turn, an owner edit or Resume
+  (`replan_at`), a pin change, or a task that answered `fresh` (`retiredCarriers`, in memory). Parallel
+  goals never continue a session. Engineering note: `docs/goal-persistent-sessions.md`.
+- **`continueGoalTask` is synchronous up to the `resuming` reservation, and refuses on ANY pending work.**
+  `goalTurnHold` lists it (owner input of every kind, live/winding-down runs, manual Proceed, deadline,
+  token safety, restart drain, concurrency caps) and `goalTaskHold` keeps a cap-parked or restart-parked
+  task's step RUNNING, because GGO itself owes it an auto-resume in the same session. A new hold kind
+  goes in those two functions, and `test:goal-continuation` (the real entry point, no paid model) must
+  cover it; `goalSession.test.ts`'s fake host cannot prove the manager detects anything.
+- **Stops use evidence, never prose.** `noProgress`: no tool call → stop; a turn with progress
+  (`assessSessionProgress`: ≥3 novel tool calls, a new finding, or a git fingerprint change) always
+  continues, even under the same words; otherwise a repeated report digest, or `GOAL_IDLE_TURNS` idle turns,
+  stops it. `blockerStreak` never compares wording: only `moved` (repo change or new finding) restarts the
+  count. Both stop as `blocked`, an owner status apart from `paused`; Resume resets the streaks and sets
+  `replan_at` so the next pass audits.
+- **Races the settle and judge must survive.** `sendTurn` stamps `turnStartedAt` from the clock BEFORE
+  `continueTask` (the host may create the run row synchronously). `settleStep` re-checks `turnUnchanged`
+  after awaiting the workspace fingerprint and returns `restarted` if the owner resumed or steered the task
+  meanwhile. `judgeAndAct` re-reads the goal after the judge and drops the plan if the objective, pin,
+  pace, `persistentSession` or `tokenBudget` changed, then re-checks `budgetSpent`.
+- **Usage is step-task run usage from the goal's own baseline, and the budget is boundary-enforced.**
+  `usage_since` (creation, or migration time for older goals) is the only provenance: never a global
+  meter date. Earlier runs are a count, unmetered runs make the total `≥`, cache reads are apart. Director
+  judgements are outside it. A running turn can overshoot the budget, which is checked between turns, and
+  a spent budget refuses Resume until it is raised or removed. Do not add streaming metering here.
+- **The `goals` event patches the cached hello** (`createHelloCache` in `ws/hub.ts`), so a reload inside
+  the cache window shows the status the runner last broadcast. A raw SQL write in a lab emits no event: drive
+  an owner action through the runner after it (`goals-lab.cjs` pauses another goal) instead of adding a
+  production refresh.
 - **Guards fire at SETTLE time, not on every evaluation.** A cancelled step pauses the goal, and so do 3
   consecutive failed steps. If those checks ran on every evaluation, Resume would re-pause at once on the
   same old step (`test:goals` covers "resume judges again"). Only a missing workspace is re-checked on
   every pass. A `review` outcome is NOT a failure: QA was unsatisfied, but the work exists.
 - **There is no step budget; a goal keeps going until it is done.** The owner removed it on 2026-09-28,
   so do not reintroduce a step count limit as a runaway guard. The bounds are the failed-step streak,
-  a cancelled step, the burn-rate hold and the owner's Pause. Boot drops the old `goals.max_steps`
+  a cancelled step, the burn-rate hold, the evidence-based `blocked` stops above, an optional owner token
+  budget (`budget_limited`) and the owner's Pause. Boot drops the old `goals.max_steps`
   column and reactivates any goal still paused by "Reached its budget of …" (`resumeBudgetPausedGoals`).
 - **The step row is written BEFORE the dispatch.** A crash in between leaves a step with no `thread_id`;
   `adoptOrphan` finds its task by the exact `stepTitle` in that workspace, and while that is unresolved

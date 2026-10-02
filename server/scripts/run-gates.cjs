@@ -220,6 +220,7 @@ const GATES = [
   "test:silent-resume",
   "test:steering-reply",
   "test:continuation-guard",
+  "test:goal-continuation",
   "test:continuation-progress",
   "test:implementor-handover",
   "test:cli-role-kickoff",

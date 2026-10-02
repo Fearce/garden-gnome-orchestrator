@@ -1,11 +1,12 @@
 import { z } from "zod";
 import {
   CODEX_EFFORTS,
-  GOAL_STATUSES,
+  GOAL_OWNER_STATUSES,
   GROK_EFFORTS,
   MAX_DIRECTOR_DIRECTIVES_CHARS,
   MAX_GOAL_BURN_RATE_PCT,
   MAX_GOAL_MAX_CONCURRENT,
+  MAX_GOAL_TOKEN_BUDGET,
   MIN_GOAL_BURN_RATE_PCT,
   ZAI_EFFORTS,
 } from "../types.js";
@@ -37,7 +38,7 @@ import type {
   DirectorStatus,
   Finding,
   Goal,
-  GoalStatus,
+  GoalOwnerStatus,
   ImplementationMemo,
   Message,
   MessageCursor,
@@ -269,11 +270,14 @@ const GOAL_PIN_FIELDS = {
   model: z.string().trim().max(100).nullable().optional(),
 };
 
-// Parallel steps and the weekly burn-rate guard; the service clamps and applies them.
+// Parallel steps, the weekly burn-rate guard, the carried session and the token budget (null removes it);
+// the service clamps and applies them.
 const GOAL_PACE_FIELDS = {
   maxConcurrent: z.number().int().min(1).max(MAX_GOAL_MAX_CONCURRENT).optional(),
   burnConservation: z.boolean().optional(),
   burnRatePct: z.number().int().min(MIN_GOAL_BURN_RATE_PCT).max(MAX_GOAL_BURN_RATE_PCT).optional(),
+  persistentSession: z.boolean().optional(),
+  tokenBudget: z.number().int().min(1).max(MAX_GOAL_TOKEN_BUDGET).nullable().optional(),
 };
 
 const imageAttachmentSchema = z.object({
@@ -669,7 +673,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
       ...GOAL_PACE_FIELDS,
     }),
   }),
-  z.object({ type: z.literal("goal.status"), id: z.string(), status: z.enum(GOAL_STATUSES as [GoalStatus, ...GoalStatus[]]) }),
+  z.object({ type: z.literal("goal.status"), id: z.string(), status: z.enum(GOAL_OWNER_STATUSES as [GoalOwnerStatus, ...GoalOwnerStatus[]]) }),
   z.object({ type: z.literal("goal.delete"), id: z.string() }),
   // ---- The owner's note list — agents post via the bus tool; these are the owner's own edits ----
   // `body` is bounded generously here and CLIPPED to NOTE_MAX_CHARS by the service, so a paste that

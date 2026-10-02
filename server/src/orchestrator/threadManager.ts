@@ -176,6 +176,9 @@ import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments
 import { coworkContentWithAttachments } from "../coworkAttachments.js";
 import { acknowledgedInjection, injectionNeedsPickupWatch, injectionSendOptions, neutralizeSteeringMarkers, structuredAcknowledgedInjection } from "./injection.js";
 import { watchInjectionPickup } from "./injectionPickup.js";
+import { providerOfRunAccount } from "./goalUsage.js";
+import { UNFINISHED_STATES } from "./scheduler.js";
+import type { GoalContinuation, GoalTaskHold } from "./goals.js";
 import {
   ReviewInjectionStore,
   reviewInjectionLabel,
@@ -779,6 +782,8 @@ const MAX_STRANDED_AGE_MS = 24 * 3600_000;
 // auto-resumes those tasks once an account frees up — so a cap wave doesn't leave the owner to
 // hand-resume every task. A normal "needs your review" park carries no such prefix and is left alone.
 const CAP_PARK_PREFIX = "⏳ Auto-resume pending";
+/** How long after a goal step task stops its run's teardown may still hold the step's slot. */
+const GOAL_TEARDOWN_GRACE_MS = 2 * 60_000;
 // A token-safety stop is a capacity park, not an operator cancellation. The more-specific prefix lets
 // stale pipeline callbacks recognize the durable stop while the ordinary CAP_PARK prefix keeps the
 // existing supervisor/reset recovery machinery responsible for waking it.
@@ -13327,13 +13332,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     message?: string,
     reviewInjectionIds: string[] = [],
     recheckWithQa = false,
+    goalTurn = false,
   ): Promise<void> {
     // Every caller `void`s this. An exception thrown after the slot is reserved but before the run's own
     // finalizer exists (route resolution, model auto-selection, a DB read) would otherwise disappear into
     // an unhandled rejection WITH the slot still held — one of the ways the cap permanently lost a slot.
     // Park the task for the owner instead, and hand the slot back either way.
     try {
-      await this.runImplementorOnlyResume(thread, message, reviewInjectionIds, recheckWithQa);
+      await this.runImplementorOnlyResume(thread, message, reviewInjectionIds, recheckWithQa, goalTurn);
     } catch (e) {
       this.hub.log("error", `Resume of ${thread.id.slice(0, 8)} threw before it could hand back its slot: ${String(e)}`);
       this.resuming.delete(thread.id);
@@ -13348,6 +13354,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     message?: string,
     reviewInjectionIds: string[] = [],
     recheckWithQa = false,
+    goalTurn = false,
   ): Promise<void> {
     // A manual resume occupies a concurrency slot for the run's lifetime (like a pipeline), so it
     // counts toward maxConcurrent and frees a queued task when it settles. Reserving through the shared
@@ -13403,8 +13410,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const effectiveMessage = [message?.trim(), reviewInstruction].filter(Boolean).join("\n\n");
     // A vanilla session must receive the owner's actual next message, not the normal GGO
     // acknowledgement/injection wrapper. Other lanes retain that acknowledgement for traceability.
+    // A goal turn is GGO's own continuation, not owner steering, so it goes in as written.
     const resumeNudge = effectiveMessage
-      ? vanilla ? effectiveMessage : acknowledgedInjection(effectiveMessage)
+      ? vanilla || goalTurn ? effectiveMessage : acknowledgedInjection(effectiveMessage)
       : "Continue where you left off.";
     let start: LiveImplementor | null;
     try {
@@ -13457,6 +13465,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         const deployment = implementationFinished && !recheckWithQa
           ? this.verifyManualDeploymentAtBoundary(thread, "implementor_no_qa", undefined, start!.runId)
           : { attempted: false, done: false };
+        if (goalTurn && !deployment.attempted) {
+          this.settleGoalTurn(thread.id, result);
+          return;
+        }
         if (implementationFinished && recheckWithQa && this.db.getThread(thread.id)?.state === "implementing") {
           // This is a new QA episode for a newly injected follow-up, not a retry of the verdict
           // that parked the task. Reuse the direct-QA continuation path so no second implementor
@@ -13510,6 +13522,103 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         releaseSlot();
         void this.stopLive(thread.id);
       });
+  }
+
+  /**
+   * Sends a goal's next turn into a step task's own implementor session, the way an owner's Resume would,
+   * so the goal keeps its context instead of paying a fresh task's bootstrap. Synchronous up to the
+   * reservation, so an owner action can never interleave with it. Refuses, at no cost, while the task or
+   * GGO has anything pending (`goalTurnHold`), and asks for a fresh task when this one cannot take a turn.
+   */
+  continueGoalTask(threadId: string, message: string): GoalContinuation {
+    const thread = this.db.getThread(threadId);
+    const id8 = threadId.slice(0, 8);
+    if (!thread) return { ok: false, fresh: `step task ${id8} no longer exists` };
+    if (thread.state === "cancelled" || thread.state === "closed") return { ok: false, fresh: `step task ${id8} is ${thread.state}` };
+    if (!existsSync(thread.workspace)) return { ok: false, fresh: `step task ${id8}'s workspace ${thread.workspace} no longer exists` };
+    if (!(this.lastImplementorSession.get(threadId) ?? this.latestImplementorSession(threadId))) {
+      return { ok: false, fresh: `step task ${id8} has no implementor session to continue` };
+    }
+    const hold = this.goalTaskHold(threadId) ?? this.goalTurnHold(thread);
+    if (hold && "stop" in hold) return { ok: false, stop: hold.stop };
+    if (hold) return { ok: false, hold };
+    const m = this.db.addMessage({ threadId, role: "director", kind: "system", content: `↪ goal continues in this session: ${message}` });
+    this.hub.publish({ type: "thread.message", threadId, message: m });
+    this.resuming.add(threadId);
+    this.setState(threadId, "implementing");
+    void this.resumeImplementorOnly(thread, message, [], false, true);
+    return { ok: true };
+  }
+
+  /**
+   * Why a goal step task that has stopped is still owed work by GGO itself, so its step must keep its slot:
+   * a usage-limit park that auto-resumes it, a restart's auto-resume, or a run whose teardown is still
+   * unwinding. Null when the task is genuinely finished.
+   */
+  goalTaskHold(threadId: string): GoalTaskHold | null {
+    const thread = this.db.getThread(threadId);
+    if (!thread || this.cancelled(threadId)) return null;
+    const id8 = threadId.slice(0, 8);
+    if ((thread.state === "review" || thread.state === "failed") && (thread.error ?? "").startsWith(CAP_PARK_PREFIX)) {
+      return { kind: "usage_limited", reason: `Step task ${id8} is parked on a usage limit; GGO resumes it in the same session when capacity returns.` };
+    }
+    if (thread.state === "failed" && thread.error === RESTART_AUTO_RESUME_MSG) {
+      return { kind: "waiting", reason: `Step task ${id8} is resuming after GGO's restart.` };
+    }
+    // Bounded, because a review/paused task can keep a stale live/stopping entry; past the grace the step
+    // settles, and `goalTurnHold` still keeps a next turn off a task that looks busy.
+    if (this.goalTaskBusy(threadId) && Date.now() - thread.updatedAt < GOAL_TEARDOWN_GRACE_MS) {
+      return { kind: "waiting", reason: `Step task ${id8} is still finishing its run.`, settling: true };
+    }
+    return null;
+  }
+
+  /** The git state of a goal step task's workspace, so the goal can tell a turn that changed it. */
+  async goalWorkspaceFingerprint(threadId: string): Promise<string | null> {
+    const thread = this.db.getThread(threadId);
+    return thread ? workspaceGitFingerprint(thread.workspace) : null;
+  }
+
+  private goalTaskBusy(threadId: string): boolean {
+    return this.activePipelines.has(threadId) || this.hasActiveRun(threadId) || this.selfImproving.has(threadId);
+  }
+
+  /** What must go before a goal's next turn on this task: the owner's pending input, a gate only the owner
+   *  lifts, or GGO's own capacity. `stop` means continuing would override the owner. */
+  private goalTurnHold(thread: Thread): GoalTaskHold | { stop: string } | null {
+    const id = thread.id;
+    const id8 = id.slice(0, 8);
+    if (UNFINISHED_STATES.has(thread.state)) return { kind: "waiting", reason: `Step task ${id8} is ${thread.state}.` };
+    if (this.goalTaskBusy(id)) return { kind: "waiting", reason: `Step task ${id8} still has an agent run winding down.` };
+    if (this.deadlineDue(thread) || this.deadlineParked(thread)) return { stop: `Step task ${id8} reached its hard deadline. Extend or clear it, then resume the goal.` };
+    if (this.db.getThreadStageOutputs(id).manualProceed) return { kind: "waiting", reason: `Step task ${id8} is waiting for the owner to click Proceed.` };
+    const pendingInput =
+      this.db.listOpenQuestions().some((q) => q.threadId === id) ||
+      !!this.directorNotes.get(id)?.length ||
+      !!this.queuedForImplementor.get(id)?.length ||
+      !!this.pendingResumeMsgs.get(id)?.length ||
+      this.reviewInjections.listOpen(id).length > 0;
+    if (pendingInput) return { kind: "waiting", reason: `Owner input is pending on step task ${id8}; it goes before the goal's next turn.` };
+    if (this.tokenLimitTripped) return { kind: "usage_limited", reason: "Token safety is holding new work until the blocking usage window resets." };
+    if (this.restartDrainActive()) return { kind: "waiting", reason: "GGO is restarting; the goal continues once it is back." };
+    const cap = this.settings().maxConcurrent;
+    if (this.activePipelines.size >= cap) return { kind: "waiting", reason: `${this.activePipelines.size}/${cap} tasks are running at the concurrency cap.` };
+    if (this.repoAtCapacity(thread)) return { kind: "waiting", reason: "This repository is at its concurrency cap, or a Co-worker turn is using it." };
+    return null;
+  }
+
+  /** How a goal turn ends: a clean finish leaves its report for the goal to read; anything else parks the
+   *  task for review, which the goal reads as an unclean turn. No QA or bonus round: the goal's own
+   *  completion audit judges the work. */
+  private settleGoalTurn(threadId: string, result: ResultEvent | undefined): void {
+    if (this.db.getThread(threadId)?.state !== "implementing" || this.cancelled(threadId)) return;
+    if (result && !result.isError) {
+      this.recordLatestImplementationMemo(threadId, result, "done");
+      this.setState(threadId, "done");
+    } else {
+      this.recordLatestImplementationMemo(threadId, result, "review");
+      this.settleReview(threadId, this.implementorParkReason(result, "could not finish its goal turn cleanly."));
+    }
   }
 
   async cancelThread(threadId: string): Promise<ThreadActionResult> {
@@ -16698,15 +16807,6 @@ export function cliRoleKickoff(
 export function capFlaggedBy(agent: AgentRunLike): boolean {
   const cliCapped = (agent instanceof CodexAgentRun || agent instanceof GrokAgentRun) && agent.capped;
   return agent.rateLimited || cliCapped;
-}
-
-/** Which backend produced a run, read back off its persisted account label ("codex:…" ⇒ Codex, "grok:…" ⇒
- *  Grok, "zai:…" ⇒ z.ai, a Claude sub's own label ⇒ Claude). */
-function providerOfRunAccount(account: string | null | undefined): ImplementorProvider {
-  if (account?.startsWith("codex:")) return "codex";
-  if (account?.startsWith("grok:")) return "grok";
-  if (account?.startsWith("zai:")) return "zai";
-  return "claude";
 }
 
 /** Human label for an implementor backend, for the failover findings/notices. */
