@@ -219,9 +219,7 @@ server.requestTimeout = 15_000;
 
 // ---- WebSocket --------------------------------------------------------------------------------------
 
-// 1 MiB: a shared Director call carries up to SHARE_CALL_MAX_CHARS of conversation, and JSON-escaped
-// multi-byte text can take several bytes per character. Chat stays bounded by its own chunk cap.
-const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
 
 server.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);

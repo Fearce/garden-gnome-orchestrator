@@ -78,69 +78,6 @@ export interface RelayChat {
   at: number;
 }
 
-/** A relay that routes Director-sharing frames says so in `welcome.features`. A console never sends a
- *  `share.*` frame to a relay that did not, because an older relay answers an unknown frame with an error
- *  and drops it, so the recipient would wait out its timeout for a reply that can never come. */
-export const RELAY_FEATURE_DIRECTOR_SHARING = "director-sharing";
-
-/** One subscription a donor console currently offers as Director capacity. Discovery only: the relay and
- *  the recipient use it to list and address capacity, but the DONOR re-checks every request against its
- *  own durable share record, so a stale copy of this (a cached roster, a relay that has not seen the
- *  expiry yet) can never authorise a model call. `shareId` is minted afresh on every opt-in, which is
- *  what makes an offer discovered before a stop or an expiry useless after a later re-share. */
-export interface RelayShareOffer {
-  shareId: string;
-  providerLabel: string; // e.g. "OpenAI API"
-  model: string;
-  expiresAt: number; // epoch ms, the donor's deadline
-  maxConcurrent: number;
-  inFlight: number;
-}
-
-/** An offer as everyone else sees it: stamped by the relay with the donor instance that advertised it. */
-export interface RelaySharePresent extends RelayShareOffer {
-  instanceId: string;
-  instanceName: string;
-  donorName: string; // the donor console's director persona, for attribution
-}
-
-/** One chat-completions message of a shared Director call. Text only: the donor forwards it verbatim and
- *  never adds its own system prompt, memory, tools or files. */
-export interface RelayShareMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
-}
-
-/** Why a shared call did not produce a reply. Stable codes: the recipient's Director words its note from
- *  them, and none of them carries provider-side detail that could expose the donor's account. */
-export type RelayShareErrorCode =
-  | "offline" // the donor console is not connected to the relay
-  | "not-shared" // no active share with that id (never shared, stopped, or re-shared under a new id)
-  | "expired" // the share's deadline has passed
-  | "busy" // the share's concurrency limit is reached
-  | "rate-limited" // the share's hourly request limit, or the provider's own rate limit
-  | "exhausted" // the provider reports the donor's quota or credit is used up
-  | "provider-error" // the provider failed or refused the request
-  | "too-large" // the request exceeds SHARE_CALL_MAX_CHARS
-  | "cancelled" // the recipient cancelled the call
-  | "timeout";
-
-export interface RelayShareUsage {
-  inputTokens: number;
-  outputTokens: number;
-}
-
-/** Upper bound on one shared call's message text, summed over every message. Well inside the relay's
- *  socket payload cap even for multi-byte text, so a call is refused clearly instead of being dropped. */
-export const SHARE_CALL_MAX_CHARS = 150_000;
-/** Upper bound on message count, including the opening instructions and any omission marker. */
-export const SHARE_CALL_MAX_MESSAGES = 400;
-/** Upper bound on one reply's text. */
-export const SHARE_REPLY_MAX_CHARS = 32_000;
-export const SHARE_MAX_OFFERS = 8;
-/** Calls one recipient may have outstanding through the relay at once, across every donor. */
-export const SHARE_MAX_PENDING_CALLS = 4;
-
 export const CHAT_MAX_CHARS = 2000;
 /** Bounded client-to-relay chunks per logical message (128k UTF-16 code units at the current chunk cap). */
 export const CHAT_MAX_CHUNKS = 64;
@@ -151,9 +88,7 @@ export const ROOM_HISTORY = 60;
 export type ClientFrame =
   /** `director` — when present — both names the human at this console and opts the instance into the
    *  directors' room. Optional, so a client that predates the room simply never enters it. */
-  /** `shares` is the subscriptions this console currently offers as Director capacity. Optional: a console
-   *  that predates sharing sends none, and the relay routes `share.*` frames only to a console offering one. */
-  | { t: "presence"; agents: RelayAgent[]; director?: { name: string; busy?: boolean }; shares?: RelayShareOffer[] }
+  | { t: "presence"; agents: RelayAgent[]; director?: { name: string; busy?: boolean } }
   /** `room` is the sender's own room and stays the addressing unit. `rooms` — when present — is every
    *  room the line belongs to (the sender's whole identity group), so one post reaches a fork's room as
    *  well as the upstream's. The relay still delivers ONE message with ONE id, stamped per receiver with
@@ -171,22 +106,6 @@ export type ClientFrame =
       chunkIndex?: number;
       chunkCount?: number;
     }
-  /** Director sharing, sent only to a relay that advertised RELAY_FEATURE_DIRECTOR_SHARING. A call is
-   *  addressed to the donor instance and the relay stamps who is calling, so a donor never trusts a
-   *  self-declared identity. A reply is accepted only from the instance a pending call was sent to, and
-   *  is delivered only to the instance that made that call. */
-  | { t: "share.call"; to: string; callId: string; shareId: string; messages: RelayShareMessage[] }
-  | {
-      t: "share.reply";
-      to: string;
-      callId: string;
-      ok: boolean;
-      text?: string;
-      code?: RelayShareErrorCode;
-      message?: string;
-      usage?: RelayShareUsage;
-    }
-  | { t: "share.cancel"; to: string; callId: string }
   | { t: "ping" };
 
 /** `directors` rides along on the two frames that already carry a roster rather than becoming a frame of
@@ -201,25 +120,11 @@ export type ServerFrame =
       presence: RelayPresentAgent[];
       recent: RelayChat[];
       directors?: RelayDirector[];
-      features?: string[];
-      shares?: RelaySharePresent[];
     }
-  | { t: "presence"; agents: RelayPresentAgent[]; directors?: RelayDirector[]; shares?: RelaySharePresent[] }
+  | { t: "presence"; agents: RelayPresentAgent[]; directors?: RelayDirector[] }
   /** The recent backlog of a room this instance has just entered (its first agent in that repo). */
   | { t: "history"; room: string; messages: RelayChat[] }
   | { t: "chat"; msg: RelayChat }
-  | { t: "share.call"; from: string; fromName: string; callId: string; shareId: string; messages: RelayShareMessage[] }
-  | {
-      t: "share.reply";
-      from: string;
-      callId: string;
-      ok: boolean;
-      text?: string;
-      code?: RelayShareErrorCode;
-      message?: string;
-      usage?: RelayShareUsage;
-    }
-  | { t: "share.cancel"; from: string; callId: string }
   | { t: "pong" }
   | { t: "error"; message: string };
 

@@ -203,7 +203,6 @@ const GATES = [
   "test:reset-credits",
   "test:review-model-floor",
   "test:director-provider",
-  "test:director-sharing",
   "test:director-directives",
   "test:recent-repos",
   "test:model-request",

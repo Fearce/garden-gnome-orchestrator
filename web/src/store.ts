@@ -47,7 +47,6 @@ import type {
   MessageCursor,
   ModelStat,
   OnlineOfficeDTO,
-  DirectorSharingDTO,
   HighlightNewsItem,
   OperatorNote,
   OrchestratorSettings,
@@ -399,13 +398,6 @@ interface State {
   // code produce an identical office DTO and a panel watching only that could never un-busy.
   officeJoining: boolean;
   officeJoinError: string | null;
-  // Director sharing, both directions. Server-authoritative like the office: the `director.sharing`
-  // broadcast is the only writer of the DTO. The action in flight and its refusal arrive separately, as
-  // `director.sharing.result`, so a refused change (a past deadline) can be shown where it was made.
-  directorSharing: DirectorSharingDTO;
-  directorSharePending: { action: string; key: string } | null;
-  directorShareError: { action: string; key: string; error: string } | null;
-  directorShareModels: Record<string, { models: string[]; error: string | null; loading: boolean }>;
   boardView: BoardView;
   // Auto model selection's scoreboard: per-model averages over every graded auto-picked task. Rendered
   // read-only in Settings so the selection loop's learning is visible, and rebroadcast on each grading.
@@ -597,12 +589,6 @@ interface State {
   joinOnlineOffice: (input: { url: string; code: string; instanceName: string }) => void;
   leaveOnlineOffice: () => void;
   setOnlineOffice: (patch: { enabled?: boolean; instanceName?: string }) => void;
-  shareDirector: (input: { subscriptionId: string; model: string; expiresAt: number; timeZone: string; maxConcurrent: number; maxRequestsPerHour: number }) => void;
-  updateDirectorShare: (input: { subscriptionId: string; expiresAt: number; timeZone: string; maxConcurrent: number; maxRequestsPerHour: number }) => void;
-  stopDirectorShare: (subscriptionId: string) => void;
-  loadDirectorShareModels: (subscriptionId: string) => void;
-  /** Use another console's shared Director, or (shareId null) this console's own subscriptions again. */
-  useSharedDirector: (instanceId: string, shareId: string | null) => void;
   // Flag that a fresh web build is available (set by version.ts when the served bundle hash changes).
   setUpdateReady: (v: boolean) => void;
   // Record the latest git-update poll result (set by update.ts).
@@ -858,8 +844,6 @@ const IDLE_SUPERVISOR: SupervisorSnapshot = {
   chat: [],
   events: [],
 };
-
-const NO_DIRECTOR_SHARING: DirectorSharingDTO = { relay: "office-offline", subscriptions: [], offers: [], selection: null };
 
 const OFFLINE_OFFICE: OnlineOfficeDTO = {
   enabled: false,
@@ -1498,10 +1482,6 @@ export const useStore = create<State>((set) => ({
   onlineOffice: OFFLINE_OFFICE,
   officeJoining: false,
   officeJoinError: null,
-  directorSharing: NO_DIRECTOR_SHARING,
-  directorSharePending: null,
-  directorShareError: null,
-  directorShareModels: {},
   modelStats: [],
   boardView: "tasks",
 
@@ -2035,28 +2015,6 @@ export const useStore = create<State>((set) => ({
     sendCommand({ type: "office.leave" });
   },
   setOnlineOffice: (patch) => sendCommand({ type: "office.set", ...patch }),
-  shareDirector: (input) => {
-    set({ directorSharePending: { action: "director.share", key: input.subscriptionId }, directorShareError: null });
-    sendCommand({ type: "director.share", ...input });
-  },
-  updateDirectorShare: (input) => {
-    set({ directorSharePending: { action: "director.share.update", key: input.subscriptionId }, directorShareError: null });
-    sendCommand({ type: "director.share.update", ...input });
-  },
-  stopDirectorShare: (subscriptionId) => {
-    set({ directorSharePending: { action: "director.share.stop", key: subscriptionId }, directorShareError: null });
-    sendCommand({ type: "director.share.stop", subscriptionId });
-  },
-  loadDirectorShareModels: (subscriptionId) => {
-    set((s) => ({
-      directorShareModels: { ...s.directorShareModels, [subscriptionId]: { models: s.directorShareModels[subscriptionId]?.models ?? [], error: null, loading: true } },
-    }));
-    sendCommand({ type: "director.share.models", subscriptionId });
-  },
-  useSharedDirector: (instanceId, shareId) => {
-    set({ directorSharePending: { action: "director.share.use", key: shareId ?? "own" }, directorShareError: null });
-    sendCommand({ type: "director.share.use", instanceId, shareId });
-  },
   setUpdateReady: (v) => set({ updateReady: v }),
   setGitUpdate: (v) => set({ gitUpdate: v }),
   applyGitUpdate: async () => {
@@ -2268,8 +2226,6 @@ function applyEvent(ev: ServerEvent): void {
         ...(ev.notes ? { notes: ev.notes } : {}),
         ...(ev.news ? { news: ev.news } : {}),
         ...(ev.onlineOffice ? { onlineOffice: ev.onlineOffice } : {}),
-        // An action sent on a dead socket gets no result frame, so a reconnect releases its button.
-        ...(ev.directorSharing ? { directorSharing: ev.directorSharing, directorSharePending: null } : {}),
         ...(ev.supervisor ? { supervisor: ev.supervisor } : {}),
         // A reconnect never delivers the reply to a bypass sent on the dead socket, so release the button.
         ...(ev.tokenSafety ? { tokenSafety: ev.tokenSafety, tokenSafetyBypassing: false } : {}),
@@ -2427,23 +2383,6 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "office.join.result":
       useStore.setState({ officeJoining: false, officeJoinError: ev.ok ? null : ev.error });
-      break;
-    case "director.sharing":
-      useStore.setState({ directorSharing: ev.sharing });
-      break;
-    case "director.sharing.result": {
-      const pending = useStore.getState().directorSharePending;
-      const key = pending?.action === ev.action ? pending.key : "";
-      useStore.setState({
-        directorSharePending: null,
-        directorShareError: ev.ok ? null : { action: ev.action, key, error: ev.error ?? "The change was refused." },
-      });
-      break;
-    }
-    case "director.sharing.models":
-      useStore.setState({
-        directorShareModels: { ...useStore.getState().directorShareModels, [ev.subscriptionId]: { models: ev.models, error: ev.error, loading: false } },
-      });
       break;
     case "notes":
       useStore.setState({ notes: ev.notes });

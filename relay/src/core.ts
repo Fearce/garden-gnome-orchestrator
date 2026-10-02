@@ -1,30 +1,5 @@
-import {
-  CHAT_MAX_CHARS,
-  CHAT_MAX_CHUNKS,
-  DIRECTORS_ROOM,
-  OFFICE_ROOM,
-  PRESENCE_MAX_AGENTS,
-  RELAY_FEATURE_DIRECTOR_SHARING,
-  RELAY_PROTOCOL,
-  SHARE_CALL_MAX_CHARS,
-  SHARE_CALL_MAX_MESSAGES,
-  SHARE_MAX_OFFERS,
-  SHARE_MAX_PENDING_CALLS,
-  SHARE_REPLY_MAX_CHARS,
-  relayRepoRoom,
-} from "./protocol.js";
-import type {
-  ClientFrame,
-  RelayAgent,
-  RelayChat,
-  RelayDirector,
-  RelayPresentAgent,
-  RelayShareErrorCode,
-  RelayShareMessage,
-  RelayShareOffer,
-  RelaySharePresent,
-  ServerFrame,
-} from "./protocol.js";
+import { CHAT_MAX_CHARS, CHAT_MAX_CHUNKS, DIRECTORS_ROOM, OFFICE_ROOM, PRESENCE_MAX_AGENTS, RELAY_PROTOCOL, relayRepoRoom } from "./protocol.js";
+import type { ClientFrame, RelayAgent, RelayChat, RelayDirector, RelayPresentAgent, ServerFrame } from "./protocol.js";
 
 /** One live connection, as the routing core sees it. The transport (a real WebSocket, or a fake in the
  *  test) is behind `send` so every routing decision in this file is testable without a socket. */
@@ -69,31 +44,8 @@ interface PeerState {
   /** The human at that console, once the instance has declared one. Null is what keeps a pre-directors
    *  client out of the room rather than merely quiet in it. */
   director: { name: string; busy?: boolean } | null;
-  /** Director capacity this console offers. Empty for every console that predates sharing. */
-  shares: RelayShareOffer[];
   since: number;
 }
-
-/** A shared Director call in flight between two instances. The relay remembers who asked so that a reply
- *  reaches only that caller, and so that either side going away settles the other. */
-interface PendingShareCall {
-  caller: string;
-  donor: string;
-  callId: string;
-  at: number;
-}
-
-type ShareCallFrame = Extract<ClientFrame, { t: "share.call" }>;
-type ShareReplyFrame = Extract<ClientFrame, { t: "share.reply" }>;
-
-/** A call the relay has not heard back about in this long is dropped (and its caller told), so a donor
- *  that never answers cannot pin a caller's pending-call budget. Longer than any Director model call. */
-const SHARE_CALL_STALE_MS = 15 * 60_000;
-const SHARE_ID_RE = /^[A-Za-z0-9-]{8,64}$/;
-const SHARE_ERROR_CODES = new Set<RelayShareErrorCode>([
-  "offline", "not-shared", "expired", "busy", "rate-limited", "exhausted", "provider-error", "too-large", "cancelled", "timeout",
-]);
-const SHARE_ROLES = new Set<RelayShareMessage["role"]>(["system", "user", "assistant"]);
 
 type ChatFrame = Extract<ClientFrame, { t: "chat" }>;
 type CleanChat = Pick<ChatFrame, "room" | "body" | "senderName" | "role"> & {
@@ -158,51 +110,6 @@ const cleanKeys = (raw: unknown, exclude: string): string[] => {
   return out;
 };
 
-const shareCallKey = (donor: string, callId: string): string => `${donor}\n${callId}`;
-
-const boundedInt = (v: unknown, min: number, max: number): number | null =>
-  typeof v === "number" && Number.isInteger(v) && v >= min && v <= max ? v : null;
-
-/** Donor-supplied offers, held to shape and bounds. A past deadline is dropped here as well as at read
- *  time, because a donor whose clock or state is wrong must not be able to advertise dead capacity. */
-const cleanShares = (raw: unknown, now: number): RelayShareOffer[] => {
-  if (!Array.isArray(raw)) return [];
-  const out: RelayShareOffer[] = [];
-  for (const s of raw as Partial<RelayShareOffer>[]) {
-    if (!s || typeof s !== "object") continue;
-    const shareId = clip(s.shareId, 64);
-    const maxConcurrent = boundedInt(s.maxConcurrent, 1, 16);
-    const expiresAt = typeof s.expiresAt === "number" && Number.isFinite(s.expiresAt) ? s.expiresAt : 0;
-    if (!SHARE_ID_RE.test(shareId) || !maxConcurrent || expiresAt <= now) continue;
-    if (out.some((o) => o.shareId === shareId)) continue;
-    out.push({
-      shareId,
-      providerLabel: clip(s.providerLabel, 40) || "Shared provider",
-      model: clip(s.model, 80),
-      expiresAt,
-      maxConcurrent,
-      inFlight: boundedInt(s.inFlight, 0, maxConcurrent) ?? 0,
-    });
-    if (out.length >= SHARE_MAX_OFFERS) break;
-  }
-  return out;
-};
-
-const cleanShareMessages = (raw: unknown): RelayShareMessage[] | null => {
-  if (!Array.isArray(raw) || !raw.length || raw.length > SHARE_CALL_MAX_MESSAGES) return null;
-  const out: RelayShareMessage[] = [];
-  for (const m of raw as Partial<RelayShareMessage>[]) {
-    if (!m || !SHARE_ROLES.has(m.role as RelayShareMessage["role"]) || typeof m.content !== "string") return null;
-    out.push({ role: m.role as RelayShareMessage["role"], content: m.content });
-  }
-  return out;
-};
-
-const cleanUsage = (raw: unknown): { inputTokens: number; outputTokens: number } => {
-  const u = raw as { inputTokens?: unknown; outputTokens?: unknown };
-  return { inputTokens: boundedInt(u?.inputTokens, 0, 10_000_000) ?? 0, outputTokens: boundedInt(u?.outputTokens, 0, 10_000_000) ?? 0 };
-};
-
 /**
  * The Online Office's routing brain: who is online, which repos they are in, and who each chat line
  * reaches. Deliberately free of transport, storage and clock concerns — the relay process wires those in.
@@ -217,7 +124,6 @@ export class RelayCore {
   private readonly peers = new Map<string, PeerState>();
   private readonly pendingChat = new Map<string, PendingChat>();
   private readonly completedChat = new Set<string>();
-  private readonly pendingCalls = new Map<string, PendingShareCall>();
   private readonly history: RoomHistory;
   private readonly now: () => number;
   private readonly newId: () => string;
@@ -238,7 +144,7 @@ export class RelayCore {
         this.clearPendingChat(st.peer.instanceId);
       }
     }
-    this.peers.set(peer.connId, { peer, agents: [], rooms: new Set([OFFICE_ROOM]), director: null, shares: [], since: this.now() });
+    this.peers.set(peer.connId, { peer, agents: [], rooms: new Set([OFFICE_ROOM]), director: null, since: this.now() });
     peer.send({
       t: "welcome",
       protocol: RELAY_PROTOCOL,
@@ -247,8 +153,6 @@ export class RelayCore {
       presence: this.rosterFor(peer.instanceId),
       recent: this.othersOnly(this.history.recent(OFFICE_ROOM), peer.instanceId),
       directors: this.directorsFor(peer.instanceId),
-      features: [RELAY_FEATURE_DIRECTOR_SHARING],
-      shares: this.sharesFor(peer.instanceId),
     });
     this.broadcastPresence();
   }
@@ -256,12 +160,7 @@ export class RelayCore {
   detach(connId: string): void {
     const st = this.peers.get(connId);
     if (this.peers.delete(connId)) {
-      if (st) {
-        this.clearPendingChat(st.peer.instanceId);
-        // A reconnect that raced its own close has already replaced this connection: the instance is
-        // still here, so its calls are still live.
-        if (!this.peerByInstance(st.peer.instanceId)) this.settleCallsOf(st.peer.instanceId);
-      }
+      if (st) this.clearPendingChat(st.peer.instanceId);
       this.broadcastPresence();
     }
   }
@@ -280,12 +179,6 @@ export class RelayCore {
         return null;
       case "chat":
         return this.applyChat(st, frame);
-      case "share.call":
-        return this.routeShareCall(st, frame);
-      case "share.reply":
-        return this.routeShareReply(st, frame);
-      case "share.cancel":
-        return this.routeShareCancel(st, frame);
       default:
         return "unknown frame";
     }
@@ -327,15 +220,11 @@ export class RelayCore {
         if (REPO_ROOM_RE.test(room)) rooms.add(room);
       }
     }
-    const shares = cleanShares(frame.shares, this.now());
     const entered = [...rooms].filter((r) => !st.rooms.has(r));
-    const changed = JSON.stringify(st.agents) !== JSON.stringify(clean)
-      || JSON.stringify(st.director) !== JSON.stringify(director)
-      || JSON.stringify(st.shares) !== JSON.stringify(shares);
+    const changed = JSON.stringify(st.agents) !== JSON.stringify(clean) || JSON.stringify(st.director) !== JSON.stringify(director);
     st.agents = clean;
     st.rooms = rooms;
     st.director = director;
-    st.shares = shares;
     for (const room of entered) {
       const messages = this.othersOnly(this.history.recent(room), st.peer.instanceId);
       if (messages.length) st.peer.send({ t: "history", room, messages });
@@ -449,132 +338,6 @@ export class RelayCore {
   private clearPendingChat(instanceId: string): void {
     const prefix = `${instanceId}:`;
     for (const key of this.pendingChat.keys()) if (key.startsWith(prefix)) this.pendingChat.delete(key);
-  }
-
-  // ---- Director sharing -----------------------------------------------------------------------------
-  //
-  // The relay only carries these frames between two authenticated instances; it never sees a credential
-  // and never decides whether a call is allowed. It does refuse what it can already tell is pointless: a
-  // donor that is not here, a share that donor is not advertising, an oversized request.
-
-  private routeShareCall(st: PeerState, frame: ShareCallFrame): string | null {
-    const caller = st.peer.instanceId;
-    const callId = clip(frame.callId, 100);
-    if (!/^[A-Za-z0-9._:-]{1,100}$/.test(callId)) return "bad share callId";
-    const to = clip(frame.to, 100);
-    const fail = (code: RelayShareErrorCode, message: string): null => {
-      st.peer.send({ t: "share.reply", from: to, callId, ok: false, code, message });
-      return null;
-    };
-    this.pruneStaleCalls();
-    if (!to || to === caller) return fail("not-shared", "That share belongs to this machine.");
-    const donor = this.peerByInstance(to);
-    if (!donor) return fail("offline", "The machine sharing this Director is not connected to the office.");
-    const shareId = clip(frame.shareId, 64);
-    const offer = donor.shares.find((s) => s.shareId === shareId);
-    if (!offer) return fail("not-shared", "That machine is no longer sharing this Director.");
-    if (offer.expiresAt <= this.now()) return fail("expired", "This shared Director has expired.");
-    const messages = cleanShareMessages(frame.messages);
-    if (!messages) return "share messages must be a non-empty list of text messages";
-    const chars = messages.reduce((n, m) => n + m.content.length, 0);
-    if (chars > SHARE_CALL_MAX_CHARS) return fail("too-large", `The request is ${chars} characters; the limit is ${SHARE_CALL_MAX_CHARS}.`);
-    const key = shareCallKey(to, callId);
-    if (this.pendingCalls.has(key)) return "duplicate share callId";
-    const outstanding = [...this.pendingCalls.values()].filter((c) => c.caller === caller).length;
-    if (outstanding >= SHARE_MAX_PENDING_CALLS) return fail("busy", `At most ${SHARE_MAX_PENDING_CALLS} shared calls may be outstanding at once.`);
-    this.pendingCalls.set(key, { caller, donor: to, callId, at: this.now() });
-    donor.peer.send({ t: "share.call", from: caller, fromName: st.peer.instanceName, callId, shareId, messages });
-    return null;
-  }
-
-  private routeShareReply(st: PeerState, frame: ShareReplyFrame): string | null {
-    const donor = st.peer.instanceId;
-    const callId = clip(frame.callId, 100);
-    const key = shareCallKey(donor, callId);
-    const pending = this.pendingCalls.get(key);
-    // Only the instance a call went to may answer it, and only to the instance that asked: a reply naming
-    // anyone else is dropped rather than re-addressed.
-    if (!pending || pending.caller !== clip(frame.to, 100)) return "no pending share call with that id";
-    this.pendingCalls.delete(key);
-    const caller = this.peerByInstance(pending.caller);
-    if (!caller) return null;
-    const ok = frame.ok === true;
-    const code = !ok && SHARE_ERROR_CODES.has(frame.code as RelayShareErrorCode) ? frame.code : undefined;
-    caller.peer.send({
-      t: "share.reply",
-      from: donor,
-      callId,
-      ok,
-      ...(ok ? { text: typeof frame.text === "string" ? frame.text.slice(0, SHARE_REPLY_MAX_CHARS) : "" } : {}),
-      ...(!ok ? { code: code ?? "provider-error", message: clip(frame.message, 400) } : {}),
-      ...(frame.usage ? { usage: cleanUsage(frame.usage) } : {}),
-    });
-    return null;
-  }
-
-  private routeShareCancel(st: PeerState, frame: Extract<ClientFrame, { t: "share.cancel" }>): string | null {
-    const to = clip(frame.to, 100);
-    const callId = clip(frame.callId, 100);
-    const key = shareCallKey(to, callId);
-    const pending = this.pendingCalls.get(key);
-    if (!pending || pending.caller !== st.peer.instanceId) return null; // already settled, or not theirs
-    this.pendingCalls.delete(key);
-    this.peerByInstance(to)?.peer.send({ t: "share.cancel", from: st.peer.instanceId, callId });
-    return null;
-  }
-
-  /** An instance left the office: every call it was answering fails as offline, and every call it was
-   *  waiting on is cancelled at the donor, so neither side waits on the other. */
-  private settleCallsOf(instanceId: string): void {
-    for (const [key, call] of this.pendingCalls) {
-      if (call.donor === instanceId) {
-        this.pendingCalls.delete(key);
-        this.peerByInstance(call.caller)?.peer.send({
-          t: "share.reply", from: call.donor, callId: call.callId, ok: false, code: "offline",
-          message: "The machine sharing this Director disconnected before replying.",
-        });
-      } else if (call.caller === instanceId) {
-        this.pendingCalls.delete(key);
-        this.peerByInstance(call.donor)?.peer.send({ t: "share.cancel", from: call.caller, callId: call.callId });
-      }
-    }
-  }
-
-  private pruneStaleCalls(): void {
-    const cutoff = this.now() - SHARE_CALL_STALE_MS;
-    for (const [key, call] of this.pendingCalls) {
-      if (call.at > cutoff) continue;
-      this.pendingCalls.delete(key);
-      this.peerByInstance(call.caller)?.peer.send({
-        t: "share.reply", from: call.donor, callId: call.callId, ok: false, code: "timeout",
-        message: "The machine sharing this Director never replied.",
-      });
-      this.peerByInstance(call.donor)?.peer.send({ t: "share.cancel", from: call.caller, callId: call.callId });
-    }
-  }
-
-  private peerByInstance(instanceId: string): PeerState | undefined {
-    for (const st of this.peers.values()) if (st.peer.instanceId === instanceId) return st;
-    return undefined;
-  }
-
-  /** Every current offer, stamped with its donor. An offer whose deadline has passed is withheld even if
-   *  its donor has not re-announced yet, so discovery never lists capacity the donor would refuse. */
-  shares(): RelaySharePresent[] {
-    const now = this.now();
-    const out: RelaySharePresent[] = [];
-    for (const st of this.peers.values()) {
-      for (const s of st.shares) {
-        if (s.expiresAt <= now) continue;
-        out.push({ ...s, instanceId: st.peer.instanceId, instanceName: st.peer.instanceName, donorName: st.director?.name ?? st.peer.instanceName });
-      }
-    }
-    return out;
-  }
-
-  /** Offers as ONE instance must see them: never its own. */
-  sharesFor(instanceId: string): RelaySharePresent[] {
-    return this.shares().filter((s) => s.instanceId !== instanceId);
   }
 
   /** Every agent every connected instance is reporting, stamped with its instance. The status pages want
@@ -697,7 +460,6 @@ export class RelayCore {
         t: "presence",
         agents: all.filter((a) => a.instanceId !== st.peer.instanceId),
         directors: this.directorsFor(st.peer.instanceId),
-        shares: this.sharesFor(st.peer.instanceId),
       });
     }
   }

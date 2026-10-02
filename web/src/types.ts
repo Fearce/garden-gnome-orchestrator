@@ -78,19 +78,9 @@ export type UsageSavingPolicies = Record<string, UsageSavingPolicy>;
 
 /** Live backend/model for the director. This is server runtime state, not a settings-derived guess. */
 export interface DirectorStatus {
-  /** "shared": the Director runs on capacity another online-office console shares (see `shared`). */
-  provider: ImplementorProvider | "shared";
+  provider: ImplementorProvider;
   model: string;
   accountLabel: string;
-  shared?: SharedDirectorAttribution;
-}
-
-/** Who lends the Director's capacity while this console uses a shared Director. */
-export interface SharedDirectorAttribution {
-  donorName: string;
-  instanceName: string;
-  providerLabel: string;
-  expiresAt: number;
 }
 
 export type ThreadState =
@@ -1416,84 +1406,6 @@ export interface RelayDirector {
   busy?: boolean; // Director's own activity; legacy peers may not report it.
 }
 
-// ---- Director sharing (over the online office) ----
-// Mirrored from server/src/office/directorShare/{policy,host,client,sharing}.ts and onlineProtocol.ts.
-
-/** One connected subscription on this console and whether its provider allows sharing it. */
-export interface DirectorShareSubscription {
-  id: string;
-  kind: "openai-api" | "xai-api" | "claude" | "codex-chatgpt" | "grok-login" | "zai";
-  label: string;
-  providerLabel: string;
-  shareable: boolean;
-  reason: string;
-  sourceUrl: string;
-}
-
-export interface DirectorShareUsage {
-  requests: number;
-  denied: number;
-  inputTokens: number;
-  outputTokens: number;
-  lastUsedAt: number | null;
-  recipients: Record<string, { name: string; requests: number; lastAt: number }>;
-}
-
-export interface DirectorShareState {
-  shareId: string;
-  status: "shared" | "stopped" | "expired";
-  model: string;
-  expiresAt: number;
-  timeZone: string;
-  sharedAt: number;
-  endedAt: number | null;
-  maxConcurrent: number;
-  maxRequestsPerHour: number;
-  usage: DirectorShareUsage;
-  inFlight: number;
-  requestsLastHour: number;
-}
-
-export interface DirectorShareView {
-  subscription: DirectorShareSubscription;
-  share: DirectorShareState | null;
-}
-
-/** Capacity another console currently offers as a Director. */
-export interface DirectorShareOffer {
-  shareId: string;
-  providerLabel: string;
-  model: string;
-  expiresAt: number;
-  maxConcurrent: number;
-  inFlight: number;
-  instanceId: string;
-  instanceName: string;
-  donorName: string;
-}
-
-export type SharedDirectorAvailability = "available" | "busy" | "expired" | "withdrawn" | "donor-offline" | "office-offline" | "relay-unsupported";
-
-export interface SharedDirectorSelection {
-  instanceId: string;
-  shareId: string;
-  instanceName: string;
-  donorName: string;
-  providerLabel: string;
-  model: string;
-  expiresAt: number;
-  selectedAt: number;
-  availability: SharedDirectorAvailability;
-  detail: string;
-}
-
-export interface DirectorSharingDTO {
-  relay: "office-offline" | "relay-unsupported" | "ready";
-  subscriptions: DirectorShareView[];
-  offers: DirectorShareOffer[];
-  selection: SharedDirectorSelection | null;
-}
-
 /** A repository whose work is split across machines. `workspaces` are the LOCAL checkouts that resolve to
  *  it — what lets the office strip stand a remote agent next to the local worker it collides with, which
  *  a repo label alone cannot do: the two sides agree on the remote, never on the path. */
@@ -1532,8 +1444,6 @@ export type ServerEvent =
       notes: OperatorNote[];
       news?: HighlightNewsItem[];
       onlineOffice: OnlineOfficeDTO;
-      /** Missing on an older server that predates Director sharing. */
-      directorSharing?: DirectorSharingDTO;
       supervisor: SupervisorSnapshot;
       coworkSessions: CoworkSession[];
       tokenSafety?: TokenSafetyState;
@@ -1542,9 +1452,6 @@ export type ServerEvent =
   | { type: "token.safety"; state: TokenSafetyState }
   | { type: "office.online"; office: OnlineOfficeDTO }
   | { type: "office.join.result"; ok: boolean; error: string | null }
-  | { type: "director.sharing"; sharing: DirectorSharingDTO }
-  | { type: "director.sharing.result"; action: string; ok: boolean; error: string | null }
-  | { type: "director.sharing.models"; subscriptionId: string; models: string[]; error: string | null }
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "model.stats"; stats: ModelStat[] }
   | { type: "schedules"; schedules: ScheduledTask[] }
@@ -1715,11 +1622,6 @@ export type ClientCommand =
   | { type: "goal.status"; id: string; status: GoalOwnerStatus }
   | { type: "goal.delete"; id: string }
   | { type: "office.join"; url: string; code: string; instanceName: string }
-  | { type: "director.share"; subscriptionId: string; model: string; expiresAt: number; timeZone: string; maxConcurrent: number; maxRequestsPerHour: number }
-  | { type: "director.share.update"; subscriptionId: string; expiresAt: number; timeZone: string; maxConcurrent: number; maxRequestsPerHour: number }
-  | { type: "director.share.stop"; subscriptionId: string }
-  | { type: "director.share.models"; subscriptionId: string }
-  | { type: "director.share.use"; instanceId: string; shareId: string | null }
   | { type: "office.leave" }
   | { type: "office.set"; enabled?: boolean; instanceName?: string }
   | { type: "note.create"; body: string; url?: string }

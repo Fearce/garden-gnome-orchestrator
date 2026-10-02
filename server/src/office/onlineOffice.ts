@@ -2,18 +2,8 @@ import { WebSocket } from "ws";
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
-import { CHAT_MAX_CHARS, CHAT_MAX_CHUNKS, DIRECTORS_ROOM, OFFICE_ROOM, RELAY_FEATURE_DIRECTOR_SHARING, RELAY_PROTOCOL, relayRepoRoom } from "./onlineProtocol.js";
-import type {
-  ClientFrame,
-  JoinResponse,
-  RelayAgent,
-  RelayChat,
-  RelayDirector,
-  RelayPresentAgent,
-  RelayShareOffer,
-  RelaySharePresent,
-  ServerFrame,
-} from "./onlineProtocol.js";
+import { CHAT_MAX_CHARS, CHAT_MAX_CHUNKS, DIRECTORS_ROOM, OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } from "./onlineProtocol.js";
+import type { ClientFrame, JoinResponse, RelayAgent, RelayChat, RelayDirector, RelayPresentAgent, ServerFrame } from "./onlineProtocol.js";
 import { identitiesMatch, identityKeys, repoIdentity, repoLeaf, type RepoIdentity } from "./repoIdentity.js";
 
 /** How the console sees the online office. The token is never part of this — only whether one is held. */
@@ -65,17 +55,6 @@ export interface OnlineOfficeDeps {
   directorBusy?: () => boolean;
   /** The remote roster changed: agents that appeared in a repo THIS instance is also working. */
   onRemoteJoin: (repoLabel: string, workspaces: string[], joiners: RelayPresentAgent[]) => void;
-  /** Director sharing (directorShare/sharing.ts). Optional so the office runs without it. */
-  sharing?: OnlineShareHooks;
-}
-
-/** What the office needs from Director sharing: the offers to advertise, and where `share.*` traffic,
- *  other consoles' offers and a dropped connection are delivered. */
-export interface OnlineShareHooks {
-  offers: () => RelayShareOffer[];
-  onFrame: (frame: Extract<ServerFrame, { t: "share.call" | "share.reply" | "share.cancel" }>) => void;
-  onOffers: (offers: RelaySharePresent[] | undefined) => void;
-  onDisconnected: () => void;
 }
 
 const KV = {
@@ -129,8 +108,6 @@ export class OnlineOffice {
   private connectedAt: number | null = null;
   private remote: RelayPresentAgent[] = [];
   private directors: RelayDirector[] = [];
-  /** What the connected relay said it supports in its welcome. Empty until then, and for an older relay. */
-  private features = new Set<string>();
   private lastPresence = "";
   private lastLookalikes = "";
   private reconnectDelay = RECONNECT_MIN_MS;
@@ -345,24 +322,6 @@ export class OnlineOffice {
     });
   }
 
-  /** Send a Director-sharing frame. Refused (false) unless connected to a relay that routes them: an older
-   *  relay would answer with an error and drop the frame, leaving the other side waiting. */
-  sendShare(frame: Extract<ClientFrame, { t: "share.call" | "share.reply" | "share.cancel" }>): boolean {
-    if (this.shareRelayState() !== "ready" || this.ws?.readyState !== WebSocket.OPEN) return false;
-    this.send(frame);
-    return true;
-  }
-
-  shareRelayState(): "office-offline" | "relay-unsupported" | "ready" {
-    if (this.state !== "online") return "office-offline";
-    return this.features.has(RELAY_FEATURE_DIRECTOR_SHARING) ? "ready" : "relay-unsupported";
-  }
-
-  /** Whether another console is connected to the office right now (its director is on the roster). */
-  instanceOnline(instanceId: string): boolean {
-    return this.directors.some((d) => d.instanceId === instanceId) || this.remote.some((a) => a.instanceId === instanceId);
-  }
-
   /** Re-advertise this instance's agents right now — called when one starts or ends, so a teammate sees
    *  a new worker in seconds rather than at the next presence tick. */
   refreshPresence(): void {
@@ -430,27 +389,12 @@ export class OnlineOffice {
         // The relay is the authority on which instance this connection is; a token re-issued under a new
         // id would otherwise leave the self-filter below matching nothing.
         if (frame.instanceId) this.deps.db.kvSet(KV.instanceId, frame.instanceId);
-        this.features = new Set(Array.isArray(frame.features) ? frame.features : []);
         this.applyDirectors(frame.directors);
         this.applyPresence(frame.presence);
-        // Always delivered, even empty from an older relay: the relay's features changed, and sharing
-        // re-renders its availability from them.
-        this.applyShares(frame.shares ?? []);
-        // The relay's features are known only now, so the presence frame sent on open went out without
-        // this console's offers.
-        this.lastPresence = "";
-        void this.publishPresence();
         return;
       case "presence":
         this.applyDirectors(frame.directors);
         this.applyPresence(frame.agents);
-        this.applyShares(frame.shares);
-        return;
-      case "share.call":
-      case "share.reply":
-      case "share.cancel":
-        if (this.isSelf(frame.from)) return;
-        this.deps.sharing?.onFrame(frame);
         return;
       case "history":
         // The backlog of a room we just entered: deliver it like live traffic so a fresh agent reads
@@ -486,13 +430,6 @@ export class OnlineOffice {
   private isSelf(instanceId: string): boolean {
     const mine = this.deps.db.kvGet(KV.instanceId) ?? "";
     return !!mine && instanceId === mine;
-  }
-
-  /** Other consoles' Director offers. Self-filtered like every roster: this console's own offers are not
-   *  capacity it can use. */
-  private applyShares(shares: RelaySharePresent[] | undefined): void {
-    if (!shares) return;
-    this.deps.sharing?.onOffers(shares.filter((s) => !this.isSelf(s.instanceId)));
   }
 
   /** Fold in the other consoles' humans. Self-filtered for the same reason the agent roster is: the
@@ -599,12 +536,10 @@ export class OnlineOffice {
     // Naming the director is also what puts this console in the directors' room, so it rides on every
     // presence frame — including the one an instance with no agents at all sends.
     const director = { name: this.deps.directorName(), busy: this.deps.directorBusy?.() };
-    // Offers go only to a relay that routes calls for them.
-    const shares = this.features.has(RELAY_FEATURE_DIRECTOR_SHARING) ? this.deps.sharing?.offers() : undefined;
-    const fingerprint = JSON.stringify({ agents, director, shares });
+    const fingerprint = JSON.stringify({ agents, director });
     if (fingerprint === this.lastPresence) return;
     this.lastPresence = fingerprint;
-    this.send({ t: "presence", agents, director, ...(shares ? { shares } : {}) });
+    this.send({ t: "presence", agents, director });
   }
 
   private send(frame: ClientFrame): void {
@@ -612,7 +547,6 @@ export class OnlineOffice {
   }
 
   private failAndRetry(reason: string): void {
-    this.connectionLost();
     if (this.disposed || !this.enabled()) return;
     this.setState("connecting", reason);
     this.reconnect(this.reconnectDelay);
@@ -625,19 +559,11 @@ export class OnlineOffice {
     this.reconnectTimer.unref?.();
   }
 
-  /** Nothing in flight over the old socket can be answered, and the relay's features and the other
-   *  consoles' offers are unknown until the next welcome. */
-  private connectionLost(): void {
-    this.features = new Set();
-    this.deps.sharing?.onDisconnected();
-  }
-
   private closeSocket(): void {
     const ws = this.ws;
     this.ws = null;
     this.connectedAt = null;
     if (!ws) return;
-    this.connectionLost();
     ws.removeAllListeners();
     // `ws` EMITS on a close during the handshake ("closed before the connection was established"), and a
     // socket we just stripped of listeners has nobody to catch an `error` — which in Node is a process

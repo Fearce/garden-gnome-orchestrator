@@ -144,7 +144,13 @@ try {
   check("a director model an earlier build auto-picked is not restored on boot", bootDirector().status() === null);
   check("the retired auto-pick marker is cleared on boot", db.kvGet("director_target_auto") === null);
   db.kvSet("director_target_key", withAuto[0]!.key);
-  check("the configured director model is restored on boot", bootDirector().status()?.model === "gpt-director");
+  db.kvSet("director_shares_v1", JSON.stringify({ s1: { status: "active", expiresAt: Date.now() + 3_600_000 } }));
+  db.kvSet("director_shared_selection_v1", JSON.stringify({ shareId: "s1", expiresAt: Date.now() + 3_600_000 }));
+  const restored = bootDirector().status();
+  check("the configured director model is restored on boot", restored?.model === "gpt-director");
+  check("removed Director sharing: saved offers and a chosen share are deleted on boot",
+    db.kvGet("director_shares_v1") === null && db.kvGet("director_shared_selection_v1") === null);
+  check("removed Director sharing: a saved share never becomes the Director's target", restored?.provider === "codex", JSON.stringify(restored));
   mgr.setSettings({ autoModelSelection: false });
 
   let dispatched: Record<string, unknown> | undefined;

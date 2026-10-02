@@ -1331,49 +1331,6 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 /* A repo THIS machine is also working — the one line in the roster that means "you can collide". */
 .office-roster-repo.shared { color: var(--accent); }
 
-/* ---- Director sharing: one card per subscription (donor) or per offer (recipient) ---- */
-.dshare { padding-bottom: 8px; }
-.dshare-warn { color: var(--warn); }
-.dshare-list { margin: 2px 16px 8px; display: flex; flex-direction: column; gap: 8px; }
-.dshare-row { border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.dshare-current { margin: 2px 16px 8px; border-color: color-mix(in oklch, var(--role-director) 45%, var(--line)); }
-.dshare-row-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.dshare-row-title { min-width: 0; }
-.dshare-reason { margin: 0; font-size: 11.5px; line-height: 1.45; color: var(--text-dim); overflow-wrap: anywhere; }
-.dshare-reason a { color: var(--accent); }
-.dshare-live { margin: 0; font-size: 12px; color: var(--text); line-height: 1.45; }
-.dshare-form { display: flex; flex-direction: column; gap: 8px; }
-.dshare-form .model-select { width: 100%; }
-.dshare-limits { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.dshare-hint { font-size: 10.5px; color: var(--text-faint); }
-.dshare-hint.bad { color: var(--danger); }
-.dshare-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.dshare-error { margin: 0; }
-.dshare-usage { font-size: 11px; color: var(--text-dim); line-height: 1.5; border-top: 1px solid var(--line); padding-top: 6px; }
-.share-chip {
-  flex: none; padding: 2px 7px; border-radius: 999px; white-space: nowrap;
-  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase;
-  color: var(--text-faint); border: 1px solid var(--line);
-}
-.share-chip.on { color: var(--ok); border-color: color-mix(in oklch, var(--ok) 45%, var(--line)); }
-.share-chip.off { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 45%, var(--line)); }
-@media (max-width: 520px) {
-  .dshare-list, .dshare-current { margin-left: 12px; margin-right: 12px; }
-  .dshare-limits { grid-template-columns: minmax(0, 1fr); }
-  .dshare-actions .btn { min-height: var(--tap-sm); }
-}
-
-/* The Director's header while it runs on another member's shared capacity. */
-.shared-director-strip {
-  margin-top: 8px; padding: 7px 10px; display: flex; align-items: center; gap: 10px;
-  border: 1px solid color-mix(in oklch, var(--role-director) 45%, var(--line)); border-radius: var(--r-sm);
-  font-size: 12px; line-height: 1.4;
-}
-.shared-director-strip.warn { border-color: color-mix(in oklch, var(--warn) 55%, var(--line)); }
-.shared-director-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.shared-director-meta { margin-top: 2px; font-size: 11px; }
-.shared-director-strip .btn { flex: none; }
-
 /* The top-bar cluster for one remote machine working repos WE aren't — a machine sharing a repo with us
    stands in that repo's huddle instead. Deliberately quieter than a huddle: the gnomes are smaller and
    don't pace, because nothing here is happening in this working tree. */

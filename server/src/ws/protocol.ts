@@ -19,7 +19,6 @@ import type { ThreadActionResult } from "../orchestrator/api.js";
 import type { RepoActionDTO, RepoRef, RepoStateDTO } from "../orchestrator/repoConsole.js";
 import type { CodeContext } from "../orchestrator/codeContext.js";
 import type { OnlineOfficeDTO } from "../office/onlineOffice.js";
-import type { DirectorSharingDTO } from "../office/directorShare/sharing.js";
 import {
   MAX_COWORK_ATTACHMENTS,
   MAX_COWORK_FILE_BASE64_CHARS,
@@ -125,7 +124,6 @@ export type ServerEvent =
       notes: OperatorNote[];
       news: HighlightNewsItem[];
       onlineOffice: OnlineOfficeDTO;
-      directorSharing: DirectorSharingDTO;
       supervisor: SupervisorSnapshot;
       coworkSessions: CoworkSession[];
       tokenSafety: TokenSafetyState;
@@ -163,11 +161,6 @@ export type ServerEvent =
   // can't stand in for it: a second attempt with the same wrong code produces an identical DTO, so the
   // panel would have no way to tell "still trying" from "refused again" and its button would stick.
   | { type: "office.join.result"; ok: boolean; error: string | null }
-  // Director sharing, both directions: this console's shares and what other consoles offer. Never carries
-  // a credential. `director.sharing.result` answers one owner action on the socket that sent it.
-  | { type: "director.sharing"; sharing: DirectorSharingDTO }
-  | { type: "director.sharing.result"; action: string; ok: boolean; error: string | null }
-  | { type: "director.sharing.models"; subscriptionId: string; models: string[]; error: string | null }
   | { type: "plan.ready"; threadId: string; brief: string }
   | { type: "approval.mode"; on: boolean }
   | { type: "settings"; settings: OrchestratorSettings }
@@ -705,30 +698,6 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("office.leave") }),
   // Go quiet without giving up the device token, and rename this machine as others see it.
   z.object({ type: z.literal("office.set"), enabled: z.boolean().optional(), instanceName: z.string().max(40).optional() }),
-  // ---- Director sharing. Every limit is re-validated by DirectorShareHost; these bounds only keep junk out.
-  // `expiresAt` is epoch ms (the browser converts its local date/time); `timeZone` is the IANA zone the
-  // owner picked it in, kept for display.
-  z.object({
-    type: z.literal("director.share"),
-    subscriptionId: z.string().min(1).max(120),
-    model: z.string().min(1).max(80),
-    expiresAt: z.number().finite(),
-    timeZone: z.string().max(64),
-    maxConcurrent: z.number().int().min(1).max(16),
-    maxRequestsPerHour: z.number().int().min(1).max(10_000),
-  }),
-  z.object({
-    type: z.literal("director.share.update"),
-    subscriptionId: z.string().min(1).max(120),
-    expiresAt: z.number().finite(),
-    timeZone: z.string().max(64),
-    maxConcurrent: z.number().int().min(1).max(16),
-    maxRequestsPerHour: z.number().int().min(1).max(10_000),
-  }),
-  z.object({ type: z.literal("director.share.stop"), subscriptionId: z.string().min(1).max(120) }),
-  z.object({ type: z.literal("director.share.models"), subscriptionId: z.string().min(1).max(120) }),
-  // Use another console's shared Director, or go back to this console's own subscriptions (`shareId` null).
-  z.object({ type: z.literal("director.share.use"), instanceId: z.string().max(100), shareId: z.string().max(64).nullable() }),
   z.object({ type: z.literal("note.create"), body: z.string().min(1).max(2000), url: z.string().max(600).optional() }),
   z.object({ type: z.literal("note.delete"), id: z.string() }),
   z.object({ type: z.literal("note.clear") }),

@@ -1554,19 +1554,9 @@ export interface ModelRequest {
 /** The backend/model the long-lived director is actually using right now. Unlike the configured model
  *  matrix this is runtime truth: cap failover and auto-selection can move the director between providers. */
 export interface DirectorStatus {
-  /** "shared": the Director runs on capacity another online-office console shares (see `shared`). */
-  provider: ImplementorProvider | "shared";
+  provider: ImplementorProvider;
   model: string;
   accountLabel: string;
-  shared?: SharedDirectorAttribution;
-}
-
-/** Who lends the Director's capacity while this console uses a shared Director. */
-export interface SharedDirectorAttribution {
-  donorName: string;
-  instanceName: string;
-  providerLabel: string;
-  expiresAt: number;
 }
 
 /** The five agent roles a model can be picked for. Mirrored in web/src/types.ts. */

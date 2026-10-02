@@ -5,17 +5,8 @@
 import assert from "node:assert/strict";
 import { MemoryHistory, RelayCore } from "./core.js";
 import type { RelayPeer } from "./core.js";
-import {
-  CHAT_MAX_CHARS,
-  DIRECTORS_ROOM,
-  OFFICE_ROOM,
-  RELAY_FEATURE_DIRECTOR_SHARING,
-  ROOM_HISTORY,
-  SHARE_CALL_MAX_CHARS,
-  SHARE_MAX_PENDING_CALLS,
-  relayRepoRoom,
-} from "./protocol.js";
-import type { ClientFrame, RelayAgent, RelayShareOffer, ServerFrame } from "./protocol.js";
+import { CHAT_MAX_CHARS, DIRECTORS_ROOM, OFFICE_ROOM, ROOM_HISTORY, relayRepoRoom } from "./protocol.js";
+import type { RelayAgent, ServerFrame } from "./protocol.js";
 
 /** A connected instance that records everything the core sends it. */
 function fakePeer(instanceId: string, instanceName = instanceId): RelayPeer & { sent: ServerFrame[]; drain(): ServerFrame[] } {
@@ -623,135 +614,6 @@ function forkPair(opts: { withAlias: boolean }) {
   const after = presences(kevin.drain()).at(-1);
   assert.ok(after && after.t === "presence");
   assert.deepEqual(after.directors ?? [], [], "the departed director is gone from the roster");
-}
-
-// ---- Director sharing ---------------------------------------------------------------------------------
-
-function shareCore() {
-  const clock = { now: 10_000 };
-  const core = new RelayCore({ history: new MemoryHistory(ROOM_HISTORY), now: () => clock.now });
-  return { core, clock };
-}
-const offer = (over: Partial<RelayShareOffer> = {}): RelayShareOffer => ({
-  shareId: "share-aaaaaaaa", providerLabel: "OpenAI API", model: "gpt-x", expiresAt: 60_000, maxConcurrent: 2, inFlight: 0, ...over,
-});
-const replies = (frames: ServerFrame[]) => frames.filter((f): f is Extract<ServerFrame, { t: "share.reply" }> => f.t === "share.reply");
-const call = (to: string, callId: string, shareId = "share-aaaaaaaa"): ClientFrame =>
-  ({ t: "share.call", to, callId, shareId, messages: [{ role: "user", content: "hi" }] });
-
-// The relay advertises the feature, stamps offers with their donor, and never hands a donor its own offer.
-{
-  const { core } = shareCore();
-  const donor = fakePeer("i-donor", "Donor box"), user = fakePeer("i-user");
-  core.attach(donor);
-  core.attach(user);
-  const welcome = user.sent.find((f) => f.t === "welcome");
-  assert.ok(welcome?.t === "welcome" && welcome.features?.includes(RELAY_FEATURE_DIRECTOR_SHARING), "the welcome advertises sharing");
-  core.onFrame(donor.connId, { t: "presence", agents: [], director: { name: "Mira" }, shares: [offer()] });
-  const seen = core.sharesFor("i-user");
-  assert.equal(seen.length, 1);
-  assert.equal(seen[0]!.instanceId, "i-donor");
-  assert.equal(seen[0]!.donorName, "Mira", "attribution names the donor's director");
-  assert.deepEqual(core.sharesFor("i-donor"), [], "a donor never sees its own offer as someone else's");
-  const pushed = presences(user.drain()).at(-1);
-  assert.ok(pushed?.t === "presence" && pushed.shares?.length === 1, "offers ride on presence");
-}
-
-// Offers are cleaned: a past deadline, a malformed id and an over-long list never reach discovery, and an
-// offer whose deadline passes disappears without the donor re-announcing.
-{
-  const { core, clock } = shareCore();
-  const donor = fakePeer("i-donor"), user = fakePeer("i-user");
-  core.attach(donor);
-  core.attach(user);
-  const many = Array.from({ length: 20 }, (_, i) => offer({ shareId: `share-${String(i).padStart(8, "0")}` }));
-  core.onFrame(donor.connId, {
-    t: "presence", agents: [], shares: [offer({ shareId: "bad id!" }), offer({ shareId: "share-expired0", expiresAt: 5_000 }), ...many],
-  });
-  assert.equal(core.sharesFor("i-user").length, 8, "at most SHARE_MAX_OFFERS, junk dropped");
-  assert.ok(!core.sharesFor("i-user").some((s) => s.shareId === "share-expired0"), "a past deadline is never advertised");
-  clock.now = 60_000;
-  assert.deepEqual(core.sharesFor("i-user"), [], "an offer is withheld the moment its deadline passes");
-}
-
-// A call is routed to the donor stamped with the REAL caller; the reply goes back only to that caller,
-// and a third instance can neither answer nor cancel it.
-{
-  const { core } = shareCore();
-  const donor = fakePeer("i-donor"), user = fakePeer("i-user", "User box"), other = fakePeer("i-other");
-  for (const p of [donor, user, other]) core.attach(p);
-  core.onFrame(donor.connId, { t: "presence", agents: [], shares: [offer()] });
-  donor.drain(); user.drain(); other.drain();
-  assert.equal(core.onFrame(user.connId, call("i-donor", "c1")), null);
-  const delivered = donor.drain().find((f) => f.t === "share.call");
-  assert.ok(delivered?.t === "share.call");
-  assert.equal(delivered.from, "i-user", "the relay stamps the caller; a donor never trusts a claimed identity");
-  assert.equal(delivered.fromName, "User box");
-  // Another instance tries to answer the call, and to cancel it.
-  assert.notEqual(core.onFrame(other.connId, { t: "share.reply", to: "i-user", callId: "c1", ok: true, text: "forged" }), null);
-  core.onFrame(other.connId, { t: "share.cancel", to: "i-donor", callId: "c1" });
-  assert.equal(donor.drain().filter((f) => f.t === "share.cancel").length, 0, "only the caller can cancel its call");
-  // The donor may not re-address its reply to a different instance.
-  assert.notEqual(core.onFrame(donor.connId, { t: "share.reply", to: "i-other", callId: "c1", ok: true, text: "leak" }), null);
-  assert.equal(replies(other.drain()).length, 0, "a reply never reaches anyone but the caller");
-  core.onFrame(donor.connId, { t: "share.reply", to: "i-user", callId: "c1", ok: true, text: "hello", usage: { inputTokens: 3, outputTokens: 2 } });
-  const got = replies(user.drain());
-  assert.equal(got.length, 1);
-  assert.equal(got[0]!.text, "hello");
-  assert.equal(got[0]!.from, "i-donor");
-  assert.deepEqual(got[0]!.usage, { inputTokens: 3, outputTokens: 2 });
-  assert.notEqual(core.onFrame(donor.connId, { t: "share.reply", to: "i-user", callId: "c1", ok: true, text: "again" }), null, "a call is answered once");
-}
-
-// The relay refuses what it can already tell is hopeless, with a reply the caller can settle on.
-{
-  const { core, clock } = shareCore();
-  const donor = fakePeer("i-donor"), user = fakePeer("i-user");
-  core.attach(donor);
-  core.attach(user);
-  core.onFrame(user.connId, call("i-nobody", "c0"));
-  assert.equal(replies(user.drain())[0]?.code, "offline", "a donor that is not connected");
-  core.onFrame(donor.connId, { t: "presence", agents: [], shares: [offer()] });
-  core.onFrame(user.connId, call("i-donor", "c1", "share-bbbbbbbb"));
-  assert.equal(replies(user.drain())[0]?.code, "not-shared", "a share id the donor is not advertising (stale discovery)");
-  core.onFrame(user.connId, { t: "share.call", to: "i-donor", callId: "c2", shareId: "share-aaaaaaaa", messages: [{ role: "user", content: "x".repeat(SHARE_CALL_MAX_CHARS + 1) }] });
-  assert.equal(replies(user.drain())[0]?.code, "too-large");
-  core.onFrame(user.connId, call("i-user", "c3"));
-  assert.equal(replies(user.drain())[0]?.code, "not-shared", "an instance cannot call itself");
-  for (let i = 0; i < SHARE_MAX_PENDING_CALLS; i++) core.onFrame(user.connId, call("i-donor", `p${i}`));
-  assert.equal(replies(user.drain()).length, 0);
-  core.onFrame(user.connId, call("i-donor", "p-over"));
-  assert.equal(replies(user.drain())[0]?.code, "busy", "outstanding calls per caller are bounded");
-  clock.now = 60_000;
-  core.onFrame(user.connId, call("i-donor", "late"));
-  assert.ok(["expired", "busy"].includes(replies(user.drain())[0]?.code ?? ""), "a deadline that has passed is refused at the relay too");
-}
-
-// Either side leaving settles the other: a donor that disconnects fails its calls as offline, a caller
-// that disconnects has its calls cancelled at the donor. A raced reconnect settles nothing.
-{
-  const { core } = shareCore();
-  const donor = fakePeer("i-donor"), user = fakePeer("i-user");
-  core.attach(donor);
-  core.attach(user);
-  core.onFrame(donor.connId, { t: "presence", agents: [], shares: [offer()] });
-  core.onFrame(user.connId, call("i-donor", "c1"));
-  const donor2 = { ...fakePeer("i-donor"), connId: "conn-donor-2" };
-  core.attach(donor2);
-  core.detach(donor.connId);
-  assert.equal(replies(user.drain()).length, 0, "a replaced connection is not a departure");
-  core.onFrame(donor2.connId, { t: "presence", agents: [], shares: [offer()] });
-  core.detach(donor2.connId);
-  assert.equal(replies(user.drain()).find((r) => r.callId === "c1")?.code, "offline", "the caller hears the donor left");
-
-  const d = fakePeer("i-d2"), u = fakePeer("i-u2");
-  core.attach(d);
-  core.attach(u);
-  core.onFrame(d.connId, { t: "presence", agents: [], shares: [offer()] });
-  core.onFrame(u.connId, call("i-d2", "c9"));
-  d.drain();
-  core.detach(u.connId);
-  assert.ok(d.drain().some((f) => f.t === "share.cancel" && f.callId === "c9" && f.from === "i-u2"), "the donor stops work for a caller that left");
 }
 
 console.log("relay core: all assertions passed");
