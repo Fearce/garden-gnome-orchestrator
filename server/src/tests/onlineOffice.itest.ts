@@ -30,7 +30,7 @@ process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -44,7 +44,7 @@ const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { OnlineOffice, normalizeRelayUrl, splitOfficeChatBody } = await import("../office/onlineOffice.js");
-const { forgetRepoIdentity, normalizeRemote, remoteLabel, repoIdentity, repoLeaf } = await import("../office/repoIdentity.js");
+const { forgetRepoIdentity, identitiesMatch, identityKeys, normalizeRemote, remoteLabel, repoIdentity, repoLeaf } = await import("../office/repoIdentity.js");
 const { DIRECTORS_ROOM: RELAY_DIRECTORS_ROOM, OFFICE_ROOM, RELAY_PROTOCOL, relayRepoRoom } = await import("../office/onlineProtocol.js");
 const { DIRECTORS_ROOM, GENERAL_ROOM, isCollaborationRoom, repoRoom } = await import("../types.js");
 
@@ -189,6 +189,13 @@ async function makeRepo(dir: string, remote?: string, extra: Record<string, stri
   await runGit(dir, ["init", "-q"]);
   if (remote) await runGit(dir, ["remote", "add", "origin", remote]);
   for (const [name, url] of Object.entries(extra)) await runGit(dir, ["remote", "add", name, url]);
+  return dir;
+}
+
+/** A fresh folder inside `parent`, for a checkout nested in another one. */
+function subdir(parent: string, name: string): string {
+  const dir = join(parent, name);
+  mkdirSync(dir, { recursive: true });
   return dir;
 }
 
@@ -338,6 +345,50 @@ async function main(): Promise<void> {
       const u = await repoIdentity(upstream);
       check("a remote under any NAME becomes an alias, not just `upstream`", u?.aliases.includes("github.com/prismicious/garden-gnome-orchestrator") === true, JSON.stringify(u));
       check("…and the primary key is unchanged, so its room never moves", u?.key === "github.com/fearce/garden-gnome-orchestrator", JSON.stringify(u?.key));
+
+      // A remote-less scratch repo HOLDING the real clone: `C:\game` with the checkout in
+      // `C:\game\d2r-summon-overlay`. Keyed on the folder, its agents sat in `name:game`, a room nobody
+      // else was in, while the D2R office ran next door.
+      const d2rUrl = "https://github.com/Fearce/d2r-summon-overlay";
+      const game = await makeRepo(mkdtempSync(join(root, "game-")));
+      const clone = await makeRepo(subdir(game, "local-clone-name"), d2rUrl);
+      mkdirSync(join(game, "node_modules", "dep", ".git"), { recursive: true }); // never a candidate
+      forgetRepoIdentity();
+      const g = await repoIdentity(game);
+      check("a remote-less repo holding one clone takes the CLONE's identity", g?.key === "github.com/fearce/d2r-summon-overlay", JSON.stringify(g));
+      check("…labelled as the clone, not the local folder", g?.label === "Fearce/d2r-summon-overlay", JSON.stringify(g));
+      check("…and its folder name is not smuggled in as an alias", g?.aliases.length === 0, JSON.stringify(g?.aliases));
+      const machineB = await makeRepo(mkdtempSync(join(root, "d2r-summon-overlay-")), "git@github.com:Fearce/d2r-summon-overlay.git");
+      const remoteB = await repoIdentity(machineB);
+      check("…so it matches a plain clone of the same repo under any folder name", !!g && !!remoteB && identitiesMatch(g, identityKeys(remoteB)), JSON.stringify({ g, remoteB }));
+
+      // A task worktree of the outer repo carries a linked worktree of the clone (a `.git` FILE).
+      const outerTree = join(root, "game-worktree");
+      await runGit(game, ["commit", "-q", "--allow-empty", "-m", "init"]);
+      await runGit(game, ["worktree", "add", "-q", outerTree]);
+      await runGit(clone, ["commit", "-q", "--allow-empty", "-m", "init"]);
+      await runGit(clone, ["worktree", "add", "-q", join(outerTree, "overlay")]);
+      forgetRepoIdentity();
+      const w = await repoIdentity(outerTree);
+      check("…and so does a worktree of it whose clone is a linked worktree", w?.key === "github.com/fearce/d2r-summon-overlay", JSON.stringify(w));
+
+      // Two DIFFERENT repositories side by side: either choice would seat agents in a stranger's room.
+      const mixed = await makeRepo(mkdtempSync(join(root, "mixed-")));
+      await makeRepo(subdir(mixed, "a"), d2rUrl);
+      await makeRepo(subdir(mixed, "b"), "https://github.com/someone/unrelated");
+      forgetRepoIdentity();
+      const m = await repoIdentity(mixed);
+      check("a repo holding two unrelated clones keeps its folder-name key", !!m && m.key.startsWith("name:mixed-"), JSON.stringify(m));
+      check("…and matches neither clone's room", !!m && !identitiesMatch(m, [g?.key ?? "", "github.com/someone/unrelated"]), JSON.stringify(m));
+
+      // A repo with its OWN remote is never re-keyed by whatever it happens to contain.
+      const owned = await makeRepo(mkdtempSync(join(root, "owned-")), "https://github.com/Fearce/card-marker.git");
+      await makeRepo(subdir(owned, "vendored"), d2rUrl);
+      forgetRepoIdentity();
+      const o = await repoIdentity(owned);
+      check("a repo with its own remote keeps its own key, not a nested clone's", o?.key === "github.com/fearce/card-marker" && o.aliases.length === 0, JSON.stringify(o));
+      const unrelated = await repoIdentity(cloned);
+      check("…and an unrelated repo never matches the D2R room", !!unrelated && !!g && !identitiesMatch(g, identityKeys(unrelated)), JSON.stringify(unrelated));
     } finally {
       rmTemp(root);
     }

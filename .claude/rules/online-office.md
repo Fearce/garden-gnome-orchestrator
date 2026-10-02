@@ -15,7 +15,9 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
   own compose project. `relay/src/core.ts` is transport-free routing (gate `test:relay-core`);
   `relay/src/index.ts` is the HTTP + WebSocket shell; `relay/README.md` has the surfaces and the deploy.
 - `server/src/office/repoIdentity.ts` — `normalizeRemote` collapses every URL form of one remote to
-  `host/owner/repo`. No remote ⇒ `name:<folder>`. **This is the hinge**: get it wrong and nobody groups.
+  `host/owner/repo`. No remote ⇒ the identity of the clone(s) directly inside it when they all name one
+  repo (`C:\game` holding `d2r-summon-overlay`), else `name:<folder>`. **This is the hinge**: get it
+  wrong and nobody groups.
   An identity is a `key` (from `origin`) **plus `aliases`** — every OTHER remote of that checkout. Two
   identities are one repo when the sets INTERSECT (`identitiesMatch`), never when the keys are equal.
 - `server/src/office/onlineOffice.ts` — one authenticated socket. Standalone over `(Db, EventHub)` + three

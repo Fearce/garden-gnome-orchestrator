@@ -1,4 +1,5 @@
-import { basename } from "node:path";
+import { existsSync, readdirSync } from "node:fs";
+import { basename, join } from "node:path";
 import { resolveRepoRoot, runGit } from "../gitService.js";
 
 /** How a workspace is named across the internet. `key` is what rooms are keyed on (never shown);
@@ -46,9 +47,13 @@ export function repoLeaf(key: string): string {
  * key is the repository's REMOTE identity — host + owner + name, stripped of scheme, credentials, `.git`
  * and case — which both checkouts agree on because they were cloned from it.
  *
- * A workspace with no remote (a scratch repo, a fresh `git init`) falls back to `name:<folder>`. Two
- * people who both have a `card-marker` folder still meet; two people who don't, don't. That is the best
- * available answer without a remote, and it is a strictly better default than not grouping at all.
+ * A remote-less repo that HOLDS a clone (a scratch `git init` at `C:\game` with the real checkout in
+ * `C:\game\d2r-summon-overlay`) is the clone's repository: that is what its agents edit, and a folder
+ * name chosen locally must not keep them out of the clone's room. See `nestedIdentity`.
+ *
+ * Otherwise a workspace with no remote falls back to `name:<folder>`. Two people who both have a
+ * `card-marker` folder still meet; two people who don't, don't. That is the best available answer
+ * without a remote, and it is a strictly better default than not grouping at all.
  */
 export async function repoIdentity(workspace: string): Promise<RepoIdentity | null> {
   const cached = cache.get(workspace);
@@ -112,16 +117,50 @@ const cache = new Map<string, { at: number; identity: RepoIdentity | null }>();
 async function resolve(workspace: string): Promise<RepoIdentity | null> {
   const root = await resolveRepoRoot(workspace);
   if (!root) return null;
-  const remotes = await remoteUrls(root);
-  const primary = remotes.find((r) => normalizeRemote(r.url));
-  if (primary) {
-    const key = normalizeRemote(primary.url) as string;
-    const aliases = [...new Set(remotes.map((r) => normalizeRemote(r.url)).filter((k): k is string => !!k && k !== key))];
-    return { key, label: remoteLabel(primary.url), aliases };
-  }
+  const own = fromRemotes(await remoteUrls(root));
+  if (own) return own;
+  const nested = await nestedIdentity(workspace);
+  if (nested) return nested;
   const leaf = basename(root.replace(/[\\/]+$/, ""));
   const slug = leaf.toLowerCase().replace(/[^a-z0-9._+-]/g, "-");
   return slug ? { key: `name:${slug}`, label: leaf, aliases: [] } : null;
+}
+
+/** The identity a checkout's remotes give it: the first normalizable remote is primary, the rest aliases. */
+function fromRemotes(remotes: { name: string; url: string }[]): RepoIdentity | null {
+  const primary = remotes.find((r) => normalizeRemote(r.url));
+  if (!primary) return null;
+  const key = normalizeRemote(primary.url) as string;
+  const aliases = [...new Set(remotes.map((r) => normalizeRemote(r.url)).filter((k): k is string => !!k && k !== key))];
+  return { key, label: remoteLabel(primary.url), aliases };
+}
+
+/**
+ * The identity of the remote-backed checkout directly inside a remote-less workspace.
+ *
+ * Only immediate children are read, and they must ALL name the same repository (sibling worktrees of one
+ * clone do). Two different repositories side by side leave the workspace on its folder name: picking
+ * either would seat its agents in an unrelated project's room. The folder's own `name:` key is not kept
+ * as an alias, because another machine's same-named folder is no evidence of a shared repository.
+ */
+async function nestedIdentity(workspace: string): Promise<RepoIdentity | null> {
+  let children: string[];
+  try {
+    children = readdirSync(workspace, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && !e.name.startsWith(".") && e.name !== "node_modules")
+      .map((e) => join(workspace, e.name))
+      .filter((dir) => existsSync(join(dir, ".git")));
+  } catch {
+    return null; // unreadable folder
+  }
+  const found: RepoIdentity[] = [];
+  for (const dir of children) {
+    const id = fromRemotes(await remoteUrls(dir));
+    if (id) found.push(id);
+  }
+  const first = found[0];
+  if (!first || found.some((id) => id.key !== first.key)) return null;
+  return { ...first, aliases: [...new Set(found.flatMap((id) => id.aliases))] };
 }
 
 /**
