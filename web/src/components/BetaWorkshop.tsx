@@ -25,9 +25,10 @@ const verbs: Record<GnomeRole, string> = {
   qa: "Checking", reader: "Reading", reviewer: "Reviewing", coworker: "Collaborating",
 };
 export const WORKSHOP_MESSAGE_MS = 15_000;
-export function latestWorkshopMessage(chat: ChatMessage[], seats: WorkshopSeat[], now: number) {
+export function latestWorkshopMessage(chat: ChatMessage[], seats: WorkshopSeat[], now: number, dismissedThrough = 0) {
   return chat.reduce<ChatMessage | undefined>((latest, message) => {
     if (message.kind !== "chat" || message.createdAt > now || now - message.createdAt >= WORKSHOP_MESSAGE_MS) return latest;
+    if (message.createdAt <= dismissedThrough) return latest;
     if (message.room !== "general" && !seats.some((seat) => seat.room === message.room)) return latest;
     return !latest || message.createdAt > latest.createdAt ? message : latest;
   }, undefined);
@@ -152,7 +153,8 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
     return () => window.removeEventListener("keydown", close);
   }, [expanded]);
   // Expire the current bubble even in an empty office, without an always-running ticker.
-  const message = latestWorkshopMessage(chat, seats, Math.max(now, Date.now()));
+  const [dismissedThrough, setDismissedThrough] = useState(0);
+  const message = latestWorkshopMessage(chat, seats, Math.max(now, Date.now()), dismissedThrough);
   useEffect(() => {
     if (!message) return;
     const timer = window.setTimeout(() => setNow(Date.now()), Math.max(1, message.createdAt + WORKSHOP_MESSAGE_MS - Date.now()));
@@ -214,9 +216,12 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
       <button type="button" className={`beta-cast-more${totalFrozen ? " has-frozen" : ""}`} onClick={() => setExpanded(!expanded)} aria-expanded={expanded} aria-label={`Show all ${seats.length} workshop gnomes`} title={`${seats.length} gnomes · ${online} online${totalFrozen ? ` · ${totalFrozen} waiting for reset` : ""}`}>{seats.length > cast.length ? `+${seats.length - cast.length}` : "···"}{online > 0 && <i />}</button>
       <button type="button" className="beta-motion-toggle" aria-label={motionPaused ? "Resume workshop animations" : "Pause workshop animations"} aria-pressed={motionPaused} onClick={() => setMotionPaused(!motionPaused)}>{motionPaused ? "▶" : "Ⅱ"}</button>
     </div>
-    {message && <button type="button" className="beta-workshop-message has-message" onClick={() => open(message.room)} title={bubble}>
-      <span className="beta-chat-icon" aria-hidden="true">···</span><span aria-live="polite">{bubble}</span><span aria-hidden="true">↗</span>
-    </button>}
+    {message && <div className="beta-workshop-message has-message">
+      <button type="button" className="beta-message-dismiss" onClick={() => setDismissedThrough(message.createdAt)} title={`${bubble}\nClick to dismiss`} aria-label={`Dismiss: ${bubble}`}>
+        <span className="beta-chat-icon" aria-hidden="true">···</span><span aria-live="polite">{bubble}</span>
+      </button>
+      <button type="button" className="beta-message-open" onClick={() => { setDismissedThrough(message.createdAt); open(message.room); }} title="Open this chat" aria-label="Open this chat">↗</button>
+    </div>}
     {expanded && <div className="beta-workshop-roster" role="region" aria-label="Workshop crew">
       <div><strong>Everyone in the workshop</strong><button type="button" onClick={() => setExpanded(false)} aria-label="Close workshop crew">×</button></div>
       {seats.map((seat) => <button key={seat.id} type="button" data-frozen={seat.freezeReason ? "true" : undefined} onClick={() => open(seat.room)} title={seat.freezeReason ?? seat.group}><WorkshopGnome classic={classic} role={seat.role} size={24} active={seat.active} rest={seat.rest} frozen={!!seat.freezeReason} /><span>{seat.name}<small>{destination(seat).label} · {destination(seat).office}</small><small>{seatActivity(seat)} · {seat.task}</small><small className="beta-destination-path">{seat.group}</small></span></button>)}

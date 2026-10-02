@@ -213,6 +213,21 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     currentSocket.send(JSON.stringify({...hello,threads:[],runs:[],directorBusy:false,directorIdleSince:Date.now(),onlineOffice:{...onlineOffice,remoteAgents:[]},chat:[{...fresh,id:'idle-message',room:'directors',scope:'directors',createdAt:Date.now()-14_000}]}));
     await page.locator('.beta-workshop-message.has-message').waitFor();
     await page.locator('.beta-workshop-message.has-message').waitFor({state:'detached',timeout:4000});
+    // Clicking the chatter dismisses it at once; the ↗ still opens its chat.
+    const directorsMessage=(id)=>({...fresh,id,room:'directors',scope:'directors',createdAt:Date.now()});
+    currentSocket.send(JSON.stringify({type:'chat.message',message:directorsMessage('dismiss-me')}));
+    await page.locator('.beta-message-dismiss').click({timeout:3000});
+    await page.locator('.beta-workshop-message').waitFor({state:'detached',timeout:1000});
+    await page.waitForTimeout(50);
+    currentSocket.send(JSON.stringify({type:'chat.message',message:directorsMessage('open-me')}));
+    await page.locator('.beta-workshop-message.has-message').waitFor();
+    await page.locator('.beta-workshop-message').screenshot({path:path.join(output,'chatter-card.png')});
+    sent.length=0;
+    await page.getByRole('button',{name:'Open this chat',exact:true}).click();
+    await page.locator('.office-panel').waitFor();
+    assert(sent.some(m=>m.type==='chat.history' && m.room==='directors'),'↗ opens the message room');
+    assert.equal(await page.locator('.beta-workshop-message').count(),0,'Opening the chat also clears the chatter');
+    await page.locator('.office-panel').getByRole('button',{name:'Close',exact:true}).click();
     // Cross-tab preference and live rollback.
     const second = await context.newPage(); await second.goto(base); await second.locator('.beta-workshop').waitFor();
     await page.evaluate(()=>localStorage.setItem('ggo:beta-gnomes','0'));
@@ -220,7 +235,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.reload(); await page.locator('.office-strip').waitFor();
     assert.equal(await page.locator('.beta-gnome').count(),0);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({result:'PASS',checks:['default off/no atlas request','General toggle','persistence','larger director and shifted text','visible destination labels and full folder paths','48px lane/no added header rows','visible walking and shared projects','bounded crowd and online visitors','messages and room navigation','pause/reduced motion','hidden tab and offscreen pause','390/768/1440/1920 layout','offline visitors removed','idle bubble expiry','cross-tab rollback','no browser errors'],performance,atlasRequests:artRequests.length,evidence:output},null,2));
+    console.log(JSON.stringify({result:'PASS',checks:['default off/no atlas request','General toggle','persistence','larger director and shifted text','visible destination labels and full folder paths','48px lane/no added header rows','visible walking and shared projects','bounded crowd and online visitors','messages and room navigation','pause/reduced motion','hidden tab and offscreen pause','390/768/1440/1920 layout','offline visitors removed','idle bubble expiry','click dismisses chatter','chatter ↗ opens chat','cross-tab rollback','no browser errors'],performance,atlasRequests:artRequests.length,evidence:output},null,2));
     await context.close();
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});

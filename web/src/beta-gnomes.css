@@ -139,9 +139,13 @@
 .beta-cast-more i { position: absolute; right: 1px; top: 2px; width: 4px; height: 4px; border-radius: 50%; background: #9ad8c8; }
 .beta-cast-more.has-frozen { color: var(--frost-strong); }
 .beta-motion-toggle:hover, .beta-cast-more:hover { background: var(--bg-2); color: var(--text); }
-.beta-workshop-message { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; width: max-content; max-width: min(360px, 100% + 160px, 90vw); padding: 7px 10px; display: flex; align-items: center; gap: 7px; border: 1px solid #d8b275; border-radius: 3px 10px 10px; color: #f7e2b5; background: #30291f; box-shadow: 0 3px 12px #0005; cursor: pointer; text-align: left; font-size: 11px; }
+.beta-workshop-message { position: absolute; top: calc(100% + 4px); left: 0; z-index: 30; width: max-content; max-width: min(360px, 100% + 160px, 90vw); display: flex; align-items: stretch; border: 1px solid #d8b275; border-radius: 3px 10px 10px; color: #f7e2b5; background: #30291f; box-shadow: 0 3px 12px #0005; font-size: 11px; }
 .beta-workshop-message::before { content: ""; position: absolute; top: -5px; left: 9px; width: 7px; height: 7px; background: #30291f; border-top: 1px solid #d8b275; border-left: 1px solid #d8b275; transform: rotate(45deg); }
-.beta-workshop-message > span:nth-child(2) { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.beta-workshop-message > button { color: inherit; background: transparent; border: 0; font: inherit; cursor: pointer; }
+.beta-message-dismiss { min-width: 0; padding: 7px 4px 7px 10px; display: flex; align-items: center; gap: 7px; text-align: left; border-radius: 3px 0 0 10px; }
+.beta-message-dismiss > span:nth-child(2) { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.beta-workshop-message > .beta-message-open { flex: none; padding: 0 9px; border-left: 1px solid #d8b27540; border-radius: 0 10px 10px 0; }
+.beta-message-open:hover { background: #3d3427; color: #fff3d6; }
 .beta-chat-icon { flex: none; border: 1px solid #c9b07b7a; border-radius: 4px 4px 4px 0; height: 13px; width: 17px; line-height: 6px; text-align: center; font-size: 15px; letter-spacing: 1px; }
 .beta-workshop button:focus-visible { outline: 2px solid #f2ce89; outline-offset: -2px; }
 .beta-workshop-roster { position: absolute; top: 100%; right: 0; z-index: 25; width: min(310px, 85vw); max-height: 320px; overflow-y: auto; border: 1px solid #a78d5c; border-radius: 10px; background: #202630; padding: 8px; box-shadow: 0 10px 30px #0008; }
