@@ -479,6 +479,25 @@ async function testQuestionsSurviveAndTheAnswerResumes(): Promise<void> {
   const refused = bed.db.getThread(refusing.id)?.error ?? "";
   check("an answer whose resume is refused says so", /your answer was saved, but the task could not resume: A Co-worker turn/.test(refused), refused);
   third.stop();
+
+  // The owner clicks Resume instead of answering. The real resumeThread runs here (only the pipeline it
+  // launches is stubbed): the dead asker's question must not stay open, unanswerable, in the console.
+  const skipped = seedAskingTask(bed, "implementor");
+  const fourth = boot(bed);
+  check("a task resumed without its answer is held first", bed.db.getThread(skipped.id)?.error === AWAITING_ANSWER_MSG);
+  const pipelines: string[] = [];
+  fourth.mgr.runPipeline = async (id: string): Promise<void> => {
+    pipelines.push(id);
+  };
+  const bare = await (ThreadManager.prototype.resumeThread as (id: string) => Promise<ResumeResult>).call(fourth.mgr, skipped.id);
+  check("a bare Resume of a task held for its answer starts it", bare.ok === true && pipelines.includes(skipped.id), JSON.stringify(bare));
+  const closed = bed.db.getQuestion(skipped.questionIds[0]!);
+  check(
+    "…and closes the dead asker's question, saying why",
+    closed?.answeredAt != null && /resumed without one after a server restart/.test(closed?.answer ?? ""),
+    JSON.stringify(closed),
+  );
+  fourth.stop();
   bed.dispose();
 }
 

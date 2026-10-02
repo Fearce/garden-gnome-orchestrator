@@ -13712,6 +13712,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // the failure point — and clears the error via the first stage's setState.
     if (thread.state === "failed") {
       const note = message?.trim() ? message : undefined;
+      // Held by a restart for an ask_user answer, but resumed without one (a bare Resume or a steering
+      // message). The asker died with the old process, so its question would otherwise sit open in the
+      // console forever, and answering it later would do nothing. Close it so the record says why.
+      if (thread.error === RESTART_AWAITING_ANSWER_MSG) {
+        for (const q of this.db.listOpenQuestions()) {
+          if (q.threadId === threadId) this.resolveQuestion(q.id, "(no answer — the task was resumed without one after a server restart)");
+        }
+      }
       // A completed read task can be promoted into a real implementor session when the owner corrects
       // or extends the reader's answer. Its durable lane remains `read` for the card/history, so a
       // restart during that promoted session leaves state=failed + readerDone=true. Sending that back
