@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import type { ChatMessage, GnomeRole } from "../types.js";
 import { observeGnomeMotion } from "../lib/betaGnomes.js";
 import {
-  assignDepths, lastSpoken, sameProject, seatForMessage, stageCapacity, stageCast, stageLayout, walkDuration,
+  assignDepths, holdsPost, lastSpoken, sameProject, seatForMessage, stageCapacity, stageCast, stageLayout, walkDuration,
   type Depth, type DepthMemory, type StageActor, type WorkshopSeat,
 } from "../lib/workshopStage.js";
 import { bridgeJourney, fadeIn, stride } from "../lib/workshopMotion.js";
@@ -116,9 +116,9 @@ function useStage(seats: WorkshopSeat[], chat: ChatMessage[], width: number, cla
     // A visitor stands with its local teammate; an unrelated one counts from when it showed up.
     const teammate = seat.remote ? cast.find((local) => !local.remote && sameProject(local, seat)) : undefined;
     const spokeAt = spoken.get(seat.id) ?? 0;
-    return { id: seat.id, recency: teammate ? Math.max(spokeAt, arrived(teammate)) : arrived(seat), spokeAt, guest: !!seat.remote, floor: seat.freezeReason ? 1 as const : 0 as const, follows: teammate?.id };
+    return { id: seat.id, recency: teammate ? Math.max(spokeAt, arrived(teammate)) : arrived(seat), spokeAt, guest: !!seat.remote, floor: seat.freezeReason ? 1 as const : 0 as const, follows: teammate?.id, pinned: holdsPost(seat) };
   });
-  const entryKey = `${capacity.front}/${capacity.mid}#${entries.map((entry) => `${entry.id}@${entry.recency}/${entry.spokeAt}/${entry.floor}/${entry.follows ?? ""}`).join("|")}`;
+  const entryKey = `${capacity.front}/${capacity.mid}#${entries.map((entry) => `${entry.id}@${entry.recency}/${entry.spokeAt}/${entry.floor}/${entry.follows ?? ""}${entry.pinned ? "/post" : ""}`).join("|")}`;
   const assigned = useMemo(() => classic ? null : assignDepths(entries, memory.current, capacity, Date.now()), [entryKey, tick, classic]);
   useLayoutEffect(() => { if (assigned) memory.current = assigned.memory; }, [assigned]);
   useEffect(() => {
@@ -283,12 +283,13 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
       <div className="beta-workshop-cast" aria-label="Gnomes in the workshop">
         {walks.map(({ actor, walkMs }) => {
           const { seat, depth, x, scale, lift, z, travel, delay, partner, labelWidth, labelLeft } = actor;
-          return <div key={seat.id} ref={register(seat.id)} className="beta-actor" data-depth={depth}
+          return <div key={seat.id} ref={register(seat.id)} className="beta-actor" data-depth={depth} data-label={!classic && !labelWidth ? "hover" : undefined}
             style={{ transform: `translate3d(${x}px, ${-lift}px, 0) scale(${scale})`, zIndex: z, "--depth-scale": scale, "--walk-ms": `${walkMs}ms` } as CSSProperties}>
             <button type="button"
               className={`beta-workstation${seat.remote ? " beta-visitor" : ""}`}
               data-office-room={seat.room} data-speaking={speaker?.id === seat.id} data-working={seat.active}
               data-rest={seat.rest}
+              data-post={!classic && holdsPost(seat) ? "true" : undefined}
               data-frozen={seat.freezeReason ? "true" : undefined}
               data-agent-id={seat.id}
               data-label-side={labelLeft ? "left" : "right"}

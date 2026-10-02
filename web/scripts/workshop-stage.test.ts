@@ -13,7 +13,9 @@
  *     the gnomes in the back"), never off the stage and never into a front neighbour's label,
  *   · a stage with room to spare spaces every group evenly over the whole width (the owner's "when
  *     there's free space the gnomes should space out more evenly"), and still walks front past crowd,
- *   · walks take a believable time instead of a teleport.
+ *   · walks take a believable time instead of a teleport,
+ *   · the director holds the left edge at full size in every lane decision and layout, and its pose follows
+ *     AFK time: standing under 30 minutes, a chair until 4 hours, then the bed (owner, 2026-10-02).
  */
 
 import assert from "node:assert/strict";
@@ -22,6 +24,7 @@ import {
   DEPTH_DWELL_MS, FRONT_IDLE_MS, MID_IDLE_MS, assignDepths, lastSpoken, stageCapacity, stageCast, stageLayout, walkDuration,
   type Depth, type DepthEntry, type DepthMemory, type WorkshopSeat,
 } from "../src/lib/workshopStage.js";
+import { DIRECTOR_BEDTIME_MS, DIRECTOR_CHAIR_MS, directorRest, directorRestChangesAt, type DirectorRest } from "../src/lib/directorRest.js";
 
 const NOW = 1_800_000_000_000;
 const roles: GnomeRole[] = ["implementor", "qa", "planner", "researcher", "reviewer", "reader"];
@@ -40,6 +43,10 @@ function entry(id: string, quietMs: number, extra: Partial<DepthEntry> = {}): De
   return { id, recency: NOW - quietMs, spokeAt: 0, guest: false, floor: 0, ...extra };
 }
 function depthsOf(result: ReturnType<typeof assignDepths>) { return Object.fromEntries(result.depths); }
+/** How the header lists a cast: the director keeps its post, everyone else ages by floor order. */
+function castEntries(cast: readonly WorkshopSeat[], extra: (seat: WorkshopSeat) => Partial<DepthEntry> = () => ({})) {
+  return cast.map((seat, index) => entry(seat.id, index * 70_000, { pinned: seat.role === "director", ...extra(seat) }));
+}
 
 function castKeepsEveryOwnGnome() {
   for (const width of [90, 240, 617, 1100]) {
@@ -123,8 +130,7 @@ function layoutStaysOnStage() {
     for (const count of [0, 1, 3, 8, 16, 30]) {
       const cast = stageCast(crew(count), width);
       const capacity = stageCapacity(width, cast.length);
-      const entries = cast.map((seat, index) => entry(seat.id, index * 70_000));
-      const { depths } = assignDepths(entries, new Map(), capacity, NOW);
+      const { depths } = assignDepths(castEntries(cast), new Map(), capacity, NOW);
       const actors = stageLayout(cast, depths, width);
       assert.equal(actors.length, cast.length);
       for (const actor of actors) {
@@ -183,16 +189,17 @@ function frontWalksPastTheCrowd() {
   for (const [width, count] of [[617, 16], [617, 30], [1100, 16], [437, 16]] as const) {
     const cast = stageCast(crew(count), width);
     const capacity = stageCapacity(width, cast.length);
-    const { depths } = assignDepths(cast.map((seat, index) => entry(seat.id, index * 70_000)), new Map(), capacity, NOW);
+    const { depths } = assignDepths(castEntries(cast), new Map(), capacity, NOW);
     const actors = stageLayout(cast, depths, width);
     const front = actors.filter((actor) => actor.depth === 0);
     const crowd = actors.filter((actor) => actor.depth > 0);
     assert(front.length >= 2 && crowd.length > 0, `${width}px/${count}: a front lane and a crowd`);
-    const passes = front.filter((actor) => {
+    const walkers = front.filter((actor) => actor.seat.role !== "director");
+    const passes = walkers.filter((actor) => {
       const from = actor.x + Math.min(0, actor.travel), to = actor.x + 32 + Math.max(0, actor.travel);
       return Math.abs(actor.travel) >= 12 && crowd.some((behind) => behind.x + 16 > from && behind.x + 16 < to);
     });
-    assert(passes.length >= Math.ceil(front.length / 2), `${width}px/${count}: front gnomes stroll past the crowd (${passes.length}/${front.length})`);
+    assert(passes.length >= Math.ceil(walkers.length / 2), `${width}px/${count}: front gnomes stroll past the crowd (${passes.length}/${walkers.length})`);
     const spanOf = (group: typeof actors) => [Math.min(...group.map((actor) => actor.x)), Math.max(...group.map((actor) => actor.x))];
     const [frontLeft, frontRight] = spanOf(front), [crowdLeft, crowdRight] = spanOf(crowd);
     assert(crowdLeft < frontRight && crowdRight > frontLeft && crowd.some((actor) => actor.x > frontLeft && actor.x < frontRight),
@@ -207,18 +214,23 @@ function roomyStageSpacesEvenly() {
       for (const guests of [0, 2]) {
         const cast = stageCast([...crew(count), ...Array.from({ length: guests }, (_, i) => visitor(i))], width);
         const capacity = stageCapacity(width, cast.length);
-        const { depths } = assignDepths(cast.map((seat, index) => entry(seat.id, index * 70_000, { guest: !!seat.remote })), new Map(), capacity, NOW);
-        const actors = stageLayout(cast, depths, width);
+        const { depths } = assignDepths(castEntries(cast, (seat) => ({ guest: !!seat.remote })), new Map(), capacity, NOW);
+        const everyone = stageLayout(cast, depths, width);
+        const post = everyone.find((actor) => actor.seat.role === "director");
+        const actors = everyone.filter((actor) => actor !== post);
         const reach = (actor: typeof actors[number]): [number, number] => actor.depth > 0
           ? [actor.x + 16 - 16 * actor.scale, actor.x + 16 + 16 * actor.scale]
           : actor.labelLeft ? [actor.x - actor.labelWidth - 8, actor.x + 32] : [actor.x, actor.x + 40 + actor.labelWidth];
-        const groups = actors.reduce<[number, number][]>((all, actor, index) => {
+        const groups = actors.reduce<[number, number][]>((all, actor) => {
           const span = reach(actor);
-          if (actor.partner === index - 1 && all.length) all[all.length - 1] = [Math.min(all.at(-1)![0], span[0]), Math.max(all.at(-1)![1], span[1])];
+          if (actor.partner === everyone.indexOf(actor) - 1 && all.length) all[all.length - 1] = [Math.min(all.at(-1)![0], span[0]), Math.max(all.at(-1)![1], span[1])];
           else all.push(span);
           return all;
         }, []).sort((a, b) => a[0] - b[0]);
-        const air = [...groups.map(([left], k) => left - (k ? groups[k - 1]![1] : 0)), width - groups.at(-1)![1]];
+        if (!groups.length) continue;
+        // The director's post holds the left edge; the floor to its right is what spaces evenly.
+        const start = post ? reach(post)[1] : 0;
+        const air = [...groups.map(([left], k) => left - (k ? groups[k - 1]![1] : start)), width - groups.at(-1)![1]];
         const label = `${width}px/${count}+${guests}: air ${air.map((gap) => gap.toFixed(0)).join(", ")}`;
         assert(Math.min(...air) > 0 && Math.max(...air) - Math.min(...air) <= 6, `${label} — a roomy stage spaces every group evenly, ends included`);
         const front = actors.filter((actor) => actor.depth === 0), crowd = actors.filter((actor) => actor.depth > 0);
@@ -228,6 +240,49 @@ function roomyStageSpacesEvenly() {
           const centre = behind.x + 16, end = centre + (behind.delay === actor.delay ? behind.travel * behind.scale : 0);
           return Math.sign(centre - actor.x - 16) !== Math.sign(end - actor.x - 16 - actor.travel);
         })), `${label} — a front gnome still strolls across a crowd gnome`);
+      }
+    }
+  }
+}
+
+function directorRestFollowsAfkTime() {
+  assert.equal(DIRECTOR_CHAIR_MS, 30 * 60_000, "a chair after 30 minutes AFK");
+  assert.equal(DIRECTOR_BEDTIME_MS, 4 * 60 * 60_000, "the bed after 4 hours AFK");
+  const afk = (ms: number) => directorRest(false, NOW - ms, NOW);
+  assert.equal(directorRest(true, null, NOW), undefined, "a working director stands");
+  assert.equal(directorRest(false, null, NOW), undefined, "an unknown idle clock stands rather than guessing a chair");
+  assert.equal(afk(0), undefined, "a director that just finished stands");
+  assert.equal(afk(DIRECTOR_CHAIR_MS - 1000), undefined, "AFK under 30 minutes still stands");
+  assert.equal(afk(DIRECTOR_CHAIR_MS), "chair");
+  assert.equal(afk(DIRECTOR_BEDTIME_MS - 1000), "chair");
+  assert.equal(afk(DIRECTOR_BEDTIME_MS), "sleep");
+  assert.equal(directorRestChangesAt(false, NOW - 60_000, NOW), NOW - 60_000 + DIRECTOR_CHAIR_MS, "the pose re-decides at the chair threshold");
+  assert.equal(directorRestChangesAt(false, NOW - DIRECTOR_CHAIR_MS, NOW), NOW - DIRECTOR_CHAIR_MS + DIRECTOR_BEDTIME_MS, "then at bedtime");
+  assert.equal(directorRestChangesAt(false, NOW - DIRECTOR_BEDTIME_MS, NOW), null, "and never again once asleep");
+  assert.equal(directorRestChangesAt(true, null, NOW), null, "a working director waits for the next busy event");
+}
+
+function directorHoldsTheLeftEdge() {
+  assert.equal(stageCast([worker(0), director, worker(1)], 900)[0]!.id, "director", "the director heads the floor order");
+  const quiet = assignDepths([entry("director", MID_IDLE_MS * 8, { pinned: true }), ...Array.from({ length: 6 }, (_, i) => entry(`w${i}`, i * 1000))], new Map(), { front: 2, mid: 2 }, NOW);
+  assert.equal(depthsOf(quiet).director, 0, "a long-quiet director never recedes");
+  assert.equal(depthsOf(quiet).w0, 0, "and the freshest worker still holds the rest of the front");
+  for (const width of [120, 300, 617, 900, 1084, 1400]) {
+    for (const count of [0, 1, 3, 8, 16, 30]) {
+      for (const rest of [undefined, "chair", "sleep"] as (DirectorRest | undefined)[]) {
+        const cast = stageCast([{ ...director, active: !rest, rest }, ...Array.from({ length: count }, (_, i) => worker(i))], width);
+        const entries = cast.map((seat, index) => entry(seat.id, seat.role === "director" ? MID_IDLE_MS * 8 : index * 70_000, { pinned: seat.role === "director" }));
+        const actors = stageLayout(cast, assignDepths(entries, new Map(), stageCapacity(width, cast.length), NOW).depths, width);
+        const lead = actors.find((actor) => actor.seat.role === "director")!;
+        const label = `${width}px/${count}/${rest ?? "standing"}`;
+        assert(lead.depth === 0 && lead.scale === 1 && !lead.labelLeft, `${label}: the director stands at full size in front, label to its right`);
+        assert(lead.partner === -1 && lead.travel === 0 && lead.meeting === null, `${label}: the director keeps its post`);
+        assert(lead.x <= 12, `${label}: the director stands at the left edge (x ${lead.x.toFixed(1)})`);
+        for (const actor of actors) {
+          if (actor === lead) continue;
+          const left = actor.x + 16 - 16 * actor.scale + Math.min(0, actor.travel) * actor.scale;
+          assert(left >= lead.x + 32 - 0.5, `${label}: ${actor.seat.id} stands or strolls left of the director (${left.toFixed(1)})`);
+        }
       }
     }
   }
@@ -249,5 +304,7 @@ spokenIsMatchedToTheRightGnome();
 layoutStaysOnStage();
 frontWalksPastTheCrowd();
 roomyStageSpacesEvenly();
+directorRestFollowsAfkTime();
+directorHoldsTheLeftEdge();
 walksTakeTime();
-console.log("workshop-stage: PASS (own gnomes first, recency lanes, dwell, layout bounds, strolls past the crowd, even spacing, walk timing)");
+console.log("workshop-stage: PASS (own gnomes first, recency lanes, dwell, layout bounds, strolls past the crowd, even spacing, director post and rest, walk timing)");

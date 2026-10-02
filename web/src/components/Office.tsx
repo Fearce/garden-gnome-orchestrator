@@ -451,7 +451,8 @@ export function Office() {
 
   const workshopSeats: WorkshopSeat[] = workshop ? [{
     id: "director", role: "director", name: directorName, room: directorRoom,
-    task: directorBusy ? "Coordinating your work" : directorRest === "sleep" ? "Asleep after eight hours off duty — a new request wakes me" : "Taking a seat until your next idea",
+    task: directorBusy ? "Coordinating your work" : directorRest === "sleep" ? "Asleep after four hours off duty — a new request wakes me"
+      : directorRest === "chair" ? "Taking a seat until your next idea" : "Standing by for your next idea",
     group: "The office", active: directorBusy, rest: directorRest,
   }, ...groups.flatMap((group) => group.workers.map((worker) => ({
     id: worker.threadId, role: worker.role, name: nameOf(worker.threadId, worker.role),

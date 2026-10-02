@@ -21,10 +21,21 @@ art). Read this before changing how gnomes are chosen, placed, walked or animate
   workers last), then visitors only while `stageCapacity(...).comfortable` has room. There is no "+N"
   overflow badge on the beta stage; a dense crowd stands closer and smaller (`CROWD_SLOT` → `CROWD_MIN_SLOT`)
   instead. Never reintroduce a cap on own gnomes to make room for visitors.
+- **The director keeps a post at the left edge** (owner, 2026-10-02: "all the way to the left and should not
+  scale in size"). `stageCast` lists our own director first (`holdsPost`), `assignDepths` keeps a `pinned`
+  entry in front without letting it stand in for the freshest worker, and `stageLayout` stands it at full
+  size, unpaired and still, then lays everyone else out (`floorLayout`) on the floor to the right of its
+  label. Below `POST_LABEL_STAGE` (360 px) its label shows only on hover (`data-label="hover"`), so a
+  narrow stage keeps its floor for the crowd. `data-post` stops the walk loop in CSS.
+- **The director's pose follows AFK time** (`directorRest.ts`): standing while busy and for
+  `DIRECTOR_CHAIR_MS` (30 min) after, a chair until `DIRECTOR_BEDTIME_MS` (4 h), then the bed.
+  `useDirectorRest` sets one timer per threshold. The clock is the server's `director_idle_since`; a
+  skip-director send is not director work and never resets it, across restarts too (the boot reads the
+  saved clock, not the feed's newest message).
 - **A roomy stage spaces everyone evenly** (owner, 2026-10-02: "when there's free space the gnomes should
   space out more evenly"). `evenStage` stands every group (a pair counts as one; front groups include their
   labels) in floor order with equal air between neighbours and at both ends, over the WHOLE stage width,
-  whenever that air is at least `EVEN_AIR`. A lone gnome stands centre stage. There is no small-crew floor
+  whenever that air is at least `EVEN_AIR` (right of the director's post). A lone gnome stands centre stage. There is no small-crew floor
   cap any more (the old `CREW_PITCH` huddled a few gnomes at the left with the right half empty). A solo
   front gnome whose only crowd neighbour is on its right carries its label on the left, so its stroll
   crosses open floor instead of its own label. Only a stage too full for `EVEN_AIR` falls back to the

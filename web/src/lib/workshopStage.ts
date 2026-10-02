@@ -58,6 +58,9 @@ const EVEN_AIR = 24;
  *  labelled front gnome needs in all, which bounds how many stand in front. */
 const STROLL_FLOOR = 44;
 const FRONT_PITCH = 170;
+/** The director's label ("The office · Local office") and the narrowest stage that shows it beside the post. */
+const POST_LABEL = 68;
+const POST_LABEL_STAGE = 360;
 
 export function sameProject(a: WorkshopSeat, b: WorkshopSeat) {
   return a.active && b.active && a.role !== "director" && b.role !== "director" && a.group === b.group;
@@ -90,11 +93,16 @@ export function stageCapacity(width: number, count: number): StageCapacity {
   return { front, mid, comfortable: front + Math.max(2, Math.floor((width - 4 - front * (32 + 2 * BODY_CLEAR)) / CROWD_SLOT)) };
 }
 
-/** Every own gnome, then visitors while the stage has comfortable room, in floor order: teams
- *  stand together (a visitor beside its local teammate) and frozen workers wait at the end. */
+/** Our own director keeps its post at the left edge, at full size, out of the lanes and the strolls. */
+export function holdsPost(seat: WorkshopSeat) {
+  return seat.role === "director" && !seat.remote;
+}
+
+/** Every own gnome, then visitors while the stage has comfortable room, in floor order: the director
+ *  first, teams together (a visitor beside its local teammate) and frozen workers waiting at the end. */
 export function stageCast(seats: readonly WorkshopSeat[], width: number) {
   const own = seats.filter((seat) => !seat.remote);
-  const working = own.filter((seat) => !seat.freezeReason);
+  const working = [...own.filter(holdsPost), ...own.filter((seat) => !seat.freezeReason && !holdsPost(seat))];
   const frozen = own.filter((seat) => seat.freezeReason);
   const room = Math.max(0, stageCapacity(width, own.length).comfortable - own.length);
   const joinsLocal = (seat: WorkshopSeat) => working.some((local) => sameProject(local, seat));
@@ -124,6 +132,8 @@ export interface DepthEntry {
   floor: Depth;
   /** A visitor working with a local teammate stands in that teammate's lane and moves with it. */
   follows?: string;
+  /** The director's post: always in front, taking a front place but never standing in for the freshest worker. */
+  pinned?: boolean;
 }
 export interface DepthMemory { depth: Depth; at: number; spokeAt: number }
 
@@ -136,7 +146,7 @@ export function assignDepths(entries: readonly DepthEntry[], memory: ReadonlyMap
   const fresh = (entry: DepthEntry) => entry.spokeAt > 0 && now - entry.spokeAt < FRONT_IDLE_MS;
   const waits = (entry: DepthEntry) => Number(entry.guest && !fresh(entry));
   const order = entries.map((entry, index) => ({ entry, index }))
-    .sort((a, b) => waits(a.entry) - waits(b.entry) || b.entry.recency - a.entry.recency || a.index - b.index);
+    .sort((a, b) => Number(!a.entry.pinned) - Number(!b.entry.pinned) || waits(a.entry) - waits(b.entry) || b.entry.recency - a.entry.recency || a.index - b.index);
   const caps = [capacity.front, capacity.mid, Infinity];
   const counts = [0, 0, 0];
   const depths = new Map<string, Depth>();
@@ -144,6 +154,12 @@ export function assignDepths(entries: readonly DepthEntry[], memory: ReadonlyMap
   let wake = Infinity;
   let anchored = false;
   for (const { entry } of order) {
+    if (entry.pinned) {
+      counts[0]!++;
+      depths.set(entry.id, 0);
+      next.set(entry.id, { depth: 0, at: memory.get(entry.id)?.at ?? now, spokeAt: entry.spokeAt });
+      continue;
+    }
     const age = now - entry.recency;
     let want = Math.max(entry.floor, age < FRONT_IDLE_MS ? 0 : age < MID_IDLE_MS ? 1 : 2) as Depth;
     const previous = memory.get(entry.id);
@@ -174,7 +190,8 @@ export interface StageActor {
   scale: number;
   lift: number;
   z: number;
-  /** Front-lane destination label; background gnomes only reveal theirs on hover. */
+  /** Front-lane destination label; background gnomes only reveal theirs on hover, as does a front gnome
+   *  whose label has no room (0). */
   labelWidth: number;
   labelLeft: boolean;
   /** Index of the teammate it meets on the shared timeline, or -1. */
@@ -186,13 +203,44 @@ export interface StageActor {
   meeting: number | null;
 }
 
-/** Positions for a cast whose lanes are already chosen, in floor order. Every lane stands across the
- *  same floor. A stage with room to spare spaces every group evenly over its whole width; a fuller one
- *  keeps the labelled front lane's labels clear of each other and spreads the crowd further back behind
- *  and between it, never hidden behind a front gnome. Each loop strolls a gnome past the
- *  others, which is what makes the lanes read as depth. A dense crowd stands closer and smaller rather
- *  than leaving anyone out. */
+/** Positions for a cast whose lanes are already chosen, in floor order. The director keeps its post at
+ *  the left edge, full size and still; everyone else shares the floor to its right. */
 export function stageLayout(cast: readonly WorkshopSeat[], depths: ReadonlyMap<string, Depth>, width: number): StageActor[] {
+  const director = cast[0] && holdsPost(cast[0]) ? cast[0] : undefined;
+  if (!director) return floorLayout(cast, depths, width).actors;
+  const post = directorPost(director, width);
+  // An evenly spaced floor brings its own air; a fuller one keeps a front neighbour's gap from the post.
+  let offset = post.right - 2;
+  let floor = floorLayout(cast.slice(1), depths, width - offset);
+  if (!floor.even) {
+    offset += SOLO_GAP;
+    floor = floorLayout(cast.slice(1), depths, width - offset);
+  }
+  return [post.actor, ...floor.actors.map((actor) => ({
+    ...actor, x: actor.x + offset, partner: actor.partner < 0 ? -1 : actor.partner + 1,
+    meeting: actor.meeting === null ? null : actor.meeting + offset,
+  }))];
+}
+
+/** The director's post: its body at the left edge (a bed reaches a little left of the body and its
+ *  label sits further right) and its label beside it, or only on hover on a stage too narrow to spare
+ *  the floor. `right` is the floor it takes in all. */
+function directorPost(seat: WorkshopSeat, width: number) {
+  const sleeping = seat.rest === "sleep";
+  const labelWidth = width >= POST_LABEL_STAGE ? POST_LABEL : 0;
+  const x = 2 + (sleeping ? 10 : 0);
+  const right = x + 32 + (sleeping ? 14 : 0) + (labelWidth ? labelWidth + 8 : BODY_CLEAR);
+  const { z } = STAGE_DEPTHS[0]!;
+  const actor: StageActor = { seat, depth: 0, x, scale: 1, lift: 0, z, labelWidth, labelLeft: false, partner: -1, travel: 0, delay: 0, meeting: null };
+  return { actor, right };
+}
+
+/** Positions on an open floor. A floor with room to spare spaces every group evenly over its whole
+ *  width; a fuller one keeps the labelled front lane's labels clear of each other and spreads the crowd
+ *  further back behind and between it, never hidden behind a front gnome. Each loop strolls a gnome
+ *  past the others, which is what makes the lanes read as depth. A dense crowd stands closer and
+ *  smaller rather than leaving anyone out. */
+function floorLayout(cast: readonly WorkshopSeat[], depths: ReadonlyMap<string, Depth>, width: number) {
   const depthOf = (index: number) => depths.get(cast[index]!.id) ?? 0;
   const partners = new Map<number, number>();
   for (const depth of [0, 1, 2] as const) pairLane(cast, cast.flatMap((_, index) => depthOf(index) === depth ? [index] : []), partners);
@@ -226,7 +274,7 @@ export function stageLayout(cast: readonly WorkshopSeat[], depths: ReadonlyMap<s
     });
   }
   const phaseOf = (index: number) => actors[index]!.partner >= 0 ? Math.min(index, actors[index]!.partner) : index;
-  return actors.map((actor, index) => {
+  return { even: !!even, actors: actors.map((actor, index) => {
     const partner = actors[actor.partner];
     const still = actor.seat.rest || actor.seat.freezeReason;
     const travel = strolls.get(index)! / actor.scale;
@@ -234,7 +282,7 @@ export function stageLayout(cast: readonly WorkshopSeat[], depths: ReadonlyMap<s
     const phase = phaseOf(escorts.get(index) ?? index);
     const meeting = partner && actor.partner > index && !still ? (actor.x + partner.x) / 2 + 16 : null;
     return { ...actor, travel, delay: -(phase * 2.7), meeting };
-  });
+  }) };
 }
 
 interface FrontLane {
@@ -441,10 +489,12 @@ function settle(free: readonly [number, number][], centre: number, half: number,
   }
   if (best) return best;
   const distance = ([left, right]: readonly [number, number]) => centre < left ? left - centre : centre > right ? centre - right : 0;
-  const ahead = free.filter(([, right]) => right > min);
+  // Prefer a stretch with the whole group's room past `min`, so a squeezed group never backs into the last one.
+  const roomy = free.filter(([, right]) => right - half >= min);
+  const ahead = roomy.length ? roomy : free.filter(([, right]) => right > min);
   const [left, right] = (ahead.length ? ahead : free).reduce((near, stretch) => distance(stretch) < distance(near) ? stretch : near);
   const squeezed = Math.min(half, (right - left) / 2);
-  return { centre: Math.max(left + squeezed, Math.min(right - squeezed, centre)), half: squeezed };
+  return { centre: Math.max(left + squeezed, Math.min(right - squeezed, Math.max(centre, roomy.length ? min : -Infinity))), half: squeezed };
 }
 
 /** How far (screen px, signed) a gnome without a partner strolls on its loop: toward the side with
@@ -539,17 +589,11 @@ function crowdRoom(actors: readonly StageActor[], index: number, width: number) 
   return { left: Math.max(0, left), right: Math.max(0, right) };
 }
 
-/** Pair floor neighbours in the same lane: repository teammates, or the director helping a lone
- *  worker. Only neighbours, so nobody walks through the crowd to meet. A visitor meets its local
- *  teammate first, so a crowded repo never leaves the cross-office pair apart. */
+/** Pair floor neighbours in the same lane that share a repository. Only neighbours, so nobody walks
+ *  through the crowd to meet. A visitor meets its local teammate first, so a crowded repo never leaves
+ *  the cross-office pair apart. */
 function pairLane(cast: readonly WorkshopSeat[], lane: number[], partners: Map<number, number>) {
-  const laneSeats = lane.map((index) => cast[index]!);
-  const pairs = (a: number, b: number) => {
-    const seat = cast[a]!, other = cast[b]!;
-    const helps = seat.active && other.active && seat.role === "director" && !seat.remote && !other.remote &&
-      !laneSeats.some((candidate) => candidate.id !== other.id && sameProject(other, candidate));
-    return !seat.rest && !other.rest && (sameProject(seat, other) || helps);
-  };
+  const pairs = (a: number, b: number) => !cast[a]!.rest && !cast[b]!.rest && sameProject(cast[a]!, cast[b]!);
   for (const crossOffice of [true, false]) {
     for (let k = 0; k + 1 < lane.length; k++) {
       const a = lane[k]!, b = lane[k + 1]!;

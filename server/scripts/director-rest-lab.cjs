@@ -6,7 +6,8 @@ const path = require('node:path');
 const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir } = require('./lab-harness.cjs');
 const PORT = 4533;
 const BASE = `http://127.0.0.1:${PORT}`;
-const BEDTIME = 8 * 60 * 60 * 1000;
+const CHAIR = 30 * 60 * 1000;
+const BEDTIME = 4 * 60 * 60 * 1000;
 
 async function main() {
   requireBuild();
@@ -63,10 +64,10 @@ async function main() {
       socket.send(JSON.stringify({ type: 'director.busy', busy: false, idleSince: boundaryStart - BEDTIME + 1000 }));
       await page.waitForTimeout(50);
       await page.clock.fastForward(500);
-      check('just under eight hours still means chair', await owner.getAttribute('data-rest') === 'chair');
+      check('just under four hours still means chair', await owner.getAttribute('data-rest') === 'chair');
       await page.clock.fastForward(1000);
       await owner.locator('[data-rest="sleep"]').waitFor();
-      check('eight-hour deadline puts owner in bed without another event', await owner.getAttribute('data-rest') === 'sleep');
+      check('four-hour deadline puts owner in bed without another event', await owner.getAttribute('data-rest') === 'sleep');
       check('bed and dreams are visible', await owner.locator('.beta-rest-bed').isVisible() && await owner.locator('.beta-sleep-dream').isVisible());
       check('sleeping owner stops walking', await owner.evaluate(el => !el.getAnimations().length));
       check('other directors remain hidden at bedtime', await visitors.count() === 0);
@@ -85,9 +86,16 @@ async function main() {
       check('busy remote directors stay hidden too', await page.locator('.beta-directors-table').count() === 0 && await visitors.count() === 0);
       await page.locator('.beta-workshop').screenshot({ path: path.join(shots, 'working.png') });
 
-      socket.send(JSON.stringify({ type: 'director.busy', busy: false, idleSince: now + 1500 }));
+      const finishedAt = await page.evaluate(() => Date.now());
+      socket.send(JSON.stringify({ type: 'director.busy', busy: false, idleSince: finishedAt }));
+      await page.waitForFunction(() => document.querySelector('[data-agent-id="director"]').dataset.working === 'false');
+      check('a director that just finished stands', !(await owner.getAttribute('data-rest')));
+      check('standing at its post, it does not walk', await owner.evaluate(el => !el.getAnimations().length));
+      await page.clock.fastForward(CHAIR - 1000);
+      check('just under thirty minutes still stands', !(await owner.getAttribute('data-rest')));
+      await page.clock.fastForward(2000);
       await owner.locator('[data-rest="chair"]').waitFor();
-      check('finishing work starts back in the chair', await owner.getAttribute('data-rest') === 'chair');
+      check('thirty minutes AFK takes the chair without another event', await owner.getAttribute('data-rest') === 'chair');
       socket.send(JSON.stringify({ ...hello, directorIdleSince: now - BEDTIME - 1, onlineOffice: { ...office, directors: office.directors.map(({busy,...legacy}) => legacy) } }));
       await owner.locator('[data-rest="sleep"]').waitFor();
       check('reconnect restores overnight sleep from server time', await owner.getAttribute('data-rest') === 'sleep');

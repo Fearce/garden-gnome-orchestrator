@@ -59,7 +59,8 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
   reports the director's own turn and is forwarded as `RelayDirector.busy`. Never infer it from
   `agents`: a director may be idle while its crew works. Older peers omit this field.
   Locally the server persists the rest clock, includes it in hello, and publishes each busy/idle
-  transition; beta gnomes move from chair to bed after eight idle hours. `director-rest-lab` checks
+  transition; the director stands for 30 idle minutes, then takes a chair, then goes to bed after four
+  idle hours (`web/src/lib/directorRest.ts`). `director-rest-lab` checks
   the boundary, wake-up, compact layout, and older peers. The owner subsequently requested hiding
   visiting directors and their table from the header (2026-10-01): only the local director and active
   workers take places in the workshop. Online directors remain reachable through the directors' room.

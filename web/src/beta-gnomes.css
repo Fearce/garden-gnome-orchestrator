@@ -74,6 +74,9 @@
 .beta-workstation[data-rest], .beta-workstation[data-rest] .beta-character,
 .beta-workstation[data-rest] .beta-gnome-body, .beta-workstation[data-rest] .beta-gnome-boot { animation: none; }
 .beta-workstation[data-rest="sleep"] .beta-destination { left: 46px; }
+/* The director keeps its post: it works at its bench and rests in place, never walking the loop. */
+.beta-workstation[data-post], .beta-workstation[data-post] .beta-character, .beta-workstation[data-post] .beta-gnome-boot,
+.beta-workstation[data-post] .beta-tool, .beta-workstation[data-post] .beta-gnome:not([data-animated="true"]) .beta-gnome-body { animation: none; }
 .beta-workstation[data-frozen], .beta-workstation[data-frozen] .beta-character { animation: none; }
 .beta-workstation[data-frozen] .beta-destination small { color: var(--frost-strong); }
 /* Ice is drawn once. The figure stays visible through facets, completely still inside the block. */
@@ -98,11 +101,12 @@
 .beta-workshop[data-bubble="right"] .beta-workstation[data-speaking="true"] .beta-destination,
 .beta-workshop[data-bubble="left"] .beta-workstation[data-speaking="true"] .beta-destination,
 .beta-workshop[data-bubble] .beta-workstation[data-speaking="true"] .beta-message-badge { opacity: 0; }
-/* Further back a gnome is too small to carry its label; hovering it shows the label at full size. */
-.beta-actor:not([data-depth="0"]) .beta-destination { top: 0; width: max-content; max-width: 150px; padding: 2px 6px; opacity: 0; pointer-events: none;
+/* Further back a gnome is too small to carry its label, and on a narrow stage the director's post has no
+   room for one; hovering either shows the label at full size. */
+:is(.beta-actor:not([data-depth="0"]), .beta-actor[data-label="hover"]) .beta-destination { top: 0; width: max-content; max-width: 150px; padding: 2px 6px; opacity: 0; pointer-events: none;
   transform: scale(calc(1 / var(--depth-scale, 1))); transform-origin: 0 0; border: 1px solid var(--line); border-radius: 4px; background: var(--bg-1); transition: opacity .15s; }
 .beta-actor:not([data-depth="0"]) .beta-workstation[data-label-side="left"] .beta-destination { transform-origin: 100% 0; }
-.beta-actor:not([data-depth="0"]):is(:hover, :focus-within) .beta-destination { opacity: 1; }
+:is(.beta-actor:not([data-depth="0"]), .beta-actor[data-label="hover"]):is(:hover, :focus-within) .beta-destination { opacity: 1; }
 /* Hit-test the figure, not its 32×48 box: the box reaches past the art and would bury the gnome behind it.
    Hovering a partly hidden gnome lifts it to the front (z-index 60 above), so whatever shows is a target. */
 .beta-actor, .beta-workstation, .beta-workstation * { pointer-events: none; }

@@ -233,9 +233,9 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
       await holdClock(page, false);
     }
     await page.locator('.beta-workstation[data-agent-id="director"]').screenshot({ path: path.join(output, 'classic-bench-director.png') });
-    // An idle director rests like its beta self, in SD furniture: a chair at first, the bed after eight hours off duty.
+    // An idle director rests like its beta self, in SD furniture: a chair after thirty minutes off duty, the bed after four hours.
     const restingDirector = '.beta-workstation[data-agent-id="director"]';
-    for (const [rest, idleFor] of [['chair', 60_000], ['sleep', 9 * 60 * 60 * 1000]]) {
+    for (const [rest, idleFor] of [['chair', 45 * 60_000], ['sleep', 5 * 60 * 60 * 1000]]) {
       currentSocket.send(JSON.stringify({ ...hello, directorBusy: false, directorIdleSince: Date.now() - idleFor }));
       await page.locator(`${restingDirector}[data-rest="${rest}"] .classic-workshop-gnome[data-rest="${rest}"] .gnome > svg`).waitFor();
       assert.equal(await page.locator(`${restingDirector} .old-rest-${rest === 'chair' ? 'chair' : 'bed'}`).count(), 1, `SD director has its own ${rest} furniture`);
