@@ -44,6 +44,8 @@ const TAP_EXCEPTIONS = [
   { sel: ".ws-path", min: 34, why: "repo chip in a card or detail title; 44 would crowd the header" },
   { sel: ".board-tab", min: 34, why: "a text heading that doubles as the view switcher" },
   { sel: ".card-chatroom", min: 34, why: "inline in a card's meta row" },
+  { sel: ".card-pin", min: 34, why: "beside .card-chatroom in the same meta row; pin-lab holds it at 34" },
+  { sel: ".reset-credit", min: 24, why: "WCAG 2.5.8 AA; inside a 26px usage chip that cannot grow" },
   { sel: ".closed-toggle", min: 34, why: "a quiet disclosure line under the board's lanes" },
   // The chips exist because this lab seeds nine remembered repos (see seed()). They were first found
   // by `~/.claude/scripts/tablet-audit.cjs` against prod.
@@ -243,8 +245,12 @@ async function drivePass(page, { name, width, height }) {
     }));
     check(`${name}: the accounts strip waits behind its gauge button`, strip.hidden && strip.toggle, JSON.stringify(strip));
   } else {
-    const order = await page.$eval(".accounts", (el) => getComputedStyle(el).order);
-    check(`${name}: the accounts strip took the landscape band's order`, order === "20", `order=${order}`);
+    // From 900px the usage chips live in the board's own top padding, not the top bar (topbar-accounts-strip.md).
+    const strip = await page.evaluate(() => {
+      const el = document.querySelector(".board-usage .accounts");
+      return { mounted: !!el, shown: !!el && el.getBoundingClientRect().height > 0, inTopbar: !!document.querySelector(".topbar .accounts") };
+    });
+    check(`${name}: the accounts strip sits above the board, not in the top bar`, strip.mounted && strip.shown && !strip.inTopbar, JSON.stringify(strip));
   }
 
   console.log("\n  LAYOUT — nothing wider than the screen");

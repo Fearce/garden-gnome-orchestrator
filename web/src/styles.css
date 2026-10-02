@@ -3946,6 +3946,7 @@ button.note-from:hover { color: var(--text-dim); }
   .board-tab { min-height: var(--tap-sm); }
   .hide-done { min-height: var(--tap); padding: 0 4px; }
   .hide-done input { width: 24px; height: 24px; }
+  .board-usage .acct-status .reset-credit { min-width: 24px; min-height: 24px; display: inline-flex; align-items: center; justify-content: center; }
   .title-edit { min-height: var(--tap-sm); }
   /* The ✕ that forgets a recent repo was a 19px target beside a 20px name. The board's Closed
      disclosure was 22px. */
