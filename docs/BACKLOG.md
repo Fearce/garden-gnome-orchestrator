@@ -14,7 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Fix stale goal parallel-step waits after owner edits or Resume** (Bramble Fuse, 2026-10-02).
+  Saved d2r concurrency is 3; a cached wait can survive pace edits and skip the requested fresh judgement.
 
 ## Open
 
