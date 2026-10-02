@@ -2533,11 +2533,12 @@ export class Db {
 
   updateRun(
     id: string,
-    patch: Partial<Pick<AgentRun, "sessionId" | "state" | "costUsd" | "numTurns" | "tokenUsage" | "error" | "endedAt" | "capFlagged">>,
+    patch: Partial<Pick<AgentRun, "effort" | "sessionId" | "state" | "costUsd" | "numTurns" | "tokenUsage" | "error" | "endedAt" | "capFlagged">>,
   ): void {
     const sets: string[] = [];
     const params: Row = { id };
     const map: Record<string, string> = {
+      effort: "effort",
       sessionId: "session_id",
       state: "state",
       costUsd: "cost_usd",

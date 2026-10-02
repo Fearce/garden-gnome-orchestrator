@@ -8325,12 +8325,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // per attempt, because a mid-run failover re-selects the account (and so can re-resolve the model).
       if (resume && this.roleSessionModelDrifted(thread.id, role, resume, model)) resume = undefined;
       const run = this.db.createRun({ threadId: thread.id, role, model, account: accountLabel, effort });
-      this.emitRun(run.id);
       const cfg = makeCfg({ token: provider === "claude" ? acct!.token : undefined, resume: provider === "claude" ? resume : undefined, runId: run.id });
       cfg.model = model;
       if (saving && (provider === "claude" || provider === "zai")) {
         cfg.effort = saving.effort as Exclude<Effort, "ultra">;
       }
+      // A plain Claude run's effort comes from its role config, known only once makeCfg has run; without
+      // it the chat labels this role's rows with the model alone.
+      if (provider === "claude" && cfg.effort && cfg.effort !== run.effort) this.db.updateRun(run.id, { effort: cfg.effort });
+      this.emitRun(run.id);
       let agent: AgentRunLike;
       let startMessage: string | unknown[] = message;
       let accountId = provider === "claude" ? acct!.id : "";

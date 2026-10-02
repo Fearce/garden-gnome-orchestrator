@@ -223,6 +223,7 @@
     "test:token-conservation": "tsx src/tests/tokenConservation.test.ts",
     "test:usage-saving": "tsx src/tests/usageSaving.test.ts",
     "test:usage-saving-resume-drift": "tsx src/tests/usageSavingResumeDrift.itest.ts",
+    "test:role-run-effort": "tsx src/tests/roleRunEffort.itest.ts",
     "test:bloated-resume-reseed": "tsx src/tests/bloatedResumeReseed.itest.ts",
     "test:themes": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/themes.test.tsx",
     "test:fonts": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/fonts.test.tsx",
