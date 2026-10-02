@@ -7,48 +7,53 @@ import type { CliAutoUpdateStatus, HighlightNewsItem } from "../types.js";
  * The top bar's "highlighted news" chip. It only exists while there is unseen news, and the server only
  * makes news for a newly released model, so the chip appearing at all is the signal. Opening it is the
  * acknowledgement: the items it shows are dismissed server-side right then (so they stay gone across
- * reloads and browsers), the panel keeps listing them until it closes, and the chip goes with it. A model
- * announced while the panel is open was never shown, so it brings the chip back once the panel closes.
+ * reloads and browsers), the chip disappears immediately, and the panel keeps listing them until it
+ * closes. A model announced while the panel is open was never shown, so it brings the chip back once
+ * the panel closes.
  */
 export function NewsChip() {
   const news = useStore((s) => s.news);
   const dismiss = useStore((s) => s.dismissNews);
   // What the open panel lists: the items as they were when the chip was opened, already dismissed.
-  const [opened, setOpened] = useState<HighlightNewsItem[] | null>(null);
+  const [opened, setOpened] = useState<{ news: HighlightNewsItem[]; anchor: NewsAnchor } | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => setOpened(null), []);
   useDismissOnOutside(opened !== null, wrap, close);
-  const shown = opened ?? news;
-  if (!shown.length) return null;
+  if (!news.length && !opened) return null;
 
-  const toggle = (): void => {
-    if (opened) return close();
-    setOpened(news);
+  const open = (): void => {
+    if (!button.current) return;
+    const { left, bottom } = button.current.getBoundingClientRect();
+    setOpened({ news, anchor: { left, bottom } });
     for (const item of news) dismiss(item.id);
   };
-  const label = shown.length === 1 ? "New model" : `${shown.length} new models`;
-  const names = shown.map((item) => modelLabel(item.model)).join(", ");
+  const label = news.length === 1 ? "New model" : `${news.length} new models`;
+  const names = news.map((item) => modelLabel(item.model)).join(", ");
   return (
     <div className="news" ref={wrap}>
-      <button
-        ref={button}
-        type="button"
-        className={"news-chip" + (opened ? " open" : "")}
-        aria-expanded={opened !== null}
-        aria-haspopup="dialog"
-        title={`${label}: ${names}`}
-        onClick={toggle}
-      >
-        <SparkIcon />
-        <span className="news-chip-label">{label}</span>
-      </button>
-      {opened ? <NewsPanel news={opened} anchor={button.current} /> : null}
+      {!opened ? (
+        <button
+          ref={button}
+          type="button"
+          className="news-chip"
+          aria-expanded={false}
+          aria-haspopup="dialog"
+          title={`${label}: ${names}`}
+          onClick={open}
+        >
+          <SparkIcon />
+          <span className="news-chip-label">{label}</span>
+        </button>
+      ) : null}
+      {opened ? <NewsPanel news={opened.news} anchor={opened.anchor} /> : null}
     </div>
   );
 }
 
-function NewsPanel({ news, anchor }: { news: HighlightNewsItem[]; anchor: HTMLElement | null }) {
+type NewsAnchor = Pick<DOMRect, "left" | "bottom">;
+
+function NewsPanel({ news, anchor }: { news: HighlightNewsItem[]; anchor: NewsAnchor }) {
   const status = useStore((s) => s.settings.cliAutoUpdate);
   const autoUpdate = useStore((s) => s.settings.autoUpdateClis);
   const position = usePanelPosition(anchor);
@@ -88,15 +93,13 @@ function runtimeLine(status: CliAutoUpdateStatus, autoUpdate: boolean): string {
 }
 
 /** The panel is fixed to the viewport, under the chip and kept on-screen: the top bar clips overflow. */
-function usePanelPosition(anchor: HTMLElement | null): CSSProperties {
+function usePanelPosition(anchor: NewsAnchor): CSSProperties {
   const [style, setStyle] = useState<CSSProperties>({ visibility: "hidden" });
   useLayoutEffect(() => {
-    if (!anchor) return;
     const place = (): void => {
-      const rect = anchor.getBoundingClientRect();
       const width = Math.min(360, window.innerWidth - 16);
-      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
-      setStyle({ top: rect.bottom + 6, left, width });
+      const left = Math.max(8, Math.min(anchor.left, window.innerWidth - width - 8));
+      setStyle({ top: anchor.bottom + 6, left, width });
     };
     place();
     window.addEventListener("resize", place);
