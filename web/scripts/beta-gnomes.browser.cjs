@@ -1,5 +1,7 @@
 /* Authenticated UI regression. Fixtures stay in this browser's WebSocket; no tasks are dispatched.
  * node web/scripts/beta-gnomes.browser.cjs [http://127.0.0.1:4317]
+ * :4317 serves master's build. For uncommitted web code, run `npx vite --port 4391 --strictPort` in web/
+ * (it proxies /api and /ws to :4317) and pass http://127.0.0.1:4391.
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
