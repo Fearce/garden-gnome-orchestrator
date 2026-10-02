@@ -28,6 +28,7 @@
     "goals-lab": "node scripts/goals-lab.cjs",
     "inject-lab": "node scripts/inject-lab.cjs",
     "receipts-lab": "node scripts/receipts-lab.cjs",
+    "restart-resume-lab": "node scripts/restart-resume-lab.cjs",
     "layout-lab": "node scripts/layout-lab.cjs",
     "layout-memory-lab": "node scripts/layout-memory-lab.cjs",
     "panel-scroll-lab": "node scripts/panel-scroll-lab.cjs",

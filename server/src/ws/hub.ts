@@ -327,7 +327,7 @@ export async function handleCommand(
       break;
     }
     case "question.answer":
-      ctx.manager.resolveQuestion(cmd.questionId, cmd.answer);
+      ctx.manager.answerOwnerQuestion(cmd.questionId, cmd.answer);
       break;
     case "thread.inject":
       sendThreadAction(

@@ -49,6 +49,14 @@ import {
   type ShotgunPlan,
 } from "./shotgun.js";
 import {
+  RESTART_AUTO_RESUME_MSG,
+  RESTART_AWAITING_ANSWER_MSG,
+  RESTART_COWORK_WAIT_MSG,
+  RESTART_ERROR_PREFIX,
+  restartAutoResumeOwed,
+  restartResumePending,
+} from "./restartResume.js";
+import {
   isJevSubTask,
   MAX_SUBTASK_DEPTH,
   MAX_SUBTASK_REPORT_ROUNDS,
@@ -220,6 +228,7 @@ import type {
   OrchestratorSettings,
   PlanOutput,
   QaOutput,
+  Question,
   RateLimitInfo,
   ReaderOutput,
   ResearchOutput,
@@ -804,8 +813,9 @@ const MAX_FAST_INTERRUPTS = 3;
 const AUTO_RESUME_DELAY_MS = 4_000;
 // That delay is held in memory, so a SECOND bounce landing inside it kills the resume with the process —
 // and the thread is 'failed' by then, which the IN_FLIGHT scan skips. The next boot re-arms from the
-// persisted promise instead. Bounded: each attempt costs a spawn, so a task that never gets running
-// again becomes a person's to look at rather than every boot's to retry.
+// persisted promise instead. Bounded: each attempt that actually fires costs a spawn, so a task that never
+// gets running again becomes a person's to look at rather than every boot's to retry. A boot that dies
+// before its timer fires spent nothing and is not charged.
 const MAX_STRANDED_REVIVALS = 3;
 // …and bounded in time as well as in attempts. The original promise means "in 4 seconds"; a revival can be
 // arbitrarily later, and resuming a day-old session onto a workspace other agents have since committed to
@@ -854,15 +864,11 @@ const ACTIVE_DEADLINE_RUN_REASON = "Stopped by the active-task hard deadline; th
 const DEADLINE_TERMINAL_STATES: ReadonlySet<Thread["state"]> = new Set(["done", "cancelled", "closed"]);
 /** Tasks whose stored model choices are history: nothing restarts them without the owner re-opening them. */
 const MODEL_MIGRATION_SKIP_STATES: ReadonlySet<Thread["state"]> = new Set(["done", "cancelled", "closed"]);
-// Shared prefix for every "a server restart killed this thread" error, so startResumedImplementor can
-// recognise a restart-triggered resume from the thread's persisted error alone.
-const RESTART_ERROR_PREFIX = "interrupted by a server restart";
 // Stamped on the runs a planned deploy restart killed, so the boot crash-loop guard does not count them.
 const PLANNED_RESTART_RUN_REASON = `${RESTART_ERROR_PREFIX} (a planned deploy)`;
 const RESTART_FAILED_MSG = `${RESTART_ERROR_PREFIX} — click Resume to continue from where it left off (finished stages are reused)`;
-const RESTART_AUTO_RESUME_MSG = `${RESTART_ERROR_PREFIX} — auto-resuming…`;
 const RESTART_REVIVAL_SPENT_MSG =
-  `${RESTART_ERROR_PREFIX} — auto-resume was re-armed ${MAX_STRANDED_REVIVALS}× across restarts and never got this task running again. ` +
+  `${RESTART_ERROR_PREFIX} — auto-resume was re-armed and started ${MAX_STRANDED_REVIVALS}× across restarts and never got this task running again. ` +
   `Click Resume to continue from where it left off (finished stages are reused).`;
 const RESTART_REVIVAL_STALE_MSG =
   `${RESTART_ERROR_PREFIX} — the auto-resume it was promised never fired, and the task is now too old to pick up on its own. ` +
@@ -1171,6 +1177,10 @@ export class ThreadManager implements OrchestratorApi {
   private readonly capResumeAttemptedAt = new Map<string, number>();
   /** Coalesces slot-release recovery so several finishing pipelines never synchronously rescan every task. */
   private capResumeQueued = false;
+  /** Restart auto-resumes held back by a Co-worker turn or a pending restart; released with the capacity. */
+  private readonly heldRestartResumes = new Set<string>();
+  /** Restart auto-resumes between their check and resumeThread's slot reservation, which awaits first. */
+  private readonly firingRestartResumes = new Set<string>();
   private capSupervisor: NodeJS.Timeout | undefined;
   // The interval supervisor is a safety net. This one-shot wakes at the earliest provider/account reset
   // we actually know, so provider exhaustion does not wait for a human (or for the next coarse poll).
@@ -2330,7 +2340,9 @@ export class ThreadManager implements OrchestratorApi {
     const at = Date.now();
     // Tallied so the boot leaves one greppable line saying what it did to the previous process's work —
     // see logRestartReconcile. Without it, "did that bounce eat something?" is a cross-table reconstruction.
-    const tally = { runs: 0, resumed: 0, revived: 0, gaveUp: 0, reParked: 0, handedBack: 0, settled: 0, requeued: 0 };
+    const tally = {
+      runs: 0, resumed: 0, revived: 0, gaveUp: 0, reParked: 0, handedBack: 0, settled: 0, requeued: 0, kept: 0, awaitingAnswer: 0,
+    };
     const plannedRestart = consumePlannedRestart(this.db, at);
     for (const r of this.db.listActiveRuns()) {
       this.db.updateRun(r.id, {
@@ -2411,8 +2423,13 @@ export class ThreadManager implements OrchestratorApi {
         tally.reParked++;
         continue;
       }
-      if (!AUTO_RESUME_STATES.has(t.state)) {
-        // Was waiting on a person (question/approval/paused/intake) — leave it for a manual Resume.
+      const settled = this.settleWaitingAfterRestart(t, stage);
+      if (settled) {
+        tally[settled]++;
+        continue;
+      }
+      if (!AUTO_RESUME_STATES.has(t.state) && t.state !== "awaiting_approval" && t.state !== "awaiting_user") {
+        // Nothing the boot can recover by itself ('enriching' is never written by this server).
         this.db.updateThread(t.id, { state: "failed", error: RESTART_FAILED_MSG });
         tally.handedBack++;
         continue;
@@ -2435,7 +2452,7 @@ export class ThreadManager implements OrchestratorApi {
         if (stage.qaFixHandoff) {
           this.qaFixHandoff.add(t.id);
         } else {
-          this.db.updateThreadStageOutputs(t.id, { qaInterruptedRetryRound: Math.max(1, stage.qaRoundsUsed ?? 0) });
+          this.markQaRoundInterrupted(t.id, stage);
         }
       }
       this.db.updateThread(t.id, { state: "failed", error: RESTART_AUTO_RESUME_MSG });
@@ -2454,11 +2471,72 @@ export class ThreadManager implements OrchestratorApi {
       setTimeout(() => {
         // Re-check state at fire time — a queued task could have been cancelled/dismissed during the
         // delay, and enqueueOrRun would otherwise stamp it 'queued' again (resurrecting a dead row).
-        for (const t of queued) if (this.db.getThread(t.id)?.state === "queued") this.enqueueOrRun(t.id);
+        try {
+          for (const t of queued) if (this.db.getThread(t.id)?.state === "queued") this.enqueueOrRun(t.id);
+        } catch (e) {
+          this.hub.log("error", `Re-queueing ${queued.length} task(s) after the restart failed: ${String(e)}`);
+        }
       }, AUTO_RESUME_DELAY_MS);
     }
     const touched = Object.entries(tally).filter(([, n]) => n > 0);
     this.bootReconcile = touched.length ? touched.map(([k, n]) => `${k}=${n}`).join(" ") : null;
+  }
+
+  /** The restart's answer for a task that was waiting rather than working, or null when it was working
+   *  (the caller auto-resumes those). Every branch here leaves the task somewhere its own controls still
+   *  work; flipping these to the generic click-Resume 'failed' is what used to strand them. */
+  private settleWaitingAfterRestart(t: Thread, stage: StageOutputs): "kept" | "awaitingAnswer" | "requeued" | null {
+    // Stopped at a Proceed gate, by the owner's Pause, or at the end of a Default-mode turn: nothing was
+    // running, and Proceed/Resume/reply all work across a restart. As 'failed' a pending Proceed was a
+    // deadlock — Resume refuses while one is pending and Proceed refuses outside 'paused'.
+    if (t.state === "paused") return "kept";
+    if (t.state === "intake") {
+      // A shotgun collaborator is launched by its lead, which installs the ownership contract first; the
+      // lead's resume (reconcileShotgunSplit) starts every child still in intake.
+      if (t.assignment && t.parentId && this.leadWillResume(t.parentId)) return "kept";
+      // Anything else died between being created and being queued: the re-queue below starts it under
+      // the normal caps, which a click-Resume (straight into runPipeline) would have bypassed.
+      if (!t.assignment) {
+        this.db.updateThread(t.id, { state: "queued" });
+        return "requeued";
+      }
+    }
+    if (t.state === "awaiting_user") {
+      const question = this.db.listOpenQuestions().find((q) => q.threadId === t.id);
+      if (question) {
+        this.holdForAnswerAfterRestart(t, question, stage);
+        return "awaitingAnswer";
+      }
+    }
+    return null;
+  }
+
+  /** The lead is still in flight or already promised its resume, so its reconcile will launch the child. */
+  private leadWillResume(leadId: string): boolean {
+    const lead = this.db.getThread(leadId);
+    return !!lead && (IN_FLIGHT.has(lead.state) || restartAutoResumeOwed(lead));
+  }
+
+  /** The task was blocked inside ask_user. Its resolver died with the process; the question did not.
+   *  Keep the question open and let the owner's answer resume the task (answerOwnerQuestion) — resuming
+   *  it now would have the agent proceed on work that was deliberately waiting for a person. */
+  private holdForAnswerAfterRestart(t: Thread, question: Question, stage: StageOutputs): void {
+    const asker = question.runId ? this.db.getRun(question.runId) : null;
+    // QA asked: the implementation was already complete, so the answer must reach a QA retry, not a
+    // relaunched implementor.
+    if (asker?.role === "qa" && !stage.qaFixHandoff) this.markQaRoundInterrupted(t.id, stage);
+    this.db.updateThread(t.id, { state: "failed", error: RESTART_AWAITING_ANSWER_MSG });
+    const m = this.db.addMessage({
+      threadId: t.id,
+      role: "director",
+      kind: "system",
+      content: `↻ The server restarted while this task was waiting for your answer to “${question.question.slice(0, 200)}”. The question is still open — answering it resumes the task.`,
+    });
+    this.hub.publish({ type: "thread.message", threadId: t.id, message: m });
+  }
+
+  private markQaRoundInterrupted(threadId: string, stage: StageOutputs): void {
+    this.db.updateThreadStageOutputs(threadId, { qaInterruptedRetryRound: Math.max(1, stage.qaRoundsUsed ?? 0) });
   }
 
   /** Reconcile the part markInterrupted cannot infer from task state alone: which owner instruction a
@@ -2524,17 +2602,16 @@ export class ThreadManager implements OrchestratorApi {
   private reviveStrandedAutoResumes(at: number): { revived: number; gaveUp: number } {
     const counts = { revived: 0, gaveUp: 0 };
     for (const t of this.db.listThreads()) {
-      if (t.state !== "failed" || t.error !== RESTART_AUTO_RESUME_MSG) continue;
-      const attempt = (this.db.getThreadStageOutputs(t.id).autoResumeRevivals ?? 0) + 1;
-      const giveUp = this.revivalGiveUpMsg(t, attempt, at);
+      if (!restartAutoResumeOwed(t)) continue;
+      const fired = this.db.getThreadStageOutputs(t.id).autoResumeRevivals ?? 0;
+      const giveUp = this.revivalGiveUpMsg(t, fired, at);
       if (giveUp) {
         // Stop claiming a resume is coming — the promise in the error is what a person reads.
         this.db.updateThread(t.id, { state: "failed", error: giveUp });
         counts.gaveUp++;
         continue;
       }
-      this.db.updateThreadStageOutputs(t.id, { autoResumeRevivals: attempt });
-      this.hub.log("warn", `Re-arming the auto-resume of "${t.title.slice(0, 48)}" (attempt ${attempt}) — a restart landed before the last one fired.`);
+      this.hub.log("warn", `Re-arming the auto-resume of "${t.title.slice(0, 48)}" (${fired} earlier start(s) never got it running) — a restart landed before it was delivered.`);
       this.scheduleAutoResume(t.id, t.title);
       counts.revived++;
     }
@@ -2543,11 +2620,11 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Why this stranded task should be handed to a person instead of re-armed again, or null to re-arm.
    *  `updatedAt` is when the promise was stamped — nothing touches it while a task sits stranded. */
-  private revivalGiveUpMsg(t: Thread, attempt: number, at: number): string | null {
+  private revivalGiveUpMsg(t: Thread, fired: number, at: number): string | null {
     const fastInterrupts = this.fastInterruptCount(t.id, at);
     if (fastInterrupts >= MAX_FAST_INTERRUPTS) return this.crashLoopMsg(fastInterrupts);
     if (at - t.updatedAt > MAX_STRANDED_AGE_MS) return RESTART_REVIVAL_STALE_MSG;
-    if (attempt > MAX_STRANDED_REVIVALS) return RESTART_REVIVAL_SPENT_MSG;
+    if (fired >= MAX_STRANDED_REVIVALS) return RESTART_REVIVAL_SPENT_MSG;
     return null;
   }
 
@@ -2575,10 +2652,123 @@ export class ThreadManager implements OrchestratorApi {
   /** Defer the resume so the HTTP/WS listeners are up before agents respawn. Held in memory by design —
    *  reviveStrandedAutoResumes is what makes it survive a bounce landing inside the delay. */
   private scheduleAutoResume(id: string, title: string): void {
-    setTimeout(() => {
-      this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
-      void this.resumeThread(id).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
-    }, AUTO_RESUME_DELAY_MS);
+    setTimeout(() => this.fireRestartResumeLogged(id, title), AUTO_RESUME_DELAY_MS);
+  }
+
+  /** Timers and release hooks call this: a failure to even read the task stays a logged error, and the
+   *  persisted promise is left for the next boot to re-arm. */
+  private fireRestartResumeLogged(id: string, title: string): void {
+    void this.fireRestartResume(id, title).catch((e) => this.hub.log("error", `Auto-resume of ${id.slice(0, 8)} failed: ${String(e)}`));
+  }
+
+  /** Keep one restart promise. Whatever happens, the task ends up either running, honestly held for a
+   *  named reason that wakes it again, or handed to the owner with that reason — never still claiming
+   *  "auto-resuming…" with nothing coming (a refusal used to be dropped on the floor, silently). */
+  private async fireRestartResume(id: string, title: string): Promise<void> {
+    const thread = this.db.getThread(id);
+    // The owner (or another recovery path) got to it first: a Resume, a cancel, a cap park.
+    if (!thread || !restartAutoResumeOwed(thread) || this.activePipelines.has(id) || this.resuming.has(id)) return;
+    if (this.firingRestartResumes.has(id) || this.holdRestartResume(thread)) return;
+    this.firingRestartResumes.add(id);
+    try {
+      await this.deliverRestartResume(thread, title);
+    } finally {
+      this.firingRestartResumes.delete(id);
+    }
+  }
+
+  private async deliverRestartResume(thread: Thread, title: string): Promise<void> {
+    const id = thread.id;
+    // Charged only now, once it costs something: a boot that dies before this point spent nothing.
+    const fired = (this.db.getThreadStageOutputs(id).autoResumeRevivals ?? 0) + 1;
+    this.db.updateThreadStageOutputs(id, { autoResumeRevivals: fired });
+    this.heldRestartResumes.delete(id);
+    this.hub.log("warn", `Auto-resuming "${title.slice(0, 48)}" after a server restart.`);
+    let result: ThreadActionResult;
+    try {
+      result = await this.resumeThread(id);
+    } catch (e) {
+      result = { ok: false, error: String(e) };
+    }
+    if (result.ok) return;
+    const after = this.db.getThread(id);
+    // resumeThread already wrote its own outcome (a deadline park, a missing workspace, a cancel).
+    if (!after || !restartAutoResumeOwed(after)) return;
+    // Conditions can change between the check above and resumeThread's own gate.
+    if (this.holdRestartResume(after)) return;
+    this.handBackRestartResume(after, result.error ?? "the resume was refused without a reason");
+  }
+
+  /** Hold a promise that cannot start YET for a reason that clears by itself, so it neither spends an
+   *  attempt nor reads as lost. Returns false when nothing is holding it. */
+  private holdRestartResume(thread: Thread): boolean {
+    if (this.restartDrainActive()) {
+      // Another restart is landing; its boot re-arms the promise. If that restart is called off,
+      // restartDrainReleased fires it from here.
+      this.heldRestartResumes.add(thread.id);
+      this.hub.log("info", `Auto-resume of "${thread.title.slice(0, 48)}" deferred — GGO is restarting again.`);
+      return true;
+    }
+    if (this.tokenLimitTripped) {
+      // The token-safety freeze owns every start until its window resets. Park exactly as the freeze
+      // would have parked it, so the reset wake (and an owner bypass) resumes it with everything else.
+      this.parkRestartResumeForTokenSafety(thread);
+      return true;
+    }
+    if (this.coworkWorkspaceBusy?.(thread.workspace)) {
+      this.heldRestartResumes.add(thread.id);
+      // Quietly: a wait that clears by itself is not a failure to ping the owner about.
+      const waiting = thread.error === RESTART_COWORK_WAIT_MSG ? null : this.db.updateThread(thread.id, { error: RESTART_COWORK_WAIT_MSG });
+      if (waiting) this.hub.publish({ type: "thread.upsert", thread: waiting });
+      return true;
+    }
+    return false;
+  }
+
+  private parkRestartResumeForTokenSafety(thread: Thread): void {
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    const parkStage: CapParkStage =
+      stage.qaInterruptedRetryRound != null || stage.qaFixHandoff ? "qa" : thread.lane === "read" ? "reader" : "implementor";
+    const { tokenLimitPercent } = this.settings();
+    const util = this.accounts.effectiveUtilization();
+    const usage = util == null ? "" : ` — usage is at ${Math.round(util)}% (limit ${tokenLimitPercent}%)`;
+    this.heldRestartResumes.delete(thread.id);
+    this.setState(
+      thread.id,
+      "review",
+      `${TOKEN_SAFETY_PARK_PREFIX} (${parkStage} stage)${usage}. A server restart interrupted this task while the freeze was holding new work; the saved work resumes automatically when the blocking window resets.`,
+    );
+    this.publishTokenSafety();
+  }
+
+  /** The resume was refused for a reason no wake-up will clear: say so, and make it the owner's. */
+  private handBackRestartResume(thread: Thread, reason: string): void {
+    this.heldRestartResumes.delete(thread.id);
+    const why = reason.trim().replace(/\.$/, "");
+    this.setState(
+      thread.id,
+      "failed",
+      `${RESTART_ERROR_PREFIX} — the automatic resume could not start: ${why}. Click Resume to continue from where it left off (finished stages are reused).`.slice(0, MAX_REVIEW_ERROR_LEN),
+    );
+    this.postFinding({
+      threadId: thread.id,
+      fromRole: "director",
+      summary: "Restart auto-resume could not start — handed back for a click",
+      detail: why,
+      severity: "warning",
+    });
+  }
+
+  /** A hold above just cleared (a Co-worker turn ended, a restart was called off): deliver what it held. */
+  private releaseHeldRestartResumes(): void {
+    for (const id of [...this.heldRestartResumes]) {
+      const thread = this.db.getThread(id);
+      if (!thread || !restartAutoResumeOwed(thread)) {
+        this.heldRestartResumes.delete(id);
+        continue;
+      }
+      this.fireRestartResumeLogged(id, thread.title);
+    }
   }
 
   /** One shared workload estimate for account, provider, model-pool, and reset-wait decisions. */
@@ -2804,6 +2994,41 @@ export class ThreadManager implements OrchestratorApi {
       return true;
     }
     return false;
+  }
+
+  /** The owner answered a question from the console. Normally that unblocks the agent that asked. When a
+   *  restart killed that agent (the task was held with RESTART_AWAITING_ANSWER_MSG), the answer is what
+   *  resumes the task instead — carried into the resumed run, since nobody is left to receive it.
+   *  Deliberately not inside resolveQuestion: cancel/dismiss/deadline close questions through it too. */
+  answerOwnerQuestion(questionId: string, answer: string): void {
+    const question = this.db.getQuestion(questionId);
+    if (this.resolveQuestion(questionId, answer) || !question?.threadId) return;
+    const thread = this.db.getThread(question.threadId);
+    if (!thread || thread.state !== "failed" || thread.error !== RESTART_AWAITING_ANSWER_MSG) return;
+    // Several questions can be open at once; resume only when the last one is answered.
+    if (this.db.listOpenQuestions().some((q) => q.threadId === thread.id)) return;
+    void this.resumeWithRestartAnswer(thread, question, answer);
+  }
+
+  private async resumeWithRestartAnswer(thread: Thread, question: Question, answer: string): Promise<void> {
+    const note =
+      `A server restart interrupted you while you were waiting for ${config.ownerName}'s answer to your question ` +
+      `“${question.question}”. ${config.ownerName} has now answered: ${answer}`;
+    let result: ThreadActionResult;
+    try {
+      result = await this.resumeThread(thread.id, note, true);
+    } catch (e) {
+      result = { ok: false, error: String(e) };
+    }
+    if (result.ok) return;
+    const after = this.db.getThread(thread.id);
+    if (!after || after.state !== "failed" || after.error !== RESTART_AWAITING_ANSWER_MSG) return;
+    const why = (result.error ?? "the resume was refused without a reason").trim().replace(/\.$/, "");
+    this.setState(
+      thread.id,
+      "failed",
+      `${RESTART_ERROR_PREFIX} — your answer was saved, but the task could not resume: ${why}. Click Resume to continue; the answer is in the task history.`.slice(0, MAX_REVIEW_ERROR_LEN),
+    );
   }
 
   private restoreAfterQuestion(questionId: string): void {
@@ -7268,6 +7493,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private recoverReleasedCapacity(): void {
     this.restartWorkChanged();
     this.pumpQueue();
+    this.releaseHeldRestartResumes();
     if (this.capResumeQueued) return;
     this.capResumeQueued = true;
     // Let the current pipeline finish unwinding before one bounded capacity sweep. Besides avoiding
@@ -10657,9 +10883,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (saved.shotgunRecoveryBlocked) return saved.kickoff ?? kickoff;
     this.db.updateThreadStageOutputs(thread.id, { shotgunRecoveryBlocked: reason });
     for (const child of this.db.listCollaborators(thread.id)) {
-      if (collaboratorSettled(child.state)) continue;
+      if (collaboratorSettled(child)) continue;
       await this.stopLive(child.id);
-      if (!collaboratorSettled(this.db.getThread(child.id)?.state ?? child.state)) {
+      if (!collaboratorSettled(this.db.getThread(child.id) ?? child)) {
         this.setState(child.id, "review", "Shotgun split recovery was incomplete, so this collaborator was stopped to protect the shared working tree.");
       }
     }
@@ -10781,14 +11007,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     let announced = false;
     for (;;) {
       const rows = children.map((id) => this.db.getThread(id)).filter((t): t is Thread => !!t);
-      const pending = rows.filter((t) => !collaboratorSettled(t.state));
+      const pending = rows.filter((t) => !collaboratorSettled(t));
       if (!pending.length || Date.now() > deadline || this.cancelled(thread.id)) {
         if (pending.length) {
           this.hub.log("warn", `Shotgun ${thread.id.slice(0, 8)} stopped waiting: ${pending.length} collaborator(s) still running after ${formatDuration(config.shotgunBarrierTimeoutMs)}.`);
         }
         return rows.map((t) => ({
           title: t.title,
-          state: collaboratorSettled(t.state) ? t.state : `still running (${t.state}) — the lead stopped waiting`,
+          state: collaboratorSettled(t) ? t.state : `still running (${t.state}) — the lead stopped waiting`,
           files: t.assignment?.files ?? [],
           error: t.error ?? null,
         }));

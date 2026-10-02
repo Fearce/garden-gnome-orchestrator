@@ -28,6 +28,7 @@ import {
   type ShotgunAssignment,
   type ShotgunPlan,
 } from "../orchestrator/shotgun.js";
+import type { Thread } from "../types.js";
 
 let passed = 0;
 let failed = 0;
@@ -160,11 +161,24 @@ check("a collision among the TRIMMED-AWAY shares still refuses the whole split",
 // -- 5. the barrier's terminal set -------------------------------------------------------------------
 console.log("\n5 — which collaborator states end the lead's wait");
 for (const st of ["done", "review", "failed", "cancelled", "closed"]) {
-  check(`'${st}' is settled`, collaboratorSettled(st));
+  check(`'${st}' is settled`, collaboratorSettled({ state: st as Thread["state"], error: null }));
 }
 for (const st of ["implementing", "queued", "planning", "qa", "paused", "reviewing"]) {
-  check(`'${st}' is NOT settled (the lead keeps waiting)`, !collaboratorSettled(st));
+  check(`'${st}' is NOT settled (the lead keeps waiting)`, !collaboratorSettled({ state: st as Thread["state"], error: null }));
 }
+// A restart parks a live collaborator as `failed` and resumes it seconds later; the lead must not read that
+// as a finished share. A restart that handed the task to a person IS a stop.
+for (const error of [
+  "interrupted by a server restart — auto-resuming…",
+  "interrupted by a server restart — auto-resume is waiting for the Co-worker turn using this workspace to finish…",
+  "interrupted by a server restart while it was waiting for your answer — answer the open question to resume it, or click Resume to continue without an answer.",
+]) {
+  check(`a restart still owing its resume is NOT settled: ${error.slice(33, 70)}`, !collaboratorSettled({ state: "failed", error }));
+}
+check(
+  "a restart hand-off is settled",
+  collaboratorSettled({ state: "failed", error: "interrupted by a server restart — click Resume to continue from where it left off (finished stages are reused)" }),
+);
 
 // -- 6. the text the agents actually receive ---------------------------------------------------------
 console.log("\n6 — the ownership contract an agent is handed");

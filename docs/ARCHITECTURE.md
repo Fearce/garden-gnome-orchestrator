@@ -522,8 +522,10 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   A `review`/`done`/`paused` thread instead takes
   the lighter `resumeImplementorOnly` path — it talks **only** to the implementor (no QA loop) and
   settles back to `review` when it finishes. Both reuse the prior implementor session through the
-  same warm/cold gate (below). `markInterrupted` flips in-flight threads to `failed` on boot but
-  leaves `stage_outputs` intact, so a restart mid-task is recoverable rather than lost. A manual
+  same warm/cold gate (below). `markInterrupted` flips working threads to `failed` (with an
+  auto-resume promise) on boot but leaves `stage_outputs` intact, so a restart mid-task is recoverable
+  rather than lost; waiting threads keep their own controls (`paused` stays paused, an open `ask_user`
+  question resumes the task when answered, `intake` is re-queued). A manual
   resume that lands while a prior cold resume is still *materializing* (compressing) is coalesced via
   a `resuming` guard so it can't double-start a second implementor on the same workspace; an inject in
   that window is buffered and delivered once the implementor is live; a cancel in that window wins

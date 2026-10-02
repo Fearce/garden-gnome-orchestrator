@@ -25,7 +25,8 @@
  *    spends triple the quota to collide with itself.
  */
 
-import type { ShotgunAssignment } from "../types.js";
+import type { ShotgunAssignment, Thread } from "../types.js";
+import { restartResumePending } from "./restartResume.js";
 
 // ShotgunAssignment is declared in types.ts (it is persisted on the thread row and mirrored to the
 // client), and re-exported here so callers of this module get the whole vocabulary from one import.
@@ -226,9 +227,10 @@ export interface CollaboratorOutcome {
  *  of view, and the integration pass is told the share is incomplete. */
 export const COLLABORATOR_TERMINAL: ReadonlySet<string> = new Set(["done", "review", "failed", "cancelled", "closed"]);
 
-/** Whether a collaborator has stopped, whatever the verdict. */
-export function collaboratorSettled(state: string): boolean {
-  return COLLABORATOR_TERMINAL.has(state);
+/** Whether a collaborator has stopped, whatever the verdict. A restart's `failed` is not a stop while the
+ *  task is still owed its resume — the lead would otherwise integrate a share that is about to come back. */
+export function collaboratorSettled(collaborator: Pick<Thread, "state" | "error">): boolean {
+  return COLLABORATOR_TERMINAL.has(collaborator.state) && !restartResumePending(collaborator);
 }
 
 // ---- the text the agents see ---------------------------------------------------------------------

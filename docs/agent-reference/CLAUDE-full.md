@@ -265,8 +265,20 @@ Read the run trail to tell causes apart:
   phases now **auto-resume on boot** (crash-loop guarded — repeated <60s deaths stop it). That resume is
   armed by a 4s in-memory timer, so a SECOND bounce inside the window used to lose it for good (the thread
   is `failed` by then, which the IN_FLIGHT scan skips); the next boot now re-arms from the persisted
-  "auto-resuming…" promise, up to 3 attempts and only while the promise is <24h old — past either bound it
-  says so and waits for a click. Gate: `test:restart-revival`. Two rounds are
+  "auto-resuming…" promise, up to 3 attempts that actually FIRED (a boot that dies before its timer spends
+  nothing) and only while the promise is <24h old — past either bound it says so and waits for a click. A
+  task that was WAITING, not working, keeps its own controls (`settleWaitingAfterRestart`): `paused`
+  (Proceed gate, owner Pause, Default-mode turn end) stays paused; `awaiting_approval` auto-resumes and asks
+  again; `intake` (a read-lane task mid-read sits there too) is re-queued — a shotgun collaborator stays for
+  its resuming lead to launch; `awaiting_user` keeps its question open as `failed` "…waiting for your
+  answer", and the owner's answer (`answerOwnerQuestion`) resumes it with the answer. A fired resume that cannot start is never dropped:
+  a restart drain or a Co-worker turn holds it (released by `recoverReleasedCapacity`), the token-safety
+  freeze parks it for the reset wake, anything else is handed back with the reason plus a finding. Shotgun
+  and sub-task barriers treat a task still owed its resume (`restartResume.ts`) as running, not failed.
+  The boot's crash.log `restart reconcile —` line counts `kept`/`awaitingAnswer`/`requeued`. Gate:
+  `test:restart-revival`; `npm run restart-resume-lab --prefix server` seeds each waiting state into a
+  throwaway instance, kills and reboots it, and answers the open question (providers pointed at nothing;
+  `GGO_LAB_ENTRY=<other dist>` replays it against another build). Two rounds are
   exempt because they run on ALREADY-accepted work and are keyed on a durable MARKER, not the state (both
   run under auto-resume states): an auto-review fix round re-parks (`reviewFixing`), and the opt-in
   self-improvement round settles the task **done** (`selfImproving`) — so a `done` task holding one

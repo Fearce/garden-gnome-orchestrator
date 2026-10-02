@@ -1107,10 +1107,11 @@ export interface StageOutputs {
   // cost ceiling, a provider session limit). Durable and never reset except by Retry, because the stall
   // repeats: without a lifetime bound the rollover would wake the same task every window forever, which is
   // the spend the mechanism exists to remove. Enforced against MAX_CAPACITY_STALL_RESUMES.
-  autoResumeRevivals?: number; // times a boot has re-armed a restart auto-resume that an EARLIER boot promised
-  // (state 'failed' + the auto-resuming marker) but died before delivering. Durable because the whole failure
-  // mode is a process not surviving long enough to keep its own promise; reset by the next real interruption,
-  // so it bounds one episode's consecutive misses rather than the task's lifetime.
+  autoResumeRevivals?: number; // times a restart auto-resume (state 'failed' + an owed-resume marker) actually
+  // FIRED without getting the task running again. Charged when the resume starts, not when a boot re-arms it: a
+  // boot that dies before its timer fires spent nothing. Durable because the failure mode is a process not
+  // surviving long enough to keep its own promise; reset by the next real interruption, so it bounds one
+  // episode's consecutive misses rather than the task's lifetime.
   modelPick?: ModelPick | null; // the auto-selected implementor model for this task (null = selection ran but
   // produced nothing usable, so normal routing decides). Lives here rather than on the thread row because it
   // is a per-EPISODE decision: a retry nulls the blob and re-selects against the latest grades.

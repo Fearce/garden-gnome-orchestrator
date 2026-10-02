@@ -51,6 +51,7 @@ import {
   type Thread,
   type ThreadState,
 } from "../types.js";
+import { restartResumePending } from "./restartResume.js";
 
 // ---- bounds ---------------------------------------------------------------------------------------
 
@@ -74,8 +75,10 @@ const RESULT_CHARS = 6000;
  *  human may want to look, which from the parent's side is a finished run it must hear about. */
 const SETTLED: ReadonlySet<ThreadState> = new Set(["done", "review", "failed", "cancelled", "closed"]);
 
-export function subTaskSettled(state: ThreadState): boolean {
-  return SETTLED.has(state);
+export function subTaskSettled(child: Pick<Thread, "state" | "error">): boolean {
+  // A restart's `failed` is not a stop while the sub-task is still owed its resume: reporting it to the
+  // parent as a failure would hand over a result the sub-agent is about to replace.
+  return SETTLED.has(child.state) && !restartResumePending(child);
 }
 
 export function isJevSubTask(thread: Pick<Thread, "subTask"> | null | undefined): boolean {
@@ -255,7 +258,7 @@ export function subTaskReport(db: Db, child: Thread): string {
 /** One line of `list_subtasks`. */
 export function subTaskStatusLine(child: Thread): string {
   const spec = child.subTask;
-  return `- ${child.id} "${child.title}" — ${spec ? subTaskRuntimeLabel(spec) : "sub-agent"} — ${child.state}${child.error && !subTaskSettled(child.state) ? ` (${child.error})` : ""}`;
+  return `- ${child.id} "${child.title}" — ${spec ? subTaskRuntimeLabel(spec) : "sub-agent"} — ${child.state}${child.error && !subTaskSettled(child) ? ` (${child.error})` : ""}`;
 }
 
 /** The barrier's resume message: every unreported result, and what to do with them. */
@@ -347,7 +350,7 @@ export class SubTaskService {
     if (children.length >= MAX_SUBTASKS_PER_TASK) {
       return `This task has already spawned ${children.length} sub-tasks, the lifetime maximum of ${MAX_SUBTASKS_PER_TASK}. Finish with the ones you have.`;
     }
-    const live = children.filter((c) => !subTaskSettled(c.state)).length;
+    const live = children.filter((c) => !subTaskSettled(c)).length;
     if (live >= MAX_ACTIVE_SUBTASKS) {
       return `${live} of your sub-tasks are still running (the maximum at once is ${MAX_ACTIVE_SUBTASKS}). Call wait_for_subtasks and spawn more once some finish.`;
     }
@@ -427,7 +430,7 @@ export class SubTaskService {
     this.parentFeed(parent.id, `⑂ ${spawnedByName} asked Jev (sub-task "${input.title.trim()}") ${Object.keys(questions).length} question(s).`);
     const settled = await this.waitFor(parent.id, [id], 90_000);
     const child = settled.find((t) => t.id === id) ?? this.host.db.getThread(id)!;
-    if (!subTaskSettled(child.state)) {
+    if (!subTaskSettled(child)) {
       return { ok: true, thread: child, message: `Sub-task ${id} is still waiting on Jev. Call wait_for_subtasks for its answers.` };
     }
     this.markReported(child.id);
@@ -459,9 +462,9 @@ export class SubTaskService {
     if (!wanted.length) return `None of those ids are your sub-tasks.\n${this.listText(parentId)}`;
     const seconds = Math.min(MAX_WAIT_SECONDS, Math.max(1, Math.round(timeoutSeconds ?? DEFAULT_WAIT_SECONDS)));
     const rows = await this.waitFor(parentId, wanted.map((c) => c.id), seconds * 1000);
-    const reports = rows.filter((c) => subTaskSettled(c.state) && !this.host.db.getThreadStageOutputs(c.id).subTaskReported);
+    const reports = rows.filter((c) => subTaskSettled(c) && !this.host.db.getThreadStageOutputs(c.id).subTaskReported);
     for (const c of reports) this.markReported(c.id);
-    const pending = rows.filter((c) => !subTaskSettled(c.state));
+    const pending = rows.filter((c) => !subTaskSettled(c));
     const parts = [
       ...reports.map((c) => subTaskReport(this.host.db, c)),
       pending.length
@@ -478,7 +481,7 @@ export class SubTaskService {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       const rows = ids.map((id) => this.host.db.getThread(id)).filter((t): t is Thread => !!t);
-      if (rows.every((t) => subTaskSettled(t.state)) || Date.now() >= deadline) return rows;
+      if (rows.every((t) => subTaskSettled(t)) || Date.now() >= deadline) return rows;
       await new Promise<void>((resolve) => {
         const set = this.waiters.get(parentId) ?? new Set<() => void>();
         const wake = (): void => {
@@ -505,7 +508,7 @@ export class SubTaskService {
       this.markReported(child.id);
       return subTaskResultText(this.host.db, this.host.db.getThread(child.id) ?? child);
     }
-    if (subTaskSettled(child.state)) {
+    if (subTaskSettled(child)) {
       // A settled sub-agent is resumed with the message, exactly as the owner's inject would.
       this.host.db.updateThreadStageOutputs(child.id, { subTaskReported: false });
     }
@@ -519,7 +522,7 @@ export class SubTaskService {
    *  result to the spawning agent through the first channel that reaches it. */
   onStateChanged(child: Thread): void {
     if (!child.subTask || !child.parentId) return;
-    if (!subTaskSettled(child.state)) {
+    if (!subTaskSettled(child)) {
       this.announced.delete(child.id);
       return;
     }
@@ -542,11 +545,11 @@ export class SubTaskService {
   unreported(parentId: string): Thread[] {
     return this.host.db
       .listSubTasks(parentId)
-      .filter((c) => subTaskSettled(c.state) && !this.host.db.getThreadStageOutputs(c.id).subTaskReported);
+      .filter((c) => subTaskSettled(c) && !this.host.db.getThreadStageOutputs(c.id).subTaskReported);
   }
 
   unsettled(parentId: string): Thread[] {
-    return this.host.db.listSubTasks(parentId).filter((c) => !subTaskSettled(c.state));
+    return this.host.db.listSubTasks(parentId).filter((c) => !subTaskSettled(c));
   }
 
   markReported(childId: string): void {
