@@ -80,10 +80,14 @@ export async function listChatModels(fetchImpl: ShareFetch, endpoint: ShareableE
 }
 
 // `codex` models answer only on the Responses API, not chat completions.
-const NON_CHAT = /(embed|audio|realtime|transcribe|tts|whisper|dall-e|image|moderation|search|instruct|davinci|babbage|codex)/i;
+const NON_CHAT = /(embed|audio|realtime|transcribe|tts|whisper|dall-e|image|moderation|search|instruct|davinci|babbage|codex|multi-?agent|base)/i;
+// These reasoning variants require Responses, even though their ids look like chat models.
+// https://developers.openai.com/api/docs/models/gpt-5-pro
+// https://developers.openai.com/api/docs/models/o1-pro
+const RESPONSES_ONLY = /^(?:gpt-[\d.]+|o\d+)-pro(?:-|$)/i;
 
 export function isChatModelId(id: string): boolean {
-  return /^(gpt-|o\d|chatgpt-|grok-)/i.test(id) && !NON_CHAT.test(id);
+  return /^(gpt-|o\d|chatgpt-|grok-)/i.test(id) && !NON_CHAT.test(id) && !RESPONSES_ONLY.test(id);
 }
 
 function providerFailure(status: number, body: unknown): Extract<ProviderCallResult, { ok: false }> {

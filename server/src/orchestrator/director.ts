@@ -477,7 +477,7 @@ export class Director {
     if (resume) turn = this.withDirectivesUpdate(sessionKey, firstContent);
     else this.directivesSeen.set(sessionKey, normalizeDirectorDirectives(directives));
     const run = chosen.provider === "shared"
-      ? new SharedDirectorRun({ call: (messages, signal) => this.sharedCall(messages, signal), schema: DIRECTOR_CLI_SCHEMA, resume })
+      ? new SharedDirectorRun({ call: (messages, signal) => this.sharedCall(chosen, messages, signal), schema: DIRECTOR_CLI_SCHEMA, resume })
       : this.api.createDirectorAgent(chosen, cfg, { resume, ...(isCli ? { cliSchema: DIRECTOR_CLI_SCHEMA } : {}) });
     this.target = chosen;
     this.activeSessionKey = sessionKey;
@@ -516,9 +516,12 @@ export class Director {
     return target.provider === "shared" || this.api.directorTargetReady(target);
   }
 
-  private sharedCall(messages: RelayShareMessage[], signal: AbortSignal): Promise<ShareCallResult> {
+  private async sharedCall(target: SharedTarget, messages: RelayShareMessage[], signal: AbortSignal): Promise<ShareCallResult> {
+    if (!this.stillConfigured(target)) return { ok: false, code: "cancelled", message: "The shared Director selected for this turn has changed. Resend on the current choice." };
     if (!this.sharing) return Promise.resolve({ ok: false, code: "not-shared", message: "Director sharing is not available on this console." });
-    return this.sharing.call(messages, signal);
+    const result = await this.sharing.call(messages, signal);
+    if (!this.stillConfigured(target)) return { ok: false, code: "cancelled", message: "The shared Director selected for this turn has changed. Resend on the current choice." };
+    return result;
   }
 
   private async chooseTarget(excludeKeys: ReadonlySet<string> = new Set()): Promise<RunTarget | undefined> {

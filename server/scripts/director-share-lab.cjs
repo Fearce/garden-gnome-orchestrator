@@ -291,7 +291,7 @@ async function main() {
     check("the recipient is told the donor stopped, with no fallback", !!stopNote && /Nothing was sent to your own subscriptions/.test(stopNote.content), JSON.stringify(directorMessages(recipientDir).slice(-2)));
     await waitFor(async () => /No longer shared|Donor offline/i.test(await rp.locator(".shared-director-strip").innerText()), 30_000);
     check("the recipient header shows it is no longer shared", /No longer shared/i.test(await rp.locator(".shared-director-strip").innerText()));
-    check("the donor row is Private again", /private/i.test(await openaiRow.locator(".share-chip").innerText()));
+    check("the donor row is Private again", !!await waitFor(async () => /private/i.test(await openaiRow.locator(".share-chip").innerText()), 15_000));
     await rp.screenshot({ path: path.join(shots, "recipient-after-stop.png") });
 
     console.log("\n=== a live share expires on the donor's clock ===\n");

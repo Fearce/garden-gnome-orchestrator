@@ -4,7 +4,7 @@ import { SHARE_CALL_MAX_CHARS, SHARE_REPLY_MAX_CHARS } from "../onlineProtocol.j
 import type { RelayShareErrorCode, RelayShareMessage, RelayShareOffer, ServerFrame } from "../onlineProtocol.js";
 import type { ShareClientFrame } from "./client.js";
 import type { DirectorShareSubscription, ShareableEndpoint } from "./policy.js";
-import { callChatCompletion, listChatModels, type ShareFetch } from "./providerCall.js";
+import { callChatCompletion, isChatModelId, listChatModels, type ShareFetch } from "./providerCall.js";
 
 const KV_SHARES = "director_shares_v1";
 /** Nobody shares open-ended: a deadline further out than this is refused. */
@@ -134,6 +134,7 @@ export class DirectorShareHost {
     if (this.records[subscriptionId]?.status === "shared") return { ok: false, error: "Already shared. Edit the deadline, or stop sharing first." };
     const cleanModel = model.trim();
     if (!/^[A-Za-z0-9._:/-]{1,80}$/.test(cleanModel)) return { ok: false, error: "Pick a model to share." };
+    if (!isChatModelId(cleanModel)) return { ok: false, error: "This model cannot use the shared Director's chat-completions integration." };
     const bad = this.badTerms(terms);
     if (bad) return { ok: false, error: bad };
     const now = this.now();

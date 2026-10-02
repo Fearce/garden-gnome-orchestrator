@@ -51,7 +51,7 @@ class FakeProvider {
   fetch = (url: string, init: RequestInit): Promise<Response> => new Promise((resolve, reject) => {
     const signal = init.signal as AbortSignal;
     if (url.endsWith("/models")) {
-      resolve(new Response(JSON.stringify({ data: [{ id: "gpt-test-mini" }, { id: "text-embedding-3-small" }, { id: "gpt-test-codex" }] }), { status: 200 }));
+      resolve(new Response(JSON.stringify({ data: [{ id: "gpt-test-mini" }, { id: "text-embedding-3-small" }, { id: "gpt-test-codex" }, { id: "gpt-5-pro" }, { id: "o1-pro" }, { id: "grok-4.20-multi-agent" }] }), { status: 200 }));
       return;
     }
     signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
@@ -121,6 +121,7 @@ try {
     check("an unknown subscription cannot be shared", !d.host.share("nope", "gpt-test-mini", terms(d.clock)).ok);
     const models = await d.host.models("openai-api");
     check("the model picker lists chat models only", models.ok && models.models.join(",") === "gpt-test-mini", JSON.stringify(models));
+    check("Responses-only models cannot be shared through a direct settings command", ["gpt-5-pro", "o1-pro", "grok-4.20-multi-agent"].every((model) => !d.host.share("openai-api", model, terms(d.clock)).ok));
     check("a non-shareable subscription lists no models", !(await d.host.models("codex-chatgpt")).ok);
     check("a ChatGPT-plan key is not an API key", directorShareSubscriptions({ claudeAccounts: [], openaiApiKey: "eyJhbGciOi", codexChatgptLogin: false, grokLogin: false, zaiConfigured: false }).length === 0);
   }
@@ -303,6 +304,42 @@ try {
     const r = await pending;
     check("only the donor's own reply is accepted", r.ok && r.text === "real");
 
+    const late = client.call([{ role: "user", content: "hi" }]);
+    const lateFrame = sent.at(-1) as Extract<ShareClientFrame, { t: "share.call" }>;
+    const shortened = clock.now + 60_000;
+    client.setOffers([{ ...offer, expiresAt: shortened }]);
+    clock.now = shortened;
+    client.handleReply({ t: "share.reply", from: "donor-1", callId: lateFrame.callId, ok: true, text: "late command" });
+    const lateResult = await late;
+    check("a reply in transit is refused at an edited expiry boundary", !lateResult.ok && lateResult.code === "expired");
+    clock.now = offer.expiresAt - HOUR;
+    client.setOffers([offer]);
+
+    const extended = client.call([{ role: "user", content: "hi" }]);
+    const extendedFrame = sent.at(-1) as Extract<ShareClientFrame, { t: "share.call" }>;
+    client.setOffers([{ ...offer, expiresAt: offer.expiresAt + HOUR }]);
+    clock.now = offer.expiresAt;
+    client.handleReply({ t: "share.reply", from: "donor-1", callId: extendedFrame.callId, ok: true, text: "within edited deadline" });
+    check("a deadline extension also applies to a reply already in flight", (await extended).ok);
+    clock.now = offer.expiresAt - HOUR;
+    client.setOffers([offer]);
+
+    const withdrawn = client.call([{ role: "user", content: "hi" }]);
+    const withdrawnFrame = sent.at(-1) as Extract<ShareClientFrame, { t: "share.call" }>;
+    client.setOffers([]);
+    client.handleReply({ t: "share.reply", from: "donor-1", callId: withdrawnFrame.callId, ok: true, text: "revoked command" });
+    const withdrawnResult = await withdrawn;
+    check("a reply in transit is withheld after discovery reports revocation", !withdrawnResult.ok && withdrawnResult.code === "not-shared");
+    client.setOffers([offer]);
+
+    const switched = client.call([{ role: "user", content: "hi" }]);
+    const switchedFrame = sent.at(-1) as Extract<ShareClientFrame, { t: "share.call" }>;
+    client.clearSelection();
+    client.handleReply({ t: "share.reply", from: "donor-1", callId: switchedFrame.callId, ok: true, text: "old selection command" });
+    const switchedResult = await switched;
+    check("a reply from a deselected donor is withheld", !switchedResult.ok && switchedResult.code === "cancelled");
+    client.select("donor-1", "share-1");
+
     const aborter = new AbortController();
     const aborted = client.call([{ role: "user", content: "hi" }], aborter.signal);
     aborter.abort();
@@ -402,6 +439,21 @@ try {
     await settled();
     check("a turn on the shared Director completes", notes().includes("Hello from the shared Director."), JSON.stringify(notes()));
     check("the shared call carries the Director's own protocol (bootstrapped on this console)", calls[0]?.[0]?.content.includes("JSON") === true);
+
+    const originalSelection = selection;
+    let finishOld: ((v: { ok: true; text: string }) => void) | undefined;
+    answer = () => new Promise((resolve) => { finishOld = resolve; });
+    director.handleUserMessage("hold this turn");
+    for (let i = 0; i < 200 && !finishOld; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    check("the old donor's call is in flight for the selection race", !!finishOld);
+    const beforeSwitch = calls.length;
+    director.handleUserMessage("steering while the old donor decides");
+    selection = { ...originalSelection!, instanceId: "donor-2", shareId: "share-2", donorName: "Other donor" };
+    finishOld?.({ ok: true, text: '{"kind":"reply","message":"Do not execute this stale command."}' });
+    await settled();
+    check("switching donors does not send steering or history to the new donor mid-turn", calls.length === beforeSwitch);
+    check("a deselected donor's command is not executed", !notes().includes("Do not execute this stale command.") && notes().some((n) => /selected for this turn has changed/.test(n)));
+    selection = originalSelection;
 
     answer = async () => ({ ok: false, code: "expired", message: "This shared Director expired at 2026-10-02T13:00:00.000Z." });
     director.handleUserMessage("still there?");

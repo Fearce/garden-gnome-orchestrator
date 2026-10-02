@@ -39,6 +39,7 @@ export type ShareCallResult =
 
 interface PendingCall {
   donor: string;
+  selection: SharedDirectorSelection;
   resolve: (r: ShareCallResult) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -160,7 +161,7 @@ export class DirectorShareClient {
         finish({ ok: false, code: "timeout", message: "The shared Director did not answer in time." });
       }, CALL_TIMEOUT_MS);
       timer.unref?.();
-      this.pending.set(callId, { donor: sel.instanceId, resolve: finish, timer });
+      this.pending.set(callId, { donor: sel.instanceId, selection: sel, resolve: finish, timer });
       if (signal?.aborted) return onAbort();
       signal?.addEventListener("abort", onAbort, { once: true });
       const sent = this.deps.send({ t: "share.call", to: sel.instanceId, callId, shareId: sel.shareId, messages });
@@ -172,6 +173,20 @@ export class DirectorShareClient {
   handleReply(frame: Extract<ServerFrame, { t: "share.reply" }>): void {
     const p = this.pending.get(frame.callId);
     if (!p || p.donor !== frame.from) return;
+    // A reply can have left the donor before expiry or revocation and spent time in transit. Re-read
+    // this console's current selection and discovery state before executing any returned command.
+    if (frame.ok) {
+      const sel = this.selection();
+      if (!sel || sel.instanceId !== p.donor || sel.shareId !== p.selection.shareId) {
+        p.resolve({ ok: false, code: "cancelled", message: "The shared Director selection changed before the reply arrived." });
+        return;
+      }
+      const state = this.availability(sel);
+      if (state && state !== "available" && state !== "busy") {
+        p.resolve({ ok: false, code: state === "expired" ? "expired" : state === "withdrawn" ? "not-shared" : "offline", message: availabilityText(state, sel) });
+        return;
+      }
+    }
     if (frame.ok) p.resolve({ ok: true, text: frame.text ?? "", usage: frame.usage });
     else p.resolve({ ok: false, code: frame.code ?? "provider-error", message: frame.message || "The shared Director failed." });
   }

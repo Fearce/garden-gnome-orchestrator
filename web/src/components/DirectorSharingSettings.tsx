@@ -37,6 +37,10 @@ export function DirectorShareDonorSection() {
         files, and the tasks their Director dispatches run on their own subscriptions. Each share ends at its own
         deadline, enforced by this server.
       </p>
+      <p className="settings-note tight">
+        Stop sharing and expiry abort active requests and withhold late replies. A provider may still finish or
+        bill a request it already started. New calls are refused immediately.
+      </p>
       {problem ? <p className="settings-note tight dshare-warn">{problem}</p> : null}
       {sharing.subscriptions.length === 0 ? (
         <p className="settings-note tight">No subscriptions are connected on this console.</p>
