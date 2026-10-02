@@ -14,9 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Unpin d2r step 15 to allow Codex routing** (Bramblewick, 2026-10-02).
-  Task ef2438cb-33b8-43db-9545-6e338502e16e has a strict Claude Opus 5.5 model request; clear via the authenticated task control and resume.
+_(none: claim from Ready)_
 
 ## Open
 
 No open entries.
+
+## Done (newest first; keep the last 20)
+
+- 2026-10-02 **Unpin d2r step 15 to allow Codex routing** (Bramblewick): authenticated thread.model Auto and thread.resume both succeeded; SQLite confirms task ef2438cb-33b8-43db-9545-6e338502e16e implementing with model_request NULL, no error, and a running gpt-6.1-sol implementor on codex:gpt-6.1-sol.
