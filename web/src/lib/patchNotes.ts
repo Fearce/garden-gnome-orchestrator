@@ -43,9 +43,21 @@ interface PatchNotesState {
   error: string | null;
   /** The newest commit the operator has seen in this area; entries above it are "new to you". */
   seenSha: string | null;
+  /** Busy days' overviews by `digestKey`; absent until asked for, null when it could not be written. */
+  digests: Record<string, DayDigest>;
   load: () => Promise<void>;
   loadOlder: () => Promise<void>;
   markSeen: () => void;
+  requestDigest: (shas: string[]) => void;
+}
+
+export type DayDigest = { status: "loading" } | { status: "ready"; summary: string } | { status: "failed" };
+
+/** Must match the server's DIGEST_MIN_CHANGES: below this a day is short enough to scan. */
+export const DIGEST_MIN_CHANGES = 5;
+
+export function digestKey(shas: string[]): string {
+  return [...shas].sort().join(",");
 }
 
 const SEEN_KEY = "ggo.patchNotesSeen";
@@ -70,6 +82,17 @@ async function fetchPage(skip: number): Promise<PatchNotesPage> {
   const res = await fetch(apiUrl(`/api/patch-notes?skip=${skip}`), { cache: "no-store" });
   if (!res.ok) throw new Error(`patch notes request failed (${res.status})`);
   return (await res.json()) as PatchNotesPage;
+}
+
+async function fetchDigest(shas: string[]): Promise<string> {
+  const res = await fetch(apiUrl("/api/patch-notes/digest"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ shas }),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`patch notes digest failed (${res.status})`);
+  return ((await res.json()) as { summary: string }).summary;
 }
 
 let inflight: Promise<void> | null = null;
@@ -105,6 +128,7 @@ export const usePatchNotes = create<PatchNotesState>((set, get) => {
     loading: false,
     error: null,
     seenSha: readSeen(),
+    digests: {},
 
     // Concurrent callers share one request, so a caller that awaits `load()` (the view, before marking
     // what it showed as seen) always resumes after the data it asked for has landed.
@@ -123,6 +147,19 @@ export const usePatchNotes = create<PatchNotesState>((set, get) => {
       } finally {
         set({ loading: false });
       }
+    },
+
+    // Asked once per day while the console stays loaded: a failure stays failed until a reload rather
+    // than retrying a model call on every render.
+    requestDigest: (shas) => {
+      const key = digestKey(shas);
+      if (get().digests[key]) return;
+      const settle = (digest: DayDigest) => set((s) => ({ digests: { ...s.digests, [key]: digest } }));
+      settle({ status: "loading" });
+      fetchDigest(shas).then(
+        (summary) => settle({ status: "ready", summary }),
+        () => settle({ status: "failed" }),
+      );
     },
 
     markSeen: () => {

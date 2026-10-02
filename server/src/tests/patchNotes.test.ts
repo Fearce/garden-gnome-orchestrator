@@ -4,6 +4,8 @@
 // against a real repo: commits are classified the way an operator reads them (feat → feature, fix → fix,
 // docs/test/chore → internal, trailers never shown), and the upstream commits an update would bring in are
 // listed separately from what this checkout already has, with paging that never drops or repeats a commit.
+// A busy day's digest is built from the commits git holds for the shas asked about, never from client
+// text, needs five operator-facing changes, and is asked of the model once per commit set.
 
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -12,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stopChildRunner } from "../childRunner.js";
 import { classifyCommit, readPatchNotes } from "../patchNotes.js";
+import { cleanDigest, digestShas, PatchNoteDigests } from "../patchNoteDigest.js";
 
 const root = mkdtempSync(join(tmpdir(), "ggo-patch-notes-"));
 // The owner's global core.hooksPath runs a real validation suite on every commit and push (~3s each).
@@ -125,8 +128,54 @@ async function notACheckout(): Promise<void> {
   console.log("  ok  an install outside git explains itself instead of throwing");
 }
 
+/** The digest reads the commits itself, skips internal ones, refuses a quiet day, and caches per set. */
+async function dayDigest(): Promise<void> {
+  const repo = join(root, "digest");
+  mkdirSync(repo);
+  git(repo, "init", "-q", "-b", "master");
+  const facing = ["feat(board): hide done tasks", "fix: stop the chip overlap", "perf: faster board load", "feat(goals): keep one session", "fix(web): wrap the header"].map((m) => {
+    commit(repo, m);
+    return git(repo, "rev-parse", "HEAD");
+  });
+  commit(repo, "docs: write it down");
+  const internal = git(repo, "rev-parse", "HEAD");
+
+  const kv = new Map<string, string>();
+  const store = { get: (k: string) => kv.get(k) ?? null, set: (k: string, v: string) => void kv.set(k, v) };
+  const asked: string[] = [];
+  const digests = new PatchNoteDigests(store, async (changes) => (asked.push(changes), "Board and goal polish with three fixes"), repo);
+
+  const quiet = await digests.digest([...facing.slice(0, 4), internal]);
+  assert.deepEqual(quiet.ok ? null : quiet.status, 422, "four operator-facing changes plus an internal one is not a busy day");
+  assert.equal(asked.length, 0, "a quiet day never reaches the model");
+
+  const [a, b] = await Promise.all([digests.digest([...facing, internal]), digests.digest([internal, ...facing].reverse())]);
+  assert.deepEqual(a, { ok: true, summary: "Board and goal polish with three fixes." }, "the overview ends as a sentence");
+  assert.deepEqual(b, a, "the same set in another order is the same day");
+  assert.equal(asked.length, 1, "concurrent asks for one day share one model call");
+  assert.match(asked[0]!, /- New \(board\): Hide done tasks/);
+  assert.ok(!asked[0]!.includes("Write it down"), "internal commits stay out of the overview");
+
+  const reread = new PatchNoteDigests(store, async () => assert.fail("a cached day must not call the model again"), repo);
+  assert.deepEqual(await reread.digest([...facing, internal]), a, "the digest survives a restart via the store");
+
+  const unknown = await digests.digest([...facing.slice(1), "0".repeat(40)]);
+  assert.equal(unknown.ok ? null : unknown.status, 422, "a sha this checkout lacks is refused");
+
+  const noAnswer = await new PatchNoteDigests({ get: () => null, set: () => assert.fail("a failure is not cached") }, async () => null, repo).digest(facing);
+  assert.equal(noAnswer.ok ? null : noAnswer.status, 502);
+
+  assert.equal(digestShas([facing[0], facing[0]])?.length, 1);
+  for (const bad of [[], ["HEAD"], [facing[0]!.toUpperCase()], ["--all"], "abc", [1]]) assert.equal(digestShas(bad), null, JSON.stringify(bad));
+  assert.equal(cleanDigest("I can't summarize this"), null);
+  assert.equal(cleanDigest("This is not a coding task"), null);
+  assert.equal(cleanDigest("Mostly fixes!"), "Mostly fixes!");
+  console.log("  ok  a busy day's digest comes from git, needs five changes and is asked once per set");
+}
+
 try {
   classification();
+  await dayDigest();
   await historyAndUpcoming();
   await notACheckout();
   await pendingByPath();

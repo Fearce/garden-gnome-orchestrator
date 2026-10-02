@@ -51,6 +51,7 @@ import { startWebAutoBuild } from "./webAutoBuild.js";
 import { refreshStatus, getStatus, applyUpdate, startUpdatePoll, stagedBuildStamp, claimCheckoutForRuntimeBump } from "./update.js";
 import { CliAutoUpdater } from "./toolchain/cliAutoUpdate.js";
 import { readPatchNotes } from "./patchNotes.js";
+import { digestShas, haikuDigestModel, PatchNoteDigests } from "./patchNoteDigest.js";
 import { registerWs } from "./ws/hub.js";
 import { FreeProviderService } from "./freeProviders/service.js";
 import { registerFreeProviderRoutes } from "./freeProviders/routes.js";
@@ -139,6 +140,7 @@ async function main(): Promise<void> {
     if (e.type === "accounts") publishAccountUsage(accounts.usageSnapshot());
   });
   const manager = new ThreadManager(db, hub, memory, accounts, freeProviders);
+  const patchNoteDigests = new PatchNoteDigests({ get: (key) => db.kvGet(key), set: (key, value) => db.kvSet(key, value) }, haikuDigestModel(() => accounts.auxToken()));
   const cowork = new CoworkManager(db, hub, {
     prepare: (input) => manager.prepareCoworkerRun(input),
     taskConflict: (workspace) => manager.coworkTaskConflict(workspace),
@@ -420,6 +422,17 @@ async function main(): Promise<void> {
       const skip = req.query.skip === undefined ? undefined : Number(req.query.skip);
       const limit = req.query.limit === undefined ? undefined : Number(req.query.limit);
       return readPatchNotes({ skip, limit });
+    });
+
+    // A busy day's one-line overview (Haiku, cached per commit set). The console asks per day because it
+    // groups days in the viewer's timezone; the server re-reads the commits, so no client text reaches the model.
+    app.post<{ Body: { shas?: unknown } }>("/api/patch-notes/digest", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      reply.header("cache-control", "no-store");
+      const shas = digestShas(req.body?.shas);
+      if (!shas) return reply.code(400).send({ error: "shas must be a non-empty list of full commit hashes" });
+      const result = await patchNoteDigests.digest(shas);
+      return result.ok ? { summary: result.summary } : reply.code(result.status).send({ error: result.error });
     });
 
     // Durable implementor handoffs are fetched independently of the chronological task feed so QA,

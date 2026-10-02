@@ -3,7 +3,8 @@
 // above the last-seen one, opening the area records them as seen, the filters and the internal toggle
 // show exactly the rows they claim, a commit body expands, paging loads older changes, the next-update
 // section appears exactly when the upstream is ahead, and a phone reaches the area through the
-// All-areas picker without the page scrolling sideways.
+// All-areas picker without the page scrolling sideways, and a busy day (5+ operator-facing changes)
+// opens with its digest — asked of the server with exactly that day's shas, shown only in Everything.
 //
 // The throwaway instance reads THIS checkout's real history (the server reads the repo it runs from),
 // so every expectation is computed from `git log` at run time rather than hard-coded.
@@ -69,6 +70,8 @@ async function desktopPass(browser, dataDir, expectedNew, seenSha, local) {
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
   });
+  // The lab's bogus account token makes every real digest a 502; digestPass covers digests on their own.
+  await ctx.route("**/api/patch-notes/digest", (route) => route.fulfill({ json: { summary: "Lab digest." } }));
   // Seed before the app boots: its first-visit branch records HEAD as seen when the key is missing, and
   // would overwrite a seed written after load. This pass never reloads, so the script runs once.
   await ctx.addInitScript(([key, sha]) => localStorage.setItem(key, sha), [SEEN_KEY, seenSha]);
@@ -156,6 +159,82 @@ async function phonePass(browser, dataDir) {
   await ctx.close();
 }
 
+/** Busy days in the first page, grouped by the browser's local date like the view does. The last day
+ *  may continue on the next page, so it is never expected to carry a digest. */
+function busyDays(count) {
+  const commits = git("log", "--no-merges", `--max-count=${count}`, "--format=%H%x1f%ct%x1f%s")
+    .split("\n")
+    .map((line) => {
+      const [sha, seconds, subject] = line.split("\x1f");
+      const m = /^([a-z]+)(?:\([^)]*\))?!?:/i.exec(subject);
+      return { sha, day: new Date(Number(seconds) * 1000).toDateString(), internal: !!m && INTERNAL.has(m[1].toLowerCase()) };
+    });
+  const days = [];
+  for (const c of commits) {
+    if (days.at(-1)?.day !== c.day) days.push({ day: c.day, facing: [] });
+    if (!c.internal) days.at(-1).facing.push(c.sha);
+  }
+  return days.slice(0, -1).map((d) => ({ ...d, busy: d.facing.length >= 5 }));
+}
+
+/** The digest endpoint is stubbed: the lab proves what the view asks for and how it shows the answer, not
+ *  what Haiku writes (test:patch-notes proves the server side against a fixture repo). The first ask is
+ *  held to see the loading line; the second fails, and its day must fall back to plain bullets. */
+async function digestPass(browser, dataDir) {
+  const busy = busyDays(150).filter((d) => d.busy);
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  const asked = [];
+  let release;
+  const held = new Promise((r) => (release = r));
+  await page.route("**/api/patch-notes/digest", async (route) => {
+    const shas = route.request().postDataJSON().shas;
+    asked.push(shas);
+    if (asked.length === 1) await held;
+    if (asked.length === 2) return route.fulfill({ status: 502, json: { error: "the summary model gave no usable answer" } });
+    await route.fulfill({ json: { summary: `Lab digest of ${shas.length} changes.` } });
+  });
+  await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
+  await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 60000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 60000 });
+  await page.click('.board-tab:has-text("Patch notes")');
+  await waitForRows(page);
+  if (busy.length < 2) {
+    check("busy-day digests need two busy days in the loaded history to exercise", false, `${busy.length} busy days`);
+    release();
+    await ctx.close();
+    return;
+  }
+  const loading = await page.waitForSelector(".pn-digest.loading", { timeout: 10000 }).catch(() => null);
+  check("a busy day shows that its digest is being written", !!loading && /Summarizing \d+ changes/.test((await loading.textContent()) ?? ""));
+  release();
+  await page.waitForFunction((n) => document.querySelectorAll(".pn-digest:not(.loading)").length >= n, busy.length - 1, { timeout: 15000 }).catch(() => {});
+
+  const expected = new Set(busy.map((d) => [...d.facing].sort().join(",")));
+  const askedKeys = asked.map((shas) => [...shas].sort().join(","));
+  check("the view asks once per busy day, with exactly that day's operator-facing shas", askedKeys.length === busy.length && askedKeys.every((k) => expected.has(k)), `${askedKeys.length} asks for ${busy.length} busy days`);
+  const shown = await page.$$eval(".pn-day", (els) => els.map((el) => el.querySelector(".pn-digest")?.textContent?.trim() ?? null));
+  const withDigest = shown.filter(Boolean);
+  check(
+    "every busy day opens with its digest except the failed one; quiet days have none",
+    withDigest.length === busy.length - 1 && withDigest.every((t) => /^Lab digest of \d+ changes\.$/.test(t)),
+    JSON.stringify(shown.slice(0, 8)),
+  );
+  const first = await page.$(".pn-day:has(.pn-digest)");
+  if (first) await first.screenshot({ path: path.join(shotDir(dataDir), "patch-notes-digest.png") });
+
+  await page.click('.pn-filter:has-text("Fixed")');
+  check("a filtered view drops the digest, which covers every kind", (await page.$$(".pn-digest")).length === 0);
+  await page.click('.pn-filter:has-text("Everything")');
+  const asksBefore = asked.length;
+  await page.click('.board-tab:has-text("Tasks")');
+  await page.click('.board-tab:has-text("Patch notes")');
+  await waitForRows(page);
+  check("reopening the area does not ask again", asked.length === asksBefore, `${asked.length} vs ${asksBefore}`);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await ctx.close();
+}
+
 /** The next-update section, with the upstream's commits injected into the response: this checkout is
  *  usually level with its upstream, and a lab must never make the real repo fall behind to see it. Its
  *  Update button is deliberately NOT clicked — on this instance it would pull the real checkout. */
@@ -211,6 +290,7 @@ async function upcomingPass(browser, dataDir) {
     const browser = await loadChromium().launch();
     await desktopPass(browser, dataDir, expectedNew, local[seenIdx].sha, local);
     await upcomingPass(browser, dataDir);
+    await digestPass(browser, dataDir);
     await phonePass(browser, dataDir);
     await browser.close();
     console.log(`\nscreenshots: ${shotDir(dataDir)}`);

@@ -128,6 +128,13 @@ async function log(range: string, cwd: string, skip: number, limit: number): Pro
   return r.ok ? parseLog(r.stdout) : null;
 }
 
+/** These exact commits as patch notes, or null when git cannot resolve one of them. */
+export async function readNotesBySha(shas: string[], cwd: string = REPO_ROOT): Promise<PatchNote[] | null> {
+  if (shas.length === 0) return [];
+  const r = await git(["log", "--no-walk=unsorted", "--no-merges", `--format=${LOG_FORMAT}`, ...shas], cwd);
+  return r.ok ? parseLog(r.stdout) : null;
+}
+
 function clampInt(value: number | undefined, fallback: number, min: number, max: number): number {
   return Number.isFinite(value) ? Math.min(max, Math.max(min, Math.floor(value!))) : fallback;
 }

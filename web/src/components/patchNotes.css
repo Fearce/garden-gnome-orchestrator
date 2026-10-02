@@ -38,6 +38,12 @@
   font-family: var(--font-serif); font-style: italic; font-weight: 400; font-size: 19px; color: var(--text-dim);
 }
 
+.pn-digest {
+  margin: 4px 0 8px; padding: 2px 0 2px 12px; border-left: 2px solid color-mix(in oklch, var(--accent) 55%, var(--line));
+  font: 400 13.5px/1.55 var(--font-sans); color: var(--text); max-width: 72ch; overflow-wrap: anywhere;
+}
+.pn-digest.loading { color: var(--text-faint); border-left-color: var(--line); font-size: 12.5px; }
+
 .pn-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .pn-row {
   display: grid; grid-template-columns: 62px minmax(0, 1fr); align-items: baseline; gap: 12px;

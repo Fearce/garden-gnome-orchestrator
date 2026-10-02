@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../store.js";
-import { newerThan, usePatchNotes, type PatchNote, type PatchNoteKind } from "../lib/patchNotes.js";
+import { DIGEST_MIN_CHANGES, digestKey, newerThan, usePatchNotes, type PatchNote, type PatchNoteKind } from "../lib/patchNotes.js";
 import "./patchNotes.css";
 
 /**
  * Patch notes: what changed in this install, newest first, read from its own git history. Features,
  * fixes and speed-ups lead; docs, tests and chores stay folded behind a toggle because nobody using the
  * console acts on them. Commits the upstream has but this checkout does not are listed on top as the
- * next update, so the Update badge's "N new commits" finally says what those commits are.
+ * next update, so the Update badge's "N new commits" finally says what those commits are. A busy day
+ * opens with a one-line model-written overview of its changes above the bullets.
  */
 export function PatchNotes() {
   const { entries, upcoming, pending, hasMore, loading, error, seenSha, load, loadOlder, markSeen } = usePatchNotes();
@@ -25,7 +26,6 @@ export function PatchNotes() {
     const unbuilt = new Set(pending);
     return entries.map((note, i) => ({ note, isNew: i < newCount, notLive: unbuilt.has(note.sha) }));
   }, [entries, newCount, pending]);
-  const visible = annotated.filter(({ note }) => shows(note, filter, showInternal));
   const internalCount = entries.filter((e) => e.kind === "internal").length;
 
   return (
@@ -47,7 +47,7 @@ export function PatchNotes() {
           <div className="big">{loading ? "Reading the change history…" : "No changes recorded"}</div>
         </div>
       ) : (
-        <DayGroups rows={visible} />
+        <DayGroups rows={annotated} filter={filter} showInternal={showInternal} lastDayComplete={!hasMore} />
       )}
 
       {hasMore ? (
@@ -136,15 +136,21 @@ function UpcomingUpdate({ notes }: { notes: PatchNote[] }) {
 
 type Row = { note: PatchNote; isNew: boolean; notLive: boolean };
 
-function DayGroups({ rows }: { rows: Row[] }) {
-  if (rows.length === 0) return <div className="pn-none faint">Nothing in this filter among the loaded changes.</div>;
+/** Days are grouped over every loaded change, so a day's digest and its "busy" test do not depend on
+ *  the filter; the filter only decides which bullets show under it. */
+function DayGroups({ rows, filter, showInternal, lastDayComplete }: { rows: Row[]; filter: Filter; showInternal: boolean; lastDayComplete: boolean }) {
+  const days = groupByDay(rows)
+    .map((group, i, all) => ({ ...group, visible: group.rows.filter(({ note }) => shows(note, filter, showInternal)), complete: lastDayComplete || i < all.length - 1 }))
+    .filter((group) => group.visible.length > 0);
+  if (days.length === 0) return <div className="pn-none faint">Nothing in this filter among the loaded changes.</div>;
   return (
     <>
-      {groupByDay(rows).map((group) => (
+      {days.map((group) => (
         <section className="pn-day" key={group.key}>
           <h3 className="pn-day-head">{group.label}</h3>
+          {filter === "all" && group.complete ? <DayDigest rows={group.rows} /> : null}
           <ul className="pn-list">
-            {group.rows.map((row) => (
+            {group.visible.map((row) => (
               <NoteRow key={row.note.sha} {...row} />
             ))}
           </ul>
@@ -152,6 +158,30 @@ function DayGroups({ rows }: { rows: Row[] }) {
       ))}
     </>
   );
+}
+
+/** The overview above a busy day. It covers the operator-facing changes only, like the default list.
+ *  The last loaded day may continue on the next page, so it waits until that page is loaded. */
+function DayDigest({ rows }: { rows: Row[] }) {
+  const shas = useMemo(() => rows.filter(({ note }) => note.kind !== "internal").map(({ note }) => note.sha), [rows]);
+  const busy = shas.length >= DIGEST_MIN_CHANGES;
+  const key = busy ? digestKey(shas) : null;
+  const digest = usePatchNotes((s) => (key ? s.digests[key] : undefined));
+  const requestDigest = usePatchNotes((s) => s.requestDigest);
+
+  useEffect(() => {
+    if (busy) requestDigest(shas);
+  }, [busy, shas, requestDigest]);
+
+  if (!busy || !digest || digest.status === "failed") return null;
+  if (digest.status === "loading") {
+    return (
+      <p className="pn-digest loading" aria-busy="true">
+        Summarizing {shas.length} changes…
+      </p>
+    );
+  }
+  return <p className="pn-digest">{digest.summary}</p>;
 }
 
 function NoteRow({ note, isNew, notLive }: Row) {
