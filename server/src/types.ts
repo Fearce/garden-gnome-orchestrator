@@ -1580,6 +1580,9 @@ export interface RateLimitInfo {
    * provider-stated reset must win over a shorter, stale usage snapshot so routing never retries an
    * account before the provider said it would be available again. */
   resetSource?: "provider" | "fallback";
+  /** When the provider rejected, if that was not just now (a cap replayed from a recorded run). A
+   * reset-less fallback hold counts from here, so an old rejection cannot open a fresh hold at boot. */
+  rejectedAt?: number;
   rateLimitType?: "five_hour" | "seven_day" | "seven_day_opus" | "seven_day_sonnet" | "overage";
   utilization?: number;
 }

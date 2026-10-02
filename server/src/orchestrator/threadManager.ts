@@ -1609,6 +1609,7 @@ export class ThreadManager implements OrchestratorApi {
       status: "rejected",
       resetsAt: reset,
       resetSource: reset == null ? "fallback" : "provider",
+      rejectedAt: recordedAt,
     };
     if (accountLabel?.startsWith("codex:")) {
       // The label IS `codex:<model>`, so a dedicated pool's cap is latched to that pool rather than
@@ -5291,6 +5292,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const pool = pools ? poolForModel(pools, model) : undefined;
     if (!pool?.modelSlug) return false;
     const until = this.capResetUntil(info, [pool.fiveHourReset, pool.sevenDayReset], CODEX_CAP_COOLDOWN_MS);
+    if (until === undefined) return true;
     const held = this.poolCapUntil.get(pool.limitId);
     if (held == null || until > held) {
       this.poolCapUntil.set(pool.limitId, until);
@@ -5714,8 +5716,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   /** Latch Codex as usage-capped until its window resets, so implementors route to the Claude backend.
    *  Prefers the real reset epoch from the usage snapshot; falls back to a fixed cooldown when unknown. */
-  private capResetUntil(info: RateLimitInfo | undefined, observed: Array<number | null | undefined>, fallbackMs: number): number {
+  /** Undefined when a replayed reset-less rejection's fallback hold has already run out — latch nothing. */
+  private capResetUntil(info: RateLimitInfo | undefined, observed: Array<number | null | undefined>, fallbackMs: number): number | undefined {
     const now = Date.now();
+    const rejectedAt = Math.min(info?.rejectedAt ?? now, now);
+    const statedReset = info?.resetsAt != null && info.resetsAt > now;
+    if (!statedReset && rejectedAt + fallbackMs <= now) return undefined;
     // A provider's own future timestamp is the authority. In particular, do not shorten a plain-text
     // "try again at Sep 2" cap to an older 5h/weekly dashboard reset: that would route work straight
     // back to the provider before the provider said it was ready. The only non-authoritative timestamp
@@ -5724,7 +5730,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const snapshots = observed.filter((reset): reset is number => reset != null && reset > now);
     if (snapshots.length) return Math.min(...snapshots);
     if (info?.resetsAt != null && info.resetsAt > now) return info.resetsAt;
-    return now + fallbackMs;
+    return rejectedAt + fallbackMs;
   }
 
   /** The model the newest implementor run was actually dispatched with. Read from the run ROW, never
@@ -5745,11 +5751,13 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const now = Date.now();
     const u = readCodexUsage();
     const until = this.capResetUntil(info, [u?.fiveHourReset, u?.sevenDayReset], CODEX_CAP_COOLDOWN_MS);
+    if (until === undefined) return;
+    const rejectedAt = info?.rejectedAt ?? now;
     const providerStated = info?.resetsAt != null && info.resetsAt > now && info.resetSource !== "fallback";
     // Record every fresh rejection, including one that preserves a longer existing provider reset. A
     // later clean run can then prove that held reset stale, while an older historical success cannot.
-    this.codexCapRecordedAt = now;
-    this.db.kvSet(CODEX_CAP_RECORDED_AT_KV_KEY, String(now));
+    this.codexCapRecordedAt = rejectedAt;
+    this.db.kvSet(CODEX_CAP_RECORDED_AT_KV_KEY, String(rejectedAt));
     if (this.codexCapUntil && this.codexCapUntil >= until && (!providerStated || this.codexCapUntilProviderStated)) return;
     this.codexCapUntil = until;
     this.codexCapUntilProviderStated = providerStated;
@@ -5959,8 +5967,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // reopens it. See config.grok.entitlementCooldownMs.
     const fallbackMs = usage.creditAllowance === "none" ? config.grok.entitlementCooldownMs : config.grok.capCooldownMs;
     const until = this.capResetUntil(info, [usage.sevenDayReset], fallbackMs);
-    this.grokCapRecordedAt = now;
-    this.db.kvSet(GROK_CAP_RECORDED_AT_KV_KEY, String(now));
+    if (until === undefined) return;
+    const rejectedAt = info?.rejectedAt ?? now;
+    this.grokCapRecordedAt = rejectedAt;
+    this.db.kvSet(GROK_CAP_RECORDED_AT_KV_KEY, String(rejectedAt));
     if (this.grokCapUntil && this.grokCapUntil >= until) return; // already latched at least this long
     this.grokCapUntil = until;
     this.db.kvSet(GROK_CAP_KV_KEY, String(until));
@@ -6024,8 +6034,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // future). Preserve a rejected turn's stated reset too, so a transiently unavailable quota endpoint
     // cannot shorten the provider hold to an arbitrary cooldown.
     const until = this.capResetUntil(info, [u.fiveHourReset, u.sevenDayReset], config.zai.capCooldownMs);
-    this.zaiCapRecordedAt = now;
-    this.db.kvSet(ZAI_CAP_RECORDED_AT_KV_KEY, String(now));
+    if (until === undefined) return;
+    const rejectedAt = info?.rejectedAt ?? now;
+    this.zaiCapRecordedAt = rejectedAt;
+    this.db.kvSet(ZAI_CAP_RECORDED_AT_KV_KEY, String(rejectedAt));
     if (this.zaiCapUntil && this.zaiCapUntil >= until) return; // already latched at least this long
     this.zaiCapUntil = until;
     this.db.kvSet(ZAI_CAP_KV_KEY, String(until));

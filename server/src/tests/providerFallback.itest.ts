@@ -1347,6 +1347,48 @@ try {
   freeDb.raw.close();
   rmSync(freeRoot, { recursive: true, force: true });
 
+  // Regression (2026-10-02): a reset-less rejection's fallback hold runs from the REJECTION, not from
+  // boot. Anchored at boot, a three-week-old free-tier "try again later" re-latched Grok for a fresh 24h
+  // on every restart with no live latch — the chip read "retry in 4h 50m" while the CLI worked fine.
+  const oldRejectionRoot = mkdtempSync(join(tmpdir(), "provider-fallback-old-resetless-"));
+  const oldRejectionWorkspace = join(oldRejectionRoot, "workspace");
+  mkdirSync(oldRejectionWorkspace, { recursive: true });
+  const oldRejectionDb = new Db(join(oldRejectionRoot, "orchestrator.sqlite"));
+  const oldRejectionAt = Date.now() - 20 * 24 * 60 * 60_000;
+  const oldGrokThread = oldRejectionDb.createThread({ title: "Old free-tier Grok rejection", workspace: oldRejectionWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(oldRejectionDb, oldGrokThread, "grok:grok-4.6", "error", "You’ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, or try again later", true, oldRejectionAt);
+  const oldZaiThread = oldRejectionDb.createThread({ title: "Old z.ai capacity rejection", workspace: oldRejectionWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(oldRejectionDb, oldZaiThread, "zai", "error", "Selected model is at capacity. Please try a different model.", false, oldRejectionAt);
+  const oldCodexThread = oldRejectionDb.createThread({ title: "Old Codex capacity rejection", workspace: oldRejectionWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(oldRejectionDb, oldCodexThread, "codex:gpt-5.6-terra", "error", "Selected model is at capacity. Please try a different model.", false, oldRejectionAt);
+  noteGrokNoCreditAllowance("Free", Date.now());
+  const oldRejectionInternals = bootFixtureManager(oldRejectionDb, oldRejectionRoot);
+  check("a weeks-old reset-less Grok rejection does not re-latch on boot", oldRejectionInternals.grokCapUntil === undefined, String(oldRejectionInternals.grokCapUntil));
+  check("a weeks-old reset-less z.ai rejection does not re-latch on boot", oldRejectionInternals.zaiCapUntil === undefined, String(oldRejectionInternals.zaiCapUntil));
+  check("a weeks-old reset-less Codex rejection does not re-latch on boot", oldRejectionInternals.codexCapUntil === undefined, String(oldRejectionInternals.codexCapUntil));
+  check("the stale Grok latch is not persisted either", !oldRejectionDb.kvGet("grok_cap_until"), String(oldRejectionDb.kvGet("grok_cap_until")));
+  oldRejectionDb.raw.close();
+  rmSync(oldRejectionRoot, { recursive: true, force: true });
+
+  const recentRejectionRoot = mkdtempSync(join(tmpdir(), "provider-fallback-recent-resetless-"));
+  const recentRejectionWorkspace = join(recentRejectionRoot, "workspace");
+  mkdirSync(recentRejectionWorkspace, { recursive: true });
+  const recentRejectionDb = new Db(join(recentRejectionRoot, "orchestrator.sqlite"));
+  const recentRejectionAt = Date.now() - 20 * 60 * 60_000;
+  const recentGrokThread = recentRejectionDb.createThread({ title: "Recent free-tier Grok rejection", workspace: recentRejectionWorkspace, rawPrompt: "verify", brief: "verify" });
+  recordOutcome(recentRejectionDb, recentGrokThread, "grok:grok-4.6", "error", "You’ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, or try again later", true, recentRejectionAt);
+  const recentRejectionInternals = bootFixtureManager(recentRejectionDb, recentRejectionRoot);
+  const recentRemainingMs = recentRejectionInternals.grokCapUntil - Date.now();
+  check(
+    "a recent reset-less Grok rejection keeps only the rest of its hold, counted from the rejection",
+    recentRemainingMs > 3 * 60 * 60_000 && recentRemainingMs < 5 * 60 * 60_000,
+    `${Math.round(recentRemainingMs / 60_000)}min left`,
+  );
+  check("the restored hold records the rejection time, not boot", recentRejectionInternals.grokCapRecordedAt === recentRejectionAt, String(recentRejectionInternals.grokCapRecordedAt));
+  __grokUsageTestHooks.clearUnmetered();
+  recentRejectionDb.raw.close();
+  rmSync(recentRejectionRoot, { recursive: true, force: true });
+
   // A later model-capacity notice is not proof that an earlier provider-stated plan reset is stale.
   // Keep the authoritative date until a clean run succeeds after it.
   const preserveRoot = mkdtempSync(join(tmpdir(), "provider-fallback-preserve-reset-"));
