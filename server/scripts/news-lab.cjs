@@ -8,7 +8,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { loadChromium, authPassword, requireBuild, requireFreshWebBuild, boot, waitForPersisted, waitForSettingsReloadSafe, killInstance, createChecks, shotDir, isVoiceBridgeNoise } = require("./lab-harness.cjs");
+const { loadChromium, authPassword, requireBuild, requireFreshWebBuild, boot, waitForPersisted, killInstance, createChecks, shotDir, isVoiceBridgeNoise } = require("./lab-harness.cjs");
 
 const PORT = 4391;
 const check = createChecks();
@@ -73,6 +73,7 @@ async function waitForHello(page) {
     // ---- the panel: opening it is the dismissal ----
     await page.click(".news-chip");
     await page.waitForSelector(".news-panel", { timeout: 5000 });
+    check("opening immediately removes the announcement chip", (await page.$(".news-chip")) === null);
     const items = await page.$$eval(".news-item", (els) =>
       els.map((el) => ({ model: el.querySelector(".news-model")?.textContent, id: el.querySelector(".news-id")?.textContent, provider: el.querySelector(".news-provider")?.textContent })),
     );
@@ -91,17 +92,16 @@ async function waitForHello(page) {
     check("the footer speaks to the CLI auto-update", /auto-update|latest release/i.test(foot), foot);
     await page.screenshot({ path: path.join(shotDir(dataDir), "news-open.png") });
 
-    const stillListed = await waitForSettingsReloadSafe(dataDir, "highlight_news", "[]");
+    const stillListed = await waitForPersisted(dataDir, "highlight_news", "[]");
     check("opening dismissed both shown items server-side", stillListed === "[]", String(stillListed));
     check("...while the open panel keeps listing them", (await page.$$(".news-item")).length === 2);
     check("the panel has no dismiss controls left to click", (await page.$(".news-panel button")) === null);
     await page.keyboard.press("Escape");
     check("Escape closes the panel", (await page.$(".news-panel")) === null);
     await page.waitForSelector(".news-chip", { state: "detached", timeout: 10000 });
-    check("closing the opened panel takes the chip with it", (await page.$(".news-chip")) === null);
+    check("closing the opened panel leaves the chip gone", (await page.$(".news-chip")) === null);
     await page.reload({ timeout: 45000 });
     await waitForHello(page);
-    await page.waitForTimeout(1500);
     check("the chip stays gone across a reload (server-authoritative)", (await page.$(".news-chip")) === null);
 
     // ---- a different model announced later is still news ----
@@ -117,18 +117,28 @@ async function waitForHello(page) {
     await waitForHello(page);
     await page.waitForSelector(".news-chip", { timeout: 15000 });
     check("a newly announced model brings the chip back", (await chipText(page)) === "New model", await chipText(page));
-    await page.click(".news-chip");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.focus(".news-chip");
+    await page.keyboard.press("Enter");
     await page.waitForSelector(".news-panel", { timeout: 5000 });
+    check("keyboard opening also removes the chip immediately", (await page.$(".news-chip")) === null);
+    const mobileBox = await page.$eval(".news-panel", (el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: innerWidth, vh: innerHeight };
+    });
+    check("the details remain on-screen at phone width", mobileBox.left >= 0 && mobileBox.right <= mobileBox.vw && mobileBox.top >= 0 && mobileBox.bottom <= mobileBox.vh, JSON.stringify(mobileBox));
     const laterItems = await page.$$eval(".news-item .news-id", (els) => els.map((el) => el.textContent));
     check("...listing only the new one", laterItems.length === 1 && laterItems[0] === "claude-sonnet-6", JSON.stringify(laterItems));
-    await page.click(".news-chip");
+    await page.keyboard.press("Escape");
     await page.waitForSelector(".news-chip", { state: "detached", timeout: 10000 });
-    check("clicking the open chip again closes it and it is gone", (await page.$(".news-chip")) === null);
+    check("closing the later announcement leaves its chip gone", (await page.$(".news-chip")) === null);
+    await page.setViewportSize({ width: 1600, height: 950 });
 
     // ---- Settings: the toggle and the status ----
     await page.click(".settings-btn");
     await page.click('.settings-nav-item:has-text("Subscriptions")');
     await page.waitForSelector(".cli-updates", { timeout: 10000 });
+    check("opening Settings does not bring a seen announcement back", (await page.$(".news-chip")) === null);
     const toggle = await page.$('button[role="switch"][aria-label="Auto-update agent CLIs"]');
     check("Settings has the auto-update toggle, on by default", !!toggle && (await toggle.getAttribute("aria-checked")) === "true");
     const lines = await page.$$eval(".cli-update", (els) => els.map((el) => ({ state: el.querySelector(".cli-update-state")?.textContent, detail: el.querySelector(".cli-update-detail")?.textContent })));
