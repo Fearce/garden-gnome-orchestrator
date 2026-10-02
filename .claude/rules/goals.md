@@ -64,10 +64,17 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   task's step RUNNING, because GGO itself owes it an auto-resume in the same session. A new hold kind
   goes in those two functions, and `test:goal-continuation` (the real entry point, no paid model) must
   cover it; `goalSession.test.ts`'s fake host cannot prove the manager detects anything.
-- **Stops use evidence, never prose.** `noProgress`: no tool call → stop; a turn with progress
-  (`assessSessionProgress`: ≥3 novel tool calls, a new finding, or a git fingerprint change) always
-  continues, even under the same words; otherwise a repeated report digest, or `GOAL_IDLE_TURNS` idle turns,
-  stops it. `blockerStreak` never compares wording: only `moved` (repo change or new finding) restarts the
+- **Stops use evidence, never prose.** `noProgress` runs for `done` AND `review` turns: no tool call →
+  stop; a turn with progress (`assessSessionProgress`: ≥3 novel tool calls, a new finding, or a git
+  fingerprint change) resets the idle count and the wait backoff whatever status it ended on, and always
+  continues, even under the same words; otherwise a clean turn stops on a repeated report digest (the
+  WAITING/BLOCKED turns update the digest too, so "repeated" means the turn just before) or on
+  `GOAL_IDLE_TURNS` idle turns. `toolCalls == null` (Grok) never counts idle. An idle `WAITING` turn never
+  stops: `idleWaits` doubles the next check up to `GOAL_WAIT_BACKOFF_MAX_MS`. `noteUncleanTurn` retires a
+  carrier after `GOAL_UNCLEAN_TURNS` `review` turns running (in memory, like `retiredCarriers`). A
+  persistent goal's dispatch sets `skipSelfImprovement`, or that round's report replaces the status line.
+  `judgeAndAct` checks the carrier's pool (`runningProvider`: the latest run's account, not
+  `step.provider`) before the director call and again, on a fresh roster, after it. `blockerStreak` never compares wording: only `moved` (repo change or new finding) restarts the
   count. Both stop as `blocked`, an owner status apart from `paused`; Resume resets the streaks and sets
   `replan_at` so the next pass audits.
 - **Races the settle and judge must survive.** `sendTurn` stamps `turnStartedAt` from the clock BEFORE

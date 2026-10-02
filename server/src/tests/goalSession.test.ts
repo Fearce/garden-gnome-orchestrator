@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Db } from "../db/db.js";
 import { EventHub } from "../events.js";
-import { GOAL_BLOCKED_TURNS, GOAL_IDLE_TURNS, GoalRunner, describeGoal, type GoalContinuation, type GoalHost, type GoalTaskHold } from "../orchestrator/goals.js";
+import { GOAL_BLOCKED_TURNS, GOAL_IDLE_TURNS, GOAL_UNCLEAN_TURNS, GoalRunner, describeGoal, type GoalContinuation, type GoalHost, type GoalTaskHold } from "../orchestrator/goals.js";
 import { describeGoalUsage, summarizeRunUsage, type RunTokenRow } from "../orchestrator/goalUsage.js";
 import type { DispatchInput } from "../orchestrator/api.js";
 import type { ModelCandidate } from "../orchestrator/modelSelector.js";
@@ -528,6 +528,140 @@ async function races(): Promise<void> {
   check("a run the host creates during the send belongs to the new turn", h.continued.length === 1 && runs === 1);
 }
 
+async function uncleanTurns(): Promise<void> {
+  console.log("goal session: an unclean turn with no tool call stops");
+  let h = harness();
+  let g = await started(h);
+  await endTurn(h, g.thread, { report: "Lost the context.", state: "review" });
+  await h.runner.evaluate(g.id);
+  let goal = goalOf(h, g.id);
+  check("it blocks without asking the director", goal.status === "blocked" && /did not finish cleanly and made no tool call/.test(goal.statusReason ?? "") && h.judged.length === 1 && h.continued.length === 0);
+
+  console.log("goal session: a task that keeps ending unclean is not continued again");
+  h = harness();
+  g = await started(h);
+  h.answers.push(answer("continue", "Try again"));
+  await endTurn(h, g.thread, { report: "Half.", tools: novel(4), state: "review" });
+  await h.runner.evaluate(g.id);
+  check("one unclean turn: the director is asked, and the session goes on", h.judged.length === 2 && h.continued.length === 1 && h.dispatched.length === 1);
+  h.answers.push(answer("continue", "Start clean"));
+  await endTurn(h, g.thread, { report: "Half again.", tools: novel(4), state: "review" });
+  await h.runner.evaluate(g.id);
+  check(`${GOAL_UNCLEAN_TURNS} unclean turns running: the next step is a fresh task`, h.continued.length === 1 && h.dispatched.length === 2 && h.dispatched[1]!.title.includes("Start clean"));
+}
+
+async function waitingBackoff(): Promise<void> {
+  console.log("goal session: a long job's idle checks wait longer each time");
+  let h = harness();
+  let g = await started(h);
+  const minutes: number[] = [];
+  // The first two turns do new work (SAME is new the first time it appears); the five after them only poll.
+  for (let i = 0; i < 7; i++) {
+    await endTurn(h, g.thread, { report: "Still running.\nGOAL STATUS: WAITING — pid 4242 bench", tools: i === 0 ? novel(4) : SAME });
+    await h.runner.evaluate(g.id);
+    const goal = goalOf(h, g.id);
+    minutes.push(Math.round((goal.nextCheckAt! - h.clock.t) / 60_000));
+    h.clock.t = goal.nextCheckAt! + 1;
+    await h.runner.evaluate(g.id);
+  }
+  check(`the waits double and stop at an hour (${minutes.join(", ")} min)`, minutes.join() === [5, 5, 10, 20, 40, 60, 60].join());
+  check("an idle watch never stops the goal", goalOf(h, g.id).status === "active" && h.continued.length === 7 && h.judged.length === 1);
+  await endTurn(h, g.thread, { report: "Bench at 80%.\nGOAL STATUS: WAITING — pid 4242 bench", tools: novel(4) });
+  await h.runner.evaluate(g.id);
+  check("a check that finds new work resets the wait", goalOf(h, g.id).nextCheckAt! - h.clock.t === 5 * 60_000);
+
+  console.log("goal session: a WAITING turn that did new work clears the idle streak");
+  h = harness();
+  g = await started(h);
+  for (const i of [0, 1, 2]) {
+    await endTurn(h, g.thread, { report: `Checked again (${i}).\nGOAL STATUS: CONTINUE — a`, tools: SAME });
+    await h.runner.evaluate(g.id);
+  }
+  check("two idle turns counted", h.db.goalLoopState(g.id).idleStreak === 2);
+  await endTurn(h, g.thread, { report: "Started the benchmark as pid 7.\nGOAL STATUS: WAITING — pid 7", tools: novel(4) });
+  await h.runner.evaluate(g.id);
+  check("the WAITING turn's new work resets the count", h.db.goalLoopState(g.id).idleStreak === 0);
+  h.clock.t = goalOf(h, g.id).nextCheckAt! + 1;
+  await h.runner.evaluate(g.id);
+  await endTurn(h, g.thread, { report: "Checked again (3).\nGOAL STATUS: CONTINUE — a", tools: SAME });
+  await h.runner.evaluate(g.id);
+  check("so the next idle turn is the first of a new streak", goalOf(h, g.id).status === "active" && h.db.goalLoopState(g.id).idleStreak === 1);
+
+  console.log("goal session: a repeated report is compared with the turn just before");
+  h = harness();
+  g = await started(h);
+  const same = "Checked the queue.\nGOAL STATUS: CONTINUE — queue";
+  await endTurn(h, g.thread, { report: same, tools: SAME });
+  await h.runner.evaluate(g.id);
+  await endTurn(h, g.thread, { report: "Job running.\nGOAL STATUS: WAITING — job", tools: SAME });
+  await h.runner.evaluate(g.id);
+  h.clock.t = goalOf(h, g.id).nextCheckAt! + 1;
+  await h.runner.evaluate(g.id);
+  await endTurn(h, g.thread, { report: same, tools: SAME });
+  await h.runner.evaluate(g.id);
+  check("a report seen two turns ago is not a repeat", goalOf(h, g.id).status === "active");
+}
+
+async function carrierPolicy(): Promise<void> {
+  console.log("goal session: a persistent goal's task skips the self-improvement round");
+  let h = harness();
+  let g = await started(h);
+  check("its dispatch asks for no self-improvement round", h.dispatched[0]!.skipSelfImprovement === true);
+  const p = harness();
+  p.answers.push(answer("continue", "s1"));
+  p.runner.create({ title: "Fresh", objective: "o", workspace: process.cwd(), persistentSession: false });
+  await p.runner.idle();
+  check("a fresh-step goal keeps the round", p.dispatched[0]!.skipSelfImprovement === undefined);
+
+  console.log("goal session: a budgeted goal reads the backend a task actually ran on");
+  h = harness();
+  g = await started(h);
+  h.db.createRun({ threadId: g.thread, role: "implementor", model: "grok-5", account: "grok:grok-5" });
+  check("the budget is accepted (the step was dispatched on claude)", h.runner.update(g.id, { tokenBudget: 50_000 }).ok);
+  await h.runner.idle();
+  h.answers.push(answer("continue", "Metered"));
+  await endTurn(h, g.thread, { report: "Part 1.\nGOAL STATUS: CONTINUE — part 2", tools: novel(4) });
+  await h.runner.evaluate(g.id);
+  check("a task that failed over to Grok is not carried on", h.continued.length === 0 && h.dispatched.length === 2 && h.dispatched[1]!.requestedProvider === "claude");
+
+  console.log("goal session: a carrier whose pool is over pace waits without a director call");
+  h = harness();
+  g = await started(h);
+  h.roster = [{ ...ROSTER[0]!, weekly: { usedPct: 99, resetAt: h.clock.t + 6 * 86_400_000 } }, ROSTER[1]!];
+  await endTurn(h, g.thread, { report: "Half.", tools: novel(4), state: "review" });
+  await h.runner.evaluate(g.id);
+  const goal = goalOf(h, g.id);
+  check("no judgement, no fresh task on another pool", h.judged.length === 1 && h.dispatched.length === 1 && h.continued.length === 0);
+  check("the goal waits for the carrier's pool", goal.hold === "usage_limited" && goal.status === "active");
+
+  console.log("goal session: a carrier's pool that runs out while the director judges");
+  h = harness();
+  g = await started(h);
+  h.answers.push(answer("continue", "Fix the half"));
+  h.onJudge = () => {
+    h.onJudge = undefined;
+    h.roster = [{ ...ROSTER[0]!, weekly: { usedPct: 99, resetAt: h.clock.t + 6 * 86_400_000 } }, ROSTER[1]!];
+  };
+  await endTurn(h, g.thread, { report: "Half.", tools: novel(4), state: "review" });
+  await h.runner.evaluate(g.id);
+  check("the session's judgement is not handed to a fresh task on another pool", h.judged.length === 2 && h.dispatched.length === 1 && h.continued.length === 0 && goalOf(h, g.id).hold === "usage_limited");
+
+  console.log("goal session: a backend that reports no tool calls is not idle for it");
+  h = harness();
+  g = await started(h);
+  for (let i = 1; i <= GOAL_IDLE_TURNS + 1; i++) {
+    await tick();
+    h.db.createRun({ threadId: g.thread, role: "implementor", model: "grok-5", account: "grok:grok-5" });
+    await endTurn(h, g.thread, { report: `Grok turn ${i}.\nGOAL STATUS: CONTINUE — more` });
+    await h.runner.evaluate(g.id);
+  }
+  check(`${GOAL_IDLE_TURNS + 1} reworded Grok turns keep going`, goalOf(h, g.id).status === "active" && h.continued.length === GOAL_IDLE_TURNS + 1);
+  h.db.createRun({ threadId: g.thread, role: "implementor", model: "grok-5", account: "grok:grok-5" });
+  await endTurn(h, g.thread, { report: `Grok turn ${GOAL_IDLE_TURNS + 1}.\nGOAL STATUS: CONTINUE — more` });
+  await h.runner.evaluate(g.id);
+  check("but a repeated report still stops them", goalOf(h, g.id).status === "blocked" && /repeated the report/.test(goalOf(h, g.id).statusReason ?? ""));
+}
+
 function usageAccounting(): void {
   console.log("goal session: usage accounting");
   const base = 1_000_000;
@@ -578,6 +712,9 @@ async function main(): Promise<void> {
   await budgetMetering();
   await pinChange();
   await races();
+  await uncleanTurns();
+  await waitingBackoff();
+  await carrierPolicy();
   usageAccounting();
   existingGoals();
   if (failures) {

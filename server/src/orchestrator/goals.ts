@@ -8,7 +8,7 @@ import type { DispatchInput } from "./api.js";
 import type { ModelCandidate } from "./modelSelector.js";
 import { UNFINISHED_STATES } from "./scheduler.js";
 import { formatUntil } from "./capacityRouting.js";
-import { describeGoalUsage, UNMETERED_PROVIDER } from "./goalUsage.js";
+import { describeGoalUsage, providerOfRunAccount, UNMETERED_PROVIDER } from "./goalUsage.js";
 import { actionKey, assessSessionProgress } from "./continuationProgress.js";
 import {
   DEFAULT_GOAL_BURN_RATE_PCT,
@@ -29,6 +29,7 @@ import {
   type GoalVerdict,
   type ImplementorProvider,
   type Thread,
+  type ThreadState,
 } from "../types.js";
 
 /**
@@ -231,6 +232,10 @@ export function detectGoalComplete(report: string | null | undefined): boolean {
 export const GOAL_BLOCKED_TURNS = 3;
 /** Consecutive goal turns that did no new work that stop automatic continuation. */
 export const GOAL_IDLE_TURNS = 3;
+/** Consecutive turns of one task that end unclean (`review`) before the goal stops continuing it. */
+export const GOAL_UNCLEAN_TURNS = 2;
+/** The longest a goal waits between checks on a live job its turns keep reporting without new work. */
+export const GOAL_WAIT_BACKOFF_MAX_MS = 60 * 60_000;
 /** A turn's tool calls are compared with this many of the task's earlier ones to find what it tried anew. */
 const EARLIER_ACTIONS_COMPARED = 500;
 
@@ -753,6 +758,10 @@ export class GoalRunner {
   /** Step tasks that answered they can take no more turns, so the director plans a fresh task instead of
    *  being asked to continue them again. In memory: after a restart one more attempt just gets the same answer. */
   private readonly retiredCarriers = new Set<string>();
+  /** threadId → its consecutive unclean turns. In memory: a restart allows at most that many more. */
+  private readonly uncleanTurns = new Map<string, number>();
+  /** goalId → consecutive WAITING turns that did no new work, which stretch the wait before the next check. */
+  private readonly idleWaits = new Map<string, number>();
 
   constructor(
     private readonly db: Db,
@@ -1091,8 +1100,9 @@ export class GoalRunner {
       return "stopped";
     }
     const stop = evidence && turn
-      ? this.blockerStreak(goal, status, evidence) ?? (outcome === "done" ? this.noProgress(goal, step, turn, status, evidence) : null)
+      ? this.blockerStreak(goal, status, evidence) ?? (outcome === "done" || outcome === "review" ? this.noProgress(goal, step, turn, status, evidence, outcome) : null)
       : null;
+    if (evidence) this.noteUncleanTurn(goal, step, outcome);
     if (stop) {
       this.stopLoop(goal, "blocked", stop);
       return "stopped";
@@ -1146,23 +1156,34 @@ export class GoalRunner {
   }
 
   /**
-   * Why a clean turn of a persistent goal must not be followed automatically. A turn that made no tool call
-   * (where its backend reports them) stops at once. Otherwise the turn's evidence decides: a turn that did
-   * new work always continues, whatever its report says. One that did none stops when it also repeated the
-   * report of the turn before, or when it is the GOAL_IDLE_TURNS-th such turn running. A completion claim is
-   * left to the audit, a WAITING turn may sit on a live job, and a BLOCKED one is counted by `blockerStreak`.
+   * Why a turn of a persistent goal must not be followed automatically. Any turn that did new work resets the
+   * idle count, whatever it ended on. A turn that made no tool call (where its backend reports them) stops at
+   * once, clean or not. Otherwise a clean turn that did no new work stops when it also repeated the report of
+   * the turn before, or when it is the GOAL_IDLE_TURNS-th such turn running. A completion claim is left to the
+   * audit, a BLOCKED turn is counted by `blockerStreak`, an unclean one by `noteUncleanTurn`, and a WAITING one
+   * that did no new work stretches the wait before the next check instead of stopping a live job's watch.
    */
-  private noProgress(goal: Goal, step: GoalStep, turn: GoalTurnActivity, status: GoalStatusLine | null, evidence: TurnEvidence): string | null {
-    if (status?.kind === "complete") return null;
-    if (turn.toolCalls === 0) return `Step ${step.seq}'s last turn made no tool call, so automatic continuation is suppressed. Resume the goal to continue.`;
-    if (status?.kind === "waiting" || status?.kind === "blocked") return null;
+  private noProgress(goal: Goal, step: GoalStep, turn: GoalTurnActivity, status: GoalStatusLine | null, evidence: TurnEvidence, outcome: ThreadState): string | null {
     const digest = turn.report ? reportDigest(turn.report) : null;
     if (evidence.progressed) {
       this.db.updateGoal(goal.id, { lastTurnDigest: digest, idleStreak: 0 });
+      this.idleWaits.delete(goal.id);
+    }
+    if (status?.kind === "complete") return null;
+    if (turn.toolCalls === 0) {
+      const how = outcome === "review" ? "did not finish cleanly and made no tool call" : "made no tool call";
+      return `Step ${step.seq}'s last turn ${how}, so automatic continuation is suppressed. Resume the goal to continue.`;
+    }
+    if (evidence.progressed || outcome !== "done") return null;
+    if (status?.kind === "waiting" || status?.kind === "blocked") {
+      this.db.updateGoal(goal.id, { lastTurnDigest: digest });
+      if (status.kind === "waiting") this.idleWaits.set(goal.id, (this.idleWaits.get(goal.id) ?? 0) + 1);
       return null;
     }
     const { lastTurnDigest, idleStreak } = this.db.goalLoopState(goal.id);
-    const idle = idleStreak + 1;
+    // A backend that reports no tool calls cannot show investigative work, so only the report and the
+    // repository speak for its turns: they never count as idle, but a repeated report still stops them.
+    const idle = turn.toolCalls == null ? idleStreak : idleStreak + 1;
     this.db.updateGoal(goal.id, { lastTurnDigest: digest, idleStreak: idle });
     const nothingNew = "no repository change, no new finding and nothing new tried";
     if (digest != null && digest === lastTurnDigest) {
@@ -1172,6 +1193,27 @@ export class GoalRunner {
       return `The last ${idle} turns did no new work (${nothingNew}), so automatic continuation is suppressed. Resume the goal to continue.`;
     }
     return null;
+  }
+
+  /**
+   * Counts a task's consecutive unclean turns. A session that keeps failing to finish a turn (a context it
+   * can no longer resume, a provider error) is not continued again after GOAL_UNCLEAN_TURNS: the next step
+   * is a fresh task, which the failed-step guard then bounds like any other.
+   */
+  private noteUncleanTurn(goal: Goal, step: GoalStep, outcome: ThreadState | null): void {
+    const threadId = step.threadId!;
+    if (outcome !== "review") {
+      this.uncleanTurns.delete(threadId);
+      return;
+    }
+    const count = (this.uncleanTurns.get(threadId) ?? 0) + 1;
+    if (count < GOAL_UNCLEAN_TURNS) {
+      this.uncleanTurns.set(threadId, count);
+      return;
+    }
+    this.uncleanTurns.delete(threadId);
+    this.retiredCarriers.add(threadId);
+    this.hub.log("info", `Goal "${goal.title}": step ${step.seq}'s task ended ${count} turns running without finishing cleanly; the next step is a fresh task.`);
   }
 
   /** Whether this goal continues its task's own session between turns instead of dispatching fresh steps. */
@@ -1189,6 +1231,9 @@ export class GoalRunner {
     const burn = checkBurnRate(goal, available, this.now());
     if (burn.hold) return this.wait(goal, burn.hold.reason, burn.hold.until, "usage_limited");
     const carrier = running.length ? null : this.carrier(goal, settled);
+    // The next turn goes into the carrier's session, on its pool: wait for that pool before asking the director.
+    const carrierHeld = carrier ? this.turnCapacity(goal, carrier, available) : null;
+    if (carrierHeld) return this.wait(goal, carrierHeld.reason, carrierHeld.until, "usage_limited");
 
     const prompt = buildGoalJudgePrompt({
       goal,
@@ -1237,7 +1282,11 @@ export class GoalRunner {
     if (judgement.verdict === "complete" && agentClaimed) return this.achieve(fresh, judgement.reason);
     const verification = judgement.verdict === "complete";
     const latest = this.db.getGoal(goalId)!;
-    if (carrier && !this.turnCapacity(latest, carrier, available)) {
+    if (carrier) {
+      // The judgement was written for this session, so a pool that ran out meanwhile means waiting for it,
+      // not handing a continuation's brief to a fresh task.
+      const capacity = this.turnCapacity(latest, carrier, this.host.roster());
+      if (capacity) return this.wait(latest, capacity.reason, capacity.until, "usage_limited");
       const message = goalContinuationMessage(latest, carrier, null, { judgement, verification, auditRejected: agentClaimed });
       if (this.sendTurn(latest, carrier, message)) return;
     }
@@ -1257,7 +1306,12 @@ export class GoalRunner {
     if (replanAt != null && replanAt >= carrier.turnStartedAt) return false;
     const last = readGoalStatusLine(this.db.goalTurnActivity(carrier.threadId!, carrier.turnStartedAt).report);
     if (last?.kind === "waiting" && goal.nextCheckAt == null) {
-      this.wait(goal, `Waiting on a live job the last turn reported${last.detail ? `: ${clip(last.detail, 300)}` : ""}. The goal continues in the same session at the next check.`);
+      // Each check that found the job still running and nothing new doubles the wait, so a long job's watch
+      // costs a turn an hour at most instead of a turn every few minutes.
+      const idle = this.idleWaits.get(goal.id) ?? 0;
+      const delay = Math.min(this.retryMs() * 2 ** idle, GOAL_WAIT_BACKOFF_MAX_MS);
+      const stretched = idle ? ` ${idle} check${idle === 1 ? "" : "s"} running found no new work, so the next one waits longer.` : "";
+      this.wait(goal, `Waiting on a live job the last turn reported${last.detail ? `: ${clip(last.detail, 300)}` : ""}. The goal continues in the same session at the next check.${stretched}`, this.now() + delay);
       return true;
     }
     const capacity = this.turnCapacity(goal, carrier, this.host.roster());
@@ -1277,9 +1331,16 @@ export class GoalRunner {
     if (!this.persistent(goal)) return null;
     const last = settled.at(-1);
     if (!last?.threadId || (last.outcome !== "done" && last.outcome !== "review") || this.retiredCarriers.has(last.threadId)) return null;
-    if (goal.tokenBudget != null && last.provider === UNMETERED_PROVIDER) return null;
+    if (goal.tokenBudget != null && this.runningProvider(last) === UNMETERED_PROVIDER) return null;
     const { pinChangedAt } = this.db.goalLoopState(goal.id);
     return pinChangedAt != null && pinChangedAt >= last.createdAt ? null : last;
+  }
+
+  /** The backend a step's session actually runs on: its latest implementor run's, since an auto-routed step
+   *  records no provider and a failed-over one left the pool it was dispatched to. */
+  private runningProvider(step: GoalStep): ImplementorProvider | null {
+    const run = this.db.listRuns(step.threadId!).filter((r) => r.role === "implementor").at(-1);
+    return run ? providerOfRunAccount(run.account) : step.provider;
   }
 
   /** Why a persistent goal asks the director now instead of continuing on its own, for the judge prompt. */
@@ -1383,6 +1444,9 @@ export class GoalRunner {
       rationale,
       brief: judgement.next.brief,
     });
+    // A new task's turns are judged against each other, not against the session it replaces.
+    this.db.updateGoal(goal.id, { idleStreak: 0, lastTurnDigest: null });
+    this.idleWaits.delete(goal.id);
     try {
       const threadId = await this.host.dispatch({
         title: stepTitle(goal, step.seq, step.title),
@@ -1392,6 +1456,8 @@ export class GoalRunner {
         requestedModel: pin.model,
         requestedProvider: pin.provider,
         skipQa: true,
+        // A self-improvement round after each turn would replace the report the goal reads its status from.
+        ...(this.persistent(goal) ? { skipSelfImprovement: true as const } : {}),
       });
       this.db.updateGoalStep(step.id, { threadId });
       this.db.updateGoal(goal.id, { currentThreadId: threadId, hold: null });

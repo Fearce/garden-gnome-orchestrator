@@ -54,9 +54,21 @@ that does not make cached inference free.
 - **No spinning.** A turn with no tool call stops automatic continuation. Progress is evidence, never
   prose: at least 3 tool calls the task never made before, a new finding, or a changed git state (the same
   test auto-continue uses). A repeated report with no new work stops it, and so do 3 idle turns running.
-  The same `BLOCKED` impasse three turns running stops the goal as `blocked`. Only a repository change or a
-  new finding starts a new count; rewording does not. `WAITING` defers one check at no cost, and a timeout
-  while reading a live job is not a reason to restart it.
+  Any turn that did new work resets that count, whatever status it ended on, and a repeat is judged
+  against the turn just before. Grok reports no tool calls, so its turns are never counted idle; a repeated
+  report still stops them. The same `BLOCKED` impasse three turns running stops the goal as `blocked`. Only
+  a repository change or a new finding starts a new count; rewording does not. `WAITING` defers one check
+  at no cost; each check that finds the job still running and nothing new doubles the next wait (5, 10,
+  20, 40 minutes, then hourly), so a long job's watch never stops the goal but costs at most a turn an
+  hour. A timeout while reading a live job is not a reason to restart it.
+- **Unclean turns are bounded too.** A `review` turn with no tool call stops the goal as `blocked`. After
+  2 unclean turns running, the task is not continued again: the next step is a fresh task, which the
+  failed-step guard bounds like any other. A persistent goal's tasks skip the self-improvement round,
+  which would otherwise replace the report the goal reads its status line from.
+- **The carrier's pool, not any pool.** The next turn runs in the carrier's session on the backend its
+  latest run actually used (a failed-over task left its dispatch pool). When that pool is over pace the
+  goal waits as `usage_limited` before calling the director, and a pool that runs out during the call
+  means waiting, never handing the session's judgement to a fresh task elsewhere.
 - **Optional token budget**, unset by default. It counts step-task run usage (fresh input plus output,
   cache reads apart) from the goal's recorded `usage_since` baseline, and is checked between turns, so a
   running turn can exceed it. Director judgements are outside the meter. A spent budget stops the goal as
