@@ -22,6 +22,8 @@ const BETA = 'ggo:beta-gnomes';
 
 /** Flip a browser-local flag the way another tab would, so the storage listener is what reacts. */
 const setFlag = (page, key, on) => page.evaluate(([k, v]) => { localStorage.setItem(k, v); window.dispatchEvent(new StorageEvent('storage', { key: k })); }, [key, on ? '1' : '0']);
+// The stop-motion clock re-seeks every loop a few times a second; holding it keeps a test seek in place until it is read.
+const holdClock = (page, hold) => page.locator('.beta-workshop').evaluate((el, h) => { el.dataset.paused = String(h); }, hold);
 const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
 
 (async () => {
@@ -123,6 +125,7 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     await page.locator('.topbar').screenshot({ path: path.join(output, 'classic-workshop-desktop.png') });
 
     // Real travel and a rendezvous on the shared timeline, plus the SD walk, breath and bench work.
+    await holdClock(page, true);
     await page.locator('.beta-workshop').evaluate((el) => {
       window.classicTimelines = el.getAnimations({ subtree: true }).map((animation) => ({ animation, time: animation.currentTime }));
     });
@@ -174,6 +177,7 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     await atPhase(0.14);
     await page.locator('.topbar').screenshot({ path: path.join(output, 'classic-workshop-walking.png') });
     await page.evaluate(() => { for (const { animation, time } of window.classicTimelines) animation.currentTime = time; delete window.classicTimelines; });
+    await holdClock(page, false);
 
     // Seats still route to their rooms; the roster lists everyone in the classic art.
     await page.getByRole('button', { name: /Show all .* workshop gnomes/ }).click();
@@ -223,8 +227,10 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
         const names = await bench.evaluate((el) => el.getAnimations({ subtree: true }).map((a) => a.animationName));
         assert(names.includes(benchMotion[expected]), `${expected} bench moves with ${benchMotion[expected]} (${names.join(', ')})`);
       }
+      await holdClock(page, true);
       await page.locator('.beta-workshop').evaluate((el) => { for (const a of el.getAnimations({ subtree: true })) { const t = a.effect.getTiming(); if (Number(t.duration) === 12000) { let c = t.delay + 12000 * 0.9; while (c < 0) c += 12000; a.currentTime = c; } } });
       await page.locator(`.beta-workstation[data-agent-id="${solo[0].id}"]`).screenshot({ path: path.join(output, `classic-bench-${role}.png`) });
+      await holdClock(page, false);
     }
     await page.locator('.beta-workstation[data-agent-id="director"]').screenshot({ path: path.join(output, 'classic-bench-director.png') });
     // An idle director rests like its beta self, in SD furniture: a chair at first, the bed after eight hours off duty.

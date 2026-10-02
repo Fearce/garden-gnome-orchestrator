@@ -232,6 +232,7 @@
     "test:themes": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/themes.test.tsx",
     "test:fonts": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/fonts.test.tsx",
     "test:gnome-skins": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/gnome-skins.test.tsx",
+    "test:workshop-stage": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/workshop-stage.test.ts",
     "test:screensaver": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/screensaver.test.tsx",
     "test:lab-contexts": "node scripts/lab-contexts.test.cjs",
     "test:model-pin-probe": "node scripts/model-pin-reading.test.cjs",

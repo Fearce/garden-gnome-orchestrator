@@ -20,6 +20,7 @@ interface Worker {
   model: string; // drives the walker's pacing tempo — a more capable model struts a quicker lap
   title: string;
   workspace: string;
+  startedAt: number;
 }
 
 /** A stale cap marker on a hidden subtask must not make its completed project look active again. */
@@ -283,7 +284,7 @@ export function Office() {
     for (const r of [...runs].sort((a, b) => a.startedAt - b.startedAt)) {
       const t = threads[r.threadId];
       if (!t) continue;
-      perThread.set(r.threadId, { runId: r.id, threadId: r.threadId, role: r.role, model: r.model, title: t.title, workspace: homeWorkspace(t) });
+      perThread.set(r.threadId, { runId: r.id, threadId: r.threadId, role: r.role, model: r.model, title: t.title, workspace: homeWorkspace(t), startedAt: r.startedAt });
     }
     const byRepo = new Map<string, Worker[]>();
     for (const w of perThread.values()) {
@@ -455,7 +456,7 @@ export function Office() {
   }, ...groups.flatMap((group) => group.workers.map((worker) => ({
     id: worker.threadId, role: worker.role, name: nameOf(worker.threadId, worker.role),
     room: repoRoom(worker.workspace), task: worker.title, group: group.workspace, active: true,
-    runId: worker.runId, threadId: worker.threadId,
+    runId: worker.runId, threadId: worker.threadId, since: worker.startedAt,
   }))), ...(onlineOffice.state === "online" ? onlineOffice.remoteAgents.map((agent) => {
     const sharedGroup = groups.find((group) => group.remotes.some((remote) => remote.instanceId === agent.instanceId && remote.key === agent.key));
     return { id: `${agent.instanceId}:${agent.key}`, role: roleOf(agent.role), name: agent.name,

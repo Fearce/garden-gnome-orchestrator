@@ -63,13 +63,32 @@ export const useOldGnomesBeta = oldGnomesBeta.use;
 // per-character timers, or React updates while the gnomes move.
 let observer: IntersectionObserver | undefined;
 const visible = new Map<HTMLElement, boolean>();
+
+/** Gnome loops play as stop-motion: their CSS animations stay paused (`data-motion-clock`) and one
+ *  shared clock seeks them this many times a second. Even composited, 60fps loops on a crowd cost the
+ *  main thread every frame; the owner wants a light console over smooth gnomes. Seeking re-styles only
+ *  the animated elements, where an inherited clock property would re-style the whole cast. */
+export const GNOME_MOTION_FPS = 5;
+let clock: number | undefined;
+const clockOrigin = typeof performance === "undefined" ? 0 : performance.now();
+function advanceGnomes() {
+  const now = Math.round(performance.now() - clockOrigin);
+  for (const element of visible.keys()) {
+    if (element.dataset.paused === "true" || element.dataset.motionPaused === "true" || element.parentElement?.closest("[data-motion-clock]")) continue;
+    for (const animation of element.getAnimations({ subtree: true })) if (animation instanceof CSSAnimation) animation.currentTime = now;
+  }
+}
 function applyPause(element: HTMLElement, onScreen: boolean) {
   element.dataset.paused = String(!onScreen || document.visibilityState === "hidden");
 }
 function visibilityChanged() { for (const [element, onScreen] of visible) applyPause(element, onScreen); }
 export function observeGnomeMotion(element: HTMLElement) {
-  if (!visible.size) document.addEventListener("visibilitychange", visibilityChanged);
+  if (!visible.size) {
+    document.addEventListener("visibilitychange", visibilityChanged);
+    clock = window.setInterval(advanceGnomes, 1000 / GNOME_MOTION_FPS);
+  }
   visible.set(element, true);
+  element.dataset.motionClock = "";
   applyPause(element, true);
   if (typeof IntersectionObserver !== "undefined") {
     observer ??= new IntersectionObserver((entries) => {
@@ -85,10 +104,13 @@ export function observeGnomeMotion(element: HTMLElement) {
   return () => {
     observer?.unobserve(element);
     visible.delete(element);
+    delete element.dataset.motionClock;
     if (!visible.size) {
       observer?.disconnect();
       observer = undefined;
       document.removeEventListener("visibilitychange", visibilityChanged);
+      window.clearInterval(clock);
+      clock = undefined;
     }
   };
 }

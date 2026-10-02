@@ -212,6 +212,7 @@ const GATES = [
   "test:themes",
   "test:fonts",
   "test:gnome-skins",
+  "test:workshop-stage",
   "test:screensaver",
   "test:git-console-ui",
   "test:lazy-chunks-ui",
