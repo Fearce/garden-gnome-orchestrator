@@ -13573,10 +13573,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return null;
   }
 
-  /** The git state of a goal step task's workspace, so the goal can tell a turn that changed it. */
+  /** The git state of the checkout holding a goal step task's work (a worktree it claimed, else its
+   *  workspace), so the goal can tell a turn that changed it. */
   async goalWorkspaceFingerprint(threadId: string): Promise<string | null> {
     const thread = this.db.getThread(threadId);
-    return thread ? workspaceGitFingerprint(thread.workspace) : null;
+    return thread ? workspaceGitFingerprint(taskWorkCheckout(thread).workspace) : null;
   }
 
   private goalTaskBusy(threadId: string): boolean {

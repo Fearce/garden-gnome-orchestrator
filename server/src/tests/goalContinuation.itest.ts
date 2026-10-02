@@ -16,7 +16,8 @@ process.env.CAP_RETRY_MS = "0";
 process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
 
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
@@ -294,6 +295,31 @@ console.log("\n=== F. a task that cannot take a turn asks for a fresh one ===");
   const gone = h.mgr.continueGoalTask("no-such-thread", MESSAGE);
   check("a task that no longer exists", !gone.ok && "fresh" in gone);
   h.dispose();
+}
+
+console.log("\n=== G. a turn's git evidence is read where the task works ===");
+{
+  const h = makeHarness();
+  const dir = mkdtempSync(join(tmpdir(), "goal-continuation-git-"));
+  const main = join(dir, "repo");
+  const worktree = join(dir, "repo.worktrees", "step");
+  for (const repo of [main, worktree]) {
+    mkdirSync(repo, { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    writeFileSync(join(repo, "a.txt"), "a");
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "add", "."], { cwd: repo });
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"], { cwd: repo });
+  }
+  h.db.setThreadWorktrees(h.thread.id, main, [{ repo: main, path: worktree, branch: "ggo/step", base: "master", baseSha: "x", createdAt: Date.now() }]);
+  const before = await h.mgr.goalWorkspaceFingerprint(h.thread.id);
+  writeFileSync(join(main, "a.txt"), "main changed");
+  const mainOnly = await h.mgr.goalWorkspaceFingerprint(h.thread.id);
+  writeFileSync(join(worktree, "a.txt"), "worktree changed");
+  const afterWork = await h.mgr.goalWorkspaceFingerprint(h.thread.id);
+  check("a change in the main checkout is not the task's work", before != null && mainOnly === before);
+  check("a change in its claimed worktree is", afterWork != null && afterWork !== before);
+  h.dispose();
+  rmSync(dir, { recursive: true, force: true });
 }
 
 console.log(`\n=== ${passed}/${passed + failed} checks passed ===`);
