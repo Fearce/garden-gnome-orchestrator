@@ -170,7 +170,7 @@ import { config, fallbackModelFor } from "../config.js";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { childRepos, containingRepoRoot, createTaskWorktree, discoverTaskWorktrees, enclosingRepoSync, isLinkedWorktree, isWithin, mainCheckoutOf, mapIntoWorktree, restoreTaskWorktree, retireTaskWorktree } from "./taskWorktree.js";
+import { childRepos, containingRepoRoot, createTaskWorktree, discoverTaskWorktrees, enclosingRepoSync, isLinkedWorktree, mainCheckoutOf, mapIntoWorktree, restoreTaskWorktree, retireTaskWorktree, taskWorkCheckout } from "./taskWorktree.js";
 import { worktreeBriefing } from "./worktreeBriefing.js";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import { coworkContentWithAttachments } from "../coworkAttachments.js";
@@ -6872,6 +6872,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (updated) this.hub.publish({ type: "thread.upsert", thread: updated });
   }
 
+  /** The checkout holding the task's work, read fresh: an agent can claim a worktree mid-run. */
+  private workCheckoutOf(thread: Thread): string {
+    return taskWorkCheckout(this.db.getThread(thread.id) ?? thread).workspace;
+  }
+
   /** The main checkouts a task may claim worktrees in: an umbrella's child repos, a guided task's one repo. */
   private async claimableRepos(thread: Thread): Promise<string[]> {
     const mode = this.db.getThreadStageOutputs(thread.id).workspaceMode;
@@ -9713,7 +9718,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // call, and every stop()/provider read below has to address the live child. Tracking the argument
     // instead is what let a turn-ceiling resume spawn a second agent onto the same workspace while the
     // real one kept committing.
-    let gitBefore = await workspaceGitFingerprint(thread.workspace);
+    let gitBefore = await workspaceGitFingerprint(this.workCheckoutOf(thread));
     let turn = await this.awaitImplementorResult(thread, effort, kickoff, run, accountId, useNext, continueMsg);
     let res = turn.res;
     let current = turn.run;
@@ -9738,7 +9743,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (wrapUp && !this.isTurnLimitStop(res) && !silent) break;
       const session = this.lastImplementorSession.get(thread.id) ?? this.latestImplementorSession(thread.id);
       if (!session) break; // no session to resume from — fall through to the QA/review handling
-      const gitAfter = await workspaceGitFingerprint(thread.workspace);
+      const gitAfter = await workspaceGitFingerprint(this.workCheckoutOf(thread));
       const progress = assessSessionProgress(
         this.db.roleActivitySince(thread.id, "implementor", attemptFrom),
         history.union(),
@@ -9801,7 +9806,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (!start) break; // cancelled while compressing the prior session
       this.flushDirectorNotes(thread.id, start.run);
       attemptFrom = this.attemptStart(thread.id);
-      gitBefore = await workspaceGitFingerprint(thread.workspace);
+      gitBefore = await workspaceGitFingerprint(this.workCheckoutOf(thread));
       turn = await this.awaitImplementorResult(thread, effort, kickoff, start.run, start.accountId, false, nudge);
       res = turn.res;
       current = turn.run;
@@ -10842,7 +10847,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Compress the prior session locally (free static strip + cheap Haiku summary) rather than
     // reloading it. Runs alongside the git read; tolerates failure (→ plan + git only).
     const [progress, handoff] = await Promise.all([
-      buildGitProgressBlock(thread.workspace),
+      buildGitProgressBlock(this.workCheckoutOf(thread)),
       sessionId
         ? // auxToken() is a read-only token grab — it must NOT run the dispatch selector (which would
           // bump round-robin state and flicker the "active account" badge for a non-dispatch).
@@ -15794,7 +15799,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const how = cli
       ? "create your own worktree with the `git worktree add` command in your brief's \"Branch & worktree\" section"
       : "call `task_worktree` with this repository and a short `name` for your work";
-    return `To keep out of each other's way, if you have not edited anything yet, ${how} before your first edit, and do every edit, build and commit there. If you already have uncommitted edits in this checkout, stay and commit only your own hunks.`;
+    return `To keep out of each other's way, if you have not edited anything yet, ${how} before your first edit, and do every edit, build and commit there. If you already have uncommitted edits in this checkout, or your brief or ${config.ownerName} named the branch to work on, stay and commit only your own hunks.`;
   }
 
   /** The task (or, for a sub-task, its parent) has a worktree of its own: made at start by the retired
@@ -16064,7 +16069,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const t = this.db.getThread(threadId);
     if (!t) return { isRepo: false, repoRoot: null, branch: null, detached: false, branches: [], upstreamRef: null, pushRef: null, behind: 0, unpushed: 0, isCommitOnly: false, pushState: "no-remote", hasUncommitted: false, files: [], commits: [], hasDiffAnchor: false, error: "No such task." };
     const taskFiles = collectTaskWrittenFiles(this.db, t);
-    const view = changesCheckout(t);
+    const view = taskWorkCheckout(t);
     return getTaskGitStatus(view.workspace, { threadId, baselineHead: view.baselineHead, taskFiles });
   }
 
@@ -16072,7 +16077,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const t = this.db.getThread(threadId);
     if (!t) return { isRepo: false, fileCount: 0, added: 0, removed: 0, commitCount: 0, branch: null, unpushed: 0, isCommitOnly: false, pushState: "no-remote" };
     const taskFiles = collectTaskWrittenFiles(this.db, t);
-    const view = changesCheckout(t);
+    const view = taskWorkCheckout(t);
     return getTaskGitSummary(view.workspace, { threadId, baselineHead: view.baselineHead, taskFiles });
   }
 
@@ -16082,17 +16087,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // device — which would render a file OUTSIDE the repo as one big addition. Confine it to a
     // repo-relative path here rather than trusting the caller to only ask for files it listed.
     if (!t || !validRepoPath(path)) return { path, binary: false, patch: "", truncated: false };
-    const view = changesCheckout(t);
+    const view = taskWorkCheckout(t);
     return getFileDiff(view.workspace, path, view.baselineHead);
   }
-}
-
-/** Where a task's Changes view reads: the worktree it claimed for the repo it was dispatched into (a
- *  guided task keeps running in the main checkout, but its work is on the claimed branch), else its own
- *  workspace. */
-export function changesCheckout(t: Thread): { workspace: string; baselineHead: string | null } {
-  const claimed = (t.worktrees ?? []).find((w) => !isWithin(t.workspace, w.path) && isWithin(t.workspace, w.repo));
-  return claimed ? { workspace: mapIntoWorktree(t.workspace, claimed), baselineHead: claimed.baseSha } : { workspace: t.workspace, baselineHead: t.baselineHead ?? null };
 }
 
 /** The researcher's structured brief as markdown, folded into the implementor's kickoff (the

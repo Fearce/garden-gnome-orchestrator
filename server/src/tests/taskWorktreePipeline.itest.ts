@@ -44,8 +44,8 @@ import type { Thread } from "../types.js";
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
-const { ThreadManager, changesCheckout } = await import("../orchestrator/threadManager.js");
-const { retireTaskWorktree, worktreesHome } = await import("../orchestrator/taskWorktree.js");
+const { ThreadManager } = await import("../orchestrator/threadManager.js");
+const { retireTaskWorktree, taskWorkCheckout, worktreesHome } = await import("../orchestrator/taskWorktree.js");
 const { resolveTaskDeliverable } = await import("../orchestrator/deliverablePath.js");
 
 let passed = 0;
@@ -182,7 +182,7 @@ try {
   const claimed = section(fresh(task.id));
   check("later kickoffs name the claimed worktree and its integration", !!wt && claimed.includes(wt.path) && claimed.includes(wt.branch) && claimed.includes("--ff-only"), claimed);
   check("...and say the session may start in the main checkout", claimed.includes(`main checkout \`${repo}\``));
-  const view = changesCheckout(fresh(task.id));
+  const view = taskWorkCheckout(fresh(task.id));
   check("the Changes view reads the claimed worktree", !!wt && view.workspace === wt.path, view.workspace);
   check("...diffed from the branch's start", !!wt && view.baselineHead === wt.baseSha);
   writeFileSync(join(wt!.path, "report.md"), "# report\n");
@@ -211,7 +211,7 @@ try {
   check("stays in the subfolder, guided", sub.workspace === join(repo, "web") && mode(sub.id) === "guided");
   check("its kickoff names the repo root, not the subfolder", section(fresh(sub.id)).includes(`git -C "${repo}" worktree add`), section(fresh(sub.id)));
   const subClaim = await mgr.claimTaskWorktree(sub.id, { repo: join(repo, "web"), name: "web only" });
-  check("the Changes view maps into the claimed worktree's web", subClaim.ok && changesCheckout(fresh(sub.id)).workspace === join(subClaim.worktree.path, "web"), subClaim.ok ? changesCheckout(fresh(sub.id)).workspace : subClaim.error);
+  check("the Changes view maps into the claimed worktree's web", subClaim.ok && taskWorkCheckout(fresh(sub.id)).workspace === join(subClaim.worktree.path, "web"), subClaim.ok ? taskWorkCheckout(fresh(sub.id)).workspace : subClaim.error);
 
   console.log("C. tasks that hear no guidance");
   const child = await prepare(dispatch(repo, "Helper", { parentId: task.id }));
@@ -307,6 +307,7 @@ try {
   console.log("H. office advice");
   const advice = internals.worktreeAdvice(unclaimedParent, false) as string | null;
   check("an unclaimed guided task is told to claim a worktree", !!advice && advice.includes("task_worktree"), advice ?? "null");
+  check("...unless its brief or the owner named the branch", !!advice && /named the branch to work on, stay/.test(advice));
   const cliAdvice = internals.worktreeAdvice(unclaimedParent, true) as string | null;
   check("...a CLI agent through the git command in its brief", !!cliAdvice && cliAdvice.includes("git worktree add") && !cliAdvice.includes("task_worktree"));
   check("a task that claimed one hears nothing", internals.worktreeAdvice(fresh(second.id), false) === null);

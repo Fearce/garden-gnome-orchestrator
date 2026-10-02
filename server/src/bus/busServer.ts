@@ -222,7 +222,7 @@ Post at most one or two per task, at the END, once the thing is actually there t
 
   const taskWorktree = tool(
     "task_worktree",
-    "Get THIS task's own git worktree and branch for one repository inside your workspace, creating it on the first call. Call it before changing a repository when your workspace is a folder holding several repos, or when other agents work in the same repository (your brief's OFFICE section or a \"teammate just joined\" message tells you); do every edit, build and commit for that repo in the returned folder, never in its main checkout. Calling it again for the same repo returns the same worktree.",
+    "Get THIS task's own git worktree and branch for one repository inside your workspace, creating it on the first call. Call it before changing a repository when your workspace is a folder holding several repos, or when other agents work in the same repository (your brief's OFFICE section or a \"teammate just joined\" message tells you); do every edit, build and commit for that repo in the returned folder, never in its main checkout. Calling it again for the same repo returns the same worktree. Skip it when your brief or the owner named the branch to work on and a checkout already has that branch: work there.",
     {
       repo: z.string().min(1).describe("The repository's path — absolute, or relative to your workspace."),
       branch: z.string().min(1).optional().describe("An existing branch to continue instead of a new task branch. Omit for a fresh `ggo/…` branch cut from the repo's current branch."),

@@ -3,6 +3,7 @@ import { lstat, realpath } from "node:fs/promises";
 import type { Db } from "../db/db.js";
 import type { IdeService } from "../ide/service.js";
 import { getRepoHeadState, gitCacheGeneration, resolveRepoRoot, type PushState, type RepoHeadState } from "../gitService.js";
+import { taskWorkCheckout } from "./taskWorktree.js";
 
 // One resolved answer to "where does this work live, and how do I get into it" — the single seam the
 // console's contextual navigation runs on. Everything here already exists somewhere (a thread's
@@ -224,7 +225,10 @@ export class CodeContextService {
    *  registry the IDE enforces). Without that check this command is a "stat any directory, and read its
    *  git remote state" oracle for anyone who reaches the console. */
   private workspaceOf(subject: CodeSubject): string | null {
-    if (subject.kind === "thread") return trimmed(this.db.getThread(subject.id)?.workspace);
+    if (subject.kind === "thread") {
+      const thread = this.db.getThread(subject.id);
+      return thread ? trimmed(taskWorkCheckout(thread).workspace) : null;
+    }
     if (subject.kind === "cowork") return trimmed(this.db.getCoworkSession(subject.id)?.workspace);
     const path = trimmed(subject.id);
     return path && this.ide.isRegistered(path) ? path : null;

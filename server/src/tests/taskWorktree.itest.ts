@@ -211,10 +211,12 @@ try {
   const umb = worktreeBriefing({ threadId: THREAD, workspace: umbrella, mode: "umbrella", worktrees: [], owner: "Kevin", autoPush: true });
   check("umbrella: points at task_worktree and the exact branch convention", !!umb && umb.includes("task_worktree") && umb.includes(`-${THREAD.slice(0, 8)}`) && umb.includes("ggo/<name>"));
   check("umbrella: the agent names the branch itself, not from the title", !!umb && /`name`/.test(umb) && !umb.includes(umbrellaBranch));
+  check("umbrella: a branch the owner named overrides the worktree rule", !!umb && /names the branch to work on in a repository/.test(umb) && /checkout that already has it/.test(umb));
   const guided = worktreeBriefing({ threadId: THREAD, workspace: join(repo, "web"), repoRoot: repo, mode: "guided", worktrees: [], owner: "Kevin", autoPush: true });
   check("guided: work here while alone, claim a worktree when the repo is shared", !!guided && /alone in this repository/.test(guided) && /another agent works in this repository/.test(guided) && guided.includes("task_worktree"));
   check("guided: the CLI fallback names the repo root and the branch convention", !!guided && guided.includes(`git -C "${repo}" worktree add -b ggo/<name>-${THREAD.slice(0, 8)}`) && guided.includes(worktreesHome(repo)));
   check("guided: no integration step before a claim", !!guided && !/--ff-only/.test(guided));
+  check("guided: a branch the owner named outranks the worktree advice", !!guided && /names the branch to work on/.test(guided) && /claim no worktree and create no branch/.test(guided));
   const guidedClaimed = worktreeBriefing({ threadId: THREAD, workspace: repo, repoRoot: repo, mode: "guided", worktrees: [wt], owner: "Kevin", autoPush: true });
   check("guided + claimed: the own-worktree rules and integration", !!guidedClaimed && guidedClaimed.includes(wt.path) && /--ff-only/.test(guidedClaimed) && /never there/.test(guidedClaimed));
   check("guided sub-task of an unclaimed parent: no section", worktreeBriefing({ threadId: THREAD, workspace: repo, mode: "guided", worktrees: [], owner: "Kevin", autoPush: true, borrowed: true }) === null);

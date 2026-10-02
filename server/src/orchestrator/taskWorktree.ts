@@ -112,6 +112,14 @@ export function mapIntoWorktree(path: string, worktree: TaskWorktree): string {
   return existsSync(target) ? target : worktree.path;
 }
 
+/** The checkout holding a task's work, for whatever reads it rather than running in it (the Changes view,
+ *  progress fingerprints, the code-context bar): the worktree it claimed for the repo it was dispatched
+ *  into, since a guided task keeps running in the main checkout, else its own workspace. */
+export function taskWorkCheckout(t: { workspace: string; worktrees?: readonly TaskWorktree[]; baselineHead?: string | null }): { workspace: string; baselineHead: string | null } {
+  const claimed = (t.worktrees ?? []).find((w) => !isWithin(t.workspace, w.path) && isWithin(t.workspace, w.repo));
+  return claimed ? { workspace: mapIntoWorktree(t.workspace, claimed), baselineHead: claimed.baseSha } : { workspace: t.workspace, baselineHead: t.baselineHead ?? null };
+}
+
 /** Every branch currently checked out somewhere, mapped to the folder holding it. */
 async function checkedOutBranches(root: string): Promise<Map<string, string>> {
   const porcelain = await git(root, ["worktree", "list", "--porcelain"]);

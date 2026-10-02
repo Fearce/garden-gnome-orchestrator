@@ -619,13 +619,14 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   where it was dispatched. A guided kickoff says: work here while alone; when another agent shares
   the repo, claim your own worktree with the `task_worktree` bus tool before the first edit (CLI
   backends get the exact `git worktree add -b ggo/<name>-<id8>` command). The office note and the
-  "teammate just joined" push repeat that advice to an unclaimed guided task. A claim cuts branch
+  "teammate just joined" push repeat that advice to an unclaimed guided task. A branch the brief or the owner
+  names outranks the advice: the agent works on it where it is checked out and claims nothing. A claim cuts branch
   `ggo/<name>-<id8>` in `<repo-parent>/<repo>.worktrees/<name>` (the agent's `name`, or
   `worktreeName.ts`'s model name for the brief) from the main checkout's current branch, with ignored
   `node_modules`/`.venv` junctioned back and `.env*` copied. It is recorded in `thread.worktrees`
   WITHOUT changing `thread.workspace`, because the agent's session is keyed by its cwd. So the
-  Changes view (`changesCheckout`) and deliverable containment (`resolveTaskDeliverable`) follow the
-  claim explicitly, and later kickoffs (QA rounds, resumes) name it with the integration step: rebase,
+  Changes view, code-context bar and progress fingerprints (`taskWorkCheckout`) and deliverable
+  containment (`resolveTaskDeliverable`) follow the claim explicitly, and later kickoffs (QA rounds, resumes) name it with the integration step: rebase,
   fast-forward the base, push; commit-only repos stay on the branch. Hand-made `ggo/*-<id8>`
   worktrees are discovered. Sub-tasks and collaborators share the parent's checkout. Close/dismiss/purge
   retires a clean worktree, unlinking its junctions first because `git worktree remove` follows them
