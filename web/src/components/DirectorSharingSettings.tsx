@@ -115,12 +115,14 @@ function ShareForm({ subscriptionId, relayReady, lastModel }: { subscriptionId: 
     if (relayReady && !models) loadModels(subscriptionId);
   }, [relayReady, models, loadModels, subscriptionId]);
   useEffect(() => {
-    if (!model && models?.models.length) setModel(models.models.includes(lastModel ?? "") ? lastModel! : models.models[0]!);
+    if (!models?.loading && models?.models.length && !models.models.includes(model)) {
+      setModel(models.models.includes(lastModel ?? "") ? lastModel! : models.models[0]!);
+    }
   }, [models, model, lastModel]);
 
   const expiresAt = fromLocalInput(deadline);
   const problem = deadlineProblem(expiresAt);
-  const canShare = relayReady && !!model && !problem && !pending;
+  const canShare = relayReady && !models?.loading && !!models?.models.includes(model) && !problem && !pending;
   return (
     <div className="dshare-form">
       <label className="office-field">

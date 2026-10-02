@@ -38,14 +38,18 @@ const NAV_TIMEOUT = 60_000;
 /** OpenAI-compatible enough for the donor: `/v1/models` and `/v1/chat/completions`. A message containing
  *  HOLD is held open until the donor aborts it, which is how Stop-in-flight is observed from outside. */
 function startProvider() {
-  const state = { calls: [], aborted: 0, held: 0 };
+  const state = { calls: [], aborted: 0, held: 0, models: [MODEL], holdModels: false, modelReplies: [] };
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       if (req.url === "/v1/models") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ data: [{ id: MODEL }, { id: "text-embedding-lab" }] }));
+        const reply = () => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ data: [...state.models.map((id) => ({ id })), { id: "text-embedding-lab" }] }));
+        };
+        if (state.holdModels) state.modelReplies.push(reply);
+        else reply();
         return;
       }
       if (req.url !== "/v1/chat/completions") {
@@ -313,6 +317,29 @@ async function main() {
     check("the recipient header shows it is no longer shared", /No longer shared/i.test(await rp.locator(".shared-director-strip").innerText()));
     check("the donor row is Private again", !!await waitFor(async () => /private/i.test(await openaiRow.locator(".share-chip").innerText()), 15_000));
     await rp.screenshot({ path: path.join(shots, "recipient-after-stop.png") });
+
+    console.log("\n=== re-sharing validates the provider's current model list ===\n");
+    provider.state.holdModels = true;
+    await dp.reload();
+    await dp.waitForSelector(".accounts .acct", { state: "attached", timeout: 45_000 });
+    await openSharingSettings(dp);
+    await waitFor(() => provider.state.modelReplies.length > 0, 15_000);
+    check("a previous model cannot enable Share while the picker is loading", /Loading models/.test(await openaiRow.locator("select").first().innerText()) && await openaiRow.locator('button:text-is("Share")').isDisabled());
+    provider.state.models = ["gpt-lab-replacement"];
+    provider.state.holdModels = false;
+    provider.state.modelReplies.splice(0).forEach((reply) => reply());
+    check("a removed model is replaced with one the provider currently lists", !!await waitFor(async () => (await openaiRow.locator("select").first().inputValue()) === "gpt-lab-replacement", 15_000));
+    provider.state.models = [];
+    await dp.reload();
+    await dp.waitForSelector(".accounts .acct", { state: "attached", timeout: 45_000 });
+    await openSharingSettings(dp);
+    await openaiRow.locator("select").first().getByText("No models listed", { exact: true }).waitFor({ state: "attached", timeout: 15_000 });
+    check("no eligible models keeps Share disabled despite the previous share", await openaiRow.locator('button:text-is("Share")').isDisabled());
+    provider.state.models = [MODEL];
+    await dp.reload();
+    await dp.waitForSelector(".accounts .acct", { state: "attached", timeout: 45_000 });
+    await openSharingSettings(dp);
+    check("a confirmed available model enables a fresh opt-in", !!await waitFor(async () => (await openaiRow.locator("select").first().inputValue()) === MODEL && await openaiRow.locator('button:text-is("Share")').isEnabled(), 15_000));
 
     console.log("\n=== a live share expires on the donor's clock ===\n");
     const soon = await localDeadline(dp, 70_000);
