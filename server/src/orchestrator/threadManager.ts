@@ -7678,7 +7678,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private persistedImageBlocks(threadId: string): ImageBlock[] {
     const seen = new Set<string>();
     const blocks: ImageBlock[] = [];
+    const since = this.db.getThreadStageOutputs(threadId).priorTurnsEndedAt ?? 0;
     for (const message of this.db.listMessages(threadId)) {
+      if (message.createdAt < since) continue;
       for (const ref of message.attachments ?? []) {
         if (seen.has(ref.id) || !IMAGE_MEDIA_TYPES.has(ref.mediaType as ImageAttachment["mediaType"])) continue;
         seen.add(ref.id);
@@ -11491,6 +11493,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       opts?.qaFollows === false
         ? `When the work is complete, commit and push per the doctrine (${config.ownerName} will then review it).`
         : "A QA agent will review your work when you're done.";
+    // An earlier goal turn's instructions are history like the handoff: inside the authoritative block below
+    // they outranked the handoff recording them as done, and every reseed redid a long-finished fix.
+    const stage = this.db.getThreadStageOutputs(thread.id);
+    const earlierTurns = renderPriorTurnDirectives(stage.priorTurnDirectives);
+    if (earlierTurns) parts.push(earlierTurns, "");
     parts.push(
       "## Current workspace progress (git)",
       progress,
@@ -11500,7 +11507,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // authoritative item *after* it: otherwise a model change can see an old verbatim transcript tail
     // later in the prompt than the owner injection that caused the resume, and act as if history won.
     // This is intentionally also after the git snapshot — it is the final instruction-bearing context.
-    const directives = this.standingDirectivesBlock(thread.id);
+    const directives = renderStandingDirectives(stage.standingDirectives);
     if (directives || opts?.restartNote || opts?.directorNote) {
       parts.push(
         "## Current authoritative task context (newer than the compressed handoff above)",
@@ -13669,13 +13676,16 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   /** A goal's next turn is new work the goal sends, so the owner instructions of the turns before it become
-   *  `priorTurnDirectives`, rendered as belonging to the turn they were sent in. */
+   *  `priorTurnDirectives`, rendered as belonging to the turn they were sent in, and their screenshots stop
+   *  riding along with a fresh session's kickoff. */
   private carryDirectivesPastGoalTurn(threadId: string): void {
     const stage = this.db.getThreadStageOutputs(threadId);
-    if (!stage.standingDirectives?.length) return;
+    this.threadImages.delete(threadId);
     this.db.updateThreadStageOutputs(threadId, {
-      standingDirectives: [],
-      priorTurnDirectives: [...(stage.priorTurnDirectives ?? []), ...stage.standingDirectives].slice(-25),
+      priorTurnsEndedAt: Date.now(),
+      ...(stage.standingDirectives?.length
+        ? { standingDirectives: [], priorTurnDirectives: [...(stage.priorTurnDirectives ?? []), ...stage.standingDirectives].slice(-25) }
+        : {}),
     });
   }
 
@@ -16919,10 +16929,13 @@ function renderPriorTurnDirectives(directives?: string[] | null): string | undef
   if (!directives?.length) return undefined;
   return [
     "## Owner instructions from earlier turns of this goal",
-    "The owner sent these while an earlier turn of this goal-directed task was running. A constraint on how to " +
-      "work (what to leave alone, which approach to take, where to commit) still applies. An instruction about " +
-      "that turn's own course (to stop, wind down, wrap up or finish up) ended with that turn: GGO continues this " +
-      "task only while the goal is active, and the owner pauses the goal to stop it.",
+    "The owner sent these while an earlier turn of this goal-directed task was running, and that turn already " +
+      "acted on them. They are history, not your to-do list: do not start a request to fix, check or investigate " +
+      "something again unless current evidence (the backlog, the repository or the live system right now) shows " +
+      "it is still open. A lasting constraint on how to work (what to leave alone, which approach to take, where " +
+      "to commit) keeps binding. A change of direction is superseded by the objective as it stands now. An " +
+      "instruction about that turn's own course (to stop, wind down, wrap up or finish up) ended with that turn: " +
+      "GGO continues this task only while the goal is active, and the owner pauses the goal to stop it.",
     ...directives.map((d, i) => `${i + 1}. ${d}`),
   ].join("\n");
 }

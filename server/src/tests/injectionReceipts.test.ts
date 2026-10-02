@@ -380,6 +380,19 @@ assert.ok(!carriesInstruction("please use port 4400 now", "use port 4400"), "nor
   assert.ok(!ledgerOf(rejected).has(rejectedId), "a provider rejection end is not delivery");
 }
 
+// A kickoff carries the open instruction among older ones; the ACK request names only what it covers,
+// so the agent is not asked to take on every instruction above it again.
+{
+  const t = thread();
+  const text = "being lvl 37 and still not having insight on the merc is a bit of a fail";
+  receipts.expect(t, echo(t, text), text, ["implementor"]);
+  const kickoff = `## Owner instructions from earlier turns of this goal\n1. lane C is a green square, fix it\n\n## Owner instructions given during this task\n1. ${text}`;
+  const prepared = String(receipts.prepare(t, "implementor", new FakeRun().asRun(), kickoff));
+  const note = prepared.slice(kickoff.length);
+  assert.ok(note.includes(`"${text}"`), "the note quotes the instruction it acknowledges");
+  assert.ok(!note.includes("instruction(s) above"), "the note does not point at every instruction in the input");
+}
+
 db.raw.close();
 rmSync(dir, { recursive: true, force: true });
 console.log("injectionReceipts: pending/sent/delivered/read/failed transitions, recipients, retries and restart verified");

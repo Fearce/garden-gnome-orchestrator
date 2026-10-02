@@ -56,6 +56,13 @@ export function carriesInstruction(text: string, instruction: string): boolean {
   return new RegExp(`(?:^|\\n)[ \\t]*(?:\\d+\\.[ \\t]+|[-*][ \\t]+|RI-\\w+:[ \\t]*)?${body}[ \\t]*(?:\\r?\\n|$)`).test(text);
 }
 
+/** An instruction named inside the receipt note, on one line and clipped, so it never forms a whole line
+ *  `carriesInstruction` could bind a receipt to. */
+function quoteInstruction(instruction: string): string {
+  const line = instruction.trim().replace(/\s+/g, " ");
+  return `"${line.length > 160 ? `${line.slice(0, 159)}…` : line}"`;
+}
+
 function contentText(content: UserContent): string {
   if (typeof content === "string") return content;
   return content
@@ -140,13 +147,15 @@ export class InjectionReceipts {
     const text = contentText(content);
     const context = this.context.getStore();
     const current = context?.threadId === threadId && carriesInstruction(text, context.instruction) ? context : undefined;
-    const receiptIds = (this.db.raw.prepare("SELECT id, instruction FROM injection_receipts WHERE thread_id=? AND recipient=? AND status IN ('pending','sent','delivered')")
-      .all(threadId, recipient) as Row[]).filter((r) => carriesInstruction(text, String(r.instruction))).map((r) => String(r.id));
+    const open = (this.db.raw.prepare("SELECT id, instruction FROM injection_receipts WHERE thread_id=? AND recipient=? AND status IN ('pending','sent','delivered')")
+      .all(threadId, recipient) as Row[]).filter((r) => carriesInstruction(text, String(r.instruction)));
+    const receiptIds = open.map((r) => String(r.id));
     if (!current && !receiptIds.length) return content;
     const marker = `IR-${randomUUID()}`;
     this.prepared.set(marker, { contextId: current?.id, receiptIds });
     run.onEnd(() => this.prepared.delete(marker));
-    const note = `\n\n[GGO receipt ${marker}]\nAfter taking the instruction(s) above, include a separate acknowledgement line: ACK ${marker}: followed by how you will apply them. For a structured response, include that line in the summary field. Also satisfy any existing RI acknowledgement requirements. This token acknowledges only this input.`;
+    const covered = [...new Set([current?.instruction, ...open.map((r) => String(r.instruction))].filter((s): s is string => !!s))];
+    const note = `\n\n[GGO receipt ${marker}]\nThis acknowledges the owner's ${covered.length === 1 ? "instruction" : "instructions"} ${covered.map(quoteInstruction).join(", ")} in this input. After taking ${covered.length === 1 ? "it" : "them"}, include a separate acknowledgement line: ACK ${marker}: followed by how you will apply ${covered.length === 1 ? "it" : "them"}. For a structured response, include that line in the summary field. Also satisfy any existing RI acknowledgement requirements. This token acknowledges only this input.`;
     return typeof content === "string" ? content + note : [...content, { type: "text", text: note }];
   }
 

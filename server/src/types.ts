@@ -1174,6 +1174,9 @@ export interface StageOutputs {
   // when the goal sends the next turn. Still rendered, but framed as belonging to the turn they were sent in:
   // a "finish up" given to one turn must not stop every later turn of a step that runs for days.
   priorTurnDirectives?: string[];
+  // When the goal last sent this step task a new turn. Images the owner attached before it showed that
+  // turn's state, so a fresh session of a later turn is not handed them as if they were current.
+  priorTurnsEndedAt?: number;
 }
 
 /** The live Token Safety freeze, broadcast on every transition and carried on `hello` so the console's

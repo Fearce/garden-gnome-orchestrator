@@ -390,6 +390,43 @@ console.log("\n=== I. a goal step tells the owner it is done once, not at every 
   h.dispose();
 }
 
+console.log("\n=== J. an earlier turn's request and screenshot do not come back as live work ===");
+{
+  const h = makeHarness();
+  const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+  const injectWithImage = (text: string, name: string) => {
+    const ref = h.db.addAttachment({ name, mediaType: "image/png", data: PNG });
+    return h.db.addMessage({ threadId: h.thread.id, role: "director", kind: "system", content: `↪ injected: ${text}`, attachments: [ref] });
+  };
+  const imageNames = () => (h.internals.persistedImageBlocks(h.thread.id) as { source?: { data?: string } }[]).length;
+  const early = injectWithImage("lane C is a green square, fix it", "green.png");
+  h.db.updateThreadStageOutputs(h.thread.id, { standingDirectives: ["lane C is a green square, fix it"] });
+  // The image the owner sent during this turn still belongs to it, so a fresh session of this turn sees it.
+  check("during its own turn the screenshot is re-attached to a fresh session", imageNames() === 1);
+  // Older than the boundary the next turn stamps, whatever the clock resolution.
+  h.db.raw.prepare("UPDATE messages SET created_at = created_at - 60000 WHERE id = ?").run(early.id);
+  h.internals.threadImages.set(h.thread.id, h.internals.persistedImageBlocks(h.thread.id));
+  check("the goal's next turn is admitted", h.mgr.continueGoalTask(h.thread.id, MESSAGE).ok === true);
+  await settled(h);
+  check("a later turn's fresh session is not handed the earlier turn's screenshot", imageNames() === 0);
+  check("nor is it kept in memory for the next kickoff", !(h.internals.threadImages.get(h.thread.id)?.length));
+  injectWithImage("now lane B looks wrong", "lane-b.png");
+  check("a screenshot sent during the current turn is still re-attached", imageNames() === 1);
+  const carried = h.starts[0]?.directives ?? "";
+  check(
+    "the earlier request is framed as already acted on, to re-open only on current evidence",
+    carried.includes("lane C is a green square, fix it") && carried.includes("already acted on") && carried.includes("current evidence") && !carried.includes("still applies"),
+    carried,
+  );
+  // The cold reseed must not rank an earlier turn's request above the handoff that records it as done.
+  const seed: string = await h.internals.composeResumeKickoff(h.db.getThread(h.thread.id)!, "KICKOFF", undefined, { directorNote: "GOAL CONTINUATION — turn 3" });
+  const earlierAt = seed.indexOf("lane C is a green square, fix it");
+  const authoritativeAt = seed.indexOf("Current authoritative task context");
+  check("the cold reseed still carries the earlier request", earlierAt >= 0, seed);
+  check("but outside the block that overrides the handoff", authoritativeAt > earlierAt, `earlierAt=${earlierAt}; authoritativeAt=${authoritativeAt}`);
+  h.dispose();
+}
+
 console.log(`\n=== ${passed}/${passed + failed} checks passed ===`);
 if (failed) {
   for (const f of failures) console.log(`  ✗ ${f}`);

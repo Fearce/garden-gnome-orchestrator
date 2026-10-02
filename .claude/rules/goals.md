@@ -87,7 +87,14 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   orders ("pls finish up") with their turn. Without the move a days-old "finish up" re-arrived as a live
   order in every continuation turn and made the agent refuse work. Retry keeps both lists, and every lane's
   kickoff (researcher, reader, QA, reviewer) takes the stage's two lists through `renderOwnerDirectives`, so
-  a constraint moved to the earlier-turn list still reaches them.
+  a constraint moved to the earlier-turn list still reaches them. The same boundary stamps
+  `priorTurnsEndedAt`: `persistedImageBlocks` skips owner screenshots older than it and the in-memory
+  `threadImages` are dropped, and the earlier-turn heading calls those requests already acted on (re-open only
+  on current evidence). The cold reseed (`composeResumeKickoff`) puts them beside the handoff, never in its
+  "Current authoritative" block. On 2026-10-02 the d2r step re-attached a 14:53 green-window screenshot and
+  ranked "fix the green artifacts" above the handoff that recorded the fix, so every fresh session redid a
+  fix finished hours earlier. The receipt note names the instruction it acknowledges (`quoteInstruction`), not
+  "the instruction(s) above". Gate: `test:goal-continuation` J + `test:injection-receipts`.
 - **One Done notice per step task.** `settleGoalTurn` marks its `done` quiet (`quietGoalDone`, held only
   across the `setState`) when `db.endsGoalContinuationTurn` — the task's latest step has `turns > 1` and its
   goal is still `active` — and `publishState` skips the owner notice (Discord + voice) for it. An ending the
