@@ -1,5 +1,6 @@
-// Deterministic Claude model floor: every Claude role runs on Opus 5.5 or a newer Opus — never on an
-// older Opus, and never on Sonnet, Haiku or Fable.
+// Deterministic Claude model floor: every CONFIGURED Claude role model resolves to Opus 5.5 or a newer
+// Opus — never an older Opus, and never Sonnet, Haiku or Fable. The one automatic way onto Sonnet is the
+// task route (claudeModelRoute.ts), which ThreadManager applies beside this floor, not through it.
 //
 // Same defect shape as `reviewModelFloor.ts`, on the other backend. The persisted per-subscription role
 // override matrix is enforced verbatim by `modelFor`, so a stored `acct1.implementor` naming the bare-major 5.0 Opus
@@ -13,6 +14,9 @@
 // Scope:
 //  - Every non-Opus Claude tier is lifted too. Owner directive, 2026-09-27: "always use opus 5.5, never
 //    use sonnet as a claude model". Adaptive auto-selection had put a Sonnet implementor on ordinary work.
+//    Refined 2026-10-02: Sonnet 5.5 "excels at well-scoped tasks", so a task the route judges well-scoped
+//    runs its implementor/QA (and the reader lane) on Sonnet 5.5 — a deterministic route decision, never
+//    a stored setting or a free selector choice, both of which this floor still lifts.
 //  - The per-task strict owner model pin (`thread.modelRequest`) is untouched, exactly as the Codex
 //    floor leaves it: naming a model for one task must keep naming that model.
 //  - It is a MINIMUM, not a pin. A future `claude-opus-6` is already above the floor and passes through,

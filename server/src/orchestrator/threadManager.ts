@@ -1,5 +1,5 @@
 import { currentCodexModel, currentCodexModels, isGpt6Model } from "../agents/codexModelGeneration.js";
-import { familyUpgradeNote, invalidateModelFamilyRoster, latestFamilyModel, sameModelFamily, setModelFamilyRoster, withoutSupersededModels } from "../agents/modelFamily.js";
+import { familyUpgradeNote, invalidateModelFamilyRoster, latestFamilyModel, newestInFamily, sameModelFamily, setModelFamilyRoster, withoutSupersededModels } from "../agents/modelFamily.js";
 import type { AccountDispatchPreview, AccountManager } from "../accounts/accountManager.js";
 import { bySafetyHeadroom, untilReset, weeklySafetyPool } from "../accounts/accountManager.js";
 import type { Db } from "../db/db.js";
@@ -141,6 +141,7 @@ import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "./deliverabl
 import { deliverableRefusal, resolveTaskDeliverable } from "./deliverablePath.js";
 import { buildGitProgressBlock, workspaceGitFingerprint } from "./gitProgress.js";
 import { ROUTE_POLICY_VERSION, selectRoute } from "./routeSelection.js";
+import { isScopedSonnetModel, planClaudeModel, SCOPED_SONNET_MODEL } from "./claudeModelRoute.js";
 import { AUTOMATIC_EFFORT_CEILING, automaticEffortOptions, capAutomaticEffort } from "./automaticEffort.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, runGit, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
@@ -227,6 +228,7 @@ import type {
   CliAutoUpdateStatus,
   OrchestratorSettings,
   PlanOutput,
+  ClaudeModelRoute,
   QaOutput,
   Question,
   RateLimitInfo,
@@ -3190,6 +3192,7 @@ export class ThreadManager implements OrchestratorApi {
       selfImproveEnabled: this.settingBool("setting_self_improve_enabled", false),
       summarizeDoneDeliverables: this.settingBool("setting_summarize_done_deliverables", false),
       autoModelSelection: this.settingBool("setting_auto_model_selection", false),
+      scopedSonnetRouting: this.settingBool("setting_scoped_sonnet_routing", true),
       tokenLimitEnabled: this.settingBool("setting_token_limit_enabled", false),
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
       fastUsagePolling: this.settingBool("setting_fast_usage_polling", false),
@@ -3662,6 +3665,85 @@ export class ThreadManager implements OrchestratorApi {
   private poolResolved(subId: string, model: string): string {
     const fb = fallbackModelFor(model);
     return fb && this.accounts.isModelLimited(subId, model) ? fb : model;
+  }
+
+  /** What a Claude role runs for THIS task: the Sonnet a scoped task was routed to, else exactly what
+   *  `modelFor` resolves (usage saving, the role matrix, the Opus floor). */
+  private claudeTaskTarget(threadId: string, subId: string, role: Role): ClaudeOpusTarget {
+    const sonnet = this.scopedSonnet(threadId, subId, role);
+    return sonnet ? { model: sonnet } : this.claudeOpusFloored(this.configuredClaudeModel(subId, role, {}));
+  }
+
+  /**
+   * The Sonnet this task's role runs on `subId`, or undefined for the configured model. Scoped routing
+   * fills only a role left on Auto: usage saving and a per-role matrix entry are explicit choices and
+   * keep winning, as a strict task pin does upstream. Sonnet that is not installed, or whose own pool
+   * is capped on this subscription, falls back to the configured Opus and says so on the task.
+   */
+  private scopedSonnet(threadId: string, subId: string, role: Role): string | undefined {
+    if (!this.wantsScopedSonnet(threadId, role)) return undefined;
+    if (this.usageSavingTarget(subId) || this.claudeRoleConfigured(subId, role)) return undefined;
+    const model = this.dispatchableScopedSonnet();
+    if (!model) {
+      this.noteScopedSonnetFallback(threadId, role, `${SCOPED_SONNET_MODEL} is not in this installation's Claude roster`);
+      return undefined;
+    }
+    if (this.accounts.isModelLimited(subId, model)) {
+      this.noteScopedSonnetFallback(threadId, role, `${model}'s own usage pool is capped on this subscription`);
+      return undefined;
+    }
+    return model;
+  }
+
+  /** Whether the task's route put this role on Sonnet: its implementor and QA when the route judged the
+   *  work well-scoped, and the reader lane's lookup. Default-mode sessions and pinned tasks never are. */
+  private wantsScopedSonnet(threadId: string, role: Role): boolean {
+    if (!this.settingBool("setting_scoped_sonnet_routing", true)) return false;
+    const thread = this.db.getThread(threadId);
+    if (!thread || thread.modelRequest || thread.lane === "vanilla") return false;
+    if (role === "reader") return thread.lane === "read";
+    if (role !== "implementor" && role !== "qa") return false;
+    return this.db.getThreadStageOutputs(threadId).routeDecision?.claudeModel?.tier === "sonnet";
+  }
+
+  /** The owner chose this role's model on this subscription (or on the composer's default layer). */
+  private claudeRoleConfigured(subId: string, role: Role): boolean {
+    const ov = this.modelOverrides();
+    return !!(ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim());
+  }
+
+  /** The newest installed Sonnet at or above the scoped model, or undefined when none is dispatchable. */
+  private dispatchableScopedSonnet(): string | undefined {
+    const roster = this.claudeRosterModels();
+    const newest = newestInFamily(SCOPED_SONNET_MODEL, roster);
+    return roster.some((model) => sameModelId(model, newest)) ? newest : undefined;
+  }
+
+  /** Once per task and role: an auto-routed (never pinned) Sonnet run fell back to Opus. */
+  private noteScopedSonnetFallback(threadId: string, role: Role, why: string): void {
+    const summary = `Sonnet unavailable: ${role} falls back to Opus`;
+    if (this.db.listFindings(threadId).some((finding) => finding.summary === summary)) return;
+    this.hub.log("warn", `${role} on ${threadId.slice(0, 8)} was routed to Sonnet, but ${why}; running on Opus instead.`);
+    this.postFinding({
+      threadId,
+      fromRole: "director",
+      summary,
+      detail: `This task's route chose Sonnet for well-scoped work, but ${why}. It was auto-routed, not pinned, so the ${role} runs on the configured Opus model rather than waiting.`,
+      severity: "info",
+    });
+  }
+
+  /**
+   * Judge a refinable Claude line once against the planner's plan, before the implementor first runs. A
+   * task already implementing keeps the line its session runs on.
+   */
+  private refineClaudeModel(threadId: string, plan: PlanOutput | undefined): void {
+    if (!plan) return;
+    const route = this.db.getThreadStageOutputs(threadId).routeDecision;
+    if (!route?.claudeModel?.planRefinable || this.implementorHasRun(threadId)) return;
+    const claudeModel = planClaudeModel(route.claudeModel, plan);
+    this.db.updateThreadStageOutputs(threadId, { routeDecision: { ...route, claudeModel } });
+    this.announceClaudeModel(threadId, claudeModel);
   }
 
   /** Set (or, with a blank value, clear) one (subId, role) model override in the persisted matrix. */
@@ -4553,7 +4635,10 @@ export class ThreadManager implements OrchestratorApi {
   /** Every (provider, model) pair a task could ACTUALLY be dispatched to right now — each backend that is
    *  enabled, authed and not usage-capped, with the models its own picker offers. A roster built from
    *  anything looser would let the selector choose a backend that then can't run. */
-  private implementorModelRoster(demand: CapacityDemand = demandForRole("implementor"), opts: { narrowToBurn?: boolean } = {}): ModelCandidate[] {
+  private implementorModelRoster(
+    demand: CapacityDemand = demandForRole("implementor"),
+    opts: { narrowToBurn?: boolean; threadId?: string } = {},
+  ): ModelCandidate[] {
     interface RosterEntry {
       provider: ImplementorProvider;
       model: string;
@@ -4580,9 +4665,12 @@ export class ThreadManager implements OrchestratorApi {
       const accountId = this.accounts.dispatchPreview(demand).account.id;
       const saving = this.usageSavingTarget(accountId);
       const cap = this.accountMaxEffort(accountId);
+      // A task the route judged well-scoped offers Claude as its Sonnet alone: the route chose the line,
+      // so the selector weighs Claude against the other backends rather than Sonnet against Opus.
+      const scoped = opts.threadId ? this.scopedSonnet(opts.threadId, accountId, "implementor") : undefined;
       add(
         "claude",
-        saving ? [saving.model] : this.claudeRosterModels(),
+        saving ? [saving.model] : scoped ? [scoped] : this.claudeRosterModels(),
         (model) => saving ? [saving.effort] : underCap(claudeEffortsForModel(model), cap),
         () => claude,
       );
@@ -4691,14 +4779,15 @@ export class ThreadManager implements OrchestratorApi {
     const stage = this.db.getThreadStageOutputs(thread.id);
     const policy = stage.routeDecision?.modelPolicy;
     let saved = stage.modelPick;
-    if (saved && isRetiredClaudeAutoModel(saved)) {
-      // A pick made before the Opus-only Claude rule must not resume its Sonnet/Haiku/Fable session.
+    if (saved && isRetiredClaudeAutoModel(saved) && !this.isScopedSonnetPick(thread.id, saved)) {
+      // Only a task the route judged well-scoped may run Sonnet; any other Sonnet/Haiku/Fable pick (one made
+      // before scoped routing, or before the plan moved this task to Opus) must not resume its session.
       this.db.updateThreadStageOutputs(thread.id, { modelPick: undefined });
       this.postFinding({
         threadId: thread.id,
         fromRole: "director",
-        summary: `Superseded automatic ${saved.model} route — Claude roles run on Opus 5.5 only`,
-        detail: `The prior pick was ${saved.model} at ${saved.effort}. ${config.ownerName} runs every Claude role on Opus 5.5 or newer, so the next run starts fresh on a compliant model instead of resuming that session. Its run history remains intact.`,
+        summary: `Superseded automatic ${saved.model} route — this task runs Claude on Opus 5.5`,
+        detail: `The prior pick was ${saved.model} at ${saved.effort}. ${config.ownerName} runs Claude on Opus 5.5 except for work the route judges well-scoped, which runs on Sonnet 5.5; this task is not routed to Sonnet, so the next run starts fresh on Opus instead of resuming that session. Its run history remains intact.`,
         severity: "warning",
       });
       saved = undefined;
@@ -4725,7 +4814,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     let selectionDemand: CapacityDemand | undefined;
     let selectionRoster: ModelCandidate[] | undefined;
     const demandForSelection = (): CapacityDemand => selectionDemand ??= this.capacityDemand(thread, "implementor", thread.effortOverride ?? plan?.effort);
-    const rosterForSelection = (): ModelCandidate[] => selectionRoster ??= this.implementorModelRoster(demandForSelection());
+    const rosterForSelection = (): ModelCandidate[] => selectionRoster ??= this.implementorModelRoster(demandForSelection(), { threadId: thread.id });
     if (saved && savedComplies) {
       if (policy?.tier !== "flagship") return saved; // a valid adaptive episode pick remains sticky
       const exactReady = rosterForSelection().some((candidate) =>
@@ -4901,7 +4990,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (provider === "grok") return { model: picked ? latestFamilyModel(picked) : this.grokModel(), saving };
     if (provider === "zai") return { model: picked ? latestFamilyModel(picked) : this.zaiModel(), saving };
     const subId = accountId ?? this.accounts.dispatchPreview().account.id;
-    return { model: picked ? this.claudeOpusFloored(this.poolResolved(subId, picked)).model : this.modelFor(subId, "implementor"), saving };
+    return { model: picked ? this.claudePickedModel(threadId, subId, picked) : this.claudeTaskTarget(threadId, subId, "implementor").model, saving };
+  }
+
+  /** An auto-pick's Claude model as it dispatches: the scoped Sonnet the roster offered stays Sonnet (or
+   *  its Opus fallback once its pool caps); every other pick takes the Opus floor. */
+  private isScopedSonnetPick(threadId: string, pick: Pick<ModelPick, "provider" | "model">): boolean {
+    return pick.provider === "claude" && isScopedSonnetModel(pick.model) && this.wantsScopedSonnet(threadId, "implementor");
+  }
+
+  private claudePickedModel(threadId: string, subId: string, picked: string): string {
+    if (this.isScopedSonnetPick(threadId, { provider: "claude", model: picked })) return this.poolResolved(subId, picked);
+    return this.claudeOpusFloored(this.poolResolved(subId, picked)).model;
   }
 
   /** The implementor's effort for this task: an operator pin beats everything, then the auto-selected
@@ -5453,6 +5553,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.selfImproveEnabled !== undefined) this.db.kvSet("setting_self_improve_enabled", patch.selfImproveEnabled ? "1" : "0");
     if (patch.summarizeDoneDeliverables !== undefined) this.db.kvSet("setting_summarize_done_deliverables", patch.summarizeDoneDeliverables ? "1" : "0");
     if (patch.autoModelSelection !== undefined) this.db.kvSet("setting_auto_model_selection", patch.autoModelSelection ? "1" : "0");
+    if (patch.scopedSonnetRouting !== undefined) this.db.kvSet("setting_scoped_sonnet_routing", patch.scopedSonnetRouting ? "1" : "0");
     const safetyBefore = this.settings();
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
@@ -8264,6 +8365,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // restart-interrupted QA retry has durable completed implementation, so an extra model-selection
       // call would waste a provider turn and could itself derail the handoff.
       if (saved.qaCapRetryRound == null && saved.qaInterruptedRetryRound == null && saved.qaFixHandoff == null) {
+        this.refineClaudeModel(threadId, plan);
         const modelSelection = await this.autoSelectModel(thread, plan);
         if (modelSelection === null) return; // visible flagship-policy wait; never fall through to a weaker configured model
       }
@@ -8310,10 +8412,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       timedHours: thread.durationMs ? thread.durationMs / 3_600_000 : undefined,
       effortOverride: thread.effortOverride,
       readerEscalation: readerEscalation ?? undefined,
+      // Only a goal's step dispatches with skipQa (see withoutQaWhenSkipped).
+      goalStep: stage.skipQa === true,
+      collaborator: !!thread.parentId && !!thread.assignment,
     }));
 
     if (existing?.policyVersion === ROUTE_POLICY_VERSION && existing.modelPolicy && existing.evidence) {
-      return existing.implementorEffort ? existing : this.backfillRouteEffort(thread.id, existing, classified);
+      const withEffort = existing.implementorEffort ? existing : this.backfillRouteEffort(thread.id, existing, classified);
+      return withEffort.claudeModel ? withEffort : this.backfillClaudeModel(thread.id, withEffort, classified);
     }
 
     // Pre-v2 decisions stay sticky for planner/QA execution, but gain the new model floor and structural
@@ -8329,7 +8435,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           ...(sameStages ? { reason: classified.reason, signals: classified.signals } : {}),
           // Effort is not a stage: a task whose implementor has not started yet takes the current policy's
           // effort even when its sticky stages differ; one already running keeps the effort it runs at.
-          ...(!this.implementorHasRun(thread.id) ? { implementorEffort: classified.implementorEffort, effortReason: classified.effortReason } : {}),
+          ...(!this.implementorHasRun(thread.id)
+            ? { implementorEffort: classified.implementorEffort, effortReason: classified.effortReason, claudeModel: classified.claudeModel }
+            : {}),
           modelPolicy: classified.modelPolicy,
           evidence: classified.evidence,
           policyVersion: ROUTE_POLICY_VERSION,
@@ -8347,6 +8455,16 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (existing.scope !== classified.scope || this.implementorHasRun(threadId)) return existing;
     const decision = { ...existing, implementorEffort: classified.implementorEffort, effortReason: classified.effortReason };
     this.db.updateThreadStageOutputs(threadId, { routeDecision: decision });
+    return decision;
+  }
+
+  /** A current-policy route persisted before routes carried a Claude line. Filled in only while no
+   *  implementor has run: a session already working stays on the Opus it started on. */
+  private backfillClaudeModel(threadId: string, existing: RouteDecision, classified: RouteDecision): RouteDecision {
+    if (!classified.claudeModel || this.implementorHasRun(threadId)) return existing;
+    const decision = { ...existing, claudeModel: classified.claudeModel };
+    this.db.updateThreadStageOutputs(threadId, { routeDecision: decision });
+    this.announceClaudeModel(threadId, classified.claudeModel);
     return decision;
   }
 
@@ -8379,12 +8497,40 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           ? `flagship implementor required; ${latestFamilyModel(decision.modelPolicy.preferredModel ?? DEFAULT_FLAGSHIP_MODEL)} first, otherwise only a policy-approved flagship fallback`
           : "adaptive cheapest-capable implementor selection";
     const effort = this.routeEffortNote(threadId, decision, settings);
+    const claude = this.claudeModelNote(threadId, decision.claudeModel);
     const m = this.db.addMessage({
       threadId,
       role: "director",
       kind: "system",
-      content: `🧭 Route ${updated ? "updated" : "selected"} — ${planner}, ${qa}. Model routing: ${modelRoute}.${effort ? ` ${effort}` : ""} ${decision.reason}`,
+      content: `🧭 Route ${updated ? "updated" : "selected"} — ${planner}, ${qa}. Model routing: ${modelRoute}.${claude ? ` ${claude}` : ""}${effort ? ` ${effort}` : ""} ${decision.reason}`,
     });
+    this.hub.publish({ type: "thread.message", threadId, message: m });
+  }
+
+  /** The route note's Claude-line sentence: which model a Claude implementor runs and why. Undefined for
+   *  a strict pin (its own notice says what runs) and a route persisted before the line existed. */
+  private claudeModelNote(threadId: string, route: ClaudeModelRoute | undefined): string | undefined {
+    if (!route || this.db.getThread(threadId)?.modelRequest) return undefined;
+    if (!this.settingBool("setting_scoped_sonnet_routing", true)) return "Claude model: Opus (scoped Sonnet routing is off in Settings).";
+    const model = latestFamilyModel(route.tier === "sonnet" ? SCOPED_SONNET_MODEL : CLAUDE_OPUS_FLOOR_MODEL);
+    const overruled = route.tier === "sonnet" ? this.scopedSonnetOverruledBy() : undefined;
+    if (overruled) return `Claude model: the route judged this well-scoped for ${model} (${route.reason}), but ${overruled} takes precedence.`;
+    return `Claude model: ${model} — ${route.reason}.`;
+  }
+
+  /** The explicit Settings choice that would keep a scoped task's implementor off Sonnet, for its note. */
+  private scopedSonnetOverruledBy(): string | undefined {
+    if (this.anyUsageSavingActive()) return "usage saving";
+    const cliSubs = new Set<string>([CODEX_SUB_ID, GROK_SUB_ID, ZAI_SUB_ID]);
+    const configured = Object.entries(this.modelOverrides()).some(([subId, roles]) => !cliSubs.has(subId) && roles?.implementor?.trim());
+    return configured ? "the implementor model set in Settings" : undefined;
+  }
+
+  /** A Claude line chosen after the route note was posted (a plan judged it, or an older route gained it). */
+  private announceClaudeModel(threadId: string, route: ClaudeModelRoute): void {
+    const note = this.claudeModelNote(threadId, route);
+    if (!note) return;
+    const m = this.db.addMessage({ threadId, role: "director", kind: "system", content: `🧭 ${note}` });
     this.hub.publish({ type: "thread.message", threadId, message: m });
   }
 
@@ -8714,7 +8860,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       }
       const saving = this.usageSavingTarget(this.usageSavingSubId(provider, acct?.id));
       const codexTarget = provider === "codex" ? this.codexRoleTarget(role, demand) : undefined;
-      const claudeTarget = provider === "claude" ? this.claudeOpusFloored(this.configuredClaudeModel(acct!.id, role, {})) : undefined;
+      const claudeTarget = provider === "claude" ? this.claudeTaskTarget(thread.id, acct!.id, role) : undefined;
       const model = codexTarget ? codexTarget.model : provider === "grok" ? this.providerRoleModel("grok", role) : provider === "zai" ? this.providerRoleModel("zai", role) : claudeTarget!.model;
       const accountLabel = provider === "codex" ? `codex:${model}` : provider === "grok" ? `grok:${model}` : provider === "zai" ? `zai:${model}` : acct!.label;
       // A review-stage substitution carries its own cheap effort; the configured Codex effort applies to
@@ -13847,6 +13993,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const routeSettings = this.settings();
     this.resolveRoute(thread, routeSettings);
     const stage = this.db.getThreadStageOutputs(thread.id);
+    this.refineClaudeModel(thread.id, stage.plan ?? undefined);
     const modelSelection = await this.autoSelectModel(thread, stage.plan ?? undefined);
     if (modelSelection === null) {
       this.resuming.delete(thread.id);

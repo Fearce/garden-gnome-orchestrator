@@ -33,4 +33,4 @@ The probe's drift check flags any run whose DB figure exceeds its transcript. Ol
   running on for hours (`stepWrapUpReason`). After the two fixes above, the 09-29 overnight burn was VOLUME,
   not a leak: context per call 169k, 0% above 300k, but two Opus goal steps ran ~2,800 calls in 7h. To size
   a goal's spend, join `goal_steps.thread_id` to the probe's runs; the per-thread table already ranks them.
-- Every Claude role runs Opus 5.5 by design (`claudeOpusFloor.ts`), so a "use a cheaper model" proposal must first read `token-conservation-mode.md` and `model-backend-economics.md`.
+- Every configured Claude role runs Opus 5.5 by design (`claudeOpusFloor.ts`); only work the route judges well-scoped runs Sonnet 5.5 (`.claude/rules/scoped-sonnet-routing.md`), so a "use a cheaper model" proposal must first read `token-conservation-mode.md` and `model-backend-economics.md`.

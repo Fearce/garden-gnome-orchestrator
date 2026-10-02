@@ -158,7 +158,9 @@ export const config = {
     userId: process.env.DISCORD_USER_ID || undefined,
   },
   models: {
-    // Every Claude role runs Opus 5.5 — the owner's standing rule (claudeOpusFloor.ts enforces it).
+    // Every Claude role defaults to Opus 5.5 (claudeOpusFloor.ts enforces it for configured models). A task
+    // the route judges well-scoped runs its implementor/QA on Sonnet 5.5 instead, as does the reader lane
+    // (claudeModelRoute.ts, Settings "Sonnet for well-scoped work").
     director: "claude-opus-5-5",
     planner: "claude-opus-5-5",
     researcher: "claude-opus-5-5",
@@ -176,6 +178,9 @@ export const config = {
   // Fable run is rejected while those windows still show headroom, dispatch falls back to this model
   // on the SAME subscription until the Fable pool frees up (see fallbackModelFor / classifyCap).
   fableFallbackModel: process.env.FABLE_FALLBACK_MODEL?.trim() || "claude-opus-5-5",
+  // Sonnet has its own weekly pool too. A scoped task routed to Sonnet (never a pinned one) continues on
+  // this model when that pool caps while the account's normal windows still have headroom.
+  sonnetFallbackModel: process.env.SONNET_FALLBACK_MODEL?.trim() || "claude-opus-5-5",
   // ---- OpenAI Codex (second, optional agent backend) ----
   // Implementors can be routed here normally. Structured roles stay on Claude unless repeated transient
   // API failures force an outage failover, at which point the CLI's structured-output adapter takes over.
@@ -430,12 +435,12 @@ export const config = {
 export type RoleModelKey = keyof typeof config.models;
 
 /**
- * The stand-in for a model whose own separately-metered usage pool (today: Fable's gated allowance) is
- * exhausted while the account's normal 5h/weekly windows still have headroom — or undefined when the
- * model has no separate pool, so a rejection on it means the account itself is capped. Matching on the
- * family keyword keeps a Fable version bump (claude-fable-5-1…) covered without a config change.
+ * The stand-in for a model whose own separately-metered usage pool (Fable's gated allowance, Sonnet's
+ * weekly pool) is exhausted while the account's normal 5h/weekly windows still have headroom — or
+ * undefined when the model has no separate pool, so a rejection on it means the account itself is capped.
+ * Matching on the family keyword keeps a version bump (claude-fable-5-1…) covered without a config change.
  */
 export function fallbackModelFor(model: string): string | undefined {
-  const fb = /fable/i.test(model) ? config.fableFallbackModel : undefined;
+  const fb = /fable/i.test(model) ? config.fableFallbackModel : /sonnet/i.test(model) ? config.sonnetFallbackModel : undefined;
   return fb && fb !== model ? fb : undefined;
 }

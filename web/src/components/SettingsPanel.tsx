@@ -420,6 +420,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   on={settings.autoModelSelection}
                   onChange={(v) => setSettings({ autoModelSelection: v })}
                 />
+                <ToggleRow
+                  label="Sonnet for well-scoped work"
+                  hint="On (default): a task the route judges well-scoped (a narrow or contained change, or work whose planner returns a tight plan of a few named files) runs its Claude implementor and QA on Sonnet 5.5, which is faster and strong at clearly specified coding. The read-only reader lane runs Sonnet 5.5 too. Open-ended investigation, risky or broad work, goal steps, timed and multi-agent tasks stay on Opus 5.5, which is stronger at long agentic tool loops. Each task's route note names its Claude model and why. A model set in a subscription's per-role models, a usage-saving model, or a model pinned on the task always wins. If Sonnet is not installed or its own pool is capped, the task continues on Opus. Off: every Claude role runs Opus 5.5."
+                  on={settings.scopedSonnetRouting}
+                  onChange={(v) => setSettings({ scopedSonnetRouting: v })}
+                />
                 <ModelScoreboard enabled={settings.autoModelSelection} />
               </Group>
               <Group label="Director Supervisor">
@@ -1502,7 +1508,7 @@ function SubRoleModels({
   return (
     <div className="sub-field">
       <button className={"sub-disclosure" + (open ? " open" : "")} onClick={() => setOpen((o) => !o)}>
-        <Caret /> Per-role models{count ? ` · ${count} overriding` : " · all inherit default"}
+        <Caret /> Per-role models{count ? ` · ${count} overriding` : " · all on Auto"}
       </button>
       {open && (
         <div className="sub-models">
@@ -1516,7 +1522,7 @@ function SubRoleModels({
                 <ModelSelect
                   value={visibleValue}
                   options={roleOptions}
-                  defaultLabel={`Inherit (${defaultLabelFor(role)})`}
+                  defaultLabel={`Auto (${defaultLabelFor(role)})`}
                   onChange={(m) => setModel(subId, role, m)}
                 />
               </div>
@@ -1549,7 +1555,12 @@ const Caret = () => (
 function AccountModels({ accountId }: { accountId: string }) {
   const models = useStore((s) => s.settings.claudeModels);
   const defaults = useStore((s) => s.settings.modelDefaults);
-  return <SubRoleModels subId={accountId} models={models} defaultLabelFor={(role) => defaults[role] ?? "—"} />;
+  const scopedSonnet = useStore((s) => s.settings.scopedSonnetRouting);
+  const autoLabel = (role: Role): string => {
+    const configured = defaults[role] ?? "—";
+    return scopedSonnet && (role === "implementor" || role === "qa") ? `${configured}, Sonnet 5.5 when well-scoped` : configured;
+  };
+  return <SubRoleModels subId={accountId} models={models} defaultLabelFor={autoLabel} />;
 }
 
 /** The MAX reasoning-effort cap for one Claude account. `max` means uncapped, so it's dropped from the

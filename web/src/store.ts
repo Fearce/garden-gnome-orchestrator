@@ -877,6 +877,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   selfImproveEnabled: false,
   summarizeDoneDeliverables: false,
   autoModelSelection: false,
+  scopedSonnetRouting: true,
   tokenLimitEnabled: false,
   tokenLimitPercent: 80,
   fastUsagePolling: false,

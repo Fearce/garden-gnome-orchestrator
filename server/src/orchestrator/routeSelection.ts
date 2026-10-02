@@ -12,6 +12,7 @@
 import type { Effort, ImplementorModelPolicy, RouteDecision, RouteEvidence, RouteScope } from "../types.js";
 import { AUTOMATIC_EFFORT_CEILING } from "./automaticEffort.js";
 import { DEFAULT_FLAGSHIP_MODEL } from "./modelRoutingPolicy.js";
+import { routeClaudeModel } from "./claudeModelRoute.js";
 
 export const ROUTE_POLICY_VERSION = 3;
 
@@ -30,6 +31,10 @@ export interface RouteInput {
    * investigation or independent verification selects the stages that actually help.
    */
   readerEscalation?: { reason?: string; answer?: string } | null;
+  /** A goal's step task: long autonomous work that keeps the Opus line whatever its brief reads like. */
+  goalStep?: boolean;
+  /** A shotgun collaborator's own slice. It routes its stages on that slice, but keeps the split's Opus line. */
+  collaborator?: boolean;
 }
 
 interface Signal {
@@ -256,19 +261,31 @@ function routeImplementorEffort(
 }
 
 function completeDecision(
-  decision: Omit<RouteDecision, "modelPolicy" | "evidence" | "policyVersion" | "implementorEffort" | "effortReason">,
+  input: RouteInput,
+  decision: Omit<RouteDecision, "modelPolicy" | "evidence" | "policyVersion" | "implementorEffort" | "effortReason" | "claudeModel">,
   riskHits: string[],
   structural: string[],
   evidence: RouteEvidence,
   narrowHinted = false,
 ): RouteDecision {
   const effort = routeImplementorEffort(decision.scope, narrowHinted, riskHits, structural, evidence);
+  const modelPolicy = implementorModelPolicy(riskHits, structural, evidence);
   return {
     ...decision,
-    modelPolicy: implementorModelPolicy(riskHits, structural, evidence),
+    modelPolicy,
     evidence,
     implementorEffort: effort.effort,
     effortReason: effort.reason,
+    claudeModel: routeClaudeModel({
+      scope: decision.scope,
+      usePlanner: decision.usePlanner,
+      flagshipSignals: modelPolicy.tier === "flagship" ? modelPolicy.signals : [],
+      riskHits,
+      structural,
+      goalStep: input.goalStep,
+      shotgun: input.shotgun || input.collaborator,
+      timed: (input.timedHours ?? 0) > 0,
+    }),
     policyVersion: ROUTE_POLICY_VERSION,
   };
 }
@@ -318,7 +335,7 @@ export function selectRoute(input: RouteInput): RouteDecision {
       compoundCount: countCompoundMarkers(evidenceText),
       riskCount: riskMatches(evidenceText).length,
     };
-    return completeDecision({
+    return completeDecision(input, {
       usePlanner: true,
       useQa: true,
       scope: "broad",
@@ -341,7 +358,7 @@ export function selectRoute(input: RouteInput): RouteDecision {
 
   if (riskHits.length > 0 || structural.length > 0) {
     const signals = [...riskHits, ...structural];
-    return completeDecision({
+    return completeDecision(input, {
       usePlanner: true,
       useQa: true,
       scope: "broad" as RouteScope,
@@ -360,7 +377,7 @@ export function selectRoute(input: RouteInput): RouteDecision {
         ...narrowHits,
         ...verificationHits,
       ];
-      return completeDecision({
+      return completeDecision(input, {
         usePlanner: false,
         useQa: true,
         scope: "standard" as RouteScope,
@@ -369,7 +386,7 @@ export function selectRoute(input: RouteInput): RouteDecision {
       }, riskHits, structural, evidence);
     }
     const signals = [`short, single-scope brief (${wordCount} words${fileCount ? `, ${fileCount} file ref(s)` : ""})`, ...narrowHits];
-    return completeDecision({
+    return completeDecision(input, {
       usePlanner: false,
       useQa: false,
       scope: "narrow" as RouteScope,
@@ -378,7 +395,7 @@ export function selectRoute(input: RouteInput): RouteDecision {
     }, riskHits, structural, evidence, narrowHits.length > 0);
   }
 
-  return completeDecision({
+  return completeDecision(input, {
     usePlanner: true,
     useQa: true,
     scope: "standard" as RouteScope,

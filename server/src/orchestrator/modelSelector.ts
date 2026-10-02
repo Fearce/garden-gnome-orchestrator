@@ -96,7 +96,7 @@ export function modelNote(provider: ImplementorProvider, model: string): string 
   if (provider === "grok") return "capable generalist, frontier-tier reasoning; separate CLI with no interactive bus tools, but text bridges preserve office chat, owner notes, and deliverables";
   if (provider === "zai") return "GLM coding-plan model on an Anthropic-compatible endpoint — keeps every tool a Claude run has; solid mid-tier coder";
   if (id.includes("haiku")) return "fastest and cheapest; well suited to small, well-scoped, mechanical changes";
-  if (id.includes("sonnet")) return "balanced cost and capability; the workhorse for ordinary feature work and refactors";
+  if (id.includes("sonnet")) return "fast; excels at well-scoped, clearly specified coding but weak at long agentic tool loops. Offered only for work the route judged well-scoped";
   if (id.includes("fable")) return "frontier reasoning, drawn from its own separate limited allowance — worth spending on genuinely hard work";
   if (id.includes("opus")) return "the strongest Claude tier; multi-file features, subtle debugging, long-horizon work";
   return "general-purpose coding model";

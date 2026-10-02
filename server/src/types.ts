@@ -818,6 +818,17 @@ export interface ImplementorModelPolicy {
   signals: string[];
 }
 
+/** Which Claude line runs this task's implementor (and QA) when Claude runs it: Sonnet 5.5 for
+ *  well-scoped "normal coding", Opus 5.5 for open-ended, agentic or long-running work. Judged from the
+ *  route's own evidence (`claudeModelRoute.ts`), then once more from the planner's plan when one exists. */
+export interface ClaudeModelRoute {
+  tier: "sonnet" | "opus";
+  reason: string; // one line, shown in the route note
+  /** The planner's plan may still move the tier: the route's case for Opus (or Sonnet) was structural,
+   *  not a hard agentic signal. False once a plan has judged it, and for every locked Opus reason. */
+  planRefinable: boolean;
+}
+
 /** Reproducible non-semantic evidence behind the route. These counts also feed capacity reservation, so
  * a long multi-part brief without a planner still reserves more than a one-line edit. */
 export interface RouteEvidence {
@@ -850,6 +861,8 @@ export interface RouteDecision {
   implementorEffort?: Effort;
   /** Why the route chose `implementorEffort` — shown in the Route selected note. Absent before policy v3. */
   effortReason?: string;
+  /** The Claude line for this task. Absent on routes persisted before scoped Sonnet routing, which run Opus. */
+  claudeModel?: ClaudeModelRoute;
   policyVersion?: number;
 }
 
@@ -1216,6 +1229,7 @@ export interface OrchestratorSettings {
   selfImproveEnabled: boolean; // off (default) → opt-in; on → after a task completes, the implementor runs one extra round building the tools/skills/memories that would have made the task easier
   summarizeDoneDeliverables: boolean; // off (default) → a done/review task's feed ends with the implementor's own final report. on → one Sonnet call condenses that report + the surfaced files into a short owner note shown there instead (the full report stays one click away)
   autoModelSelection: boolean; // off (default) → configured models + usage-aware provider routing. on → before each implementor starts a provider-neutral judge picks its model AND effort from every backend dispatchable right now. Implementor picks are graded for the next choice. Implementor-only: the director always runs on its configured model.
+  scopedSonnetRouting: boolean; // on (default) → a well-scoped task's Claude implementor and QA run Sonnet 5.5 and the reader lane runs Sonnet 5.5, wherever the per-role matrix leaves that role on Auto; open-ended, agentic and long work stays on Opus 5.5. off → every Claude role runs Opus 5.5
   maxConcurrent: number; // max pipelines running at once; further dispatches wait in 'queued'
   maxConcurrentPerRepo: number; // max pipelines running at once for a SINGLE repo (normalized workspace); 0 (default) = unlimited. Additional tasks for a repo already at its per-repo cap wait in 'queued' until one of that repo's tasks finishes — tasks in OTHER repos are unaffected (they still run up to maxConcurrent).
   // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----

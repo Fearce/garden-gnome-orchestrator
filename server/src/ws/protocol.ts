@@ -440,6 +440,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         selfImproveEnabled: z.boolean(),
         summarizeDoneDeliverables: z.boolean(),
         autoModelSelection: z.boolean(),
+        scopedSonnetRouting: z.boolean(),
         tokenLimitEnabled: z.boolean(),
         tokenLimitPercent: z.number().int().min(50).max(99),
         fastUsagePolling: z.boolean(),

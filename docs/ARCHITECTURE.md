@@ -230,7 +230,7 @@ is a much smaller, deterministic sibling of the above: once the Codex general po
 sits in the last 10% of its weekly window, `modelFor`/`providerRoleModel` — the plain default model-resolution
 layer every role runs through absent a strict pin or an auto-select pick, including the per-role/per-subscription
 model-matrix override — caps the backend's model to its economy tier (GPT-6
-Luna — Claude has no economy tier: every Claude role runs Opus 5.5, `claudeOpusFloor.ts`) instead of a pricier one, so the remaining runway isn't spent on the most expensive model right before the
+Luna — Claude has no economy tier: every configured Claude role runs Opus 5.5, `claudeOpusFloor.ts`; Sonnet 5.5 is chosen per task by the route, never by conservation) instead of a pricier one, so the remaining runway isn't spent on the most expensive model right before the
 window caps outright. Unlike `modelRoutingPolicy.isPolicyApprovedFlagship` (which fails CLOSED — an unreviewed
 model id is excluded from flagship routing), conservation's own "is this already cheap" check
 (`TOKEN_CONSERVATION_ECONOMY_MODELS`) fails OPEN toward conserving: an id it has never seen is conserved by
@@ -355,7 +355,11 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   "misrouting to the cheap path is the unsafe direction" rule. That decision also persists an
   implementor capability floor: `adaptive` keeps cheapest-capable selection, while substantial/risky
   work is `flagship`, prefers Opus 5.5, and permits only reviewed flagship fallbacks. If capacity cannot
-  satisfy that floor, the task waits visibly; an exact owner model pin remains authoritative. The pick is
+  satisfy that floor, the task waits visibly; an exact owner model pin remains authoritative. The same
+  decision carries the task's **Claude line** (`claudeModelRoute.ts`). Narrow or contained work runs its
+  Claude implementor and QA on Sonnet 5.5. Agentic work (investigation, goal steps, duration windows,
+  shotgun splits, flagship risk) stays on Opus 5.5. A tight plan can move a not-obviously-contained task
+  to Sonnet once, before it implements. Pins, usage saving and per-role Settings models outrank it. The pick is
   persisted (`stage_outputs.routeDecision`, sticky across resume except for a one-time upgrade of legacy
   decisions) and announced as a system message in the task's own feed ("🧭 Route selected/updated — …"), so it's visible
   as a deliberate choice, not a silent omission. When the planner DOES run, its structured output
@@ -380,7 +384,7 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
 - **Read lane (`dispatch_read`) — a single-agent short-circuit, immune to route selection.** A
   thread dispatched with `lane: "read"` (the director's `dispatch_read` tool) skips the whole
   planner→implementor→QA pipeline and the route decision above entirely: `runPipeline` sees the
-  lane and runs ONE read-only **reader** (`runReader` → Opus 5.5, the §3 read-only toolset), which
+  lane and runs ONE read-only **reader** (`runReader` → Sonnet 5.5 when scoped Sonnet routing is on, else Opus 5.5; the §3 read-only toolset), which
   answers a pure lookup by posting the answer as a finding — no planner, no QA, regardless of the
   operator's settings. It's for the ~1% of tasks that are answered just by reading (the
   cost/benefit analysis's Option C): seconds-to-minutes and a fraction of the cost of the

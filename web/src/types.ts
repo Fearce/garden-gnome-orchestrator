@@ -788,6 +788,7 @@ export interface OrchestratorSettings {
   selfImproveEnabled: boolean; // opt-in (off by default): completed tasks get one extra implementor round that builds the tools/skills/memories the session showed were missing
   summarizeDoneDeliverables: boolean; // opt-in (off by default): a Sonnet summary of the final report + deliverables ends a done/review task's feed instead of the raw report
   autoModelSelection: boolean; // opt-in: smart-pick each implementor's model/effort from every dispatchable backend; implementor outcomes feed later picks. The director always runs on its configured model.
+  scopedSonnetRouting: boolean; // default on: well-scoped tasks run their Claude implementor/QA (and the reader lane) on Sonnet 5.5 where the role matrix is on Auto; agentic work stays on Opus 5.5
   // Token-usage safety limit: opt-in auto-stop when live utilization reaches the threshold. Disabled by
   // default; the percent is clamped 50–99 (default 80) and compared against the live rate-limit burn.
   tokenLimitEnabled: boolean;
