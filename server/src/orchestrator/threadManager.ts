@@ -8532,22 +8532,28 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   /** The route note's Claude-line sentence: which model a Claude implementor runs and why. Undefined for
-   *  a strict pin (its own notice says what runs) and a route persisted before the line existed. */
+   *  a strict pin (its own notice says what runs), a default-mode session (it runs the default-mode model,
+   *  never the route's line) and a route persisted before the line existed. */
   private claudeModelNote(threadId: string, route: ClaudeModelRoute | undefined): string | undefined {
-    if (!route || this.db.getThread(threadId)?.modelRequest) return undefined;
+    const thread = this.db.getThread(threadId);
+    if (!route || thread?.modelRequest || thread?.lane === "vanilla") return undefined;
     if (!this.settingBool("setting_scoped_sonnet_routing", true)) return "Claude model: Opus (scoped Sonnet routing is off in Settings).";
     const model = latestFamilyModel(route.tier === "sonnet" ? SCOPED_SONNET_MODEL : CLAUDE_OPUS_FLOOR_MODEL);
-    const overruled = route.tier === "sonnet" ? this.scopedSonnetOverruledBy() : undefined;
-    if (overruled) return `Claude model: the route judged this well-scoped for ${model} (${route.reason}), but ${overruled} takes precedence.`;
+    const overrides = route.tier === "sonnet" ? this.scopedSonnetOverrides() : { all: false, reasons: [] };
+    const reasons = overrides.reasons.join(" and ");
+    if (overrides.all) return `Claude model: the route judged this well-scoped for ${model} (${route.reason}), but ${reasons} takes precedence.`;
+    if (reasons) return `Claude model: ${model} — ${route.reason}; on a subscription under ${reasons}, the implementor runs Opus instead.`;
     return `Claude model: ${model} — ${route.reason}.`;
   }
 
-  /** The explicit Settings choice that would keep a scoped task's implementor off Sonnet, for its note. */
-  private scopedSonnetOverruledBy(): string | undefined {
-    if (this.anyUsageSavingActive()) return "usage saving";
-    const cliSubs = new Set<string>([CODEX_SUB_ID, GROK_SUB_ID, ZAI_SUB_ID]);
-    const configured = Object.entries(this.modelOverrides()).some(([subId, roles]) => !cliSubs.has(subId) && roles?.implementor?.trim());
-    return configured ? "the implementor model set in Settings" : undefined;
+  /** The explicit Settings choices that keep a scoped task's implementor off Sonnet — the same checks
+   *  `scopedSonnet` makes — across the enabled Claude subscriptions, since dispatch picks one later. */
+  private scopedSonnetOverrides(): { all: boolean; reasons: string[] } {
+    const subs = this.usageSavingAccounts().filter((account) => account.enabled).map((account) => account.id);
+    const reasons = subs.map((subId): string | undefined =>
+      this.usageSavingTarget(subId) ? "usage saving" : this.claudeRoleConfigured(subId, "implementor") ? "the implementor model set in Settings" : undefined);
+    const chosen = reasons.filter((reason): reason is string => !!reason);
+    return { all: subs.length > 0 && chosen.length === subs.length, reasons: [...new Set(chosen)] };
   }
 
   /** A Claude line chosen after the route note was posted (a plan judged it, or an older route gained it). */

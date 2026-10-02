@@ -44,8 +44,13 @@ floor still lifts every *configured* Sonnet; the route is the one automatic path
   through `modelCapFallback` (`fallbackModelFor` covers Sonnet → `config.sonnetFallbackModel`). A pinned
   Sonnet is exact and parks instead.
 - The 🧭 route note carries `Claude model: <id> — <reason>.`. When usage saving or a Settings implementor
-  model would overrule the Sonnet, it says so. `scopedSonnetOverruledBy` reads the matrix keys, not
-  `accounts.dto()`, because several itest stubs lack `dto`.
+  model would overrule the Sonnet, it says so. `scopedSonnetOverrides` applies `scopedSonnet`'s checks to
+  every enabled Claude sub (dispatch picks one later). If all are overridden, the note says "takes
+  precedence"; if only some are, it names them as the exception. A default-mode session gets no Claude
+  sentence. Never use the global `anyUsageSavingActive()`: it counts Codex/Grok saving, which never moves a
+  Claude run. The first live task (2026-10-02) ran Sonnet under a note claiming "usage saving takes
+  precedence" for that reason. Read accounts through `usageSavingAccounts()`, not `accounts.dispatchPreview()`
+  or `dto()`: several itest stubs (vanilla-lane, goal-continuation) carry neither.
 
 ## Switch
 Settings → Auto model selection → "Sonnet for well-scoped work" (`scopedSonnetRouting`, kv

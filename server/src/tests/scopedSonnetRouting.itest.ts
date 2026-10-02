@@ -63,6 +63,8 @@ const AGENTIC_BRIEF = "Investigate why QA keeps timing out on the d2r repo and f
 /** Models whose own pool the stub reports as capped. */
 const limited = new Set<string>();
 let stubSevenDay = 0;
+/** The second subscription's weekly meter; dispatch always picks acct1. */
+let stubOtherSevenDay = 0;
 
 class StubAccounts {
   onUsageRefresh(_cb: () => void): void {}
@@ -88,7 +90,10 @@ class StubAccounts {
   setSpreadUsage(_on: boolean): void {}
   setProfileToken(_id: string, _token: string): void {}
   dto(): unknown[] {
-    return [{ id: "acct1", label: "Sub One", enabled: true, fiveHour: 0, sevenDay: stubSevenDay, sevenDayReset: null }];
+    return [
+      { id: "acct1", label: "Sub One", enabled: true, fiveHour: 0, sevenDay: stubSevenDay, sevenDayReset: null },
+      { id: "acct2", label: "Sub Two", enabled: true, fiveHour: 0, sevenDay: stubOtherSevenDay, sevenDayReset: null },
+    ];
   }
 }
 
@@ -243,18 +248,19 @@ console.log("\n=== scoped sonnet — explicit choices win ===\n");
 
     const vanilla = routedTask(h, { lane: "vanilla" });
     check("a default-mode session is never routed to Sonnet", implementorModel(h, vanilla.id) === OPUS, implementorModel(h, vanilla.id));
+    check("…and its route note names no Claude line", !notes(h, vanilla.id).some((content) => content.includes("Claude model:")), JSON.stringify(notes(h, vanilla.id)));
   } finally {
     h.dispose();
   }
 }
 {
-  const h = makeHarness({ acct1: { implementor: OPUS } });
+  const h = makeHarness({ acct1: { implementor: OPUS }, acct2: { implementor: OPUS } });
   try {
     const { id } = routedTask(h);
     check("a per-role model set in Settings wins over the route", implementorModel(h, id) === OPUS, implementorModel(h, id));
     check("…only for that role: QA left on Auto still runs Sonnet", roleModel(h, id, "qa") === SONNET, roleModel(h, id, "qa"));
     const note = notes(h, id).find((content) => content.startsWith("🧭 Route selected"));
-    check("…and the route note says the setting takes precedence", !!note && note.includes("the implementor model set in Settings takes precedence"), note);
+    check("…and with it set on every sub, the route note says the setting takes precedence", !!note && note.includes("the implementor model set in Settings takes precedence"), note);
   } finally {
     h.dispose();
   }
@@ -272,13 +278,34 @@ console.log("\n=== scoped sonnet — explicit choices win ===\n");
   const h = makeHarness();
   try {
     stubSevenDay = 95;
-    h.db.kvSet("setting_usage_saving", JSON.stringify({ acct1: { enabled: true, thresholdPct: 90, model: OPUS, effort: "medium" } }));
+    stubOtherSevenDay = 95;
+    const saving = { enabled: true, thresholdPct: 90, model: OPUS, effort: "medium" };
+    h.db.kvSet("setting_usage_saving", JSON.stringify({ acct1: saving, acct2: saving }));
     const { id } = routedTask(h);
     check("usage saving wins over the route", implementorModel(h, id) === OPUS && roleModel(h, id, "qa") === OPUS, `${implementorModel(h, id)}/${roleModel(h, id, "qa")}`);
     const note = notes(h, id).find((content) => content.startsWith("🧭 Route selected"));
-    check("…and the route note says so", !!note && note.includes("usage saving takes precedence"), note);
+    check("…and with it on every sub, the route note says so", !!note && note.includes("usage saving takes precedence"), note);
   } finally {
     stubSevenDay = 0;
+    stubOtherSevenDay = 0;
+    h.dispose();
+  }
+}
+{
+  const h = makeHarness({ acct2: { implementor: OPUS } });
+  try {
+    stubOtherSevenDay = 95;
+    h.db.kvSet("setting_usage_saving", JSON.stringify({ acct2: { enabled: true, thresholdPct: 90, model: OPUS, effort: "medium" } }));
+    const { id } = routedTask(h);
+    check("usage saving and a matrix model on another sub leave the dispatching sub on Sonnet", implementorModel(h, id) === SONNET, implementorModel(h, id));
+    const note = notes(h, id).find((content) => content.startsWith("🧭 Route selected"));
+    check(
+      "…and the route note names Sonnet, with the other sub as the exception",
+      !!note && note.includes(`Claude model: ${SONNET} — `) && note.includes("on a subscription under usage saving, the implementor runs Opus instead") && !note.includes("precedence"),
+      note,
+    );
+  } finally {
+    stubOtherSevenDay = 0;
     h.dispose();
   }
 }
