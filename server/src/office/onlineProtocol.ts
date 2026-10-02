@@ -133,6 +133,8 @@ export interface RelayShareUsage {
 /** Upper bound on one shared call's message text, summed over every message. Well inside the relay's
  *  socket payload cap even for multi-byte text, so a call is refused clearly instead of being dropped. */
 export const SHARE_CALL_MAX_CHARS = 150_000;
+/** Upper bound on message count, including the opening instructions and any omission marker. */
+export const SHARE_CALL_MAX_MESSAGES = 400;
 /** Upper bound on one reply's text. */
 export const SHARE_REPLY_MAX_CHARS = 32_000;
 export const SHARE_MAX_OFFERS = 8;

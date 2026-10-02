@@ -17,6 +17,9 @@ const path = require("node:path");
 const http = require("node:http");
 const { spawn } = require("node:child_process");
 const Database = require("better-sqlite3");
+const { WebSocket } = require("ws");
+// Always exercise the owner authentication boundary, including on worktrees without a local .env.
+process.env.AUTH_PASSWORD ||= "director-share-lab-only-password";
 const { SERVER_ROOT, loadChromium, allowConcurrentContexts, authPassword, requireBuild, requireFreshWebBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
 
 const DONOR_PORT = 4561; // HTTPS on 4563
@@ -144,7 +147,7 @@ async function prepareConsole({ dataDir, port, env, seed }) {
 }
 
 async function openConsole(browser, port, viewport = { width: 1440, height: 950 }) {
-  const context = await browser.newContext({ viewport });
+  const context = await browser.newContext({ viewport, ...(viewport.width < 600 ? { hasTouch: true, isMobile: true } : {}) });
   const page = await context.newPage();
   await page.request.post(`http://127.0.0.1:${port}/api/login`, { data: { password: authPassword() } });
   await page.goto(`http://127.0.0.1:${port}/`, { timeout: NAV_TIMEOUT });
@@ -185,6 +188,20 @@ async function localDeadline(page, msFromNow) {
 
 const shares = (dataDir) => JSON.parse(readKv(dataDir, "director_shares_v1") || "{}");
 
+async function unauthenticatedSocketRejected(port) {
+  const me = await (await fetch(`http://127.0.0.1:${port}/api/me`)).json();
+  if (me.authed !== false) return false;
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+    let received = false;
+    const timer = setTimeout(() => { ws.terminate(); resolve(false); }, 10_000);
+    ws.on("message", () => { received = true; });
+    ws.on("error", () => {});
+    // Fastify can close before the upgrade finishes, so ws reports 1006 instead of the 4401 frame.
+    ws.on("close", (code) => { clearTimeout(timer); resolve((code === 4401 || code === 1006) && !received); });
+  });
+}
+
 async function main() {
   requireBuild();
   requireFreshWebBuild();
@@ -195,8 +212,8 @@ async function main() {
   const shots = shotDir(donorDir);
   console.log(`director-share-lab: donor :${DONOR_PORT}, recipient :${RECIPIENT_PORT}, relay :${RELAY_PORT}, provider :${PROVIDER_PORT}`);
 
-  const donorEnv = { DIRECTOR_SHARE_OPENAI_BASE_URL: `http://127.0.0.1:${PROVIDER_PORT}/v1`, OWNER_NAME: "Dana" };
-  const recipientEnv = { OWNER_NAME: "Rowan" };
+  const donorEnv = { DIRECTOR_SHARE_OPENAI_BASE_URL: `http://127.0.0.1:${PROVIDER_PORT}/v1`, OWNER_NAME: "Dana", REMOTE_ACCESS: "0" };
+  const recipientEnv = { OWNER_NAME: "Rowan", REMOTE_ACCESS: "0" };
   let relayProc = null;
   let provider = null;
   let browser = null;
@@ -205,6 +222,9 @@ async function main() {
     relayProc = await bootRelay(relayDir);
     await prepareConsole({ dataDir: donorDir, port: DONOR_PORT, env: donorEnv, seed: { openai_api_key: DONOR_KEY, ...(await officeMembership("Donor tower")) } });
     await prepareConsole({ dataDir: recipientDir, port: RECIPIENT_PORT, env: recipientEnv, seed: await officeMembership("Recipient laptop") });
+
+    check("an unauthenticated donor socket cannot read or change sharing settings", await unauthenticatedSocketRejected(DONOR_PORT));
+    check("an unauthenticated recipient socket cannot select shared capacity", await unauthenticatedSocketRejected(RECIPIENT_PORT));
 
     const chromium = loadChromium();
     browser = await chromium.launch();

@@ -7,6 +7,7 @@ import {
   RELAY_FEATURE_DIRECTOR_SHARING,
   RELAY_PROTOCOL,
   SHARE_CALL_MAX_CHARS,
+  SHARE_CALL_MAX_MESSAGES,
   SHARE_MAX_OFFERS,
   SHARE_MAX_PENDING_CALLS,
   SHARE_REPLY_MAX_CHARS,
@@ -93,7 +94,6 @@ const SHARE_ERROR_CODES = new Set<RelayShareErrorCode>([
   "offline", "not-shared", "expired", "busy", "rate-limited", "exhausted", "provider-error", "too-large", "cancelled", "timeout",
 ]);
 const SHARE_ROLES = new Set<RelayShareMessage["role"]>(["system", "user", "assistant"]);
-const MAX_SHARE_MESSAGES = 400;
 
 type ChatFrame = Extract<ClientFrame, { t: "chat" }>;
 type CleanChat = Pick<ChatFrame, "room" | "body" | "senderName" | "role"> & {
@@ -189,7 +189,7 @@ const cleanShares = (raw: unknown, now: number): RelayShareOffer[] => {
 };
 
 const cleanShareMessages = (raw: unknown): RelayShareMessage[] | null => {
-  if (!Array.isArray(raw) || !raw.length || raw.length > MAX_SHARE_MESSAGES) return null;
+  if (!Array.isArray(raw) || !raw.length || raw.length > SHARE_CALL_MAX_MESSAGES) return null;
   const out: RelayShareMessage[] = [];
   for (const m of raw as Partial<RelayShareMessage>[]) {
     if (!m || !SHARE_ROLES.has(m.role as RelayShareMessage["role"]) || typeof m.content !== "string") return null;

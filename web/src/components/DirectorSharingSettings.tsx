@@ -33,7 +33,7 @@ export function DirectorShareDonorSection() {
     <div className="dshare">
       <p className="settings-note tight">
         Lend an API-key subscription to other members of the online office as their Director. Their Director's model
-        calls run here, on your key, which never leaves this machine. They never reach your tasks, memory, tools or
+        calls send their conversation context here and run on your key, which never leaves this machine. They never reach your tasks, memory, tools or
         files, and the tasks their Director dispatches run on their own subscriptions. Each share ends at its own
         deadline, enforced by this server.
       </p>
@@ -258,8 +258,8 @@ export function DirectorShareRecipientSection() {
   return (
     <div className="dshare">
       <p className="settings-note tight">
-        Use capacity another office member shares as your Director. Only your Director's model calls go to them. Your
-        conversation, tools, memory and files stay on this console, and dispatched tasks run on your own
+        Use capacity another office member shares as your Director. Each model call sends your conversation context
+        through the office relay to their machine and provider. Your stored chat, tools, memory access and files stay on this console, and dispatched tasks run on your own
         subscriptions. If the shared Director becomes unavailable it says so; it never switches to your own
         subscriptions on its own.
       </p>

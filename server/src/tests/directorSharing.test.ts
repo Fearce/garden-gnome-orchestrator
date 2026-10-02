@@ -399,6 +399,11 @@ try {
     const long = [{ role: "user" as const, content: "S".repeat(10) }, ...Array.from({ length: 30 }, (_, i) => ({ role: (i % 2 ? "assistant" : "user") as "user" | "assistant", content: `${i}`.padEnd(1000, "x") }))];
     const fitted = fitToLimit(long, 5_000);
     check("an over-long transcript keeps the opening message and the newest turns", fitted[0]!.content === long[0]!.content && fitted.at(-1)!.content === long.at(-1)!.content && fitted.reduce((n, m) => n + m.content.length, 0) <= 5_000);
+
+    const many = [{ role: "user" as const, content: "Director instructions" }, ...Array.from({ length: 450 }, (_, i) => ({ role: (i % 2 ? "assistant" : "user") as "user" | "assistant", content: `short turn ${i}` }))];
+    const bounded = fitToLimit(many);
+    check("many short turns fit the relay's message count limit", bounded.length <= 400 && bounded[0]!.content === many[0]!.content && bounded.at(-1)!.content === many.at(-1)!.content && bounded.some((m) => m.content.includes("omitted")));
+    check("a transcript at the relay's message count limit is retained", fitToLimit(many.slice(0, 400)).length === 400);
   }
 
   console.log("\n=== the Director never falls back to a private subscription ===\n");

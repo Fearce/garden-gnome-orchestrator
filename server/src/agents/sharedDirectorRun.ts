@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentEvent, RateLimitInfo, TokenUsage } from "../types.js";
 import type { AgentRunLike, ResultEvent, UserContent } from "./runner.js";
 import { parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
-import { SHARE_CALL_MAX_CHARS, type RelayShareErrorCode, type RelayShareMessage } from "../office/onlineProtocol.js";
+import { SHARE_CALL_MAX_CHARS, SHARE_CALL_MAX_MESSAGES, type RelayShareErrorCode, type RelayShareMessage } from "../office/onlineProtocol.js";
 import type { ShareCallResult } from "../office/directorShare/client.js";
 
 /** Conversations of shared Director sessions, by session id. In memory only, like the Director's own
@@ -171,10 +171,10 @@ function remember(sessionId: string, messages: RelayShareMessage[]): void {
 }
 
 /** Keep the opening message (it carries the Director's instructions and the bootstrapped history) and as
- *  many of the most recent messages as fit, marking the gap. */
+ *  many of the most recent messages as fit within both relay limits, marking the gap. */
 export function fitToLimit(messages: RelayShareMessage[], limit = SHARE_CALL_MAX_CHARS): RelayShareMessage[] {
   const size = (list: RelayShareMessage[]): number => list.reduce((n, m) => n + m.content.length, 0);
-  if (size(messages) <= limit) return messages;
+  if (size(messages) <= limit && messages.length <= SHARE_CALL_MAX_MESSAGES) return messages;
   const [first, ...rest] = messages;
   if (!first) return messages;
   const head = { ...first, content: first.content.slice(0, Math.floor(limit * 0.6)) };
@@ -182,6 +182,7 @@ export function fitToLimit(messages: RelayShareMessage[], limit = SHARE_CALL_MAX
   let budget = limit - head.content.length - marker.content.length;
   const tail: RelayShareMessage[] = [];
   for (let i = rest.length - 1; i >= 0; i--) {
+    if (tail.length >= SHARE_CALL_MAX_MESSAGES - 2) break;
     const m = rest[i]!;
     if (m.content.length > budget) {
       if (!tail.length) tail.unshift({ ...m, content: m.content.slice(-Math.max(0, budget)) });
