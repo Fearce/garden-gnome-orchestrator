@@ -270,7 +270,7 @@ export interface ScheduledTask {
 
 /** A goal's lifecycle. `active` keeps a step task working; `paused` stops new turns and steps (the
  *  running one finishes); `blocked` means GGO stopped continuing on its own (the same blocker three turns
- *  running, a turn with no tool call, or a repeated report) and `budget_limited` that the goal used its
+ *  running, two turns in a row with no tool call, or a repeated report) and `budget_limited` that the goal used its
  *  token budget. Both wait for the owner, and neither is completion. `achieved` and `abandoned` are terminal. */
 export type GoalStatus = "active" | "paused" | "blocked" | "budget_limited" | "achieved" | "abandoned";
 export const GOAL_STATUSES: GoalStatus[] = ["active", "paused", "blocked", "budget_limited", "achieved", "abandoned"];
@@ -1156,6 +1156,10 @@ export interface StageOutputs {
   // the fix: every kickoff-composing path renders it verbatim (never Haiku-summarized, unlike the
   // compressed prior-session handoff) so a standing owner instruction cannot silently drop across a resume.
   standingDirectives?: string[];
+  // Owner injections a goal step task received during its EARLIER goal turns, moved out of `standingDirectives`
+  // when the goal sends the next turn. Still rendered, but framed as belonging to the turn they were sent in:
+  // a "finish up" given to one turn must not stop every later turn of a step that runs for days.
+  priorTurnDirectives?: string[];
 }
 
 /** The live Token Safety freeze, broadcast on every transition and carried on `hello` so the console's

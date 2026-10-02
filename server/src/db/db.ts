@@ -2474,6 +2474,7 @@ export class Db {
       const preservedStage = this.getThreadStageOutputs(tid);
       const preservedReaderEscalation = preservedStage.readerEscalation;
       const preservedDirectives = preservedStage.standingDirectives;
+      const preservedPriorTurns = preservedStage.priorTurnDirectives;
       // A Jev sub-task's state and spawn questions ARE its brief; a retry re-asks them.
       const preservedJev =
         preservedStage.jevState !== undefined && preservedStage.jevQuestions
@@ -2497,10 +2498,11 @@ export class Db {
         .run({
           id: tid,
           stageOutputs:
-            preservedReaderEscalation || preservedDirectives?.length || preservedJev || preservedStage.skipSelfImprovement === true || preservedStage.skipQa === true
+            preservedReaderEscalation || preservedDirectives?.length || preservedPriorTurns?.length || preservedJev || preservedStage.skipSelfImprovement === true || preservedStage.skipQa === true
               ? JSON.stringify({
                   ...(preservedReaderEscalation ? { readerEscalation: preservedReaderEscalation } : {}),
                   ...(preservedDirectives?.length ? { standingDirectives: preservedDirectives } : {}),
+                  ...(preservedPriorTurns?.length ? { priorTurnDirectives: preservedPriorTurns } : {}),
                   ...(preservedJev ?? {}),
                   ...(preservedStage.skipSelfImprovement === true ? { skipSelfImprovement: true } : {}),
                   ...(preservedStage.skipQa === true ? { skipQa: true } : {}),
@@ -4011,6 +4013,15 @@ export class Db {
       ? (this.raw.prepare("SELECT * FROM goal_steps WHERE goal_id = ? AND settled_at IS NULL ORDER BY seq ASC").all(goalId) as Row[])
       : (this.raw.prepare("SELECT * FROM goal_steps WHERE settled_at IS NULL ORDER BY goal_id, seq ASC").all() as Row[]);
     return rows.map(rowToGoalStep);
+  }
+
+  /** Whether a task's ending closes a continuation turn of a step whose goal is still active: the goal carries
+   *  on by itself and tells the owner when it stops, so that ending is no news to them. */
+  endsGoalContinuationTurn(threadId: string): boolean {
+    const r = this.raw
+      .prepare("SELECT s.turns, g.status FROM goal_steps s JOIN goals g ON g.id = s.goal_id WHERE s.thread_id = ? ORDER BY s.created_at DESC LIMIT 1")
+      .get(threadId) as { turns: number; status: string } | undefined;
+    return !!r && r.turns > 1 && r.status === "active";
   }
 
   /** The director's brief for one step. Kept off `GoalStep` so the goals broadcast stays small. */

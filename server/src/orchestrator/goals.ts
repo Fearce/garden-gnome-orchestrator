@@ -50,7 +50,7 @@ import {
  * claim the director rejects just gets more work. Neither side can end the loop alone.
  *
  * Automatic continuation stops itself rather than spin, judged from evidence a report cannot fake (tool
- * calls, findings, the git state): a turn with no tool call, a turn that did no new work and repeated the
+ * calls, findings, the git state): a second turn running with no tool call, a turn that did no new work and repeated the
  * report before it, three turns running that did no new work, or three turns blocked on the same impasse
  * with nothing changed move the goal to `blocked`; a spent token budget to `budget_limited`. The budget is
  * checked between turns from finished runs' recorded usage, so a running turn may exceed it, and director
@@ -234,6 +234,8 @@ export const GOAL_BLOCKED_TURNS = 3;
 export const GOAL_IDLE_TURNS = 3;
 /** Consecutive turns of one task that end unclean (`review`) before the goal stops continuing it. */
 export const GOAL_UNCLEAN_TURNS = 2;
+/** Consecutive turns of one task with no tool call that stop the goal; the first only asks the director. */
+export const GOAL_SILENT_TURNS = 2;
 /** The longest a goal waits between checks on a live job its turns keep reporting without new work. */
 export const GOAL_WAIT_BACKOFF_MAX_MS = 60 * 60_000;
 /** A turn's tool calls are compared with this many of the task's earlier ones to find what it tried anew. */
@@ -735,7 +737,7 @@ export function goalContinuationMessage(goal: Goal, step: GoalStep, last: GoalSt
     "Start from evidence, not memory: check the repository, the tests and any running job against each part of the objective, then do the most valuable remaining work in this turn, committing at each coherent point.",
     "Wait only on a process, job or tool run you can show is still live, and wait for it inside this turn where you can; ending a turn just to poll again is no progress. A timeout while reading a live job is not a reason to restart it.",
     GOAL_STATUS_RULE,
-    "Automatic continuation stops after a turn that makes no tool call, after turns that do no new work (no repository change, no new finding, nothing new tried), and after the same blocker three turns running.",
+    "A turn that makes no tool call hands the goal to the director, and a second in a row stops it. Automatic continuation also stops after turns that do no new work (no repository change, no new finding, nothing new tried), and after the same blocker three turns running.",
   ].join("\n\n");
 }
 
@@ -774,6 +776,9 @@ export class GoalRunner {
   private readonly uncleanTurns = new Map<string, number>();
   /** goalId → consecutive WAITING turns that did no new work, which stretch the wait before the next check. */
   private readonly idleWaits = new Map<string, number>();
+  /** goalId → its carrier task's consecutive turns with no tool call. In memory, like `uncleanTurns`: the
+   *  durable idle streak still bounds a restart that forgets one. */
+  private readonly silentTurns = new Map<string, { threadId: string; count: number }>();
   /** The sub the last settings broadcast was burning for its reset; undefined until the first broadcast. */
   private resetBurnSubId: string | null | undefined;
 
@@ -884,6 +889,8 @@ export class GoalRunner {
       ...(pinChanged ? { pinChangedAt: at } : {}),
       ...(replan ? { nextCheckAt: null } : {}),
     });
+    // The director is asked about the new objective instead, so a silent turn before it must not count toward a stop.
+    if (objectiveChanged) this.silentTurns.delete(id);
     this.broadcast();
     if (replan && goal?.status === "active") this.evaluate(id);
     return { ok: true, goal: goal ?? undefined };
@@ -922,6 +929,7 @@ export class GoalRunner {
       // A resume starts a fresh audit: the director judges before the session continues on its own (the DB clock, as in `update`).
       ...(status === "active" ? { blockedStreak: 0, idleStreak: 0, lastTurnDigest: null, replanAt: Date.now() } : {}),
     });
+    if (status === "active") this.silentTurns.delete(id);
     this.hub.log("info", `Goal "${current.title}" is now ${status}.`);
     this.broadcast();
     if (status === "active") this.evaluate(id);
@@ -1188,9 +1196,10 @@ export class GoalRunner {
 
   /**
    * Why a turn of a persistent goal must not be followed automatically. Any turn that did new work resets the
-   * idle count, whatever it ended on. A turn that made no tool call (where its backend reports them) stops at
-   * once, clean or not. Otherwise a clean turn that did no new work stops when it also repeated the report of
-   * the turn before, or when it is the GOAL_IDLE_TURNS-th such turn running. A completion claim is left to the
+   * idle count, whatever it ended on. A turn that made no tool call (where its backend reports them), clean or
+   * not, hands the next turn to the director, since a closing report is how a turn normally ends; the
+   * GOAL_SILENT_TURNS-th in a row stops; the turns before it still count toward the idle streak. Otherwise a clean turn that did no new work stops when it also repeated
+   * the report of the turn before, or when it is the GOAL_IDLE_TURNS-th such turn running. A completion claim is left to the
    * audit, a BLOCKED turn is counted by `blockerStreak`, an unclean one by `noteUncleanTurn`, and a WAITING one
    * that did no new work stretches the wait before the next check instead of stopping a live job's watch.
    */
@@ -1200,10 +1209,14 @@ export class GoalRunner {
       this.db.updateGoal(goal.id, { lastTurnDigest: digest, idleStreak: 0 });
       this.idleWaits.delete(goal.id);
     }
-    if (status?.kind === "complete") return null;
-    if (turn.toolCalls === 0) {
-      const how = outcome === "review" ? "did not finish cleanly and made no tool call" : "made no tool call";
-      return `Step ${step.seq}'s last turn ${how}, so automatic continuation is suppressed. Resume the goal to continue.`;
+    if (status?.kind === "complete") {
+      this.silentTurns.delete(goal.id);
+      return null;
+    }
+    const silent = this.countSilentTurn(goal, step, turn);
+    if (silent >= GOAL_SILENT_TURNS) {
+      const unclean = outcome === "review" ? ", and the last did not finish cleanly" : "";
+      return `Step ${step.seq}'s last ${silent} turns made no tool call${unclean}, even with the director's direction after the first, so automatic continuation is suppressed. Resume the goal to continue.`;
     }
     if (evidence.progressed || outcome !== "done") return null;
     if (status?.kind === "waiting" || status?.kind === "blocked") {
@@ -1216,6 +1229,8 @@ export class GoalRunner {
     // repository speak for its turns: they never count as idle, but a repeated report still stops them.
     const idle = turn.toolCalls == null ? idleStreak : idleStreak + 1;
     this.db.updateGoal(goal.id, { lastTurnDigest: digest, idleStreak: idle });
+    // The first silent turn is the director's to judge, even when it repeated itself: a refusal usually does.
+    if (silent > 0) return null;
     const nothingNew = "no repository change, no new finding and nothing new tried";
     if (digest != null && digest === lastTurnDigest) {
       return `Step ${step.seq}'s last turn repeated the report of the turn before and did no new work (${nothingNew}), so automatic continuation is suppressed. Resume the goal to continue.`;
@@ -1224,6 +1239,19 @@ export class GoalRunner {
       return `The last ${idle} turns did no new work (${nothingNew}), so automatic continuation is suppressed. Resume the goal to continue.`;
     }
     return null;
+  }
+
+  /** The carrier's consecutive turns with no tool call, this one included; 0 when it made one or its backend
+   *  reports none. A fresh step task starts its own count. */
+  private countSilentTurn(goal: Goal, step: GoalStep, turn: GoalTurnActivity): number {
+    if (turn.toolCalls !== 0) {
+      this.silentTurns.delete(goal.id);
+      return 0;
+    }
+    const prior = this.silentTurns.get(goal.id);
+    const count = prior?.threadId === step.threadId ? prior.count + 1 : 1;
+    this.silentTurns.set(goal.id, { threadId: step.threadId!, count });
+    return count;
   }
 
   /**
@@ -1328,11 +1356,13 @@ export class GoalRunner {
    * A persistent goal's next turn without the director: its last turn ended cleanly with no completion
    * claim and nothing about the goal changed, so it continues in the same task and session. False hands
    * the evaluation to the director: no task to carry on, a claim to audit, a changed objective, an
-   * unclean turn, or a task that can no longer take a turn. A WAITING turn is deferred once, at no cost.
+   * unclean turn, a turn with no tool call, or a task that can no longer take a turn. A WAITING turn is
+   * deferred once, at no cost.
    */
   private continueOnItsOwn(goal: Goal): boolean {
     const carrier = this.carrier(goal, this.settledSteps(goal.id));
     if (!carrier || carrier.outcome !== "done" || carrier.agentClaimedComplete) return false;
+    if (this.silentTurns.get(goal.id)?.threadId === carrier.threadId) return false;
     const { replanAt } = this.db.goalLoopState(goal.id);
     if (replanAt != null && replanAt >= carrier.turnStartedAt) return false;
     const last = readGoalStatusLine(this.db.goalTurnActivity(carrier.threadId!, carrier.turnStartedAt).report);
@@ -1384,6 +1414,10 @@ export class GoalRunner {
     }
     const { replanAt } = this.db.goalLoopState(goal.id);
     if (replanAt != null && replanAt >= carrier.turnStartedAt) return "the owner changed the objective or resumed the goal since the last turn: check where it stands before it goes on";
+    if (this.silentTurns.get(goal.id)?.threadId === carrier.threadId) {
+      const unclean = last.outcome === "review" ? " and did not finish cleanly (its task ended in review)" : "";
+      return `the last turn made no tool call${unclean}: it only wrote its report. Judge from that report why it stopped. If it stopped on an instruction or an impasse that no longer holds, say so in \`next\` and give the turn concrete work; if this task's next turn again makes no tool call, the goal stops for the owner`;
+    }
     if (last.outcome === "review") return "the last turn did not finish cleanly (its task ended in review)";
     return "its task could not take another turn on its own";
   }

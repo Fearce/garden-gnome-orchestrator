@@ -446,13 +446,19 @@ async function main(): Promise<void> {
       const id = seedTask(h);
       await h.mgr.injectThread(id, BRANCH_DIRECTIVE, "queue");
       const thread = h.db.getThread(id)!;
-      const directives = h.db.getThreadStageOutputs(id).standingDirectives;
-      const kickoff = qaFixFreshKickoff(thread, undefined, "prior fix summary", [], directives);
+      const kickoff = qaFixFreshKickoff(thread, undefined, "prior fix summary", [], h.db.getThreadStageOutputs(id));
       check("the QA kickoff carries the standing directive", kickoff.includes(BRANCH_DIRECTIVE), kickoff);
       check(
         "…under the owner-instruction heading QA is told to check the work against",
         kickoff.includes("Owner instructions given during this task"),
         kickoff,
+      );
+      h.db.updateThreadStageOutputs(id, { priorTurnDirectives: ["leave lane B alone"] });
+      const goalKickoff = qaFixFreshKickoff(thread, undefined, "prior fix summary", [], h.db.getThreadStageOutputs(id));
+      check(
+        "…and a goal step's earlier-turn instructions reach it too, under their own heading",
+        goalKickoff.includes("leave lane B alone") && goalKickoff.includes("Owner instructions from earlier turns of this goal") && goalKickoff.includes(BRANCH_DIRECTIVE),
+        goalKickoff,
       );
       await settle();
     } finally {

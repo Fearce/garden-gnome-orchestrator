@@ -280,22 +280,56 @@ async function noProgress(): Promise<void> {
   goal = goalOf(h, g.id);
   check(`${GOAL_IDLE_TURNS} idle turns in a row stop`, goal.status === "blocked" && /did no new work/.test(goal.statusReason ?? ""));
 
-  console.log("goal session: a turn with no tool call stops at once");
+  console.log("goal session: a turn that ends on its report alone goes to the director");
   h = harness();
   g = await started(h);
-  await endTurn(h, g.thread, { report: "I think we are fine.\nGOAL STATUS: CONTINUE — x" });
+  h.answers.push(answer("continue", "The instruction ended with its turn: do the backlog"));
+  await endTurn(h, g.thread, { report: "Wrapped up as you asked; nothing changed.\nGOAL STATUS: BLOCKED — you asked me to finish up" });
   await h.runner.evaluate(g.id);
   goal = goalOf(h, g.id);
-  check("no tool call blocks without a continuation", goal.status === "blocked" && /no tool call/.test(goal.statusReason ?? "") && h.continued.length === 0);
+  check("a text-only turn does not block the goal", goal.status === "active");
+  check("the director is asked why it stopped, not skipped", h.judged.length === 2 && h.judged[1]!.includes("made no tool call: it only wrote its report"));
+  check("its direction goes into the same session", h.continued.length === 1 && h.continued[0]!.threadId === g.thread && h.continued[0]!.message.includes("Do The instruction ended with its turn: do the backlog."));
+  await endTurn(h, g.thread, { report: "Took the backlog.\nGOAL STATUS: CONTINUE — more backlog", tools: novel(5) });
+  await h.runner.evaluate(g.id);
+  check("a working turn after it continues on its own again", goalOf(h, g.id).status === "active" && h.continued.length === 2 && h.judged.length === 2);
+
+  console.log("goal session: a text-only turn that repeats the report before it still goes to the director");
+  h = harness();
+  g = await started(h);
+  await endTurn(h, g.thread, { report: "Finished up.\nGOAL STATUS: CONTINUE — nothing left", tools: novel(5) });
+  await h.runner.evaluate(g.id);
+  h.answers.push(answer("continue", "Take the next backlog item"));
+  await endTurn(h, g.thread, { report: "Finished up.\nGOAL STATUS: CONTINUE — nothing left" });
+  await h.runner.evaluate(g.id);
+  check("a repeated report does not stop it before the director judges", goalOf(h, g.id).status === "active" && h.judged.length === 2 && h.judged[1]!.includes("made no tool call"));
+
+  console.log("goal session: a turn with no tool call again after the director's direction stops");
+  h = harness();
+  g = await started(h);
+  h.answers.push(answer("continue", "Get back to work"));
+  await endTurn(h, g.thread, { report: "I think we are fine.\nGOAL STATUS: CONTINUE — x" });
+  await h.runner.evaluate(g.id);
+  check("the first goes to the director", goalOf(h, g.id).status === "active" && h.judged.length === 2 && h.continued.length === 1);
+  await endTurn(h, g.thread, { report: "Still fine, I think.\nGOAL STATUS: CONTINUE — y" });
+  await h.runner.evaluate(g.id);
+  goal = goalOf(h, g.id);
+  check("the second in a row blocks with the reason", goal.status === "blocked" && /last 2 turns made no tool call, even with the director's direction/.test(goal.statusReason ?? ""));
+  check("without another director call or turn", h.judged.length === 2 && h.continued.length === 1);
+  check("the stop is notified", h.notices.includes("input:Goal blocked: Carry"));
 
   console.log("goal session: an explicit resume starts a fresh audit");
   h.answers.push(answer("continue", "Pick up from the parser"));
   check("resume is accepted", h.runner.setStatus(g.id, "active").ok);
   await h.runner.idle();
   goal = goalOf(h, g.id);
-  check("the director is asked before the session goes on", h.judged.length === 2 && h.judged[1]!.includes("resumed the goal"));
-  check("the resumed goal continues in its session with the director's direction", h.continued.length === 1 && h.continued[0]!.message.includes("Do Pick up from the parser."));
+  check("the director is asked before the session goes on", h.judged.length === 3 && h.judged[2]!.includes("resumed the goal"));
+  check("the resumed goal continues in its session with the director's direction", h.continued.length === 2 && h.continued[1]!.message.includes("Do Pick up from the parser."));
   check("its progress summary is kept", goal.progress === "progress after Pick up from the parser");
+  h.answers.push(answer("continue", "Parser next"));
+  await endTurn(h, g.thread, { report: "Read the notes.\nGOAL STATUS: CONTINUE — parser" });
+  await h.runner.evaluate(g.id);
+  check("the resume starts the no-tool-call count afresh: the director is asked, not a stop", goalOf(h, g.id).status === "active" && h.judged.length === 4 && h.continued.length === 3);
 }
 
 async function blockerStreak(): Promise<void> {
@@ -529,13 +563,19 @@ async function races(): Promise<void> {
 }
 
 async function uncleanTurns(): Promise<void> {
-  console.log("goal session: an unclean turn with no tool call stops");
+  console.log("goal session: unclean turns with no tool call stop at the second");
   let h = harness();
   let g = await started(h);
+  h.answers.push(answer("continue", "Recover the context"));
   await endTurn(h, g.thread, { report: "Lost the context.", state: "review" });
   await h.runner.evaluate(g.id);
   let goal = goalOf(h, g.id);
-  check("it blocks without asking the director", goal.status === "blocked" && /did not finish cleanly and made no tool call/.test(goal.statusReason ?? "") && h.judged.length === 1 && h.continued.length === 0);
+  check("the first is the director's to judge", goal.status === "active" && h.judged.length === 2 && h.continued.length === 1);
+  check("told it both made no tool call and did not finish cleanly", h.judged[1]!.includes("made no tool call and did not finish cleanly"));
+  await endTurn(h, g.thread, { report: "Lost it again.", state: "review" });
+  await h.runner.evaluate(g.id);
+  goal = goalOf(h, g.id);
+  check("the second blocks without asking the director again", goal.status === "blocked" && /made no tool call, and the last did not finish cleanly/.test(goal.statusReason ?? "") && h.judged.length === 2 && h.continued.length === 1);
 
   console.log("goal session: a task that keeps ending unclean is not continued again");
   h = harness();

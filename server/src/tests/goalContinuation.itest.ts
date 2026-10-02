@@ -103,7 +103,8 @@ interface Harness {
   thread: Thread;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   internals: any;
-  starts: { session: string | undefined; nudge: string; directorNote: string | undefined }[];
+  /** `directives`: the owner-instruction block the real resume puts in front of the turn's message. */
+  starts: { session: string | undefined; nudge: string; directorNote: string | undefined; directives: string | undefined }[];
   /** The result each started turn ends with. */
   result: ResultEvent;
   /** Holds the turn open until released, so a test can act while it runs. */
@@ -142,7 +143,7 @@ function makeHarness(state: ThreadState = "done", error?: string): Harness {
   internals.autoSelectModel = async () => ({});
   internals.gateImplementorProvider = () => true;
   internals.startResumedImplementor = async (t: Thread, _kickoff: string, session: string | undefined, opts: { resumeNudge: string; directorNote?: string }) => {
-    h.starts.push({ session, nudge: opts.resumeNudge, directorNote: opts.directorNote });
+    h.starts.push({ session, nudge: opts.resumeNudge, directorNote: opts.directorNote, directives: internals.standingDirectivesBlock(t.id) });
     const run = db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-5-5", account: "a" });
     db.updateRun(run.id, { sessionId: session ?? "sess-new", state: "running" });
     const agent = fakeRun();
@@ -320,6 +321,73 @@ console.log("\n=== G. a turn's git evidence is read where the task works ===");
   check("a change in its claimed worktree is", afterWork != null && afterWork !== before);
   h.dispose();
   rmSync(dir, { recursive: true, force: true });
+}
+
+console.log("\n=== H. an owner instruction sent during one goal turn does not stand over the next ===");
+{
+  const h = makeHarness();
+  // What an owner injection ("pls finish up") into the running step leaves behind.
+  h.db.updateThreadStageOutputs(h.thread.id, { standingDirectives: ["pls finish up"] });
+  const before = h.internals.standingDirectivesBlock(h.thread.id) ?? "";
+  check("while its turn runs, the instruction stands in full", before.includes("pls finish up") && before.includes("remain in force for the REST"), before);
+  const r = h.mgr.continueGoalTask(h.thread.id, MESSAGE);
+  check("the goal's next turn is admitted", r.ok === true, JSON.stringify(r));
+  await settled(h);
+  const carried = h.starts[0]?.directives ?? "";
+  check("the next turn still sees the instruction", carried.includes("pls finish up"), carried);
+  check(
+    "framed as an earlier turn's, whose wind-down ended with that turn",
+    carried.includes("Owner instructions from earlier turns of this goal") && carried.includes("ended with that turn") && !carried.includes("remain in force for the REST"),
+    carried,
+  );
+  const stage = h.db.getThreadStageOutputs(h.thread.id);
+  check("it moved out of the standing list", !stage.standingDirectives?.length && stage.priorTurnDirectives?.join("|") === "pls finish up", JSON.stringify(stage));
+  // The owner steers again during this turn: a restart's resume of THIS turn must carry it in full.
+  h.db.updateThreadStageOutputs(h.thread.id, { standingDirectives: ["leave lane B alone"] });
+  const during = h.internals.standingDirectivesBlock(h.thread.id) ?? "";
+  const earlier = during.indexOf("pls finish up");
+  const standing = during.indexOf("remain in force for the REST");
+  check("an instruction of the current turn stands in full, after the earlier ones", earlier >= 0 && standing > earlier && during.indexOf("leave lane B alone") > standing, during);
+  const next = h.mgr.continueGoalTask(h.thread.id, MESSAGE);
+  await settled(h);
+  check(
+    "every goal turn moves the instructions before it, oldest first",
+    next.ok === true && h.db.getThreadStageOutputs(h.thread.id).priorTurnDirectives?.join("|") === "pls finish up|leave lane B alone",
+    JSON.stringify(h.db.getThreadStageOutputs(h.thread.id)),
+  );
+  h.db.resetThreadForRetry(h.thread.id);
+  check("a Retry keeps them", h.db.getThreadStageOutputs(h.thread.id).priorTurnDirectives?.length === 2);
+  h.dispose();
+}
+
+console.log("\n=== I. a goal step tells the owner it is done once, not at every turn ===");
+{
+  const h = makeHarness("implementing");
+  const notices: { kind: string }[] = [];
+  h.internals.discord.notify = (n: { kind: string }) => notices.push(n);
+  const doneNotices = () => notices.filter((n) => n.kind === "done").length;
+  const goal = h.db.createGoal({ title: "Carry", objective: "o", workspace: h.thread.workspace, effort: null, provider: null, model: null, maxConcurrent: 1, burnConservation: false, burnRatePct: 100 });
+  const step = h.db.createGoalStep({ goalId: goal.id, title: "Build it", provider: null, model: null, effort: null, rationale: "", brief: "b" });
+  h.db.updateGoalStep(step.id, { threadId: h.thread.id });
+  h.internals.setState(h.thread.id, "done");
+  check("the step's first turn ending is announced", doneNotices() === 1, JSON.stringify(notices));
+  for (let turn = 2; turn <= 3; turn++) {
+    const r = h.mgr.continueGoalTask(h.thread.id, MESSAGE);
+    // What the GoalRunner's sendTurn records once the host admits the turn.
+    h.db.updateGoalStep(step.id, { turns: turn });
+    await settled(h);
+    check(`continuation turn ${turn} ran and settled done`, r.ok === true && stateOf(h) === "done");
+  }
+  check("two continuation turns later the owner has still heard one Done", doneNotices() === 1, JSON.stringify(notices));
+  // Any ending that is not a goal turn's settle (an owner Resume or inject run) is the owner's own news.
+  h.db.updateThread(h.thread.id, { state: "implementing" });
+  h.internals.setState(h.thread.id, "done");
+  check("a run the owner started on the same step is still announced", doneNotices() === 2, JSON.stringify(notices));
+  h.db.updateGoal(goal.id, { status: "blocked", statusReason: "stopped" });
+  h.mgr.continueGoalTask(h.thread.id, MESSAGE);
+  await settled(h);
+  check("once the goal has stopped, the task's ending is news again", doneNotices() === 3, JSON.stringify(notices));
+  h.dispose();
 }
 
 console.log(`\n=== ${passed}/${passed + failed} checks passed ===`);

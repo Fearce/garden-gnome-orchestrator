@@ -553,7 +553,7 @@ function GoalEditor({ initial, onClose }: { initial: Goal | null; onClose: () =>
               ? `Every step runs at ${effort} effort.`
               : "With effort on Auto, the director picks low or medium for each step, since a goal spends capacity around the clock."}{" "}
             The goal keeps going until a step's agent and the director both judge the objective complete. It pauses if three steps in a row
-            fail or you cancel a step, and stops as blocked after a turn that makes no tool call, turns that do no new work, or the same
+            fail or you cancel a step, and stops as blocked after two turns in a row that make no tool call, turns that do no new work, or the same
             blocker three turns running.
           </div>
           <div className="sched-row goal-pace-row">

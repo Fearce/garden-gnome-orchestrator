@@ -64,8 +64,12 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   task's step RUNNING, because GGO itself owes it an auto-resume in the same session. A new hold kind
   goes in those two functions, and `test:goal-continuation` (the real entry point, no paid model) must
   cover it; `goalSession.test.ts`'s fake host cannot prove the manager detects anything.
-- **Stops use evidence, never prose.** `noProgress` runs for `done` AND `review` turns: no tool call →
-  stop; a turn with progress (`assessSessionProgress`: ≥3 novel tool calls, a new finding, or a git
+- **Stops use evidence, never prose.** `noProgress` runs for `done` AND `review` turns: a turn with no tool
+  call is counted per carrier (`silentTurns`, in memory) — the first only blocks `continueOnItsOwn`, so the
+  director judges the report and its `next` reaches the same session, even when it repeated the report
+  before it (a refusal usually does); `GOAL_SILENT_TURNS` (2) in a row stop as `blocked`. An objective edit
+  or Resume clears the count. Never make the first one a stop: a turn that ends on its report alone is a normal ending
+  (the d2r goal blocked that way on 2026-10-02). A turn with progress (`assessSessionProgress`: ≥3 novel tool calls, a new finding, or a git
   fingerprint change) resets the idle count and the wait backoff whatever status it ended on, and always
   continues, even under the same words; otherwise a clean turn stops on a repeated report digest (the
   WAITING/BLOCKED turns update the digest too, so "repeated" means the turn just before) or on
@@ -77,6 +81,18 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   `step.provider`) before the director call and again, on a fresh roster, after it. `blockerStreak` never compares wording: only `moved` (repo change or new finding) restarts the
   count. Both stop as `blocked`, an owner status apart from `paused`; Resume resets the streaks and sets
   `replan_at` so the next pass audits.
+- **Owner injections are scoped to their turn.** An inject into a step task is a standing directive
+  (`recordStandingDirective`); `continueGoalTask` moves it to `priorTurnDirectives` before the next turn,
+  and `standingDirectivesBlock` renders those under a heading that keeps constraints but ends wind-down
+  orders ("pls finish up") with their turn. Without the move a days-old "finish up" re-arrived as a live
+  order in every continuation turn and made the agent refuse work. Retry keeps both lists, and every lane's
+  kickoff (researcher, reader, QA, reviewer) takes the stage's two lists through `renderOwnerDirectives`, so
+  a constraint moved to the earlier-turn list still reaches them.
+- **One Done notice per step task.** `settleGoalTurn` marks its `done` quiet (`quietGoalDone`, held only
+  across the `setState`) when `db.endsGoalContinuationTurn` — the task's latest step has `turns > 1` and its
+  goal is still `active` — and `publishState` skips the owner notice (Discord + voice) for it. An ending the
+  owner started (Resume, inject run) is never quiet. The goal's own blocked/paused/achieved notice covers
+  the rest; covered by `test:goal-continuation` I.
 - **Races the settle and judge must survive.** `sendTurn` stamps `turnStartedAt` from the clock BEFORE
   `continueTask` (the host may create the run row synchronously). `settleStep` re-checks `turnUnchanged`
   after awaiting the workspace fingerprint and returns `restarted` if the owner resumed or steered the task

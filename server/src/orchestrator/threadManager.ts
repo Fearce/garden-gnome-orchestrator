@@ -1056,6 +1056,9 @@ export class ThreadManager implements OrchestratorApi {
   // implementor in that window; injects that arrive are buffered in pendingResumeMsgs and flushed
   // once the implementor is live.
   private readonly resuming = new Set<string>();
+  // Threads settling a continuation turn of a still-active goal: that `done` is no owner news, since the goal
+  // goes on and tells the owner itself when it stops. Held only across the settle's `setState`.
+  private readonly quietGoalDone = new Set<string>();
   private readonly pendingResumeMsgs = new Map<string, string[]>();
   // Threads whose on-demand auto-review is live. The reviewer settles the task itself (done, or back to
   // 'review'), so this is purely the double-click guard: the button is clickable again the instant the
@@ -7450,14 +7453,16 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (t.subTask) {
       /* no owner notice */
     } else if (t.state === "done") {
-      const deployment = t.manualDeployment?.status === "verified" ? t.manualDeployment : null;
-      this.notifyOwner(
-        deployment
-          ? `Complete in GGO: "${t.title}" - manual deployment to ${deployment.environment} remains pending.`
-          : `✓ done: "${t.title}"`,
-        { kind: "done", title: t.title, detail: deployment ? deployment.instructions : undefined, repo: t.homeWorkspace ?? t.workspace },
-      );
-      void this.announceDone(t);
+      if (!this.quietGoalDone.has(t.id)) {
+        const deployment = t.manualDeployment?.status === "verified" ? t.manualDeployment : null;
+        this.notifyOwner(
+          deployment
+            ? `Complete in GGO: "${t.title}" - manual deployment to ${deployment.environment} remains pending.`
+            : `✓ done: "${t.title}"`,
+          { kind: "done", title: t.title, detail: deployment ? deployment.instructions : undefined, repo: t.homeWorkspace ?? t.workspace },
+        );
+        void this.announceDone(t);
+      }
     }
     // A cap-park lands in 'review' too, but it's auto-handled by the supervisor — don't ping "needs your
     // review" (misleading, and it would re-fire every time a re-capping task re-parks).
@@ -8832,11 +8837,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   private async runResearcher(thread: Thread, plan: PlanOutput | undefined): Promise<ResearchOutput | undefined> {
-    const standingDirectives = this.db.getThreadStageOutputs(thread.id).standingDirectives;
     const res = await this.runRole(
       thread,
       "researcher",
-      this.kickoffContent(thread.id, this.withOfficeNote(thread, "researcher", researcherKickoff(thread, plan, standingDirectives))),
+      this.kickoffContent(thread.id, this.withOfficeNote(thread, "researcher", researcherKickoff(thread, plan, this.db.getThreadStageOutputs(thread.id)))),
       ({ token, resume, runId }) => {
       const bus = createBusServer(this, { threadId: thread.id, role: "researcher", getRunId: () => runId });
       const memory = createMemoryServer(this.memory);
@@ -8961,7 +8965,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       "reader",
       this.kickoffContent(
         thread.id,
-        this.withOfficeNote(thread, "reader", readerKickoff(thread, directorNote, this.db.getThreadStageOutputs(thread.id).standingDirectives)),
+        this.withOfficeNote(thread, "reader", readerKickoff(thread, directorNote, this.db.getThreadStageOutputs(thread.id))),
       ),
       ({ token, resume, runId }) => {
         const bus = createBusServer(this, { threadId: thread.id, role: "reader", getRunId: () => runId });
@@ -9083,8 +9087,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // deliverables check starts from a concrete list instead of the model's memory. Recomputed each
     // round — a fix-round that emits a forgotten deliverable drops it from the next round's hint.
     const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
-    const standingDirectives = this.db.getThreadStageOutputs(thread.id).standingDirectives;
-    const roundKickoff = qaRoundKickoff(thread, { resume: !!resume, opts, plan, unsurfaced, standingDirectives });
+    const roundKickoff = qaRoundKickoff(thread, { resume: !!resume, opts, plan, unsurfaced, owner: this.db.getThreadStageOutputs(thread.id) });
     const worktree = resume ? null : this.worktreeSection(thread);
     const baseKickoff = worktree
       ? `${roundKickoff}\n\nThe implementor worked under these branch rules. Review the work in that checkout, and check it was integrated exactly as they describe:\n\n${worktree}`
@@ -13248,7 +13251,18 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  functions (qaKickoff/reviewerKickoff et al., which take the array, not a threadId) share the exact
    *  same rendering rather than a second copy drifting out of sync. */
   private standingDirectivesBlock(threadId: string): string | undefined {
-    return renderStandingDirectives(this.db.getThreadStageOutputs(threadId).standingDirectives);
+    return renderOwnerDirectives(this.db.getThreadStageOutputs(threadId));
+  }
+
+  /** A goal's next turn is new work the goal sends, so the owner instructions of the turns before it become
+   *  `priorTurnDirectives`, rendered as belonging to the turn they were sent in. */
+  private carryDirectivesPastGoalTurn(threadId: string): void {
+    const stage = this.db.getThreadStageOutputs(threadId);
+    if (!stage.standingDirectives?.length) return;
+    this.db.updateThreadStageOutputs(threadId, {
+      standingDirectives: [],
+      priorTurnDirectives: [...(stage.priorTurnDirectives ?? []), ...stage.standingDirectives].slice(-25),
+    });
   }
 
   /** Deliver to a now-live implementor any director notes buffered while it was still materializing
@@ -13765,6 +13779,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (hold) return { ok: false, hold };
     const m = this.db.addMessage({ threadId, role: "director", kind: "system", content: `↪ goal continues in this session: ${message}` });
     this.hub.publish({ type: "thread.message", threadId, message: m });
+    this.carryDirectivesPastGoalTurn(threadId);
     this.resuming.add(threadId);
     this.setState(threadId, "implementing");
     void this.resumeImplementorOnly(thread, message, [], false, true);
@@ -13836,7 +13851,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (this.db.getThread(threadId)?.state !== "implementing" || this.cancelled(threadId)) return;
     if (result && !result.isError) {
       this.recordLatestImplementationMemo(threadId, result, "done");
-      this.setState(threadId, "done");
+      if (this.db.endsGoalContinuationTurn(threadId)) this.quietGoalDone.add(threadId);
+      try {
+        this.setState(threadId, "done");
+      } finally {
+        this.quietGoalDone.delete(threadId);
+      }
     } else {
       this.recordLatestImplementationMemo(threadId, result, "review");
       this.settleReview(threadId, this.implementorParkReason(result, "could not finish its goal turn cleanly."));
@@ -14398,7 +14418,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private freshReviewKickoff(thread: Thread): string | unknown[] {
     const unsurfaced = detectUnsurfacedArtifacts(this.db, thread);
     const stage = this.db.getThreadStageOutputs(thread.id);
-    const kickoff = reviewerKickoff(thread, stage.plan ?? undefined, unsurfaced, this.settings().maxReviewFixRounds, stage.standingDirectives);
+    const kickoff = reviewerKickoff(thread, stage.plan ?? undefined, unsurfaced, this.settings().maxReviewFixRounds, stage);
     return this.kickoffContent(thread.id, this.withOfficeNote(thread, "reviewer", kickoff));
   }
 
@@ -14571,7 +14591,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private reviewRecheck(thread: Thread, out: ReviewerOutput): Promise<ResultEvent | undefined> {
     const prior = this.resumableReviewSession(thread.id);
     if (!prior) return this.reviewToVerdict(thread, this.freshReviewKickoff(thread));
-    return this.reviewToVerdict(thread, reviewerRecheckKickoff(out, this.db.getThreadStageOutputs(thread.id).standingDirectives), prior);
+    return this.reviewToVerdict(thread, reviewerRecheckKickoff(out, this.db.getThreadStageOutputs(thread.id)), prior);
   }
 
   /** The reviewer's own last session, but only while the backend that produced it can still take the run.
@@ -14615,7 +14635,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.noteReviewRecovery(thread.id, { empty, resuming: !!prior, spent });
       attemptFrom = Date.now();
       res = prior
-        ? await this.runReviewer(thread, reviewerContinueKickoff(this.db.getThreadStageOutputs(thread.id).standingDirectives), prior)
+        ? await this.runReviewer(thread, reviewerContinueKickoff(this.db.getThreadStageOutputs(thread.id)), prior)
         : await startOver();
       empty = this.markIfEmpty(thread.id, attemptFrom, res);
     }
@@ -16447,8 +16467,9 @@ function formatResearch(research: ResearchOutput): string {
 /** Render every standing owner directive (`StageOutputs.standingDirectives`) verbatim and in order, or
  *  `undefined` when there are none. Pure so every kickoff builder — implementor (via
  *  ThreadManager.standingDirectivesBlock) as well as the free QA/reviewer kickoff functions below, which
- *  only ever see the array, not a threadId — renders the exact same text instead of two copies drifting
- *  apart. See ThreadManager.recordStandingDirective for why this list exists at all. */
+ *  only ever see the stage's lists, not a threadId — renders the exact same text (through
+ *  `renderOwnerDirectives`) instead of two copies drifting apart. See ThreadManager.recordStandingDirective
+ *  for why this list exists at all. */
 function renderStandingDirectives(directives?: string[] | null): string | undefined {
   if (!directives?.length) return undefined;
   return [
@@ -16458,6 +16479,27 @@ function renderStandingDirectives(directives?: string[] | null): string | undefi
       "resumed session that never itself received them — unless a later message here explicitly supersedes " +
       "one. Before committing, pushing, switching/creating a branch, or declaring the task finished, re-check " +
       "your current plan (and, for QA/review, your verdict) against every line below.",
+    ...directives.map((d, i) => `${i + 1}. ${d}`),
+  ].join("\n");
+}
+
+/** The owner instructions every lane's kickoff carries: those of a goal step's earlier turns, then the standing ones. */
+type OwnerDirectives = Pick<StageOutputs, "standingDirectives" | "priorTurnDirectives">;
+
+function renderOwnerDirectives(owner?: OwnerDirectives): string | undefined {
+  const blocks = [renderPriorTurnDirectives(owner?.priorTurnDirectives), renderStandingDirectives(owner?.standingDirectives)].filter(Boolean);
+  return blocks.length ? blocks.join("\n\n") : undefined;
+}
+
+/** The owner instructions a goal step task received during its earlier goal turns, or `undefined`. */
+function renderPriorTurnDirectives(directives?: string[] | null): string | undefined {
+  if (!directives?.length) return undefined;
+  return [
+    "## Owner instructions from earlier turns of this goal",
+    "The owner sent these while an earlier turn of this goal-directed task was running. A constraint on how to " +
+      "work (what to leave alone, which approach to take, where to commit) still applies. An instruction about " +
+      "that turn's own course (to stop, wind down, wrap up or finish up) ended with that turn: GGO continues this " +
+      "task only while the goal is active, and the owner pauses the goal to stop it.",
     ...directives.map((d, i) => `${i + 1}. ${d}`),
   ].join("\n");
 }
@@ -16533,9 +16575,9 @@ function composeKickoff(
 
 /** The researcher's kickoff. Planner-first means the researcher is handed the plan and told to
  *  resolve its open questions with EXTERNAL sources only — it must not re-read the codebase. */
-function researcherKickoff(thread: Thread, plan: PlanOutput | undefined, standingDirectives?: string[]): string {
+function researcherKickoff(thread: Thread, plan: PlanOutput | undefined, owner?: OwnerDirectives): string {
   const parts: string[] = [`# Research request for task: ${thread.title}`, "", "## Brief", thread.brief, ""];
-  const directives = renderStandingDirectives(standingDirectives);
+  const directives = renderOwnerDirectives(owner);
   if (directives) parts.push(directives, "");
   if (plan) {
     parts.push(
@@ -16558,7 +16600,7 @@ function researcherKickoff(thread: Thread, plan: PlanOutput | undefined, standin
 /** The reader lane's kickoff: the question to answer, plus the two rules that keep the lane honest —
  *  post the answer as a finding, and escalate rather than half-answer. The full read-only doctrine lives
  *  in READER_PROMPT (the system prompt); this is just the task hand-off. */
-function readerKickoff(thread: Thread, directorNote?: string, standingDirectives?: string[]): string {
+function readerKickoff(thread: Thread, directorNote?: string, owner?: OwnerDirectives): string {
   const parts: string[] = [
     `# Read task: ${thread.title}`,
     "",
@@ -16569,13 +16611,13 @@ function readerKickoff(thread: Thread, directorNote?: string, standingDirectives
     "",
     "Do NOT half-answer. If answering actually requires editing files, running a build/tests, verification you can't do read-only, or a broad multi-file investigation beyond a lookup, STOP: call `post_finding` (severity `warning`) explaining \"needs full pipeline because …\", and return structured output with `escalated: true` and a one-line `reason`. Otherwise, once you've posted the answer, return `answered: true`.",
   ];
-  const directives = renderStandingDirectives(standingDirectives);
+  const directives = renderOwnerDirectives(owner);
   if (directives) parts.push("", directives);
   if (directorNote) parts.push("", "## Note from the director", directorNote);
   return parts.join("\n");
 }
 
-function qaKickoff(thread: Thread, plan?: PlanOutput, unsurfacedArtifacts: string[] = [], standingDirectives?: string[]): string {
+function qaKickoff(thread: Thread, plan?: PlanOutput, unsurfacedArtifacts: string[] = [], owner?: OwnerDirectives): string {
   const parts: string[] = [
     `# QA review for task: ${thread.title}`,
     "",
@@ -16595,7 +16637,7 @@ function qaKickoff(thread: Thread, plan?: PlanOutput, unsurfacedArtifacts: strin
   // A standing owner directive (e.g. "keep this on a separate branch") is exactly the kind of thing a
   // fix-round implementor can silently drop across a resume — QA/review is the independent check that
   // can catch a violation before the task ships, so it must see the same durable list the implementor does.
-  const directives = renderStandingDirectives(standingDirectives);
+  const directives = renderOwnerDirectives(owner);
   if (directives) parts.push("", directives);
   appendDeliverablesHint(parts, unsurfacedArtifacts);
   return parts.join("\n");
@@ -16605,14 +16647,14 @@ function qaKickoff(thread: Thread, plan?: PlanOutput, unsurfacedArtifacts: strin
  *  prior diff, and the test output, so this is just a short re-check nudge — no re-statement. The
  *  deliverables check is repeated (with the freshly-recomputed unsurfaced list) because a fix-round
  *  is exactly where a forgotten deliverable gets emitted — or still doesn't. */
-function qaRecheckKickoff(unsurfacedArtifacts: string[] = [], standingDirectives?: string[]): string {
+function qaRecheckKickoff(unsurfacedArtifacts: string[] = [], owner?: OwnerDirectives): string {
   const lines = [
     "The implementor reports it has addressed the issues you raised. Re-verify:",
     "- Re-run `git diff` to see the NEW state and re-run the project's build/typecheck/tests.",
     "- Confirm each issue you raised is actually resolved, and watch for any regression the fix introduced.",
     "Then return your updated structured verdict (pass + remaining issues). Pass only if you'd ship it.",
   ];
-  const directives = renderStandingDirectives(standingDirectives);
+  const directives = renderOwnerDirectives(owner);
   if (directives) lines.push("", directives);
   appendDeliverablesHint(lines, unsurfacedArtifacts);
   return lines.join("\n");
@@ -16623,7 +16665,7 @@ function qaRecheckKickoff(unsurfacedArtifacts: string[] = [], standingDirectives
  * finished. In QA-fixes mode it must also be told that its OWN pre-cutoff edits still count as changes:
  * a `changed: false` there would accept the reviewer's edits with no independent pass, which is exactly
  * what the fixes mode forbids. */
-function qaContinueKickoff(unsurfacedArtifacts: string[] = [], applyFixes = false, standingDirectives?: string[]): string {
+function qaContinueKickoff(unsurfacedArtifacts: string[] = [], applyFixes = false, owner?: OwnerDirectives): string {
   const lines = [
     "You stopped at a per-session turn limit, not because your review was finished — nothing else has touched the repo since you stopped.",
     "Continue exactly where you left off: finish the checks you still had outstanding, then return your structured verdict (pass + issues).",
@@ -16634,7 +16676,7 @@ function qaContinueKickoff(unsurfacedArtifacts: string[] = [], applyFixes = fals
       "If you modified any task file at any point in this review — including before you were cut off — you must still report `changed: true`. Your own edits are the one thing that HAS changed, and they need an independent QA pass before the task can be accepted.",
     );
   }
-  const directives = renderStandingDirectives(standingDirectives);
+  const directives = renderOwnerDirectives(owner);
   if (directives) lines.push("", directives);
   appendDeliverablesHint(lines, unsurfacedArtifacts);
   return lines.join("\n");
@@ -16644,17 +16686,17 @@ function qaContinueKickoff(unsurfacedArtifacts: string[] = [], applyFixes = fals
  * read, so it gets only the reason it was woken; a fresh one gets the full review brief. */
 function qaRoundKickoff(
   thread: Thread,
-  o: { resume: boolean; opts: QaRoundOpts; plan?: PlanOutput; unsurfaced: string[]; standingDirectives?: string[] },
+  o: { resume: boolean; opts: QaRoundOpts; plan?: PlanOutput; unsurfaced: string[]; owner?: OwnerDirectives },
 ): string {
   if (!o.resume) {
     return o.opts.priorFixSummary
-      ? qaFixFreshKickoff(thread, o.plan, o.opts.priorFixSummary, o.unsurfaced, o.standingDirectives)
-      : qaKickoff(thread, o.plan, o.unsurfaced, o.standingDirectives);
+      ? qaFixFreshKickoff(thread, o.plan, o.opts.priorFixSummary, o.unsurfaced, o.owner)
+      : qaKickoff(thread, o.plan, o.unsurfaced, o.owner);
   }
-  if (o.opts.continuation) return qaContinueKickoff(o.unsurfaced, o.opts.applyFixes, o.standingDirectives);
+  if (o.opts.continuation) return qaContinueKickoff(o.unsurfaced, o.opts.applyFixes, o.owner);
   return o.opts.priorFixSummary
-    ? qaFixRecheckKickoff(o.opts.priorFixSummary, o.unsurfaced, o.standingDirectives)
-    : qaRecheckKickoff(o.unsurfaced, o.standingDirectives);
+    ? qaFixRecheckKickoff(o.opts.priorFixSummary, o.unsurfaced, o.owner)
+    : qaRecheckKickoff(o.unsurfaced, o.owner);
 }
 
 /** Handoff between two editing-QA passes. Unlike qaRecheckKickoff, no implementor was relaunched:
@@ -16673,9 +16715,9 @@ function qaFixHandoffBlock(previousSummary: string): string[] {
 
 /** The RESUMED form: the session already holds the brief, the plan and the prior diff, so it only
  * needs the handoff itself. */
-function qaFixRecheckKickoff(previousSummary: string, unsurfacedArtifacts: string[] = [], standingDirectives?: string[]): string {
+function qaFixRecheckKickoff(previousSummary: string, unsurfacedArtifacts: string[] = [], owner?: OwnerDirectives): string {
   const lines = qaFixHandoffBlock(previousSummary);
-  const directives = renderStandingDirectives(standingDirectives);
+  const directives = renderOwnerDirectives(owner);
   if (directives) lines.push("", directives);
   appendDeliverablesHint(lines, unsurfacedArtifacts);
   return lines.join("\n");
@@ -16690,9 +16732,9 @@ export function qaFixFreshKickoff(
   plan: PlanOutput | undefined,
   previousSummary: string,
   unsurfacedArtifacts: string[] = [],
-  standingDirectives?: string[],
+  owner?: OwnerDirectives,
 ): string {
-  return [qaKickoff(thread, plan, unsurfacedArtifacts, standingDirectives), "", "## Prior QA fix handoff", ...qaFixHandoffBlock(previousSummary)].join(
+  return [qaKickoff(thread, plan, unsurfacedArtifacts, owner), "", "## Prior QA fix handoff", ...qaFixHandoffBlock(previousSummary)].join(
     "\n",
   );
 }
@@ -16770,7 +16812,7 @@ function reviewerKickoff(
   plan: PlanOutput | undefined,
   unsurfacedArtifacts: string[],
   fixRounds: number,
-  standingDirectives?: string[],
+  owner?: OwnerDirectives,
 ): string {
   const parts: string[] = [
     `# Review request for task: ${thread.title}`,
@@ -16783,7 +16825,7 @@ function reviewerKickoff(
     "## Why it parked for review",
     thread.error?.trim() || "(no reason recorded — treat it as a plain hand-off and judge the work on its merits)",
   ];
-  const directives = renderStandingDirectives(standingDirectives);
+  const directives = renderOwnerDirectives(owner);
   // A violated standing directive (a mixed branch, a re-enabled push, a re-touched forbidden path) is
   // exactly the kind of defect the reviewer exists to catch — accept only if the diff also honors these.
   if (directives) parts.push("", directives);
@@ -16820,7 +16862,7 @@ function reviewerKickoff(
 
 /** The RESUMED form for an auto-reviewer the turn ceiling cut off before it decided. Its session already
  * holds the brief, the park reason and everything it read, so all it needs is to know it wasn't finished. */
-function reviewerContinueKickoff(standingDirectives?: string[]): string {
+function reviewerContinueKickoff(owner?: OwnerDirectives): string {
   const lines = [
     "You stopped at a per-session turn limit, not because your review was finished — nothing has touched the repo since you stopped.",
     "Continue exactly where you left off: finish the checks you still had outstanding, then return your structured verdict.",
@@ -16831,7 +16873,7 @@ function reviewerContinueKickoff(standingDirectives?: string[]): string {
   // kickoff — the same insurance the QA continue/recheck kickoffs carry against provider-side context
   // compaction quietly dropping an earlier turn. The reviewer is an acceptance gate: it must never sign
   // off work that violates an owner directive it can no longer see.
-  const directives = renderStandingDirectives(standingDirectives);
+  const directives = renderOwnerDirectives(owner);
   if (directives) lines.push("", directives);
   return lines.join("\n");
 }
@@ -16889,7 +16931,7 @@ function reviewFixMessage(out: ReviewerOutput, reviewerName: string): string {
 /** The RESUMED form for a reviewer re-checking after the implementor fixed what it asked for. Its session
  * still holds the brief, the diff it read and its own issue list, so all it needs is the fact that the tree
  * has changed underneath it — and a reminder that the verdict is still its call, not a rubber stamp. */
-function reviewerRecheckKickoff(out: ReviewerOutput, standingDirectives?: string[]): string {
+function reviewerRecheckKickoff(out: ReviewerOutput, owner?: OwnerDirectives): string {
   const lines = [
     `The implementor has been through the issues you raised and reports it addressed them. The working tree has CHANGED since you read it — re-read the files and re-run the checks that matter; nothing you saw before can be assumed to still hold.`,
     "",
@@ -16902,7 +16944,7 @@ function reviewerRecheckKickoff(out: ReviewerOutput, standingDirectives?: string
   // injected a directive in the meantime that this resumed session would otherwise never see. It is the
   // gate that marks the task DONE, so its verdict is re-checked against every owner instruction — not
   // only the ones that existed when the review started.
-  const directives = renderStandingDirectives(standingDirectives);
+  const directives = renderOwnerDirectives(owner);
   if (directives) lines.push("", directives);
   return lines.join("\n");
 }

@@ -51,7 +51,8 @@ that does not make cached inference free.
   caps, capacity and the burn rate. A held turn costs nothing and waits as `waiting` or `usage_limited`. A
   task past its hard deadline pauses the goal for the owner. Reservation is synchronous (`resuming`), so a second admission or an owner
   action cannot interleave with it.
-- **No spinning.** A turn with no tool call stops automatic continuation. Progress is evidence, never
+- **No spinning.** A turn with no tool call hands the goal to the director, since a turn that ends on its
+  report alone is a normal ending; a second in a row stops automatic continuation. Progress is evidence, never
   prose: at least 3 tool calls the task never made before, a new finding, or a changed git state (the same
   test auto-continue uses). A repeated report with no new work stops it, and so do 3 idle turns running.
   Any turn that did new work resets that count, whatever status it ended on, and a repeat is judged
@@ -61,7 +62,7 @@ that does not make cached inference free.
   at no cost; each check that finds the job still running and nothing new doubles the next wait (5, 10,
   20, 40 minutes, then hourly), so a long job's watch never stops the goal but costs at most a turn an
   hour. A timeout while reading a live job is not a reason to restart it.
-- **Unclean turns are bounded too.** A `review` turn with no tool call stops the goal as `blocked`. After
+- **Unclean turns are bounded too.** A `review` turn with no tool call counts toward the same pair. After
   2 unclean turns running, the task is not continued again: the next step is a fresh task, which the
   failed-step guard bounds like any other. A persistent goal's tasks skip the self-improvement round,
   which would otherwise replace the report the goal reads its status line from.
