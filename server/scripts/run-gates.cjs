@@ -186,6 +186,7 @@ const GATES = [
   "test:tools-filter-narration",
   "test:collaborator-feed",
   "test:swipe",
+  "test:nav-history",
   "test:collapse-shotgun-task",
   "test:deliverables-probe",
   "test:elapsed-probe",

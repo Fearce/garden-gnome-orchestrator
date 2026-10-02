@@ -6,6 +6,7 @@ import type { Finding } from "../types.js";
 import { apiUrl } from "../lib/base.js";
 import { FileIcon, fileKindOf, basenameOf, type FileKind } from "./FileIcon.js";
 import { useResizableModal } from "./useResizableModal.js";
+import { LayerCloseBar } from "./LayerClose.js";
 
 // The deliverable preview modal and its per-type renderers. Split into its own module so the heavy
 // markdown/highlight.js deps load lazily (on first View) instead of weighing down the main bundle.
@@ -36,7 +37,7 @@ export default function DeliverableModal({ d, onClose }: { d: Finding; onClose: 
                 Download
               </a>
             )}
-            <button className="btn ghost sm" onClick={onClose} aria-label="Close">
+            <button className="btn ghost sm layer-head-close" onClick={onClose} aria-label="Close">
               ✕
             </button>
           </div>
@@ -51,6 +52,7 @@ export default function DeliverableModal({ d, onClose }: { d: Finding; onClose: 
             <DeliverablePreview id={d.id} name={name} kind={kind} onFailure={setFailure} />
           )}
         </div>
+        <LayerCloseBar onClose={onClose} />
         <div className="dl-resize dl-resize-r" onPointerDown={(e) => startResize(e, 1, 0)} title="Drag to resize" />
         <div className="dl-resize dl-resize-b" onPointerDown={(e) => startResize(e, 0, 1)} title="Drag to resize" />
         <div

@@ -43,11 +43,13 @@ import { applyTheme } from "./lib/theme.js";
 import { applyFonts } from "./lib/font.js";
 import { startVersionWatch } from "./lib/version.js";
 import { startUpdateWatch } from "./lib/update.js";
+import { markIosPhone } from "./lib/iosPhone.js";
 
 // index.html's inline script has normally painted the theme already; this reconciles <html> with the
 // value the store actually parsed, so a stored theme the boot script doesn't recognise still applies.
 applyTheme(useStore.getState().theme);
 applyFonts(useStore.getState().uiFont, useStore.getState().monoFont, useStore.getState().displayFont);
+markIosPhone();
 
 void init();
 startVersionWatch();

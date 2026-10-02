@@ -2350,6 +2350,47 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   .implementation-memo-file { align-items: flex-start; flex-direction: column; }
 }
 
+/* iPhone task layers (scoped by the owner, see lib/iosPhone.ts). The task, its work memo, a deliverable
+   preview and the diff all leave by the same labelled Close in the bottom-right thumb corner, where the
+   task's own header already docks. The layers go full screen so that bar sits on the bottom edge above
+   the home indicator, with the head pushed below the notch; the old top-right × of the memo sat under
+   the status bar. Every other device keeps each layer's own ✕ and never shows the bar. */
+.layer-bar,
+.task-close-label { display: none; }
+@media (max-width: 899.98px) {
+  .ios-phone .modal.implementation-memo-modal,
+  .ios-phone .modal.deliverable,
+  .ios-phone .modal.changes {
+    width: 100vw; max-width: none; height: 100vh; height: 100dvh; max-height: none;
+    border: 0; border-radius: 0; padding-top: env(safe-area-inset-top);
+  }
+  .ios-phone .changes-body { flex: 1 1 auto; min-height: 0; }
+  .ios-phone .modal .layer-head-close,
+  .ios-phone .modal.deliverable .dl-resize { display: none; }
+  .ios-phone .layer-bar {
+    display: flex; flex: 0 0 auto; justify-content: flex-end;
+    padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line); background: var(--bg-1);
+  }
+  .ios-phone .layer-close,
+  .ios-phone .detail-title-actions .task-close {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    width: 88px; height: var(--tap); padding: 0 12px;
+    border: 1px solid var(--line-strong); border-radius: var(--r-md);
+    background: var(--bg-2); color: var(--text); font: 600 13px/1 var(--font-sans);
+  }
+  .ios-phone .layer-close:active,
+  .ios-phone .detail-title-actions .task-close:active { background: var(--bg-3); }
+  .ios-phone .task-close-label { display: inline; }
+  /* Room for the wider Close plus the 44px collapse chevron beside it (4px gaps). */
+  .ios-phone .detail-head .top { padding-right: 140px; }
+  .ios-phone .detail-title-actions .head-toggle { right: 92px; }
+  /* The header is the row that gives ground (see .detail-head), and here it carries the task's only
+     visible exit. On a short screen (an SE in landscape is 320px tall) the transcript's 168px floor
+     squeezed it below the bottom edge, so the floor yields to a quarter of the screen first. */
+  .ios-phone .detail-body { min-height: min(168px, 25vh); min-height: min(168px, 25dvh); }
+}
+
 /* The closing card of a done/review feed. It repeats the implementor's hand-off below every QA and
    self-improvement row, so it reads as an outcome panel rather than one more chat line. */
 .fi.final-report {

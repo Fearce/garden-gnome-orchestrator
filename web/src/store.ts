@@ -57,6 +57,7 @@ import type {
   ServerEvent,
   SettingsPatch,
   SupervisorSnapshot,
+  TaskOverlay,
   TaskSearchHit,
   Thread,
   TokenSafetyState,
@@ -210,6 +211,8 @@ interface State {
   // separate from threadDrafts (the response-text draft) so reasoning and answer stream independently.
   thinkingDrafts: Record<string, ThreadDraft | undefined>;
   selectedThreadId: string | null;
+  // The memo / deliverable / diff layer over the selected task. Cleared whenever the selection changes.
+  taskOverlay: TaskOverlay | null;
   coworkSessions: Record<string, CoworkSession>;
   coworkMessages: Record<string, CoworkMessage[]>;
   coworkTurns: Record<string, CoworkTurn[]>;
@@ -401,6 +404,8 @@ interface State {
   modelStats: ModelStat[];
 
   select: (id: string | null) => void;
+  openTaskOverlay: (overlay: TaskOverlay) => void;
+  closeTaskOverlay: () => void;
   // Fetch the next older page of the selected task's durable feed. A no-op while a page is in flight or
   // once the server has said there is no earlier history.
   loadOlderThreadHistory: (threadId: string) => boolean;
@@ -1391,6 +1396,7 @@ export const useStore = create<State>((set) => ({
   threadDrafts: {},
   thinkingDrafts: {},
   selectedThreadId: null,
+  taskOverlay: null,
   coworkSessions: {},
   coworkMessages: {},
   coworkTurns: {},
@@ -1482,9 +1488,12 @@ export const useStore = create<State>((set) => ({
     const sent = id ? sendCommand({ type: "thread.history", threadId: id }) : false;
     set((s) => ({
       selectedThreadId: id,
+      taskOverlay: id === s.selectedThreadId ? s.taskOverlay : null,
       ...(id && sent ? { threadHistoryLoading: { ...s.threadHistoryLoading, [id]: true } } : {}),
     }));
   },
+  openTaskOverlay: (overlay) => set((s) => (s.selectedThreadId ? { taskOverlay: overlay } : {})),
+  closeTaskOverlay: () => set({ taskOverlay: null }),
   loadOlderThreadHistory: (threadId) => {
     const s = useStore.getState();
     if (s.threadHistoryLoading[threadId] || s.threadHistoryHasMore[threadId] === false) return false;
@@ -2574,6 +2583,7 @@ function applyEvent(ev: ServerEvent): void {
           findings: s.findings.filter((f) => f.threadId !== ev.threadId),
           questions: s.questions.filter((q) => q.threadId !== ev.threadId),
           selectedThreadId: s.selectedThreadId === ev.threadId ? null : s.selectedThreadId,
+          taskOverlay: s.selectedThreadId === ev.threadId ? null : s.taskOverlay,
         };
       });
       break;

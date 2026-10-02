@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { ImplementationMemo, ImplementationMemoHandoff, ImplementationMemoOutcome } from "../types.js";
 import { selectImplementationMemos } from "../implementationMemos.js";
 import { apiUrl } from "../lib/base.js";
+import { LayerCloseBar, useLayerEscape } from "./LayerClose.js";
 import { Markdown } from "./Markdown.js";
 
 const OUTCOME_LABEL: Record<ImplementationMemoOutcome, string> = {
@@ -32,9 +33,8 @@ function preview(report: string | null | undefined): string {
 
 /** Pinned independently of the task feed. The newest actual completion stays featured while a later
  * failed/interrupted attempt remains visible as the current warning and in the revision audit. */
-export function ImplementationMemos({ memos }: { memos: ImplementationMemo[] }) {
+export function ImplementationMemos({ memos, onOpen }: { memos: ImplementationMemo[]; onOpen: (memoId: string) => void }) {
   const selection = useMemo(() => selectImplementationMemos(memos), [memos]);
-  const [open, setOpen] = useState(false);
   const featured = selection.featured;
   if (!featured) return null;
   const newerProblem = selection.current && selection.current.id !== featured.id ? selection.current : null;
@@ -58,10 +58,9 @@ export function ImplementationMemos({ memos }: { memos: ImplementationMemo[] }) 
           </div>
         ) : null}
       </div>
-      <button className="btn ghost sm implementation-memo-open" type="button" onClick={() => setOpen(true)}>
+      <button className="btn ghost sm implementation-memo-open" type="button" onClick={() => onOpen(featured.id)}>
         Open memo{memos.length > 1 ? ` · ${memos.length} revisions` : ""}
       </button>
-      {open ? <ImplementationMemoModal memos={memos} initialId={featured.id} onClose={() => setOpen(false)} /> : null}
     </section>
   );
 }
@@ -72,13 +71,7 @@ export function ImplementationMemoModal({ memos, initialId, onClose }: { memos: 
   const selected = ordered.find((memo) => memo.id === selectedId) ?? ordered[0]!;
   const currentId = ordered[0]?.id;
 
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useLayerEscape(onClose);
 
   return (
     <div className="scrim" onClick={onClose}>
@@ -91,7 +84,7 @@ export function ImplementationMemoModal({ memos, initialId, onClose }: { memos: 
               {memoTime(selected.completedAt)} · run {selected.runId.slice(0, 8)} · {selected.model}{selected.account ? ` · ${selected.account}` : ""}
             </div>
           </div>
-          <button className="close-x" type="button" onClick={onClose} aria-label="Close memo">×</button>
+          <button className="close-x layer-head-close" type="button" onClick={onClose} aria-label="Close memo">×</button>
         </div>
         <div className={`implementation-memo-modal-grid${ordered.length > 1 ? "" : " single"}`}>
           {ordered.length > 1 ? (
@@ -153,6 +146,7 @@ export function ImplementationMemoModal({ memos, initialId, onClose }: { memos: 
             </details>
           </div>
         </div>
+        <LayerCloseBar onClose={onClose} />
       </div>
     </div>
   );

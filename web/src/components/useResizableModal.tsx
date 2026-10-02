@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { IOS_PHONE } from "../lib/iosPhone.js";
 
 // Drag-to-resize for the deliverable preview modal. The modal is centered by its scrim, so an edge
 // tracks the cursor when its size changes by 2× the drag delta (the opposite edge grows in lockstep).
@@ -10,6 +11,7 @@ const STORAGE_KEY = "deliverable-modal-size";
 const MIN_W = 360;
 const MIN_H = 240;
 const VIEWPORT_MARGIN = 24;
+const PHONE_MQ = "(max-width: 899.98px)";
 
 type Size = { w: number; h: number };
 
@@ -83,7 +85,9 @@ export function useResizableModal() {
   }, []);
 
   let style: CSSProperties | undefined;
-  if (size) {
+  // An iPhone shows the preview as a full-screen layer with its Close docked at the bottom, so a stored
+  // size must not shrink it back into a floating box.
+  if (size && !(IOS_PHONE && window.matchMedia(PHONE_MQ).matches)) {
     const w = clamp(size.w, MIN_W, window.innerWidth - VIEWPORT_MARGIN);
     const h = clamp(size.h, MIN_H, window.innerHeight - VIEWPORT_MARGIN);
     style = { width: `${w}px`, height: `${h}px`, maxWidth: "none", maxHeight: "none" };

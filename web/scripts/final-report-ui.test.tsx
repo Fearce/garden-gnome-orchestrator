@@ -63,7 +63,7 @@ check("a summary of another revision is never shown", finalReportFor("done", [us
 
 console.log("\nB. card markup");
 const plain = renderToStaticMarkup(
-  <FinalReportCard report={{ memo: useful, summary: null }} state="done" label={<span>implementor (Pip)</span>} memos={[useful]} />,
+  <FinalReportCard report={{ memo: useful, summary: null }} state="done" label={<span>implementor (Pip)</span>} memos={[useful]} onOpenMemo={() => {}} />,
 );
 check("the card is labelled as the final report", plain.includes('aria-label="Final report"') && plain.includes("Final report"));
 check("without a summary it renders the report verbatim as markdown", plain.includes("<strong>export</strong>") && plain.includes("abc123"));
@@ -72,7 +72,7 @@ check("a done card is styled as done", plain.includes("state-done"));
 check("no summary provenance without a summary", !plain.includes("Summarized by"));
 
 const summarized = renderToStaticMarkup(
-  <FinalReportCard report={{ memo: useful, summary }} state="review" label={<span>implementor</span>} memos={[useful, interrupted]} />,
+  <FinalReportCard report={{ memo: useful, summary }} state="review" label={<span>implementor</span>} memos={[useful, interrupted]} onOpenMemo={() => {}} />,
 );
 check("the summary leads", summarized.indexOf("Export shipped.") < summarized.indexOf("Implementor&#x27;s full report"));
 check("its model is named in plain words", summarized.includes("Summarized by Sonnet 5"));

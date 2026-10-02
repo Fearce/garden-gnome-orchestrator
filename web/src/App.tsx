@@ -15,6 +15,8 @@ import { useIdle } from "./components/screensaver/useIdle.js";
 import { runActive } from "./lib/format.js";
 import { apiUrl } from "./lib/base.js";
 import { useSwipePanes, type WorkbenchPane } from "./lib/swipe.js";
+import { installNavHistory } from "./lib/navHistory.js";
+import { IOS_PHONE } from "./lib/iosPhone.js";
 import { visibleBoardTabs } from "./lib/boardTabs.js";
 import ggLogo from "./assets/gg-logo.webp";
 import type { BoardView } from "./types.js";
@@ -65,6 +67,7 @@ export function App() {
   const closeGitConsole = useStore((s) => s.closeGitConsole);
   const [workbench, setWorkbench] = useState<HTMLDivElement | null>(null);
   useSwipePanes(workbench, mobilePane, setMobilePane, !selected);
+  useEffect(() => (IOS_PHONE ? installNavHistory(useStore) : undefined), []);
 
   if (authRequired && !authed) return <Login />;
 

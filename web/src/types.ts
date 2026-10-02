@@ -325,6 +325,13 @@ export const MAX_GOAL_BURN_RATE_PCT = 500;
  *  over whatever pane is showing so the rest of the work stays in sight. */
 export type BoardView = "tasks" | "notes" | "schedules" | "goals" | "supervisor" | "patchnotes" | "ide" | "remote";
 
+/** A layer opened on top of the selected task. Store-owned rather than component state so browser
+ *  Back/Forward can close and reopen it (lib/navHistory.ts). `memoId` / `findingId` name what to show. */
+export type TaskOverlay =
+  | { kind: "memo"; memoId: string }
+  | { kind: "deliverable"; findingId: string }
+  | { kind: "changes" };
+
 /** Hard ceiling on a note's body — enforced server-side by truncation. Mirrors server/src/types.ts. */
 export const NOTE_MAX_CHARS = 255;
 

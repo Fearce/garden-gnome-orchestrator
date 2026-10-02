@@ -18,7 +18,8 @@ import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { TaskAgentsPicker } from "./TaskAgentsPicker.js";
 import { TaskModelPicker } from "./TaskModelPicker.js";
 import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
-import { ImplementationMemos } from "./ImplementationMemos.js";
+import { ImplementationMemoModal, ImplementationMemos } from "./ImplementationMemos.js";
+import { LayerCloseBar } from "./LayerClose.js";
 import { FinalReportCard } from "./FinalReport.js";
 import { finalReportFor } from "../implementationMemos.js";
 import { CodeContextBar, useCodeContext } from "./CodeContextBar.js";
@@ -612,7 +613,10 @@ export function ThreadDetail() {
   const pendingPlan = useStore((s) => (s.selectedThreadId ? s.pendingPlans[s.selectedThreadId] : undefined));
   const changes = useStore((s) => (s.selectedThreadId ? s.threadChanges[s.selectedThreadId] : undefined));
   const [msg, setMsg] = useState("");
-  const [showChanges, setShowChanges] = useState(false);
+  const overlay = useStore((s) => s.taskOverlay);
+  const openOverlay = useStore((s) => s.openTaskOverlay);
+  const closeOverlay = useStore((s) => s.closeTaskOverlay);
+  const openMemo = useCallback((memoId: string) => openOverlay({ kind: "memo", memoId }), [openOverlay]);
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
   // A phone or touch tablet opens as a transcript, not as two rows of composing chrome. One tap reveals the full
@@ -792,6 +796,12 @@ export function ThreadDetail() {
   const [panel, setPanel] = useState<HTMLElement | null>(null);
   useSwipeDismiss(panel, () => select(null), { swipeRight: true });
 
+  // The diff is fetched whenever its layer opens, including when browser Forward reopens it.
+  const changesOpen = overlay?.kind === "changes";
+  useEffect(() => {
+    if (changesOpen && id) loadChanges(id);
+  }, [changesOpen, id, loadChanges]);
+
   if (!id || !thread) return null;
 
   // Frozen (cap-parked) thread: the pane renders normally so the operator can read the feed, view the
@@ -969,8 +979,11 @@ export function ThreadDetail() {
             >
               <ChevronIcon down={headCollapsed} />
             </button>
-            <button className="close-x" onClick={() => select(null)} aria-label="Close" title="Close">
-              ✕
+            {/* On a phone this widens into the labelled Close that every layer over the task also
+                docks in this corner (LayerClose.tsx); the bare glyph sat beside a look-alike chevron. */}
+            <button className="close-x task-close" onClick={() => select(null)} aria-label="Close" title="Close">
+              <span aria-hidden="true">✕</span>
+              <span className="task-close-label" aria-hidden="true">Close</span>
             </button>
           </div>
         </div>
@@ -1069,10 +1082,7 @@ export function ThreadDetail() {
               )}
               <button
                 className="btn ghost sm"
-                onClick={() => {
-                  setShowChanges(true);
-                  loadChanges(id);
-                }}
+                onClick={() => openOverlay({ kind: "changes" })}
               >
                 Diff
               </button>
@@ -1109,7 +1119,12 @@ export function ThreadDetail() {
           sheared the inject bar off the panel. `.deliverables` yields the way `.detail-head` does
           (`flex: 0 1 auto` over a capped, self-scrolling strip), which keeps it on screen without a
           height claim the panel cannot afford. */}
-      <Deliverables items={deliverables} />
+      <Deliverables
+        items={deliverables}
+        viewingId={overlay?.kind === "deliverable" ? overlay.findingId : null}
+        onView={(findingId) => openOverlay({ kind: "deliverable", findingId })}
+        onClose={closeOverlay}
+      />
       {/* One scrollport for everything else between the header and the inject bar. The memo, the
           deployment handoff and the filter chips used to be non-scrolling siblings of a panel that is
           `overflow: hidden`, so they took their height off the transcript and, once it ran out, off the
@@ -1117,7 +1132,7 @@ export function ThreadDetail() {
           follow-the-live-agent stick, the load-older anchor and the filter jump all measure whatever
           actually scrolls. */}
       <div className="detail-body" ref={scrollRef} onScroll={onFeedScroll}>
-        <ImplementationMemos memos={taskMemos} />
+        <ImplementationMemos memos={taskMemos} onOpen={openMemo} />
         <ManualDeploymentHandoff deployment={thread.state === "done" ? thread.manualDeployment : null} />
         {thread.state === "awaiting_approval" && (
           <div className="approval">
@@ -1283,6 +1298,7 @@ export function ThreadDetail() {
               report={finalReport}
               state={thread.state}
               memos={taskMemos}
+              onOpenMemo={openMemo}
               label={<RoleLabel role="implementor" name={nameFor("implementor")} model={modelFor(finalReport.memo.runId)} />}
             />
           ) : null}
@@ -1452,12 +1468,15 @@ export function ThreadDetail() {
           </span>
         </div>
       </div>
-      {showChanges && (
-        <div className="scrim" onClick={() => setShowChanges(false)}>
+      {overlay?.kind === "memo" && taskMemos.length ? (
+        <ImplementationMemoModal memos={taskMemos} initialId={overlay.memoId} onClose={closeOverlay} />
+      ) : null}
+      {overlay?.kind === "changes" && (
+        <div className="scrim" onClick={closeOverlay}>
           <div className="modal changes" onClick={(e) => e.stopPropagation()}>
             <div className="m-head">
               <h3>Changes · {thread.workspace}</h3>
-              <button className="btn ghost sm" onClick={() => setShowChanges(false)}>
+              <button className="btn ghost sm layer-head-close" onClick={closeOverlay} aria-label="Close changes">
                 ✕
               </button>
             </div>
@@ -1473,6 +1492,7 @@ export function ThreadDetail() {
                 <div className="faint">loading…</div>
               )}
             </div>
+            <LayerCloseBar onClose={closeOverlay} />
           </div>
         </div>
       )}

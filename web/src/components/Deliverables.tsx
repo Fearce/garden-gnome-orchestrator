@@ -45,8 +45,19 @@ function popoverPosition(chip: HTMLElement | null): { top: number; left: number 
  * (touch-only) and from the icon of a file that has no preview to open instead.
  * Renders nothing when the task has no deliverables.
  */
-export function Deliverables({ items }: { items: Finding[] }) {
-  const [viewing, setViewing] = useState<Finding | null>(null);
+export function Deliverables({
+  items,
+  viewingId,
+  onView,
+  onClose,
+}: {
+  items: Finding[];
+  /** The file whose preview is open. Owned by the task's layer state so browser Back closes it. */
+  viewingId: string | null;
+  onView: (findingId: string) => void;
+  onClose: () => void;
+}) {
+  const viewing = viewingId ? items.find((d) => d.id === viewingId) ?? null : null;
   // File cards are useful but secondary to the transcript. Phones start with one disclosure row;
   // desktop retains the established open strip, and either can be changed deliberately.
   const [expanded, setExpanded] = useState(() => typeof window === "undefined" || !window.matchMedia("(max-width: 899.98px)").matches);
@@ -65,13 +76,13 @@ export function Deliverables({ items }: { items: Finding[] }) {
       {expanded ? (
         <div className="deliverable-strip">
           {items.map((d) => (
-            <DeliverableChip key={d.id} d={d} onView={() => setViewing(d)} />
+            <DeliverableChip key={d.id} d={d} onView={() => onView(d.id)} />
           ))}
         </div>
       ) : null}
       {viewing && (
         <Suspense fallback={null}>
-          <DeliverableModal d={viewing} onClose={() => setViewing(null)} />
+          <DeliverableModal d={viewing} onClose={onClose} />
         </Suspense>
       )}
     </div>

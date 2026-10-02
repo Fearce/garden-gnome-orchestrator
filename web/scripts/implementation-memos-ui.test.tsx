@@ -77,7 +77,7 @@ merged = mergeImplementationMemos(merged, [refreshed]);
 check("newer same-id terminal evidence upgrades in place", merged.length === 2 && merged[1]?.outcome === "completed" && merged[1]?.report === "Fix completed.");
 
 console.log("\nC. pinned panel and revision audit markup");
-const pin = renderToStaticMarkup(<ImplementationMemos memos={[useful, interrupted]} />);
+const pin = renderToStaticMarkup(<ImplementationMemos memos={[useful, interrupted]} onOpen={() => {}} />);
 check("work memo is labeled and pinned independently of feed rows", pin.includes("Implementor work memo"));
 check("pin names latest useful revision", pin.includes("Latest useful") && pin.includes("revision 1"));
 check("pin warns about the newer interrupted current revision", pin.includes("Current revision 2 interrupted"));
@@ -90,7 +90,7 @@ check("modal exposes stable run/work identity", modal.includes("implementation:2
 
 console.log("\nD. reconstructed (backfilled) revisions are labeled, not passed off as observed");
 const reconstructed = memo({ id: "memo-3", revision: 1, source: "backfill", handoff: "done", report: "Legacy completion report." });
-const backfilledPin = renderToStaticMarkup(<ImplementationMemos memos={[reconstructed]} />);
+const backfilledPin = renderToStaticMarkup(<ImplementationMemos memos={[reconstructed]} onOpen={() => {}} />);
 check("pin discloses a reconstructed revision", backfilledPin.includes("reconstructed from run history"));
 const backfilledModal = renderToStaticMarkup(<ImplementationMemoModal memos={[reconstructed]} initialId={reconstructed.id} onClose={() => {}} />);
 check("modal badges the revision as reconstructed", backfilledModal.includes("Reconstructed"));
