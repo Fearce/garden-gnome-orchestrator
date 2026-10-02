@@ -103,3 +103,5 @@ A continuation is under 2,500 characters, against a full step brief plus a new s
 - The budget is boundary-enforced from persisted run rows, not a streaming per-token cap.
 - Director judgements are not linked to step-task runs, so they are outside both the usage line and the
   budget.
+- The unclean-turn count, the waiting backoff and the retired-carrier set are kept in memory. After a
+  restart a task gets up to two more unclean turns, and a long job's watch starts again at 5 minutes.
