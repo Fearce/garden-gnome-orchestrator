@@ -61,7 +61,8 @@ It is red on some boxes and green on others, so it gets written off as a "known 
   falls back to `config.oauthToken` and legitimately re-publishes an identity when that token matches
   a configured account, so the assertion only holds on a box whose `.env` configures none. Fix: drive
   it with a token no configuration can match, so the property under test (a stale inherited identity
-  never survives) is asserted the same way everywhere.
+  never survives) is asserted the same way everywhere. (The identity vars and this check were retired
+  on 2026-10-02 with the usage-warning handoff hook that read them; the lesson stands.)
 - **`test:director-provider`** did not fail, it CRASHED. `directorTargets` calls `codexAuthAvailable`,
   which asks the machine (a `~/.codex` ChatGPT login, a seeded isolated `CODEX_HOME`, or a key) and
   which none of the test's `internals.*` stubs reach. With no Codex login there was no target at all,

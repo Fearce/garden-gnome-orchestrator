@@ -29,7 +29,6 @@ import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
 import { AccountManager, type PersistedAccountUsage } from "./accounts/accountManager.js";
 import { ResetStagger } from "./accounts/resetStagger.js";
-import { publishAccountUsage } from "./accounts/usageSnapshot.js";
 import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
 import { startGrokUsageMonitor } from "./agents/grokUsagePing.js";
 import { startZaiUsageMonitor } from "./agents/zaiUsagePing.js";
@@ -131,13 +130,6 @@ async function main(): Promise<void> {
       },
       save: (id, usage) => db.kvSet(`account_usage_${id}`, JSON.stringify(usage)),
     },
-  });
-  // Republish every sub's usage to ~/.claude/state on each account-state change, so Claude Code's own
-  // handoff hook can judge the account a session is actually burning instead of the single account in
-  // the global credentials file (see accounts/usageSnapshot.ts).
-  publishAccountUsage(accounts.usageSnapshot());
-  hub.subscribe((e) => {
-    if (e.type === "accounts") publishAccountUsage(accounts.usageSnapshot());
   });
   const manager = new ThreadManager(db, hub, memory, accounts, freeProviders);
   const patchNoteDigests = new PatchNoteDigests({ get: (key) => db.kvGet(key), set: (key, value) => db.kvSet(key, value) }, haikuDigestModel(() => accounts.auxToken()));
