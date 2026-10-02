@@ -1228,10 +1228,20 @@ const DirectorBubble = memo(function DirectorBubble({
         {item.kind === "user" ? item.text : <Markdown text={item.text} />}
         <MessageThumbs refs={item.attachments} />
       </div>
+      <time className="msg-time" dateTime={new Date(item.at).toISOString()} title={new Date(item.at).toLocaleString()}>
+        {bubbleTime(item.at)}
+      </time>
       {delivery ? <DeliveryReceipt status={delivery} error={deliveryError} /> : null}
     </div>
   );
 });
+
+/** Clock time for today's messages; the date joins it once the message is from an earlier day. */
+function bubbleTime(ts: number): string {
+  const when = new Date(ts);
+  const clock = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return when.toDateString() === new Date().toDateString() ? clock : resultDate(ts);
+}
 
 function DeliveryReceipt({ status, error }: { status: "sending" | "failed"; error?: string }) {
   return (

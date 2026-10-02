@@ -628,6 +628,7 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 
 .msg { display: flex; flex-direction: column; gap: 3px; }
 .msg .by { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint); }
+.msg .msg-time { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .msg.user .bubble { background: var(--bg-3); border: 1px solid var(--line); }
 .msg.director .bubble { background: transparent; border-left: 2px solid var(--role-director); padding-left: 11px; border-radius: 0; }
 .bubble { padding: 9px 12px; border-radius: var(--r-md); white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; color: var(--text); }
@@ -3234,6 +3235,7 @@ body.dl-resizing { user-select: none; }
   .rail .transcript { flex: 1 1 0; min-height: 0; padding: 16px 12px 18px; gap: 14px; }
   .rail .msg.user { align-items: flex-end; }
   .rail .msg.user .by { display: none; }
+  .rail .msg.user .msg-time { align-self: flex-end; }
   .rail .msg.user .bubble {
     max-width: 86%; padding: 9px 13px; border-radius: 18px 18px 5px 18px;
     background: color-mix(in oklch, var(--accent) 13%, var(--bg-2));
