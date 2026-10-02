@@ -235,6 +235,19 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
       assert.equal(await page.locator(`${restingDirector} .old-rest-${rest === 'chair' ? 'chair' : 'bed'}`).count(), 1, `SD director has its own ${rest} furniture`);
       assert.equal(await page.locator(`${restingDirector} [class^="beta-rest"]`).count(), 0, 'No beta furniture');
       assert.equal(await page.locator(`${restingDirector} .old-bench`).count(), 0, 'A resting director has no bench');
+      // Test the painted figure, not just its button: lifting the chair pose used to clip the bobble.
+      for (const width of [320, 390, 1440, 1920]) {
+        await page.setViewportSize({ width, height: 1000 });
+        await page.waitForTimeout(150);
+        const clippedFigure = await page.locator(restingDirector).evaluate((el) => {
+          const lane = el.closest('.beta-workshop-cast').getBoundingClientRect();
+          return [...el.querySelectorAll('.gnome-figure > path, .gnome-figure > circle, .gnome-boot')]
+            .filter((part) => { const b = part.getBoundingClientRect(); return b.height && (b.top < lane.top - 0.5 || b.bottom > lane.bottom + 0.5); })
+            .map((part) => part.outerHTML);
+        });
+        assert.deepEqual(clippedFigure, [], `${rest} director figure clips at ${width}px`);
+      }
+      await page.setViewportSize({ width: 1440, height: 1000 });
       // Exercise the existing cloud/aurora motion even when this mount rolled a plain skin.
       const skinMotion = await page.locator(`${restingDirector} .gnome`).evaluate((el) => {
         const previous = { floating: el.classList.contains('gnome-floating'), super: el.classList.contains('gnome-super') };

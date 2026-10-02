@@ -37,7 +37,7 @@
 
 /* A resting director sits in its chair with boots splayed, or lies in bed under the blanket and dreams.
    Rare-skin motion stops while it rests. */
-.classic-workshop-gnome[data-rest="chair"] > .gnome { transform: translateY(-9%); }
+.classic-workshop-gnome[data-rest="chair"] > .gnome { transform: translateY(-9%) scaleY(.9); }
 .classic-workshop-gnome[data-rest="chair"] .gnome-boot-left { transform: translate(-1px, -1.5px) rotate(-16deg); }
 .classic-workshop-gnome[data-rest="chair"] .gnome-boot-right { transform: translate(1px, -1.5px) rotate(16deg); }
 .classic-workshop-gnome[data-rest="sleep"] > .gnome { transform: translate(-32%, 20%) rotate(-76deg) scale(.7); transform-origin: 50% 45%; }
