@@ -573,7 +573,6 @@ interface State {
   deleteNote: (id: string) => void;
   clearNotes: () => void;
   dismissNews: (id: string) => void;
-  dismissAllNews: () => void;
   checkCliUpdates: () => void;
   sendSupervisorMessage: (content: string, targetIds: string[]) => boolean;
   runSupervisorNow: () => void;
@@ -1982,7 +1981,6 @@ export const useStore = create<State>((set) => ({
   deleteNote: (id) => sendCommand({ type: "note.delete", id }),
   clearNotes: () => sendCommand({ type: "note.clear" }),
   dismissNews: (id) => sendCommand({ type: "news.dismiss", id }),
-  dismissAllNews: () => sendCommand({ type: "news.dismissAll" }),
   checkCliUpdates: () => sendCommand({ type: "cli.update.check" }),
   sendSupervisorMessage: (content, targetIds) => {
     const text = content.trim();

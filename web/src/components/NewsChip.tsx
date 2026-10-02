@@ -1,47 +1,54 @@
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { useStore } from "../store.js";
 import { ago, modelLabel } from "../lib/format.js";
 import type { CliAutoUpdateStatus, HighlightNewsItem } from "../types.js";
 
 /**
- * The top bar's "highlighted news" chip. It only exists while there is undismissed news, and the server
- * only makes news for a newly released model, so the chip appearing at all is the signal. Clicking opens
- * a small panel listing each release with a dismiss control.
+ * The top bar's "highlighted news" chip. It only exists while there is unseen news, and the server only
+ * makes news for a newly released model, so the chip appearing at all is the signal. Opening it is the
+ * acknowledgement: the items it shows are dismissed server-side right then (so they stay gone across
+ * reloads and browsers), the panel keeps listing them until it closes, and the chip goes with it. A model
+ * announced while the panel is open was never shown, so it brings the chip back once the panel closes.
  */
 export function NewsChip() {
   const news = useStore((s) => s.news);
-  const [open, setOpen] = useState(false);
+  const dismiss = useStore((s) => s.dismissNews);
+  // What the open panel lists: the items as they were when the chip was opened, already dismissed.
+  const [opened, setOpened] = useState<HighlightNewsItem[] | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
-  useDismissOnOutside(open, wrap, () => setOpen(false));
-  useEffect(() => {
-    if (!news.length) setOpen(false);
-  }, [news.length]);
-  if (!news.length) return null;
+  const close = useCallback(() => setOpened(null), []);
+  useDismissOnOutside(opened !== null, wrap, close);
+  const shown = opened ?? news;
+  if (!shown.length) return null;
 
-  const label = news.length === 1 ? "New model" : `${news.length} new models`;
-  const names = news.map((item) => modelLabel(item.model)).join(", ");
+  const toggle = (): void => {
+    if (opened) return close();
+    setOpened(news);
+    for (const item of news) dismiss(item.id);
+  };
+  const label = shown.length === 1 ? "New model" : `${shown.length} new models`;
+  const names = shown.map((item) => modelLabel(item.model)).join(", ");
   return (
     <div className="news" ref={wrap}>
       <button
         ref={button}
         type="button"
-        className={"news-chip" + (open ? " open" : "")}
-        aria-expanded={open}
+        className={"news-chip" + (opened ? " open" : "")}
+        aria-expanded={opened !== null}
         aria-haspopup="dialog"
         title={`${label}: ${names}`}
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
       >
         <SparkIcon />
         <span className="news-chip-label">{label}</span>
       </button>
-      {open ? <NewsPanel news={news} anchor={button.current} /> : null}
+      {opened ? <NewsPanel news={opened} anchor={button.current} /> : null}
     </div>
   );
 }
 
 function NewsPanel({ news, anchor }: { news: HighlightNewsItem[]; anchor: HTMLElement | null }) {
-  const dismissAll = useStore((s) => s.dismissAllNews);
   const status = useStore((s) => s.settings.cliAutoUpdate);
   const autoUpdate = useStore((s) => s.settings.autoUpdateClis);
   const position = usePanelPosition(anchor);
@@ -49,11 +56,6 @@ function NewsPanel({ news, anchor }: { news: HighlightNewsItem[]; anchor: HTMLEl
     <div className="news-panel" role="dialog" aria-label="Highlighted news" style={position}>
       <div className="news-head">
         <span className="news-title">Highlighted news</span>
-        {news.length > 1 ? (
-          <button type="button" className="news-clear" onClick={dismissAll}>
-            Dismiss all
-          </button>
-        ) : null}
       </div>
       <ul className="news-list">
         {news.map((item) => (
@@ -66,20 +68,12 @@ function NewsPanel({ news, anchor }: { news: HighlightNewsItem[]; anchor: HTMLEl
 }
 
 function NewsRow({ item }: { item: HighlightNewsItem }) {
-  const dismiss = useStore((s) => s.dismissNews);
   return (
     <li className="news-item">
-      <div className="news-item-main">
-        <span className={"news-provider " + item.provider}>{item.provider === "claude" ? "Claude" : "Codex"}</span>
-        <span className="news-model">{modelLabel(item.model)}</span>
-        <code className="news-id">{item.model}</code>
-        <span className="news-when">Spotted {ago(item.at)} ago · pickable in Settings → Subscriptions now</span>
-      </div>
-      <button type="button" className="news-dismiss" aria-label={`Dismiss ${modelLabel(item.model)}`} title="Dismiss" onClick={() => dismiss(item.id)}>
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true">
-          <path d="M18 6 6 18M6 6l12 12" />
-        </svg>
-      </button>
+      <span className={"news-provider " + item.provider}>{item.provider === "claude" ? "Claude" : "Codex"}</span>
+      <span className="news-model">{modelLabel(item.model)}</span>
+      <code className="news-id">{item.model}</code>
+      <span className="news-when">Spotted {ago(item.at)} ago · pickable in Settings → Subscriptions now</span>
     </li>
   );
 }

@@ -1,13 +1,14 @@
 // Lab for the highlighted-news chip and the Agent CLI updates settings (`npm run news-lab`). What the unit
 // gate can't see: whether the chip mounts beside the usage gauge only while news exists, whether the panel
-// opens on-screen, whether a dismiss round-trips through the socket and STAYS dismissed across a reload,
-// and whether Settings renders the updater's status. Boots its own throwaway instance (which, on its own
-// DATA_DIR, stands the updater down — so this lab never installs or commits anything) and seeds its own
-// news. Not in GATES: it needs a browser + an instance, like the other labs.
+// opens on-screen, whether showing the chip leaves it unseen while opening it dismisses exactly what it
+// showed (round-tripping through the socket and STAYING dismissed across a reload), whether a different
+// model announced afterwards still brings the chip back, and whether Settings renders the updater's
+// status. Boots its own throwaway instance (which, on its own DATA_DIR, stands the updater down — so this
+// lab never installs or commits anything) and seeds its own news. Not in GATES: it needs a browser + an instance, like the other labs.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { loadChromium, authPassword, requireBuild, requireFreshWebBuild, boot, waitForPersisted, killInstance, createChecks, shotDir, isVoiceBridgeNoise } = require("./lab-harness.cjs");
+const { loadChromium, authPassword, requireBuild, requireFreshWebBuild, boot, waitForPersisted, waitForSettingsReloadSafe, killInstance, createChecks, shotDir, isVoiceBridgeNoise } = require("./lab-harness.cjs");
 
 const PORT = 4391;
 const check = createChecks();
@@ -31,7 +32,7 @@ async function waitForHello(page) {
   requireFreshWebBuild();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "news-lab-"));
   killInstance(PORT);
-  const child = await boot({ dataDir, port: PORT });
+  let child = await boot({ dataDir, port: PORT });
   let code = 1;
   try {
     // Seeded before any client connects, so the first connect snapshot is built from it.
@@ -63,7 +64,13 @@ async function waitForHello(page) {
     });
     check("it sits immediately before the usage gauge", order.gauge === -1 || order.news === order.gauge - 1, JSON.stringify(order));
 
-    // ---- the panel ----
+    // ---- showing is not seeing: a reload with the chip never opened still has both items ----
+    await page.reload({ timeout: 45000 });
+    await waitForHello(page);
+    await page.waitForSelector(".news-chip", { timeout: 15000 });
+    check("merely displaying the chip does not mark it seen", (await chipText(page)) === "2 new models", await chipText(page));
+
+    // ---- the panel: opening it is the dismissal ----
     await page.click(".news-chip");
     await page.waitForSelector(".news-panel", { timeout: 5000 });
     const items = await page.$$eval(".news-item", (els) =>
@@ -84,21 +91,39 @@ async function waitForHello(page) {
     check("the footer speaks to the CLI auto-update", /auto-update|latest release/i.test(foot), foot);
     await page.screenshot({ path: path.join(shotDir(dataDir), "news-open.png") });
 
-    // ---- dismiss one; it must round-trip and survive a reload ----
-    await page.click('.news-item:has-text("gpt-6-nova") .news-dismiss');
-    await page.waitForFunction(() => document.querySelectorAll(".news-item").length === 1, { timeout: 10000 });
-    check("dismissing an item removes it", (await chipText(page)) === "New model", await chipText(page));
+    const stillListed = await waitForSettingsReloadSafe(dataDir, "highlight_news", "[]");
+    check("opening dismissed both shown items server-side", stillListed === "[]", String(stillListed));
+    check("...while the open panel keeps listing them", (await page.$$(".news-item")).length === 2);
+    check("the panel has no dismiss controls left to click", (await page.$(".news-panel button")) === null);
     await page.keyboard.press("Escape");
     check("Escape closes the panel", (await page.$(".news-panel")) === null);
+    await page.waitForSelector(".news-chip", { state: "detached", timeout: 10000 });
+    check("closing the opened panel takes the chip with it", (await page.$(".news-chip")) === null);
+    await page.reload({ timeout: 45000 });
+    await waitForHello(page);
+    await page.waitForTimeout(1500);
+    check("the chip stays gone across a reload (server-authoritative)", (await page.$(".news-chip")) === null);
+
+    // ---- a different model announced later is still news ----
+    // The server keeps kv in memory, so the later announcement is seeded across a restart of the instance.
+    child.kill();
+    killInstance(PORT);
+    const later = { id: "model:claude:claude-sonnet-6", kind: "model", provider: "claude", model: "claude-sonnet-6", at: Date.now() };
+    const seedDb = new Database(path.join(dataDir, "orchestrator.sqlite"));
+    seedDb.prepare("INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)").run("highlight_news", JSON.stringify([later]));
+    seedDb.close();
+    child = await boot({ dataDir, port: PORT });
     await page.reload({ timeout: 45000 });
     await waitForHello(page);
     await page.waitForSelector(".news-chip", { timeout: 15000 });
-    check("the dismissal survived a reload (server-authoritative)", (await chipText(page)) === "New model", await chipText(page));
-
+    check("a newly announced model brings the chip back", (await chipText(page)) === "New model", await chipText(page));
     await page.click(".news-chip");
-    await page.click('.news-item:has-text("claude-opus-6") .news-dismiss');
+    await page.waitForSelector(".news-panel", { timeout: 5000 });
+    const laterItems = await page.$$eval(".news-item .news-id", (els) => els.map((el) => el.textContent));
+    check("...listing only the new one", laterItems.length === 1 && laterItems[0] === "claude-sonnet-6", JSON.stringify(laterItems));
+    await page.click(".news-chip");
     await page.waitForSelector(".news-chip", { state: "detached", timeout: 10000 });
-    check("dismissing the last item removes the chip", (await page.$(".news-chip")) === null);
+    check("clicking the open chip again closes it and it is gone", (await page.$(".news-chip")) === null);
 
     // ---- Settings: the toggle and the status ----
     await page.click(".settings-btn");
