@@ -74,6 +74,12 @@
 //   • Playwright's `locator.boundingBox()` returns `{x,y,width,height}`, NOT a DOMRect. `right` and
 //     `bottom` are undefined, so a correct layout fails a naive bounds assertion. Use `boxBounds()`
 //     below (or return `getBoundingClientRect()` fields from `page.evaluate`) before comparing edges.
+//   • "instance never came up — exited with code 1" with `EADDRINUSE 0.0.0.0:<PORT>` in lab.log is usually NOT
+//     a stale lab: this box's TCP dynamic range starts at 1024 (`netsh int ipv4 show dynamicport tcp`), so any
+//     process's OUTBOUND socket can sit on a lab port (2026-10-02: a python bot held 4341 in CLOSE_WAIT and
+//     code-nav-lab could not boot). `Get-NetTCPConnection -LocalPort <PORT>` names the owner; don't kill it
+//     for a lab — run a copy of the lab with its `PORT` const changed. Labs that clean up their dataDir lose
+//     lab.log, so pass `--keep` to read it.
 //   • Don't wrap a lab in `timeout` — it SIGTERMs the whole npm child tree, so `--keep`'s instance dies
 //     with it. Give the Bash call a long timeout, or background it and poll the port.
 //   • **Seed AFTER `boot()`, never before.** The schema is created by the server's own `Db`
