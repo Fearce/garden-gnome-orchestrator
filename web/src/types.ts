@@ -727,6 +727,14 @@ export interface TokenSafetyState {
   bypass: { at: number; threshold: number; resumed: number; waiting: number } | null;
 }
 
+/** Mirrors server/src/types.ts ResetBurnDTO. */
+export interface ResetBurnDTO {
+  subId: string;
+  startedAt: number;
+  endsAt: number;
+  anchored: boolean;
+}
+
 /** Operator-tunable pipeline settings — server-authoritative (persisted in the DB kv table, broadcast
  *  to every client). Mirrors the server's OrchestratorSettings. */
 export interface OrchestratorSettings {
@@ -761,6 +769,9 @@ export interface OrchestratorSettings {
   // the provider (Claude sub, Codex, or Grok) with the lowest weekly usage, balancing burn evenly across
   // every enabled platform.
   spreadUsage: boolean;
+  // "Prepare a sub for reset": the one subscription routed to first so it maxes out before its banked
+  // reset is spent. Null = off. Set it with the patch-only `resetBurnSubId` (null stops it).
+  resetBurn: ResetBurnDTO | null;
   // Token conservation mode: off (default) = normal model routing. on = once the Codex general pool
   // sits in the last 10% of its weekly window (and isn't resetting within 24h), every role dispatched
   // against it is capped to GPT-6 Luna. Claude is never downgraded (Opus 5.5 only). Never overrides a
@@ -1091,8 +1102,9 @@ export type SettingsPatch = Partial<
     | "codexModelEfforts"
     | "grokModels"
     | "zaiModels"
+    | "resetBurn"
   >
-> & { openaiApiKey?: string; zaiApiKey?: string; jevApiKey?: string; discordBotToken?: string };
+> & { openaiApiKey?: string; zaiApiKey?: string; jevApiKey?: string; discordBotToken?: string; resetBurnSubId?: string | null };
 
 /** Flagship Codex models suggested when the live list hasn't loaded yet (most-capable first). */
 export const CODEX_MODELS = [

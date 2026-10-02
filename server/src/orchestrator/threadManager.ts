@@ -110,6 +110,7 @@ import { codexReviewTarget, type CodexReviewTarget } from "./reviewModelFloor.js
 import { claudeOpusTarget, CLAUDE_OPUS_FLOOR_MODEL, isDisallowedClaudeModel, type ClaudeOpusTarget } from "./claudeOpusFloor.js";
 import { conservationResolvedCodexModel, conservationResolvedModel } from "./tokenConservation.js";
 import { usageSavingActive } from "./usageSaving.js";
+import { burnSubIdOf, parseResetBurn, resetBurnDTO, resetBurnEligible, resetBurnEndsAt, startResetBurn, stepResetBurn, type ResetBurn } from "./resetBurn.js";
 import { providerIntent } from "./providerIntent.js";
 import { detectModelRequest, exactModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
 import { LiveBenchScores, type LiveBenchLeaderboard, type LiveBenchUsableModel } from "./liveBenchScores.js";
@@ -229,6 +230,7 @@ import type {
   ToggleableRole,
   UsageSavingPolicies,
   UsageSavingPolicy,
+  ResetBurnDTO,
   WorkspaceMode,
   ZaiEffort,
 } from "../types.js";
@@ -550,8 +552,9 @@ export type SettingsPatch = Partial<
     | "codexModels"
     | "grokModels"
     | "zaiModels"
+    | "resetBurn"
   >
-> & { openaiApiKey?: string; zaiApiKey?: string; jevApiKey?: string; discordBotToken?: string };
+> & { openaiApiKey?: string; zaiApiKey?: string; jevApiKey?: string; discordBotToken?: string; resetBurnSubId?: string | null };
 
 /** The slice of operator settings the implementor→QA stage needs, captured at pipeline start. */
 interface PipeOpts {
@@ -1267,8 +1270,9 @@ export class ThreadManager implements OrchestratorApi {
     this.applyAccountWeeklySafety();
     this.applyAccountProfileTokens();
     this.accounts.setSpreadUsage(this.settingBool("setting_spread_usage", false));
-    const temporaryPriority = this.temporaryAccountPriority();
-    this.accounts.setTemporaryPriority?.(temporaryPriority?.accountId ?? "", temporaryPriority?.until ?? 0);
+    // The burn superseded an unexposed owner-only kv priority; that key is retired, not migrated.
+    this.db.kvDelete("temporary_claude_account_priority");
+    this.applyResetBurn(this.resetBurn());
     this.loadCodexCap();
     this.loadPoolCaps();
     this.loadGrokCap();
@@ -1309,6 +1313,7 @@ export class ThreadManager implements OrchestratorApi {
     // reset. onUsageRefresh holds a single callback, so BOTH run from this one wrapper. Registered here
     // (before accounts.start() fires the first ping in index.ts).
     this.accounts.onUsageRefresh(() => {
+      this.resetBurn(); // ends a burn whose window just reset, so routing stops steering at a refilled sub
       this.enforceTokenSafetyLimit();
       this.maybeScheduleTokenResume();
       // An account reset is the best signal that a cap-park can run again. Do not wait for the
@@ -2924,6 +2929,7 @@ export class ThreadManager implements OrchestratorApi {
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
       fastUsagePolling: this.settingBool("setting_fast_usage_polling", false),
       spreadUsage: this.settingBool("setting_spread_usage", false),
+      resetBurn: this.resetBurnSetting(),
       tokenConservationMode: this.settingBool("setting_token_conservation_mode", false),
       usageSaving: this.usageSavingSettings(),
       codexEnabled: this.settingBool("setting_codex_enabled", false),
@@ -3216,6 +3222,8 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Exact fallback for a subscription right now. Either exposed rolling meter can activate it. */
   private usageSavingTarget(subId: string): UsageSavingPolicy | undefined {
+    // Saving a sub that is being burned down for its reset would only slow the burn.
+    if (this.resetBurn()?.subId === subId) return undefined;
     const policy = this.usageSavingSettings()[subId];
     let meters: { fiveHour: number | null | undefined; sevenDay: number | null | undefined };
     if (subId === CODEX_SUB_ID) {
@@ -3348,7 +3356,7 @@ export class ThreadManager implements OrchestratorApi {
     if (saving) return saving.model;
     const ov = this.modelOverrides();
     const base = this.poolResolved(subId, ov[subId]?.[role]?.trim() || ov[DEFAULT_SUB_ID]?.[role]?.trim() || config.models[role]);
-    if (opts.conserve === false || !this.settingBool("setting_token_conservation_mode", false)) return base;
+    if (opts.conserve === false || !this.settingBool("setting_token_conservation_mode", false) || this.resetBurn()?.subId === subId) return base;
     const acct = this.accounts.dto().find((a) => a.id === subId);
     return conservationResolvedModel("claude", base, { usedPct: acct?.sevenDay ?? null, resetAt: acct?.sevenDayReset }, Date.now());
   }
@@ -3769,7 +3777,7 @@ export class ThreadManager implements OrchestratorApi {
     if (provider === "claude") return this.modelFor(accountId ?? this.accounts.dispatchPreview().account.id, role, opts);
     if (provider === "codex") {
       const base = ov[CODEX_SUB_ID]?.[role]?.trim() || this.codexModel();
-      if (opts.conserve === false || !this.settingBool("setting_token_conservation_mode", false)) return base;
+      if (opts.conserve === false || !this.settingBool("setting_token_conservation_mode", false) || this.resetBurn()?.subId === CODEX_SUB_ID) return base;
       const usage = readCodexUsage();
       // Neither side of this may cross a dedicated Codex pool — see `conservationResolvedCodexModel` for
       // both directions. The pool map is built at runtime from the live plan, so the predicate is resolved
@@ -4317,7 +4325,7 @@ export class ThreadManager implements OrchestratorApi {
       const routedZai = zai.hasHeadroom ? zai : { ...zai, hasHeadroom: true, capacityWindows: [] };
       add("zai", models, (model) => saving ? [saving.effort] : underCap(zaiEffortsForModel(model), this.zaiEffort(model)), () => routedZai);
     }
-    const autoEntries = filterAutoSelectionCandidates(entries);
+    const autoEntries = filterAutoSelectionCandidates(this.burningEntries(entries, demand));
     const capacity = preferCapacity(autoEntries, (entry) => candidateCapacityWindows(entry.candidate), demand);
     // Usage forecasts rank model pools but never suppress one that has not actually capped.
     const selected = [
@@ -4671,6 +4679,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       }
     }
     if (pick.provider === routed) return routed;
+    if (this.burnsForReset(routed, this.accounts.dispatchPreview(demand).account.id)) {
+      this.hub.log("info", `Routing ${threadId.slice(0, 8)} to ${providerLabel(routed)} instead of its auto-picked ${providerLabel(pick.provider)}: that sub is being prepared for its reset.`);
+      return routed;
+    }
     const pickedCandidate = this.readyRoleCandidates("implementor", demand).find((candidate) => candidate.provider === pick.provider);
     if (!pickedCandidate) {
       const why = "can't take the task now";
@@ -5166,6 +5178,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.db.kvSet("setting_spread_usage", patch.spreadUsage ? "1" : "0");
       this.accounts.setSpreadUsage(patch.spreadUsage);
     }
+    if (patch.resetBurnSubId !== undefined) this.setResetBurn(patch.resetBurnSubId);
     if (patch.tokenConservationMode !== undefined) this.db.kvSet("setting_token_conservation_mode", patch.tokenConservationMode ? "1" : "0");
     if (patch.usageSaving !== undefined) this.db.kvSet("setting_usage_saving", JSON.stringify(sanitizeUsageSaving(patch.usageSaving)));
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
@@ -5875,6 +5888,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  evens out across all platforms; the safety fallback still supersedes. */
   private preferredProviderCandidate(candidates: ProviderCandidate[], demand?: CapacityDemand): ProviderCandidate {
     const withHeadroom = candidates.filter((c) => c.hasHeadroom);
+    // A sub being prepared for its reset outranks the runway forecast, soft ceilings and the spread or
+    // perishable order; only hard availability (already filtered into withHeadroom) still wins.
+    const burning = this.burningCandidate(withHeadroom, demand);
+    if (burning) return burning;
     const base = withHeadroom.length ? withHeadroom : candidates;
     // Viable runway is the first cut. A soft weekly ceiling or perishable-first preference must never
     // put a long task on a pool forecast to cap when another pool can carry it.
@@ -5888,11 +5905,6 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // carry their backend ceilings.
     const safety = weeklySafetyPool(capacityPool);
     const pool = safety.candidates;
-    // An owner can spend one expiring Claude subscription first. This is only a tie-break inside
-    // hard availability, task-sized capacity and weekly-safety tiers; explicit model pins bypass it.
-    const accountPriority = this.temporaryAccountPriority();
-    const claude = pool.find((candidate) => candidate.provider === "claude");
-    if (!safety.allOver && accountPriority && claude && this.accounts.dispatchPreview(demand).account.id === accountPriority.accountId) return claude;
     // Spread usage: balance across ALL backends by lowest weekly usage. The all-over-safety no-freeze
     // fallback (most headroom) supersedes both it and the default soonest-reset order.
     const priority = safety.allOver
@@ -5903,16 +5915,108 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return pool.reduce((best, c) => (priority(best, c) <= 0 ? best : c));
   }
 
-  temporaryAccountPriority(): { accountId: string; until: number } | null {
-    try {
-      const value: unknown = JSON.parse(this.db.kvGet("temporary_claude_account_priority") ?? "null");
-      if (value && typeof value === "object" && "accountId" in value && "until" in value &&
-        typeof value.accountId === "string" && typeof value.until === "number" &&
-        Number.isFinite(value.until) && value.until > Date.now()) {
-        return { accountId: value.accountId, until: value.until };
-      }
-    } catch { /* malformed or absent operator setting: use ordinary routing */ }
-    return null;
+  private burningCandidate(candidates: ProviderCandidate[], demand?: CapacityDemand): ProviderCandidate | undefined {
+    const burn = this.resetBurn();
+    if (!burn) return undefined;
+    if (burn.subId === CODEX_SUB_ID) return candidates.find((candidate) => candidate.provider === "codex");
+    const claude = candidates.find((candidate) => candidate.provider === "claude");
+    return claude && this.accounts.dispatchPreview(demand).account.id === burn.subId ? claude : undefined;
+  }
+
+  /** The active "prepare a sub for reset" burn, advanced against its target's latest weekly reset: it
+   *  anchors on the first known reset and ends once that window is gone (reset naturally or spent early). */
+  resetBurn(): ResetBurn | null {
+    const burn = parseResetBurn(this.db.kvGet("setting_reset_burn"));
+    if (!burn) return null;
+    if (!resetBurnEligible(burn.subId, this.claudeAccountIds())) {
+      this.endResetBurn(burn, "it is no longer a configured subscription");
+      return null;
+    }
+    const step = stepResetBurn(burn, this.weeklyResetOf(burn.subId), Date.now());
+    if (step.kind === "end") {
+      this.endResetBurn(burn, step.reason);
+      return null;
+    }
+    if (step.kind === "anchor") {
+      this.db.kvSet("setting_reset_burn", JSON.stringify(step.burn));
+      this.applyResetBurn(step.burn);
+      this.publishSettingsSoon();
+      return step.burn;
+    }
+    return burn;
+  }
+
+  /** While a sub is being burned and has room, auto model selection and goal steps choose among its
+   *  models only; an empty narrowing (the target can't take work) leaves the roster untouched. */
+  private burningEntries<T extends { provider: ImplementorProvider; candidate: ProviderCandidate }>(entries: T[], demand: CapacityDemand): T[] {
+    const burning = this.burningCandidate(entries.map((entry) => entry.candidate), demand);
+    return burning ? entries.filter((entry) => entry.provider === burning.provider) : entries;
+  }
+
+  /** A banked reset was just spent on `subId`. If that is the burn's target, its job is done — end it now
+   *  rather than waiting for the next usage reading to show the window rolled. */
+  resetCreditRedeemed(subId: string): void {
+    const burn = parseResetBurn(this.db.kvGet("setting_reset_burn"));
+    if (burn?.subId === subId) this.endResetBurn(burn, "its banked reset was spent");
+  }
+
+  /** Does this provider/account spend the sub being prepared for its reset? The Director follows it too. */
+  burnsForReset(provider: ImplementorProvider, accountId: string): boolean {
+    return this.resetBurn()?.subId === burnSubIdOf(provider, accountId);
+  }
+
+  private resetBurnSetting(): ResetBurnDTO | null {
+    const burn = this.resetBurn();
+    return burn ? resetBurnDTO(burn) : null;
+  }
+
+  private setResetBurn(subId: string | null): void {
+    const current = this.resetBurn();
+    if (subId && (current?.subId === subId || !resetBurnEligible(subId, this.claudeAccountIds()))) return;
+    if (current) this.endResetBurn(current, subId ? `you chose ${this.subLabel(subId)} instead` : "you stopped it", false);
+    if (!subId) return;
+    const burn = startResetBurn(subId, this.weeklyResetOf(subId), Date.now());
+    this.db.kvSet("setting_reset_burn", JSON.stringify(burn));
+    this.applyResetBurn(burn);
+    this.hub.log("info", `Preparing ${this.subLabel(subId)} for its reset: it now takes every dispatch it has room for.`);
+  }
+
+  /** Ends the burn. `broadcast` is false only inside setSettings, which publishes the new settings itself. */
+  private endResetBurn(burn: ResetBurn, reason: string, broadcast = true): void {
+    this.db.kvDelete("setting_reset_burn");
+    this.applyResetBurn(null);
+    this.hub.log("info", `Stopped preparing ${this.subLabel(burn.subId)} for its reset: ${reason}.`);
+    if (broadcast) this.publishSettingsSoon();
+  }
+
+  /** Callers may be mid-`settings()`, so the broadcast waits for the current call to finish. */
+  private publishSettingsSoon(): void {
+    queueMicrotask(() => this.hub.publish({ type: "settings", settings: this.settings() }));
+  }
+
+  private applyResetBurn(burn: ResetBurn | null): void {
+    const claudeTarget = burn && burn.subId !== CODEX_SUB_ID ? burn : null;
+    this.accounts.setResetBurn?.(claudeTarget?.subId ?? null, claudeTarget ? resetBurnEndsAt(claudeTarget) : 0);
+  }
+
+  private weeklyResetOf(subId: string): number | null {
+    if (subId === CODEX_SUB_ID) return readCodexUsage()?.sevenDayReset ?? null;
+    return this.accountDTOs().find((account) => account.id === subId)?.sevenDayReset ?? null;
+  }
+
+  private claudeAccountIds(): string[] {
+    return this.usageSavingAccounts().map((account) => account.id);
+  }
+
+  private subLabel(subId: string): string {
+    if (subId === CODEX_SUB_ID) return "Codex";
+    return this.accountDTOs().find((account) => account.id === subId)?.label ?? subId;
+  }
+
+  /** Same narrow-fake tolerance as usageSavingAccounts: some legacy harnesses expose no dto(). */
+  private accountDTOs(): Array<{ id: string; label?: string; sevenDayReset?: number | null }> {
+    const api = this.accounts as unknown as { dto?: () => Array<{ id: string; label?: string; sevenDayReset?: number | null }> };
+    return typeof api.dto === "function" ? api.dto() : [];
   }
 
   private preferredImplementorProvider(candidates: ProviderCandidate[], demand?: CapacityDemand): ImplementorProvider {
@@ -6328,6 +6432,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (exclude !== "grok" && !unavailable.has("grok") && serves("grok") && this.grokImplementorReady()) cands.push(this.grokProviderCandidate(demand));
     if (exclude !== "zai" && !unavailable.has("zai") && serves("zai") && this.zaiImplementorReady()) cands.push(this.zaiProviderCandidate(demand));
     if (!cands.length) return undefined;
+    const burning = this.burningCandidate(cands, demand);
+    if (burning) return burning.provider;
     if (demand) {
       const capacity = preferCapacity(cands, candidateCapacityWindows, demand);
       return this.preferredImplementorProvider(capacity.candidates, demand);
@@ -8217,7 +8323,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (this.cancelled(thread.id)) return undefined;
     if (
       (role === "planner" || role === "reader") &&
-      !this.temporaryAccountPriority() &&
+      !this.resetBurn() &&
       !initialResume &&
       !opts?.preferredProvider &&
       !opts?.forcedProvider
@@ -9082,6 +9188,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (!thread) return undefined;
     const demand = this.capacityDemand(thread, "qa");
     const candidates = this.readyRoleCandidates("qa", demand).filter((candidate) => candidate.provider !== impProvider);
+    const burning = this.burningCandidate(candidates.filter((candidate) => candidate.hasHeadroom), demand);
+    if (burning) return burning.provider;
     const capacity = preferCapacity(candidates, candidateCapacityWindows, demand);
     if (!capacity.candidates.length) return undefined;
     return this.preferredImplementorProvider(capacity.candidates, demand);
@@ -9093,6 +9201,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private pickReadyQaProviderExcept(thread: Thread, excluded: ImplementorProvider): ImplementorProvider | undefined {
     const demand = this.capacityDemand(thread, "qa");
     const candidates = this.readyRoleCandidates("qa", demand).filter((candidate) => candidate.provider !== excluded);
+    const burning = this.burningCandidate(candidates.filter((candidate) => candidate.hasHeadroom), demand);
+    if (burning) return burning.provider;
     const capacity = preferCapacity(candidates, candidateCapacityWindows, demand);
     if (!capacity.candidates.length) return undefined;
     return this.preferredImplementorProvider(capacity.candidates, demand);

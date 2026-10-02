@@ -49,6 +49,7 @@ import type {
   HighlightNewsItem,
   OperatorNote,
   OrchestratorSettings,
+  ResetBurnDTO,
   Question,
   Role,
   ScheduledTask,
@@ -133,6 +134,16 @@ function dropKey<V>(record: Record<string, V>, key: string): Record<string, V> {
   if (!(key in record)) return record;
   const { [key]: _omit, ...rest } = record;
   return rest;
+}
+
+/** The picker reads `resetBurn`, so a change must show there at once. A new target is shown unanchored
+ *  until the server's settings broadcast replaces it with the real window; `undefined` = untouched. */
+function optimisticResetBurn(current: ResetBurnDTO | null, subId: string | null | undefined): Pick<OrchestratorSettings, "resetBurn"> | undefined {
+  if (subId === undefined) return undefined;
+  if (!subId) return { resetBurn: null };
+  if (current?.subId === subId) return { resetBurn: current };
+  const now = Date.now();
+  return { resetBurn: { subId, startedAt: now, endsAt: now + 7 * 24 * 60 * 60_000, anchored: false } };
 }
 
 interface State {
@@ -863,6 +874,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   tokenLimitPercent: 80,
   fastUsagePolling: false,
   spreadUsage: false,
+  resetBurn: null,
   tokenConservationMode: false,
   usageSaving: {},
   codexEnabled: false,
@@ -1681,8 +1693,8 @@ export const useStore = create<State>((set) => ({
   setSettings: (patch) => {
     // Reflect the writable view fields locally at once; the raw key is write-only and never held in
     // client state (the server confirms it via hasOpenaiKey/openaiKeyLast4 on its settings broadcast).
-    const { openaiApiKey: _key, discordBotToken: _bot, ...local } = patch;
-    set((s) => ({ settings: { ...s.settings, ...local } }));
+    const { openaiApiKey: _key, discordBotToken: _bot, resetBurnSubId, ...local } = patch;
+    set((s) => ({ settings: { ...s.settings, ...local, ...optimisticResetBurn(s.settings.resetBurn, resetBurnSubId) } }));
     sendCommand({ type: "settings.set", settings: patch });
   },
   // Projected only once the command is on the wire: a chip shown for a write the socket dropped would

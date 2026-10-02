@@ -75,25 +75,35 @@ check("entries carry the label the warning names", snapshot.accounts.acct2?.labe
 check("an unpinged sub reports no reading", snapshot.accounts.acct1?.usageAt === 0);
 check("an unpinged sub has no utilization", snapshot.accounts.acct1?.fiveHour === null);
 
-console.log("account-usage: temporary owner account priority");
+console.log("account-usage: preparing a sub for its reset");
 const priorityManager = new AccountManager([personal, secondary], new EventHub());
 const priorityStates = (priorityManager as any).states;
 const priorityReset = Date.now() + 12 * 60 * 60_000;
 Object.assign(priorityStates.get("acct1"), { fiveHour: 10, sevenDay: 54, sevenDayReset: priorityReset });
 Object.assign(priorityStates.get("acct2"), { fiveHour: 10, sevenDay: 38, sevenDayReset: Date.now() + 60 * 60_000 });
 check("ordinary routing spends the sooner-resetting account", priorityManager.dispatchPreview().account.id === "acct2");
-priorityManager.setTemporaryPriority("acct1", priorityReset);
-check("temporary priority changes the preview", priorityManager.dispatchPreview().account.id === "acct1");
-check("temporary priority changes the actual dispatch", priorityManager.select().account.id === "acct1");
+priorityManager.setResetBurn("acct1", priorityReset);
+check("a burn changes the preview", priorityManager.dispatchPreview().account.id === "acct1");
+check("a burn changes the actual dispatch", priorityManager.select().account.id === "acct1");
+check("the dispatch reason names the burn", priorityManager.select().reason.includes("preparing this sub for its reset"));
+check("a burn steers failover from another sub to the target", priorityManager.selectFailover("acct2")?.id === "acct1");
 priorityStates.get("acct1").rateLimited = true;
 priorityStates.get("acct1").rateLimitResetAt = Date.now() + 60 * 60_000;
-check("a rate-limited preferred account falls back", priorityManager.dispatchPreview().account.id === "acct2");
+check("a rate-limited burn target falls back", priorityManager.dispatchPreview().account.id === "acct2");
 priorityStates.get("acct1").rateLimited = false;
+priorityStates.get("acct1").sevenDay = 98;
+check("the hard limit still excludes the burn target", priorityManager.dispatchPreview().account.id === "acct2");
+priorityStates.get("acct1").sevenDay = 85;
 priorityStates.get("acct1").weeklySafetyPct = 50;
-check("weekly safety still excludes the preferred account", priorityManager.dispatchPreview().account.id === "acct2");
+check("the soft weekly ceiling does not hold a burn back", priorityManager.dispatchPreview().account.id === "acct1");
+const longDemand = { label: "long task", expectedDurationMs: 6 * 60 * 60_000, expectedBurnPct: 40, reservePct: 10, substantial: true };
+check("a runway forecast does not hold a burn back", priorityManager.dispatchPreview(longDemand).account.id === "acct1");
 priorityStates.get("acct1").weeklySafetyPct = 100;
-priorityManager.setTemporaryPriority("acct1", Date.now() - 1);
-check("the priority expires at its captured reset", priorityManager.dispatchPreview().account.id === "acct2");
+priorityManager.setResetBurn("acct1", Date.now() - 1);
+check("the burn expires at its captured reset", priorityManager.dispatchPreview().account.id === "acct2");
+priorityManager.setResetBurn("acct1", priorityReset);
+priorityManager.setResetBurn(null);
+check("stopping the burn restores ordinary routing", priorityManager.dispatchPreview().account.id === "acct2");
 check("cadence rides along so a consumer can size its staleness bound", snapshot.pingIntervalMs > 0);
 
 // A dashboard can open before AccountManager.start() begins its asynchronous boot pings. It must show

@@ -32,6 +32,25 @@ against Codex/Grok. So "balance across everything" = layer 1 balances the subs *
 Claude, layer 2 balances Claude-vs-Codex-vs-Grok. Add a new routing policy = add a
 parallel comparator in BOTH files (`byX` + `providerX`) and flip to it in both places.
 
+## The reset burn sits ABOVE both comparators
+"Prepare a sub for reset" (Settings → Usage & limits, kv `setting_reset_burn`, logic in
+`orchestrator/resetBurn.ts`) names ONE sub (a Claude account id or `codex`) that takes every
+dispatch it has HARD headroom for. It is not a comparator: layer 1 returns the target before
+the capacity tier, the soft weekly ceiling and `primaryOrder` (`selectionPool` /
+`selectFailover` → `burningAmong`), and layer 2 returns its candidate first in
+`preferredProviderCandidate` (`burningCandidate`). Callers that cut by runway BEFORE layer 2
+(`nextReadyImplementor`, the two different-provider QA pickers) check `burningCandidate` first,
+and auto model selection / goal steps get a roster narrowed to the target (`burningEntries`;
+`routeForPick` drops a saved pick on another sub). What still moves work off it: a cap or the
+98% hard limit, a disabled account, an owner model pin, and provider intent named in the brief.
+While active it also skips that sub's usage-saving model and token conservation, makes
+planner/reader skip free providers, and steers the Director (`chooseTarget`). It ends the moment
+a redeem of that sub's banked reset succeeds (`resetCreditRedeemed`, from the hub), and as a
+backstop in `ThreadManager.resetBurn()` once the anchored weekly window passes or rolls early (a
+reset spent in the native app) — so read it through `resetBurn()`, never the raw kv. Tests:
+`test:reset-burn` (lifecycle), `test:account-usage` + `test:provider-fallback` (routing,
+failover, redeem), `test:auto-model` (roster), `reset-burn-lab` (the picker in a real browser).
+
 ## Conventions that bite
 - Codex/Grok usage is real and comparable: their weekly `sevenDay` % comes from
   `codexUsagePing` / `grokUsagePing` and each carries a `weeklySafetyPct`. Don't assume

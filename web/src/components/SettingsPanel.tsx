@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
 import { DIRECTOR_CHAT_FONT_MAX, DIRECTOR_CHAT_FONT_MIN, IDLE_MINUTES_MAX, IDLE_MINUTES_MIN, useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
-import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, claudeEffortsForModel, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type AccountDTO, type CliUpdateComponent, type CodexEffort, type Effort, type GrokEffort, type Role, type UsageSavingPolicy, type ZaiEffort } from "../types.js";
+import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, claudeEffortsForModel, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type AccountDTO, type CliUpdateComponent, type CodexUsageDTO, type ResetBurnDTO, type CodexEffort, type Effort, type GrokEffort, type Role, type UsageSavingPolicy, type ZaiEffort } from "../types.js";
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
-import { ago, effortLabel, since } from "../lib/format.js";
+import { ago, effortLabel, since, timeLeft } from "../lib/format.js";
+import { useCoarseNow } from "../lib/timing.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { FreeProviders } from "./FreeProviders.js";
 import { LiveBenchRankings } from "./LiveBenchRankings.js";
@@ -30,7 +31,7 @@ interface SettingsCategory {
 const SETTINGS_CATEGORIES = [
   { id: "general", section: "Orchestrator", label: "General", description: "Meet your gnomes and set how agents communicate with you.", keywords: "name wording concise detailed communication tone beta gnomes workshop characters animation" },
   { id: "pipeline", section: "Orchestrator", label: "Pipeline", description: "Control task execution, reviews, concurrency, and supervision.", keywords: "planner research implementor qa review auto push git parallel workers supervisor models" },
-  { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced.", keywords: "tokens quota capacity allowance polling reset spread resume budget" },
+  { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced.", keywords: "tokens quota capacity allowance polling reset spread resume budget prepare burn banked max out" },
   { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits.", keywords: "claude anthropic codex openai chatgpt grok xai zai glm api keys accounts models effort weekly safety cli update upgrade version sdk runtime new model" },
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
   { id: "livebench", section: "Providers", label: "LiveBench rankings", description: "Compare models on the newest cached LiveBench leaderboard; click any column to sort.", keywords: "livebench benchmark leaderboard rankings scores models compare reasoning coding agentic mathematics data analysis language instruction following global average organization" },
@@ -473,6 +474,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                   on={settings.tokenConservationMode}
                   onChange={(v) => setSettings({ tokenConservationMode: v })}
                 />
+              </Group>
+              <Group label="Prepare a sub for reset">
+                <ResetBurnSection />
               </Group>
             </SettingsCategoryPanel>
 
@@ -2476,6 +2480,86 @@ function BoardTabToggles() {
       ))}
       <div className="settings-note tight">The Tasks tab is always shown.</div>
     </>
+  );
+}
+
+interface ResetBurnOption {
+  subId: string;
+  label: string;
+  sevenDay: number | null;
+  fiveHour: number | null;
+  banked: number;
+}
+
+/** The subscriptions a burn can aim at: every enabled Claude account, plus Codex while it is active. The
+ *  current target always stays listed, so a sub switched off mid-burn can still be seen and stopped. */
+function resetBurnOptions(accounts: AccountDTO[], codexActive: boolean, codexUsage: CodexUsageDTO | null, currentSubId: string | null): ResetBurnOption[] {
+  const claude = accounts
+    .filter((a) => a.enabled || a.id === currentSubId)
+    .map((a) => ({ subId: a.id, label: a.label, sevenDay: a.sevenDay, fiveHour: a.fiveHour, banked: a.resetCredits?.available ?? 0 }));
+  if (!codexActive && currentSubId !== CODEX_SUB_ID) return claude;
+  return [...claude, {
+    subId: CODEX_SUB_ID,
+    label: "Codex",
+    sevenDay: codexUsage?.sevenDay ?? null,
+    fiveHour: codexUsage?.fiveHour ?? null,
+    banked: codexUsage?.resetCredits?.available ?? 0,
+  }];
+}
+
+function resetBurnOptionText(o: ResetBurnOption): string {
+  const weekly = o.sevenDay == null ? "weekly —" : `weekly ${Math.round(o.sevenDay)}%`;
+  const banked = o.banked ? ` · ${o.banked} reset${o.banked === 1 ? "" : "s"} banked` : "";
+  return `${o.label} · ${weekly}${banked}`;
+}
+
+/** "Prepare a sub for reset": pick the one subscription that should max out before its banked reset is
+ *  spent. The server owns the routing and ends the burn by itself once that sub's weekly window resets. */
+function ResetBurnSection() {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const accounts = useStore((s) => s.accounts);
+  const codexUsage = useStore((s) => s.codexUsage);
+  const burn = settings.resetBurn;
+  const codexActive = settings.codexEnabled && (settings.codexChatgptLogin || settings.hasOpenaiKey);
+  const options = resetBurnOptions(accounts, codexActive, codexUsage, burn?.subId ?? null);
+  const target = burn ? options.find((o) => o.subId === burn.subId) : undefined;
+  return (
+    <>
+      <Row
+        label="Burn this sub first"
+        hint="Pick a subscription with a banked reset waiting. Until it is maxed out, it takes every dispatch it can carry, including the Director. That overrides spread usage, the soonest-reset order, its weekly safety ceiling, the runway forecast, automatic model selection and its usage-saving model. A real cap, the 98% hard limit, or a model or provider you name for a task still sends work elsewhere. The burn ends by itself the moment you spend that sub's banked reset, or when its weekly window resets. Off by default."
+        control={
+          <select
+            className="model-select reset-burn-select"
+            aria-label="Sub to prepare for reset"
+            value={burn?.subId ?? ""}
+            onChange={(e) => setSettings({ resetBurnSubId: e.target.value || null })}
+          >
+            <option value="">Off</option>
+            {options.map((o) => (
+              <option key={o.subId} value={o.subId}>{resetBurnOptionText(o)}</option>
+            ))}
+          </select>
+        }
+      />
+      {burn ? <ResetBurnStatus burn={burn} target={target} /> : null}
+    </>
+  );
+}
+
+function ResetBurnStatus({ burn, target }: { burn: ResetBurnDTO; target: ResetBurnOption | undefined }) {
+  const now = useCoarseNow();
+  const meters = target
+    ? [target.sevenDay != null ? `weekly ${Math.round(target.sevenDay)}%` : null, target.fiveHour != null ? `5h ${Math.round(target.fiveHour)}%` : null].filter(Boolean).join(" · ")
+    : "";
+  const ends = burn.anchored
+    ? `Ends when its weekly window resets, in ${timeLeft(burn.endsAt - now)}, or as soon as you spend the reset.`
+    : `Ends when its weekly window resets, or as soon as you spend the reset. That reset time has not been read yet, so the burn stops within ${timeLeft(burn.endsAt - now)} at the latest.`;
+  return (
+    <p className="settings-note tight reset-burn-status" role="status">
+      Preparing <strong>{target?.label ?? burn.subId}</strong> for its reset{meters ? ` (${meters})` : ""}, started {now - burn.startedAt < 60_000 ? "just now" : `${since(now, burn.startedAt)} ago`}. {ends}
+    </p>
   );
 }
 

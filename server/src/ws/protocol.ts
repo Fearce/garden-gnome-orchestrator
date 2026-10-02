@@ -439,6 +439,8 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         tokenLimitPercent: z.number().int().min(50).max(99),
         fastUsagePolling: z.boolean(),
         spreadUsage: z.boolean(),
+        // A Claude account id or "codex"; null stops the burn. Eligibility is checked server-side.
+        resetBurnSubId: z.string().min(1).max(64).nullable(),
         tokenConservationMode: z.boolean(),
         usageSaving: z
           .record(

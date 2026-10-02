@@ -1690,6 +1690,13 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 /* audio-device picks in the Voice mode settings group: fixed width inside the flex row,
    ellipsized (Windows device names run long) */
 .settings-row .voice-device { flex: none; width: 210px; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+.settings-row .reset-burn-select { flex: none; width: 260px; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+.reset-burn-status strong { color: var(--text); font-weight: 600; }
+@media (max-width: 640px) {
+  /* The option text carries the weekly % and banked count; a phone gives it its own line instead of squeezing the hint. */
+  .settings-row:has(.reset-burn-select) { flex-wrap: wrap; }
+  .settings-row .reset-burn-select { width: 100%; min-height: var(--tap); font-size: 16px; }
+}
 
 /* volume slider (Voice mode group): a range track with an amber fill + a numeric readout */
 .slider { flex: none; display: inline-flex; align-items: center; gap: 10px; width: 210px; }

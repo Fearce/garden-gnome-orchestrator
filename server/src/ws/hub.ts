@@ -23,7 +23,7 @@ import { formatStructuredRoleFeed } from "../agents/structuredText.js";
 import { clientCommandSchema, type ClientCommand, type ServerEvent } from "./protocol.js";
 import { isAuthed } from "../auth.js";
 import { logCrash } from "../crashLog.js";
-import { CHAT_PAGE_SIZE, THREAD_HISTORY_PAGE_SIZE } from "../types.js";
+import { CHAT_PAGE_SIZE, CODEX_SUB_ID, THREAD_HISTORY_PAGE_SIZE } from "../types.js";
 import type { Message, OrchestratorSettings, Thread, ThreadSummary } from "../types.js";
 import { injectThreadWithReceipt } from "./threadInjectionReceipt.js";
 
@@ -676,6 +676,7 @@ export async function handleCommand(
         const outcome = cmd.provider === "codex"
           ? await redeemCodexResetCredit(ctx.manager.openaiApiKey(), readCodexUsageForSnapshot()?.resetCredits?.redeemId ?? null)
           : await ctx.accounts.redeemResetCredit(cmd.accountId!);
+        if (outcome.ok) ctx.manager.resetCreditRedeemed(cmd.provider === "codex" ? CODEX_SUB_ID : cmd.accountId!);
         send(socket, { type: "resetCredit.result", key, ...outcome });
       } catch (err) {
         logCrash("resetCredit.redeem", err);

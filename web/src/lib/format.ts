@@ -122,6 +122,16 @@ export function formatDuration(ms: number): string {
   return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
 }
 
+/** Coarse time left, two units at most: "6d 23h", "4h 12m", "12m". */
+export function timeLeft(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60_000));
+  const d = Math.floor(m / 1440);
+  const h = Math.floor((m % 1440) / 60);
+  if (d > 0) return h ? `${d}d ${h}h` : `${d}d`;
+  if (h > 0) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`;
+  return `${m}m`;
+}
+
 /** Compact running-or-final duration of a single span: "9s", "2m 34s", "1h 12m". */
 export function elapsed(startMs: number, endMs?: number | null): string {
   return formatDuration((endMs ?? Date.now()) - startMs);

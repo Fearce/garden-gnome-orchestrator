@@ -343,7 +343,9 @@ export class AccountManager {
   // When on, selection targets the sub with the lowest weekly usage to balance burn across all subs,
   // overriding the default perishable-first order. Operator toggle ("Spread usage"), applied on boot.
   private spreadUsage = false;
-  private temporaryPriority: { accountId: string; until: number } | null = null;
+  // "Prepare a sub for reset": while set (and before `until`), this account takes every dispatch it has
+  // hard headroom for. ThreadManager owns the persisted burn and ends it; this is the live copy select() reads.
+  private resetBurn: { accountId: string; until: number } | null = null;
   private readonly persist?: AccountUsagePersistence;
   private readonly stagger?: ResetStagger;
   // Fired right after every usage publish (periodic ping + reset ping), so a consumer can react to a
@@ -888,26 +890,29 @@ export class AccountManager {
     this.spreadUsage = on;
   }
 
-  /** Prefer one subscription until its captured weekly reset. Capacity and safety filters still win. */
-  setTemporaryPriority(accountId: string, until: number): void {
-    this.temporaryPriority = this.states.has(accountId) && Number.isFinite(until) && until > Date.now()
+  /** Burn one subscription down ahead of its banked reset until `until`. Only hard availability (a cap or
+   *  the hard limit) outranks it — the runway forecast and the soft weekly ceiling deliberately do not,
+   *  because the reset refills whatever they would have kept in reserve. Null stops it. */
+  setResetBurn(accountId: string | null, until = 0): void {
+    this.resetBurn = accountId && this.states.has(accountId) && Number.isFinite(until) && until > Date.now()
       ? { accountId, until }
       : null;
   }
 
-  temporaryPriorityAccountId(now = Date.now()): string | null {
-    return this.temporaryPriority && this.temporaryPriority.until > now
-      ? this.temporaryPriority.accountId
-      : null;
+  resetBurnAccountId(now = Date.now()): string | null {
+    return this.resetBurn && this.resetBurn.until > now ? this.resetBurn.accountId : null;
+  }
+
+  /** The burn target when it can take a dispatch right now; otherwise ordinary routing applies. */
+  private burningAmong(candidates: AccountState[], now: number): AccountState | undefined {
+    const id = this.resetBurnAccountId(now);
+    return id ? candidates.find((s) => s.account.id === id) : undefined;
   }
 
   /** The primary selection comparator: spread-usage balancing when the operator toggle is on, else the
    *  default perishable-first order. The all-over-safety fallback (most headroom) supersedes both. */
   private primaryOrder(allOverSafety: boolean): (x: AccountState, y: AccountState) => number {
-    const ordinary = allOverSafety ? bySafetyFallbackPriority : this.spreadUsage ? bySpreadUsage : bySelectionPriority;
-    const priorityId = this.temporaryPriorityAccountId();
-    if (allOverSafety || !priorityId) return ordinary;
-    return (x, y) => Number(y.account.id === priorityId) - Number(x.account.id === priorityId) || ordinary(x, y);
+    return allOverSafety ? bySafetyFallbackPriority : this.spreadUsage ? bySpreadUsage : bySelectionPriority;
   }
 
   private enabledCount(): number {
@@ -1032,7 +1037,9 @@ export class AccountManager {
       : "";
     const reason = (!usable.length
       ? "all accounts near limit — using the one resetting soonest"
-      : !pool.some(hasBurnData)
+      : this.burningAmong(usable, now) === chosen
+        ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} — preparing this sub for its reset`
+        : !pool.some(hasBurnData)
         ? "round-robin (no burn data yet)"
         : this.spreadUsage
           ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} — spread: lowest weekly usage`
@@ -1089,7 +1096,7 @@ export class AccountManager {
     // Same order select() uses: soonest-resetting reserve by default, or lowest weekly usage when
     // "spread usage" is on — so failover balances the same way normal dispatch does.
     pool.sort(this.primaryOrder(safety.allOver));
-    const chosen = pool[0]!;
+    const chosen = this.burningAmong(candidates, now) ?? pool[0]!;
     chosen.lastPick = ++this.selSeq;
     this.preferredId = chosen.account.id;
     this.releaseHold(chosen); // dispatch traffic starts the held window anyway — refresh the read now
@@ -1305,6 +1312,8 @@ export class AccountManager {
     const capacity = demand
       ? preferCapacity(hardCandidates, (state) => accountCapacityWindows(state, now), demand, now)
       : undefined;
+    const burning = this.burningAmong(usable, now);
+    if (burning) return { usable, pool: [burning], allOverSafety: false, capacity };
     const capacityCandidates = capacity?.candidates ?? hardCandidates;
     const safety = weeklySafetyPool(capacityCandidates);
     return {

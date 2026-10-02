@@ -15,6 +15,7 @@ import type { GoalRunner } from "./goals.js";
 import type { Account } from "../accounts/account.js";
 import { config, fallbackModelFor } from "../config.js";
 import { normalizeDuration } from "./timedTasks.js";
+import { resetBurnEndsAt } from "./resetBurn.js";
 import { clampAgentCount } from "./shotgun.js";
 import { existsSync } from "node:fs";
 import { DIRECTOR_CLI_PROTOCOL, DIRECTOR_CLI_SCHEMA, executeDirectorCliAction, type DirectorCliAction } from "./directorCliBridge.js";
@@ -443,17 +444,18 @@ export class Director {
 
   private async chooseTarget(excludeKeys: ReadonlySet<string> = new Set()): Promise<DirectorTarget | undefined> {
     const available = this.api.directorTargets().filter((t) => !excludeKeys.has(t.key));
-    const priority = this.api.temporaryAccountPriority();
-    const priorityTargets = priority
-      ? available.filter((target) => target.provider === "claude" && target.accountId === priority.accountId && this.api.directorTargetReady(target))
+    const burn = this.api.resetBurn();
+    const priorityTargets = burn
+      ? available.filter((target) => this.api.burnsForReset(target.provider, target.accountId) && this.api.directorTargetReady(target))
       : [];
     if (priorityTargets.length) {
-      this.db.kvSet("director_temporary_priority_until", String(priority!.until));
+      this.db.kvSet("director_temporary_priority_until", String(resetBurnEndsAt(burn!)));
       return priorityTargets.find((target) => target.key === this.target?.key)
         ?? this.api.preferredDirectorTarget(priorityTargets);
     }
     const priorityUntil = Number(this.db.kvGet("director_temporary_priority_until"));
-    const priorityExpired = priorityUntil > 0 && priorityUntil <= Date.now();
+    // A burn that ended early (its window was reset) releases the Director as surely as one that ran out.
+    const priorityExpired = priorityUntil > 0 && (priorityUntil <= Date.now() || !burn);
     if (priorityExpired) this.db.kvDelete("director_temporary_priority_until");
     const sticky = !priorityExpired && this.target && !excludeKeys.has(this.target.key) && this.api.directorTargetReady(this.target)
       ? available.find((t) => t.key === this.target!.key)

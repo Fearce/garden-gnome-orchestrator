@@ -362,6 +362,32 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("Test roster — a sub prepared for its reset narrows automatic selection to that sub");
+  {
+    const h = makeHarness();
+    try {
+      h.internals.codexImplementorReady = (): boolean => true;
+      h.internals.codexPoolSnapshot = (): null => null;
+      h.internals.codexProviderCandidate = (): { provider: "codex"; hasHeadroom: boolean } => ({ provider: "codex", hasHeadroom: true });
+      h.internals.codexRosterModels = (): string[] => [SOL_56];
+      h.internals.codexSupportedEfforts = (): Effort[] => ["low", "medium", "high", "xhigh"];
+      h.internals.codexEffort = (): Effort => "high";
+      const providersOf = (): string[] => uniqueProviders(h.internals.implementorModelRoster() as { provider: ImplementorProvider }[]);
+      check("without a burn the roster spans Claude and Codex", providersOf().join(",") === "claude,codex", providersOf().join(","));
+      h.mgr.setSettings({ resetBurnSubId: "codex" });
+      check("a Codex burn leaves only Codex models to choose from", providersOf().join(",") === "codex", providersOf().join(","));
+      check("goal steps choose from the same narrowed roster", uniqueProviders(h.mgr.goalModelRoster()).join(",") === "codex");
+      const id = h.seed();
+      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: SONNET_5, effort: "high", reason: "picked before the burn began" } });
+      const demand = h.internals.capacityDemand(thread(h, id), "implementor", "high");
+      check("a saved pick on another sub yields to the burn target", h.internals.routeForPick(id, "codex", demand) === "codex");
+      h.internals.codexProviderCandidate = (): { provider: "codex"; hasHeadroom: boolean } => ({ provider: "codex", hasHeadroom: false });
+      check("a burn target without hard headroom leaves the roster whole", providersOf().join(",") === "claude", providersOf().join(","));
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- A: off by default — the feature costs nothing until it's switched on ---------------------------
   console.log("Test A — the setting is off by default and nothing is spent");
   {
@@ -913,3 +939,7 @@ async function main(): Promise<void> {
 await main().finally(() => {
   globalThis.fetch = realFetch;
 });
+
+function uniqueProviders(roster: readonly { provider: ImplementorProvider }[]): ImplementorProvider[] {
+  return [...new Set(roster.map((candidate) => candidate.provider))];
+}

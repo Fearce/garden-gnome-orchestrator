@@ -1152,6 +1152,16 @@ export interface TokenSafetyState {
 /** Ceiling on the Director's standing directives, enforced server-side. Mirrors web/src/types.ts. */
 export const MAX_DIRECTOR_DIRECTIVES_CHARS = 4000;
 
+/** An active "prepare a sub for reset" burn, as Settings shows it. `subId` is a Claude account id or
+ *  CODEX_SUB_ID; `endsAt` is the weekly reset it was aimed at (or one weekly window after it started while
+ *  that reset is still unknown — `anchored: false`). */
+export interface ResetBurnDTO {
+  subId: string;
+  startedAt: number;
+  endsAt: number;
+  anchored: boolean;
+}
+
 /**
  * Operator-tunable pipeline settings, persisted server-side in the `kv` table and broadcast to every
  * client (mirrors `approvalMode`). Read live at dispatch/pipeline time, so a change applies to the
@@ -1185,6 +1195,7 @@ export interface OrchestratorSettings {
   // when the specific compatible provider window has enough headroom again.
   // ---- Fast usage polling: opt-in tighter cadence for the account usage ping ----
   fastUsagePolling: boolean; // off (default) → 10-min ping; on → poll every ~30s so the strip tracks the live burn within ~1-2%
+  resetBurn: ResetBurnDTO | null; // "prepare a sub for reset": the one subscription routed to first so it maxes out before its banked reset is spent; null = off. Written via the patch-only `resetBurnSubId`
   spreadUsage: boolean; // off (default) → burn the soonest-resetting provider/sub first; on → always dispatch to the provider (Claude sub, Codex, or Grok) with the lowest weekly usage, balancing burn across every enabled platform
   // Token conservation mode: off (default) → normal model routing. on → once the Codex general pool sits
   // in the LAST 10% of its weekly window (and isn't resetting within 24h), every role dispatched against it

@@ -57,6 +57,7 @@ const GATES = [
   "test:event-loop",
   "test:ext-wake",
   "test:account-usage",
+  "test:reset-burn",
   "test:auto-compact-window",
   "test:grok-runner",
   "test:incident-recovery",
