@@ -54,6 +54,9 @@ export interface ModelCandidate {
   capacity?: string;
   /** That pool's weekly meter, when fresh; what a goal's burn-rate conservation paces against. */
   weekly?: { usedPct: number; resetAt: number } | null;
+  /** This pool is the sub being prepared for its reset ("burn this sub first"), so a goal's burn-rate
+   *  conservation does not pace it: the banked reset refills whatever pacing would have saved. */
+  resetBurn?: boolean;
 }
 
 export interface SelectionContext {

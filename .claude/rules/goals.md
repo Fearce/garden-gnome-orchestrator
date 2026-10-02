@@ -97,7 +97,8 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   every pass. A `review` outcome is NOT a failure: QA was unsatisfied, but the work exists.
 - **There is no step budget; a goal keeps going until it is done.** The owner removed it on 2026-09-28,
   so do not reintroduce a step count limit as a runaway guard. The bounds are the failed-step streak,
-  a cancelled step, the burn-rate hold, the evidence-based `blocked` stops above, an optional owner token
+  a cancelled step, the burn-rate hold (never on a pool the owner is preparing for its reset: a roster
+  entry marked `resetBurn` is not paced), the evidence-based `blocked` stops above, an optional owner token
   budget (`budget_limited`) and the owner's Pause. Boot drops the old `goals.max_steps`
   column and reactivates any goal still paused by "Reached its budget of …" (`resumeBudgetPausedGoals`).
 - **The step row is written BEFORE the dispatch.** A crash in between leaves a step with no `thread_id`;

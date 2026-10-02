@@ -44,7 +44,9 @@ and auto model selection / goal steps get a roster narrowed to the target (`burn
 `routeForPick` drops a saved pick on another sub). What still moves work off it: a cap or the
 98% hard limit, a disabled account, an owner model pin, and provider intent named in the brief.
 While active it also skips that sub's usage-saving model and token conservation, makes
-planner/reader skip free providers, and steers the Director (`chooseTarget`). It ends the moment
+planner/reader skip free providers, and steers the Director (`chooseTarget`). Goals do not pace it:
+`implementorModelRoster` marks its roster entries `resetBurn`, `poolOverPace` never holds those, and
+`GoalRunner` re-checks goals held for usage the moment a settings broadcast names a new burn target. It ends the moment
 a redeem of that sub's banked reset succeeds (`resetCreditRedeemed`, from the hub), and as a
 backstop in `ThreadManager.resetBurn()` once the anchored weekly window passes or rolls early (a
 reset spent in the native app) — so read it through `resetBurn()`, never the raw kv. Tests:

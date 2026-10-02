@@ -33,7 +33,7 @@ import {
 } from "../orchestrator/goals.js";
 import type { DispatchInput } from "../orchestrator/api.js";
 import type { ModelCandidate } from "../orchestrator/modelSelector.js";
-import type { Goal, ThreadState } from "../types.js";
+import type { Goal, OrchestratorSettings, ThreadState } from "../types.js";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -145,6 +145,13 @@ function burnRate(): void {
   const pinnedOver = checkBurnRate({ ...auto, provider: "claude", model: "claude-opus-5-5" }, claudeOver, now);
   check("a goal pinned to an over-pace pool holds even when another pool has room", pinnedOver.hold !== null);
   check("a goal pinned to a pool within pace runs", checkBurnRate({ ...auto, provider: "codex", model: "gpt-5.6" }, claudeOver, now).hold === null);
+
+  console.log("goals: a sub being prepared for its reset is not paced");
+  const burning = { ...paced(ROSTER[0]!, 90, now), resetBurn: true };
+  check("the burn target is never over pace", poolOverPace(burning, 100, now) === null);
+  const burnOnly = checkBurnRate(auto, [burning, paced(ROSTER[1]!, 80, now)], now);
+  check("the burn target keeps an otherwise-held goal going", burnOnly.hold === null && burnOnly.roster.map((c) => c.provider).join(",") === "claude");
+  check("a goal pinned to the burn target runs", checkBurnRate({ ...auto, provider: "claude", model: "claude-opus-5-5" }, [burning], now).hold === null);
 }
 
 interface Harness {
@@ -415,6 +422,28 @@ async function burnHoldLoop(): Promise<void> {
   check("switching conservation off dispatches at once", h.dispatched.length === 2 && h.db.getGoal(held.id)!.burnConservation === false);
   const raised = h.runner.update(held.id, { burnRatePct: 9999 });
   check("the burn rate is clamped", raised.goal?.burnRatePct === 500);
+
+  console.log("goals: preparing a sub for its reset releases a burn-rate hold at once");
+  h = harness();
+  h.roster = [paced(ROSTER[0]!, 70, h.clock.t), paced(ROSTER[1]!, 80, h.clock.t)];
+  const paused = h.runner.create({ title: "d2r", objective: "o", workspace: ws }).goal!;
+  await h.runner.idle();
+  check("the goal holds for burn rate first", h.dispatched.length === 0 && h.db.getGoal(paused.id)!.hold === "usage_limited");
+  h.runner.start();
+  await h.runner.idle();
+  const settingsWith = (subId: string | null) => ({ resetBurn: subId ? { subId, startedAt: h.clock.t, endsAt: h.clock.t + DAY, anchored: true } : null }) as unknown as OrchestratorSettings;
+  h.hub.publish({ type: "settings", settings: settingsWith(null) });
+  await h.runner.idle();
+  check("a settings broadcast without a burn leaves the hold alone", h.dispatched.length === 0);
+  // The roster marks the burn target (ThreadManager.implementorModelRoster); the clock does not move.
+  h.roster = [{ ...paced(ROSTER[0]!, 70, h.clock.t), resetBurn: true }];
+  h.answers.push(answer("continue", "burn vota", { provider: "claude", model: "claude-opus-5-5", effort: "medium" }));
+  h.hub.publish({ type: "settings", settings: settingsWith("vota") });
+  await h.runner.idle();
+  const released = h.db.getGoal(paused.id)!;
+  check("starting a burn re-checks the held goal without waiting out its hold", h.dispatched.length === 1 && released.hold === null);
+  check("the step runs on the burn target", h.dispatched[0]!.requestedProvider === "claude");
+  h.runner.stop();
 }
 
 async function parallel(): Promise<void> {
