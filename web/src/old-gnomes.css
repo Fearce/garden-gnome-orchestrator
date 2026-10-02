@@ -1,0 +1,52 @@
+/* Old gnomes beta: the original vector gnome (OldWorkshopGnome.tsx) in the workshop header, on the beta
+   cast's 12s timeline and keyframes (beta-gnomes.css): 0–28% walk to a teammate, 28–50% shared work,
+   50–78% walk home, 78–100% own bench. The figure bobs and breathes, each boot steps on its own beat,
+   and in the work phases the held tool and mitts are set down while the role bench and its mitts show.
+   Only data-art="classic" workshops match; no beta artwork is involved. */
+.classic-workshop-gnome { position: relative; display: block; }
+.classic-workshop-gnome > .gnome { position: relative; display: block; transform-origin: 50% 100%; }
+.old-gnome-shadow { position: absolute; bottom: 1%; left: 18%; width: 64%; height: 7%; border-radius: 50%; background: oklch(0.34 0.025 50 / 0.6); }
+.old-bench, .old-rest-chair, .old-rest-seat { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.old-rest-bed { position: absolute; top: 0; left: -30%; width: 160%; height: 100%; }
+
+/* Walking and working, for every seat that is neither resting nor frozen. */
+.beta-workshop[data-art="classic"] .beta-workstation:not([data-rest]):not([data-frozen]) .classic-workshop-gnome > .gnome { animation: beta-walk-bob 12s linear var(--seat-delay) infinite; }
+.classic-workshop-gnome .gnome-boot { transform-box: fill-box; }
+.classic-workshop-gnome .gnome-boot-left { transform-origin: 70% 20%; }
+.classic-workshop-gnome .gnome-boot-right { transform-origin: 30% 20%; }
+.beta-workshop[data-art="classic"] .beta-workstation:not([data-rest]):not([data-frozen]) .gnome-boot-left { animation: beta-walk-left 12s linear var(--seat-delay) infinite; }
+.beta-workshop[data-art="classic"] .beta-workstation:not([data-rest]):not([data-frozen]) .gnome-boot-right { animation: beta-walk-right 12s linear var(--seat-delay) infinite; }
+.beta-workshop[data-art="classic"] .beta-workstation[data-working="true"]:not([data-rest]):not([data-frozen]) .gnome-figure { transform-origin: 18px 50px; animation: beta-breathe 4.4s ease-in-out var(--seat-delay) infinite; }
+.beta-workshop[data-art="classic"] .beta-workstation[data-working="true"]:not([data-rest]):not([data-frozen]) :is(.gnome-prop, .gnome-mitt) { animation: old-stow 12s linear var(--seat-delay) infinite; }
+.beta-workshop[data-art="classic"] .beta-workstation .old-bench { animation: beta-work-stop 12s linear var(--seat-delay) infinite; }
+.beta-workstation:is([data-working="false"], [data-frozen]) .old-bench { display: none; }
+/* The held tool and mitts are set down exactly while the bench is out (the inverse of beta-work-stop). */
+@keyframes old-stow { 0%,25%,53%,75% { opacity: 1; } 28%,50%,78%,100% { opacity: 0; } }
+
+/* Each bench's moving part, on the same keyframes as its beta counterpart. */
+.old-bench .old-hand-left { animation: beta-type .65s ease-in-out infinite; }
+.old-bench .old-hand-right { animation: beta-type .65s ease-in-out -.33s infinite; }
+.old-bench .old-code { animation: beta-code 2.8s steps(3) infinite; }
+.old-bench .old-inspect { animation: beta-inspect 3.6s ease-in-out infinite; }
+.old-bench .old-write { animation: beta-write 2.4s ease-in-out infinite; }
+.old-bench .old-orbit { transform-origin: 51px 108px; animation: beta-globe 7s ease-in-out infinite; }
+.old-bench .old-stamp { transform-origin: 72px 126px; animation: beta-stamp 2.8s ease-in-out infinite; }
+.old-bench .old-page { transform-origin: 50px 120px; animation: beta-page 5s ease-in-out infinite; }
+.old-bench .old-conduct { transform-origin: 70px 119px; animation: beta-conduct 3.8s ease-in-out infinite; }
+.old-bench .old-discovery { animation: beta-spark 3s ease-in-out infinite; }
+
+/* A resting director sits in its chair with boots splayed, or lies in bed under the blanket and dreams.
+   Rare-skin motion stops while it rests. */
+.classic-workshop-gnome[data-rest="chair"] > .gnome { transform: translateY(-9%); }
+.classic-workshop-gnome[data-rest="chair"] .gnome-boot-left { transform: translate(-1px, -1.5px) rotate(-16deg); }
+.classic-workshop-gnome[data-rest="chair"] .gnome-boot-right { transform: translate(1px, -1.5px) rotate(16deg); }
+.classic-workshop-gnome[data-rest="sleep"] > .gnome { transform: translate(-32%, 20%) rotate(-76deg) scale(.7); transform-origin: 50% 45%; }
+.classic-workshop-gnome[data-rest="sleep"] :is(.old-gnome-shadow, .gnome-prop) { display: none; }
+.classic-workshop-gnome[data-rest] > .gnome svg,
+.classic-workshop-gnome[data-rest] > .gnome svg * { animation: none; }
+.old-sleep-dream { position: absolute; top: 24%; left: 8%; width: 8px; height: 10px; color: oklch(0.95 0.02 90); font: 600 10px/1 var(--font-ui, sans-serif); animation: beta-dream 5s ease-in-out infinite; }
+.old-sleep-dream span { position: absolute; left: 7px; top: -5px; font-size: 8px; }
+.old-sleep-dream span + span { left: 13px; top: -9px; font-size: 6px; }
+
+/* Frozen gnomes stand still inside their ice. */
+.gnome-ice .classic-workshop-gnome, .gnome-ice .classic-workshop-gnome * { animation: none !important; }

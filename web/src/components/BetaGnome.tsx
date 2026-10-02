@@ -30,8 +30,8 @@ export const BetaGnome = memo(function BetaGnome({ role, size = 30, active = tru
   </span>;
 });
 
-/** Director rest furniture behind the figure (chair back). Shared by the beta and classic workshop art;
- *  both draw on the same 2:3 box, so one set of paths fits either gnome. */
+/** Director rest furniture behind the figure (chair back). Old gnomes beta draws its own (OldWorkshopGnome);
+ *  both use the same 2:3 box. */
 export function RestFurnitureBack({ rest }: { rest?: DirectorRest }) {
   return <>
     {rest === "chair" && <svg className="beta-rest-chair" viewBox="0 0 100 150" fill="none">

@@ -15,8 +15,9 @@ import { ThemePicker } from "./ThemePicker.js";
 import { FontPicker } from "./FontPicker.js";
 import { DISPLAY_FONTS, MONO_FONTS, UI_FONTS } from "../lib/font.js";
 import { useSwipeDismiss } from "../lib/swipe.js";
-import { setBetaGnomes, setClassicWorkshop, useBetaGnomes, useClassicWorkshop } from "../lib/betaGnomes.js";
+import { setBetaGnomes, setOldGnomesBeta, useBetaGnomes, useOldGnomesBeta } from "../lib/betaGnomes.js";
 import { BetaGnome } from "./BetaGnome.js";
+import { Gnome } from "./Gnome.js";
 
 type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "livebench" | "voice-alerts" | "remote-control" | "office" | "appearance" | "interface";
 
@@ -66,7 +67,7 @@ interface SettingsSearchResult {
  *  control remains mounted, preserving in-progress credential and text drafts as the owner moves around. */
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const betaGnomes = useBetaGnomes();
-  const classicWorkshop = useClassicWorkshop();
+  const oldGnomesBeta = useOldGnomesBeta();
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
   const showCompleted = useStore((s) => s.showCompleted);
@@ -304,8 +305,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                     <BetaGnome role="implementor" size={48} /><BetaGnome role="qa" size={48} /><BetaGnome role="planner" size={48} />
                     <span className="beta-gnomes-preview-copy"><strong>Your crew has come to life.</strong>Builders build. Inspectors inspect. Everyone has a part to play.</span>
                   </div>}
-                  <ToggleRow label="Workshop header for classic gnomes" hint="Your original gnomes fill the top bar the way beta gnomes do: they walk, team up with their repo-mates and work at their tools. Beta gnomes always use this header, so this only changes the classic look. Off by default. Saved on this browser; takes effect immediately."
-                    on={classicWorkshop} onChange={setClassicWorkshop} />
+                  <ToggleRow label="Old gnomes beta" hint="Your original gnomes move into the workshop header. They walk, team up with their repo-mates, work at their own benches and rest, just like beta gnomes. Choose this or Beta gnomes: switching one on switches the other off. Off by default. Saved on this browser; takes effect immediately."
+                    on={oldGnomesBeta} onChange={setOldGnomesBeta} />
+                  {oldGnomesBeta && <div className="beta-gnomes-preview">
+                    <Gnome role="implementor" size={32} skin={null} /><Gnome role="qa" size={32} skin={null} /><Gnome role="planner" size={32} skin={null} />
+                    <span className="beta-gnomes-preview-copy"><strong>The original crew is on the move.</strong>Same faces, new benches. Watch them in the top bar.</span>
+                  </div>}
                 </div>
               </Group>
               <Group label="Director">

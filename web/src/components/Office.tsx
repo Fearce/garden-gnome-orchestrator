@@ -6,7 +6,7 @@ import { agentName, CHAT_PAGE_SIZE, DIRECTORS_ROOM, GENERAL_ROOM, homeWorkspace,
 import { clock, isCapParked, pacePeriodForModel, roleColor } from "../lib/format.js";
 import { Gnome } from "./Gnome.js";
 import { Markdown } from "./Markdown.js";
-import { useBetaGnomes, useClassicWorkshop } from "../lib/betaGnomes.js";
+import { useBetaGnomes, useOldGnomesBeta } from "../lib/betaGnomes.js";
 import { useDirectorRest } from "../lib/directorRest.js";
 import { BetaWorkshop, type WorkshopSeat } from "./BetaWorkshop.js";
 import { FrozenGnome } from "./FrozenGnome.js";
@@ -247,9 +247,9 @@ function fittingItems(available: number, strip: HTMLElement): number {
  *  the deliberate entry point for the general office. */
 export function Office() {
   const beta = useBetaGnomes();
-  // Beta gnomes always walk the workshop; the original gnomes join it when the owner opts in.
-  const classicWorkshop = useClassicWorkshop();
-  const workshop = beta || classicWorkshop;
+  // Beta gnomes and Old gnomes beta are alternative casts; both walk the workshop header.
+  const oldGnomesBeta = useOldGnomesBeta();
+  const workshop = beta || oldGnomesBeta;
   const runs = useStore(useShallow((s) => Object.values(s.runs).filter((r) => r.state === "starting" || r.state === "running")));
   const threads = useStore((s) => s.threads);
   const chat = useStore((s) => s.chat);
@@ -472,7 +472,7 @@ export function Office() {
   // to the left) and the director is always one click from its chat.
   return (
     <div className={workshop ? "office office-beta" : "office"} ref={officeRef}>
-      {workshop ? <BetaWorkshop seats={workshopSeats} chat={chat} online={othersOnline ? onlineOffice.directors.length : 0} activeRoom={officeRoom} openOffice={openOffice} classic={!beta} /> : <div className="office-strip" ref={stripRef} title="The office — the director and any agents working right now. Click to open the chat.">
+      {workshop ? <BetaWorkshop seats={workshopSeats} chat={chat} online={othersOnline ? onlineOffice.directors.length : 0} activeRoom={officeRoom} openOffice={openOffice} classic={oldGnomesBeta} /> : <div className="office-strip" ref={stripRef} title="The office — the director and any agents working right now. Click to open the chat.">
         <button
           className={"office-walker office-director" + (directorBusy ? " working" : "")}
           // Pace the gnome from the runtime model; cap failover can move the director between providers.

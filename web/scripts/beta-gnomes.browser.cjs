@@ -149,7 +149,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     };
     for (const artwork of ['beta','classic']) {
       await page.evaluate((art) => {
-        for (const [key,value] of [['ggo:classic-workshop','1'],['ggo:beta-gnomes',art==='beta'?'1':'0']]) {
+        for (const [key,value] of [['ggo:classic-workshop',art==='classic'?'1':'0'],['ggo:beta-gnomes',art==='beta'?'1':'0']]) {
           localStorage.setItem(key,value); window.dispatchEvent(new StorageEvent('storage',{key}));
         }
       }, artwork);

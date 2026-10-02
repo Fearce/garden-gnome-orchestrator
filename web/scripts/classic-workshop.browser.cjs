@@ -1,4 +1,5 @@
-/* Authenticated UI regression for the "Workshop header for classic gnomes" preference.
+/* Authenticated UI regression for the "Old gnomes beta" preference (key ggo:classic-workshop): the original
+ * gnomes in the workshop header with their own animation set, as an alternative to Beta gnomes.
  * Fixtures stay in this browser's WebSocket; no tasks are dispatched and no mutation reaches the office.
  * node web/scripts/classic-workshop.browser.cjs [http://127.0.0.1:4317]
  */
@@ -65,16 +66,33 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     await page.getByRole('button', { name: 'Open settings', exact: true }).click();
     const general = page.locator('[data-settings-panel="general"]');
     const magic = general.locator('.beta-gnomes-setting');
-    const toggle = magic.getByRole('switch', { name: 'Workshop header for classic gnomes', exact: true });
+    const toggle = magic.getByRole('switch', { name: 'Old gnomes beta', exact: true });
+    const betaToggle = magic.getByRole('switch', { name: 'Beta gnomes', exact: true });
     await toggle.waitFor();
-    assert.equal(await magic.getByRole('switch', { name: 'Beta gnomes', exact: true }).count(), 1, 'Both toggles share the magic group');
+    assert.equal(await betaToggle.count(), 1, 'Both toggles share the magic group');
     assert.equal(await toggle.isChecked(), false, 'Default off');
     await toggle.click();
     await page.locator('.beta-workshop[data-art="classic"]').waitFor();
     assert.equal(await page.evaluate((k) => localStorage.getItem(k), CLASSIC), '1');
     assert.notEqual(await page.evaluate((k) => localStorage.getItem(k), BETA), '1', 'Must not switch on beta gnomes');
     await magic.screenshot({ path: path.join(output, 'settings-toggle.png') });
+    // The two casts are alternatives: Beta gnomes switches Old gnomes beta off, and back again.
+    await betaToggle.click();
+    await page.waitForFunction(() => document.querySelector('.beta-workshop')?.dataset.art === 'beta');
+    assert.equal(await toggle.isChecked(), false, 'Beta gnomes switches Old gnomes beta off');
+    assert.equal(await page.evaluate((k) => localStorage.getItem(k), CLASSIC), '0');
+    await toggle.click();
+    await page.waitForFunction(() => document.querySelector('.beta-workshop')?.dataset.art === 'classic');
+    assert.equal(await betaToggle.isChecked(), false, 'Old gnomes beta switches Beta gnomes off');
+    assert.equal(await page.evaluate((k) => localStorage.getItem(k), BETA), '0');
     await page.keyboard.press('Escape');
+    // Saved before the two became alternatives, both flags on: the original cast wins and beta is put away.
+    await page.evaluate(([a, b]) => { localStorage.setItem(a, '1'); localStorage.setItem(b, '1'); }, [CLASSIC, BETA]);
+    await page.reload();
+    await page.locator('.beta-workshop[data-art="classic"] .beta-workstation').first().waitFor();
+    assert.equal(await page.evaluate((k) => localStorage.getItem(k), BETA), '0', 'Both-on migrates to Old gnomes beta only');
+    assert.equal(await page.evaluate((k) => localStorage.getItem(k), CLASSIC), '1', 'The saved Old gnomes beta choice is kept');
+    artRequests.length = 0; // the beta part of this check loaded the atlas; from here the SD cast must not
 
     // Persistence across reload, with the original vector art and no beta texture.
     await page.reload();
@@ -104,15 +122,28 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     assert.equal(outOfShare, 0, 'Every seat stands in its own share of the header');
     await page.locator('.topbar').screenshot({ path: path.join(output, 'classic-workshop-desktop.png') });
 
-    // Real travel and a rendezvous on the shared timeline, plus the classic walk and tool work.
+    // Real travel and a rendezvous on the shared timeline, plus the SD walk, breath and bench work.
     await page.locator('.beta-workshop').evaluate((el) => {
       window.classicTimelines = el.getAnimations({ subtree: true }).map((animation) => ({ animation, time: animation.currentTime }));
     });
     const names_ = await page.locator('.beta-workshop').evaluate((el) => [...new Set(el.getAnimations({ subtree: true }).map((a) => a.animationName))]);
-    for (const name of ['beta-journey', 'beta-facing', 'beta-walk-bob', 'classic-waddle', 'classic-tool-work']) assert(names_.includes(name), `Missing ${name} animation (${names_.join(', ')})`);
+    for (const name of ['beta-journey', 'beta-facing', 'beta-walk-bob', 'beta-walk-left', 'beta-walk-right', 'beta-breathe', 'beta-work-stop', 'old-stow']) assert(names_.includes(name), `Missing ${name} animation (${names_.join(', ')})`);
+    // Every role on stage has its own SD bench, moving on its beta counterpart's keyframes.
+    const benchMotion = { implementor: 'beta-type', qa: 'beta-inspect', planner: 'beta-write', researcher: 'beta-globe', reviewer: 'beta-stamp', reader: 'beta-page', director: 'beta-conduct', coworker: 'beta-spark' };
+    const benches = await page.locator('.beta-workstation[data-working="true"] .old-bench').evaluateAll((els) => els.map((el) => ({ role: [...el.classList].find((c) => c.startsWith('old-bench-')).slice(10), names: el.getAnimations({ subtree: true }).map((a) => a.animationName) })));
+    assert.equal(benches.length, await page.locator('.beta-workstation[data-working="true"]:not([data-rest]):not([data-frozen])').count(), 'Every working seat shows its bench');
+    assert(benches.length >= 2, `Several benches on stage (${benches.length})`);
+    for (const { role, names } of benches) assert(names.includes(benchMotion[role]), `${role} bench moves with ${benchMotion[role]} (${names.join(', ')})`);
+    // Seat delays reach past one cycle, so wrap into the animation's playing range.
     const atPhase = (fraction) => page.locator('.beta-workshop').evaluate((el, f) => {
-      for (const { animation } of window.classicTimelines) { const t = animation.effect.getTiming(); animation.currentTime = t.delay + Number(t.duration) * f; }
+      for (const { animation } of window.classicTimelines) {
+        const t = animation.effect.getTiming(), d = Number(t.duration);
+        let time = t.delay + d * f;
+        while (time < 0) time += d;
+        animation.currentTime = time;
+      }
     }, fraction);
+    const opacityOf = (selector) => page.locator(selector).first().evaluate((el) => Number(getComputedStyle(el).opacity));
     const partner = page.locator('.beta-workstation[data-partner]').first();
     assert.equal(await partner.count(), 1, 'Same-repo teammates pair up');
     await atPhase(0); const start = (await partner.boundingBox()).x;
@@ -125,9 +156,21 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     });
     assert(Math.abs(gap - 34) < 2, `Partners meet shoulder to shoulder (${gap}px)`);
     assert(Number(await page.locator('.beta-shared-project').first().evaluate((el) => getComputedStyle(el).opacity)) > 0.9, 'Shared sheet appears at the rendezvous');
-    const toolSwing = await page.locator('.beta-workstation[data-working="true"] .gnome-prop').first().evaluate((el) => getComputedStyle(el).rotate);
-    assert.notEqual(toolSwing, 'none', 'A working classic gnome swings its tool during shared work');
+    // At work the held tool and mitts are set down and the bench is out; walking, the reverse.
+    const working = '.beta-workstation[data-working="true"]:not([data-rest])';
+    assert(await opacityOf(`${working} .old-bench`) > 0.9, 'Bench is out during shared work');
+    assert(await opacityOf(`${working} .gnome-prop`) < 0.1, 'Held tool is set down during shared work');
+    assert(await opacityOf(`${working} .gnome-mitt`) < 0.1, 'Own mitts move to the bench during shared work');
     await page.locator('.topbar').screenshot({ path: path.join(output, 'classic-workshop-cooperation.png') });
+    await atPhase(0.9);
+    assert(await opacityOf(`${working} .old-bench`) > 0.9, 'Bench is out at the own-bench phase');
+    await page.locator('.topbar').screenshot({ path: path.join(output, 'classic-workshop-own-bench.png') });
+    await atPhase(0.14);
+    assert(await opacityOf(`${working} .old-bench`) < 0.1, 'Bench is put away while walking');
+    assert(await opacityOf(`${working} .gnome-prop`) > 0.9, 'Gnome carries its tool while walking');
+    await atPhase(0.035);
+    const step = await page.locator(`${working} .gnome-boot-left`).first().evaluate((el) => getComputedStyle(el).rotate);
+    assert.notEqual(step, '0deg', `Boots step while walking (${step})`);
     await atPhase(0.14);
     await page.locator('.topbar').screenshot({ path: path.join(output, 'classic-workshop-walking.png') });
     await page.evaluate(() => { for (const { animation, time } of window.classicTimelines) animation.currentTime = time; delete window.classicTimelines; });
@@ -148,14 +191,17 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     assert.equal(await page.locator('.beta-workshop').evaluate((el) => el.getAnimations({ subtree: true }).length), 0, 'Reduced motion stills the classic workshop');
     await page.emulateMedia({ reducedMotion: 'no-preference' });
 
-    // Independence from beta gnomes: beta art wins while on, classic returns when beta goes off.
+    // Another tab on an older build may still save both on: Old gnomes beta keeps the original cast.
     await setFlag(page, BETA, true);
+    await page.waitForTimeout(200);
+    assert.equal(await art(page), 'classic', 'Old gnomes beta wins over a stray beta flag');
+    assert.equal(await page.locator('.beta-gnome').count(), 0);
+    // Another tab choosing Beta gnomes (beta on, old off) hands the workshop to beta, and back.
+    await setFlag(page, CLASSIC, false);
     await page.waitForFunction(() => document.querySelector('.beta-workshop')?.dataset.art === 'beta');
     assert((await page.locator('.beta-gnome').count()) > 0, 'Beta gnomes take over the workshop');
-    await setFlag(page, CLASSIC, false);
-    assert.equal(await art(page), 'beta', 'Beta keeps its workshop with the classic toggle off');
-    await setFlag(page, CLASSIC, true);
     await setFlag(page, BETA, false);
+    await setFlag(page, CLASSIC, true);
     await page.waitForFunction(() => document.querySelector('.beta-workshop')?.dataset.art === 'classic');
     assert.equal(await page.locator('.beta-gnome').count(), 0);
 
@@ -166,24 +212,41 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
       assert.equal(await page.locator('.office-beta').evaluate((el) => el.getBoundingClientRect().height), 48, `Lane height with ${count} tasks`);
       await page.locator('.topbar').screenshot({ path: path.join(output, `classic-workshop-${count}-tasks.png`) });
     }
-    // An idle director rests like its beta self: a chair at first, the bed after eight hours off duty.
+    // Every role has its own SD bench, not just the ones that fit on stage at once.
+    for (const role of Object.keys(benchMotion).filter((r) => r !== 'director')) {
+      const solo = [{ ...threads[0], id: `classic-bench-${role}` }];
+      currentSocket.send(JSON.stringify({ ...hello, threads: solo, runs: [{ ...runs[0], id: `classic-bench-run-${role}`, threadId: solo[0].id, role }], onlineOffice: { ...onlineOffice, remoteAgents: [] } }));
+      for (const seat of [solo[0].id, 'director']) {
+        const expected = seat === 'director' ? 'director' : role;
+        const bench = page.locator(`.beta-workstation[data-agent-id="${seat}"] .old-bench-${expected}`);
+        await bench.waitFor({ state: 'attached' });
+        const names = await bench.evaluate((el) => el.getAnimations({ subtree: true }).map((a) => a.animationName));
+        assert(names.includes(benchMotion[expected]), `${expected} bench moves with ${benchMotion[expected]} (${names.join(', ')})`);
+      }
+      await page.locator('.beta-workshop').evaluate((el) => { for (const a of el.getAnimations({ subtree: true })) { const t = a.effect.getTiming(); if (Number(t.duration) === 12000) { let c = t.delay + 12000 * 0.9; while (c < 0) c += 12000; a.currentTime = c; } } });
+      await page.locator(`.beta-workstation[data-agent-id="${solo[0].id}"]`).screenshot({ path: path.join(output, `classic-bench-${role}.png`) });
+    }
+    await page.locator('.beta-workstation[data-agent-id="director"]').screenshot({ path: path.join(output, 'classic-bench-director.png') });
+    // An idle director rests like its beta self, in SD furniture: a chair at first, the bed after eight hours off duty.
     const restingDirector = '.beta-workstation[data-agent-id="director"]';
     for (const [rest, idleFor] of [['chair', 60_000], ['sleep', 9 * 60 * 60 * 1000]]) {
       currentSocket.send(JSON.stringify({ ...hello, directorBusy: false, directorIdleSince: Date.now() - idleFor }));
       await page.locator(`${restingDirector}[data-rest="${rest}"] .classic-workshop-gnome[data-rest="${rest}"] .gnome > svg`).waitFor();
-      assert.equal(await page.locator(`${restingDirector} .beta-rest-${rest === 'chair' ? 'chair' : 'bed'}`).count(), 1, `Classic director has the beta ${rest} furniture`);
+      assert.equal(await page.locator(`${restingDirector} .old-rest-${rest === 'chair' ? 'chair' : 'bed'}`).count(), 1, `SD director has its own ${rest} furniture`);
+      assert.equal(await page.locator(`${restingDirector} [class^="beta-rest"]`).count(), 0, 'No beta furniture');
+      assert.equal(await page.locator(`${restingDirector} .old-bench`).count(), 0, 'A resting director has no bench');
       // Exercise the existing cloud/aurora motion even when this mount rolled a plain skin.
       const skinMotion = await page.locator(`${restingDirector} .gnome`).evaluate((el) => {
         const previous = { floating: el.classList.contains('gnome-floating'), super: el.classList.contains('gnome-super') };
         el.classList.add('gnome-floating', 'gnome-super');
-        el.querySelector('svg > path').classList.add('gnome-shimmer');
+        el.querySelector('svg path').classList.add('gnome-shimmer');
         return previous;
       });
       assert.deepEqual(await page.locator(restingDirector).evaluate((el) => el.getAnimations({ subtree: true }).map((a) => a.animationName).filter((n) => n !== 'beta-dream')), [], `A ${rest} director does not walk or work`);
       await page.locator(`${restingDirector} .gnome`).evaluate((el, previous) => {
         if (!previous.floating) el.classList.remove('gnome-floating');
         if (!previous.super) el.classList.remove('gnome-super');
-        el.querySelector('svg > path').classList.remove('gnome-shimmer');
+        el.querySelector('svg path').classList.remove('gnome-shimmer');
       }, skinMotion);
       assert.equal(await page.locator('.beta-gnome').count(), 0);
       await page.locator(restingDirector).screenshot({ path: path.join(output, `classic-director-${rest}.png`) });
@@ -230,7 +293,7 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     await page.reload(); await page.locator('.office-strip .office-huddle').first().waitFor();
     assert.equal(await page.locator('.beta-workshop').count(), 0, 'Off restores the existing strip after reload');
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ result: 'PASS', checks: ['default off keeps strip', 'toggle beside Beta gnomes', 'persistence across reload', 'original art, no atlas', '48px lane, no added rows', 'beta seat distribution', 'walk, rendezvous, shared sheet, tool work', 'roster and room routing', 'pause and reduced motion', 'resting director stops rare-skin motion', 'independent of beta gnomes both ways', '320-1920px: no overflow, no clipping, controls usable', 'cross-tab rollback', 'no page errors'], evidence: output }, null, 2));
+    console.log(JSON.stringify({ result: 'PASS', checks: ['default off keeps strip', 'Old gnomes beta beside Beta gnomes, mutually exclusive', 'both-on saved preference migrates to Old gnomes beta', 'persistence across reload', 'original art, no atlas or beta furniture', '48px lane, no added rows', 'beta seat distribution', 'walk with stepping boots, breathing, rendezvous, shared sheet, tool set down for the bench', 'all 8 role benches on their beta keyframes', 'roster and room routing', 'pause and reduced motion', 'SD chair and bed, resting director stops rare-skin motion', 'stray beta flag cannot override, other-tab beta choice hands over and back', '320-1920px: no overflow, no clipping, controls usable', 'cross-tab rollback', 'no page errors'], evidence: output }, null, 2));
     await context.close();
   } finally { await browser.close(); }
 })().catch((e) => { console.error(e); process.exitCode = 1; });

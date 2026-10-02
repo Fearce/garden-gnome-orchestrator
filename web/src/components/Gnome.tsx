@@ -168,6 +168,8 @@ const ECLIPSE = "oklch(0.88 0.16 80)";
 const CLOUD = "oklch(0.97 0.01 240)"; //  the floating cloud, a touch bluer than the beard
 const CLOUD_SHADE = "oklch(0.84 0.03 240)";
 const EMBER = "oklch(0.68 0.2 42)"; //  the phoenix flame's outer fire and its sparks
+/** The fixed palette, for artwork drawn beside the gnome (the Old gnomes beta workbenches and furniture). */
+export const GNOME_PALETTE = { BEARD, SKIN, BOOTS, METAL, WOOD, INK, GOLD, HOLLY, BULB_BLUE } as const;
 
 function pick<T>(list: readonly T[]): T | null {
   return list[Math.floor(Math.random() * list.length)] ?? null;
@@ -465,11 +467,14 @@ export function Gnome({ role, size = 30, active = true, className, skin: pinnedS
     <span className={classes} style={style} aria-hidden="true">
       {/* Tall viewBox (36×54) — the long hat makes it read as a gnome, never a bottle. */}
       <svg width={size} height={size * (54 / 36)} viewBox="0 0 36 54" fill="none" role="img">
+        {/* The figure is two `gnome-figure` groups around the boots, so the Old gnomes beta header can
+            breathe the figure and step each boot (`gnome-boot-*`) while keeping this paint order. */}
         {/* body — small round role-colored robe, mostly hidden behind the beard */}
-        <path d="M11 30C7 33 6 41 8 48h20c2-7 1-15-3-18-3 3-11 3-14 0Z" fill="currentColor" />
+        <g className="gnome-figure"><path d="M11 30C7 33 6 41 8 48h20c2-7 1-15-3-18-3 3-11 3-14 0Z" fill="currentColor" /></g>
         {/* boots — two chunky dark boots, splayed slightly outward */}
-        <ellipse cx="13.5" cy="49" rx="3.7" ry="2.6" fill={BOOTS} />
-        <ellipse cx="22.5" cy="49" rx="3.7" ry="2.6" fill={BOOTS} />
+        <ellipse className="gnome-boot gnome-boot-left" cx="13.5" cy="49" rx="3.7" ry="2.6" fill={BOOTS} />
+        <ellipse className="gnome-boot gnome-boot-right" cx="22.5" cy="49" rx="3.7" ry="2.6" fill={BOOTS} />
+        <g className="gnome-figure">
         {/* hat — tall slender pointed cap, tip leaning right, brim flaring over the beard */}
         {skin !== "crown" && <path d={HAT} fill={skin === "santa" ? SANTA_RED : "currentColor"} />}
         {skin && (
@@ -481,11 +486,11 @@ export function Gnome({ role, size = 30, active = true, className, skin: pinnedS
           </>
         )}
         {/* role prop — the gnome's tool, drawn before the mitts so the right mitt grips its handle.
-            Grouped so the classic workshop header can swing it from that mitt while the gnome works. */}
+            Grouped so the Old gnomes beta header can set it down while the gnome works at its bench. */}
         <g className="gnome-prop">{roleProp(role)}</g>
         {/* mitts — two little tan hands resting at the beard's sides */}
-        <circle cx="8.6" cy="38" r="2.4" fill={SKIN} />
-        <circle cx="27.4" cy="38" r="2.4" fill={SKIN} />
+        <circle className="gnome-mitt" cx="8.6" cy="38" r="2.4" fill={SKIN} />
+        <circle className="gnome-mitt" cx="27.4" cy="38" r="2.4" fill={SKIN} />
         {/* beard — big white teardrop coming to a soft rounded point; the gnome's signature */}
         <path d="M11 30C9 37 12 43 18 46c6-3 9-9 7-16-3 3-11 3-14 0Z" fill={BEARD} />
         {/* nose — bulbous tan nose peeking out from under the hat brim */}
@@ -493,6 +498,7 @@ export function Gnome({ role, size = 30, active = true, className, skin: pinnedS
         {/* pom — the soft off-white bobble at the hat's tip; gold on a golden gnome, fluffier in winter,
             and on a Santa hat, and hidden under a crown or a phoenix flame, which take its place */}
         {skin !== "crown" && skin !== "phoenix" && <circle cx="22" cy="5" r={skin === "winter" || skin === "santa" ? 3.6 : 3} fill={skin === "golden" ? GOLD : skin === "crystal" ? CRYSTAL : BEARD} />}
+        </g>
       </svg>
     </span>
   );

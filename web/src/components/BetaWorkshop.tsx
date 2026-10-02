@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { ChatMessage, GnomeRole } from "../types.js";
 import { observeGnomeMotion } from "../lib/betaGnomes.js";
-import { BetaGnome, RestFurnitureBack, RestFurnitureFront } from "./BetaGnome.js";
+import { BetaGnome } from "./BetaGnome.js";
 import type { DirectorRest } from "../lib/directorRest.js";
-import { Gnome } from "./Gnome.js";
+import { ClassicWorkshopGnome } from "./OldWorkshopGnome.js";
 import { FrozenGnome } from "./FrozenGnome.js";
 
 export interface WorkshopSeat {
@@ -110,20 +110,11 @@ function seatActivity(seat: WorkshopSeat) {
   return seat.freezeReason ? "Frozen — waiting for reset" : seat.active ? verbs[seat.role] : seat.rest === "sleep" ? "Sleeping" : seat.rest === "chair" ? "Taking a seat" : "Ready";
 }
 
-/** The cast's artwork: the illustrated beta texture, or the original vector gnome (`classic`). A
- *  classic gnome stays in full color like a beta character; the workshop CSS walks and works it. */
+/** The cast's artwork: the illustrated beta texture, or the original vector gnome with its own
+ *  workshop artwork (`classic`, Old gnomes beta). Both stay in full color; the workshop CSS walks them. */
 function WorkshopGnome({ classic, role, size, active, rest, frozen }: { classic: boolean; role: GnomeRole; size: number; active: boolean; rest?: DirectorRest; frozen?: boolean }) {
   const gnome = classic ? <ClassicWorkshopGnome role={role} size={size} rest={rest} /> : <BetaGnome role={role} size={size} active={active} rest={rest} />;
   return frozen ? <FrozenGnome size={size}>{gnome}</FrozenGnome> : gnome;
-}
-
-/** The original gnome, wrapped so a resting director gets the same chair or bed as its beta self. */
-function ClassicWorkshopGnome({ role, size, rest }: { role: GnomeRole; size: number; rest?: DirectorRest }) {
-  return <span className="classic-workshop-gnome" data-rest={rest} style={{ width: size, height: size * 1.5 }}>
-    <RestFurnitureBack rest={rest} />
-    <Gnome role={role} size={size} />
-    <RestFurnitureFront rest={rest} />
-  </span>;
 }
 
 /** One 48px lane. Speech and the roster float over the board, never reserve header space. */

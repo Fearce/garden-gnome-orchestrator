@@ -2,8 +2,10 @@ import { useSyncExternalStore } from "react";
 
 /** Deliberately browser-local and opt-in. Never becomes a server/settings default. */
 export const BETA_GNOMES_KEY = "ggo:beta-gnomes";
-/** The workshop header for the original gnomes. Independent of beta gnomes, which always use it. */
-export const CLASSIC_WORKSHOP_KEY = "ggo:classic-workshop";
+/** "Old gnomes beta": the original gnomes in the workshop header, with their own animation set. It keeps
+ *  the key of the earlier "Workshop header for classic gnomes" toggle, so a saved choice carries over.
+ *  It and Beta gnomes are alternative casts: switching one on switches the other off. */
+export const OLD_GNOMES_BETA_KEY = "ggo:classic-workshop";
 
 /** One default-off "1"/"0" flag in localStorage, live across tabs through the storage event. */
 function browserFlag(key: string) {
@@ -33,15 +35,29 @@ function browserFlag(key: string) {
     notify();
   };
   const use = () => useSyncExternalStore(subscribe, () => enabled, () => false);
-  return { set, use };
+  return { get: () => enabled, set, use };
 }
 
 const betaGnomes = browserFlag(BETA_GNOMES_KEY);
-export const setBetaGnomes = betaGnomes.set;
-export const useBetaGnomes = betaGnomes.use;
-const classicWorkshop = browserFlag(CLASSIC_WORKSHOP_KEY);
-export const setClassicWorkshop = classicWorkshop.set;
-export const useClassicWorkshop = classicWorkshop.use;
+const oldGnomesBeta = browserFlag(OLD_GNOMES_BETA_KEY);
+// Before the two became alternatives both could be saved on, and beta won. Old gnomes beta is the
+// explicit choice of the original cast, so it keeps its place and beta is switched off once.
+if (betaGnomes.get() && oldGnomesBeta.get()) betaGnomes.set(false);
+
+export function setBetaGnomes(on: boolean) {
+  if (on) oldGnomesBeta.set(false);
+  betaGnomes.set(on);
+}
+export function setOldGnomesBeta(on: boolean) {
+  if (on) betaGnomes.set(false);
+  oldGnomesBeta.set(on);
+}
+/** Beta artwork shows only while Old gnomes beta is off, even if a tab on an older build saved both. */
+export function useBetaGnomes() {
+  const old = oldGnomesBeta.use();
+  return betaGnomes.use() && !old;
+}
+export const useOldGnomesBeta = oldGnomesBeta.use;
 
 // One observer and one visibility listener for the entire cast. No animation-frame JS,
 // per-character timers, or React updates while the gnomes move.
