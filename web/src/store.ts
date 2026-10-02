@@ -41,7 +41,7 @@ import type {
   RepoState,
   Goal,
   GoalOptions,
-  GoalStatus,
+  GoalOwnerStatus,
   Message,
   MessageCursor,
   ModelStat,
@@ -554,7 +554,7 @@ interface State {
   // Goals: each returns whether the command reached the socket, so a form never closes on a dropped write.
   createGoal: (input: { title: string; objective: string; workspace: string } & GoalOptions) => boolean;
   updateGoal: (id: string, patch: { title?: string; objective?: string } & GoalOptions) => boolean;
-  setGoalStatus: (id: string, status: GoalStatus) => boolean;
+  setGoalStatus: (id: string, status: GoalOwnerStatus) => boolean;
   deleteGoal: (id: string) => boolean;
   // The owner's note list — still optimism-free (unlike the schedule writes above): send, let the
   // `notes` broadcast reconcile. Nobody watches a note row for a response, so it needs no projection.

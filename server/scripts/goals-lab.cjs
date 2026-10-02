@@ -1,8 +1,9 @@
-// Lab for a goal's owner-chosen effort, model, parallel steps and burn-rate guard (`npm run goals-lab`).
-// What `test:goals` cannot see: whether the create/edit dialog really offers the controls, whether "Auto
-// (low or medium)", one step at a time and the guard on at 100% are the defaults a new goal gets, whether
-// the choices survive the socket into the goals table, and whether an edit can change them back — read
-// from the instance's own DB, not the optimistic UI.
+// Lab for a goal's owner-chosen effort, model, parallel steps, burn-rate guard, session policy and token
+// budget (`npm run goals-lab`). What `test:goals` cannot see: whether the create/edit dialog really offers
+// the controls, whether "Auto (low or medium)", one step at a time in one session, no budget and the guard
+// on at 100% are the defaults a new goal gets, whether the choices survive the socket into the goals table,
+// whether an edit can change them back, and whether the owner's Resume of a goal the loop stopped starts a
+// fresh audit — read from the instance's own DB, not the optimistic UI.
 // Boots its own throwaway instance with bogus account tokens, so the director never answers and no step
 // is ever dispatched. Not in GATES: it needs a browser + an instance, like the other labs.
 //
@@ -18,11 +19,32 @@ const { loadChromium, authPassword, requireBuild, boot, killInstance, createChec
 const PORT = 4417;
 const check = createChecks();
 
-function goalRow(dataDir, title) {
+function openDb(dataDir, readonly = true) {
   const Database = require(path.join(__dirname, "..", "node_modules", "better-sqlite3"));
-  const db = new Database(path.join(dataDir, "orchestrator.sqlite"), { readonly: true });
+  return new Database(path.join(dataDir, "orchestrator.sqlite"), { readonly });
+}
+
+function goalRow(dataDir, title) {
+  const db = openDb(dataDir);
   try {
-    return db.prepare("SELECT effort, provider, model, max_concurrent, burn_conservation, burn_rate_pct FROM goals WHERE title = ?").get(title) ?? null;
+    return (
+      db
+        .prepare("SELECT effort, provider, model, max_concurrent, burn_conservation, burn_rate_pct, persistent_session, token_budget, status, replan_at, blocked_streak FROM goals WHERE title = ?")
+        .get(title) ?? null
+    );
+  } finally {
+    db.close();
+  }
+}
+
+/** What only the loop can do: stop a goal as blocked, the same-impasse streak spent. */
+function stopAsBlocked(dataDir, title) {
+  const db = openDb(dataDir, false);
+  try {
+    db.prepare("UPDATE goals SET status = 'blocked', status_reason = ?, blocked_streak = 3, replan_at = NULL WHERE title = ?").run(
+      "The same blocker three turns running: the deploy key is missing.",
+      title,
+    );
   } finally {
     db.close();
   }
@@ -60,6 +82,10 @@ async function paceControls(page) {
     guard: document.querySelector(".goal-modal .goal-burn-toggle input")?.checked ?? null,
     rate: document.querySelector(".goal-modal .goal-burn-rate")?.value ?? null,
     rateDisabled: document.querySelector(".goal-modal .goal-burn-rate")?.disabled ?? null,
+    session: document.querySelector(".goal-modal .goal-session-toggle input")?.checked ?? null,
+    sessionDisabled: document.querySelector(".goal-modal .goal-session-toggle input")?.disabled ?? null,
+    budget: document.querySelector(".goal-modal .goal-token-budget")?.value ?? null,
+    canSave: !document.querySelector(".goal-modal .m-foot .btn.primary")?.disabled,
   }));
 }
 
@@ -110,15 +136,55 @@ const card = (page, title) => page.locator(".goal-card", { has: page.locator(`.s
     check("the model picker waits for a provider", p.model?.disabled === true, JSON.stringify(p.model));
     let pace = await paceControls(page);
     check("the dialog defaults to one step at a time with the burn guard on at 100%", pace.parallel === "1" && pace.guard === true && pace.rate === "100" && pace.rateDisabled === false, JSON.stringify(pace));
-    check("the dialog has no step budget", !/budget/i.test(await page.locator(".goal-modal").textContent()));
+    check("...in one session with no token budget", pace.session === true && pace.sessionDisabled === false && pace.budget === "", JSON.stringify(pace));
+    check("the dialog has no step budget", !/step budget|max(imum)? steps/i.test(await page.locator(".goal-modal").textContent()));
     await saveAndClose(page);
     let row = await waitForRow(dataDir, "Default goal", () => true);
     check("an untouched dialog stores no pin (director picks, low or medium)", row && row.effort === null && row.provider === null && row.model === null, JSON.stringify(row));
     check("...and the pace defaults", row && row.max_concurrent === 1 && row.burn_conservation === 1 && row.burn_rate_pct === 100, JSON.stringify(row));
+    check("...one persistent session and no budget", row && row.persistent_session === 1 && row.token_budget === null, JSON.stringify(row));
     await card(page, "Default goal").waitFor({ timeout: 10000 });
     check("the card says the effort is low–medium", (await card(page, "Default goal").locator(".goal-effort-auto").textContent())?.trim() === "low–medium");
     check("the card counts steps without a budget", /\b0 steps\b/.test(await card(page, "Default goal").locator(".goal-steps-count").textContent()));
     check("the card shows one at a time and the guard",/1 at a time/.test(await card(page, "Default goal").locator(".sched-meta").textContent()) && (await card(page, "Default goal").locator(".goal-burn:not(.off)").textContent())?.trim() === "burn ≤ 100%");
+    check("the card says it continues in one session", /one session/.test(await card(page, "Default goal").locator(".sched-meta").textContent()));
+    check("a goal with no runs and no budget shows no usage line", (await card(page, "Default goal").locator(".goal-usage").count()) === 0);
+
+    // ---- a token budget, written the short way, and a fresh task per step ----
+    await fillNewGoal(page, "Budgeted goal", workspace);
+    await page.fill(".goal-modal .goal-token-budget", "12.5x");
+    pace = await paceControls(page);
+    check("an unreadable budget blocks saving and says how to write one", !pace.canSave && /optionally with k or M/.test(await page.locator(".goal-modal").textContent()), JSON.stringify(pace));
+    await page.fill(".goal-modal .goal-token-budget", "20M");
+    await page.click(".goal-modal .goal-session-toggle input");
+    pace = await paceControls(page);
+    check("a valid budget can be saved", pace.canSave && pace.session === false, JSON.stringify(pace));
+    check("the hint says what the budget counts and what it does not", /director judgements are not counted/.test(await page.locator(".goal-modal").textContent()));
+    const providers = (await pickers(page)).provider?.options ?? [];
+    if (providers.includes("grok")) {
+      await select(page, "Provider", "grok");
+      pace = await paceControls(page);
+      check("a budget cannot be pinned to Grok, which reports no usage", !pace.canSave && /Grok reports no token usage/.test(await page.locator(".goal-modal").textContent()), JSON.stringify(pace));
+      await select(page, "Provider", "");
+    } else {
+      console.log(`  - skipped the Grok-pin budget rule: this instance offers no Grok target (${providers.join(", ")}); test:goals covers it server-side`);
+    }
+    await saveAndClose(page);
+    row = await waitForRow(dataDir, "Budgeted goal", () => true);
+    check("the budget and the session policy reach the goals table", row && row.token_budget === 20_000_000 && row.persistent_session === 0, JSON.stringify(row));
+    const budgetCard = card(page, "Budgeted goal");
+    await budgetCard.waitFor({ timeout: 10000 });
+    check("the card shows the step-task usage against the budget", (await budgetCard.locator(".goal-usage-total").textContent())?.trim() === "0 of 20M tokens" && /Step-task runs/.test(await budgetCard.locator(".goal-usage").textContent()));
+    check("...with its meter", (await budgetCard.locator(".goal-usage-meter").count()) === 1);
+    check("the card says each step is a fresh task", /fresh task per step/.test(await budgetCard.locator(".sched-meta").textContent()));
+    await budgetCard.locator('.btn:has-text("Edit")').click();
+    await page.waitForSelector(".goal-modal", { timeout: 10000 });
+    pace = await paceControls(page);
+    check("edit opens with the saved budget in its short form", pace.budget === "20M" && pace.session === false, JSON.stringify(pace));
+    await page.fill(".goal-modal .goal-token-budget", "");
+    await saveAndClose(page);
+    row = await waitForRow(dataDir, "Budgeted goal", (r) => r.token_budget === null);
+    check("clearing the field removes the budget", row && row.token_budget === null, JSON.stringify(row));
 
     // ---- several agents at once, guard off ----
     await fillNewGoal(page, "Parallel goal", workspace);
@@ -126,6 +192,7 @@ const card = (page, title) => page.locator(".goal-card", { has: page.locator(`.s
     await page.click(".goal-modal .goal-burn-toggle input");
     pace = await paceControls(page);
     check("switching the guard off locks the rate", pace.guard === false && pace.rateDisabled === true, JSON.stringify(pace));
+    check("parallel steps lock the one-session toggle", pace.sessionDisabled === true && pace.session === false, JSON.stringify(pace));
     await saveAndClose(page);
     row = await waitForRow(dataDir, "Parallel goal", () => true);
     check("parallel steps and the guard reach the goals table", row && row.max_concurrent === 3 && row.burn_conservation === 0 && row.burn_rate_pct === 100, JSON.stringify(row));
@@ -180,6 +247,29 @@ const card = (page, title) => page.locator(".goal-card", { has: page.locator(`.s
     await card(page, "Pinned goal").waitFor({ timeout: 10000 });
     check("after a reload the edited goal reads low–medium", (await card(page, "Pinned goal").locator(".goal-effort-auto").count()) === 1);
     check("after a reload the paced goal reads burn ≤ 150%", (await card(page, "Parallel goal").locator(".goal-burn").textContent())?.trim() === "burn ≤ 150%");
+
+    // ---- a goal the loop stopped as blocked: the owner's Resume starts a fresh audit ----
+    // The raw write emits no hub event, so a reload would get the cached hello from before it. An owner
+    // action on another goal makes the runner broadcast the whole list from the DB, the same path the
+    // loop's own stop takes.
+    stopAsBlocked(dataDir, "Default goal");
+    await card(page, "Parallel goal").locator('.sched-actions .btn:has-text("Pause")').click();
+    row = await waitForRow(dataDir, "Parallel goal", (r) => r.status === "paused");
+    check("pausing another goal goes through the runner", row?.status === "paused", JSON.stringify(row));
+    const blockedCard = card(page, "Default goal");
+    await blockedCard.locator(".goal-status", { hasText: "Blocked" }).waitFor({ timeout: 10000 }).catch(() => {});
+    const blockedStatus = (await blockedCard.locator(".goal-status").textContent())?.trim();
+    const blockedReason = await blockedCard.locator(".goal-reason").textContent();
+    check("a blocked goal reads Blocked, with why", blockedStatus === "Blocked" && /same blocker three turns running/.test(blockedReason ?? ""), JSON.stringify({ blockedStatus, blockedReason }));
+    await page.screenshot({ path: path.join(shotDir(dataDir), "goals-blocked.png") });
+    await page.reload({ timeout: 45000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
+    await openGoals(page);
+    await blockedCard.waitFor({ timeout: 10000 });
+    check("after a reload it still reads Blocked", (await blockedCard.locator(".goal-status").textContent())?.trim() === "Blocked");
+    await blockedCard.locator('.sched-actions .btn:has-text("Resume")').click();
+    row = await waitForRow(dataDir, "Default goal", (r) => r.status === "active");
+    check("Resume reactivates it, clears the blocker streak and asks the director first", row && row.status === "active" && row.blocked_streak === 0 && row.replan_at != null, JSON.stringify(row));
 
     check("no console errors", errors.length === 0, errors.join(" | "));
     await page.screenshot({ path: path.join(shotDir(dataDir), "goals-cards.png") });

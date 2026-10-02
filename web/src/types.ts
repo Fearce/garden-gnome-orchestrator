@@ -219,8 +219,26 @@ export interface ScheduledTask {
   updatedAt: number;
 }
 
-/** Mirrors the server's GoalStatus. */
-export type GoalStatus = "active" | "paused" | "achieved" | "abandoned";
+/** Mirrors the server's GoalStatus. `blocked` and `budget_limited` are set only by the loop. */
+export type GoalStatus = "active" | "paused" | "blocked" | "budget_limited" | "achieved" | "abandoned";
+/** The statuses the owner can set. Mirrors the server's GoalOwnerStatus. */
+export type GoalOwnerStatus = "active" | "paused" | "achieved" | "abandoned";
+/** Why an active goal is not working right now. Mirrors the server's GoalHold. */
+export type GoalHold = "waiting" | "usage_limited";
+
+/** A goal's token spend over its step tasks' runs since its metering baseline. Director judgements are
+ *  not in it. Mirrors the server's GoalUsage. */
+export interface GoalUsage {
+  tokensUsed: number; // fresh input + output: what a budget counts
+  freshInputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  runs: number;
+  unmeteredRuns: number; // runs that reported no usage, so tokensUsed is a lower bound
+  runsBeforeBaseline: number; // older runs, counted but never totalled
+  agentSeconds: number;
+  since: number;
+}
 
 /** One task a goal dispatched. Mirrors the server's GoalStep. */
 export interface GoalStep {
@@ -235,6 +253,9 @@ export interface GoalStep {
   rationale: string;
   outcome: ThreadState | null;
   agentClaimedComplete: boolean | null;
+  turns: number; // goal turns run in this task's session: 1 for the dispatch, +1 per continuation
+  turnStartedAt: number;
+  turnFingerprint: string | null;
   createdAt: number;
   settledAt: number | null;
 }
@@ -265,6 +286,11 @@ export interface Goal {
   maxConcurrent: number; // how many step tasks may run at once
   burnConservation: boolean; // hold new steps while every usable pool is ahead of its weekly pace
   burnRatePct: number; // the pace allowed: 100 = spend a weekly window exactly by its reset
+  persistentSession: boolean; // a one-at-a-time goal continues in its task's own session between turns
+  tokenBudget: number | null; // fresh input + output tokens its step-task runs may spend, checked between turns; null = no budget
+  usage: GoalUsage;
+  hold: GoalHold | null;
+  blockedStreak: number;
   currentThreadId: string | null;
   nextCheckAt: number | null;
   stepCount: number;
@@ -284,8 +310,11 @@ export interface GoalOptions {
   maxConcurrent?: number;
   burnConservation?: boolean;
   burnRatePct?: number;
+  persistentSession?: boolean;
+  tokenBudget?: number | null;
 }
 export const DEFAULT_GOAL_MAX_CONCURRENT = 1;
+export const MAX_GOAL_TOKEN_BUDGET = 1_000_000_000_000;
 export const MAX_GOAL_MAX_CONCURRENT = 8;
 export const DEFAULT_GOAL_BURN_RATE_PCT = 100;
 export const MIN_GOAL_BURN_RATE_PCT = 10;
@@ -1543,7 +1572,7 @@ export type ClientCommand =
   | { type: "schedule.run"; id: string }
   | ({ type: "goal.create"; title: string; objective: string; workspace: string } & GoalOptions)
   | { type: "goal.update"; id: string; patch: { title?: string; objective?: string } & GoalOptions }
-  | { type: "goal.status"; id: string; status: GoalStatus }
+  | { type: "goal.status"; id: string; status: GoalOwnerStatus }
   | { type: "goal.delete"; id: string }
   | { type: "office.join"; url: string; code: string; instanceName: string }
   | { type: "office.leave" }

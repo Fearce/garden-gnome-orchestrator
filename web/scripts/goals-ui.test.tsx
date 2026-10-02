@@ -5,12 +5,14 @@
  *   · Pause/Resume/End project in the same click, a dropped write says so instead of projecting;
  *   · the view renders what the owner needs to act: status and why, the director's progress, the
  *     current step with its model and effort, the agent's claim, and the right lifecycle buttons;
- *   · a task that is a goal step is found by its thread id (the board card's badge).
+ *   · a task that is a goal step is found by its thread id (the board card's badge);
+ *   · the loop's own stops (blocked, out of budget) and holds read as such, and usage is labelled as the
+ *     step tasks' runs: a lower bound when a run reported none, never implying director judgements count.
  */
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { Goal } from "../src/types.js";
+import type { Goal, GoalUsage } from "../src/types.js";
 import "./ssrCssStub.mjs";
 
 Object.assign(globalThis, { React });
@@ -49,6 +51,10 @@ socket.readyState = FakeWebSocket.OPEN;
 socket.onopen?.();
 socket.sent.length = 0;
 
+const NO_USAGE: GoalUsage = { tokensUsed: 0, freshInputTokens: 0, outputTokens: 0, cachedInputTokens: 0, runs: 0, unmeteredRuns: 0, runsBeforeBaseline: 0, agentSeconds: 0, since: 1 };
+const USAGE: GoalUsage = { ...NO_USAGE, tokensUsed: 1_250_000, freshInputTokens: 1_000_000, outputTokens: 250_000, cachedInputTokens: 48_000_000, runs: 3, agentSeconds: 7_200 };
+const step = { turns: 1, turnStartedAt: 1, turnFingerprint: null };
+
 const goal: Goal = {
   id: "goal-1",
   title: "Offline support",
@@ -64,12 +70,17 @@ const goal: Goal = {
   maxConcurrent: 1,
   burnConservation: true,
   burnRatePct: 100,
+  persistentSession: true,
+  tokenBudget: null,
+  usage: NO_USAGE,
+  hold: null,
+  blockedStreak: 0,
   currentThreadId: "thread-2",
   nextCheckAt: null,
   stepCount: 2,
   steps: [
-    { id: "s1", goalId: "goal-1", seq: 1, threadId: "thread-1", title: "Cache layer", provider: "claude", model: "claude-opus-5-5", effort: "high", rationale: "Architectural.", outcome: "done", agentClaimedComplete: true, createdAt: 1, settledAt: 2 },
-    { id: "s2", goalId: "goal-1", seq: 2, threadId: "thread-2", title: "Sync queue", provider: "codex", model: "gpt-5.6", effort: "medium", rationale: "Mechanical follow-up.", outcome: null, agentClaimedComplete: null, createdAt: 3, settledAt: null },
+    { id: "s1", goalId: "goal-1", seq: 1, threadId: "thread-1", title: "Cache layer", provider: "claude", model: "claude-opus-5-5", effort: "high", rationale: "Architectural.", outcome: "done", agentClaimedComplete: true, ...step, createdAt: 1, settledAt: 2 },
+    { id: "s2", goalId: "goal-1", seq: 2, threadId: "thread-2", title: "Sync queue", provider: "codex", model: "gpt-5.6", effort: "medium", rationale: "Mechanical follow-up.", outcome: null, agentClaimedComplete: null, ...step, createdAt: 3, settledAt: null },
   ],
   createdAt: 1,
   updatedAt: 3,
@@ -98,6 +109,18 @@ assert.deepEqual(
   { maxConcurrent: 3, burnConservation: false, burnRatePct: 150 },
   "parallel steps and the burn-rate guard ride on the create",
 );
+
+socket.sent.length = 0;
+assert.equal(useStore.getState().createGoal({ title: "t", objective: "o", workspace: "C:\\repo", persistentSession: false, tokenBudget: 20_000_000 }), true);
+assert.deepEqual(
+  { persistentSession: socket.sent[0]?.persistentSession, tokenBudget: socket.sent[0]?.tokenBudget },
+  { persistentSession: false, tokenBudget: 20_000_000 },
+  "the session policy and the token budget ride on the create",
+);
+
+socket.sent.length = 0;
+assert.equal(useStore.getState().updateGoal("goal-1", { tokenBudget: null }), true);
+assert.deepEqual(socket.sent, [{ type: "goal.update", id: "goal-1", patch: { tokenBudget: null } }], "an edit can remove the budget");
 
 socket.sent.length = 0;
 assert.equal(useStore.getState().updateGoal("goal-1", { effort: null, provider: null, model: null }), true);
@@ -151,6 +174,9 @@ assert.match(active, />Pause</);
 assert.doesNotMatch(active, />Resume</);
 assert.match(active, /1 at a time/, "a sequential goal says so");
 assert.match(active, /burn ≤ 100%/, "the burn-rate guard is on by default and shows its rate");
+assert.match(active, />one session</, "a sequential goal continues in one session by default");
+assert.doesNotMatch(active, /Step-task runs/, "a goal with no runs yet and no budget shows no usage line");
+assert.doesNotMatch(active, /goal-hold/, "a working goal shows no hold");
 
 const wide = render([
   {
@@ -160,7 +186,7 @@ const wide = render([
     lastVerdict: { verdict: "wait", reason: "Docs depend on the API.", agentClaimedComplete: false, at: Date.now() - 1_000, settledSteps: 1 },
     steps: [
       ...goal.steps,
-      { id: "s3", goalId: "goal-1", seq: 3, threadId: "thread-3", title: "Conflict UI", provider: "claude", model: "claude-opus-5-5", effort: "low", rationale: "Independent of sync.", outcome: null, agentClaimedComplete: null, createdAt: 4, settledAt: null },
+      { id: "s3", goalId: "goal-1", seq: 3, threadId: "thread-3", title: "Conflict UI", provider: "claude", model: "claude-opus-5-5", effort: "low", rationale: "Independent of sync.", outcome: null, agentClaimedComplete: null, ...step, createdAt: 4, settledAt: null },
     ],
   },
 ]);
@@ -170,6 +196,41 @@ assert.match(wide, /Sync queue/);
 assert.match(wide, /Conflict UI/);
 assert.match(wide, /burn guard off/, "a goal without the guard says so");
 assert.match(wide, /Director: waiting on running steps/, "a wait verdict reads as waiting");
+assert.doesNotMatch(wide, /one session|fresh task per step/, "parallel steps are always separate tasks, so no session chip");
+
+const metered = render([{ ...goal, usage: USAGE, steps: [goal.steps[0]!, { ...goal.steps[1]!, turns: 4 }] }]);
+assert.match(metered, /Step-task runs/, "usage is labelled as the step tasks' runs");
+assert.match(metered, />1.3M tokens</, "fresh input + output is the total");
+assert.match(metered, /48M cached reads apart · 3 runs · 2h agent time/, "cached reads are shown apart, never in the total");
+assert.match(metered, /Director judgements are not counted/, "the tooltip never implies director calls are in the total");
+assert.match(metered, />4 turns</, "a step continued in its own session shows its turns");
+assert.doesNotMatch(metered, /budget/i, "an unbudgeted goal mentions no budget");
+
+const lowerBound = render([{ ...goal, tokenBudget: 5_000_000, usage: { ...USAGE, unmeteredRuns: 1, runsBeforeBaseline: 2 } }]);
+assert.match(lowerBound, />≥ 1.3M of 5M tokens</, "a run with no usage makes the total a lower bound, shown against the budget");
+assert.match(lowerBound, /1 run reported no usage · 2 earlier runs not counted/, "the uncounted runs are named, never silently zero");
+assert.match(lowerBound, /role="meter"/, "a budget draws its meter");
+assert.match(lowerBound, /checked between turns from the finished runs, so a running turn may exceed it/, "the budget reads as boundary-enforced, not a hard per-token cap");
+
+const waiting = render([{ ...goal, hold: "usage_limited", statusReason: "Step task 1234abcd is parked on a usage limit." }]);
+assert.match(waiting, /goal-hold gh-usage_limited[^>]*>Usage limited</, "an active goal's hold is on the card");
+assert.match(waiting, />Active</, "a hold is not a status change");
+
+const blocked = render([{ ...goal, status: "blocked", statusReason: "The same blocker three turns running: the deploy key is missing." }]);
+assert.match(blocked, />Blocked</);
+assert.match(blocked, /goal-reason gs-blocked[^>]*>The same blocker three turns running/, "why the loop stopped is on the card");
+assert.match(blocked, />Resume</, "a blocked goal is resumed by the owner");
+assert.match(blocked, /Mark achieved/, "a blocked goal is not ended");
+
+const spent = render([{ ...goal, status: "budget_limited", tokenBudget: 1_000_000, usage: USAGE, statusReason: "Its step tasks used the token budget." }]);
+assert.match(spent, />Out of budget</);
+assert.match(spent, /<button[^>]*disabled=""[^>]*>Resume</, "Resume waits for a larger budget, as the server does");
+assert.match(spent, /goal-usage-meter spent/, "a spent budget reads as spent");
+const raised = render([{ ...goal, status: "budget_limited", tokenBudget: 5_000_000, usage: USAGE }]);
+assert.doesNotMatch(raised, /<button[^>]*disabled=""[^>]*>Resume</, "a raised budget lets the owner resume");
+
+const freshSteps = render([{ ...goal, persistentSession: false }]);
+assert.match(freshSteps, />fresh task per step</, "a goal off the persistent session says so");
 
 const holding = render([{ ...goal, statusReason: "Paused for burn rate: Claude has used 70% of its weekly window, 55% allowed by now at 100% pace." }]);
 assert.match(holding, /Paused for burn rate/, "a burn-rate hold says why on the card");

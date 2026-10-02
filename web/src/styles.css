@@ -3360,6 +3360,8 @@ body.dl-resizing { user-select: none; }
 .goal-card.gs-achieved::before { background: var(--ok); }
 .goal-card.gs-abandoned { opacity: 0.62; }
 .goal-card.gs-abandoned::before { background: var(--text-faint); }
+.goal-card.gs-blocked::before { background: var(--danger); }
+.goal-card.gs-budget_limited::before { background: color-mix(in oklch, var(--warn) 55%, var(--danger)); }
 .goal-card .ws-path { font-size: 11px; align-self: flex-start; }
 
 .goal-status {
@@ -3371,6 +3373,15 @@ body.dl-resizing { user-select: none; }
 .goal-status.gs-paused { --gs: var(--warn); }
 .goal-status.gs-achieved { --gs: var(--ok); }
 .goal-status.gs-abandoned { --gs: var(--text-faint); }
+.goal-status.gs-blocked { --gs: var(--danger); }
+.goal-status.gs-budget_limited { --gs: color-mix(in oklch, var(--warn) 55%, var(--danger)); }
+.goal-status-group { display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+/* A hold is a transient state of an active goal, so it reads quieter than the status pill beside it. */
+.goal-hold {
+  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.04em; white-space: nowrap;
+  padding: 2px 7px; border-radius: 100px; color: var(--text-dim); border: 1px dashed var(--line-strong);
+}
+.goal-hold.gh-usage_limited { color: var(--warn); border-color: color-mix(in oklch, var(--warn) 50%, transparent); }
 
 .goal-objective {
   font-size: 12.5px; color: var(--text-dim); line-height: 1.45; white-space: pre-wrap;
@@ -3379,6 +3390,18 @@ body.dl-resizing { user-select: none; }
 .goal-reason { font-size: 12px; line-height: 1.4; color: var(--text-dim); padding-left: 9px; border-left: 2px solid var(--line-strong); }
 .goal-reason.gs-paused { color: var(--warn); border-left-color: color-mix(in oklch, var(--warn) 60%, transparent); }
 .goal-reason.gs-achieved { color: var(--ok); border-left-color: color-mix(in oklch, var(--ok) 60%, transparent); }
+.goal-reason.gs-blocked { color: var(--danger); border-left-color: color-mix(in oklch, var(--danger) 60%, transparent); }
+.goal-reason.gs-budget_limited { color: var(--warn); border-left-color: color-mix(in oklch, var(--warn) 60%, transparent); }
+
+.goal-usage { display: flex; flex-direction: column; gap: 4px; }
+.goal-usage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.goal-usage-total { font-family: var(--font-mono); font-size: 11.5px; color: var(--text); font-variant-numeric: tabular-nums; }
+.goal-usage-meter { height: 3px; border-radius: 2px; background: var(--bg-3); overflow: hidden; }
+.goal-usage-meter > span { display: block; height: 100%; background: var(--goal); }
+.goal-usage-meter.near > span { background: var(--warn); }
+.goal-usage-meter.spent > span { background: var(--danger); }
+.goal-usage-detail { font-size: 11px; color: var(--text-faint); line-height: 1.4; }
+.goal-turns { font-family: var(--font-mono); font-size: 10px; color: var(--text-faint); white-space: nowrap; }
 
 .goal-progress { display: flex; flex-direction: column; gap: 4px; }
 .goal-progress p { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--text); white-space: pre-wrap; }
@@ -3420,6 +3443,10 @@ body.dl-resizing { user-select: none; }
 .goal-pace-row { flex-wrap: wrap; row-gap: 10px; }
 .goal-concurrency, .goal-burn-rate { width: 72px; }
 .goal-burn-rate:disabled { opacity: 0.5; }
+.goal-token-budget { width: 96px; }
+.goal-token-budget.invalid, .goal-token-budget[aria-invalid="true"] { border-color: var(--danger); }
+.goal-session-toggle input:disabled + span { opacity: 0.5; }
+.sched-hint.goal-hint-error { color: var(--danger); }
 
 /* ---- create/edit modal ---- */
 .modal.sched-modal { width: min(560px, 94vw); max-height: 90vh; display: flex; flex-direction: column; }
