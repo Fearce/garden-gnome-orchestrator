@@ -1999,7 +1999,7 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 }
 .card-drag-overlay .card-grip { opacity: 1; color: var(--text-dim); cursor: grabbing; }
 @media (prefers-reduced-motion: reduce) { .card-drag-overlay .card, .card-drag-overlay .cowork-card { transform: none; } }
-.card .title { font-size: 15px; font-weight: 600; line-height: 1.3; padding-right: 22px; }
+.card .title { font-size: 15px; font-weight: 600; line-height: 1.3; padding-right: 22px; overflow-wrap: anywhere; }
 /* The target repo is a primary scan target (which task to open/resume), so it's a distinct chip:
    the repo folder (leaf) is bright + bold; the parent path gives way first, and only a folder name
    wider than the card itself is ellipsized. The button tooltip keeps the full path. */
@@ -2036,7 +2036,11 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 .ws-path-meta:hover .ws-ico { color: var(--accent); }
 .card .pips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .card .activity { font-size: 12.5px; color: var(--text-dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 18px; }
-.card .foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+/* State, pin and effort badges wrap within the card, so a model pin beside a long state never pushes the
+   elapsed time past the card's edge; the right-hand group drops below them only when it must. */
+.card .foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 8px; }
+.card .foot .foot-badges { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.card .foot .foot-badges .model-pin-badge { max-width: 100%; }
 
 .badge {
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
@@ -2219,7 +2223,7 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 .findcount { font-family: var(--font-mono); font-size: 10.5px; color: var(--warn); }
 
 /* ---- elapsed timers ---- */
-.card .foot .foot-right { display: inline-flex; align-items: center; gap: 8px; }
+.card .foot .foot-right { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
 .task-elapsed { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .detail-head .task-elapsed { font-size: 11px; color: var(--text-dim); }
 /* Staleness (time since last update), sitting beside the total-elapsed timer — the same mono treatment
@@ -2266,6 +2270,8 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .detail-head {
   padding: 13px 16px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 9px;
   flex: 0 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto;
+  container: detail-head / inline-size;
+  --title-lines: 3;
 }
 /* The panel's one scrollport: work memo, approval, filter chips, deliverables and the transcript all
    scroll together, so a pinned card costs reading room only while it is on screen. `flex: 1 1 0` with
@@ -2297,7 +2303,39 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
 .detail-title-block > .task-branch { grid-column: 1 / -1; justify-self: stretch; }
 .detail-title-block > .ws-path { grid-column: 1 / -1; }
 .detail-head .top > .detail-title-actions { grid-column: 2; grid-row: 1; }
+/* A narrow pane (a dragged-in sheet, a zoomed window) cannot afford the status badges beside the
+   title: the actions column is as wide as its content, so a goal-step title was left ~150px and wrapped
+   to sixteen lines beside an empty strip. Below this width the title keeps only the chevron and ✕ on
+   its row and elapsed/effort/state drop to a row of their own beneath it. Desktop bands only: below
+   900px the header is the docked phone layout further down, which already stacks these rows. */
+@media (min-width: 900px) {
+  @container detail-head (max-width: 639.98px) {
+    .detail-head .top { row-gap: 6px; }
+    .detail-head .detail-title-actions { display: contents; }
+    .detail-title-block > .detail-title,
+    .detail-title-block > .title-edit { grid-row: 1; }
+    .detail-head-buttons { grid-column: 2; grid-row: 1; }
+    .detail-head-status { grid-column: 1 / -1; grid-row: 2; }
+    .detail-title-block > .task-branch { grid-row: 3; }
+    .detail-title-block > .ws-path { grid-row: 4; }
+  }
+}
 .detail-head h2 { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
+/* The title is clamped to --title-lines (3, 2 when collapsed or on a tablet). The clamp sits on the
+   inner span so .editable-title keeps its flex row + pencil; "Show full title" lifts it. */
+.detail-title { min-width: 0; }
+.editable-title-text {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--title-lines); overflow: hidden;
+}
+.detail-title.full .editable-title-text { display: block; -webkit-line-clamp: none; overflow: visible; }
+.title-reveal {
+  display: block; margin-top: 2px; padding: 1px 0; border: 0; background: none; cursor: pointer;
+  color: var(--text-dim); font: 600 11px/1.4 var(--font-sans);
+  text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px;
+}
+.title-reveal:hover { color: var(--text); }
+.title-reveal:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+@media (pointer: coarse) { .title-reveal { min-height: 32px; } }
 .detail-head .meta { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
 /* Click-to-rename title: the h2 keeps its size, the pencil fades in on hover as the affordance. */
 .editable-title { display: inline-flex; align-items: baseline; gap: 7px; cursor: text; border-radius: 5px; }
@@ -2308,7 +2346,12 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
   margin: 0; width: 100%; box-sizing: border-box; font: inherit; font-size: 16px; font-weight: 600; line-height: 1.25;
   color: var(--text); background: var(--bg-2); border: 1px solid var(--accent); border-radius: 6px; padding: 3px 7px; outline: none;
 }
-.detail-title-actions { display: flex; gap: 8px; align-items: center; }
+.detail-title-actions,
+.detail-head-status,
+.detail-head-buttons { display: flex; gap: 8px; align-items: center; }
+.detail-head-status { flex-wrap: wrap; min-width: 0; }
+/* A pin badge stretched across the column reads as a field; it sizes to its label instead. */
+.detail-head > .model-pin-badge { align-self: flex-start; max-width: 100%; }
 /* Plain window-style close: borderless X in the top-right of the detail panel. */
 .close-x {
   flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
@@ -2320,7 +2363,7 @@ body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-sel
    is collapsed the panel keeps only the title row, freeing vertical space for the feed. */
 .head-toggle { color: var(--text-dim); }
 .head-toggle:hover { color: var(--text); }
-.detail-head.collapsed { gap: 0; padding-top: 9px; padding-bottom: 9px; }
+.detail-head.collapsed { gap: 0; padding-top: 9px; padding-bottom: 9px; --title-lines: 2; }
 .detail-controls { display: flex; flex-wrap: wrap; gap: 7px; }
 
 /* A work memo is deliberately outside the chronological feed. Later QA/reviewer/Supervisor rows can
@@ -3960,9 +4003,8 @@ button.note-from:hover { color: var(--text-dim); }
   .detail-title-actions .close-x { position: absolute; top: 0; right: 0; }
   .detail-title-actions .head-toggle { right: 48px; }
   /* Pulling the buttons out of flow narrows the title, which then wrapped to THREE lines and gave
-     back more than it saved. Clamp it to two — the full title is still in the tooltip and in the
-     rename field. Clamped on the inner span so .editable-title keeps its flex row + pencil. */
-  .editable-title-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+     back more than it saved. Clamp it to two; "Show full title" and the rename field still hold it. */
+  .detail-head { --title-lines: 2; }
   /* A button clipped flat at the pane's edge reads as broken; faded, it reads as "more this way".
      A touch scrollbar is invisible, so this edge is the only affordance the row has. */
   .detail-controls {

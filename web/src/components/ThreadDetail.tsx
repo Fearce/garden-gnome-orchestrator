@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useStore, type OutboundMessage } from "../store.js";
 import type { AgentRun, FeedItem, InjectionReceipt, Role, SubAgentProvider, SubTaskSpec, Thread } from "../types.js";
 import { agentName, isCollaborationRoom, repoRoom } from "../types.js";
@@ -160,12 +160,20 @@ function ChevronIcon({ down }: { down: boolean }) {
 
 /** The task's board title, click-to-rename in place. Enter/blur commits (a trimmed, changed value),
  *  Escape reverts. The draft is (re)seeded from the current title each time editing opens, so an
- *  external retitle while idle is never overwritten by a stale draft. */
+ *  external retitle while idle is never overwritten by a stale draft.
+ *  The CSS clamps the title to a few lines (--title-lines); when that actually cuts it off, a
+ *  "Show full title" button reveals the rest. A button rather than a tooltip, so touch and keyboard
+ *  can read a goal-step title that runs to three sentences. The reveal belongs to one task only. */
 function EditableTitle({ threadId, title }: { threadId: string; title: string }) {
   const rename = useStore((s) => s.rename);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(title);
   const inputRef = useRef<HTMLInputElement>(null);
+  const textRef = useRef<HTMLSpanElement>(null);
+  const textId = useId();
+  const [fullFor, setFullFor] = useState<string | null>(null);
+  const full = fullFor === threadId;
+  const clamped = useLineClamped(textRef, !full && !editing, title);
   // Enter/Escape close the input, whose unmount can emit a trailing onBlur. This flag tells that blur
   // to stand down, so it neither double-saves (after Enter) nor resurrects a cancelled edit (after
   // Escape). Cleared each time editing opens, so a later genuine click-away still commits.
@@ -223,13 +231,44 @@ function EditableTitle({ threadId, title }: { threadId: string; title: string })
   }
 
   return (
-    <h2 className="editable-title" title="Click to rename this task" onClick={open}>
-      <span className="editable-title-text">{title}</span>
-      <span className="title-edit-hint" aria-hidden="true">
-        <PencilIcon />
-      </span>
-    </h2>
+    <div className={"detail-title" + (full ? " full" : "")}>
+      <h2 className="editable-title" title="Click to rename this task" onClick={open}>
+        <span className="editable-title-text" id={textId} ref={textRef}>{title}</span>
+        <span className="title-edit-hint" aria-hidden="true">
+          <PencilIcon />
+        </span>
+      </h2>
+      {clamped || full ? (
+        <button
+          type="button"
+          className="title-reveal"
+          aria-expanded={full}
+          aria-controls={textId}
+          onClick={() => setFullFor(full ? null : threadId)}
+        >
+          {full ? "Show less" : "Show full title"}
+        </button>
+      ) : null}
+    </div>
   );
+}
+
+/** Whether the element's CSS line clamp is cutting its text off right now. Measured only while
+ *  `active` (the clamp is on); otherwise the last answer stands, so un-clamping to read the full text
+ *  keeps the toggle that brings the clamp back. The observer re-measures as the pane is dragged or the
+ *  header collapses to fewer lines; `text` re-measures a retitle that keeps the same box. */
+function useLineClamped(ref: RefObject<HTMLElement | null>, active: boolean, text: string): boolean {
+  const [clamped, setClamped] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!active || !el) return;
+    const measure = () => setClamped(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, active, text]);
+  return clamped;
 }
 
 // The agent pipelinePath order. `reader` is the read-only lane's single agent — it never coexists
@@ -998,36 +1037,40 @@ export function ThreadDetail() {
             {!headCollapsed && <TaskWorkspacePath thread={thread} />}
           </div>
           <div className="detail-title-actions">
-            <Elapsed
-              className="task-elapsed"
-              startMs={thread.createdAt}
-              endMs={thread.updatedAt}
-              running={threadRunning(thread.state)}
-              title="Time since the task was dispatched"
-            />
-            {impl?.effort ? (
-              <span className={"effort-badge eff-" + impl.effort} title="Implementor effort level (your composer pick, or the planner's)">
-                {impl.effort}
+            <div className="detail-head-status">
+              <Elapsed
+                className="task-elapsed"
+                startMs={thread.createdAt}
+                endMs={thread.updatedAt}
+                running={threadRunning(thread.state)}
+                title="Time since the task was dispatched"
+              />
+              {impl?.effort ? (
+                <span className={"effort-badge eff-" + impl.effort} title="Implementor effort level (your composer pick, or the planner's)">
+                  {impl.effort}
+                </span>
+              ) : null}
+              <span className="badge" style={{ "--state-color": frozen ? "var(--frost-strong)" : stateColor(thread.state) } as CSSProperties}>
+                {stateLabel(thread.state)}
               </span>
-            ) : null}
-            <span className="badge" style={{ "--state-color": frozen ? "var(--frost-strong)" : stateColor(thread.state) } as CSSProperties}>
-              {stateLabel(thread.state)}
-            </span>
-            <button
-              className="close-x head-toggle"
-              onClick={() => setHeadCollapsed(!headCollapsed)}
-              aria-label={headCollapsed ? "Expand header" : "Collapse header"}
-              aria-expanded={!headCollapsed}
-              title={headCollapsed ? "Expand the header — show task details and controls" : "Collapse the header — more room for the feed"}
-            >
-              <ChevronIcon down={headCollapsed} />
-            </button>
-            {/* On a phone this widens into the labelled Close that every layer over the task also
-                docks in this corner (LayerClose.tsx); the bare glyph sat beside a look-alike chevron. */}
-            <button className="close-x task-close" onClick={() => select(null)} aria-label="Close" title="Close">
-              <span aria-hidden="true">✕</span>
-              <span className="task-close-label" aria-hidden="true">Close</span>
-            </button>
+            </div>
+            <div className="detail-head-buttons">
+              <button
+                className="close-x head-toggle"
+                onClick={() => setHeadCollapsed(!headCollapsed)}
+                aria-label={headCollapsed ? "Expand header" : "Collapse header"}
+                aria-expanded={!headCollapsed}
+                title={headCollapsed ? "Expand the header — show task details and controls" : "Collapse the header — more room for the feed"}
+              >
+                <ChevronIcon down={headCollapsed} />
+              </button>
+              {/* On a phone this widens into the labelled Close that every layer over the task also
+                  docks in this corner (LayerClose.tsx); the bare glyph sat beside a look-alike chevron. */}
+              <button className="close-x task-close" onClick={() => select(null)} aria-label="Close" title="Close">
+                <span aria-hidden="true">✕</span>
+                <span className="task-close-label" aria-hidden="true">Close</span>
+              </button>
+            </div>
           </div>
         </div>
         <ModelRequestStatus request={thread.modelRequest} actualModel={impl?.model} actualStartedAt={impl?.startedAt} compact={headCollapsed} />

@@ -737,7 +737,7 @@ const Card = memo(function Card({
           It renders itself only for a repo-backed task and opens the full Changes drawer on click. */}
       <ChangesChip threadId={thread.id} />
       <div className="foot">
-        <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+        <span className="foot-badges">
           {/* Frozen cards recolor the state badge from the review amber to cold cyan, matching the icy
               accent bar — so the whole card reads as ICE, not a warm review park. */}
           <span className="badge" style={{ "--state-color": capParked ? "var(--frost-strong)" : stateColor(thread.state) } as CSSProperties}>
