@@ -246,6 +246,8 @@ async function boot({ dataDir, port, env = {}, entry }) {
  * Wait until a setting mutation has crossed the WebSocket round-trip and is durable in this
  * throwaway instance. Settings controls update optimistically, so their rendered state alone
  * cannot prove persistence; querying the lab's own SQLite KV row is read-only and WAL-safe.
+ * Reading is safe, but WRITING a kv row to seed state is not while the instance runs: the server
+ * keeps kv in memory, so it never sees the write. Seed before `boot`, or kill it, seed, and boot again.
  */
 async function waitForPersisted(dataDir, key, expected, timeoutMs = 15_000) {
   const file = path.join(dataDir, "orchestrator.sqlite");
