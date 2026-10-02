@@ -697,6 +697,11 @@ const Card = memo(function Card({
           ✕
         </button>
       ) : null}
+      {isPinned(thread) ? (
+        <span className="card-pin-flag" aria-hidden="true">
+          <PinIcon size={16} />
+        </span>
+      ) : null}
       {live ? <span className="live-dot" title="Active — an agent is working on this task right now" /> : null}
       {/* Token freeze: a bare ice-cube marker (no text) in the card's top-right corner, the sole freeze
           indicator. It re-enables its own pointer events over the inert card so hovering it still shows
@@ -840,9 +845,9 @@ export function PinButton({ thread }: { thread: Thread }) {
 }
 
 /** Lucide's pin, drawn in currentColor; the pinned state fills the head. */
-function PinIcon() {
+function PinIcon({ size = 12 }: { size?: number }) {
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M12 17v5" />
       <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
     </svg>
