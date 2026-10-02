@@ -86,10 +86,11 @@ export class Director {
     private readonly goals?: GoalRunner,
   ) {
     const savedIdle = Number(db.kvGet(DIRECTOR_IDLE_KV));
-    const lastMessage = db.listDirectorMessages(1)[0]?.createdAt ?? 0;
     const now = Date.now();
-    this.idleStartedAt = db.kvGet(DIRECTOR_BUSY_KV) === "1" ? now
-      : Math.min(now, Math.max(Number.isFinite(savedIdle) ? savedIdle : 0, lastMessage) || now);
+    // The saved clock only moves on real director turns; the feed also carries skip-director sends, so it
+    // is just the fallback for a database that predates the clock.
+    const rested = savedIdle > 0 ? savedIdle : db.listDirectorMessages(1)[0]?.createdAt ?? now;
+    this.idleStartedAt = db.kvGet(DIRECTOR_BUSY_KV) === "1" ? now : Math.min(now, rested);
     db.kvSet(DIRECTOR_IDLE_KV, String(this.idleStartedAt));
     db.kvSet(DIRECTOR_BUSY_KV, "0");
     const key = db.kvGet(DIRECTOR_TARGET_KV);

@@ -126,6 +126,12 @@ try {
   db.kvSet("director_idle_since", String(overnightIdle));
   const director = new Director(mgr, db, hub, {} as Scheduler, {} as OperatorNotes);
   assert.equal(director.idleSince(), overnightIdle, "the director's rest clock survives a restart");
+  // A skip-director send puts the owner's prompt and a "Skipped the director" note in the feed, but the
+  // director did no work: it stays AFK across a restart.
+  db.addDirectorMessage({ role: "user", kind: "text", content: "skip-director prompt" });
+  db.addDirectorMessage({ role: "director", kind: "text", content: "Skipped the director — dispatched it straight to the pipeline." });
+  assert.equal(new Director(mgr, db, hub, {} as Scheduler, {} as OperatorNotes).idleSince(), overnightIdle,
+    "a skip-director dispatch never wakes the director, even across a restart");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const dInternals = director as any;
   dInternals.chooseTarget = async () => target;
