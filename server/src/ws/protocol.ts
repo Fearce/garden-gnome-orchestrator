@@ -40,6 +40,7 @@ import type {
   Goal,
   GoalOwnerStatus,
   ImplementationMemo,
+  InjectionReceipt,
   Message,
   MessageCursor,
   ModelStat,
@@ -201,6 +202,8 @@ export type ServerEvent =
   // durable file index before the fresh pipeline streams in.
   | { type: "thread.reset"; threadId: string; deliverables: Finding[] }
   | { type: "thread.message"; threadId: string; message: Message }
+  // One recipient's read receipt for an injected feed message changed (orchestrator/injectionReceipts.ts).
+  | { type: "thread.receipt"; threadId: string; receipt: InjectionReceipt }
   | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: Thread["state"]; error?: string; message?: string; result: ThreadActionResult }
   | {
       type: "thread.history";
@@ -213,6 +216,8 @@ export type ServerEvent =
       findings: Finding[];
       implementationMemos: ImplementationMemo[];
       deliverableSummary: DeliverableSummary | null;
+      // Every read receipt of this task, so an injected message's checkmark survives reload and reconnect.
+      injectionReceipts: InjectionReceipt[];
       brief: string;
       hasMoreMessages: boolean;
       before?: MessageCursor;

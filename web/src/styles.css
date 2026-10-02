@@ -644,6 +644,17 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
 .fi.system.delivery-failed { border-color: color-mix(in oklch, var(--danger) 45%, var(--line)); }
 .fi.system > .delivery-receipt { margin-top: 6px; }
 @media (prefers-reduced-motion: reduce) { .delivery-spinner { animation-duration: 1.8s; } }
+/* Read receipts on an injected message: one gnome hat per recipient (InjectionReceipts.tsx). The words
+   stay faint mono like the delivery receipt above; only a read receipt lifts to body text. */
+.receipt-marks { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; }
+.receipt-mark {
+  display: inline-flex; align-items: center; gap: 4px; color: var(--text-faint); cursor: default;
+  font: 600 9.5px/1.3 var(--font-mono); letter-spacing: .03em; white-space: nowrap;
+}
+.receipt-mark .gnome-check { flex: 0 0 auto; overflow: visible; }
+.receipt-mark.read { color: var(--text-dim); }
+.receipt-mark.failed { color: var(--danger); }
+.receipt-mark.pending .gnome-check { opacity: .7; }
 /* max-width caps the chip to the rail; the args span truncates so a long tool payload
    (e.g. a comma-joined allowedTools list) can't blow out the panel width. Full text on hover. */
 .tool-chip {

@@ -513,6 +513,30 @@ export interface Message {
   createdAt: number;
 }
 
+/** Which agent lane an injected owner message is addressed to. */
+export type InjectionRecipient = "implementor" | "qa" | "reviewer" | "planner";
+/** pending: accepted or queued, no agent has it. sent: handed to a live run's input, not yet taken.
+ *  delivered: the provider proved it entered the model's context. read: the agent then answered with
+ *  the required `ACK:`. failed: the lane ended before any run took it. */
+export type InjectionReceiptStatus = "pending" | "sent" | "delivered" | "read" | "failed";
+
+/** One recipient's receipt for an injected feed message. Mirrors server/src/types.ts byte-for-byte. */
+export interface InjectionReceipt {
+  id: string;
+  messageId: string;
+  threadId: string;
+  recipient: InjectionRecipient;
+  status: InjectionReceiptStatus;
+  runId: string | null;
+  provider: string | null; // claude | zai | codex | grok | free: whose consumption signal applied
+  detail: string | null;
+  createdAt: number;
+  sentAt: number | null;
+  deliveredAt: number | null;
+  readAt: number | null;
+  failedAt: number | null;
+}
+
 // ---- the office: cross-agent chat ----
 
 /** Mirrors ChatScope in server/src/types.ts. "directors" is the cross-machine room the humans running
@@ -1483,10 +1507,13 @@ export type ServerEvent =
       findings: Finding[];
       implementationMemos?: ImplementationMemo[];
       deliverableSummary?: DeliverableSummary | null;
+      // Every read receipt of this task, so an injected message's checkmark survives reload/reconnect.
+      injectionReceipts?: InjectionReceipt[];
       brief: string;
       hasMoreMessages?: boolean;
       before?: MessageCursor;
     }
+  | { type: "thread.receipt"; threadId: string; receipt: InjectionReceipt }
   | { type: "thread.memo"; threadId: string; memo: ImplementationMemo }
   | { type: "thread.deliverableSummary"; threadId: string; summary: DeliverableSummary }
   | { type: "run.upsert"; run: AgentRun }

@@ -661,6 +661,31 @@ export interface Message {
   createdAt: number;
 }
 
+/** Which agent lane an injected owner message is addressed to. */
+export type InjectionRecipient = "implementor" | "qa" | "reviewer" | "planner";
+/** pending: accepted or queued, no agent has it. sent: handed to a live run's input, not yet taken.
+ *  delivered: the provider proved it entered the model's context. read: the agent then answered with
+ *  the required `ACK:`. failed: the lane ended before any run took it. */
+export type InjectionReceiptStatus = "pending" | "sent" | "delivered" | "read" | "failed";
+
+/** One recipient's receipt for an injected feed message (orchestrator/injectionReceipts.ts).
+ *  Mirrored byte-for-byte in web/src/types.ts. */
+export interface InjectionReceipt {
+  id: string;
+  messageId: string;
+  threadId: string;
+  recipient: InjectionRecipient;
+  status: InjectionReceiptStatus;
+  runId: string | null;
+  provider: string | null; // claude | zai | codex | grok | free: whose consumption signal applied
+  detail: string | null;
+  createdAt: number;
+  sentAt: number | null;
+  deliveredAt: number | null;
+  readAt: number | null;
+  failedAt: number | null;
+}
+
 export interface DirectorMessage {
   id: string;
   role: "user" | "director";

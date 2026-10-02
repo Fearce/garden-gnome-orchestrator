@@ -9,6 +9,7 @@ import { trackBlockingSync } from "../eventLoopMonitor.js";
 import { logCrash } from "../crashLog.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
+import { InputLedger } from "./inputLedger.js";
 import { extractCliBridgeMessages } from "./officeBridge.js";
 import { CodexRunMeter } from "./sessionUsage.js";
 import {
@@ -364,7 +365,11 @@ export class CodexAgentRun implements AgentRunLike {
   // pendingSends, otherwise the pipeline can accept this result and hand off to QA while steering that
   // arrived in the close gap is still waiting to resume.
   private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number; tokenUsage?: TokenUsage } | undefined;
-  private readonly pendingSends: { text: string; images: CodexImage[] }[] = [];
+  private readonly pendingSends: { text: string; images: CodexImage[]; inputId: string }[] = [];
+  // Read receipts: a turn's prompt counts as consumed once that turn produces a model item or completes,
+  // never at spawn. A resume that wedges or loses its rollout emits neither, so its inputs stay unread.
+  private readonly inputs = new InputLedger();
+  private turnInputIds: string[] = [];
   // Images pasted with the initial kickoff, kept so a self-healed wedged-resume fresh restart re-attaches
   // them (the freshFallback string carries only doctrine + task). Temp files written per turn live in
   // turnImagePaths and are unlinked once that turn closes; imgCounter keeps their names unique.
@@ -394,8 +399,16 @@ export class CodexAgentRun implements AgentRunLike {
 
   start(firstMessage: UserContent): this {
     this.firstImages = toImages(firstMessage);
-    void this.runTurn(toText(firstMessage), this.cfg.resume, this.firstImages);
+    void this.runTurn(toText(firstMessage), this.cfg.resume, this.firstImages, [this.inputs.issue()]);
     return this;
+  }
+
+  get lastInputId(): string | undefined {
+    return this.inputs.lastId;
+  }
+
+  onInputConsumed(inputId: string, cb: () => void): () => void {
+    return this.inputs.onConsumed(inputId, cb);
   }
 
   onEvent(cb: (e: AgentEvent) => void): () => void {
@@ -412,16 +425,19 @@ export class CodexAgentRun implements AgentRunLike {
    *  batch turn. `priority: "now"` is reserved for human steering: end the old batch as soon as its
    *  session id is known, then onTurnClose resumes that session with the buffered message. */
   send(content: UserContent, opts?: SendOpts): void {
-    if (this.stopped) return;
     const text = toText(content);
     const images = toImages(content);
-    if (!text.trim() && !images.length) return;
+    if (this.stopped || (!text.trim() && !images.length)) {
+      this.inputs.drop();
+      return;
+    }
+    const inputId = this.inputs.issue();
     if (this.turnStarting || this.turnActive) {
-      this.pendingSends.push({ text, images });
+      this.pendingSends.push({ text, images, inputId });
       if (opts?.priority === "now") this.requestInterrupt();
       return;
     }
-    void this.runTurn(text, this.sessionId, images);
+    void this.runTurn(text, this.sessionId, images, [inputId]);
   }
 
   async interrupt(): Promise<void> {
@@ -525,8 +541,9 @@ export class CodexAgentRun implements AgentRunLike {
 
   /** Spawn one `codex exec` (or `codex exec resume <id>`) turn and stream its JSONL events. Any pasted
    *  images are written to temp files and attached via `--image` (both subcommands accept it). */
-  private async runTurn(prompt: string, resumeId?: string, images: CodexImage[] = []): Promise<void> {
+  private async runTurn(prompt: string, resumeId?: string, images: CodexImage[] = [], inputIds: string[] = []): Promise<void> {
     if (this.stopped) return;
+    this.turnInputIds = inputIds;
     this.turnStarting = true;
     this.sawTerminal = false;
     this.sawFirstEvent = false;
@@ -710,6 +727,7 @@ export class CodexAgentRun implements AgentRunLike {
         }
         break;
       case "turn.completed":
+        this.inputs.consume(this.turnInputIds);
         this.sawTerminal = true;
         // A subscription cap can arrive as the final agent_message while Codex still labels the outer
         // turn `completed`. The message is the provider's rejection, not a successful role result:
@@ -739,9 +757,11 @@ export class CodexAgentRun implements AgentRunLike {
         }
         break;
       case "item.started":
+        this.inputs.consume(this.turnInputIds);
         this.handleItem(ev.item, "started");
         break;
       case "item.completed":
+        this.inputs.consume(this.turnInputIds);
         this.handleItem(ev.item, "completed");
         break;
       default:
@@ -869,7 +889,7 @@ export class CodexAgentRun implements AgentRunLike {
   /** Replace an unusable resume with the full recovery kickoff, folding in steering that arrived while
    * the failed CLI process was closing. Otherwise that queued steering would be retried against the same
    * missing rollout and then disappear when the second failure fell back to the older kickoff. */
-  private restartResumeAsFresh(extraText = "", extraImages: CodexImage[] = []): boolean {
+  private restartResumeAsFresh(extraText = "", extraImages: CodexImage[] = [], extraInputIds: string[] = []): boolean {
     if (
       !this.isResumeTurn ||
       (this.sawFirstEvent && !this.resumeRolloutMissing) ||
@@ -889,7 +909,9 @@ export class CodexAgentRun implements AgentRunLike {
         : "⚠️ Codex `exec resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved.",
     });
     const prompt = [toText(this.cfg.freshFallback), extraText].filter(Boolean).join("\n\n");
-    void this.runTurn(prompt, undefined, [...this.firstImages, ...extraImages]);
+    // Only the folded-in steering is named: the failed turn's own prompt is not replayed verbatim, so
+    // its inputs stay unread rather than borrow this turn's proof.
+    void this.runTurn(prompt, undefined, [...this.firstImages, ...extraImages], extraInputIds);
     return true;
   }
 
@@ -932,9 +954,10 @@ export class CodexAgentRun implements AgentRunLike {
       const batch = this.pendingSends.splice(0, this.pendingSends.length);
       const next = batch.map((s) => s.text).filter(Boolean).join("\n\n");
       const imgs = batch.flatMap((s) => s.images);
-      if (this.restartResumeAsFresh(next, imgs)) return;
+      const ids = batch.map((s) => s.inputId);
+      if (this.restartResumeAsFresh(next, imgs, ids)) return;
       this.lastResult = undefined; // the chained turn produces the next result()
-      void this.runTurn(next, this.sessionId, imgs);
+      void this.runTurn(next, this.sessionId, imgs, ids);
       return;
     }
     // A bare interrupt (the Pause control) with no follow-up: stay alive like a paused Claude run —

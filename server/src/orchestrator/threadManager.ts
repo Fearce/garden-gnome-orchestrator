@@ -16,6 +16,7 @@ import {
   type SendOpts,
   type UserContent,
 } from "../agents/runner.js";
+import { InputLedger } from "../agents/inputLedger.js";
 import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { withCommunicationSystemPolicy, withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
 import { normalizeDirectorDirectives } from "../agents/directorDirectives.js";
@@ -177,6 +178,7 @@ import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments
 import { coworkContentWithAttachments } from "../coworkAttachments.js";
 import { acknowledgedInjection, injectionNeedsPickupWatch, injectionSendOptions, neutralizeSteeringMarkers, structuredAcknowledgedInjection } from "./injection.js";
 import { watchInjectionPickup } from "./injectionPickup.js";
+import { InjectionReceipts, receiptRecipientOf } from "./injectionReceipts.js";
 import { providerOfRunAccount } from "./goalUsage.js";
 import { UNFINISHED_STATES } from "./scheduler.js";
 import type { GoalContinuation, GoalTaskHold } from "./goals.js";
@@ -205,7 +207,10 @@ import type {
   ImplementationMemoHandoff,
   ImplementationMemoOutcome,
   ImplementorProvider,
+  InjectionReceipt,
+  InjectionRecipient,
   ManualDeployment,
+  Message,
   ManualDeploymentClaim,
   ManualDeploymentVerifier,
   ModelOverrides,
@@ -463,7 +468,31 @@ class LabQaAgentRun implements AgentRunLike {
     this.emitter.once("end", cb);
   }
 
-  send(_content: UserContent, _opts?: SendOpts): void {}
+  // `reads` makes the fixture behave like a provider with a consumption signal: each send is taken a
+  // moment later and answered with the ACK a steering frame asks for, so the read-receipt lab can watch
+  // a message go sent -> delivered -> read. Without it the fixture gives no signal at all.
+  private readonly inputs = new InputLedger();
+  constructor(private readonly reads = false) {}
+
+  get lastInputId(): string | undefined {
+    return this.reads ? this.inputs.lastId : undefined;
+  }
+
+  onInputConsumed(inputId: string, cb: () => void): () => void {
+    return this.inputs.onConsumed(inputId, cb);
+  }
+
+  send(_content: UserContent, _opts?: SendOpts): void {
+    const id = this.inputs.issue();
+    if (!this.reads) return;
+    setTimeout(() => {
+      if (this.finished) return;
+      this.inputs.consume([id]);
+      setTimeout(() => {
+        if (!this.finished) this.emitter.emit("event", { type: "text", text: "ACK: lab QA fixture will check this too." });
+      }, 400);
+    }, 400);
+  }
 
   async interrupt(): Promise<void> {
     await this.stop();
@@ -1214,6 +1243,9 @@ export class ThreadManager implements OrchestratorApi {
   // narrow SupervisorHost view of this manager, so its logic never entangles with the pipeline internals.
   private readonly supervisor: DirectorSupervisor;
   private readonly reviewInjections: ReviewInjectionStore;
+  private readonly injectionReceipts: InjectionReceipts;
+  /** Which task lane each wired run serves, so an input sent to it can bind read receipts. */
+  private readonly receiptLanes = new WeakMap<AgentRunLike, { threadId: string; runId: string; recipient: InjectionRecipient; provider: string }>();
 
   constructor(
     readonly db: Db,
@@ -1223,6 +1255,9 @@ export class ThreadManager implements OrchestratorApi {
     readonly freeProviders?: FreeProviderService,
   ) {
     this.reviewInjections = new ReviewInjectionStore(db);
+    this.injectionReceipts = new InjectionReceipts(db, hub);
+    // No run survives a restart, so nothing still holds a receipt that was only handed over.
+    this.injectionReceipts.recoverAfterRestart();
     this.db.onRunCreated((run) => this.ensureAgentName(run.threadId, run.role));
     this.backfillAgentNames();
     this.subTasks = new SubTaskService(this.subTaskHost());
@@ -3016,7 +3051,25 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.log("info", `[SELF-IMPROVE] ${bonusThread.slice(0, 8)}: withheld a message from the CLI bonus run to keep it to one launch`);
       return;
     }
-    run.send(this.communicationContent(content), opts);
+    const sent = this.communicationContent(content);
+    run.send(sent, opts);
+    this.noteRunInput(run, sent);
+  }
+
+  /** Hand every input a task run receives to the read-receipt tracker, which binds the injected
+   *  instructions the content carries to this run (orchestrator/injectionReceipts.ts). */
+  private noteRunInput(run: AgentRunLike, content: UserContent): void {
+    const lane = this.receiptLanes.get(run);
+    if (lane) this.injectionReceipts.observe(lane.threadId, lane.recipient, { run, runId: lane.runId, provider: lane.provider }, content);
+  }
+
+  /** Open read receipts for the feed row that echoes an injected instruction. */
+  private expectReceipts(message: { id: string; threadId: string }, instruction: string, recipients: InjectionRecipient[], detail?: string): void {
+    this.injectionReceipts.expect(message.threadId, message.id, instruction, recipients, detail);
+  }
+
+  injectionReceiptsOf(threadId: string): InjectionReceipt[] {
+    return this.injectionReceipts.list(threadId);
   }
 
   /** The thread whose live implementor `run` is, when that run is a Codex/Grok self-improvement bonus. */
@@ -7373,6 +7426,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    * owner notices, terminal cleanup, or model grading. */
   private publishState(t: Thread): void {
     this.hub.publish({ type: "thread.upsert", thread: t });
+    this.injectionReceipts.settleLane(t.id, t.state);
     if (t.subTask) this.subTasks.onStateChanged(t);
     // The concurrency slot is released HERE, from the task's own state, rather than only from the
     // owning run's `finally`. A parked or settled task is not being worked on, so it must not occupy a
@@ -8246,7 +8300,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.officeCheckIn(thread.id, role);
     this.ensureGroup(thread.id);
     if (role === "planner") this.liveRole.set(thread.id, agent);
-    agent.start(this.communicationContent(kickoff));
+    const kickoffContent = this.communicationContent(kickoff);
+    agent.start(kickoffContent);
+    this.noteRunInput(agent, kickoffContent);
     let result = await agent.result();
     // A note arriving during this run changes the remaining work. Do not spend another free completion
     // revising the plan: leave the durable note buffered and let runRole's reliable path absorb it once.
@@ -8538,7 +8594,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           this.reviewInjectionImages(pendingReviewInjections),
         );
       }
-      agent.start(this.communicationContent(startMessage));
+      const startContent = this.communicationContent(startMessage);
+      agent.start(startContent);
+      this.noteRunInput(agent, startContent);
       if (pendingReviewInjections.length) {
         this.markReviewInjectionsDelivered(pendingReviewInjections, role as "qa" | "reviewer", run.id);
       }
@@ -9461,7 +9519,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Default mode skips the communication-style wrap too (the <ggo_communication_policy> preamble this
     // very harness uses) — vanilla means the model sees exactly the owner's text, nothing prepended.
     const startContent = this.implementorStartContent(thread.id, kickoff, startKickoff, !!opts?.resume, opts?.images);
-    agent.start(vanilla ? startContent : this.communicationContent(startContent));
+    const firstInput = vanilla ? startContent : this.communicationContent(startContent);
+    agent.start(firstInput);
+    this.noteRunInput(agent, firstInput);
     return { run: agent, runId, accountId };
   }
 
@@ -11674,7 +11734,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  implementor. Returns false (the note stays an implementor note) when no such retry is pending. */
   private holdNoteForQaRetry(thread: Thread, note: string | undefined, attachments?: AttachmentRef[]): boolean {
     if (!note?.trim() || !this.qaRetryPending(thread)) return false;
-    this.acceptReviewInjection(thread.id, "qa", "append", note.trim(), attachments);
+    this.acceptReviewInjection(thread.id, "qa", "append", note.trim(), attachments, false, ["qa"]);
     return true;
   }
 
@@ -12118,7 +12178,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   // ---- live thread controls ----
 
-  installLabQaRun(threadId: string): ThreadActionResult {
+  installLabQaRun(threadId: string, reads = false): ThreadActionResult {
     if (process.env.ORCH_LAB_FIXTURES !== "1") return { ok: false, error: "Lab fixtures are disabled." };
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
@@ -12126,7 +12186,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (this.liveQa.has(threadId)) return { ok: true, state: "qa", message: "Lab QA handle already attached." };
     const row = this.db.createRun({ threadId, role: "qa", model: "lab-qa-fixture", account: "lab" });
     this.emitRun(row.id);
-    const agent = new LabQaAgentRun();
+    const agent = new LabQaAgentRun(reads);
     this.wireRun(agent, threadId, row.id, "qa", "lab");
     this.track(threadId, agent);
     this.liveQa.set(threadId, agent);
@@ -12159,7 +12219,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.attachmentImageBlocks(uniqueText(rows.flatMap((row) => row.attachmentIds)));
   }
 
-  private reviewInjectionFeed(threadId: string, content: string, attachments?: AttachmentRef[]): void {
+  private reviewInjectionFeed(threadId: string, content: string, attachments?: AttachmentRef[]): Message {
     const message = this.db.addMessage({
       threadId,
       role: "director",
@@ -12169,6 +12229,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     });
     this.hub.publish({ type: "thread.message", threadId, message });
     this.touchThread(threadId);
+    return message;
   }
 
   private markReviewInjectionsDelivered(rows: ReviewInjection[], role: "qa" | "reviewer", runId: string): void {
@@ -12211,6 +12272,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     instruction: string,
     attachments?: AttachmentRef[],
     suppressFeed?: boolean,
+    receiptRecipients: InjectionRecipient[] = [],
   ): ReviewInjection {
     const row = this.reviewInjections.create({
       threadId,
@@ -12221,11 +12283,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       attachmentIds: attachmentIdsFromRefs(attachments),
     });
     if (!suppressFeed) {
-      this.reviewInjectionFeed(
+      const line = this.reviewInjectionFeed(
         threadId,
         `[accepted] ${reviewInjectionLabel(row.id)} entered the active ${lane === "qa" ? "QA" : "auto-review"} lane (${mode}); recipient delivery is pending. ${instruction}${attachments?.length ? ` [+${attachments.length} image(s)]` : ""}`,
         attachments,
       );
+      this.expectReceipts(line, instruction, receiptRecipients);
     }
     return row;
   }
@@ -12322,7 +12385,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       return { ok: false, state: thread.state, error: `${reviewInjectionLabel(row.id)}: ${reason}` };
     }
 
-    const row = this.acceptReviewInjection(thread.id, lane, mode, instruction, attachments, mode === "interrupt");
+    const row = this.acceptReviewInjection(thread.id, lane, mode, instruction, attachments, mode === "interrupt", ["implementor"]);
     const queued = this.queueReviewInjectionsForImplementor(
       [row],
       `${lane === "qa" ? "QA" : "Auto-review"} finished before delivery; the instruction is retained for implementation instead of being sent to a dead reviewer.`,
@@ -12331,11 +12394,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Same reason as the QA fix-handoff branch: interrupt hides the lifecycle lines, so keep exactly one
     // that records the instruction and owns the saved attachments.
     if (mode === "interrupt") {
-      this.reviewInjectionFeed(
+      const line = this.reviewInjectionFeed(
         thread.id,
         `↪ interrupt requested (${lane === "qa" ? "QA" : "Auto-review"} had already finished; returning to the implementor): ${instruction}${attachments?.length ? ` [+${attachments.length} image(s)]` : ""}`,
         attachments,
       );
+      this.expectReceipts(line, instruction, ["implementor"]);
     }
     const impl = this.live.get(thread.id);
     if (impl) {
@@ -12560,13 +12624,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     );
     this.rememberQaSupersede(threadId, message, refs);
     const images = imageCount ? ` [+${imageCount} image(s)]` : "";
-    this.reviewInjectionFeed(
+    const line = this.reviewInjectionFeed(
       threadId,
       qaBypassRequested
         ? `Owner disabled QA. The in-flight review result will be ignored and the task will finish without another QA run: ${message}${images}`
         : `↪ interrupt requested (QA was between runs; its verdict will be ignored and the task returns to the implementor): ${message}${images}`,
       refs,
     );
+    this.expectReceipts(line, message, ["implementor"]);
     const label = reviewInjectionLabel(reviewRow.id);
     return {
       ok: true,
@@ -12678,6 +12743,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         attachments: injectRefs(),
       });
       this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.expectReceipts(m, message, ["implementor"], "Queued until the implementor's next hand-off.");
       this.touchThread(threadId);
       this.hub.log("info", `Queued a follow-up for ${threadId.slice(0, 8)} (delivered at the implementor's hand-off).`);
       return { ok: true, state: thread.state };
@@ -12693,7 +12759,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (!qa && inFixHandoff) {
         const refs = injectRefs();
         this.appendQaFixHandoffInstruction(threadId, message, refs);
-        const row = this.acceptReviewInjection(threadId, "qa", mode, message, refs, mode === "interrupt");
+        const row = this.acceptReviewInjection(threadId, "qa", mode, message, refs, mode === "interrupt", ["implementor"]);
         this.queueReviewInjectionsForImplementor(
           [row],
           "QA had already handed back; the instruction joined the active implementor resume.",
@@ -12704,11 +12770,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         // images. Suppressing to ZERO would make the injection invisible after reload and leave the
         // attachments injectRefs() just saved referenced by no message.
         if (mode === "interrupt") {
-          this.reviewInjectionFeed(
+          const line = this.reviewInjectionFeed(
             threadId,
             `↪ interrupt requested (QA already handed back; joining the active implementor resume): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
             refs,
           );
+          this.expectReceipts(line, message, ["implementor"]);
         }
         return {
           ok: true,
@@ -12750,6 +12817,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
               attachments: refs,
             });
             this.hub.publish({ type: "thread.message", threadId, message: m });
+            this.expectReceipts(m, message, ["implementor"]);
             this.touchThread(threadId);
             return {
               ok: true,
@@ -12767,6 +12835,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             attachments: refs,
           });
           this.hub.publish({ type: "thread.message", threadId, message: m });
+          this.injectionReceipts.refuse(threadId, m.id, message, ["implementor"], `Could not stop QA: ${stopped.error}`);
           this.touchThread(threadId);
           return { ok: false, state: qaState, error: `Could not stop QA: ${stopped.error}` };
         }
@@ -12780,6 +12849,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           attachments: refs,
         });
         this.hub.publish({ type: "thread.message", threadId, message: m });
+        this.expectReceipts(m, message, ["implementor"]);
         this.touchThread(threadId);
         return {
           ok: true,
@@ -12796,7 +12866,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (images?.length) {
         this.threadImages.set(threadId, [...(this.threadImages.get(threadId) ?? []), ...images.map(toImageBlock)]);
       }
-      const reviewRow = this.acceptReviewInjection(threadId, "qa", "append", message, injectRefs());
+      // QA reads it now and the implementor gets it at its next hand-off: one receipt each, so the
+      // checkmark never claims the implementor has it just because QA does.
+      const reviewRow = this.acceptReviewInjection(threadId, "qa", "append", message, injectRefs(), false, ["qa", "implementor"]);
       let delivered = false;
       if (qa) {
         delivered = this.deliverReviewInjection(reviewRow, "qa", qa, this.liveQaRunId.get(threadId) ?? this.latestRunIdOf(threadId, "qa"));
@@ -12820,16 +12892,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const reviewer = this.liveReviewer.get(threadId);
       const impl = this.live.get(threadId);
       const blocks = images?.length ? images.map(toImageBlock) : [];
-      const row = this.acceptReviewInjection(threadId, "reviewer", mode, message, injectRefs(), mode === "interrupt");
+      const row = this.acceptReviewInjection(
+        threadId, "reviewer", mode, message, injectRefs(), mode === "interrupt",
+        !reviewer && impl ? ["implementor"] : ["reviewer"],
+      );
 
       if (mode === "interrupt") {
         // One concise line, matching the QA interrupt convention. The lifecycle lines stay suppressed;
         // this is what keeps the owner's instruction and images in the feed.
-        this.reviewInjectionFeed(
+        const line = this.reviewInjectionFeed(
           threadId,
           `↪ interrupt requested (Auto-review is stopping; returning to the implementor): ${message}${images?.length ? ` [+${images.length} image(s)]` : ""}`,
           injectRefs(),
         );
+        this.expectReceipts(line, message, ["implementor"]);
         const queued = this.queueReviewInjectionsForImplementor(
           [row],
           "The owner explicitly superseded Auto-review; its verdict will be discarded and this instruction returns the task to implementation.",
@@ -12933,6 +13009,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           attachments: injectRefs(),
         });
         this.hub.publish({ type: "thread.message", threadId, message: m });
+        this.expectReceipts(m, message, ["implementor"], "Queued until the self-improvement round hands off.");
         this.touchThread(threadId);
         return { ok: true, state: thread?.state ?? "implementing" };
       }
@@ -12954,6 +13031,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         attachments: injectRefs(),
       });
       this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.expectReceipts(m, message, ["implementor"]);
       this.touchThread(threadId);
       return { ok: true, state: thread?.state ?? "implementing" };
     }
@@ -12981,6 +13059,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // Echo it into the task feed live (otherwise the injected note only appears on a later
       // history refetch) and bump recency so the task jumps to the front of the board.
       this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.expectReceipts(m, message, ["implementor"]);
       this.touchThread(threadId);
       this.hub.log("info", `Injected (${mode}) into ${threadId.slice(0, 8)}`);
       return {
@@ -13028,6 +13107,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         attachments: injectRefs(),
       });
       this.hub.publish({ type: "thread.message", threadId, message: m });
+      // A live planner re-plans with the note; the implementor still gets it later through the standing
+      // directives every kickoff renders, which a non-standing message is not part of.
+      this.expectReceipts(m, message, planner ? (options.standing === false ? ["planner"] : ["planner", "implementor"]) : ["implementor"]);
       this.touchThread(threadId);
       this.hub.log(
         "info",
@@ -13043,6 +13125,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.pendingResumeMsgs.set(threadId, q);
       const m = this.db.addMessage({ threadId, role: "director", kind: "system", content: `↪ injected: ${message}`, attachments: injectRefs() });
       this.hub.publish({ type: "thread.message", threadId, message: m });
+      this.expectReceipts(m, message, ["implementor"]);
       this.touchThread(threadId);
       this.hub.log("info", `Buffered inject into ${threadId.slice(0, 8)} (resume materializing)`);
       return { ok: true, state: "implementing" };
@@ -13064,6 +13147,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       attachments: injectRefs(),
     });
     this.hub.publish({ type: "thread.message", threadId, message: m });
+    if (!settlesWithoutAgent) this.expectReceipts(m, message, ["implementor"]);
     this.touchThread(threadId);
     if (qaBypassRequested && thread?.state === "done") {
       return { ok: true, state: "done", message: "This task is already done; QA remains bypassed for this episode." };
@@ -13562,8 +13646,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (buffered?.length) {
       this.pendingResumeMsgs.delete(thread.id);
       for (const m of buffered) {
-        if (vanilla) start.run.send(m, { priority: "next" });
-        else this.sendCommunication(start.run, acknowledgedInjection(m), { priority: "next" });
+        if (vanilla) {
+          start.run.send(m, { priority: "next" });
+          this.noteRunInput(start.run, m);
+        } else this.sendCommunication(start.run, acknowledgedInjection(m), { priority: "next" });
       }
       this.noteImplementorSteered(thread.id);
     }
@@ -16212,6 +16298,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   private wireRun(agent: AgentRunLike, threadId: string, runId: string, role: Role, accountId: string): void {
     this.requireAgentName(threadId, role);
+    const recipient = receiptRecipientOf(role);
+    if (recipient) {
+      const provider = agent instanceof FreeProviderAgentRun ? "free" : this.providerForRun(agent);
+      this.receiptLanes.set(agent, { threadId, runId, recipient, provider });
+    }
     let leftStarting = false;
     // A finalized run (endedAt set) is immutable. finishRun/finalizeRun run OUTSIDE this listener — from
     // runRole's explicit finishRun and the implementor's onEnd — and can land while the SDK is still

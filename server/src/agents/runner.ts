@@ -16,6 +16,7 @@ import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
 import type { AgentEvent, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
+import { InputLedger } from "./inputLedger.js";
 import { latestFamilyModel } from "./modelFamily.js";
 import { ClaudeRunMeter } from "./sessionUsage.js";
 
@@ -132,6 +133,12 @@ export interface AgentRunLike {
   readonly toolCallInFlight?: boolean;
   /** Streaming SDK runs only: the CLI has stamped the newest sent message on a turn that consumed it. */
   readonly latestSendConsumed?: boolean;
+  /** Id of the newest input start()/send() accepted, for injection read receipts. Undefined when the run
+   *  has no consumption signal or dropped that send. */
+  readonly lastInputId?: string;
+  /** Fires once when the provider proves input `inputId` reached the model's context (immediately if it
+   *  already has). Absent on runs whose provider gives no such signal. */
+  onInputConsumed?(inputId: string, cb: () => void): () => void;
   start(firstMessage: UserContent): this;
   onEvent(cb: (e: AgentEvent) => void): () => void;
   onEnd(cb: () => void): void;
@@ -311,8 +318,7 @@ export class AgentRun implements AgentRunLike {
   private readonly openToolCalls = new Set<string>();
   // The CLI echoes the client uuid of every user message a turn consumed (`user_message_uuids` on the
   // turn's first stream frame), which is the only proof that a message sent while idle was read.
-  private readonly consumedSends = new Set<string>();
-  private latestSendId: string | undefined;
+  private readonly inputs = new InputLedger();
 
   constructor(private readonly cfg: AgentRunConfig) {
     // The newest-in-family invariant's last line: whichever path chose this model, never run a superseded one.
@@ -327,7 +333,16 @@ export class AgentRun implements AgentRunLike {
   }
 
   get latestSendConsumed(): boolean {
-    return this.latestSendId !== undefined && this.consumedSends.has(this.latestSendId);
+    const id = this.inputs.lastId;
+    return id !== undefined && this.inputs.has(id);
+  }
+
+  get lastInputId(): string | undefined {
+    return this.inputs.lastId;
+  }
+
+  onInputConsumed(inputId: string, cb: () => void): () => void {
+    return this.inputs.onConsumed(inputId, cb);
   }
 
   /** Cap wording specific to the backend this run talks to, beyond the Claude CLI's own notice.
@@ -390,7 +405,7 @@ export class AgentRun implements AgentRunLike {
 
   private stampedUserMessage(content: UserContent, opts?: SendOpts): SDKUserMessage {
     const uuid = randomUUID();
-    this.latestSendId = uuid;
+    this.inputs.issue(uuid);
     return toUserMessage(content, opts, uuid);
   }
 
@@ -401,9 +416,9 @@ export class AgentRun implements AgentRunLike {
   }
 
   private noteConsumedSends(m: Record<string, any>): void {
-    if (typeof m.user_message_uuid === "string") this.consumedSends.add(m.user_message_uuid);
+    if (typeof m.user_message_uuid === "string") this.inputs.consume([m.user_message_uuid]);
     if (Array.isArray(m.user_message_uuids)) {
-      for (const id of m.user_message_uuids) if (typeof id === "string") this.consumedSends.add(id);
+      this.inputs.consume(m.user_message_uuids.filter((id: unknown): id is string => typeof id === "string"));
     }
   }
 

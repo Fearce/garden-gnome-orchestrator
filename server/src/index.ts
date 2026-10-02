@@ -659,9 +659,9 @@ async function main(): Promise<void> {
     });
 
     if (process.env.ORCH_LAB_FIXTURES === "1") {
-      app.post<{ Params: { id: string } }>("/api/lab/live-qa/:id", async (req, reply) => {
+      app.post<{ Params: { id: string }; Querystring: { reads?: string } }>("/api/lab/live-qa/:id", async (req, reply) => {
         if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
-        const result = manager.installLabQaRun(req.params.id);
+        const result = manager.installLabQaRun(req.params.id, req.query.reads === "1");
         return result.ok ? result : reply.code(409).send(result);
       });
     }

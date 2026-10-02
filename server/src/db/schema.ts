@@ -487,6 +487,27 @@ CREATE TABLE IF NOT EXISTS review_injections (
   updated_at               INTEGER NOT NULL
 );
 
+-- Read receipts for an injected owner message, one row per recipient lane. The feed row it decorates is
+-- the message; status only advances on the provider's own consumption proof and the agent's ACK.
+CREATE TABLE IF NOT EXISTS injection_receipts (
+  id           TEXT PRIMARY KEY,
+  message_id   TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  thread_id    TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  recipient    TEXT NOT NULL,
+  instruction  TEXT NOT NULL,
+  status       TEXT NOT NULL,
+  run_id       TEXT,
+  provider     TEXT,
+  detail       TEXT,
+  created_at   INTEGER NOT NULL,
+  sent_at      INTEGER,
+  delivered_at INTEGER,
+  read_at      INTEGER,
+  failed_at    INTEGER,
+  UNIQUE (message_id, recipient)
+);
+CREATE INDEX IF NOT EXISTS idx_injection_receipts_thread ON injection_receipts(thread_id, status);
+
 -- Human-led Co-work conversations are intentionally not threads. Keeping them in their own tables
 -- makes it structurally impossible for a completed conversational turn to enter planner/QA/review/done
 -- lifecycle code. The resolved provider/model/effort and agent_session_id stay on the session so each

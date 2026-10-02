@@ -81,8 +81,7 @@ class FakeSdkRun extends AgentRun {
   /** Send through the real AgentRun path, so the message carries the uuid the CLI echoes back. */
   realSend(): string {
     super.send("owner message");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (this as any).latestSendId as string;
+    return this.lastInputId!;
   }
   /** Stamp a sent message the way the CLI does on the first stream frame of the turn that consumed it. */
   cliConsumes(uuid: string): void {

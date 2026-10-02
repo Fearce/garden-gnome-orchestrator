@@ -414,6 +414,7 @@ export async function handleCommand(
         findings: ctx.db.listFindings(cmd.threadId),
         implementationMemos: ctx.db.listImplementationMemos(cmd.threadId),
         deliverableSummary: ctx.manager.deliverableSummaryOnOpen(cmd.threadId),
+        injectionReceipts: ctx.manager.injectionReceiptsOf(cmd.threadId),
         brief: thread?.brief ?? "",
         hasMoreMessages: page.hasMore,
         before: cmd.before,

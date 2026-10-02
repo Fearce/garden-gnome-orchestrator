@@ -9,6 +9,7 @@ import { config } from "../config.js";
 import { trackBlockingSync } from "../eventLoopMonitor.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
+import { InputLedger } from "./inputLedger.js";
 import { latestFamilyModel } from "./modelFamily.js";
 import { endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, endsWithOpenSubTaskMarker, extractCliBridgeMessages } from "./officeBridge.js";
 import {
@@ -220,7 +221,10 @@ export class GrokAgentRun implements AgentRunLike {
    *  (structured roles only). Prevents re-emitting the same status tick on every chunk. */
   private structuredProgressEmitted = 0;
   private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number; costUsd?: number; structuredOutput?: unknown } | undefined;
-  private readonly pendingSends: string[] = [];
+  private readonly pendingSends: { text: string; inputId: string }[] = [];
+  // Read receipts: a turn's prompt counts as consumed on that turn's first model output or clean end.
+  private readonly inputs = new InputLedger();
+  private turnInputIds: string[] = [];
   private promptFile: string | undefined;
   private turnWatchdog: NodeJS.Timeout | undefined;
   private sawFirstEvent = false;
@@ -234,8 +238,16 @@ export class GrokAgentRun implements AgentRunLike {
   }
 
   start(firstMessage: UserContent): this {
-    void this.runTurn(toText(firstMessage), this.cfg.resume);
+    void this.runTurn(toText(firstMessage), this.cfg.resume, [this.inputs.issue()]);
     return this;
+  }
+
+  get lastInputId(): string | undefined {
+    return this.inputs.lastId;
+  }
+
+  onInputConsumed(inputId: string, cb: () => void): () => void {
+    return this.inputs.onConsumed(inputId, cb);
   }
 
   onEvent(cb: (e: AgentEvent) => void): () => void {
@@ -252,15 +264,18 @@ export class GrokAgentRun implements AgentRunLike {
    *  turn. `priority: "now"` is human steering: end the old batch as soon as its session id is known, then
    *  onTurnClose resumes that session with the buffered message. */
   send(content: UserContent, opts?: SendOpts): void {
-    if (this.stopped) return;
     const text = toText(content);
-    if (!text.trim()) return;
+    if (this.stopped || !text.trim()) {
+      this.inputs.drop();
+      return;
+    }
+    const inputId = this.inputs.issue();
     if (this.turnStarting || this.turnActive) {
-      this.pendingSends.push(text);
+      this.pendingSends.push({ text, inputId });
       if (opts?.priority === "now") this.requestInterrupt();
       return;
     }
-    void this.runTurn(text, this.sessionId);
+    void this.runTurn(text, this.sessionId, [inputId]);
   }
 
   async interrupt(): Promise<void> {
@@ -330,8 +345,9 @@ export class GrokAgentRun implements AgentRunLike {
    *  `--prompt-file` (a real implementor kickoff is tens of KB — passing it as an argv arg overflows the
    *  Windows ~32KB command-line limit, the same failure that bit the Codex backend). Pasted images can't
    *  be attached to a Grok headless turn, so they're dropped here; the kickoff text still describes them. */
-  private async runTurn(prompt: string, resumeId?: string): Promise<void> {
+  private async runTurn(prompt: string, resumeId?: string, inputIds: string[] = []): Promise<void> {
     if (this.stopped) return;
+    this.turnInputIds = inputIds;
     this.turnStarting = true;
     this.sawTerminal = false;
     this.sawFirstEvent = false;
@@ -503,6 +519,9 @@ export class GrokAgentRun implements AgentRunLike {
     // event so the run leaves "starting" during multi-minute tool loops (QA often thinks for minutes
     // before any assistant text). A later init with the real id overwrites when `end` arrives.
     this.emitInitIfNeeded(ev.sessionId);
+    // Model output (or a clean end) is the proof this turn's prompt reached the model; a process that
+    // only errored never read it.
+    if (ev.type === "end" || ((ev.type === "text" || ev.type === "thought") && ev.data)) this.inputs.consume(this.turnInputIds);
     switch (ev.type) {
       case "text":
         // Stream the chunk live into the feed AND accumulate it — the whole message is persisted as one
@@ -789,9 +808,9 @@ export class GrokAgentRun implements AgentRunLike {
     // resume turn rather than ending, so the steering isn't dropped.
     if (this.pendingSends.length) {
       const batch = this.pendingSends.splice(0, this.pendingSends.length);
-      const next = batch.filter(Boolean).join("\n\n");
+      const next = batch.map((s) => s.text).filter(Boolean).join("\n\n");
       this.lastResult = undefined; // the chained turn produces the next result()
-      void this.runTurn(next, this.sessionId);
+      void this.runTurn(next, this.sessionId, batch.map((s) => s.inputId));
       return;
     }
     // A bare interrupt (the Pause control) with no follow-up: stay alive like a paused Claude run.

@@ -33,6 +33,7 @@ import type {
   ImageAttachment,
   DeliverableSummary,
   ImplementationMemo,
+  InjectionReceipt,
   ImplementorProvider,
   RepoActionResult,
   RepoCommitDetail,
@@ -233,6 +234,8 @@ interface State {
   implementationMemos: Record<string, ImplementationMemo[]>;
   // The opt-in Sonnet summary that closes a finished task's feed, per thread (absent = none yet).
   deliverableSummaries: Record<string, DeliverableSummary>;
+  // Read receipts of injected owner messages, per thread, keyed by receipt id (one per recipient).
+  injectionReceipts: Record<string, Record<string, InjectionReceipt>>;
   approvalMode: boolean;
   // Server-authoritative pipeline settings (broadcast over WS); the panel edits these via setSettings.
   settings: OrchestratorSettings;
@@ -1404,6 +1407,7 @@ export const useStore = create<State>((set) => ({
   coworkPromoted: null,
   implementationMemos: {},
   deliverableSummaries: {},
+  injectionReceipts: {},
   approvalMode: false,
   settings: DEFAULT_SETTINGS,
   codexTest: null,
@@ -2554,6 +2558,7 @@ function applyEvent(ev: ServerEvent): void {
           threadHistoryPages: drop(s.threadHistoryPages),
           implementationMemos: drop(s.implementationMemos),
           deliverableSummaries: drop(s.deliverableSummaries),
+          injectionReceipts: drop(s.injectionReceipts),
           threadDrafts: drop(s.threadDrafts),
           thinkingDrafts: drop(s.thinkingDrafts),
           pendingPlans: drop(s.pendingPlans),
@@ -2596,6 +2601,7 @@ function applyEvent(ev: ServerEvent): void {
           threadFeeds: drop(s.threadFeeds),
           // Retry wipes the server's stage outputs, the summary with them; the next finish writes a new one.
           deliverableSummaries: drop(s.deliverableSummaries),
+          injectionReceipts: drop(s.injectionReceipts),
           threadDeliverables: {
             ...drop(s.threadDeliverables),
             ...(ev.deliverables.length ? { [ev.threadId]: mergeThreadDeliverables([], ev.deliverables) } : {}),
@@ -2690,10 +2696,23 @@ function applyEvent(ev: ServerEvent): void {
             [ev.threadId]: mergeImplementationMemos(s.implementationMemos[ev.threadId] ?? [], ev.implementationMemos ?? []),
           },
           ...(ev.deliverableSummary ? { deliverableSummaries: { ...s.deliverableSummaries, [ev.threadId]: ev.deliverableSummary } } : {}),
+          // The server's rows are the whole truth for this task; a live update newer than the snapshot
+          // arrives after it as thread.receipt and overwrites by id.
+          ...(ev.injectionReceipts
+            ? { injectionReceipts: { ...s.injectionReceipts, [ev.threadId]: Object.fromEntries(ev.injectionReceipts.map((r) => [r.id, r])) } }
+            : {}),
         };
       });
       break;
     }
+    case "thread.receipt":
+      useStore.setState((s) => ({
+        injectionReceipts: {
+          ...s.injectionReceipts,
+          [ev.threadId]: { ...s.injectionReceipts[ev.threadId], [ev.receipt.id]: ev.receipt },
+        },
+      }));
+      break;
     case "thread.deliverableSummary":
       useStore.setState((s) => ({ deliverableSummaries: { ...s.deliverableSummaries, [ev.threadId]: ev.summary } }));
       break;

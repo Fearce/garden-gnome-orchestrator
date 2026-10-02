@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 import { T } from "../agents/toolNames.js";
 import { formatStructuredRoleFeed, jsonContractInstruction, parseStructuredText, type JsonSchemaLike } from "../agents/structuredText.js";
+import { InputLedger } from "../agents/inputLedger.js";
 import type { AgentRunConfig, AgentRunLike, ResultEvent, SendOpts, UserContent } from "../agents/runner.js";
 import { config } from "../config.js";
 import { runReadonlyGit } from "../git/readonlyGit.js";
@@ -425,7 +426,8 @@ export class FreeProviderAgentRun implements AgentRunLike {
   transientApiError = false;
   transientApiErrorMessage: string | undefined;
 
-  private readonly queue: UserContent[] = [];
+  private readonly queue: { content: UserContent; inputId: string }[] = [];
+  private readonly inputs = new InputLedger();
   private readonly messages: ProviderMessage[] = [];
   private readonly rootPromise: Promise<string>;
   private processing: Promise<void> | null = null;
@@ -484,9 +486,20 @@ export class FreeProviderAgentRun implements AgentRunLike {
   }
 
   send(content: UserContent, _opts?: SendOpts): void {
-    if (this.closed) return;
-    this.queue.push(content);
+    if (this.closed) {
+      this.inputs.drop();
+      return;
+    }
+    this.queue.push({ content, inputId: this.inputs.issue() });
     this.pump();
+  }
+
+  get lastInputId(): string | undefined {
+    return this.inputs.lastId;
+  }
+
+  onInputConsumed(inputId: string, cb: () => void): () => void {
+    return this.inputs.onConsumed(inputId, cb);
   }
 
   async interrupt(): Promise<void> {
@@ -548,14 +561,14 @@ export class FreeProviderAgentRun implements AgentRunLike {
 
   private async processQueue(): Promise<void> {
     while (this.queue.length && !this.closed) {
-      const content = this.queue.shift();
-      const result = await this.executeTurn(content);
+      const next = this.queue.shift();
+      const result = await this.executeTurn(next?.content, next?.inputId);
       this.lastResult = result;
       this.emit(result);
     }
   }
 
-  private async executeTurn(content: UserContent | undefined): Promise<ResultEvent> {
+  private async executeTurn(content: UserContent | undefined, inputId?: string): Promise<ResultEvent> {
     if (typeof content !== "string") {
       return this.errorResult("The free-provider read-only harness cannot safely normalize image or block-array input; falling back to the primary backend.");
     }
@@ -575,6 +588,8 @@ export class FreeProviderAgentRun implements AgentRunLike {
           maxOutputTokens: MAX_OUTPUT_TOKENS,
         });
         this.recordUsage(completion);
+        // A completed model call over this message list is the proof the provider read the input.
+        if (inputId) this.inputs.consume([inputId]);
         const canonicalCalls = canonicalToolCalls(completion.toolCalls, tools);
         if (canonicalCalls.length) {
           if (this.toolCalls + canonicalCalls.length > MAX_TOOL_CALLS) {

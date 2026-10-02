@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useStore, type OutboundMessage } from "../store.js";
-import type { AgentRun, FeedItem, Role, SubAgentProvider, SubTaskSpec, Thread } from "../types.js";
+import type { AgentRun, FeedItem, InjectionReceipt, Role, SubAgentProvider, SubTaskSpec, Thread } from "../types.js";
 import { agentName, isCollaborationRoom, repoRoom } from "../types.js";
 import { canAutoReview, clock, formatDuration, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
 import { Countdown, Elapsed, RoleElapsed } from "../lib/timing.js";
@@ -24,6 +24,7 @@ import { finalReportFor } from "../implementationMemos.js";
 import { CodeContextBar, useCodeContext } from "./CodeContextBar.js";
 import { WorkspacePath } from "./WorkspacePath.js";
 import { TaskBranch } from "./TaskBranch.js";
+import { ReceiptMarks } from "./InjectionReceipts.js";
 import { useSwipeDismiss } from "../lib/swipe.js";
 import { isToolActivity } from "../lib/feedFilter.js";
 
@@ -567,6 +568,12 @@ export function ThreadDetail() {
   const threadDeliverables = useStore((s) => s.threadDeliverables);
   const implementationMemos = useStore((s) => s.implementationMemos);
   const deliverableSummary = useStore((s) => (id ? s.deliverableSummaries[id] : undefined));
+  const receiptRows = useStore((s) => (id ? s.injectionReceipts[id] : undefined));
+  const receiptsByMessage = useMemo(() => {
+    const byMessage = new Map<string, InjectionReceipt[]>();
+    for (const r of Object.values(receiptRows ?? {})) byMessage.set(r.messageId, [...(byMessage.get(r.messageId) ?? []), r]);
+    return byMessage;
+  }, [receiptRows]);
   const summariesEnabled = useStore((s) => s.settings.summarizeDoneDeliverables);
   const drafts = useStore((s) => s.threadDrafts);
   const thinkingDrafts = useStore((s) => s.thinkingDrafts);
@@ -1268,6 +1275,7 @@ export function ThreadDetail() {
               nameFor={collabNameFor.get(mergedFeed.sourceOf.get(f) ?? "") ?? nameFor}
               modelFor={modelFor}
               source={f.kind === "system" ? collabNameFor.get(mergedFeed.sourceOf.get(f) ?? "")?.("implementor") : undefined}
+              receipts={f.kind === "system" && f.id ? receiptsByMessage.get(f.id) : undefined}
             />
           ))}
           {showFinalReport && (thread.state === "done" || thread.state === "review") ? (
@@ -1502,12 +1510,15 @@ const FeedRow = memo(function FeedRow({
   nameFor,
   modelFor,
   source,
+  receipts,
 }: {
   item: FeedItem;
   nameFor: (role: Role) => string;
   modelFor: (runId: string | undefined | null) => string | undefined;
   /** A collaborator's name on a system row, which otherwise names no agent and reads as the lead's. */
   source?: string;
+  /** Read receipts of an injected owner message, one per recipient (system rows only). */
+  receipts?: InjectionReceipt[];
 }) {
   switch (item.kind) {
     case "text":
@@ -1578,6 +1589,7 @@ const FeedRow = memo(function FeedRow({
         <div className={"fi system" + (item.delivery ? ` delivery-${item.delivery}` : "")}>
           <div className="body">{source ? `${source} · ${item.text}` : item.text}</div>
           <MessageThumbs refs={item.attachments} />
+          {receipts?.length ? <ReceiptMarks receipts={receipts} nameFor={nameFor} /> : null}
           {item.delivery ? (
             <span className={"delivery-receipt " + item.delivery} role="status" title={item.deliveryError}>
               {item.delivery === "sending" ? <span className="delivery-spinner" aria-hidden="true" /> : <span aria-hidden="true">!</span>}

@@ -88,6 +88,7 @@ const GATES = [
   "test:runner-stop-drain",
   "test:unprompted-result",
   "test:injection",
+  "test:injection-receipts",
   "test:auto-title",
   "test:voice-announce",
   "test:discord-notify",
