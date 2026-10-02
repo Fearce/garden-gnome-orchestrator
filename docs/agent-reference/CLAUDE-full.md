@@ -185,6 +185,14 @@ implementor run's real model and provider. `probe:task-runs` also accepts `--ver
 same verdict should appear inside the full timeline.
 Its control-flow timeline joins run starts/ends (including account + `cap_flagged`), routing/capacity
 findings, owner/supervisor system messages, and matching `crash.log` boot/reconcile records on one clock.
+For **"why does the agent keep redoing old work?"**, read what the session was actually SENT rather than
+the feed: a Claude implementor's transcript is `~/.claude/projects/<workspace-slug>/<session>.jsonl` (the
+slug is the workspace path with `:`/`\` as `-`, e.g. `C--repos-d2r-summon-overlay`). Its first `user`
+entries are the kickoff, and each re-attached image follows as its own `user` entry whose text names
+`…\Temp\claude\<slug>\<session>\images\N.png`; open that file with Read. The `ACK IR-…` line in a run's first
+reply names the receipt token, which you can grep for in those files. Read them with a small `.cjs` that builds paths with
+`path.join(os.homedir(), …)`; the Bash hook refuses `node -e` with a backslash path. On 2026-10-02 this showed
+a 14:53 screenshot and earlier-turn directives re-sent to every fresh d2r session (`3d50275`).
 For **"did my Supervisor-chat message arrive, and did its action run?"**, use
 `npm run probe:supervisor-chat --prefix server -- <turn-id|task-id|task-title|message-text>` (omit the
 query for recent turns; add `--json` for automation). It separates no durable receipt, pending, success,
