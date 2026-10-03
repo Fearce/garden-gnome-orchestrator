@@ -447,6 +447,7 @@ interface State {
   ) => Promise<boolean>;
   interrupt: (threadId: string) => void;
   resume: (threadId: string, message?: string) => void;
+  startImmediately: (threadId: string) => void;
   proceed: (threadId: string) => void;
   setDeadline: (threadId: string, deadlineAt: number | null) => Promise<boolean>;
   setTaskModel: (threadId: string, provider: ImplementorProvider | null, model: string | null) => Promise<boolean>;
@@ -1669,6 +1670,7 @@ export const useStore = create<State>((set) => ({
   },
   interrupt: (threadId) => sendCommand({ type: "thread.interrupt", threadId }),
   resume: (threadId, message) => sendCommand({ type: "thread.resume", threadId, message }),
+  startImmediately: (threadId) => sendCommand({ type: "thread.startImmediately", threadId }),
   proceed: (threadId) => sendCommand({ type: "thread.proceed", threadId }),
   setDeadline: (threadId, deadlineAt) =>
     sendThreadActionCommand({ type: "thread.deadline", threadId, deadlineAt }, "deadline", threadId),

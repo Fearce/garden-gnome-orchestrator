@@ -180,6 +180,7 @@ export interface OrchestratorApi {
   interruptThread(threadId: string): Promise<ThreadActionResult>;
   /** operatorInitiated is true only for an authenticated owner action; autonomous recovery leaves it false. */
   resumeThread(threadId: string, message?: string, operatorInitiated?: boolean): Promise<ThreadActionResult>;
+  startImmediately(threadId: string): ThreadActionResult;
   /** Appoint, edit, or clear an absolute hard stop on a non-terminal task. */
   setActiveDeadline(threadId: string, deadlineAt: number | null): Promise<ThreadActionResult>;
   /** Pin one exact implementor provider/model for this task, or clear the pin back to automatic routing. */

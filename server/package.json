@@ -29,6 +29,7 @@
     "git-lab": "node scripts/git-console-lab.cjs",
     "goals-lab": "node scripts/goals-lab.cjs",
     "inject-lab": "node scripts/inject-lab.cjs",
+    "start-immediately-lab": "node scripts/start-immediately-lab.cjs",
     "receipts-lab": "node scripts/receipts-lab.cjs",
     "restart-resume-lab": "node scripts/restart-resume-lab.cjs",
     "layout-lab": "node scripts/layout-lab.cjs",

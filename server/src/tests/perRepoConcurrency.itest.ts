@@ -225,6 +225,52 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("\nTest F — owner starts a chosen queued task over both caps without changing settings");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ maxConcurrent: 1, maxConcurrentPerRepo: 1 });
+      const a1 = h.dispatch(REPO_A, "running");
+      const a2 = h.dispatch(REPO_A, "older queued");
+      const a3 = h.dispatch(REPO_A, "start immediately");
+      const result = h.mgr.startImmediately(a3);
+      check("selected task starts over both caps", result.ok && h.state(a3) === "implementing");
+      check("older queued task stays queued", h.state(a2) === "queued");
+      check("settings stay unchanged", h.mgr.settings().maxConcurrent === 1 && h.mgr.settings().maxConcurrentPerRepo === 1);
+      check("duplicate click cannot start it twice", !h.mgr.startImmediately(a3).ok && h.started.filter((id) => id === a3).length === 1);
+      check("forced task leaves the FIFO queue", !(h.mgr as any).dispatchQueue.includes(a3));
+      check("owner override is recorded in the feed", h.db.listMessages(a3).some((m) => m.content.includes("Start immediately")));
+      h.finishTask(a1);
+      check("forced task still consumes capacity", h.state(a2) === "queued");
+      h.finishTask(a3);
+      check("normal queue resumes after the forced task releases capacity", h.state(a2) === "implementing");
+      check("unknown task is rejected", !h.mgr.startImmediately("missing").ok);
+      h.finishTask(a2);
+      check("done task is rejected", !h.mgr.startImmediately(a2).ok);
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("\nTest G — concurrency override retains token safety, restart and Co-work holds");
+  for (const hold of ["token", "restart", "cowork"] as const) {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ maxConcurrent: 1, maxConcurrentPerRepo: 1 });
+      h.dispatch(REPO_A, "running");
+      const queued = h.dispatch(REPO_A, "held");
+      const internals = h.mgr as any;
+      if (hold === "token") internals.tokenLimitTripped = true;
+      if (hold === "restart") internals.restartDrainActive = () => true;
+      if (hold === "cowork") internals.coworkBlocks = () => true;
+      const result = h.mgr.startImmediately(queued);
+      check(`${hold} hold rejects the override with an explanation`, !result.ok && !!result.error);
+      check(`${hold} hold keeps the task queued`, h.state(queued) === "queued" && internals.dispatchQueue.includes(queued));
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS ✅" : "FAIL ❌"} — ${passed} passed, ${failed} failed ===`);
   if (failed > 0) {
     console.log("Failures:");

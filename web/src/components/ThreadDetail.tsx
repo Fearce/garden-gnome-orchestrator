@@ -627,6 +627,7 @@ export function ThreadDetail() {
   const inject = useStore((s) => s.inject);
   const interrupt = useStore((s) => s.interrupt);
   const resume = useStore((s) => s.resume);
+  const startImmediately = useStore((s) => s.startImmediately);
   const proceed = useStore((s) => s.proceed);
   const cancel = useStore((s) => s.cancel);
   const retry = useStore((s) => s.retry);
@@ -1103,6 +1104,16 @@ export function ThreadDetail() {
             )}
             <CodeContextBar subject={{ kind: "thread", id: thread.id }} origin={threadOrigin(thread)} />
             <div className="detail-controls">
+              {thread.state === "queued" && (
+                <button
+                  className="btn primary sm"
+                  onClick={() => startImmediately(id)}
+                  disabled={tokenSafetyTripped}
+                  title={tokenSafetyTripped ? "Token safety is holding new work until the blocking usage window resets." : "Start this task despite the global and per-repository concurrency limits; settings stay unchanged"}
+                >
+                  Start immediately
+                </button>
+              )}
               {canInterrupt && (
                 <button
                   className={"btn ghost sm" + (frozen ? " frozen-ctl" : "")}

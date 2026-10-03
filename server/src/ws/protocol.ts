@@ -375,6 +375,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("thread.interrupt"), threadId: z.string() }),
   z.object({ type: z.literal("thread.resume"), threadId: z.string(), message: z.string().optional() }),
+  z.object({ type: z.literal("thread.startImmediately"), threadId: z.string() }),
   z.object({ type: z.literal("thread.proceed"), threadId: z.string() }),
   // Absolute epoch milliseconds, or null to clear. ThreadManager applies the live-state and practical
   // horizon checks using its own clock; finite/safe-integer validation belongs at this trust boundary.

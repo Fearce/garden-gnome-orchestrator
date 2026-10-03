@@ -10,6 +10,7 @@ node_modules/
 server/dist/
 server/.ide-lab-dist/
 server/.task-model-lab-dist/
+server/.start-immediately-lab-dist/
 server/.code-nav-lab-dist/
 server/.settled-lab-dist/
 server/.reset-redeem-lab-dist/

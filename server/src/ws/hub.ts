@@ -344,6 +344,9 @@ export async function handleCommand(
     case "thread.resume":
       sendThreadAction(socket, cmd.threadId, "resume", await ctx.manager.resumeThread(cmd.threadId, cmd.message, true));
       break;
+    case "thread.startImmediately":
+      sendThreadAction(socket, cmd.threadId, "startImmediately", ctx.manager.startImmediately(cmd.threadId));
+      break;
     case "thread.proceed":
       sendThreadAction(socket, cmd.threadId, "proceed", await ctx.manager.proceedThread(cmd.threadId));
       break;

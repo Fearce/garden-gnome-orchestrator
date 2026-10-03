@@ -1577,6 +1577,7 @@ export type ClientCommand =
   | { type: "thread.inject"; threadId: string; message: string; mode: "append" | "interrupt" | "queue"; recipient?: "implementor" | "qa" | "reviewer"; images?: ImageAttachment[]; clientId?: string }
   | { type: "thread.interrupt"; threadId: string }
   | { type: "thread.resume"; threadId: string; message?: string }
+  | { type: "thread.startImmediately"; threadId: string }
   | { type: "thread.proceed"; threadId: string }
   | { type: "thread.deadline"; threadId: string; deadlineAt: number | null }
   | { type: "thread.model"; threadId: string; provider: ImplementorProvider | null; model: string | null; clientId?: string }

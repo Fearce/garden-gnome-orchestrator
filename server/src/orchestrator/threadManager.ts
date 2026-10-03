@@ -7465,8 +7465,31 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.hub.publish({ type: "thread.message", threadId, message });
   }
 
-  /** Start a freshly-dispatched task's pipeline now, or hold it in 'queued' if we're at the
-   *  concurrency cap. Queued tasks start (FIFO) the moment a running pipeline settles. */
+  /** Owner-only one-launch override; the normal pipeline still reserves and releases its slot. */
+  startImmediately(threadId: string): ThreadActionResult {
+    const thread = this.db.getThread(threadId);
+    if (!thread) return { ok: false, error: "No such task." };
+    if (thread.state !== "queued" || this.activePipelines.has(threadId)) {
+      return { ok: false, state: thread.state, error: "Only queued tasks can start immediately." };
+    }
+    if (this.restartDrainActive()) {
+      return { ok: false, state: thread.state, error: "GGO is restarting. Start the task after it reconnects." };
+    }
+    if (this.tokenLimitTripped) {
+      return { ok: false, state: thread.state, error: "Token safety is holding new work until the blocking usage window resets." };
+    }
+    if (this.coworkBlocks(thread)) {
+      return { ok: false, state: thread.state, error: "A Co-worker turn is active in this repo. Start the task after it finishes." };
+    }
+    for (let i = this.dispatchQueue.length - 1; i >= 0; i--) {
+      if (this.dispatchQueue[i] === threadId) this.dispatchQueue.splice(i, 1);
+    }
+    this.taskFeedNote(threadId, "Owner chose Start immediately, bypassing the global and per-repository concurrency limits for this launch.");
+    this.startPipeline(threadId);
+    return { ok: true, state: this.db.getThread(threadId)?.state };
+  }
+
+  /** Start fresh work or queue it until both concurrency limits permit a launch. */
   private enqueueOrRun(threadId: string): void {
     const thread = this.db.getThread(threadId);
     if (this.tokenLimitTripped) {

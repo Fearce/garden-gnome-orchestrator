@@ -14,7 +14,11 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Add Start immediately for queued tasks, bypassing concurrency settings** (Mosswick, 2026-10-03).
+_(none: claim from Ready)_
+
+## Shipped, awaiting live proof
+
+- **Start immediately bypasses both concurrency limits for one queued task** (Mosswick, 2026-10-03): 32 queue assertions and 9 desktop/phone browser checks pass; deployment verification pending.
 
 ## Open
 
