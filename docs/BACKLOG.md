@@ -14,7 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Keep parallel goals planning independent work instead of waiting on the live critical path** (Bramble Fuse, 2026-10-03).
+  d2r maxConcurrent=3 but only step 17 runs; Director wait cites live client ownership and unavailable repository inspection.
 
 ## Open
 
