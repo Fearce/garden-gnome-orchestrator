@@ -14,8 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Keep parallel goals planning independent work instead of waiting on the live critical path** (Bramble Fuse, 2026-10-03).
-  d2r maxConcurrent=3 but only step 17 runs; Director wait cites live client ownership and unavailable repository inspection.
+_(none: claim from Ready)_
+
+## Shipped, awaiting live proof
+
+- **Plan independent work across free parallel-goal slots** (Bramble Fuse, 2026-10-03).
+  Goal gates pass; prompts require whole-objective dependency checks, bounded ownership and implementation-side repository inspection. Verify d2r fills its available slots after deployment.
 
 ## Open
 

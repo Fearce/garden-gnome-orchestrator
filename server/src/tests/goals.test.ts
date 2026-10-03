@@ -466,6 +466,10 @@ async function parallel(): Promise<void> {
   check("three slots, three steps", h.dispatched.length === 3 && h.judged.length === 3);
   check("the second judgement sees the running step", h.judged[1]!.includes('STEPS STILL RUNNING (1 of up to 3 at once)') && h.judged[1]!.includes("Do api."));
   check("a parallel goal asks for work beside the running steps", h.judged[1]!.includes("IN PARALLEL"));
+  check("the director sees the exact free-slot demand", h.judged[1]!.includes("AVAILABLE STEP SLOTS: 2 of 3") && h.judged[2]!.includes("AVAILABLE STEP SLOTS: 1 of 3"));
+  check("parallel planning checks beyond the live critical path", h.judged[1]!.includes("ALL substantial remaining work") && h.judged[1]!.includes("recorded evidence") && h.judged[1]!.includes("do not control a live client"));
+  check("no-tools planning delegates repository checks instead of waiting", h.judged[1]!.includes("Repository inspection is the implementor's job") && h.judged[1]!.includes("unavailable inspection is not evidence that all work conflicts"));
+  check("one parallel step cannot reserve every remaining concern", h.judged[0]!.includes("Do not assign one step every remaining concern"));
   check("the step brief names its siblings", h.dispatched[2]!.brief.includes('step 1 "api"') && h.dispatched[2]!.brief.includes('step 2 "ui"'));
   check("a parallel step stays in its lane", !h.dispatched[2]!.brief.includes("keep going into the rest of the objective"));
   await h.runner.evaluate(g.id);

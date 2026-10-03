@@ -630,7 +630,17 @@ function nextInstruction(goal: Goal, continues: boolean): string {
   if (goal.maxConcurrent <= 1) {
     return `- \`next\`: the next step, as a concrete, self-contained brief. Make it one LONG-RUNNING task covering ALL the remaining work of the objective, ordered so the most valuable part comes first. Split the remaining work only where a later part truly depends on your judging an earlier result, never just to keep a step small. ${tail}`;
   }
-  return `- \`next\`: the next step, as a concrete, self-contained brief. This goal runs up to ${goal.maxConcurrent} step tasks at once in the same repository, so make \`next\` a LONG-RUNNING task over a large share of the remaining work that can proceed IN PARALLEL with the running steps: different files and concerns, no dependency on their unfinished results. Still prefer a few long steps to many short ones. ${tail}`;
+  return `- \`next\`: the next step, as a concrete, self-contained brief. This goal runs up to ${goal.maxConcurrent} step tasks at once in the same repository, so make \`next\` a LONG-RUNNING task over a bounded share of the remaining work that can proceed IN PARALLEL with the running steps: different files and concerns, no dependency on their unfinished results. Do not assign one step every remaining concern: leave substantive independent work for the other slots. Name the ownership boundary and require the implementor to confirm it with teammates before editing shared files. Still prefer a few long steps to many short ones. ${tail}`;
+}
+
+/** A free slot calls for work across the objective, not just the next test on its live critical path. */
+function parallelPlanningBlock(goal: Goal, running: number): string {
+  if (goal.maxConcurrent <= 1) return "";
+  return [
+    `AVAILABLE STEP SLOTS: ${Math.max(0, goal.maxConcurrent - running)} of ${goal.maxConcurrent}. The owner chose parallel agents: actively fill the free slots with substantial independent work while capacity permits.`,
+    "Before waiting, consider ALL substantial remaining work in the objective, not only the next live validation. Work using recorded evidence, Offline/replay tests, control/UI features, and independent implementation or analysis can proceed while a live task waits. Respect the owner's priority gates; do not invent busywork or start a gated later phase just to fill slots.",
+    "A running task's client or file ownership constrains overlapping work, not every strand of the objective. Give the next step a disjoint scope; do not control a live client owned by another task. Repository inspection is the implementor's job: this judgement has no tools, and unavailable inspection is not evidence that all work conflicts. Use the supplied objective, reports and briefs to plan; require the implementor to read the work board, confirm ownership and choose an unclaimed item within its assigned scope before making changes.",
+  ].join("\n");
 }
 
 function verdictInstructions(ownerName: string, running: number): string[] {
@@ -640,7 +650,7 @@ function verdictInstructions(ownerName: string, running: number): string[] {
   ];
   if (running) {
     lines.push(
-      "- Steps are still running. Return \"wait\" when the next useful step depends on their results or would collide with their work; GGO then starts nothing more until one of them ends, and asks you again. While any step runs, \"complete\" is held the same way, and `next` is ignored on either.",
+      "- Steps are still running. Return \"wait\" ONLY when ALL substantial remaining work is either already owned, depends on their unfinished results, or cannot proceed without a collision. Explain the concrete dependencies or ownership conflicts that leave no independent strand. The next live test depending on a running step is insufficient when other useful work can proceed. GGO then starts nothing more until one of them ends, and asks you again. While any step runs, \"complete\" is held the same way, and `next` is ignored on either.",
     );
   }
   return lines;
@@ -673,6 +683,7 @@ export function buildGoalJudgePrompt(ctx: GoalJudgeContext): string {
     settledBlock(ctx.settled, steps.length > 0, running.length),
     "",
     runningBlock(goal, running),
+    parallelPlanningBlock(goal, running.length),
     "",
     ctx.askedBecause ? `WHY YOU ARE ASKED: between your decisions the goal continues in its task's own session without you. You are asked now because ${ctx.askedBecause}.` : "",
     "DECIDE:",

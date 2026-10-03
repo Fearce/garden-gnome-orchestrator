@@ -132,6 +132,10 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   step, not the highest `seq`, is "the last step" (its claim is the agent's voice), and the failed-streak
   guard reads the last 3 SETTLED steps. A running step has `outcome` null, which `stepFailed` counts as a
   failure. A dispatch that leaves a slot free re-runs the evaluation loop to fill it.
+  The judge sees the exact free-slot count and must search the whole remaining objective for independent
+  work before waiting. A dependency on the next live test or no-tools repository access does not block
+  unrelated implementation, recorded-evidence work or replay tests. Keep scopes bounded so one step does
+  not reserve every concern, and require work-board/ownership checks before implementors edit shared files.
 - **A settled step is not final: its task can come back.** Cap auto-resume, Retry and inject all restart a
   task the goal already settled. `reopenResumedSteps` clears the step's settle so it holds a slot again, and
   `uncountSettle` lowers the last verdict's `settledSteps`, so the real ending is still reported and still lifts a
