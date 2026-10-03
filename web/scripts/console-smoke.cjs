@@ -297,6 +297,7 @@ async function main() {
   );
   let page;
   let view;
+  let browserShutdownError;
   try {
     console.log("[INFO] browser launched; authenticating");
     page = await within(browser.newPage({ viewport: { width: 1280, height: 900 } }), REQUEST_TIMEOUT_MS, "new page");
@@ -340,10 +341,17 @@ async function main() {
     }
     if (options.shot) await page.screenshot({ path: options.shot, timeout: REQUEST_TIMEOUT_MS });
   } finally {
-    await within(browser.close(), BROWSER_CLOSE_TIMEOUT_MS, "browser shutdown");
+    try {
+      await within(browser.close(), BROWSER_CLOSE_TIMEOUT_MS, "browser shutdown");
+    } catch (error) {
+      // Cleanup must not replace an inspection error or discard the checks already collected.
+      browserShutdownError = error.message || String(error);
+      console.error(`[FAIL] ${browserShutdownError}`);
+    }
   }
 
   const failures = [];
+  if (browserShutdownError) failures.push(browserShutdownError);
   if (view.atLogin) failures.push("still at the login gate — the session cookie did not take");
   if (!view.hasTopbar) failures.push("no .topbar rendered — the bundle did not mount");
   if (view.rootChars < 200) failures.push(`#root rendered only ${view.rootChars} chars — empty shell`);

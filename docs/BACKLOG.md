@@ -14,7 +14,11 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Preserve console smoke evidence when browser shutdown times out** (Mosswick, 2026-10-03): production probe reported only cleanup failure after collecting its checks.
+_(none: claim from Ready)_
+
+## Ready (priority order)
+
+1. **Investigate console smoke served/local bundle mismatch and browser shutdown timeout**: 2026-10-03 probe reports ws=live with no console errors, served index-C8zofTVy.js versus local index-BHXtYnz4.js, and browser shutdown exceeded 5000ms; authenticated HTTP bundle verification passed earlier in the same task.
 
 ## Open
 
@@ -22,6 +26,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-03 **Preserve console smoke evidence when browser shutdown times out** (Mosswick): syntax and test:console-probe pass; live timeout reproduces and now prints websocket, error, bundle and UI assertion results while retaining exit code 1. Probe script change requires no service restart.
 - 2026-10-03 **Start immediately for queued tasks over both concurrency limits** (f70f5e8, Mosswick): 32 queue assertions, 9 desktop/phone browser checks, typechecks and slot/token-freeze/restart gates pass; deployed build matches f70f5e89 and authenticated served bundle contains the action. Production browser smoke hit a shutdown timeout.
 - 2026-10-03 **Fill parallel-goal slots beyond the live critical path** (68cd577, Bramble Fuse): goal gates/typechecks pass; deployed build verified; d2r steps 17/19/20 all implementing with running codex:gpt-6.1-sol runs. Authenticated per-repo cap increased 5→7 to fit four other active d2r tasks; global cap remains 15, goal cap 3.
 - 2026-10-02 **Release stale goal parallel-step waits after owner edits or Resume** (dfd1197, Bramble Fuse): goal gates and typecheck pass; deployed build verified; authenticated d2r edit persisted waitReleased=true with settledSteps=14 and restored maxConcurrent=3.
