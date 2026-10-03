@@ -14,7 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Allow model changes on paused tasks with stale running implementor records** (Bramble Quill, 2026-10-03).
+  Evidence: owner screenshot shows PAUSED with the model picker incorrectly demanding an interrupt.
 
 ## Ready (priority order)
 
