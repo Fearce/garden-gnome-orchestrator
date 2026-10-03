@@ -60,7 +60,10 @@ function ModelIcon() {
   );
 }
 
-export function TaskModelPicker({ thread, active }: { thread: Thread; active: boolean }) {
+export function TaskModelPicker({ thread, active: runActive }: { thread: Thread; active: boolean }) {
+  // Interrupt publishes the paused task before every historical run record has settled. The task
+  // state owns whether work is paused; a stale running record must not lock its next-start model.
+  const active = thread.state !== "paused" && runActive;
   const settings = useStore((state) => state.settings);
   const setTaskModel = useStore((state) => state.setTaskModel);
   const targets = useMemo(() => taskModelTargets(settings, thread.modelRequest), [settings, thread.modelRequest]);

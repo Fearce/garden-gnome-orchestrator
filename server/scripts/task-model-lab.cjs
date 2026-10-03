@@ -82,6 +82,11 @@ function seed(dataDir) {
     }),
     at,
   });
+  // Reproduce an interrupted task whose historical implementor record still says running.
+  db.prepare(
+    `INSERT INTO agent_runs(id, thread_id, role, model, account, state, started_at)
+     VALUES(?, ?, 'implementor', 'claude-opus-5-5', 'claude', 'running', ?)`,
+  ).run("paused-stale-implementor", TASK_ID, at - 1_000);
   // A second enabled provider makes the provider choice itself observable. The harness supplies only
   // bogus tokens, so this cannot spend quota or start provider work.
   db.prepare(
@@ -155,6 +160,12 @@ async function desktopPass(browser, dataDir, shots, errors) {
     JSON.stringify({ popoverBox, triggerBox }),
   );
 
+  check(
+    "a paused task with a stale running implementor allows an exact pin",
+    !(await page.getByRole("button", { name: "Pin exact model", exact: true }).isDisabled()) &&
+      !(await page.locator(".task-model-warning").textContent())?.includes("Interrupt the current implementor"),
+  );
+
   const provider = page.locator('select[aria-label="Task provider"]');
   const providerLabels = await provider.locator("option").allTextContents();
   check(
@@ -215,6 +226,10 @@ async function desktopPass(browser, dataDir, shots, errors) {
   await trigger.click();
   await page.getByRole("button", { name: "Use Auto", exact: true }).click();
   await waitForModelRequest(dataDir, (value) => value === null, "Auto routing did not clear the task pin");
+  await page.waitForFunction(() => {
+    const trigger = document.querySelector('[aria-label="Choose task provider and model"]');
+    return trigger?.getAttribute("data-task-model") === "auto" && !trigger.classList.contains("pinned");
+  });
   check(
     "Use Auto clears both the durable pin and its closed-trigger highlight",
     (await trigger.getAttribute("data-task-model")) === "auto" && !(await trigger.getAttribute("class"))?.includes("pinned"),
