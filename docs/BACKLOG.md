@@ -16,16 +16,12 @@ same commit as the fix. Git history keeps the record.
 
 _(none: claim from Ready)_
 
-## Shipped, awaiting live proof
-
-- **Plan independent work across free parallel-goal slots** (Bramble Fuse, 2026-10-03).
-  Goal gates pass; prompts require whole-objective dependency checks, bounded ownership and implementation-side repository inspection. Verify d2r fills its available slots after deployment.
-
 ## Open
 
 No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-03 **Fill parallel-goal slots beyond the live critical path** (68cd577, Bramble Fuse): goal gates/typechecks pass; deployed build verified; d2r steps 17/19/20 all implementing with running codex:gpt-6.1-sol runs. Authenticated per-repo cap increased 5→7 to fit four other active d2r tasks; global cap remains 15, goal cap 3.
 - 2026-10-02 **Release stale goal parallel-step waits after owner edits or Resume** (dfd1197, Bramble Fuse): goal gates and typecheck pass; deployed build verified; authenticated d2r edit persisted waitReleased=true with settledSteps=14 and restored maxConcurrent=3.
 - 2026-10-02 **Unpin d2r step 15 to allow Codex routing** (Bramblewick): authenticated thread.model Auto and thread.resume both succeeded; SQLite confirms task ef2438cb-33b8-43db-9545-6e338502e16e implementing with model_request NULL, no error, and a running gpt-6.1-sol implementor on codex:gpt-6.1-sol.
