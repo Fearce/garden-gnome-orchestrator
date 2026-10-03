@@ -1104,7 +1104,7 @@ export function ThreadDetail() {
             )}
             <CodeContextBar subject={{ kind: "thread", id: thread.id }} origin={threadOrigin(thread)} />
             <div className="detail-controls">
-              {thread.state === "queued" && (
+              {thread.state === "queued" && !threadRuns.some((run) => runActive(run.state)) && (
                 <button
                   className="btn primary sm"
                   onClick={() => startImmediately(id)}

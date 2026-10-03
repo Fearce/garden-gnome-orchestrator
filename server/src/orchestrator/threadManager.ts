@@ -2476,7 +2476,11 @@ export class ThreadManager implements OrchestratorApi {
         // Re-check state at fire time — a queued task could have been cancelled/dismissed during the
         // delay, and enqueueOrRun would otherwise stamp it 'queued' again (resurrecting a dead row).
         try {
-          for (const t of queued) if (this.db.getThread(t.id)?.state === "queued") this.enqueueOrRun(t.id);
+          // Skip a task the owner already started with Start immediately during this delay: a read-lane
+          // run stays 'queued' while it works, and re-queueing it would launch a second pipeline.
+          for (const t of queued) {
+            if (this.db.getThread(t.id)?.state === "queued" && !this.activePipelines.has(t.id)) this.enqueueOrRun(t.id);
+          }
         } catch (e) {
           this.hub.log("error", `Re-queueing ${queued.length} task(s) after the restart failed: ${String(e)}`);
         }
