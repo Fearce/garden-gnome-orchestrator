@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Add Start immediately for queued tasks, bypassing concurrency settings** (Mosswick, 2026-10-03).
 
 ## Open
 
