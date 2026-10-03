@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Preserve console smoke evidence when browser shutdown times out** (Mosswick, 2026-10-03): production probe reported only cleanup failure after collecting its checks.
 
 ## Open
 
