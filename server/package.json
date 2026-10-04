@@ -276,6 +276,7 @@
     "test:stale-gnomes": "tsx src/tests/staleGnomeCleanup.itest.ts",
     "test:git": "tsx src/tests/gitService.itest.ts",
     "test:portal-link": "tsx src/tests/portalLink.test.ts",
+    "test:desktop": "tsx src/tests/desktop.test.ts",
     "test:remote-access": "tsx src/tests/remoteAccess.test.ts && node scripts/remote-access.test.cjs",
     "test:repo-console": "tsx src/tests/repoConsole.test.ts",
     "test:git-console-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/git-console-ui.test.ts",

@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { registerPortalLink } from "./portalLink.js";
+import { createDesktopTickets, DESKTOP_SIGN_IN_COOKIE, registerDesktopRoutes } from "./desktop.js";
 import {
   isDirectLocal,
   isTunneled,
@@ -356,6 +357,8 @@ async function main(): Promise<void> {
   // Shared across both listeners so the per-IP wrong-password cooldown can't be
   // sidestepped by alternating between the HTTP and HTTPS ports.
   const loginCooldown = new Map<string, number>();
+  // One store for both listeners, so a desktop sign-in ticket minted on one redeems on the other.
+  const desktopTickets = createDesktopTickets();
 
   // Build a fully-wired Fastify instance. Called once per listener (HTTP :4317
   // and the optional HTTPS :httpsPort) so both share the same db/hub/manager/
@@ -397,6 +400,12 @@ async function main(): Promise<void> {
     registerRemoteControlRoutes(app, remoteControl, isAuthed);
     registerModuleRoutes(app, modules, isAuthed);
     registerPortalLink(app, isAuthed);
+    registerDesktopRoutes(app, {
+      isAuthed,
+      sessionCookie: (req) => cookie30d(req, SESSION_COOKIE, makeSession(config.allowedEmail)),
+      kv: { get: (key) => db.kvGet(key), set: (key, value) => db.kvSet(key, value) },
+      tickets: desktopTickets,
+    });
 
     // Settings → LiveBench rankings: the same cached release auto model selection reads.
     app.get("/api/livebench", async (req, reply) => {
@@ -595,18 +604,23 @@ async function main(): Promise<void> {
       return `${origin}/api/auth/callback`;
     };
 
-    app.get<{ Querystring: { select?: string } }>("/api/auth/google", async (req, reply) => {
+    // `desktop=1`: the desktop app opened this in the system browser, so the callback hands the new
+    // session back to the app (server/src/desktop.ts) instead of opening the console in the browser.
+    app.get<{ Querystring: { select?: string; desktop?: string } }>("/api/auth/google", async (req, reply) => {
       if (!googleEnabled()) return reply.code(404).send({ error: "google auth not configured" });
       const nonce = randomUUID();
-      reply.header("set-cookie", `${OAUTH_STATE_COOKIE}=${nonce}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${remoteCookieAttributes(req)}`);
+      const desktopFlag = req.query.desktop === "1" ? `${DESKTOP_SIGN_IN_COOKIE}=1; HttpOnly; SameSite=Lax; Path=/; Max-Age=600` : `${DESKTOP_SIGN_IN_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
+      reply.header("set-cookie", [`${OAUTH_STATE_COOKIE}=${nonce}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${remoteCookieAttributes(req)}`, `${desktopFlag}${remoteCookieAttributes(req)}`]);
       return reply.redirect(googleAuthUrl(callbackUri(req), signState(nonce), req.query.select ? "select_account" : undefined));
     });
 
     app.get<{ Querystring: { code?: string; state?: string; error?: string } }>("/api/auth/callback", async (req, reply) => {
       if (!googleEnabled()) return reply.redirect("/");
       const clearState = `${OAUTH_STATE_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
+      const forDesktop = cookieValue(req.headers.cookie, DESKTOP_SIGN_IN_COOKIE) === "1";
+      const clearDesktop = `${DESKTOP_SIGN_IN_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
       const fail = (e: string) => {
-        reply.header("set-cookie", clearState);
+        reply.header("set-cookie", [clearState, clearDesktop]);
         return reply.redirect(`/?e=${e}`);
       };
       // state must match both our signature AND the per-browser cookie nonce (CSRF binding)
@@ -616,8 +630,8 @@ async function main(): Promise<void> {
       const email = await exchangeCodeForEmail(req.query.code, callbackUri(req));
       if (!email) return fail("auth");
       if (email.toLowerCase() !== config.allowedEmail) return fail("forbidden");
-      reply.header("set-cookie", [clearState, cookie30d(req, SESSION_COOKIE, makeSession(email))]);
-      return reply.redirect("/");
+      reply.header("set-cookie", [clearState, clearDesktop, cookie30d(req, SESSION_COOKIE, makeSession(email))]);
+      return reply.redirect(forDesktop ? "../desktop/handoff" : "/");
     });
 
     // Password login with a per-IP wrong-password cooldown (anti-brute-force). On success it mints

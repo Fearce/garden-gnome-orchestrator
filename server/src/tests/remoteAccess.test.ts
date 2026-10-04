@@ -58,7 +58,7 @@ assert.equal(remoteCookieAttributes(local), "", "local HTTP and HTTPS listeners 
 async function gatedApp(google: boolean) {
   const app = Fastify();
   registerRemoteGate(app, { googleEnabled: () => google, isAuthed: (cookie) => cookie === "orch_session=owner" });
-  for (const url of ["/api/me", "/api/auth/google", "/api/auth/callback", "/api/logout", "/api/login", "/api/health", "/api/deploy/status", "/api/update/status", "/ws"]) {
+  for (const url of ["/api/me", "/api/auth/google", "/api/auth/callback", "/api/logout", "/api/login", "/api/health", "/api/deploy/status", "/api/update/status", "/ws", "/api/desktop/redeem", "/api/desktop/ticket"]) {
     app.route({ method: ["GET", "POST"], url, handler: async () => ({ route: url }) });
   }
   app.get("/*", async () => "spa asset");
@@ -73,10 +73,10 @@ const tunnelHeaders = { "x-forwarded-for": "203.0.113.9", "x-forwarded-proto": "
   const hit = (url: string, extra: Record<string, string> = {}, method: "GET" | "POST" = "GET") =>
     app.inject({ method, url, headers: { ...tunnelHeaders, ...extra } });
 
-  for (const url of ["/api/me", "/api/auth/google", "/api/auth/callback?code=x&state=y", "/api/logout", "/assets/index-abc.js", "/"]) {
+  for (const url of ["/api/me", "/api/auth/google", "/api/auth/callback?code=x&state=y", "/api/logout", "/api/desktop/redeem?ticket=x", "/assets/index-abc.js", "/"]) {
     assert.equal((await hit(url)).statusCode, 200, `${url} must load before sign-in`);
   }
-  for (const url of ["/api/health", "/api/deploy/status", "/api/update/status", "/ws", "/api/not-a-route"]) {
+  for (const url of ["/api/health", "/api/deploy/status", "/api/update/status", "/ws", "/api/desktop/ticket", "/api/not-a-route"]) {
     assert.equal((await hit(url)).statusCode, 401, `${url} must need sign-in through the tunnel`);
   }
   assert.equal((await hit("/api/login", {}, "POST")).statusCode, 401, "no remote password guessing");

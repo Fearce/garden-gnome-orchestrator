@@ -28,8 +28,9 @@ const FORWARDING_HEADERS = [
   "tailscale-funnel-request",
 ] as const;
 
-// Routes a signed-out browser needs to reach the sign-in screen and finish Google sign-in.
-const SIGN_IN_ROUTES = new Set(["/api/me", "/api/auth/google", "/api/auth/callback", "/api/logout"]);
+// Routes a signed-out browser needs to reach the sign-in screen and finish Google sign-in. The desktop
+// app redeems the one-time ticket its browser sign-in produced while it is still signed out.
+const SIGN_IN_ROUTES = new Set(["/api/me", "/api/auth/google", "/api/auth/callback", "/api/logout", "/api/desktop/redeem"]);
 // The built console's static files (the @fastify/static wildcard). Unmatched URLs fall through to the
 // SPA shell or an /api 404 and are allowed too: neither reaches a handler. The wildcard also matches
 // unknown /api paths, which stay gated so an API miss never answers a signed-out stranger differently.
