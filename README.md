@@ -116,6 +116,13 @@ The board has a tab for each area. Any tab except Tasks can be hidden per browse
 - **Remote control** (Windows only, appears once set up in Settings). Streams this
   machine's desktop into the console and sends mouse, touch and keyboard back. It needs
   an ffmpeg with Desktop Duplication capture, and setup can install a pinned copy.
+- **Script Hub, Surveillance, Home and Sidekick** (each off until you turn it on under
+  Settings → Interface). Optional tabs for local services, each served by its own worker
+  process that starts the first time you open the tab and exits when idle. Surveillance shows
+  live cameras and browses and plays recordings. Nothing records until you choose 24/7 or a
+  weekly schedule. Recording then runs on through restarts until you turn it off, with
+  per-camera recording, file length, and optional keep-days or size caps. See
+  [docs/local-service-modules.md](docs/local-service-modules.md).
 
 ![The scheduled tasks view with three recurring briefs](docs/assets/scheduled.png)
 
