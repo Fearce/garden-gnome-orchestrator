@@ -25,6 +25,11 @@
  */
 
 .gs-root {
+  /* The desktop app's top bar drags the window (styles.css) and drag regions ignore stacking, so the
+     screensaver covering it opts out. A browser ignores app-region. */
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+
   /* ---- the gnome's own non-role colours, lifted from components/Gnome.tsx ---- */
   --gs-beard: oklch(0.95 0.02 90);
   --gs-skin: oklch(0.79 0.07 64);

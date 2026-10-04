@@ -5148,7 +5148,7 @@ html[data-shell="desktop"] .topbar {
 }
 html[data-shell="desktop"] .topbar > :not(.brand, .stat, .spacer, .conn),
 html[data-shell="desktop"] :is(.scrim, .settings-scrim, .modal-load-error, .git-scrim, .gc-scrim, .office-scrim, .office-panel,
-  .accounts-scrim, .accounts.phone-open, .news-panel, .notice-stack, .lightbox, .lightbox-close, .dl-pop, .detail, .gs-root) {
+  .accounts-scrim, .accounts.phone-open, .news-panel, .notice-stack, .lightbox, .lightbox-close, .dl-pop, .detail) {
   -webkit-app-region: no-drag; app-region: no-drag;
 }
 /* Signed out there is no top bar, so the sign-in screen gets a bare title strip to move the window by. */
