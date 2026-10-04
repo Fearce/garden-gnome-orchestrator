@@ -24,6 +24,7 @@ import { reportSlowChildWaits } from "./childRunner.js";
 import { eventLoopHealth, startEventLoopMonitor } from "./eventLoopMonitor.js";
 import { startSlowStatementReporter } from "./db/slowStatements.js";
 import { Db } from "./db/db.js";
+import { WalCheckpointer } from "./db/walCheckpointer.js";
 import { startSearchIndexBackfill } from "./db/searchIndex.js";
 import { startLatestMessagePreviewBackfill } from "./db/previewBackfill.js";
 import { EventHub } from "./events.js";
@@ -111,6 +112,7 @@ function webBundleVersion(): string | null {
 
 async function main(): Promise<void> {
   const db = new Db(config.dbPath);
+  new WalCheckpointer(db.raw, config.dbPath, { onFault: logCrash }).start();
   const freeProviders = new FreeProviderService(db);
   const hub = new EventHub();
   const memory = new FileMemoryService();
