@@ -354,8 +354,9 @@ async function soft(label, fn) {
       await page.waitForFunction(() => !document.querySelector(".mod-loading"), null, { timeout: 30_000 }).catch(() => undefined);
       const ha = (await api(cookie, "GET", "/api/modules/home/api/home-assistant")).json;
       report.homeAssistant = ha;
-      // The page runs its own probe after the devices render; wait for its answer before counting notices.
-      if (ha && !ha.reachable) await page.waitForSelector(".mod-notice:has-text('not answering')", { timeout: 30_000 }).catch(() => undefined);
+      // A device can report an outage before the page's probe finishes Docker discovery. Only the
+      // page-wide notice proves that probe has settled and its controls have received the answer.
+      if (ha && !ha.reachable) await page.waitForSelector(".mod-body > .mod-notice:has-text('not answering')", { timeout: 60_000 });
       const notices = await page.$$eval(".mod-notice strong", (els) => els.map((e) => e.textContent));
       report.homeNotices = notices;
       check("Home Assistant's state is reported, not hung", ha !== null, JSON.stringify(ha)?.slice(0, 200));
