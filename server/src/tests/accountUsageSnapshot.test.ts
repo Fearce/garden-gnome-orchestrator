@@ -18,6 +18,51 @@ function check(name: string, cond: boolean, detail?: string): void {
 const personal = { id: "acct1", label: "personal", token: "tok-personal" };
 const secondary = { id: "acct2", label: "secondary", token: "tok-secondary" };
 
+console.log("account-usage: subscription token safety gate");
+const safetyManager = new AccountManager([personal, secondary], new EventHub());
+const safetyStates = (safetyManager as any).states;
+const safetyClock = Date.now();
+Object.assign(safetyStates.get(personal.id), { fiveHour: 85, sevenDay: 10, fiveHourReset: safetyClock + 60_000, sevenDayReset: safetyClock + 120_000 });
+Object.assign(safetyStates.get(secondary.id), { fiveHour: 10, sevenDay: 10, fiveHourReset: safetyClock + 60_000, sevenDayReset: safetyClock + 240_000 });
+safetyManager.setTokenSafetyLimit(80);
+check("only the subscription over its limit is blocked", safetyManager.tokenSafetyBlockedAccounts().map((a) => a.id).join() === personal.id);
+check("preview switches to the other subscription", safetyManager.dispatchPreview().account.id === secondary.id);
+check("dispatch switches to the other subscription", safetyManager.select().account.id === secondary.id);
+check("failover refuses an over-limit subscription", safetyManager.selectFailover(secondary.id) === null);
+check("ancillary calls use the safe subscription", safetyManager.auxToken() === secondary.token);
+safetyManager.setResetBurn(personal.id, safetyClock + 120_000);
+check("reset burn cannot bypass token safety", safetyManager.select().account.id === secondary.id);
+const safetyDemand = { label: "tiny turn", expectedDurationMs: 1, expectedBurnPct: 1, reservePct: 0, substantial: false };
+const blockedOption = safetyManager.capacityOptions(safetyDemand).find((o) => o.account.id === personal.id);
+check("capacity reports the blocked subscription without headroom", blockedOption?.hasHeadroom === false);
+check("capacity waits for the safety window reset", blockedOption?.nextViableAt === safetyClock + 60_000);
+safetyStates.get(secondary.id).sevenDay = 90;
+check("all over-limit subscriptions report no headroom", !safetyManager.hasHeadroom() && !safetyManager.dispatchPreview().hasHeadroom);
+let safetyRefused = false;
+try { safetyManager.select(); } catch (error) { safetyRefused = String(error).includes("Token safety limit"); }
+check("dispatch refuses when every subscription is blocked", safetyRefused);
+check("ancillary calls refuse when every subscription is blocked", safetyManager.auxToken() === undefined);
+safetyStates.get(personal.id).fiveHourReset = safetyClock - 1;
+check("a reset releases only its subscription", safetyManager.tokenSafetyBlockedAccounts().map((a) => a.id).join() === secondary.id && safetyManager.hasHeadroom());
+safetyStates.get(personal.id).sevenDay = 90;
+check("a weekly blocker survives the 5h reset", !safetyManager.hasHeadroom());
+safetyManager.setTokenSafetyLimit(null);
+check("turning safety off restores ordinary headroom", safetyManager.hasHeadroom());
+safetyManager.setTokenSafetyLimit(80);
+safetyStates.get(personal.id).fiveHour = null;
+safetyStates.get(personal.id).sevenDay = null;
+check("missing telemetry does not block an unmeasured alternative", safetyManager.hasHeadroom() && safetyManager.select().account.id === personal.id);
+safetyManager.applyEnabled(personal.id, false);
+let disabledRefused = false;
+try { safetyManager.select(); } catch { disabledRefused = true; }
+check("a disabled safe subscription cannot bypass the gate", disabledRefused);
+const loneSafetyManager = new AccountManager([personal], new EventHub());
+Object.assign((loneSafetyManager as any).states.get(personal.id), { fiveHour: 80, fiveHourReset: safetyClock + 60_000 });
+loneSafetyManager.setTokenSafetyLimit(80);
+let loneRefused = false;
+try { loneSafetyManager.select(); } catch { loneRefused = true; }
+check("single-account dispatch observes the same limit", loneRefused && !loneSafetyManager.hasHeadroom());
+
 console.log("account-usage: buildEnv");
 const zaiEnv = buildEnv({ baseUrl: "https://api.z.ai/api/anthropic", authToken: "zai-key" });
 check("z.ai run drops the subscription token", zaiEnv.CLAUDE_CODE_OAUTH_TOKEN === undefined);

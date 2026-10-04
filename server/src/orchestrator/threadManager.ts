@@ -1353,6 +1353,9 @@ export class ThreadManager implements OrchestratorApi {
     // window reset. This closes the boot gap before AccountManager's first refresh reaches us.
     // An owner bypass of the current crossing is restored first: it outranks the park-row inference.
     this.tokenSafetyBypass = this.loadTokenSafetyBypass();
+    this.subscriptionTokenSafety()?.setTokenSafetyLimit(
+      this.settings().tokenLimitEnabled && !this.tokenSafetyBypass ? this.settings().tokenLimitPercent : null,
+    );
     const safetyParks =
       this.settings().tokenLimitEnabled && !this.tokenSafetyBypass
         ? this.db.listThreadsByStates(["review", "failed"]).filter((thread) => this.tokenSafetyParked(thread))
@@ -1732,7 +1735,7 @@ export class ThreadManager implements OrchestratorApi {
     // which is a crashed process rather than a skipped sweep. A closed DB means there is nothing left to
     // resume anyway.
     if (!this.db.raw.open) return;
-    if (this.tokenLimitTripped) return; // safety freeze owns release until a fresh below-threshold reading
+    if (this.tokenSafetyStopping || (this.tokenLimitTripped && !this.subscriptionTokenSafety())) return;
     // A capacity wake is fresh work. Let the staged build restart first; the new process re-arms the
     // durable cap marker and launches it with current code instead of extending the drain indefinitely.
     if (this.restartDrainActive()) return;
@@ -1794,16 +1797,19 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   /**
-   * Token-usage safety limit (opt-in). When live utilization reaches the operator-set threshold, park
-   * every running pipeline and freeze fresh dispatches. Driven by the AccountManager usage-refresh hook
+   * Token-usage safety limit (opt-in). Exclude each subscription that reaches the threshold, park
+   * only its running pipelines, and resume saved work on eligible capacity. Driven by the usage-refresh hook
    * (~10-min ping + window-reset pings) and by setSettings, so it lags a fast burn by minutes — a proactive
    * net layered under the immediate HARD_LIMIT=98 failover, not a hard realtime cutoff. The freeze clears
-   * only when a fresh reading falls below the threshold; the parked tasks then use normal capacity resume.
+   * only on that subscription's reset or below-limit reading. Other subscriptions and backends keep running.
    */
   private enforceTokenSafetyLimit(): void {
     const { tokenLimitEnabled, tokenLimitPercent } = this.settings();
+    const scoped = this.subscriptionTokenSafety();
+    scoped?.setTokenSafetyLimit(tokenLimitEnabled ? tokenLimitPercent : null);
     const util = this.accounts.effectiveUtilization();
-    if (!tokenLimitEnabled || util == null || util < tokenLimitPercent) {
+    const blocked = scoped?.tokenSafetyBlockedAccounts();
+    if (!tokenLimitEnabled || (blocked ? blocked.length === 0 : util == null || util < tokenLimitPercent)) {
       // A real below-limit reading (or the safety being switched off) ends the crossing an owner bypass
       // covered, so the NEXT crossing trips normally. Missing telemetry proves nothing and keeps the bypass.
       const bypassEnded = !!this.tokenSafetyBypass && (!tokenLimitEnabled || util != null);
@@ -1818,13 +1824,51 @@ export class ThreadManager implements OrchestratorApi {
       if (released || bypassEnded) this.publishTokenSafety();
       return;
     }
-    if (this.tokenLimitTripped) return; // already fired for this crossing
-    if (this.tokenSafetyBypass) return; // the owner bypassed this crossing; it re-arms below the limit
+    if (this.tokenSafetyBypass) {
+      scoped?.setTokenSafetyLimit(null);
+      return;
+    }
+    if (this.tokenSafetyStopping || (this.tokenLimitTripped && !scoped)) return;
     this.tokenLimitTripped = true;
-    this.tokenLimitTrippedAt = Date.now();
-    this.tokenSafetyStopping = this.stopAllForTokenLimit(util, tokenLimitPercent).finally(() => {
+    this.tokenLimitTrippedAt ??= Date.now();
+    const targets = scoped ? this.tasksOnSafetyBlockedAccounts(blocked!) : [...this.activePipelines];
+    if (scoped && targets.length === 0) {
+      this.publishTokenSafety();
+      this.pumpQueue();
+      this.resumeCapParked();
+      return;
+    }
+    this.tokenSafetyStopping = this.stopAllForTokenLimit(util ?? tokenLimitPercent, tokenLimitPercent, targets).finally(() => {
       this.tokenSafetyStopping = null;
+      if (scoped) this.recoverReleasedCapacity();
     });
+  }
+
+  private subscriptionTokenSafety(): {
+    setTokenSafetyLimit: (threshold: number | null) => void;
+    tokenSafetyBlockedAccounts: () => Array<{ id: string }>;
+  } | null {
+    const api = this.accounts;
+    return typeof api.setTokenSafetyLimit === "function" && typeof api.tokenSafetyBlockedAccounts === "function" ? api : null;
+  }
+
+  private tasksOnSafetyBlockedAccounts(blocked: Array<{ id: string }>): string[] {
+    const accountIds = new Set(blocked.map((account) => account.id));
+    return [...this.activePipelines].filter((id) => {
+      const live = this.live.get(id);
+      if (live && accountIds.has(live.accountId)) return true;
+      return this.db.listRuns(id).some((run) =>
+        !run.endedAt && ["starting", "running", "idle"].includes(run.state) && !!run.account && accountIds.has(run.account));
+    });
+  }
+
+  /** A blocked subscription holds only work with no eligible alternate for its current stage/model. */
+  private tokenSafetyBlocks(thread: Thread | null | undefined, role?: CapParkStage): boolean {
+    if (!this.tokenLimitTripped) return false;
+    if (!this.subscriptionTokenSafety()) return true;
+    if (!thread) return false;
+    const stage = role ?? this.capParkStage(thread);
+    return !this.capacitySnapshotForThread(thread, stage, this.capacityDemand(thread, stage)).ready.length;
   }
 
   /** What the console's Token Safety box renders. Cheap: one indexed state read plus the in-memory queue. */
@@ -1832,7 +1876,10 @@ export class ThreadManager implements OrchestratorApi {
     const { tokenLimitPercent } = this.settings();
     const held = this.tokenLimitTripped ? this.tokenSafetyHeldThreads().length : 0;
     const queued = this.tokenLimitTripped
-      ? this.dispatchQueue.filter((id) => this.db.getThread(id)?.state === "queued").length
+      ? this.dispatchQueue.filter((id) => {
+        const thread = this.db.getThread(id);
+        return thread?.state === "queued" && this.tokenSafetyBlocks(thread);
+      }).length
       : 0;
     return {
       tripped: this.tokenLimitTripped,
@@ -1881,6 +1928,7 @@ export class ThreadManager implements OrchestratorApi {
     this.tokenLimitTripped = false;
     this.tokenLimitTrippedAt = null;
     this.tokenSafetyBypass = { at: Date.now(), threshold: tokenLimitPercent, resumed: 0, waiting: 0 };
+    this.subscriptionTokenSafety()?.setTokenSafetyLimit(null);
     const pct = util == null ? "unknown" : `${Math.round(util)}%`;
     this.hub.log("warn", `Token safety bypassed by the owner at ${pct} usage (limit ${tokenLimitPercent}%). Resuming ${held.length} held task(s).`);
     this.pumpQueue();
@@ -1915,12 +1963,10 @@ export class ThreadManager implements OrchestratorApi {
     this.hub.log("info", "Token safety bypass ended; the next crossing of the limit will freeze work again.");
   }
 
-  /** Park running work in the durable capacity-wait state, preserving every run/session. Queued work is
-   *  left queued: the global freeze in enqueueOrRun/pumpQueue prevents it from starting until reset. */
-  private async stopAllForTokenLimit(util: number, threshold: number): Promise<void> {
-    const targets = [...this.activePipelines];
+  /** Park affected work durably before stopping its runs. Eligible alternate capacity can resume it. */
+  private async stopAllForTokenLimit(util: number, threshold: number, targets = [...this.activePipelines]): Promise<void> {
     const pct = Math.round(util);
-    this.hub.log("warn", `Token safety limit reached (${pct}% ≥ ${threshold}%) — parking ${targets.length} active task(s).`);
+    this.hub.log("warn", `Subscription token safety limit reached (${threshold}%) — parking ${targets.length} affected task(s).`);
     // Write every durable park before awaiting a provider stop. Each setState releases a slot and pumps
     // the queue, whose safety gate must already see tokenLimitTripped=true.
     for (const id of targets) this.parkForTokenSafety(id, pct, threshold);
@@ -1933,8 +1979,8 @@ export class ThreadManager implements OrchestratorApi {
     const title = "Token safety limit reached";
     const message =
       targets.length > 0
-        ? `Token usage reached ${pct}% (your safety limit is ${threshold}%). ${targets.length} active task${targets.length === 1 ? " was" : "s were"} paused with its session preserved. New work is held until the blocking window resets; paused work then resumes automatically.`
-        : `Token usage reached ${pct}% (your safety limit is ${threshold}%). No task was running; new work is held until the blocking window resets.`;
+        ? `${targets.length} task${targets.length === 1 ? " reached" : "s reached"} a subscription's safety limit (${threshold}%). Saved work continues automatically on an eligible subscription or backend, or waits for its blocking window to reset.`
+        : `A subscription reached your safety limit (${threshold}%). Work can continue on eligible subscriptions and backends.`;
     this.hub.publish({ type: "notice", level: "warn", title, message, kind: "tokenSafety" });
     this.notifyExternal(`🛑 ${title} — ${message}`);
   }
@@ -1944,7 +1990,7 @@ export class ThreadManager implements OrchestratorApi {
     if (!thread || ["done", "cancelled", "closed"].includes(thread.state)) return;
     const stage: CapParkStage =
       thread.state === "qa" ? "qa" : thread.state === "researching" ? "researcher" : thread.state === "planning" ? "planner" : thread.lane === "read" ? "reader" : "implementor";
-    const error = `${TOKEN_SAFETY_PARK_PREFIX} (${stage} stage) — usage reached ${util}% (limit ${threshold}%). The saved work resumes automatically when the blocking window resets.`;
+    const error = `${TOKEN_SAFETY_PARK_PREFIX} (${stage} stage) — subscription reached the ${threshold}% limit. Saved work resumes automatically on eligible capacity or when its blocking window resets.`;
     this.dropFromQueue(threadId);
     this.setState(threadId, "review", error);
     const pendingApproval = this.pendingApprovals.get(threadId);
@@ -2009,7 +2055,7 @@ export class ThreadManager implements OrchestratorApi {
     this.tokenResumeTimer = undefined;
     this.tokenResumeArmedFor = undefined;
     this.db.kvSet("token_resume_wakeup_at", "");
-    if (this.tokenLimitTripped) {
+    if (this.tokenLimitTripped && !this.subscriptionTokenSafety()) {
       const next = this.tokenSafetyResetAt(this.settings().tokenLimitPercent);
       if (next != null && next > Date.now()) this.armTokenResume(next);
       else this.hub.log("info", "Token reset wake fired while the safety freeze is still active; waiting for fresh usage telemetry.");
@@ -2726,7 +2772,7 @@ export class ThreadManager implements OrchestratorApi {
       this.hub.log("info", `Auto-resume of "${thread.title.slice(0, 48)}" deferred — GGO is restarting again.`);
       return true;
     }
-    if (this.tokenLimitTripped) {
+    if (this.tokenSafetyBlocks(thread)) {
       // The token-safety freeze owns every start until its window resets. Park exactly as the freeze
       // would have parked it, so the reset wake (and an owner bypass) resumes it with everything else.
       this.parkRestartResumeForTokenSafety(thread);
@@ -7518,7 +7564,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (this.restartDrainActive()) {
       return { ok: false, state: thread.state, error: "GGO is restarting. Start the task after it reconnects." };
     }
-    if (this.tokenLimitTripped) {
+    if (this.tokenSafetyBlocks(thread)) {
       return { ok: false, state: thread.state, error: "Token safety is holding new work until the blocking usage window resets." };
     }
     if (this.coworkBlocks(thread)) {
@@ -7535,7 +7581,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   /** Start fresh work or queue it until both concurrency limits permit a launch. */
   private enqueueOrRun(threadId: string): void {
     const thread = this.db.getThread(threadId);
-    if (this.tokenLimitTripped) {
+    if (this.tokenSafetyBlocks(thread)) {
       if (!this.dispatchQueue.includes(threadId)) this.dispatchQueue.push(threadId);
       this.setState(threadId, "queued");
       this.hub.log("info", `Task ${threadId.slice(0, 8)} queued — the token safety freeze is waiting for a window reset.`);
@@ -7666,7 +7712,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   /** One FIFO pass over the dispatch queue. Skips entries no longer in 'queued' — cancelled/dismissed
    *  while waiting. Call `pumpQueue`, never this. */
   private pumpQueueOnce(): void {
-    if (this.restartDrainActive() || this.tokenLimitTripped) return;
+    if (this.restartDrainActive() || (this.tokenLimitTripped && !this.subscriptionTokenSafety())) return;
     const cap = this.settings().maxConcurrent;
     // Scan the FIFO queue rather than only peeling the head: a task blocked by its repo's per-repo cap
     // must NOT block a queued task for a DIFFERENT (free) repo behind it. startPipeline adds to
@@ -7680,7 +7726,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         this.dispatchQueue.splice(i, 1); // stale entry (cancelled/dismissed while waiting) — drop it
         continue;
       }
-      if (this.repoAtCapacity(t)) {
+      if (this.repoAtCapacity(t) || this.tokenSafetyBlocks(t)) {
         i++; // this repo is at its cap — leave the task queued and try the next one
         continue;
       }
@@ -13909,7 +13955,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       void this.subTasks.runJev(thread);
       return { ok: true, state: "implementing" };
     }
-    if (this.tokenLimitTripped && !this.activePipelines.has(threadId) && !this.hasActiveRun(threadId)) {
+    if (this.tokenSafetyBlocks(thread) && !this.activePipelines.has(threadId) && !this.hasActiveRun(threadId)) {
       return { ok: false, state: thread.state, error: "Token safety is holding new work until the blocking usage window resets." };
     }
     if (message?.trim()) {
@@ -14361,7 +14407,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       !!this.pendingResumeMsgs.get(id)?.length ||
       this.reviewInjections.listOpen(id).length > 0;
     if (pendingInput) return { kind: "waiting", reason: `Owner input is pending on step task ${id8}; it goes before the goal's next turn.` };
-    if (this.tokenLimitTripped) return { kind: "usage_limited", reason: "Token safety is holding new work until the blocking usage window resets." };
+    if (this.tokenSafetyBlocks(thread)) return { kind: "usage_limited", reason: "Token safety is holding this task until an eligible subscription has capacity." };
     if (this.restartDrainActive()) return { kind: "waiting", reason: "GGO is restarting; the goal continues once it is back." };
     const cap = this.settings().maxConcurrent;
     if (this.activePipelines.size >= cap) return { kind: "waiting", reason: `${this.activePipelines.size}/${cap} tasks are running at the concurrency cap.` };
@@ -14627,7 +14673,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // editing implementor on that question, so there is nothing safe for this loop to review.
     if (thread.lane === "read") return { ok: false, state: "done", error: "A read-only answer has no implementation for QA to review." };
     if (this.restartDrainActive()) return { ok: false, state: "done", error: "GGO is restarting now. Start QA once the console reconnects." };
-    if (this.tokenLimitTripped) return { ok: false, state: "done", error: "Token safety is holding new work until the blocking usage window resets." };
+    if (this.tokenSafetyBlocks(thread, "qa")) return { ok: false, state: "done", error: "Token safety is holding this task until an eligible subscription has capacity." };
     if (this.coworkWorkspaceBusy?.(thread.workspace)) return { ok: false, state: "done", error: "A Co-worker turn is using this workspace. Wait for it to finish before starting QA." };
     thread = await this.ensureWorktreesPresent(thread);
     if (!existsSync(thread.workspace)) return { ok: false, state: "done", error: `Workspace "${thread.workspace}" does not exist.` };

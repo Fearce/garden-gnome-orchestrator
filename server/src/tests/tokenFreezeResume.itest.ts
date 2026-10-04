@@ -46,6 +46,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
+const { AccountManager: RealAccounts } = await import("../accounts/accountManager.js");
 const { MAX_CAPACITY_STALL_RESUMES } = await import("../orchestrator/capacityStall.js");
 
 // The exact CAP_PARK marker the supervisor keys off (private in threadManager.ts — mirrored here on purpose).
@@ -126,7 +127,7 @@ interface Harness {
   dispose(): void;
 }
 
-function makeHarness(options: { legacyResumeSettings?: boolean } = {}): Harness {
+function makeHarness(options: { legacyResumeSettings?: boolean; accounts?: AccountManager } = {}): Harness {
   const dir = mkdtempSync(join(tmpdir(), "tf-resume-"));
   const dbPath = join(dir, "orchestrator.sqlite");
   const workspace = join(dir, "workspace");
@@ -144,7 +145,7 @@ function makeHarness(options: { legacyResumeSettings?: boolean } = {}): Harness 
   });
   const memory = new FileMemoryService(join(dir, "memory"));
   const stub = new StubAccounts();
-  const mgr = new ThreadManager(db, hub, memory, stub as unknown as AccountManager);
+  const mgr = new ThreadManager(db, hub, memory, options.accounts ?? stub as unknown as AccountManager);
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = mgr as any;
@@ -190,10 +191,10 @@ function makeHarness(options: { legacyResumeSettings?: boolean } = {}): Harness 
 /** Seed a mock task frozen mid-implementor: a persisted kickoff (so a resume skips the planner), an
  *  implementor run carrying an SDK session id (the "journal"), and the given frozen state. Returns the
  *  thread id and the session id a correct resume MUST recover. */
-function seedFrozenTask(h: Harness, frozenState: ThreadState, capParked = false): { threadId: string; session: string } {
+function seedFrozenTask(h: Harness, frozenState: ThreadState, capParked = false, account = "sub-alpha"): { threadId: string; session: string } {
   const t = h.db.createThread({ title: "mock long task", workspace: h.workspace, rawPrompt: "count slowly to 1e9" });
   h.db.updateThreadStageOutputs(t.id, { kickoff: "KICKOFF: mock long task — original brief", planDone: true, approved: true });
-  const run = h.db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-4-8", account: "sub-alpha" });
+  const run = h.db.createRun({ threadId: t.id, role: "implementor", model: "claude-opus-4-8", account });
   const session = `sess-${t.id.slice(0, 8)}`;
   h.db.updateRun(run.id, { sessionId: session, state: "idle" });
   h.db.updateThread(t.id, {
@@ -225,6 +226,68 @@ function stallResumesUsed(h: Harness, threadId: string): number {
 // ====================================================================================================
 async function main(): Promise<void> {
   console.log("\n=== Token-freeze → reset → auto-resume — integration test (real machinery) ===\n");
+
+  console.log("Test S — safety holds only the affected subscription and resumes on an alternate");
+  {
+    const accounts = new RealAccounts([
+      { id: "sub-alpha", label: "alpha", token: "" },
+      { id: "sub-beta", label: "beta", token: "" },
+    ], new EventHub());
+    const states = (accounts as any).states;
+    const h = makeHarness({ accounts });
+    const internals = h.mgr as any;
+    try {
+      h.mgr.setSettings({ tokenLimitEnabled: true, tokenLimitPercent: 80, maxConcurrent: 8 });
+      const affected = seedFrozenTask(h, "implementing");
+      const healthy = seedFrozenTask(h, "implementing", false, "sub-beta");
+      const external = seedFrozenTask(h, "implementing", false, "openai-codex");
+      for (const id of [affected.threadId, healthy.threadId, external.threadId]) internals.activePipelines.add(id);
+      const stops: string[] = [];
+      internals.forceStopThreadRuns = async (id: string) => {
+        stops.push(id);
+        for (const run of h.db.listRuns(id)) h.db.updateRun(run.id, { state: "done", endedAt: Date.now() });
+        internals.activePipelines.delete(id);
+      };
+      const now = Date.now();
+      Object.assign(states.get("sub-alpha"), { fiveHour: 90, fiveHourReset: now + 3_600_000, sevenDay: 20, sevenDayReset: now + 86_400_000 });
+      Object.assign(states.get("sub-beta"), { fiveHour: 5, fiveHourReset: now + 3_600_000, sevenDay: 5, sevenDayReset: now + 86_400_000 });
+      internals.enforceTokenSafetyLimit();
+      await internals.tokenSafetyStopping;
+      check("only the over-limit subscription's task was stopped", stops.join() === affected.threadId, JSON.stringify(stops));
+      check("another Claude subscription keeps running", h.db.getThread(healthy.threadId)?.state === "implementing");
+      check("another backend keeps running", h.db.getThread(external.threadId)?.state === "implementing");
+      check("the affected task has a durable session-preserving park", h.db.getThread(affected.threadId)?.error?.includes("token safety limit") === true);
+      check("safety routes dispatch to the healthy subscription", accounts.select().account.id === "sub-beta");
+      internals.resumeCapParked();
+      await delay(180);
+      check("the held task resumes while the original subscription stays blocked", h.resumeCalls.some((call) => call.threadId === affected.threadId && call.resumeSession === affected.session), JSON.stringify(h.resumeCalls));
+      check("the resumed task completes with safety still active on alpha", h.db.getThread(affected.threadId)?.state === "done" && h.mgr.tokenSafetyState().tripped);
+      let starts = 0;
+      internals.startPipeline = () => starts++;
+      const queued = h.db.createThread({ title: "new work on healthy sub", workspace: h.workspace, rawPrompt: "p" });
+      internals.enqueueOrRun(queued.id);
+      check("fresh work starts using an eligible subscription", starts === 1);
+
+      states.get("sub-beta").sevenDay = 90;
+      internals.enforceTokenSafetyLimit();
+      await internals.tokenSafetyStopping;
+      const blocked = h.db.createThread({ title: "both subscriptions blocked", workspace: h.workspace, rawPrompt: "p" });
+      internals.enqueueOrRun(blocked.id);
+      check("work without an eligible alternative waits", h.db.getThread(blocked.id)?.state === "queued" && starts === 1);
+      // Strict model capacity preserves provider intent: an unrelated backend can still start.
+      const pinned = h.db.createThread({ title: "pinned external backend", workspace: h.workspace, rawPrompt: "p", modelRequest: { requested: "codex", provider: "codex", model: "gpt-6.1", strict: true } });
+      internals.requestedModelCapacitySnapshot = () => ({ options: [], ready: [{ provider: "codex", label: "Codex", windows: [], hasHeadroom: true }] });
+      internals.enqueueOrRun(pinned.id);
+      check("a task pinned to an available other backend can start", starts === 2);
+      check("Resume anyway clears subscription safety eligibility", (await h.mgr.bypassTokenSafety()).ok && accounts.tokenSafetyBlockedAccounts().length === 0);
+      states.get("sub-beta").sevenDay = 5;
+      internals.enforceTokenSafetyLimit();
+      check("a healthy sub does not cancel the owner's bypass of another sub", !h.mgr.tokenSafetyState().tripped && accounts.hasHeadroom());
+    } finally {
+      await delay(300);
+      h.dispose();
+    }
+  }
 
   // -- Test A: old persisted OFF values cannot disable the now-unconditional recovery -----------------
   console.log("Test A — legacy toggle rows are removed and cannot disable reset recovery");

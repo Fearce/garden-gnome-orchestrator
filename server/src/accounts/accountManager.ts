@@ -163,10 +163,10 @@ const BOOT_TRUST_MS = 30 * 60 * 1000;
 const MODEL_LIMIT_FALLBACK_MS = 5 * 60 * 60 * 1000;
 
 const tightest = (s: AccountState): number => Math.max(s.fiveHour ?? 0, s.sevenDay ?? 0);
-const accountCapacityWindows = (s: AccountState, now: number): CapacityWindow[] => {
+const accountCapacityWindows = (s: AccountState, now: number, limit = HARD_LIMIT): CapacityWindow[] => {
   const windows = capacityWindowsWithFreshness(
     standardCapacityWindows(s.fiveHour, s.fiveHourReset, s.sevenDay, s.sevenDayReset),
-    HARD_LIMIT,
+    Math.min(HARD_LIMIT, limit),
     s.usageStale,
     now,
   );
@@ -342,6 +342,7 @@ export class AccountManager {
   // When on, selection targets the sub with the lowest weekly usage to balance burn across all subs,
   // overriding the default perishable-first order. Operator toggle ("Spread usage"), applied on boot.
   private spreadUsage = false;
+  private tokenSafetyLimit: number | null = null;
   // "Prepare a sub for reset": while set (and before `until`), this account takes every dispatch it has
   // hard headroom for. ThreadManager owns the persisted burn and ends it; this is the live copy select() reads.
   private resetBurn: { accountId: string; until: number } | null = null;
@@ -1010,8 +1011,34 @@ export class AccountManager {
     return this.states.get(accountId)?.account;
   }
 
+  /** Safety is an availability gate for each subscription, independent of the soft weekly preference. */
+  setTokenSafetyLimit(threshold: number | null): void {
+    this.tokenSafetyLimit = threshold != null && Number.isFinite(threshold)
+      ? Math.min(100, Math.max(1, threshold))
+      : null;
+  }
+
+  tokenSafetyBlockedAccounts(now = Date.now()): Account[] {
+    return [...this.states.values()]
+      .filter((state) => !this.accountHasSafetyHeadroom(state, now))
+      .map((state) => state.account);
+  }
+
+  private accountHasSafetyHeadroom(state: AccountState, now: number): boolean {
+    const threshold = this.tokenSafetyLimit;
+    if (threshold == null) return true;
+    const blocked = (used: number | null, reset: number | null): boolean =>
+      used != null && used >= threshold && (reset == null || reset > now);
+    return !blocked(state.fiveHour, state.fiveHourReset) && !blocked(state.sevenDay, state.sevenDayReset);
+  }
+
   /** Pick the best account for the next dispatch, reserving enough visible runway for `demand`. */
   select(demand?: CapacityDemand): { account: Account; reason: string } {
+    const all = [...this.states.values()];
+    const enabled = all.filter((state) => state.enabled);
+    if (!(enabled.length ? enabled : all).some((state) => this.accountHasSafetyHeadroom(state, Date.now()))) {
+      throw new Error("Token safety limit reached on every subscription");
+    }
     if (this.accounts.length <= 1) {
       // loadAccounts() always yields ≥1 account (a synthetic "logged-in" entry when no tokens are
       // configured), so accounts[0] is always defined — no synthetic fallback needed here.
@@ -1054,7 +1081,7 @@ export class AccountManager {
     const { usable, pool, allOverSafety, capacity } = this.selectionPool(now, demand);
     pool.sort(this.primaryOrder(allOverSafety));
     const chosen = pool[0]!;
-    const capacityWindows = accountCapacityWindows(chosen, now);
+    const capacityWindows = accountCapacityWindows(chosen, now, this.tokenSafetyLimit ?? HARD_LIMIT);
     return {
       account: chosen.account,
       hasHeadroom: usable.includes(chosen),
@@ -1080,13 +1107,13 @@ export class AccountManager {
     const candidates = [...this.states.values()].filter((s) => {
       if (s.account.id === excludeId || !s.enabled) return false;
       const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
-      return !limited && accountHasHardHeadroom(s, now);
+      return !limited && accountHasHardHeadroom(s, now) && this.accountHasSafetyHeadroom(s, now);
     });
     if (!candidates.length) return null;
     // Honor the soft weekly ceiling here too: fail over to a sub still under its ceiling when one exists,
     // else use whichever capped-out candidate has the most headroom rather than stranding the task.
     const capacity = demand
-      ? preferCapacity(candidates, (candidate) => accountCapacityWindows(candidate, now), demand, now)
+      ? preferCapacity(candidates, (candidate) => accountCapacityWindows(candidate, now, this.tokenSafetyLimit ?? HARD_LIMIT), demand, now)
       : undefined;
     // Forecasts rank subscriptions but never block failover. A real provider rejection is the
     // authority; the caller then continues on the next account with its saved session.
@@ -1110,8 +1137,8 @@ export class AccountManager {
    *  the call is about to start that window anyway, so the idle plan would become a lie. */
   auxToken(): string | undefined {
     const now = Date.now();
-    const states = [...this.states.values()];
-    const preferred = this.preferredId ? this.states.get(this.preferredId) : undefined;
+    const states = [...this.states.values()].filter((state) => this.accountHasSafetyHeadroom(state, now));
+    const preferred = states.find((state) => state.account.id === this.preferredId);
     const live = (s: AccountState | undefined): boolean =>
       !!s?.account.token && s.fiveHourReset != null && s.fiveHourReset > now && !this.inHold(s, now);
     const pick = (live(preferred) ? preferred : undefined) ?? states.find((s) => s.enabled && live(s)) ?? preferred ?? states[0];
@@ -1159,13 +1186,13 @@ export class AccountManager {
     const enabled = all.filter((state) => state.enabled);
     const base = enabled.length ? enabled : all;
     return base.map((state) => {
-      const windows = accountCapacityWindows(state, now);
+      const windows = accountCapacityWindows(state, now, this.tokenSafetyLimit ?? HARD_LIMIT);
       const limited = state.rateLimited && (state.rateLimitResetAt == null || state.rateLimitResetAt > now);
       return {
         account: state.account,
         windows,
         assessment: assessCapacity(windows, demand, now),
-        hasHeadroom: !limited && accountHasHardHeadroom(state, now),
+        hasHeadroom: !limited && accountHasHardHeadroom(state, now) && this.accountHasSafetyHeadroom(state, now),
         nextViableAt: nextViableAt(windows, demand, now),
       };
     });
@@ -1209,7 +1236,8 @@ export class AccountManager {
   tokenSafetyResetAt(threshold: number, now = Date.now()): number | null {
     const all = [...this.states.values()];
     const enabledStates = all.filter((s) => s.enabled);
-    const base = (enabledStates.length ? enabledStates : all).filter(hasBurnData);
+    const base = (enabledStates.length ? enabledStates : all).filter((state) =>
+      hasBurnData(state) && (this.tokenSafetyLimit !== threshold || !this.accountHasSafetyHeadroom(state, now)));
     const accountResets: number[] = [];
     for (const state of base) {
       const blockers: Array<number | null> = [];
@@ -1282,13 +1310,14 @@ export class AccountManager {
     const base = enabledStates.length ? enabledStates : all;
     const usable = base.filter((s) => {
       const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
-      return !limited && accountHasHardHeadroom(s, now);
+      return !limited && accountHasHardHeadroom(s, now) && this.accountHasSafetyHeadroom(s, now);
     });
     // First keep a long task off a pool that cannot plausibly carry it. The soft weekly ceiling and the
     // operator's spread/perishable preference are tiebreaks INSIDE that capacity tier, never above it.
-    const hardCandidates = usable.length ? usable : base;
+    const safetyCandidates = base.filter((state) => this.accountHasSafetyHeadroom(state, now));
+    const hardCandidates = usable.length ? usable : safetyCandidates.length ? safetyCandidates : base;
     const capacity = demand
-      ? preferCapacity(hardCandidates, (state) => accountCapacityWindows(state, now), demand, now)
+      ? preferCapacity(hardCandidates, (state) => accountCapacityWindows(state, now, this.tokenSafetyLimit ?? HARD_LIMIT), demand, now)
       : undefined;
     const burning = this.burningAmong(usable, now);
     if (burning) return { usable, pool: [burning], allOverSafety: false, capacity };

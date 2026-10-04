@@ -43,6 +43,8 @@ const DAY = 24 * HOUR;
 // Byte-identical to threadManager.ts TOKEN_SAFETY_PARK_PREFIX (the separator is an em dash).
 const DASH = String.fromCodePoint(0x2014);
 const SAFETY_PREFIX = `⏳ Auto-resume pending ${DASH} token safety limit`;
+const DONE_ID = "7a5e0000-0000-4000-8000-00000000d00e";
+const QUEUED_ID = "7a5e0000-0000-4000-8000-00000000a00e";
 const ACCOUNT_ENV = { ACCOUNT_1_ID: "acct1", ACCOUNT_1_LABEL: "personal", ACCOUNT_2_ID: "acct2", ACCOUNT_2_LABEL: "secondary" };
 const check = createChecks();
 
@@ -104,6 +106,10 @@ function seed(db, workspace) {
     at,
     at,
   );
+  for (const [fixtureId, state] of [[DONE_ID, "done"], [QUEUED_ID, "queued"]]) {
+    db.prepare(`INSERT INTO threads (id, title, workspace, state, raw_prompt, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(fixtureId, `Lab: ${state} safety controls`, workspace, state, "lab prompt", at, at);
+  }
   return id;
 }
 
@@ -209,6 +215,17 @@ async function main() {
     check("the Token Safety box is on screen", await visible(page, box), `lab log: ${path.join(dataDir, "lab.log")}`);
     const text = await page.locator(box).innerText().catch(() => "");
     check("it names the freeze and counts the held task", /Token safety limit reached/.test(text) && /1 task is paused/.test(text), text);
+    check("it explains that other subscriptions and backends can continue", /Work continues on eligible subscriptions and backends/.test(text), text);
+    await context.close();
+    const controls = await openConsole(browser, "controls");
+    await controls.page.locator(`${box} .notice-x`).click();
+    for (const [id, label] of [[DONE_ID, "Start QA"], [QUEUED_ID, "Start immediately"]]) {
+      await controls.page.locator(`.card[data-thread-id="${id}"]`).click({ position: { x: 14, y: 10 } });
+      check(`${label} remains available while another subscription is held`, await controls.page.getByRole("button", { name: label, exact: true }).isEnabled());
+      await controls.page.locator(".task-close").click();
+    }
+    await controls.context.close();
+    ({ context, page } = await openConsole(browser, "freeze"));
     check("it offers Resume anyway", await page.locator('[data-testid="token-safety-bypass"]').isEnabled().catch(() => false));
     check("the risk note sits next to the button", /hard cap/.test(text) && /re-arms once usage drops below 80%/.test(text), text);
     for (const theme of [null, "nocturne"]) {
@@ -272,7 +289,7 @@ async function main() {
     ({ context, page } = await openConsole(browser, "refreeze"));
     check("the next crossing shows the freeze box again", await visible(page, box, 30_000));
     const refrozen = await page.locator(box).innerText().catch(() => "");
-    check("it reports the new reading", /Token safety limit reached/.test(refrozen) && /92%/.test(refrozen), refrozen);
+    check("it reports the subscription safety limit", /Token safety limit reached/.test(refrozen) && /80% safety limit/.test(refrozen), refrozen);
     await page.screenshot({ path: path.join(shots, "refrozen.png"), clip: { x: 300, y: 40, width: 840, height: 340 } });
     await context.close();
   } finally {

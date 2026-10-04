@@ -634,7 +634,6 @@ export function ThreadDetail() {
   const markDone = useStore((s) => s.markDone);
   const startQa = useStore((s) => s.startQa);
   const startQaSupported = useStore((s) => s.startQaSupported);
-  const tokenSafetyTripped = useStore((s) => !!s.tokenSafety?.tripped);
   const autoReview = useStore((s) => s.autoReview);
   const select = useStore((s) => s.select);
   const loadOlderThreadHistory = useStore((s) => s.loadOlderThreadHistory);
@@ -1108,8 +1107,7 @@ export function ThreadDetail() {
                 <button
                   className="btn primary sm"
                   onClick={() => startImmediately(id)}
-                  disabled={tokenSafetyTripped}
-                  title={tokenSafetyTripped ? "Token safety is holding new work until the blocking usage window resets." : "Start this task despite the global and per-repository concurrency limits; settings stay unchanged"}
+                  title="Start this task despite the global and per-repository concurrency limits; subscription capacity still applies"
                 >
                   Start immediately
                 </button>
@@ -1169,10 +1167,9 @@ export function ThreadDetail() {
               )}
               {thread.state === "done" && thread.subTask?.provider !== "jev" && thread.lane !== "read" && (
                 <button
-                  className={"btn review sm" + (tokenSafetyTripped ? " frozen-ctl" : "")}
+                  className="btn review sm"
                   onClick={() => startQa(id)}
-                  disabled={tokenSafetyTripped}
-                  title={tokenSafetyTripped ? "Token safety is holding new work until the blocking usage window resets." : startQaSupported ? "Review the completed work through the normal QA and implementor fix loop" : "Waiting for the server update before QA can start"}
+                  title={startQaSupported ? "Review the completed work through the normal QA and implementor fix loop" : "Waiting for the server update before QA can start"}
                 >
                   Start QA
                 </button>

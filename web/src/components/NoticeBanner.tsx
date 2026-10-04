@@ -48,7 +48,7 @@ function heldSummary(state: TokenSafetyState): string {
   const parts: string[] = [];
   if (state.heldTasks) parts.push(`${plural(state.heldTasks, "task is", "tasks are")} paused with its saved session`);
   if (state.queuedTasks) parts.push(`${plural(state.queuedTasks, "new task is", "new tasks are")} held in the queue`);
-  return parts.length ? `${parts.join("; ")}.` : "No task is waiting yet; new work will be held.";
+  return parts.length ? `${parts.join("; ")}.` : "No task is waiting.";
 }
 
 function releaseSummary(state: TokenSafetyState): string {
@@ -56,7 +56,7 @@ function releaseSummary(state: TokenSafetyState): string {
     state.resetAt && state.resetAt > Date.now()
       ? ` The blocking window resets around ${clockHM(state.resetAt)} (in ${formatDuration(state.resetAt - Date.now())}).`
       : "";
-  return `It clears on its own once usage reads below ${state.threshold}%.${when}`;
+  return `Work continues on eligible subscriptions and backends. Held work resumes when capacity is available.${when}`;
 }
 
 /** The freeze itself, with the one-shot "Resume anyway" override and its risk note. */
@@ -64,7 +64,6 @@ function TokenSafetyFreeze({ state }: { state: TokenSafetyState }) {
   const bypass = useStore((s) => s.bypassTokenSafety);
   const bypassing = useStore((s) => s.tokenSafetyBypassing);
   const dismiss = useStore((s) => s.dismissTokenSafety);
-  const usage = state.utilization == null ? "Usage" : `Usage is at ${Math.round(state.utilization)}%`;
   return (
     <div className="notice-banner token-safety" role="alert" data-testid="token-safety-box">
       <span className="notice-icon" aria-hidden="true">
@@ -73,7 +72,7 @@ function TokenSafetyFreeze({ state }: { state: TokenSafetyState }) {
       <div className="notice-text">
         <div className="notice-title">Token safety limit reached</div>
         <div className="notice-message">
-          {usage} (your limit is {state.threshold}%). {heldSummary(state)} {releaseSummary(state)}
+          A subscription reached your {state.threshold}% safety limit. {heldSummary(state)} {releaseSummary(state)}
         </div>
         <div className="token-safety-actions">
           <button className="btn danger sm" disabled={bypassing} onClick={() => bypass()} data-testid="token-safety-bypass">
