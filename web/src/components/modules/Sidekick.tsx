@@ -297,8 +297,8 @@ function RuleDialog(props: { editing: Editing; revision: string | null; hubScrip
             <Field label="Script Hub entry" hint="Started and stopped through Script Hub. Or give a program path instead.">
               <input className="mod-input mono" list="sk-hub-scripts" value={companion.hubId ?? ""} onChange={(e) => patchCompanion(index, { hubId: e.target.value || null })} />
             </Field>
-            <Field label="Program path" wide>
-              <input className="mod-input mono" value={companion.exePath ?? ""} onChange={(e) => patchCompanion(index, { exePath: e.target.value || null })} placeholder="C:\Tools\Example\example.exe" />
+            <Field label="Program path" wide hint="The full path to the program's .exe, when it is not a Script Hub entry.">
+              <input className="mod-input mono" value={companion.exePath ?? ""} onChange={(e) => patchCompanion(index, { exePath: e.target.value || null })} />
             </Field>
             <Field label="Arguments">
               <input className="mod-input mono" value={companion.arguments ?? ""} onChange={(e) => patchCompanion(index, { arguments: e.target.value || null })} />

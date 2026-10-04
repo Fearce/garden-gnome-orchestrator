@@ -44,6 +44,7 @@ const USAGE_EXIT_CODE = 2;
 const GATES = [
   "test:ide",
   "test:remote-control",
+  "test:modules",
   "test:code-context",
   "test:cron",
   "test:weekly-safety",

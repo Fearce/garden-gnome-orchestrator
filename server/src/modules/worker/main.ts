@@ -56,7 +56,7 @@ class WorkerProcess {
     });
     const record: WorkerRecord = { module: this.module, pid: process.pid, port, token: this.token, build: this.build, startedAt: this.startedAt };
     await writeAtomic(this.paths.record, `${JSON.stringify(record)}\n`);
-    setInterval(() => this.checkIdle(), IDLE_CHECK_MS).unref();
+    setInterval(() => this.checkIdle(), Math.min(IDLE_CHECK_MS, Math.max(250, this.idleExitMs / 2))).unref();
     for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK"] as const) process.on(signal, () => void this.exit(`received ${signal}`));
     log(`${this.module} worker ready on 127.0.0.1:${port} (build ${this.build}, pid ${process.pid})`);
   }
@@ -141,7 +141,7 @@ class WorkerProcess {
 
   private checkIdle(): void {
     if (this.inflight > 0 || this.openStreams > 0 || this.host?.busy()) return;
-    if (Date.now() - this.lastActivityAt >= this.idleExitMs) void this.exit(`idle for ${Math.round(this.idleExitMs / 60_000)} min`);
+    if (Date.now() - this.lastActivityAt >= this.idleExitMs) void this.exit(`idle for ${Math.round(this.idleExitMs / 1000)}s`);
   }
 
   private async exit(reason: string): Promise<void> {
