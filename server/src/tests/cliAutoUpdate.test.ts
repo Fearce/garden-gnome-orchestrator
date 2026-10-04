@@ -97,6 +97,8 @@ interface RigOptions {
   behind?: number;
   /** A resolved lockfile that also moves these entries. */
   lockExtra?: Record<string, unknown>;
+  originUrl?: string;
+  noPushRepoPattern?: string;
   respond?: (line: string, rig: Rig, cwd: string) => ChildResult | undefined;
 }
 
@@ -146,7 +148,7 @@ function play(line: string, r: Rig, cwd: string, options: RigOptions): ChildResu
   }
   if (line.startsWith("git status")) return ok("");
   if (line.includes("rev-parse --abbrev-ref --symbolic-full-name")) return ok("origin/master\n");
-  if (line.startsWith("git remote get-url")) return ok("https://github.com/Fearce/claude-orchestrator.git\n");
+  if (line.startsWith("git remote get-url")) return ok(`${options.originUrl ?? "https://github.com/acme/claude-orchestrator.git"}\n`);
   return ok();
 }
 
@@ -188,6 +190,7 @@ function rig(options: RigOptions = {}): Rig {
     repoRoot: join(root, "repo"),
     serverRoot,
     stageRoot: r.stageRoot,
+    noPushRepoPattern: options.noPushRepoPattern,
     kvGet: r.kv.kvGet,
     kvSet: r.kv.kvSet,
     enabled: () => r.enabled,
@@ -447,6 +450,19 @@ check("an SDK bump stages, swaps, typechecks, commits only the package files, pu
   assert.equal(status.state, "updated");
   assert.equal(status.runtime, "2.1.285");
   cleanup(r);
+});
+
+check("an SDK bump in a repo matching NO_PUSH_REPO_PATTERN is committed but never pushed", async () => {
+  const held = rig({ latest: BUMP, originUrl: "https://git.example.com/client-work/orchestrator.git", noPushRepoPattern: "client-work" });
+  await held.updater.checkNow();
+  assert.ok(held.calls.some((c) => c.startsWith("git commit")), "the bump is still committed");
+  assert.ok(!held.calls.some((c) => c.startsWith("git push")), `a commit-only origin is never pushed:\n${held.calls.join("\n")}`);
+  cleanup(held);
+
+  const open = rig({ latest: BUMP, originUrl: "https://git.example.com/client-work/orchestrator.git" });
+  await open.updater.checkNow();
+  assert.ok(open.calls.some((c) => c.startsWith("git push")), "with no pattern configured every origin is pushed");
+  cleanup(open);
 });
 
 check("an SDK that breaks the typecheck is swapped back, restored byte for byte, remembered and not retried", async () => {

@@ -248,6 +248,7 @@ async function main(): Promise<void> {
   const cliUpdater = new CliAutoUpdater({
     repoRoot: resolve(config.serverRoot, ".."),
     serverRoot: config.serverRoot,
+    noPushRepoPattern: config.noPushRepoPattern,
     kvGet: (key) => db.kvGet(key),
     kvSet: (key, value) => db.kvSet(key, value),
     enabled: () => manager.settings().autoUpdateClis,

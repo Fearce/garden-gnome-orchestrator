@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { runChild, runChildInProcess, type ChildResult } from "../childRunner.js";
+import { isConfiguredCommitOnlyOrigin } from "../git/commitOnly.js";
 import type { CodexLauncher } from "../agents/codexLauncher.js";
 import type { RestartRequestResult } from "../orchestrator/restartCoordinator.js";
 import type { CliAutoUpdateStatus, CliUpdateComponent } from "../types.js";
@@ -32,7 +33,7 @@ const REGISTRY_TIMEOUT_MS = 15_000;
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
 const TYPECHECK_TIMEOUT_MS = 5 * 60_000;
 const GIT_TIMEOUT_MS = 60_000;
-// Kevin's global hook suite runs on every commit and can take minutes on a loaded box. Killing git
+// An operator's global git hook suite runs on every commit and can take minutes on a loaded box. Killing git
 // mid-commit strands .git/index.lock for every agent, so the deadline is generous.
 const COMMIT_TIMEOUT_MS = 10 * 60_000;
 // Another agent committing in this shared checkout holds index.lock for a few seconds.
@@ -56,6 +57,8 @@ export interface CliAutoUpdaterDeps {
   /** Scratch space for staged installs; defaults to `<serverRoot>/data/cli-auto-update` (same volume,
    *  so the swap is a rename). */
   stageRoot?: string;
+  /** NO_PUSH_REPO_PATTERN: a bump in a checkout whose remote matches it is committed, never pushed. */
+  noPushRepoPattern?: string;
   kvGet: (key: string) => string | null | undefined;
   kvSet: (key: string, value: string) => void;
   enabled: () => boolean;
@@ -940,13 +943,13 @@ export class CliAutoUpdater {
     }
   }
 
-  /** Push the bump when the branch tracks a remote. Never to a Vota remote: the owner pushes those. */
+  /** Push the bump when the branch tracks a remote. Never to a NO_PUSH_REPO_PATTERN remote: the owner pushes those. */
   private async push(): Promise<string> {
     const upstream = await this.git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
     if (upstream.code !== 0) return "committed locally; the branch tracks no upstream";
     const remote = upstream.stdout.trim().split("/")[0] ?? "";
     const url = await this.git(["remote", "get-url", remote]);
-    if (/vota/i.test(url.stdout)) return "committed locally; Vota remotes are pushed by hand";
+    if (isConfiguredCommitOnlyOrigin(url.stdout, this.deps.noPushRepoPattern ?? "")) return "committed locally; commit-only remotes are pushed by hand";
     const push = await this.git(["push"], COMMIT_TIMEOUT_MS);
     if (push.code === 0) return `pushed to ${upstream.stdout.trim()}`;
     this.deps.log("warn", `CLI auto-update: the bump is committed but the push failed — ${tail(push)}`);
