@@ -308,6 +308,20 @@ function squat() {
     check("a port held by another program reads as a conflict", firstPaint && /Something other than GGO/.test(state.detail ?? ""), JSON.stringify(state));
     check("…and offers no Start GGO", !state.buttons?.includes("Start GGO"), JSON.stringify(state.buttons));
     check("the connection page gets only its own bridge", await page.evaluate(() => typeof window.ggoConnect === "object" && typeof window.ggoDesktop === "undefined" && typeof window.require === "undefined" && typeof process === "undefined"));
+    const savedWindowPolicy = await app.evaluate(({ screen, BrowserWindow }, modulePath) => {
+      const { createMainWindow } = process.getBuiltinModule("module").createRequire(modulePath)(modulePath);
+      const { dirname, join } = process.getBuiltinModule("path");
+      const primary = screen.getPrimaryDisplay();
+      const secondary = screen.getAllDisplays().find((display) => display.id !== primary.id);
+      const saved = { x: primary.workArea.x + 40, y: primary.workArea.y + 30, width: 1000, height: 700, maximized: true };
+      const main = BrowserWindow.getAllWindows()[0];
+      const testWindow = createMainWindow({ saved, preload: main.webContents.getLastWebPreferences().preload, icon: join(dirname(modulePath), "static", "icon.png"), version: "0.1.0", linksRegistered: false });
+      const result = { primary: primary.id, secondary: secondary?.id, actual: screen.getDisplayMatching(testWindow.getNormalBounds()).id, maximized: testWindow.isMaximized(), visible: testWindow.isVisible() };
+      testWindow.destroy();
+      return result;
+    }, path.join(DESKTOP, "dist", "window.js"));
+    check("background launches ignore saved primary-monitor bounds when a secondary exists", !savedWindowPolicy.secondary || savedWindowPolicy.actual !== savedWindowPolicy.primary, JSON.stringify(savedWindowPolicy));
+    check("background launches never maximize or reveal a saved maximized test window", !savedWindowPolicy.maximized && !savedWindowPolicy.visible, JSON.stringify(savedWindowPolicy));
     await page.screenshot({ path: path.join(shots, "01-conflict.png") });
     await new Promise((done) => squatter.close(done));
 
@@ -476,6 +490,19 @@ function squat() {
 
     // ---- 6. external links leave for the system browser; nothing else leaves at all ----
     step("6");
+    const childPromise = app.waitForEvent("window");
+    await page.evaluate((base) => window.open(`${base}/`), BASE);
+    const child = await childPromise;
+    await waitForConsole(child);
+    const childPolicy = await app.evaluate(({ BrowserWindow, screen }) => {
+      const childWindow = BrowserWindow.getAllWindows().find((window) => !window.webContents.getLastWebPreferences().preload);
+      const preferences = childWindow.webContents.getLastWebPreferences();
+      const primary = screen.getPrimaryDisplay();
+      return { focused: childWindow.isFocused(), secondaryExists: screen.getAllDisplays().some((display) => display.id !== primary.id), onPrimary: screen.getDisplayMatching(childWindow.getBounds()).id === primary.id, sandbox: preferences.sandbox, isolated: preferences.contextIsolation, node: preferences.nodeIntegration };
+    });
+    check("a console child window stays in the background on the app's monitor", !childPolicy.focused && (!childPolicy.secondaryExists || !childPolicy.onPrimary), JSON.stringify(childPolicy));
+    check("child windows share authentication with no Node or preload bridge", childPolicy.sandbox && childPolicy.isolated && !childPolicy.node && await child.evaluate(() => !window.ggoDesktop && typeof require === "undefined"));
+    await child.close();
     const before = (await opened(app)).length;
     const popup = await page.evaluate(() => window.open("https://example.com/docs") === null);
     await page.evaluate(() => {

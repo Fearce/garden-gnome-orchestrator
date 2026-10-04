@@ -159,6 +159,8 @@ registers no `ggo://` handler and so never tells the server that this machine sh
 **Open in desktop**. Both also set `GGO_DESKTOP_BACKGROUND=1`, which opens the window on a monitor
 other than the primary one (the primary only when there is no other) and never takes focus, so a
 test run doesn't land on top of whatever you're doing.
+Background mode overrides saved primary-monitor positions when another monitor is available,
+does not restore a maximized window, and opens child windows without taking focus.
 
 `npm run probe:load --prefix desktop -- --out <folder>` measures a running GGO's `/api/me` and
 WebSocket latency with the app closed, open and closed again, plus the app's startup time, memory

@@ -6,7 +6,7 @@ import { APP_ORIGIN, classifyNavigation, classifyWindowOpen, isAppPage } from ".
 import { probeServer } from "./probe";
 import { consoleUrl, isLocalServer, isServerPage, isThreadId, normalizeServerUrl, redeemUrl, sameServer } from "./serverUrl";
 import { loadSettings, saveSettings, type DesktopSettings } from "./settings";
-import { applyTitleBarStyle, childWindowOptions, createMainWindow, currentBounds, openExternal, resetTitleBarStyle, revealWindow } from "./window";
+import { applyTitleBarStyle, backgroundWindows, childWindowOptions, createMainWindow, currentBounds, openExternal, resetTitleBarStyle, revealWindow } from "./window";
 
 const CONNECT_PAGE = `${APP_ORIGIN}/connect.html`;
 /** Seconds between automatic retries while nothing answers; the last value repeats. */
@@ -336,7 +336,10 @@ export class DesktopController {
       if (decision !== "child" || !this.win) return { action: "deny" };
       return { action: "allow", overrideBrowserWindowOptions: childWindowOptions(this.win, this.paths.icon) };
     });
-    contents.on("did-create-window", (child) => this.guardChild(child.webContents));
+    contents.on("did-create-window", (child) => {
+      this.guardChild(child.webContents);
+      if (backgroundWindows) child.once("ready-to-show", () => child.showInactive());
+    });
   }
 
   /** Child windows show console pages only; everything else they try goes to the system browser. */

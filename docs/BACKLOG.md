@@ -14,12 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: keep automated desktop windows off the primary monitor and repeat clean-exit verification** (2026-10-04, Codex QA; task 70393577).
-  Review saved bounds and child windows in background mode; repeat the real Electron/browser lab and packaged close/reopen check. Distribution deliverable cards remain an implementor handoff.
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 
 ## Shipped, awaiting live proof
 
+- **QA: keep automated desktop windows off the primary monitor and repeat clean-exit verification** (2026-10-04, Codex QA; task 70393577).
+  Electron/browser lab 59/59, gates 229/229, types/builds/privacy and Windows packaging pass. Packaged windows close in 626/332 ms; live browser task/settings/calendar pass. Independent review and distribution delivery remain required.
 - **QA: harden desktop settings, checkout selection, download names and load-probe cleanup** (2026-10-04, Moss Gauge).
   Desktop units 19/19 and new real-window regressions pass; application types/builds, Windows packaging and privacy pass. Clean-exit lab failures and distribution delivery remain under Ready.
 

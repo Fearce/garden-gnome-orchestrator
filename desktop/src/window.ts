@@ -41,9 +41,10 @@ function visibleOnSomeDisplay(bounds: WindowBounds): boolean {
 export const backgroundWindows = process.env.GGO_DESKTOP_BACKGROUND === "1";
 
 function initialBounds(saved: WindowBounds | null): Partial<WindowBounds> {
-  if (saved && visibleOnSomeDisplay(saved)) return saved;
   const primary = screen.getPrimaryDisplay();
-  const display = backgroundWindows ? (screen.getAllDisplays().find((d) => d.id !== primary.id) ?? primary) : primary;
+  const secondary = screen.getAllDisplays().find((d) => d.id !== primary.id);
+  if (saved && visibleOnSomeDisplay(saved) && (!backgroundWindows || !secondary || screen.getDisplayMatching(saved).id !== primary.id)) return saved;
+  const display = backgroundWindows ? (secondary ?? primary) : primary;
   const { workArea } = display;
   const width = Math.min(1600, Math.round(workArea.width * 0.86));
   const height = Math.min(1000, Math.round(workArea.height * 0.88));
@@ -77,7 +78,7 @@ export function createMainWindow(options: { saved: WindowBounds | null; preload:
     autoHideMenuBar: true,
     webPreferences: securePreferences(options.preload, options.version, options.linksRegistered),
   });
-  if (options.saved?.maximized && visibleOnSomeDisplay(options.saved)) win.maximize();
+  if (!backgroundWindows && options.saved?.maximized && visibleOnSomeDisplay(options.saved)) win.maximize();
   win.once("ready-to-show", () => (backgroundWindows ? win.showInactive() : win.show()));
   return win;
 }
@@ -113,6 +114,7 @@ export function childWindowOptions(parent: BrowserWindow, icon: string): Electro
     y: outer.y + Math.round((outer.height - height) / 2),
     width,
     height,
+    show: !backgroundWindows,
     icon,
     backgroundColor: BACKGROUND,
     autoHideMenuBar: true,
