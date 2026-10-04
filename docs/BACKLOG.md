@@ -28,6 +28,7 @@ same commit as the fix. Git history keeps the record.
 
 ## Ready (priority order)
 
+1. **Resolve high-severity production dependency advisories** (2026-10-05, Codex implementor): restart sweep audit:deps reports critical=0, high=5, moderate=12, low=3; dependency names and compatible fixed versions are in server/data/quality-sweep-last.log.
 1. **Recheck Windows process-enumeration timeout under gate load** (2026-10-05, Codex implementor): restart sweep test:modules returned 503 instead of 200 because tasklist exceeded its 15-second budget; server/data/gates-last.log records the assertion.
 1. **Resolve Electron clean-exit verification before accepting the desktop app** (2026-10-04, Moss Gauge): desktop lab 52/55; three 20-second app-exit timeouts, and packaged-window-close verification timed out at 15 seconds. Live HTTP/WS load probe completed without a desktop-open regression.
 2. **Surface the desktop distribution and all retained validation artifacts** (2026-10-04, Moss Gauge): installer and retained screenshots/metrics have no deliverable cards; existing eight cards serve. Installer exceeds the 25 MB serving cap and needs a supported delivery path.
