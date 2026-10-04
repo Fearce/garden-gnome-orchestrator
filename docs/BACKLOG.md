@@ -14,8 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Owner messages stuck on "Sending…": GGO event-loop stalls and receipt states** (Wickfern, 2026-10-04, branch ggo/event-loop-stalls-913d9247).
-  Stalls up to 45.8s on 2026-10-04 16:14Z delayed an inject that was delivered once (receipt ffaa6433 read); diagnostics 31192a9 live; fix + receipt UI in progress.
+_(none: claim from Ready)_
 
 ## Ready (priority order)
 
@@ -35,6 +34,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-04 **Owner messages stuck on "Sending…": event-loop stalls and receipt states** (ae00dada..0db6a2d7, Wickfern): the calendar inject ffaa6433 was delivered once and read, not lost; the cause was event-loop stalls (worst 45.8s at 16:15Z). Live build 0db6a2d7 ran 10 min under agent load with zero ≥1s block reports (pre-fix windows: 34.3s/45.8s worst, 355s/136s blocked). Live browser inject at 17:52:28Z was acknowledged 73ms after send, and "Sending…" cleared by 152ms; HTTP p50 4ms. The receipt UI and lab (94a011a6) cover failure, disconnect and reload.
 
 - 2026-10-04 **Calendar QA: saved defaults and month ordering integrated** (6225a033, 53f3b854, Codex QA): pushed to master; deployed build 53f3b854 verified; 83/83 isolated browser checks and 9/9 live proxy checks prove create/edit/move/delete and reload persistence; typechecks, builds, focused calendar/scheduler/cron and privacy checks pass; all 226 gates covered by 44 passes before the deployment interruption plus a 182/182 remainder run.
 
