@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA: report stalled Script Hub bodies as unavailable-service timeouts** (2026-10-05, Codex QA).
+  A local HTTP reproduction sent headers then stalled: hubJson threw an unclassified TimeoutError, producing HTTP 500 without hubDown.
+
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 
 ## Shipped, awaiting live proof
