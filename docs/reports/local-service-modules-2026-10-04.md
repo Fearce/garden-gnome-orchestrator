@@ -81,3 +81,12 @@ The final isolated browser run sampled these results while the free gate suite a
 
 Worker resident memory under that load was 72 MB (Script Hub), 92 MB (Surveillance), 57 MB (Home) and
 76 MB (Sidekick). All workers and camera processes stopped at the end of the lab.
+
+The fixes were pushed as `6970c5e0` and verified in live build `a628a671`. The live browser passed 12
+integration/mobile/lifecycle assertions, following separate default-hidden, Settings and reload checks.
+Its first camera open exceeded the worker's 20-second startup window and showed a service error; reopening
+the tab after the worker became healthy displayed the cameras. No persistent work was started.
+
+Under live module load, 40 samples measured HTTP 2.2 / 49.4 / 264.3 ms and WebSocket ping
+1.7 / 49.5 / 263.8 ms. GGO reported zero event-loop stalls in the preceding five minutes; that monitor
+counts stalls of at least one second. Owner messages were sampled only in the isolated lab.
