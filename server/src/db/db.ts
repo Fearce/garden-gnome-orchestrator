@@ -4,6 +4,7 @@ import { dirname, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
 import { KvMirror, type ListedThread, ThreadListingMirror } from "./memoryMirrors.js";
+import { instrumentStatements } from "./slowStatements.js";
 import { config } from "../config.js";
 import { manualDeploymentSummary, parseManualDeployment, parseManualDeploymentClaim } from "../orchestrator/manualDeployment.js";
 import { providerOfRunAccount, summarizeRunUsage, type RunTokenRow } from "../orchestrator/goalUsage.js";
@@ -924,6 +925,7 @@ export class Db {
     this.isServerDb = resolve(path).toLowerCase() === resolve(config.dbPath).toLowerCase();
     mkdirSync(dirname(path), { recursive: true });
     this.raw = new Database(path);
+    instrumentStatements(this.raw);
     this.raw.pragma("journal_mode = WAL");
     // Enforce ON DELETE CASCADE for thread children. The pragma is connection-scoped and
     // off by default in SQLite, so assert it here (not just in SCHEMA) — deleteThread relies on it.

@@ -22,6 +22,7 @@ import { providerRuntimeVersions } from "./providerRuntime.js";
 import { installCrashGuards, logBoot, logCrash, logLifecycle, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
 import { reportSlowChildWaits } from "./childRunner.js";
 import { eventLoopHealth, startEventLoopMonitor } from "./eventLoopMonitor.js";
+import { startSlowStatementReporter } from "./db/slowStatements.js";
 import { Db } from "./db/db.js";
 import { startSearchIndexBackfill } from "./db/searchIndex.js";
 import { startLatestMessagePreviewBackfill } from "./db/previewBackfill.js";
@@ -158,6 +159,7 @@ async function main(): Promise<void> {
   // What this process does to its own event loop. A stalling loop is what makes an external health probe
   // time out, and a probe timeout is what gets this server restarted out from under its live agents.
   startEventLoopMonitor();
+  startSlowStatementReporter();
   // A flooded git pool delays dispatches without blocking the loop, so the stall lines above never show it.
   reportSlowChildWaits((line) => {
     hub.log("warn", line);

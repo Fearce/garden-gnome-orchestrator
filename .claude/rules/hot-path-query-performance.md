@@ -66,3 +66,6 @@ SQLite's planner to make the same choice. Two tools close that gap:
   the 1,290-group reordering above; a synthetic-only gate did not.
 
 Gate: `test:hot-paths` (proves the checker in `probe-hot-paths.cjs` actually DETECTS an unindexed query before trusting it to stay quiet on a fixed one — same revert-check discipline as `db-size.test.cjs`).
+
+## Naming a stall: the `slow SQLite statements` line in crash.log
+Every statement, `exec`, `pragma` and transaction on the server's connection is timed (`db/slowStatements.ts`, wired in the `Db` constructor). One taking 250ms or more is blamed for any event-loop stall it overlaps (`worst blocked by sqlite get in goalTurnActivity <- settleStep: SELECT …`) and summarised once a minute as `slow SQLite statements: N, Xs on the event loop — …`, top four by total time. Start from that line when crash.log reports stalls, before re-profiling. A stall still reading "no tracked operation was in flight" was not SQLite. Gate: `test:slow-statements`.

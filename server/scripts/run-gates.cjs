@@ -55,6 +55,7 @@ const GATES = [
   "test:update-blocker",
   "test:patch-notes",
   "test:event-loop",
+  "test:slow-statements",
   "test:ext-wake",
   "test:account-usage",
   "test:reset-burn",

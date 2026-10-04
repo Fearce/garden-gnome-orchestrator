@@ -286,6 +286,15 @@ export function trackBlockingSync<T>(label: string, run: () => T): T {
   }
 }
 
+/**
+ * Record a synchronous span that already finished, for code that only knows it was slow afterwards (a
+ * timed SQLite statement). Same blame semantics as `trackBlockingSync`, without wrapping every call.
+ */
+export function recordBlockingSpan(label: string, startedAt: number, endedAt: number): void {
+  operations.push({ label, startedAt, endedAt });
+  if (operations.length > MAX_OPERATIONS) operations = operations.slice(-MAX_OPERATIONS);
+}
+
 /** Current window summary. Cheap enough to serve from a health route on every probe. */
 export function eventLoopHealth(): EventLoopHealth {
   const now = performance.now();
