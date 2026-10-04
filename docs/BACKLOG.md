@@ -18,8 +18,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Ready (priority order)
 
-1. **Remove the private-project reference from the module-migration Done evidence**: `test:privacy-guard` fails at docs/BACKLOG.md:38:601 after the module task's integration; its owner must redact that entry under the shared-board ownership rule.
-
 1. **Investigate console smoke served/local bundle mismatch and browser shutdown timeout**: 2026-10-03 probe reports ws=live with no console errors, served index-C8zofTVy.js versus local index-BHXtYnz4.js, and browser shutdown exceeded 5000ms; authenticated HTTP bundle verification passed earlier in the same task.
 
 ## Blocked / waiting
