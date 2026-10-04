@@ -77,6 +77,16 @@ function ScriptHubBody() {
   const [pending, setPending] = useState<Record<string, { action: "start" | "stop"; since: number }>>({});
   const [actionError, setActionError] = useState<string | null>(null);
   const [openLogs, setOpenLogs] = useState<Set<string>>(new Set());
+  const nudges = useRef<Set<number>>(new Set());
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      for (const timer of nudges.current) window.clearTimeout(timer);
+      nudges.current.clear();
+    };
+  }, []);
 
   const data = status.data;
   const hiddenSet = useMemo(() => hidden ?? new Set(data?.hiddenScripts ?? []), [hidden, data?.hiddenScripts]);
@@ -107,7 +117,14 @@ function ScriptHubBody() {
   }, [data]);
 
   const nudge = useCallback(() => {
-    for (const ms of [1200, 2800, 5000, 8000]) window.setTimeout(() => void status.refresh(), ms);
+    if (!mounted.current) return;
+    for (const ms of [1200, 2800, 5000, 8000]) {
+      const timer = window.setTimeout(() => {
+        nudges.current.delete(timer);
+        void status.refresh();
+      }, ms);
+      nudges.current.add(timer);
+    }
   }, [status]);
 
   const runAction = useCallback(

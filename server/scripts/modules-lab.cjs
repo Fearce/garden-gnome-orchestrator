@@ -391,6 +391,30 @@ async function soft(label, fn) {
     });
 
     // ---- the phone: the area menu offers the shown tabs, and a module renders at phone width ----
+    // Stop in an OPEN view must stay stopped beyond its next polling tick. Merely calling the API
+    // while on Tasks misses a poll that immediately recreates the worker after the button stops it.
+    for (const id of MODULES) await soft(`${LABELS[id]} explicit service lifecycle`, async () => {
+      await openTab(page, id);
+      await page.waitForSelector(".mod-service-running", { timeout: 60_000 });
+      const requests = [];
+      const watch = (req) => {
+        if (new RegExp(`/api/modules/${id}/(?:api/|ticket|stream)`).test(req.url())) requests.push(req.url());
+      };
+      await page.locator(".mod-service button").getByText("Stop", { exact: true }).click();
+      await page.waitForSelector(".mod-notice:has-text('Service stopped')", { timeout: 30_000 });
+      await page.waitForSelector(".mod-service-stopped", { timeout: 30_000 });
+      page.on("request", watch);
+      await delay(16_000);
+      page.off("request", watch);
+      const stopped = (await services(cookie)).find((s) => s.module === id);
+      check(`${LABELS[id]} Stop stays stopped in its open tab`, stopped?.state === "stopped", stopped?.state);
+      check(`${LABELS[id]} Stop closes its view traffic`, requests.length === 0, requests.slice(0, 3).join(", "));
+      await page.locator(".mod-service button").getByText("Start", { exact: true }).click();
+      await page.waitForSelector(".mod-service-running", { timeout: 60_000 });
+      await page.waitForSelector(".mod-notice:has-text('Service stopped')", { state: "detached" });
+      check(`${LABELS[id]} Start explicitly reopens its view`, (await services(cookie)).find((s) => s.module === id)?.state === "running");
+    });
+
     await soft("phone layout", async () => {
       await ctx.close();
       const phone = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
@@ -416,6 +440,13 @@ async function soft(label, fn) {
       const libraryFits = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       check("the recordings browser fits the phone", libraryFits <= 1, `${libraryFits}px overflow`);
       await p.screenshot({ path: path.join(shots, "phone-recordings.png"), fullPage: false });
+      await p.locator(".mod-service button").getByText("Stop", { exact: true }).click();
+      await p.waitForSelector(".mod-service-stopped", { timeout: 30_000 });
+      await delay(7_000);
+      check("phone Stop stays stopped past the recording status poll", (await services(cookie)).find((s) => s.module === "surveillance")?.state === "stopped");
+      await p.locator(".mod-service button").getByText("Start", { exact: true }).click();
+      await p.waitForSelector(".sv-plan", { timeout: 60_000 });
+      check("phone Start restores Surveillance with recording still off", (await api(cookie, "GET", "/api/modules/surveillance/api/recording")).json?.mode === "off");
       await phone.close();
     });
 

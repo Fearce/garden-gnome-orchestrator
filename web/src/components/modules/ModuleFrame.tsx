@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { ModuleView } from "../../types.js";
 import { useService, type ServiceControl } from "./hooks.js";
 import { formatBytes } from "./moduleApi.js";
@@ -13,6 +13,18 @@ const STATE_LABEL = { running: "Running", starting: "Starting", stopped: "Stoppe
  */
 export function ModuleFrame({ id, title, lede, actions, children }: { id: ModuleView; title: string; lede: string; actions?: ReactNode; children: (service: ServiceControl) => ReactNode }) {
   const service = useService(id);
+  const [viewStopped, setViewStopped] = useState(false);
+  const controls: ServiceControl = {
+    ...service,
+    act: async (action, force) => {
+      // Close view polls and streams BEFORE stopping the worker: another poll would otherwise
+      // immediately start it again. A failed stop restores the view; Start explicitly resumes it.
+      if (action === "stop") setViewStopped(true);
+      const result = await service.act(action, force);
+      if (action === "stop" ? !result : result !== null) setViewStopped(false);
+      return result;
+    },
+  };
   return (
     <section className="mod" aria-labelledby={`mod-title-${id}`}>
       <header className="mod-head">
@@ -21,8 +33,8 @@ export function ModuleFrame({ id, title, lede, actions, children }: { id: Module
           <p>{lede}</p>
         </div>
         <div className="mod-head-actions">
-          {actions}
-          <ServiceChip service={service} />
+          {!viewStopped && actions}
+          <ServiceChip service={controls} />
         </div>
       </header>
       {service.error ? <Notice tone="bad" title="Service control failed">{service.error}</Notice> : null}
@@ -31,7 +43,13 @@ export function ModuleFrame({ id, title, lede, actions, children }: { id: Module
           This service still runs code from an earlier GGO build. <button className="btn ghost sm" onClick={() => void service.act("restart")}>Restart it</button>
         </Notice>
       ) : null}
-      <div className="mod-body">{children(service)}</div>
+      <div className="mod-body">
+        {viewStopped ? (
+          <Notice tone="info" title="Service stopped">
+            This view's polling and streams are closed. Start the service to open it again.
+          </Notice>
+        ) : children(controls)}
+      </div>
     </section>
   );
 }
@@ -62,6 +80,10 @@ function ServiceChip({ service }: { service: ServiceControl }) {
             {service.pending === "stop" ? "Stopping…" : "Stop"}
           </button>
         </>
+      ) : state === "stopped" ? (
+        <button className="btn ghost sm" disabled={service.pending !== null} onClick={() => void service.act("start")} title="Start this tab's background service">
+          Start
+        </button>
       ) : null}
     </div>
   );

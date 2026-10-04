@@ -15,8 +15,11 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
+
+## Shipped, awaiting live proof
+
 - **QA: keep an explicitly stopped module stopped while its tab remains open** (Codex QA, 2026-10-04).
-  Browser reproduction: Sidekick's next view poll relaunched its worker within 13 seconds of the header Stop.
+  Isolated browser lab 72/72, including Stop/Start on all four open tabs and phone Surveillance; 228/228 gates, typechecks and privacy pass. Frontend deploy and live check pending.
 
 ## Ready (priority order)
 

@@ -47,6 +47,10 @@ cannot stall owner chat or task execution.
 Polling runs only while its tab is visible and the browser page is in the foreground. Leaving a tab stops
 its polling and closes its frame socket and log streams.
 
+The header's **Stop** also closes the open view's polling and streams, so they cannot start the worker
+again on their next tick. **Start** reopens that view. Opening the tab again starts its worker on demand;
+it does not restart recording that was explicitly stopped.
+
 ### Work you start
 
 Only an explicit choice starts continuous work, and only an explicit choice ends it. Today that is one

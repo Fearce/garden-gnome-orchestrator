@@ -66,6 +66,14 @@ const ACTIONS: { action: Action; label: string; icon: "play" | "pause" | "home" 
 const MODELS = ["xiaomi-g1", "mijia.vacuum.v2"];
 
 export function Home() {
+  return (
+    <ModuleFrame id="home" title="Home" lede="Robot vacuums through Home Assistant or the vacuum's own local miIO link. Status refreshes only while this tab is open.">
+      {() => <HomePanel />}
+    </ModuleFrame>
+  );
+}
+
+function HomePanel() {
   const config = usePoll((signal) => moduleJson<HomeConfig>("home", "/config", { signal }), null);
   const [editing, setEditing] = useState<HomeConfig | null>(null);
   const settings = config.data ? (
@@ -74,31 +82,28 @@ export function Home() {
     </button>
   ) : null;
   return (
-    <ModuleFrame id="home" title="Home" lede="Robot vacuums through Home Assistant or the vacuum's own local miIO link. Status refreshes only while this tab is open." actions={settings}>
-      {() => (
-        <>
-          {config.data ? (
-            <HomeBody config={config.data} onEdit={() => setEditing(config.data)} />
-          ) : config.error ? (
-            <Notice tone="bad" title="The Home service could not be read" onRetry={() => void config.refresh()}>
-              {errorText(config.error)}
-            </Notice>
-          ) : (
-            <Loading label="Loading your devices…" />
-          )}
-          {editing ? (
-            <SettingsDialog
-              initial={editing}
-              onClose={() => setEditing(null)}
-              onSaved={async () => {
-                setEditing(null);
-                await config.refresh();
-              }}
-            />
-          ) : null}
-        </>
+    <>
+      <div className="mod-head-actions">{settings}</div>
+      {config.data ? (
+        <HomeBody config={config.data} onEdit={() => setEditing(config.data)} />
+      ) : config.error ? (
+        <Notice tone="bad" title="The Home service could not be read" onRetry={() => void config.refresh()}>
+          {errorText(config.error)}
+        </Notice>
+      ) : (
+        <Loading label="Loading your devices…" />
       )}
-    </ModuleFrame>
+      {editing ? (
+        <SettingsDialog
+          initial={editing}
+          onClose={() => setEditing(null)}
+          onSaved={async () => {
+            setEditing(null);
+            await config.refresh();
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 

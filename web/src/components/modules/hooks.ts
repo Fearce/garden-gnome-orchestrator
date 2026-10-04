@@ -34,8 +34,10 @@ export function usePoll<T>(load: (signal: AbortSignal) => Promise<T>, intervalMs
   loadRef.current = load;
   const inflight = useRef<Promise<void> | null>(null);
   const controller = useRef<AbortController | null>(null);
+  const active = useRef(false);
 
   const refresh = useCallback((): Promise<void> => {
+    if (!active.current) return Promise.resolve();
     if (inflight.current) return inflight.current;
     const abort = new AbortController();
     controller.current = abort;
@@ -51,7 +53,7 @@ export function usePoll<T>(load: (signal: AbortSignal) => Promise<T>, intervalMs
       })
       .finally(() => {
         if (!abort.signal.aborted) setLoading(false);
-        inflight.current = null;
+        if (controller.current === abort) inflight.current = null;
       });
     inflight.current = run;
     return run;
@@ -59,9 +61,11 @@ export function usePoll<T>(load: (signal: AbortSignal) => Promise<T>, intervalMs
 
   useEffect(() => {
     if (!enabled || !visible) return;
+    active.current = true;
     void refresh();
     const timer = intervalMs ? window.setInterval(() => void refresh(), intervalMs) : null;
     return () => {
+      active.current = false;
       if (timer) window.clearInterval(timer);
       controller.current?.abort();
       inflight.current = null;

@@ -126,9 +126,10 @@ The module gate now passes 32 checks. The isolated lab passed 58 browser checks,
 | Modules idle | 2.4 / 5.4 / 26.2 | 1.8 / 3.9 / 20.2 | 2.6 / 17.9 / 17.9 | 0 |
 | Recording five cameras 24/7 and polling three modules | 2.0 / 5.2 / 5.2 | 1.0 / 2.0 / 2.8 | 4.3 / 405.5 / 405.5 | 0 |
 
-One of the five loaded owner-message samples took 405 ms. The other four stayed under 5 ms, and the stall
-monitor saw no event-loop block. That fits a single slow disk write on a loaded machine, not a busy GGO
-process; the earlier run measured 80 ms max for the same phase. Worker memory: 72 MB (Script Hub), 79 MB
+One of the five loaded owner-message samples took 405 ms. The other four stayed under 5 ms. The sampler
+does not attribute that delay, and the stall monitor counts blocks of at least one second, so its zero
+count cannot rule out a shorter event-loop pause. The earlier run measured 80 ms max for the same phase.
+Worker memory: 72 MB (Script Hub), 79 MB
 (Surveillance, recording 5 cameras), 56 MB (Home), 56 MB (Sidekick).
 
 ### Live, build 24dfe20f
@@ -155,3 +156,33 @@ The run's 40 HTTP and WebSocket samples measured 2.6 / 9.4 / 1603.9 and 2.1 / 8.
 monitor recorded two event-loop blocks in that five-minute window, worst 4.8 s, both blamed on
 `ThreadManager.liveAgentThreads` reading the threads table during the post-deploy agent resume. Module
 traffic runs in the worker processes and was not involved.
+
+## Independent QA: explicit service Stop
+
+The open Sidekick view restarted its worker on the next poll after the header's Stop; a browser
+reproduction found it running again after 13 seconds. The shared module frame now unmounts the view
+before stopping its worker and offers an explicit Start. Home's request hooks now live inside that
+view boundary. Script Hub's delayed action refreshes are cancelled on unmount, and closed or hidden
+poll hooks refuse refreshes from callbacks that finish later.
+
+The expanded isolated browser lab passed **72/72 checks**. For each of the four tabs, it clicks Stop,
+waits 16 seconds (past the view poll), verifies the worker remains stopped and no view requests leave
+the browser, then clicks Start and verifies the view returns. Phone Surveillance repeats Stop/Start
+and confirms recording remains Off. The other checks cover default-hidden services, Settings and
+reloads, migration, live frames, 24/7 across a GGO restart, playback/download, navigation cleanup and
+unavailable-service recovery. All lab workers and ffmpeg children were gone afterwards.
+
+| Phase | HTTP | WebSocket ping | Owner message echo | Stalls of at least 1 s |
+| --- | --- | --- | --- | --- |
+| Modules idle | 2.4 / 4.3 / 4.5 | 1.7 / 5.2 / 7.0 | 14.4 / 19.4 / 19.4 | 0 |
+| Recording five cameras and polling three modules | 2.3 / 4.6 / 6.1 | 1.5 / 3.8 / 5.1 | 2.5 / 17.2 / 17.2 | 0 |
+
+Worker memory under load: 69 MB (Script Hub), 76 MB (Surveillance), 58 MB (Home), 66 MB (Sidekick).
+The live read-only sample before the frontend fix, with the owner's recording continuing, measured
+HTTP 2.3 / 3.8 / 25.1 ms and WebSocket 1.6 / 3.1 / 24.9 ms, with zero stalls of at least one second.
+
+Verification: build; server/web/relay typechecks; 228/228 free gates; 32 module checks and tab visibility;
+lazy-chunk checks; privacy guard; README 65/65. Read-only local comparisons confirmed all five cameras'
+credentials, streams, folders and notes, the vacuum configuration and hidden-script preferences were
+preserved. The report's existing deliverable card returned HTTP 200 with matching file bytes; the
+design doc, agent rule and shared-memory entry are supporting files rather than owner-facing artifacts.
