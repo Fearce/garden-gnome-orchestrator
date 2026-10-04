@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>GG Orchestrator</title>
+    <link rel="stylesheet" href="connect.css" />
+    <script src="connect.js" defer></script>
+  </head>
+  <body>
+    <header class="drag" aria-hidden="true"></header>
+    <main class="shell" aria-live="polite">
+      <img class="mark" src="icon.png" alt="" width="64" height="64" />
+      <p class="eyebrow">GG Orchestrator</p>
+      <h1 id="title">Connecting</h1>
+      <p id="lead" class="lead"></p>
+      <div id="progress" class="progress" hidden><span></span></div>
+      <p id="detail" class="detail" hidden></p>
+      <div id="actions" class="actions"></div>
+      <p id="note" class="note" hidden></p>
+    </main>
+    <footer class="server">
+      <div id="server-row" class="server-row">
+        <span class="server-label">Server</span>
+        <code id="server-url"></code>
+        <button id="change-server" class="link" type="button">Change</button>
+      </div>
+      <form id="server-form" class="server-form" hidden>
+        <label for="server-input" class="server-label">Server address</label>
+        <input id="server-input" type="text" spellcheck="false" autocomplete="off" placeholder="127.0.0.1:4317" />
+        <button class="btn primary" type="submit">Connect</button>
+        <button id="cancel-server" class="btn" type="button">Cancel</button>
+        <p id="server-error" class="server-error" hidden></p>
+      </form>
+    </footer>
+  </body>
+</html>

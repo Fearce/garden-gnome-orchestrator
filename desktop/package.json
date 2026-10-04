@@ -1,0 +1,82 @@
+{
+  "name": "ggo-desktop",
+  "productName": "GG Orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Optional desktop window for GG Orchestrator. It connects to a GGO server; it never replaces the web console.",
+  "license": "MIT",
+  "author": "GG Orchestrator contributors",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.cjs",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test \"dist/tests/*.test.js\"",
+    "dist": "npm run build && electron-builder --win --x64 --publish never",
+    "lab": "npm run build && node scripts/desktop-lab.cjs"
+  },
+  "devDependencies": {
+    "@fontsource/inter-tight": "^5.2.5",
+    "@types/node": "^22.10.2",
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3",
+    "typescript": "^5.7.2"
+  },
+  "build": {
+    "appId": "io.github.ggorchestrator.desktop",
+    "productName": "GG Orchestrator",
+    "executableName": "GG Orchestrator",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/tests/**",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "dist/static/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "GG Orchestrator",
+      "artifactName": "GG-Orchestrator-Setup-${version}-x64.${ext}"
+    },
+    "protocols": [
+      {
+        "name": "GG Orchestrator",
+        "schemes": [
+          "ggo"
+        ]
+      }
+    ],
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    }
+  }
+}

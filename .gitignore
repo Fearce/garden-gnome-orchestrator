@@ -37,6 +37,9 @@ server/.modules-lab-dist/
 server/.lab-web-dist*/
 web/dist/
 relay/dist/
+desktop/dist/
+# electron-builder output: installers and the unpacked app (npm run desktop:dist)
+desktop/release/
 *.tsbuildinfo
 
 # runtime state
