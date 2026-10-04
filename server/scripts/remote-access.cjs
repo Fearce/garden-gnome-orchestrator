@@ -145,6 +145,7 @@ function reportCliError(log, command, error) {
   if (/already in use by/i.test(error)) {
     log("Another Windows account owns Tailscale on this PC. Run the command from that account's Windows session.");
     log("In that session, enable Tailscale tray > Preferences > Run unattended to keep it connected after sign-out or reboot.");
+    log("A second account signing in over Remote Desktop starts the tray from the all-users Startup folder; see docs/remote-access.md to keep it out.");
     log("Then check tailscale funnel status and retry npm run remote-access --prefix server.");
   }
   return 1;

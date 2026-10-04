@@ -93,6 +93,19 @@ is off, restore it with `npm run remote-access --prefix server -- on`; this chec
 sign-in gate before leaving the link open. A working local GGO does not prove the public tunnel
 is reachable.
 
+A common cause is a second Windows account signing in over Remote Desktop. The Tailscale
+installer puts its tray app (`tailscale-ipn.exe`) in the all-users Startup folder
+(`C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\Tailscale.lnk`), so it also
+starts in that account's session. If Tailscale has no owner at that moment (after a reboot, or
+when unattended mode is off), that session takes it over. To keep it out of other sessions,
+move the shortcut into the owner's own Startup folder (`shell:startup`, same target
+`C:\Program Files\Tailscale\tailscale-ipn.exe`) and turn on unattended mode
+(`tailscale set --unattended`) from the owner's session. A Tailscale update reinstalls the
+all-users shortcut, but with unattended mode on, a tray app in another session can no longer
+take ownership. To keep the reinstalled shortcut disabled, run this once from an elevated
+PowerShell. It is the same switch Task Manager's Startup tab uses, keyed by file name:
+`Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\StartupFolder' 'Tailscale.lnk' ([byte[]](3,0,0,0,0,0,0,0,0,0,0,0)) -Type Binary`.
+
 ## Verification
 
 - `npm run test:remote-access --prefix server`: the request classification, the gate, and the
