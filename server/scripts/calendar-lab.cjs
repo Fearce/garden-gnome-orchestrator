@@ -17,7 +17,9 @@ const path = require("node:path");
 const Database = require("better-sqlite3");
 const { loadChromium, authPassword, requireBuild, boot, killInstance, createChecks, shotDir, isVoiceBridgeNoise } = require("./lab-harness.cjs");
 
-const PORT = 4581;
+// Concurrent calendar reviews need separate HTTP/TLS port pairs (TLS is PORT + 2).
+const PORT = Number(process.env.GGO_CALENDAR_LAB_PORT ?? 4581);
+if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65533) throw new Error("GGO_CALENDAR_LAB_PORT must be an integer from 1 to 65533.");
 const ZONE = "America/New_York";
 const check = createChecks();
 
@@ -534,6 +536,22 @@ async function narrowLayout(browser, cookies, shots) {
     browser = await chromium.launch();
     const ctx = await browser.newContext({ viewport: { width: 1500, height: 950 }, timezoneId: ZONE, locale: "en-GB" });
     const page = await ctx.newPage();
+    // Hold the first range: creation must wait for saved defaults and the server's zone.
+    let releaseRange;
+    let rangeRequested;
+    const heldRange = new Promise((resolve) => { releaseRange = resolve; });
+    const initialRequest = new Promise((resolve) => { rangeRequested = resolve; });
+    let firstRange = true;
+    await page.route(/\/api\/calendar\/range\?/, async (route) => {
+      if (!firstRange) return route.continue();
+      firstRange = false;
+      rangeRequested();
+      await heldRange;
+      const response = await route.fetch();
+      const body = await response.json();
+      body.defaults = { reminderLeads: [10080, 1440], allDayTime: "09:00" };
+      await route.fulfill({ response, json: body });
+    });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     page.on("console", (m) => m.type() === "error" && !isVoiceBridgeNoise(m) && errors.push(m.text()));
@@ -545,6 +563,17 @@ async function narrowLayout(browser, cookies, shots) {
     await page.click(".board-tab.bt-calendar");
     await page.waitForSelector(".cal-month", { timeout: 15000 });
     await page.waitForSelector(".cal-day.today", { timeout: 15000 });
+    await initialRequest;
+    check("New waits for saved defaults on the first load", await page.locator(".cal-new").isDisabled());
+    check("default settings cannot overwrite unloaded settings", await page.locator('.cal-toolbar button:has-text("Default reminders")').isDisabled());
+    await page.locator(".cal-view").dispatchEvent("keydown", { key: "n", bubbles: true });
+    check("the new-item shortcut also waits for the first range", await modal(page).count() === 0);
+    check("date cells wait for the first range", await page.locator(".cal-body").evaluate((el) => el.inert));
+    releaseRange();
+    await page.waitForFunction(() => !document.querySelector(".cal-new").disabled);
+    await page.click(".cal-new");
+    check("the first create form receives the loaded reminder defaults", JSON.stringify(await page.locator('.cal-modal select[aria-label^="Reminder "]').evaluateAll((es) => es.map((e) => e.value))) === '["d:7:09:00","d:1:09:00"]');
+    await closeModal(page);
 
     await monthAndNavigation(page, dataDir);
     await createLunch(page, dataDir);

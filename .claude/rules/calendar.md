@@ -15,6 +15,7 @@ Read before touching `server/src/calendar/`, the `calendar_*` / `schedule_skips`
 (about 90 checks, all synthetic). Browser check: `npm run calendar-lab --prefix server`. It runs in
 America/New_York against the box's zone, over New York's DST change. Run it on an isolated build:
 `npx tsc -p tsconfig.json --outDir .calendar-lab-dist`, then set `GGO_LAB_ENTRY=.calendar-lab-dist/index.js`.
+For concurrent runs, set `GGO_CALENDAR_LAB_PORT` to a free HTTP port and leave that port + 2 free for TLS.
 
 ## What lives where
 

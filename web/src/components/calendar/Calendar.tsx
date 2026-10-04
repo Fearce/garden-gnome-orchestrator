@@ -207,7 +207,9 @@ export function Calendar() {
     now,
     dragging,
     open: (o) => setDialog({ kind: "details", occurrence: o }),
-    create: (date, minutes) => setDialog({ kind: "create", tab: "event", date, minutes }),
+    // The range supplies saved defaults and the server zone. Opening earlier would freeze the
+    // form's state with empty reminders and could create a reminder on the wrong server clock.
+    create: (date, minutes) => { if (range) setDialog({ kind: "create", tab: "event", date, minutes }); },
     goToDay: (date) => {
       setAnchor(date);
       setView("day");
@@ -288,7 +290,7 @@ export function Calendar() {
         <button type="button" className="btn ghost sm cal-manage" onClick={() => setBoardView("schedules")} title="The list of every reminder and scheduled task, with Run now">
           Manage schedules
         </button>
-        <button type="button" className="btn ghost sm cal-manage" onClick={() => setDialog({ kind: "defaults" })} title="The reminders every new event starts with">
+        <button type="button" className="btn ghost sm cal-manage" disabled={!range} onClick={() => setDialog({ kind: "defaults" })} title="The reminders every new event starts with">
           <BellIcon size={12} /> Default reminders
         </button>
         <div className="cal-modes" role="radiogroup" aria-label="Calendar view">
@@ -298,7 +300,7 @@ export function Calendar() {
             </button>
           ))}
         </div>
-        <button type="button" className="btn primary sm cal-new" onClick={() => actions.create(anchor, view === "month" || view === "agenda" ? null : 9 * 60)} title="New event or reminder (N)">
+        <button type="button" className="btn primary sm cal-new" disabled={!range} onClick={() => actions.create(anchor, view === "month" || view === "agenda" ? null : 9 * 60)} title="New event or reminder (N)">
           <PlusIcon /> New
         </button>
       </header>
@@ -337,7 +339,7 @@ export function Calendar() {
 
       <StatusLine loading={loading} hasData={!!range} loadError={loadError} actionError={actionError} empty={!!range && !shown.length && view !== "agenda"} filtered={filtered} onRetry={reload} onDismiss={() => setActionError(null)} />
 
-      <div className={`cal-body cal-body-${view}` + (loading && range ? " refreshing" : "")}>
+      <div className={`cal-body cal-body-${view}` + (loading && range ? " refreshing" : "")} inert={!range} aria-busy={loading}>
         {!range && loadError ? null : view === "month" ? (
           <MonthView from={from} to={to} anchor={anchor} occurrences={shown} actions={actions} onCursor={setAnchor} />
         ) : view === "agenda" ? (

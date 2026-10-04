@@ -14,8 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Calendar QA: isolate concurrent browser labs** (Codex QA, 2026-10-04, branch ggo/full-calendar-ccbcc134).
-  Calendar lab stopped after 56 checks; a retry found no scheduler table on the shared fixed port. Add a selectable lab port and rerun the full browser check.
+- **Calendar QA: preserve defaults on first load; finish branch integration** (Codex QA, 2026-10-04, branch ggo/full-calendar-ccbcc134).
+  Creation waits for saved defaults; isolated browser lab 77/77, typechecks/builds/calendar/scheduler/cron/privacy pass, full gates 224/226 then both build-dependent failures pass after build. Three pre-existing month-ordering edits remain uncommitted; integrate with current master and deploy after their owner commits them.
 
 - **Owner messages stuck on "Sending…": GGO event-loop stalls and receipt states** (Wickfern, 2026-10-04, branch ggo/event-loop-stalls-913d9247).
   Stalls up to 45.8s on 2026-10-04 16:14Z delayed an inject that was delivered once (receipt ffaa6433 read); diagnostics 31192a9 live; fix + receipt UI in progress.
