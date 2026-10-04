@@ -142,6 +142,11 @@ function seedStates(dbPath) {
 
     // Repeating identical text is a new injection, never a receipt for the previous input.
     await inject(page, asked, "Inject");
+    // The first row already has an implementor pending mark. Wait for the second server echo,
+    // rather than letting that old mark satisfy the wait before the new injection arrives.
+    await page.waitForFunction((n) => [...document.querySelectorAll(".fi.system")].filter((r) =>
+      (r.querySelector(".body")?.textContent ?? "").includes(n) && r.querySelector(".receipt-mark"),
+    ).length === 2, asked, { timeout: 20000 });
     await waitForMark(page, asked, "implementor", "pending");
     const repeatEarly = (await marksFor(page, asked))?.find((m) => m.recipient === "qa");
     check("repeated text waits for its own delivery and ACK", repeatEarly?.status === "sent" && !repeatEarly.tick, JSON.stringify(repeatEarly));

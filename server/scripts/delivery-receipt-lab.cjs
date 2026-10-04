@@ -169,6 +169,39 @@ async function holdFinalReplies(page, frames) {
     check("after a reload the queued message was delivered", recovered.length === 1, JSON.stringify(recovered));
     check("…exactly once", storedCopies(dataDir, offline).notes === 1, JSON.stringify(storedCopies(dataDir, offline)));
     await page.screenshot({ path: path.join(shots, "4-recovered.png") });
+
+    // Supervisor uses the same receipt controls. Drop its commands before they reach the throwaway
+    // server so the pending state is deterministic and no provider run is started.
+    await page.close();
+    page = await ctx.newPage();
+    const supervisorCommands = [];
+    await page.routeWebSocket(/\/ws$/, (ws) => {
+      const server = ws.connectToServer();
+      ws.onMessage((message) => {
+        const command = JSON.parse(String(message));
+        if (command.type === "supervisor.message") supervisorCommands.push(command);
+        else server.send(message);
+      });
+      server.onMessage((message) => ws.send(message));
+    });
+    await page.goto(`${BASE}/`, { timeout: 45000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
+    await page.click('.board-tab:text-is("Supervisor")');
+    await page.fill('[aria-label="Message the task supervisor"]', "check the selected task status");
+    await page.click(".supervisor-send");
+    await page.waitForSelector(".supervisor-chat .delivery-receipt.sending");
+    await page.waitForSelector('.supervisor-chat .delivery-receipt button:text-is("Retry now")', { timeout: 20000 });
+    check("Supervisor offers Retry now when its receipt is delayed", supervisorCommands.length === 1);
+    await page.click('.supervisor-chat .delivery-receipt button:text-is("Retry now")');
+    await page.waitForFunction(() => !document.querySelector('.supervisor-chat .delivery-receipt button'));
+    check("Supervisor Retry now preserves the delivery id", supervisorCommands.length === 2 && supervisorCommands[0].clientId === supervisorCommands[1].clientId, JSON.stringify(supervisorCommands.map((c) => c.clientId)));
+    child.kill();
+    killInstance(PORT);
+    await page.waitForSelector(".supervisor-chat .delivery-receipt.offline", { timeout: 60000 });
+    const supervisorWaiting = await page.textContent(".supervisor-chat .delivery-receipt.offline");
+    const supervisorStatus = await page.textContent(".supervisor-turn-status");
+    check("Supervisor reports Waiting for connection in its receipt and status", /Waiting for connection/.test(supervisorWaiting ?? "") && supervisorStatus === "Waiting for connection", `${supervisorWaiting} / ${supervisorStatus}`);
+    await page.screenshot({ path: path.join(shots, "5-supervisor-offline.png") });
     console.log(`\nscreenshots: ${shots}`);
     await browser.close();
     code = check.summary();

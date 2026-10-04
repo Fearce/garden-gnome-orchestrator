@@ -317,6 +317,7 @@ function TaskTargetPicker({
 
 function SupervisorTurn({ turn, now }: { turn: DisplaySupervisorTurn; now: number }) {
   const select = useStore((s) => s.select);
+  const connected = useStore((s) => s.connected);
   const setBoardView = useStore((s) => s.setBoardView);
   const threads = useStore((s) => s.threads);
   const openTask = (id: string) => {
@@ -325,7 +326,7 @@ function SupervisorTurn({ turn, now }: { turn: DisplaySupervisorTurn; now: numbe
     select(id);
   };
   const statusLabel = turn.delivery === "sending"
-    ? "Sending"
+    ? connected ? "Sending" : "Waiting for connection"
     : turn.delivery === "failed"
       ? "Not delivered"
       : turn.status === "needs_input"
@@ -351,7 +352,7 @@ function SupervisorTurn({ turn, now }: { turn: DisplaySupervisorTurn; now: numbe
         ) : <div className="supervisor-turn-targets faint">Board-wide</div>}
         <div className="supervisor-bubble-text">{turn.content}</div>
         <time className="supervisor-bubble-time" title={new Date(turn.createdAt).toLocaleString()}>{since(now, turn.createdAt)} ago</time>
-        {turn.delivery === "failed" ? <DeliveryReceipt id={turn.id} /> : null}
+        {turn.delivery ? <DeliveryReceipt id={turn.id} /> : null}
       </div>
       <div className="supervisor-bubble supervisor-agent-bubble">
         <div className="supervisor-bubble-top">
