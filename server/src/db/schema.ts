@@ -322,11 +322,35 @@ CREATE TABLE IF NOT EXISTS goal_steps (
   turns                  INTEGER NOT NULL DEFAULT 1,
   turn_started_at        INTEGER,
   turn_fingerprint       TEXT,
+  last_status            TEXT,
   created_at             INTEGER NOT NULL,
   settled_at             INTEGER,
   UNIQUE(goal_id, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_goal_steps_thread ON goal_steps(thread_id) WHERE thread_id IS NOT NULL;
+
+-- The milestones a goal's step agents report (orchestrator/goalWork.ts). One row per goal and stable key,
+-- so a retry, a resumed session or a later step updates the row instead of adding one. thread_id is the
+-- step task that reported it last; like goal_steps it has no FK, so a purged task keeps the history.
+-- seq is the order the item was first reported in.
+CREATE TABLE IF NOT EXISTS goal_work_items (
+  id            TEXT PRIMARY KEY,
+  goal_id       TEXT NOT NULL,
+  key           TEXT NOT NULL,
+  seq           INTEGER NOT NULL,
+  title         TEXT NOT NULL,
+  status        TEXT NOT NULL,
+  note          TEXT,
+  blocker       TEXT,
+  verified      INTEGER NOT NULL DEFAULT 0,
+  verification  TEXT,
+  thread_id     TEXT,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  started_at    INTEGER,
+  completed_at  INTEGER,
+  UNIQUE(goal_id, key)
+);
 
 -- The operator's note list: short pointers agents leave for the owner — a branch to review, a PR to
 -- merge — that they click and then delete. Deliberately NOT keyed to a task: the note outlives the

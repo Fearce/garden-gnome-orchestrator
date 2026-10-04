@@ -389,6 +389,7 @@ import type {
   ChatPostInput,
   ChatReadInput,
   DispatchInput,
+  GoalWorkRecorder,
   OrchestratorApi,
   PostFindingInput,
   RecordManualDeploymentInput,
@@ -1114,6 +1115,8 @@ export class ThreadManager implements OrchestratorApi {
   // Asked at every turn-ceiling continuation: a reason the task should wrap up instead, or null to continue.
   // `provider` is the backend the task's implementor is running on right now.
   private continuationGuard: ((threadId: string, provider: ImplementorProvider) => string | null) | null = null;
+  // The goal runner's milestone recorder, behind `report_goal_progress` and the CLI `GOAL_PROGRESS:` line.
+  private goalWork: GoalWorkRecorder | null = null;
   // During QA the implementor is fully stopped (the slot is exclusive — one agent at a time), so the
   // QA agent is the only thing running. Append steering reaches THAT QA agent; interrupt steering stops
   // or supersedes it and resumes the implementor. Either path must never wake/spawn an implementor beside
@@ -7770,6 +7773,26 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.continuationGuard = guard;
   }
 
+  /** Lets the goal runner record the milestones its step agents report. */
+  setGoalWorkRecorder(recorder: GoalWorkRecorder): void {
+    this.goalWork = recorder;
+  }
+
+  isGoalStepTask(threadId: string): boolean {
+    return !!this.goalWork?.stepOfTask(threadId);
+  }
+
+  reportGoalProgress(threadId: string, report: unknown): { ok: true; message: string } | { ok: false; error: string } {
+    return this.goalWork ? this.goalWork.recordWork(threadId, report) : { ok: false, error: "goals are not running" };
+  }
+
+  /** A CLI implementor's `GOAL_PROGRESS:` line has no tool result to read, so a refusal lands as a finding. */
+  private recordCliGoalProgress(thread: Thread, report: unknown): void {
+    const res = this.reportGoalProgress(thread.id, report);
+    if (res.ok) return;
+    this.postFinding({ threadId: thread.id, fromRole: "implementor", summary: "Goal progress not recorded", detail: `The GOAL_PROGRESS line was refused: ${res.error}.`, severity: "warning" });
+  }
+
   setApprovalMode(on: boolean): void {
     this.db.kvSet("require_plan_approval", on ? "1" : "0");
     this.hub.publish({ type: "approval.mode", on });
@@ -9859,6 +9882,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         onManualDeployOnly: (claim) => {
           this.recordCliManualDeployment(thread, runId, claim);
         },
+        onGoalProgress: (report) => {
+          this.recordCliGoalProgress(thread, report);
+        },
         onSubTask: vanilla ? undefined : (raw) => {
           void this.spawnFromCliBridge(thread, runId, raw);
         },
@@ -9899,6 +9925,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         },
         onManualDeployOnly: (claim) => {
           this.recordCliManualDeployment(thread, runId, claim);
+        },
+        onGoalProgress: (report) => {
+          this.recordCliGoalProgress(thread, report);
         },
         onSubTask: (raw) => {
           void this.spawnFromCliBridge(thread, runId, raw);

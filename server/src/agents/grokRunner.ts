@@ -11,7 +11,7 @@ import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.
 import { withAgentToolPath } from "./env.js";
 import { InputLedger } from "./inputLedger.js";
 import { latestFamilyModel } from "./modelFamily.js";
-import { endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, endsWithOpenSubTaskMarker, extractCliBridgeMessages } from "./officeBridge.js";
+import { endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, endsWithOpenSubTaskMarker, endsWithOpenGoalProgressMarker, extractCliBridgeMessages } from "./officeBridge.js";
 import {
   formatStructuredRoleFeed,
   parseStructuredText,
@@ -53,6 +53,8 @@ export interface GrokRunConfig {
   onManualDeployOnly?: (claim: unknown) => void;
   /** A standalone `SUBTASK: {json}` line — the CLI's spawn_subagent (orchestrator/subTasks.ts). */
   onSubTask?: (spec: unknown) => void;
+  /** A standalone `GOAL_PROGRESS: {json}` line — the CLI's report_goal_progress (orchestrator/goalWork.ts). */
+  onGoalProgress?: (report: unknown) => void;
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Grok headless takes only a
@@ -637,7 +639,8 @@ export class GrokAgentRun implements AgentRunLike {
       !endsWithOpenOperatorNoteMarker(this.textBuf) &&
       !endsWithOpenDeliverableMarker(this.textBuf) &&
       !endsWithOpenManualDeploymentMarker(this.textBuf) &&
-      !endsWithOpenSubTaskMarker(this.textBuf)
+      !endsWithOpenSubTaskMarker(this.textBuf) &&
+      !endsWithOpenGoalProgressMarker(this.textBuf)
     ) {
       this.textBuf += "\n";
     }
@@ -689,6 +692,13 @@ export class GrokAgentRun implements AgentRunLike {
         this.cfg.onSubTask?.(spawn.spec);
       } catch {
         /* the spawn service validates and reports; a bad side-channel cannot fail the turn */
+      }
+    }
+    for (const progress of bridge.goalProgress) {
+      try {
+        this.cfg.onGoalProgress?.(progress.report);
+      } catch {
+        /* the goal runner validates and reports; a bad side-channel cannot fail the turn */
       }
     }
     this.textBuf = bridge.visible;

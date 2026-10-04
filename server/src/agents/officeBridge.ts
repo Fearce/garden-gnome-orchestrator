@@ -80,6 +80,13 @@ const MAX_MANUAL_DEPLOY_ONLY_WIRE_CHARS = 12_000;
 const SUBTASK_RE = /`?SUBTASK[ \t]*:[ \t]*(?=\{)/g;
 const MAX_SUBTASK_WIRE_CHARS = 60_000;
 
+// A goal step's milestone report (orchestrator/goalWork.ts), the CLI form of `report_goal_progress`, on one
+// line. Case-sensitive and anchored on the brace like SUBTASK, so prose about "goal progress:" stays prose.
+//
+//   GOAL_PROGRESS: {"items":[{"id":"sync-queue","title":"Sync queue","status":"working"}]}
+const GOAL_PROGRESS_RE = /`?GOAL_PROGRESS[ \t]*:[ \t]*(?=\{)/g;
+const MAX_GOAL_PROGRESS_WIRE_CHARS = 40_000;
+
 export interface ExtractOfficeChatOpts {
   /**
    * When true (default), a marker that runs to end-of-string is treated as complete (Codex whole
@@ -116,6 +123,10 @@ export interface CliSubTask {
   spec: unknown;
 }
 
+export interface CliGoalProgress {
+  report: unknown;
+}
+
 export interface ExtractOperatorNotesOpts {
   /**
    * Same streaming contract as {@link ExtractOfficeChatOpts.openEnded}: a marker at the end of a live
@@ -146,8 +157,10 @@ export function extractCliBridgeMessages(
   deliverables: CliDeliverable[];
   manualDeployments: CliManualDeployment[];
   subTasks: CliSubTask[];
+  goalProgress: CliGoalProgress[];
 } {
-  const spawns = extractSubTasks(text, opts);
+  const progress = extractGoalProgress(text, opts);
+  const spawns = extractSubTasks(progress.visible, opts);
   const deployment = extractManualDeployments(spawns.visible, opts);
   const files = extractDeliverables(deployment.visible, opts);
   const office = extractOfficeChat(files.visible, opts);
@@ -160,6 +173,49 @@ export function extractCliBridgeMessages(
     deliverables: files.deliverables,
     manualDeployments: deployment.manualDeployments,
     subTasks: spawns.subTasks,
+    goalProgress: progress.goalProgress,
+  };
+}
+
+/** Strip valid one-line `GOAL_PROGRESS: {json}` markers. A payload that is not a JSON object stays visible;
+ * the report's own validation belongs to the goal runner, which answers a refusal with a finding. */
+export function extractGoalProgress(text: string, opts?: ExtractOfficeChatOpts): { visible: string; goalProgress: CliGoalProgress[] } {
+  const openEnded = opts?.openEnded !== false;
+  const goalProgress: CliGoalProgress[] = [];
+  if (!text) return { visible: "", goalProgress };
+  let out = "";
+  let cursor = 0;
+  GOAL_PROGRESS_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = GOAL_PROGRESS_RE.exec(text)) !== null) {
+    const markerStart = match.index;
+    const bodyStart = GOAL_PROGRESS_RE.lastIndex;
+    out += text.slice(cursor, markerStart);
+    const taken = takeJsonBridgeBody(text, bodyStart, openEnded, match[0].startsWith("`"), startsGoalProgressMarker, MAX_GOAL_PROGRESS_WIRE_CHARS);
+    if (!taken.complete) {
+      cursor = markerStart;
+      GOAL_PROGRESS_RE.lastIndex = text.length;
+      break;
+    }
+    const markerEnd = taken.bodyEnd + (taken.trailingTick ? 1 : 0);
+    try {
+      const report = JSON.parse(taken.body) as unknown;
+      if (!report || typeof report !== "object" || Array.isArray(report)) throw new Error("not an object");
+      goalProgress.push({ report });
+      out += "\n";
+    } catch {
+      out += text.slice(markerStart, markerEnd);
+    }
+    cursor = markerEnd;
+    GOAL_PROGRESS_RE.lastIndex = cursor;
+  }
+  out += text.slice(cursor);
+  const hasOpenMarker = !openEnded && endsWithOpenCliBridgeMarker(out);
+  return {
+    visible: hasOpenMarker
+      ? out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n")
+      : out.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim(),
+    goalProgress,
   };
 }
 
@@ -532,7 +588,7 @@ function takeOperatorNoteBody(
       complete = true;
       break;
     }
-    if (startsOfficeMarker(text, i) || startsDeliverableMarker(text, i) || startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i)) {
+    if (startsOfficeMarker(text, i) || startsDeliverableMarker(text, i) || startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i) || startsGoalProgressMarker(text, i)) {
       complete = true;
       break;
     }
@@ -575,7 +631,7 @@ function takeDeliverableBody(
       complete = true;
       break;
     }
-    if (startsDeliverableMarker(text, i) || startsOfficeMarker(text, i) || startsOperatorNoteMarker(text, i) || startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i)) {
+    if (startsDeliverableMarker(text, i) || startsOfficeMarker(text, i) || startsOperatorNoteMarker(text, i) || startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i) || startsGoalProgressMarker(text, i)) {
       complete = true;
       break;
     }
@@ -610,6 +666,24 @@ function startsSubTaskMarker(text: string, i: number): boolean {
   let j = i;
   if (text[j] === "`") j++;
   return /^SUBTASK[ \t]*:[ \t]*\{/.test(text.slice(j, j + 40));
+}
+
+function startsGoalProgressMarker(text: string, i: number): boolean {
+  let j = i;
+  if (text[j] === "`") j++;
+  return /^GOAL_PROGRESS[ \t]*:[ \t]*\{/.test(text.slice(j, j + 40));
+}
+
+/** True when a Grok stream ends inside an incomplete GOAL_PROGRESS JSON line. */
+export function endsWithOpenGoalProgressMarker(text: string): boolean {
+  if (!text) return false;
+  GOAL_PROGRESS_RE.lastIndex = 0;
+  let last: RegExpExecArray | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = GOAL_PROGRESS_RE.exec(text)) !== null) last = match;
+  if (!last) return false;
+  const bodyStart = last.index + last[0].length;
+  return !takeJsonBridgeBody(text, bodyStart, false, last[0].startsWith("`"), startsGoalProgressMarker, MAX_GOAL_PROGRESS_WIRE_CHARS).complete;
 }
 
 /** True when a Grok stream ends inside an incomplete SUBTASK JSON line. */
@@ -654,11 +728,12 @@ function endsWithOpenCliBridgeMarker(text: string): boolean {
     endsWithOpenOperatorNoteMarker(text) ||
     endsWithOpenDeliverableMarker(text) ||
     endsWithOpenManualDeploymentMarker(text) ||
-    endsWithOpenSubTaskMarker(text)
+    endsWithOpenSubTaskMarker(text) ||
+    endsWithOpenGoalProgressMarker(text)
   );
 }
 
-/** Scan one single-line JSON bridge payload (MANUAL_DEPLOY_ONLY, SUBTASK). `startsOwn` is the marker's
+/** Scan one single-line JSON bridge payload (MANUAL_DEPLOY_ONLY, SUBTASK, GOAL_PROGRESS). `startsOwn` is the marker's
  * own start test: a second marker of the same kind glued onto the line ends the first. */
 function takeJsonBridgeBody(
   text: string,
@@ -688,6 +763,7 @@ function takeJsonBridgeBody(
       startsDeliverableMarker(text, i) ||
       (startsOwn !== startsManualDeploymentMarker && startsManualDeploymentMarker(text, i)) ||
       (startsOwn !== startsSubTaskMarker && startsSubTaskMarker(text, i)) ||
+      (startsOwn !== startsGoalProgressMarker && startsGoalProgressMarker(text, i)) ||
       (i > bodyStart && startsOwn(text, i)) ||
       i - bodyStart >= maxChars
     ) {
@@ -776,7 +852,7 @@ function takeOfficeBody(
       break;
     }
 
-    if (startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i)) {
+    if (startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i) || startsGoalProgressMarker(text, i)) {
       bodyParts.push(text.slice(lineStart, i));
       complete = true;
       break;

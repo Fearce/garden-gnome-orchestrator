@@ -174,6 +174,17 @@ async function sessionReuse(): Promise<void> {
   const msg = h.continued.at(-1)!.message;
   check("a continuation carries the objective, the last status and the rule", msg.includes("GOAL CONTINUATION") && msg.includes("Ship the parser with docs and tests.") && msg.includes(`CONTINUE — part ${TURNS}`) && msg.includes("GOAL STATUS: COMPLETE"));
   check("a continuation is short next to a fresh brief", msg.length < 2_500);
+  check("a continuation reminds the session to report milestones", msg.includes("report_goal_progress") && msg.includes("GOAL_PROGRESS:"));
+
+  console.log("goal session: a resumed session keeps its milestones");
+  const items = Array.from({ length: 30 }, (_, i) => ({ id: `part-${i}`, title: `Parser part ${i}: a deliberately long milestone title to fill the list`, status: i < 3 ? ("done" as const) : ("planned" as const) }));
+  check("the session's report is recorded", h.runner.recordWork(thread, { items: [...items, { id: "part-3", title: "Parser part 3", status: "working" }] }).ok);
+  await endTurn(h, thread, { report: `Turn ${TURNS}.\nGOAL STATUS: CONTINUE: part ${TURNS + 1}`, tools: novel(5) });
+  await h.runner.evaluate(id);
+  const resumed = h.continued.at(-1)!.message;
+  check("the next turn lists the open milestones by id", resumed.includes("3 milestones recorded done.") && resumed.includes("- part-3 [working]: Parser part 3"));
+  check(`a long milestone list is clipped, and the continuation stays short (${resumed.length} chars, ${msg.length} without milestones)`, resumed.includes("more not shown") && resumed.length < 2_500);
+  check("the milestones stay on the goal across turns", goalOf(h, id).workItems.length === 30);
 
   console.log("goal session: the same script on the fresh-step loop");
   const f = harness();

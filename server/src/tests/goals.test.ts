@@ -31,9 +31,10 @@ import {
   type GoalHost,
   type GoalJudgement,
 } from "../orchestrator/goals.js";
+import { goalWorkList, mergeGoalWork, parseGoalWorkReport } from "../orchestrator/goalWork.js";
 import type { DispatchInput } from "../orchestrator/api.js";
 import type { ModelCandidate } from "../orchestrator/modelSelector.js";
-import type { Goal, GoalStep, OrchestratorSettings, ThreadState } from "../types.js";
+import { GOAL_WORK_ITEMS_MAX, type Goal, type GoalStep, type GoalWorkItem, type OrchestratorSettings, type ThreadState } from "../types.js";
 
 let failures = 0;
 function check(name: string, cond: boolean): void {
@@ -760,8 +761,103 @@ async function runningStepWrapUp(): Promise<void> {
   check("an ended goal's step wraps up with its reason", ended === 'the goal "Night" is abandoned (Abandoned by the owner)');
 }
 
+function workMerge(): void {
+  console.log("goals: milestone merge");
+  const now = 1_000;
+  const first = mergeGoalWork([], [{ id: "Sync Queue", title: "Sync queue", status: "working" }, { id: "readme", title: "Docs", status: "planned" }], "t1", now);
+  check("a first report adds every item", first.ok && first.added === 2 && first.updated === 0);
+  const rows: GoalWorkItem[] = first.ok ? first.rows.map((r, i) => ({ ...r, id: `w${i}`, goalId: "g", position: i + 1, createdAt: now })) : [];
+  check("ids are normalised to keys", rows[0]?.key === "sync-queue" && rows[1]?.key === "readme");
+  check("working stamps the start", rows[0]?.startedAt === now && rows[1]?.startedAt === null);
+
+  const second = mergeGoalWork(rows, [{ id: "sync-queue", title: "Sync queue", status: "done", verified: true, verification: "sync.test passed" }, { title: "docs", status: "working", note: "README first" }], "t2", 2_000);
+  const byKey = new Map(second.ok ? second.rows.map((r) => [r.key, r]) : []);
+  check("a report updates by id, and by title when no id is given (no duplicate)", second.ok && second.added === 0 && second.updated === 2);
+  check("done with verification is recorded as verified", byKey.get("sync-queue")?.verified === true && byKey.get("sync-queue")?.verification === "sync.test passed");
+  check("done keeps the start and stamps the finish", byKey.get("sync-queue")?.startedAt === now && byKey.get("sync-queue")?.completedAt === 2_000);
+  check("the item moves to the step that reported it", byKey.get("readme")?.threadId === "t2");
+
+  const unverified = mergeGoalWork([], [{ title: "Banner", status: "done" }], "t1", now);
+  check("done without verified is recorded as not verified", unverified.ok && unverified.rows[0]?.verified === false && unverified.rows[0]?.verification === null);
+  const verifiedOff = mergeGoalWork([], [{ title: "Banner", status: "working", verified: true, verification: "x" }], "t1", now);
+  check("verified means nothing on an unfinished item", verifiedOff.ok && verifiedOff.rows[0]?.verified === false && verifiedOff.rows[0]?.verification === null);
+
+  const noBlocker = mergeGoalWork(rows, [{ id: "readme", title: "Docs", status: "working" }, { title: "Ship", status: "awaiting_approval" }], "t1", now);
+  check("awaiting approval without what it waits on refuses the whole report", !noBlocker.ok && /blocker/.test(noBlocker.ok ? "" : noBlocker.error));
+  const approval = mergeGoalWork([], [{ title: "Ship", status: "awaiting_approval", blocker: "Owner tests on iPhone" }], "t1", now);
+  const approvalRows: GoalWorkItem[] = approval.ok ? approval.rows.map((r) => ({ ...r, id: "a", goalId: "g", position: 1, createdAt: now })) : [];
+  const repeat = mergeGoalWork(approvalRows, [{ title: "Ship", status: "awaiting_approval", note: "Build sent" }], "t1", now + 1);
+  check("a repeated approval keeps its recorded blocker", repeat.ok && repeat.rows[0]?.blocker === "Owner tests on iPhone" && repeat.rows[0]?.note === "Build sent");
+  const approved = mergeGoalWork(approvalRows, [{ title: "Ship", status: "done" }], "t1", now + 2);
+  check("leaving an owner status clears the blocker", approved.ok && approved.rows[0]?.blocker === null);
+  const reopened = mergeGoalWork(approved.ok ? approved.rows.map((r) => ({ ...r, id: "a", goalId: "g", position: 1, createdAt: now })) : [], [{ title: "Ship", status: "working" }], "t1", now + 3);
+  check("reopening a done item clears its finish", reopened.ok && reopened.rows[0]?.completedAt === null);
+
+  const wordy = mergeGoalWork([], [{ id: "w", title: "x".repeat(300), status: "working", note: "y".repeat(900) }], "t1", now);
+  check("titles and notes are clipped short, so the list stays skimmable", wordy.ok && wordy.rows[0]!.title.length <= 60 && (wordy.rows[0]!.note ?? "").length <= 200);
+  check("an empty report is refused",!parseGoalWorkReport({ items: [] }).ok);
+  check("an unknown status is refused", !parseGoalWorkReport({ items: [{ title: "x", status: "finished" }] }).ok);
+  const many = Array.from({ length: 30 }, (_, i) => ({ title: `m${i}`, status: "planned" as const }));
+  const full = Array.from({ length: GOAL_WORK_ITEMS_MAX - 10 }, (_, i) => ({ ...rows[0]!, key: `k${i}`, id: `k${i}` }));
+  check("the per-goal cap refuses a report that would pass it", !mergeGoalWork(full, many, "t1", now).ok);
+  check("the list puts open items first", goalWorkList(second.ok ? second.rows.map((r, i) => ({ ...r, id: `${i}`, goalId: "g", position: i, createdAt: 0 })) : [], 500).split("\n")[0] === "- readme [working]: docs");
+}
+
+async function milestones(): Promise<void> {
+  const ws = process.cwd();
+  console.log("goals: milestones recorded by a step");
+  const h = harness();
+  const broadcasts: number[] = [];
+  h.hub.subscribe((e) => {
+    if (e.type === "goals") broadcasts.push(e.goals.length);
+  });
+  h.answers.push(answer("continue", "Build"));
+  const g = h.runner.create({ title: "Offline", objective: "Works offline.", workspace: ws, persistentSession: false }).goal!;
+  await h.runner.idle();
+  const t1 = h.db.getGoal(g.id)!.currentThreadId!;
+  check("the step brief asks for milestone reports", h.dispatched[0]!.brief.includes("report_goal_progress") && h.dispatched[0]!.brief.includes("awaiting_approval` until they have explicitly approved"));
+
+  const before = broadcasts.length;
+  const plan = h.runner.recordWork(t1, { items: [{ id: "queue", title: "Queue writes", status: "working" }, { id: "reconnect", title: "Replay", status: "planned" }] });
+  check("a step's report is recorded and lists the milestones", plan.ok && plan.message.includes("- queue [working]: Queue writes"));
+  check("a recorded report is broadcast at once", broadcasts.length === before + 1);
+  check("the goal carries its milestones in report order", h.db.getGoal(g.id)!.workItems.map((i) => i.key).join(",") === "queue,reconnect");
+
+  check("a task that is no goal step is refused", !h.runner.recordWork("nope", { items: [{ title: "x", status: "done" }] }).ok);
+  const refused = h.runner.recordWork(t1, { items: [{ id: "queue", title: "Queue writes", status: "done" }, { title: "iPhone test", status: "awaiting_approval" }] });
+  check("an invalid report writes nothing", !refused.ok && h.db.getGoal(g.id)!.workItems.find((i) => i.key === "queue")?.status === "working");
+
+  h.db.raw.prepare("UPDATE goal_steps SET thread_id = NULL WHERE goal_id = ?").run(g.id);
+  check("a report in the moment before the dispatch wrote the thread back still finds its step", h.runner.recordWork(t1, { items: [{ id: "queue", title: "Queue writes", status: "done", verified: true, verification: "queue.test passed" }] }).ok);
+  h.db.raw.prepare("UPDATE goal_steps SET thread_id = ? WHERE goal_id = ?").run(t1, g.id);
+
+  console.log("goals: milestones carry into the next step");
+  h.answers.push(answer("continue", "Replay"));
+  settle(h, t1, "done", "Queue done.\nGOAL STATUS: CONTINUE: replay remains");
+  await h.runner.evaluate(g.id);
+  await h.runner.idle();
+  const goal = h.db.getGoal(g.id)!;
+  check("the settled step keeps its status line", goal.steps[0]?.lastStatus?.kind === "continue" && goal.steps[0]?.lastStatus?.detail === "replay remains");
+  check("the director audits the reported milestones", h.judged[1]!.includes("Milestones the step agents reported") && h.judged[1]!.includes("- queue [done, verified]: Queue writes"));
+  check("the next step's brief lists them to reuse", h.dispatched[1]!.brief.includes("- reconnect [planned]: Replay"));
+  const t2 = goal.currentThreadId!;
+  const next = h.runner.recordWork(t2, { items: [{ title: "Replay", status: "working" }, { id: "docs", title: "Docs", status: "planned" }] });
+  check("a retry without ids updates by title instead of duplicating", next.ok && h.db.getGoal(g.id)!.workItems.length === 3);
+  check("completed work keeps its record across steps", h.db.getGoal(g.id)!.workItems.find((i) => i.key === "queue")?.verified === true);
+
+  console.log("goals: status lines backfilled for steps from before");
+  h.db.raw.prepare("UPDATE goal_steps SET last_status = NULL WHERE goal_id = ?").run(g.id);
+  (h.runner as unknown as { backfillStepStatus(): void }).backfillStepStatus();
+  const backfilled = h.db.getGoal(g.id)!.steps;
+  check("a settled step's status line is read from its report", backfilled[0]?.lastStatus?.kind === "continue");
+  check("a running step with no earlier turn has none (nothing is invented)", backfilled[1]?.lastStatus === null);
+  check("the backfill reads each step once", h.db.listGoalStepsWithUnreadStatus().length === 0);
+}
+
 async function main(): Promise<void> {
   pure();
+  workMerge();
+  await milestones();
   burnRate();
   await lifecycle();
   await guards();

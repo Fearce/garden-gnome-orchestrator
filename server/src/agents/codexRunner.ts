@@ -55,6 +55,8 @@ export interface CodexRunConfig {
   onManualDeployOnly?: (claim: unknown) => void;
   /** A standalone `SUBTASK: {json}` line — the CLI's spawn_subagent (orchestrator/subTasks.ts). */
   onSubTask?: (spec: unknown) => void;
+  /** A standalone `GOAL_PROGRESS: {json}` line — the CLI's report_goal_progress (orchestrator/goalWork.ts). */
+  onGoalProgress?: (report: unknown) => void;
   /** When set, this run is a structured role (planner/researcher/qa) rather than the free-form implementor:
    *  the CLI can't be handed our json_schema tool, so the kickoff instructs it to end with a fenced ```json
    *  block, and its final message is parsed against this schema into `result.structuredOutput`. A parse/shape
@@ -818,6 +820,13 @@ export class CodexAgentRun implements AgentRunLike {
               this.cfg.onSubTask?.(spawn.spec);
             } catch {
               /* the spawn service validates and reports; a bad side-channel cannot fail the turn */
+            }
+          }
+          for (const progress of bridge.goalProgress) {
+            try {
+              this.cfg.onGoalProgress?.(progress.report);
+            } catch {
+              /* the goal runner validates and reports; a bad side-channel cannot fail the turn */
             }
           }
           if (bridge.visible) {

@@ -256,8 +256,37 @@ export interface GoalStep {
   turns: number; // goal turns run in this task's session: 1 for the dispatch, +1 per continuation
   turnStartedAt: number;
   turnFingerprint: string | null;
+  lastStatus: GoalStepStatusLine | null; // the `GOAL STATUS:` line its last settled turn ended on
   createdAt: number;
   settledAt: number | null;
+}
+
+/** Mirrors the server's GoalStepStatusLine. */
+export interface GoalStepStatusLine {
+  kind: "complete" | "continue" | "blocked" | "waiting";
+  detail: string;
+}
+
+/** Mirrors the server's GoalWorkItemStatus. */
+export type GoalWorkItemStatus = "planned" | "working" | "blocked" | "awaiting_approval" | "done" | "dropped";
+
+/** One milestone inside a goal, as a step agent last reported it. Mirrors the server's GoalWorkItem. */
+export interface GoalWorkItem {
+  id: string;
+  goalId: string;
+  key: string;
+  title: string;
+  status: GoalWorkItemStatus;
+  note: string | null;
+  blocker: string | null;
+  verified: boolean;
+  verification: string | null;
+  threadId: string | null; // the step task that reported it last
+  position: number;
+  createdAt: number;
+  updatedAt: number;
+  startedAt: number | null;
+  completedAt: number | null;
 }
 
 /** Mirrors the server's GoalVerdict. */
@@ -296,6 +325,7 @@ export interface Goal {
   nextCheckAt: number | null;
   stepCount: number;
   steps: GoalStep[];
+  workItems: GoalWorkItem[]; // the milestones its step agents reported, in first-reported order
   createdAt: number;
   updatedAt: number;
   endedAt: number | null;

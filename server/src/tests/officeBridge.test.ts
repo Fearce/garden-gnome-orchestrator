@@ -4,12 +4,14 @@
 import assert from "node:assert/strict";
 import {
   endsWithOpenDeliverableMarker,
+  endsWithOpenGoalProgressMarker,
   endsWithOpenOfficeMarker,
   endsWithOpenOperatorNoteMarker,
   endsWithOpenManualDeploymentMarker,
   endsWithOpenSubTaskMarker,
   extractCliBridgeMessages,
   extractDeliverables,
+  extractGoalProgress,
   extractOfficeChat,
   extractOperatorNotes,
   extractManualDeployments,
@@ -558,6 +560,39 @@ import {
   const partial = extractCliBridgeMessages("OFFICE[name]: Moss", { openEnded: false });
   assert.deepEqual(partial.names, []);
   assert.equal(endsWithOpenOfficeMarker(partial.visible), true);
+}
+
+// GOAL_PROGRESS: a goal step's milestone report, one JSON line.
+{
+  const line = 'GOAL_PROGRESS: {"items":[{"id":"sync","title":"Sync queue","status":"working"}]}';
+  const r = extractGoalProgress(`Starting the queue.\n${line}\nOn it.`);
+  assert.deepEqual(r.goalProgress, [{ report: { items: [{ id: "sync", title: "Sync queue", status: "working" }] } }]);
+  assert.equal(r.visible, "Starting the queue.\n\nOn it.");
+
+  const ticked = extractGoalProgress("`" + line + "`");
+  assert.equal(ticked.goalProgress.length, 1, "a backticked report is still a report");
+  assert.equal(ticked.visible, "");
+
+  const bad = extractGoalProgress('GOAL_PROGRESS: {"items": [oops]}');
+  assert.equal(bad.goalProgress.length, 0, "a payload that is not JSON is not a report");
+  assert.match(bad.visible, /GOAL_PROGRESS/, "and stays visible instead of vanishing");
+
+  const prose = extractGoalProgress("I will write GOAL_PROGRESS: lines as I go.");
+  assert.equal(prose.goalProgress.length, 0, "a mention without a JSON object is prose");
+  assert.match(prose.visible, /GOAL_PROGRESS: lines/);
+
+  const partial = extractGoalProgress('GOAL_PROGRESS: {"items":[{"title":"Sy', { openEnded: false });
+  assert.equal(partial.goalProgress.length, 0, "a report still streaming is not taken");
+  assert.equal(endsWithOpenGoalProgressMarker(partial.visible), true, "and holds the stream open");
+
+  const all = extractCliBridgeMessages(`${line}\nOFFICE[team]: taking sync.ts\nDone for now.`);
+  assert.equal(all.goalProgress.length, 1, "the report survives the shared seam");
+  assert.deepEqual(all.posts, [{ scope: "project", body: "taking sync.ts" }], "and does not swallow the office line after it");
+  assert.equal(all.visible, "Done for now.");
+
+  const glued = extractCliBridgeMessages(`OFFICE[team]: claiming sync.ts ${line}`);
+  assert.deepEqual(glued.posts, [{ scope: "project", body: "claiming sync.ts" }], "an office body stops at a glued report");
+  assert.equal(glued.goalProgress.length, 1);
 }
 
 console.log("All officeBridge extraction checks passed.");

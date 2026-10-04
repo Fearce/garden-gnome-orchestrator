@@ -51,7 +51,10 @@ import type {
   GoalTurnActivity,
   GoalUsage,
   GoalStep,
+  GoalStepStatusLine,
   GoalVerdict,
+  GoalWorkItem,
+  GoalWorkItemStatus,
   ImplementationMemo,
   ImplementationMemoDeliverable,
   ImplementationMemoHandoff,
@@ -561,8 +564,42 @@ function rowToGoalStep(r: Row): GoalStep {
     turns: (r.turns as number | null) ?? 1,
     turnStartedAt: (r.turn_started_at as number | null) ?? (r.created_at as number),
     turnFingerprint: (r.turn_fingerprint as string | null) ?? null,
+    lastStatus: parseStepStatus(r.last_status),
     createdAt: r.created_at as number,
     settledAt: (r.settled_at as number | null) ?? null,
+  };
+}
+
+const STEP_STATUS_KINDS = new Set<GoalStepStatusLine["kind"]>(["complete", "continue", "blocked", "waiting"]);
+
+/** `last_status` is JSON, or "" once read from a report that had no status line. */
+function parseStepStatus(raw: unknown): GoalStepStatusLine | null {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const v = JSON.parse(raw) as Partial<GoalStepStatusLine>;
+    return v.kind && STEP_STATUS_KINDS.has(v.kind) ? { kind: v.kind, detail: typeof v.detail === "string" ? v.detail : "" } : null;
+  } catch {
+    return null;
+  }
+}
+
+function rowToGoalWorkItem(r: Row): GoalWorkItem {
+  return {
+    id: r.id as string,
+    goalId: r.goal_id as string,
+    key: r.key as string,
+    title: r.title as string,
+    status: r.status as GoalWorkItemStatus,
+    note: (r.note as string | null) ?? null,
+    blocker: (r.blocker as string | null) ?? null,
+    verified: Boolean(r.verified),
+    verification: (r.verification as string | null) ?? null,
+    threadId: (r.thread_id as string | null) ?? null,
+    position: r.seq as number,
+    createdAt: r.created_at as number,
+    updatedAt: r.updated_at as number,
+    startedAt: (r.started_at as number | null) ?? null,
+    completedAt: (r.completed_at as number | null) ?? null,
   };
 }
 
@@ -986,6 +1023,8 @@ export class Db {
       "ALTER TABLE goal_steps ADD COLUMN turns INTEGER NOT NULL DEFAULT 1",
       "ALTER TABLE goal_steps ADD COLUMN turn_started_at INTEGER",
       "ALTER TABLE goal_steps ADD COLUMN turn_fingerprint TEXT",
+      // NULL = not read yet; GoalRunner fills settled steps from their reports once (`backfillStepStatus`).
+      "ALTER TABLE goal_steps ADD COLUMN last_status TEXT",
       // Goals no longer have a step budget; the NOT NULL column would reject every new goal.
       "ALTER TABLE goals DROP COLUMN max_steps",
     ]) {
@@ -3933,6 +3972,7 @@ export class Db {
   deleteGoal(id: string): boolean {
     return this.raw.transaction(() => {
       this.raw.prepare("DELETE FROM goal_steps WHERE goal_id = ?").run(id);
+      this.raw.prepare("DELETE FROM goal_work_items WHERE goal_id = ?").run(id);
       return this.raw.prepare("DELETE FROM goals WHERE id = ?").run(id).changes > 0;
     })();
   }
@@ -3968,6 +4008,8 @@ export class Db {
       turns: number;
       turnStartedAt: number;
       turnFingerprint: string | null;
+      /** null = the report had no status line; stored as "" so the backfill never reads it again. */
+      lastStatus: GoalStepStatusLine | null;
     }>,
   ): void {
     const map: Record<string, string> = {
@@ -3978,6 +4020,7 @@ export class Db {
       turns: "turns",
       turnStartedAt: "turn_started_at",
       turnFingerprint: "turn_fingerprint",
+      lastStatus: "last_status",
     };
     const sets: string[] = [];
     const params: Row = { id };
@@ -3985,9 +4028,54 @@ export class Db {
       if (!(k in patch)) continue;
       sets.push(`${col} = @${k}`);
       const v = (patch as Row)[k];
-      params[k] = k === "agentClaimedComplete" ? (v == null ? null : v ? 1 : 0) : (v ?? null);
+      params[k] = k === "agentClaimedComplete" ? (v == null ? null : v ? 1 : 0) : k === "lastStatus" ? (v ? JSON.stringify(v) : "") : (v ?? null);
     }
     if (sets.length) this.raw.prepare(`UPDATE goal_steps SET ${sets.join(", ")} WHERE id = @id`).run(params);
+  }
+
+  /** Steps whose status line was never read although a turn of theirs ended: settled steps, and running
+   *  ones past their first turn, from before the line was recorded. */
+  listGoalStepsWithUnreadStatus(): GoalStep[] {
+    return (this.raw
+      .prepare("SELECT * FROM goal_steps WHERE last_status IS NULL AND thread_id IS NOT NULL AND (settled_at IS NOT NULL OR turns > 1) ORDER BY goal_id, seq ASC")
+      .all() as Row[]).map(rowToGoalStep);
+  }
+
+  /** A task's last implementor report written before `before`: the report its previous goal turn ended on. */
+  goalReportBefore(threadId: string, before: number): string | null {
+    const r = this.raw
+      .prepare("SELECT content FROM messages WHERE thread_id = ? AND role = 'implementor' AND kind = 'text' AND created_at < ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(threadId, before) as { content: string } | undefined;
+    return r?.content ?? null;
+  }
+
+  /** The goal step a task carries (its newest, should a task ever carry two), or null for an ordinary task. */
+  goalStepOfThread(threadId: string): GoalStep | null {
+    const r = this.raw.prepare("SELECT * FROM goal_steps WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(threadId) as Row | undefined;
+    return r ? rowToGoalStep(r) : null;
+  }
+
+  /** A goal's milestones in the order they were first reported. */
+  listGoalWorkItems(goalId: string): GoalWorkItem[] {
+    return (this.raw.prepare("SELECT * FROM goal_work_items WHERE goal_id = ? ORDER BY seq ASC").all(goalId) as Row[]).map(rowToGoalWorkItem);
+  }
+
+  /** Writes milestones by (goal, key) in one transaction: a new key takes the next `seq`, a known one keeps
+   *  its row, position and creation time. The caller (goalWork.ts) decides every field. */
+  saveGoalWorkItems(goalId: string, items: Omit<GoalWorkItem, "id" | "goalId" | "position" | "createdAt">[]): void {
+    const stmt = this.raw.prepare(
+      `INSERT INTO goal_work_items(id, goal_id, key, seq, title, status, note, blocker, verified, verification, thread_id,
+                                   created_at, updated_at, started_at, completed_at)
+       VALUES(@id, @goalId, @key, (SELECT IFNULL(MAX(seq), 0) + 1 FROM goal_work_items WHERE goal_id = @goalId), @title, @status,
+              @note, @blocker, @verified, @verification, @threadId, @updatedAt, @updatedAt, @startedAt, @completedAt)
+       ON CONFLICT(goal_id, key) DO UPDATE SET
+         title = excluded.title, status = excluded.status, note = excluded.note, blocker = excluded.blocker,
+         verified = excluded.verified, verification = excluded.verification, thread_id = excluded.thread_id,
+         updated_at = excluded.updated_at, started_at = excluded.started_at, completed_at = excluded.completed_at`,
+    );
+    this.raw.transaction(() => {
+      for (const item of items) stmt.run({ id: newId(), goalId, ...item, verified: item.verified ? 1 : 0 });
+    })();
   }
 
   /** The task a dispatch created for a step whose thread id was never written back (a crash between the
@@ -4104,6 +4192,7 @@ export class Db {
       nextCheckAt: (r.next_check_at as number | null) ?? null,
       stepCount,
       steps: this.listGoalSteps(id, GOAL_STEPS_SHOWN),
+      workItems: this.listGoalWorkItems(id),
       createdAt: r.created_at as number,
       updatedAt: r.updated_at as number,
       endedAt: (r.ended_at as number | null) ?? null,

@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { Goal, GoalUsage } from "../src/types.js";
+import type { Goal, GoalUsage, GoalWorkItem } from "../src/types.js";
 import "./ssrCssStub.mjs";
 
 Object.assign(globalThis, { React });
@@ -53,7 +53,7 @@ socket.sent.length = 0;
 
 const NO_USAGE: GoalUsage = { tokensUsed: 0, freshInputTokens: 0, outputTokens: 0, cachedInputTokens: 0, runs: 0, unmeteredRuns: 0, runsBeforeBaseline: 0, agentSeconds: 0, since: 1 };
 const USAGE: GoalUsage = { ...NO_USAGE, tokensUsed: 1_250_000, freshInputTokens: 1_000_000, outputTokens: 250_000, cachedInputTokens: 48_000_000, runs: 3, agentSeconds: 7_200 };
-const step = { turns: 1, turnStartedAt: 1, turnFingerprint: null };
+const step = { turns: 1, turnStartedAt: 1, turnFingerprint: null, lastStatus: null };
 
 const goal: Goal = {
   id: "goal-1",
@@ -78,6 +78,7 @@ const goal: Goal = {
   currentThreadId: "thread-2",
   nextCheckAt: null,
   stepCount: 2,
+  workItems: [],
   steps: [
     { id: "s1", goalId: "goal-1", seq: 1, threadId: "thread-1", title: "Cache layer", provider: "claude", model: "claude-opus-5-5", effort: "high", rationale: "Architectural.", outcome: "done", agentClaimedComplete: true, ...step, createdAt: 1, settledAt: 2 },
     { id: "s2", goalId: "goal-1", seq: 2, threadId: "thread-2", title: "Sync queue", provider: "codex", model: "gpt-5.6", effort: "medium", rationale: "Mechanical follow-up.", outcome: null, agentClaimedComplete: null, ...step, createdAt: 3, settledAt: null },
@@ -249,6 +250,86 @@ const pinned = render([{ ...goal, effort: "high", provider: "codex", model: "gpt
 assert.match(pinned, /effort-badge eff-high[^>]*>high</, "the owner's effort is on the card");
 assert.doesNotMatch(pinned, /low–medium/);
 assert.doesNotMatch(pinned, /Director&#x27;s model/, "a pinned goal shows its model, not the director's");
+
+// --- steps and milestones ---
+const item = (over: Partial<GoalWorkItem> & Pick<GoalWorkItem, "key" | "title" | "status">): GoalWorkItem => ({
+  id: `w-${over.key}`,
+  goalId: "goal-1",
+  note: null,
+  blocker: null,
+  verified: false,
+  verification: null,
+  threadId: "thread-2",
+  position: 1,
+  createdAt: 1,
+  updatedAt: 2,
+  startedAt: null,
+  completedAt: null,
+  ...over,
+});
+const workItems: GoalWorkItem[] = [
+  item({ key: "legacy-cache", title: "Legacy cache probe", status: "done", threadId: "thread-0", position: 1 }),
+  item({ key: "cache-schema", title: "Cache schema", status: "done", threadId: "thread-1", verified: true, verification: "npm test: 42 passed", position: 2, completedAt: 2 }),
+  item({ key: "queue-writes", title: "Queue writes offline", status: "working", note: "IndexedDB queue in place; wiring the service worker.", position: 3, startedAt: 2 }),
+  item({ key: "replay", title: "Replay on reconnect", status: "planned", position: 4 }),
+  item({ key: "iphone-test", title: "Owner tests on iPhone", status: "awaiting_approval", blocker: "Mikkel installs the build and approves it.", position: 5 }),
+  item({ key: "polling", title: "Poll for connectivity", status: "dropped", position: 6 }),
+];
+const tree = render([{ ...goal, workItems }]);
+assert.match(tree, /Steps and milestones/);
+assert.match(tree, /2 done · 1 working · 1 awaiting approval · 1 planned/, "the tally counts milestones by status, dropped ones apart");
+assert.doesNotMatch(tree, /goal-work-tally[^>]*>[^<]*%/, "the tally carries no percentage");
+assert.match(tree, /goal-now-label[^>]*>Working on<[\s\S]*Queue writes offline[\s\S]*IndexedDB queue in place/, "the current step names the milestone in progress and its note");
+assert.match(tree, /goal-needs[\s\S]*Owner tests on iPhone[\s\S]*Needs approval[\s\S]*Mikkel installs the build and approves it\./, "an approval dependency is shown above the tree with what it waits on");
+assert.match(tree, /goal-item ws-working is-current[\s\S]*?goal-item-now[^>]*>Now</, "the working milestone is the current one");
+assert.match(tree, /goal-item ws-dropped/, "a dropped milestone stays visible, struck through");
+assert.ok(tree.indexOf("Sync queue") < tree.indexOf("Cache layer", tree.indexOf("goal-tree")), "steps list newest first");
+assert.match(tree, /aria-expanded="true"[^>]*>[\s\S]*?Sync queue/, "the running step starts open");
+assert.doesNotMatch(tree, /Cache schema/, "a settled step starts closed when one runs");
+assert.match(tree, /goal-branch-count[^>]*>0\/3</, "a step counts its done milestones of those it reported");
+assert.match(tree, /Earlier steps/, "milestones from a step outside the window gather under earlier steps");
+
+const settledTree = render([
+  {
+    ...goal,
+    workItems,
+    steps: [goal.steps[0]!, { ...goal.steps[1]!, outcome: "done", settledAt: 4 }],
+  },
+]);
+assert.match(settledTree, /aria-expanded="true"[^>]*>[\s\S]*?Sync queue/, "with nothing running, the newest step starts open");
+
+const verifiedTree = render([
+  {
+    ...goal,
+    workItems: [
+      item({ key: "store", title: "Offline store", status: "done", verified: true, verification: "sync.test: 12 passed", position: 1 }),
+      item({ key: "banner", title: "Offline banner", status: "done", position: 2 }),
+    ],
+  },
+]);
+assert.match(verifiedTree, /Offline store[\s\S]*?goal-item-verified[^>]*>Verified</, "a verified milestone says so");
+assert.match(verifiedTree, /Offline banner<\/span><span class="goal-item-state"><span>Done</, "a milestone recorded done without verification reads as plain done");
+
+const historical = render([
+  {
+    ...goal,
+    status: "achieved",
+    endedAt: 5,
+    steps: [goal.steps[0]!, { ...goal.steps[1]!, outcome: "done", settledAt: 4, lastStatus: { kind: "continue", detail: "Replay remains." } }],
+  },
+]);
+assert.match(historical, /no milestones reported yet/, "a goal from before milestone reporting invents none");
+assert.match(historical, /Last turn: Continue[\s\S]*Replay remains\./, "the step's recorded status line is shown");
+assert.match(historical, /No milestones reported in this step\./);
+assert.doesNotMatch(historical.slice(historical.indexOf("goal-work"), historical.indexOf("sched-actions")), /%/, "no percentage is made up for an old goal");
+
+const ended = render([{ ...goal, status: "achieved", endedAt: 5, workItems }]);
+assert.doesNotMatch(ended, /goal-needs/, "an ended goal asks the owner for nothing");
+assert.doesNotMatch(ended, /goal-item-now/, "nothing is current on an ended goal");
+assert.match(ended, /Last reported working/, "an ended goal's working milestone reads as its last report");
+
+const statusOnly = render([{ ...goal, steps: [goal.steps[0]!, { ...goal.steps[1]!, lastStatus: { kind: "blocked", detail: "The deploy key is missing." } }] }]);
+assert.match(statusOnly, /goal-current[\s\S]*Last turn: Blocked[\s\S]*The deploy key is missing\./, "before any milestone, the current step shows its last status line");
 
 const empty = render([]);
 assert.match(empty, /No goals/);

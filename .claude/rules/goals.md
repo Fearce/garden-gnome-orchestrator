@@ -167,4 +167,22 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   Gate: `test:goals` (`stepWrapUpReason`) + `test:continuation-guard` (the loop sends the wrap-up nudge,
   once, and settles on the wrap-up report).
 
+- **Milestones are the step agent's own structured report, never inferred.** `report_goal_progress`
+  (bus tool, registered only for a goal step's implementor) and the CLI `GOAL_PROGRESS:` line both reach
+  `GoalRunner.recordWork`, which merges into `goal_work_items` by `(goal_id, key)` (`goalWork.ts`
+  `mergeGoalWork`). A report without an `id` matches an existing item by its title slug, so a retry or a
+  resumed session updates rather than duplicates. A report is all or nothing: blocked and
+  awaiting_approval need a `blocker`, and `verified` counts only on `done`. Never mark an item done from
+  elapsed time, a session ending or a command succeeding. Titles and notes are clipped short (60/200
+  characters) because the owner skims them. `stepOfTask` falls back to the orphan title match, since the
+  bus is created before the dispatch writes `thread_id` back.
+- **A step's `last_status` is the status line its last turn ended on.** `settleStep` writes it. On boot,
+  `backfillStepStatus` reads it once for older steps from their recorded reports: NULL means not read yet,
+  and "" means read, with no line. Historical goals show only this and their steps; nothing else is
+  backfilled, and the view shows counts, never percentages.
+- **The continuation carries a short reminder and the first open milestones only** (`GOAL_PROGRESS_REMINDER`,
+  `CONTINUATION_WORK_CHARS`), because `goalSession.test.ts` keeps a continuation under 2,500 characters.
+  The full list is in the fresh brief, the judge prompt and every tool reply.
+
 Verify: `npm run test:goals --prefix server` (server loop + the web store/view gate), then typecheck.
+The tree in a real browser (desktop + iPhone, live update, restart): `npm run goal-tree-lab --prefix server`.

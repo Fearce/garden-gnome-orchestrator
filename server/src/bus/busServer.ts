@@ -8,6 +8,7 @@ import { BUS_SERVER } from "../agents/toolNames.js";
 import { config } from "../config.js";
 import { DEFAULT_WAIT_SECONDS, MAX_WAIT_SECONDS, spawnSubAgentShape } from "../orchestrator/subTasks.js";
 import { deliverableRefusal, resolveTaskDeliverable } from "../orchestrator/deliverablePath.js";
+import { goalWorkReportShape } from "../orchestrator/goalWork.js";
 
 export interface BusContext {
   threadId: string;
@@ -250,8 +251,25 @@ Post at most one or two per task, at the END, once the thing is actually there t
       // Sub-agents edit the shared working tree, so only the role that owns edits may spawn them.
       ...(ctx.role === "implementor" ? subTaskTools(api, ctx) : []),
       ...(ctx.role === "implementor" || ctx.role === "qa" ? [taskWorktree] : []),
+      // Only a goal's step reports milestones; every other task is spared the tool and its description.
+      ...(ctx.role === "implementor" && api.isGoalStepTask(ctx.threadId) ? [goalProgressTool(api, ctx)] : []),
     ],
   });
+}
+
+/** report_goal_progress: the step agent's milestones for the owner's Goals view (orchestrator/goalWork.ts). */
+function goalProgressTool(api: OrchestratorApi, ctx: BusContext) {
+  return tool(
+    "report_goal_progress",
+    `Keep ${config.ownerName}'s Goals view current: record the meaningful milestones of this goal's objective and where each stands. Report your plan when you start, then again whenever a milestone starts, finishes, gets blocked or needs ${config.ownerName}'s approval, adding newly discovered ones as you go. Each item: a stable short \`id\` you reuse in every later report about it, a \`title\` of 3-6 plain words, at most one short sentence of \`note\`, and a \`status\` (planned, working, blocked, awaiting_approval, done, dropped). Report only the items that changed; the rest keep their recorded state. Keep the one you are on \`working\`. Mark \`done\` only when it is finished; set \`verified: true\` with \`verification\` only when you checked the result. An item needing ${config.ownerName}'s approval stays \`awaiting_approval\` until they have explicitly approved it. Milestones are a handful of outcomes the owner skims, not commands or small edits. The reply lists every recorded milestone with its id.`,
+    goalWorkReportShape,
+    async (args) => {
+      const res = api.reportGoalProgress(ctx.threadId, args);
+      return res.ok
+        ? { content: [{ type: "text" as const, text: res.message }] }
+        : { content: [{ type: "text" as const, text: `Progress not recorded: ${res.error}.` }], isError: true };
+    },
+  );
 }
 
 /** spawn_subagent and its companions (orchestrator/subTasks.ts). They replace the SDK's built-in Agent

@@ -13,8 +13,11 @@ import {
   type GoalHold,
   type GoalStatus,
   type GoalStep,
+  type GoalStepStatusLine,
   type GoalUsage,
   type GoalVerdict,
+  type GoalWorkItem,
+  type GoalWorkItemStatus,
   type ImplementorProvider,
   type ThreadState,
 } from "../types.js";
@@ -102,7 +105,6 @@ function GoalCard({ goal, onEdit }: { goal: Goal; onEdit: () => void }) {
   const now = useCoarseNow();
   const setGoalStatus = useStore((s) => s.setGoalStatus);
   const deleteGoal = useStore((s) => s.deleteGoal);
-  const [showSteps, setShowSteps] = useState(false);
   const ended = goal.status === "achieved" || goal.status === "abandoned";
   const running = goal.steps.filter((s) => s.settledAt == null);
   const lastStep = goal.steps.at(-1);
@@ -157,27 +159,16 @@ function GoalCard({ goal, onEdit }: { goal: Goal; onEdit: () => void }) {
       {!ended && running.length ? (
         <div className="goal-running">
           {running.map((s) => (
-            <CurrentStep key={s.id} step={s} label={goal.maxConcurrent > 1 ? `Running · ${running.length} of ${goal.maxConcurrent}` : "Current step"} />
+            <CurrentStep key={s.id} goal={goal} step={s} label={goal.maxConcurrent > 1 ? `Running · ${running.length} of ${goal.maxConcurrent}` : "Current step"} />
           ))}
         </div>
       ) : lastStep && !ended ? (
-        <CurrentStep step={lastStep} label="Last step" />
+        <CurrentStep goal={goal} step={lastStep} label="Last step" />
       ) : null}
 
-      {goal.steps.length ? (
-        <div className="goal-history">
-          <button className="sched-lastlink" onClick={() => setShowSteps((v) => !v)} aria-expanded={showSteps}>
-            {showSteps ? "Hide steps" : `Show ${goal.stepCount > goal.steps.length ? `last ${goal.steps.length} of ${goal.stepCount}` : goal.steps.length} step${goal.steps.length === 1 ? "" : "s"}`}
-          </button>
-          {showSteps ? (
-            <ol className="goal-step-list">
-              {[...goal.steps].reverse().map((s) => (
-                <StepRow key={s.id} step={s} />
-              ))}
-            </ol>
-          ) : null}
-        </div>
-      ) : null}
+      <NeedsOwner goal={goal} />
+
+      {goal.steps.length ? <GoalWorkTree goal={goal} /> : null}
 
       <div className="sched-actions">
         {goal.status === "active" ? (
@@ -241,10 +232,12 @@ function GoalCard({ goal, onEdit }: { goal: Goal; onEdit: () => void }) {
   );
 }
 
-/** A step in flight (or the last one): what it is, what it runs on, and a jump to its task. */
-function CurrentStep({ step, label }: { step: GoalStep; label: string }) {
+/** A step in flight (or the last one): what it is, what it runs on, the milestone it is on now, and a
+ *  jump to its task. Before any milestone is reported, the status line its last turn ended on stands in. */
+function CurrentStep({ goal, step, label }: { goal: Goal; step: GoalStep; label: string }) {
   const openTask = useOpenTask();
   const state = useStore((s): ThreadState | undefined => (step.threadId ? s.threads[step.threadId]?.state : undefined));
+  const now = goal.workItems.filter((i) => i.status === "working" && i.threadId === step.threadId);
   return (
     <div className="goal-current">
       <span className="sched-label">{label}</span>
@@ -261,30 +254,320 @@ function CurrentStep({ step, label }: { step: GoalStep; label: string }) {
         ) : null}
       </div>
       {step.rationale ? <p className="goal-rationale">{step.rationale}</p> : null}
+      {now.length ? (
+        <div className="goal-now">
+          <span className="goal-now-label">Working on</span>
+          {now.map((i) => (
+            <div key={i.id} className="goal-now-item">
+              <span className="goal-now-title" title={i.title}>
+                {i.title}
+              </span>
+              {i.note ? (
+                <span className="goal-now-note" title={i.note}>
+                  {i.note}
+                </span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : step.lastStatus ? (
+        <StatusLine status={step.lastStatus} />
+      ) : null}
     </div>
   );
 }
 
-function StepRow({ step }: { step: GoalStep }) {
-  const openTask = useOpenTask();
+const WORK_STATUS_LABEL: Record<GoalWorkItemStatus, string> = {
+  planned: "Planned",
+  working: "Working",
+  blocked: "Blocked",
+  awaiting_approval: "Awaiting approval",
+  done: "Done",
+  dropped: "Dropped",
+};
+
+const STATUS_LINE_LABEL: Record<GoalStepStatusLine["kind"], string> = {
+  complete: "Complete",
+  continue: "Continue",
+  waiting: "Waiting",
+  blocked: "Blocked",
+};
+
+/** The `GOAL STATUS:` line a step's last turn ended on: the agent's own word on what remains. */
+function StatusLine({ status }: { status: GoalStepStatusLine }) {
   return (
-    <li className="goal-step">
-      <button className="goal-step-link" disabled={!step.threadId} onClick={() => step.threadId && openTask(step.threadId)} title={step.rationale || "Open this step's task"}>
-        <span className="goal-step-seq">#{step.seq}</span> {step.title}
-      </button>
-      <div className="goal-step-meta">
-        <PickChip step={step} />
-        <TurnsChip step={step} />
-        {step.outcome ? (
-          <span className="badge" style={{ "--state-color": stateColor(step.outcome) } as CSSProperties}>
-            {stateLabel(step.outcome)}
-          </span>
-        ) : (
-          <span className="faint">running</span>
-        )}
-        {step.agentClaimedComplete ? <span className="goal-claim" title="This step's agent declared the whole objective complete">agent: complete</span> : null}
+    <p className={`goal-status-line sl-${status.kind}`} title={status.detail || "The status line this step's last turn ended on"}>
+      <span className="goal-status-line-kind">Last turn: {STATUS_LINE_LABEL[status.kind]}</span>
+      {status.detail ? <span className="goal-status-line-detail">{status.detail}</span> : null}
+    </p>
+  );
+}
+
+/** Milestones waiting on someone: the owner's approval first, then blockers. Shown above the tree so they
+ *  are seen without opening anything. Only while the goal is still open. */
+function NeedsOwner({ goal }: { goal: Goal }) {
+  const openTask = useOpenTask();
+  if (goal.status === "achieved" || goal.status === "abandoned") return null;
+  const waiting = goal.workItems.filter((i) => i.status === "awaiting_approval" || i.status === "blocked");
+  if (!waiting.length) return null;
+  waiting.sort((a, b) => Number(b.status === "awaiting_approval") - Number(a.status === "awaiting_approval") || a.position - b.position);
+  return (
+    <div className="goal-needs">
+      <span className="sched-label">Waiting on</span>
+      <ul>
+        {waiting.map((i) => (
+          <li key={i.id} className={`goal-needs-item ws-${i.status}`}>
+            <WorkGlyph status={i.status} />
+            <span className="goal-needs-text">
+              <span className="goal-needs-title" title={i.title}>
+                {i.title}
+              </span>
+              <span className="goal-needs-detail" title={i.blocker ?? undefined}>
+                <span className="goal-needs-kind">{i.status === "awaiting_approval" ? "Needs approval" : "Blocked"}</span>
+                {i.blocker ? ` · ${i.blocker}` : ""}
+              </span>
+            </span>
+            {i.threadId ? (
+              <button className="sched-lastlink" onClick={() => openTask(i.threadId!)}>
+                Open task
+              </button>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** How many milestones stand where: counts only, never a percentage, since a goal's scope grows as its
+ *  agents discover work. */
+function workTally(items: GoalWorkItem[]): string {
+  const order: GoalWorkItemStatus[] = ["done", "working", "awaiting_approval", "blocked", "planned"];
+  return order
+    .map((s) => [s, items.filter((i) => i.status === s).length] as const)
+    .filter(([, n]) => n > 0)
+    .map(([s, n]) => `${n} ${WORK_STATUS_LABEL[s].toLowerCase()}`)
+    .join(" · ");
+}
+
+/** A step and the milestones its task reported. Items whose step is outside the broadcast window (or that
+ *  no step claims) gather under one "earlier steps" node. */
+interface StepNode {
+  key: string;
+  step: GoalStep | null;
+  items: GoalWorkItem[];
+}
+
+function stepNodes(goal: Goal): StepNode[] {
+  const nodes = new Map<string, StepNode>(goal.steps.map((s) => [s.id, { key: s.id, step: s, items: [] }]));
+  const byThread = new Map(goal.steps.filter((s) => s.threadId).map((s) => [s.threadId!, s.id]));
+  const earlier: StepNode = { key: "earlier", step: null, items: [] };
+  for (const item of goal.workItems) {
+    const stepId = item.threadId ? byThread.get(item.threadId) : undefined;
+    (stepId ? nodes.get(stepId)! : earlier).items.push(item);
+  }
+  const ordered = [...nodes.values()].reverse();
+  return earlier.items.length ? [...ordered, earlier] : ordered;
+}
+
+/** The goal's steps, newest first, each opening onto the milestones its agent reported. The running steps
+ *  (or, once nothing runs, the newest) start open; the rest open on a click. */
+function GoalWorkTree({ goal }: { goal: Goal }) {
+  const nodes = stepNodes(goal);
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => {
+    const running = goal.steps.filter((s) => s.settledAt == null).map((s) => s.id);
+    return new Set(running.length ? running : goal.steps.slice(-1).map((s) => s.id));
+  });
+  const toggle = (key: string) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  const live = goal.workItems.filter((i) => i.status !== "dropped");
+  const hidden = goal.stepCount - goal.steps.length;
+  return (
+    <div className="goal-work">
+      <div className="goal-work-head">
+        <span className="sched-label">Steps and milestones</span>
+        <span className="goal-work-tally">{live.length ? workTally(live) : "no milestones reported yet"}</span>
       </div>
+      <ol className="goal-tree">
+        {nodes.map((node) => (
+          <StepBranch key={node.key} goal={goal} node={node} open={open.has(node.key)} onToggle={() => toggle(node.key)} />
+        ))}
+      </ol>
+      {hidden > 0 ? (
+        <div className="goal-work-hidden">
+          {hidden} earlier step{hidden === 1 ? "" : "s"} not shown
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function StepBranch({ goal, node, open, onToggle }: { goal: Goal; node: StepNode; open: boolean; onToggle: () => void }) {
+  const openTask = useOpenTask();
+  const { step, items } = node;
+  const live = items.filter((i) => i.status !== "dropped");
+  const done = live.filter((i) => i.status === "done").length;
+  const bodyId = `goal-branch-${goal.id}-${node.key}`;
+  return (
+    <li className={"goal-branch" + (step && step.settledAt == null ? " is-running" : "")}>
+      <div className="goal-branch-head">
+        <button className="goal-branch-toggle" onClick={onToggle} aria-expanded={open} aria-controls={bodyId}>
+          <Chevron open={open} />
+          {step ? (
+            <span className="goal-branch-title" title={step.title}>
+              <span className="goal-step-seq">#{step.seq}</span> {step.title}
+            </span>
+          ) : (
+            <span className="goal-branch-title faint">Earlier steps</span>
+          )}
+          {live.length ? (
+            <span className="goal-branch-count" title="Milestones done, of those this step reported">
+              {done}/{live.length}
+            </span>
+          ) : null}
+        </button>
+        {step ? <StepOutcome step={step} /> : null}
+      </div>
+      {open ? (
+        <div className="goal-branch-body" id={bodyId}>
+          {step ? (
+            <div className="goal-step-meta">
+              <PickChip step={step} />
+              <TurnsChip step={step} />
+              {step.agentClaimedComplete ? <span className="goal-claim" title="This step's agent declared the whole objective complete">agent: complete</span> : null}
+              {step.threadId ? (
+                <button className="sched-lastlink" onClick={() => openTask(step.threadId!)}>
+                  Open task
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {step?.lastStatus ? <StatusLine status={step.lastStatus} /> : null}
+          {items.length ? (
+            <ul className="goal-items">
+              {items.map((i) => (
+                <WorkItemRow key={i.id} goal={goal} item={i} />
+              ))}
+            </ul>
+          ) : (
+            <p className="goal-items-none">No milestones reported in this step.</p>
+          )}
+        </div>
+      ) : null}
     </li>
+  );
+}
+
+function StepOutcome({ step }: { step: GoalStep }) {
+  if (step.outcome && step.settledAt != null) {
+    return (
+      <span className="badge" style={{ "--state-color": stateColor(step.outcome) } as CSSProperties}>
+        {stateLabel(step.outcome)}
+      </span>
+    );
+  }
+  return <span className="goal-branch-running">running</span>;
+}
+
+/** One milestone: its status at a glance, and on a click its note, what it waits on, how it was verified,
+ *  and a jump to the task that reported it. A `working` item is the current one and is marked so. */
+function WorkItemRow({ goal, item }: { goal: Goal; item: GoalWorkItem }) {
+  const now = useCoarseNow();
+  const openTask = useOpenTask();
+  const [open, setOpen] = useState(false);
+  const ended = goal.status === "achieved" || goal.status === "abandoned";
+  const current = item.status === "working" && !ended;
+  const label = item.status === "working" && ended ? "Last reported working" : WORK_STATUS_LABEL[item.status];
+  const times = [
+    item.startedAt ? `started ${since(now, item.startedAt)} ago` : "",
+    item.completedAt ? `done ${since(now, item.completedAt)} ago` : "",
+    `updated ${since(now, item.updatedAt)} ago`,
+  ].filter(Boolean);
+  return (
+    <li className={`goal-item ws-${item.status}` + (current ? " is-current" : "")}>
+      <button className="goal-item-row" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        <WorkGlyph status={item.status} />
+        <span className="goal-item-title" title={item.title}>
+          {item.title}
+        </span>
+        <span className="goal-item-state">
+          {current ? <span className="goal-item-now">Now</span> : null}
+          {item.status === "done" && item.verified ? <span className="goal-item-verified">Verified</span> : <span>{label}</span>}
+        </span>
+      </button>
+      {open ? (
+        <div className="goal-item-detail">
+          {item.note ? <p>{item.note}</p> : null}
+          {item.blocker ? (
+            <p className="goal-item-blocker">
+              <b>{item.status === "awaiting_approval" ? "Needs approval:" : "Blocked on:"}</b> {item.blocker}
+            </p>
+          ) : null}
+          {item.status === "done" ? (
+            item.verified ? (
+              <p className="goal-item-proof">
+                <b>Verified:</b> {item.verification ?? "reported verified, without saying how."}
+              </p>
+            ) : (
+              <p className="goal-item-unproven">Recorded done by the agent; not reported as verified.</p>
+            )
+          ) : null}
+          <p className="goal-item-times">
+            {times.join(" · ")}
+            {item.threadId ? (
+              <button className="sched-lastlink" onClick={() => openTask(item.threadId!)}>
+                Open task
+              </button>
+            ) : null}
+          </p>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+/** A milestone's status as a small shape, so the list reads at a glance without relying on colour alone. */
+function WorkGlyph({ status }: { status: GoalWorkItemStatus }) {
+  return (
+    <svg className={`goal-glyph wg-${status}`} width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+      {status === "done" ? (
+        <>
+          <circle cx="7" cy="7" r="6" className="fill" />
+          <path d="M4.2 7.2l1.9 1.9 3.7-4" className="mark" />
+        </>
+      ) : status === "working" ? (
+        <>
+          <circle cx="7" cy="7" r="5.5" />
+          <circle cx="7" cy="7" r="2.6" className="fill" />
+        </>
+      ) : status === "blocked" ? (
+        <>
+          <circle cx="7" cy="7" r="5.5" />
+          <path d="M4.5 7h5" />
+        </>
+      ) : status === "awaiting_approval" ? (
+        <>
+          <circle cx="7" cy="7" r="5.5" />
+          <path d="M7 4v3.2l2 1.3" />
+        </>
+      ) : status === "dropped" ? (
+        <path d="M3.5 7h7" />
+      ) : (
+        <circle cx="7" cy="7" r="5" className="dashed" />
+      )}
+    </svg>
+  );
+}
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg className={"goal-chevron" + (open ? " open" : "")} width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+      <path d="M3.5 2l3 3-3 3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
   );
 }
 

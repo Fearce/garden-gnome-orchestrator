@@ -323,9 +323,47 @@ export interface GoalStep {
   turns: number; // goal turns this task has run: 1 for the dispatch, +1 per continuation sent into the same session
   turnStartedAt: number; // when the current (or last) turn began; a turn's report and tool calls are read from here on
   turnFingerprint: string | null; // the task's git state when its last turn ended, so the next turn's workspace change is seen
+  lastStatus: GoalStepStatusLine | null; // the `GOAL STATUS:` line its last settled turn ended on; null while unread or when the report had none
   createdAt: number;
   settledAt: number | null;
 }
+
+/** The status line a step's agent ended a turn on, as recorded when the turn settled. */
+export interface GoalStepStatusLine {
+  kind: "complete" | "continue" | "blocked" | "waiting";
+  detail: string;
+}
+
+/** Where one milestone of a goal stands, as a step agent last reported it. `dropped` = taken out of scope. */
+export type GoalWorkItemStatus = "planned" | "working" | "blocked" | "awaiting_approval" | "done" | "dropped";
+export const GOAL_WORK_ITEM_STATUSES: GoalWorkItemStatus[] = ["planned", "working", "blocked", "awaiting_approval", "done", "dropped"];
+
+/**
+ * One meaningful milestone inside a goal, reported by a step agent (`report_goal_progress`, or the CLI
+ * `GOAL_PROGRESS:` line) and kept per goal under a stable `key`, so a retry, a resumed session or a later
+ * step updates the same row instead of adding another. Never inferred: only an agent's report moves it.
+ * `verified` is the agent's separate claim that it checked the result, with its evidence.
+ */
+export interface GoalWorkItem {
+  id: string;
+  goalId: string;
+  key: string;
+  title: string;
+  status: GoalWorkItemStatus;
+  note: string | null; // the latest progress or result note
+  blocker: string | null; // what it waits on: the blocker, or the approval it needs
+  verified: boolean;
+  verification: string | null; // how it was verified
+  threadId: string | null; // the step task that reported it last
+  position: number; // the order it was first reported in
+  createdAt: number;
+  updatedAt: number;
+  startedAt: number | null; // first reported working
+  completedAt: number | null; // reported done; cleared when it is reopened
+}
+
+/** How many milestones one goal keeps; a sanity bound on agent input, not a plan size. */
+export const GOAL_WORK_ITEMS_MAX = 120;
 
 /** The director's latest judgement of a goal, kept so the console can say why it continued or ended.
  *  `wait` = steps are still running and the director holds the next one until one of them settles. */
@@ -368,6 +406,7 @@ export interface Goal {
   nextCheckAt: number | null; // backoff: when the director could not be reached or the burn rate holds, the next attempt
   stepCount: number;
   steps: GoalStep[]; // the newest GOAL_STEPS_SHOWN steps, oldest first
+  workItems: GoalWorkItem[]; // the milestones its step agents reported, in first-reported order
   createdAt: number;
   updatedAt: number;
   endedAt: number | null;

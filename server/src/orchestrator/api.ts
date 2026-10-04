@@ -120,6 +120,12 @@ export interface RosterEntry {
  * implements it; the tools depend only on this interface, so there is no import
  * cycle between the tools and the manager.
  */
+/** The goal runner's side of milestone reporting (GoalRunner implements it; ThreadManager forwards to it). */
+export interface GoalWorkRecorder {
+  stepOfTask(threadId: string): unknown;
+  recordWork(threadId: string, report: unknown): { ok: true; message: string } | { ok: false; error: string };
+}
+
 export interface OrchestratorApi {
   readonly db: Db;
   readonly hub: EventHub;
@@ -146,6 +152,12 @@ export interface OrchestratorApi {
   /** Persist a structured deploy-only declaration. Qualification and terminal settlement remain
    * server-owned; callers cannot mark a task done merely by invoking this write. */
   recordManualDeployment(input: RecordManualDeploymentInput): ThreadActionResult;
+
+  /** Whether a task is a goal's step, so its implementor gets `report_goal_progress`. */
+  isGoalStepTask(threadId: string): boolean;
+
+  /** Record a step agent's milestone report on its goal; the reply lists the goal's milestones. */
+  reportGoalProgress(threadId: string, report: unknown): { ok: true; message: string } | { ok: false; error: string };
 
   /** Post a message to the office (general room) or this task's project room; broadcasts it live. */
   chatPost(input: ChatPostInput): ChatMessage;

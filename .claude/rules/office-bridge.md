@@ -25,6 +25,11 @@ text, which the runner intercepts and strips:
   `post_deliverable`, so QA's deterministic backstop sees it and the open console gets
   the card immediately. Invalid grammar stays visible instead of deleting ordinary
   prose that happens to say "deliverable:".
+- `GOAL_PROGRESS: {"items":[...]}` → `GoalRunner.recordWork` via
+  `ThreadManager.recordCliGoalProgress`, the CLI form of `report_goal_progress` (one JSON
+  line, like `SUBTASK:`). It is extracted first in `extractCliBridgeMessages`, and every body
+  scanner stops at it. A payload that is not a JSON object stays visible. A report the goal
+  refuses posts a warning finding, since a CLI agent has no tool result to read.
 
 ## Files
 - `server/src/agents/officeBridge.ts` — all three extractors plus the shared

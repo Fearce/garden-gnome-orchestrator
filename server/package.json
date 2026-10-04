@@ -28,6 +28,7 @@
     "focus-lab": "node scripts/focus-lab.cjs",
     "git-lab": "node scripts/git-console-lab.cjs",
     "goals-lab": "node scripts/goals-lab.cjs",
+    "goal-tree-lab": "node scripts/goal-tree-lab.cjs",
     "inject-lab": "node scripts/inject-lab.cjs",
     "start-immediately-lab": "node scripts/start-immediately-lab.cjs",
     "receipts-lab": "node scripts/receipts-lab.cjs",

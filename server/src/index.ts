@@ -188,6 +188,7 @@ async function main(): Promise<void> {
     workspaceFingerprint: (threadId) => manager.goalWorkspaceFingerprint(threadId),
   }, { ownerName: config.ownerName });
   manager.setContinuationGuard((threadId, provider) => goals.wrapUpReason(threadId, provider));
+  manager.setGoalWorkRecorder(goals);
   const director = new Director(manager, db, hub, scheduler, notes, goals);
   // The repo-level Git console (fetch/pull/push/branch/commit over any repo the console knows about).
   // Standalone: Db only, so it never entangles with the pipeline. It always offers the orchestrator's

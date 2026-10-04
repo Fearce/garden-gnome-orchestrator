@@ -10,6 +10,7 @@ import { UNFINISHED_STATES } from "./scheduler.js";
 import { formatUntil } from "./capacityRouting.js";
 import { describeGoalUsage, providerOfRunAccount, UNMETERED_PROVIDER } from "./goalUsage.js";
 import { actionKey, assessSessionProgress } from "./continuationProgress.js";
+import { GOAL_PROGRESS_RULE, goalWorkBlock, goalWorkList, mergeGoalWork, parseGoalWorkReport } from "./goalWork.js";
 import {
   DEFAULT_GOAL_BURN_RATE_PCT,
   DEFAULT_GOAL_MAX_CONCURRENT,
@@ -25,6 +26,7 @@ import {
   type GoalHold,
   type GoalOwnerStatus,
   type GoalStep,
+  type GoalStepStatusLine,
   type GoalTurnActivity,
   type GoalVerdict,
   type ImplementorProvider,
@@ -199,11 +201,9 @@ export interface StepPin {
 const COMPLETE_LINE = /^[\s>*_`#-]*GOAL STATUS\s*:\s*[*_`]*\s*COMPLETE\s*[*_`.!]*\s*$/i;
 const STATUS_LINE = /^[\s>*_`#-]*GOAL STATUS\s*:\s*[*_`]*\s*(COMPLETE|CONTINUE|BLOCKED|WAITING)\b(.*)$/i;
 
-/** A turn's closing status: the whole objective done, more to do, a job still running, or an impasse. */
-export interface GoalStatusLine {
-  kind: "complete" | "continue" | "waiting" | "blocked";
-  detail: string;
-}
+/** A turn's closing status: the whole objective done, more to do, a job still running, or an impasse.
+ *  The same shape is stored on the step as `lastStatus`. */
+export type GoalStatusLine = GoalStepStatusLine;
 
 /**
  * The status line a step's report ends on. The last status line wins, and a COMPLETE line must stand
@@ -678,6 +678,7 @@ export function buildGoalJudgePrompt(ctx: GoalJudgeContext): string {
     `REPOSITORY: ${goal.workspace}`,
     `Steps so far: ${goal.stepCount}.`,
     `Progress so far (your own earlier summary): ${goal.progress || "none yet"}`,
+    goal.workItems.length ? `Milestones the step agents reported (their own claims; audit them against the evidence):\n${goalWorkList(goal.workItems, WORK_LIST_CHARS)}` : "",
     history.length ? `Step history (oldest first):\n${history.join("\n")}` : "",
     "",
     settledBlock(ctx.settled, steps.length > 0, running.length),
@@ -719,8 +720,29 @@ export function goalStepBrief(goal: Goal, seq: number, judgement: GoalJudgement,
       ? `THIS STEP IS A VERIFICATION: the director believes the objective is already met. Check every part of it against the repository and running behaviour, fix any gap you find, then report honestly.\n\n${judgement.next.brief}`
       : `THIS STEP:\n${judgement.next.brief}`,
     scopeParagraph(goal, siblings),
+    GOAL_PROGRESS_RULE,
+    goalWorkBlock(goal.workItems, WORK_LIST_CHARS),
     GOAL_STATUS_RULE,
   ].filter(Boolean).join("\n\n");
+}
+
+/** How much of the milestone list a brief or the judge prompt carries. A continuation carries only the
+ *  first open ones: it goes to every turn, and the tool's reply lists them all whenever the agent reports. */
+const WORK_LIST_CHARS = 2_000;
+const RECORDED_LIST_CHARS = 4_000;
+const CONTINUATION_WORK_CHARS = 400;
+
+/** The progress rule in a continuation: the session already had the full rule in its brief. */
+const GOAL_PROGRESS_REMINDER =
+  "Keep the owner's Goals view current: report milestones with `report_goal_progress` (on a CLI backend, one standalone line `GOAL_PROGRESS: {\"items\":[{\"id\":\"…\",\"title\":\"…\",\"status\":\"working\"}]}`) whenever one starts, finishes, gets blocked or needs the owner's approval, reusing the recorded ids. Titles of 3-6 words, notes one short sentence. Statuses: planned, working, blocked, awaiting_approval, done, dropped; add `verified: true` only for a result you checked.";
+
+/** The open milestones a continuation lists, so the session reuses their ids after a compaction. */
+function openWorkBlock(goal: Goal): string {
+  const open = goal.workItems.filter((i) => i.status !== "done" && i.status !== "dropped");
+  const done = goal.workItems.filter((i) => i.status === "done").length;
+  if (!open.length && !done) return "";
+  const finished = done ? `${done} milestone${done === 1 ? "" : "s"} recorded done.` : "";
+  return [finished, open.length ? `Open milestones (id [status]: title):\n${goalWorkList(open, CONTINUATION_WORK_CHARS)}` : ""].filter(Boolean).join(" ");
 }
 
 const GOAL_STATUS_RULE =
@@ -747,9 +769,11 @@ export function goalContinuationMessage(goal: Goal, step: GoalStep, last: GoalSt
     direction ? directedTurn(direction) : `Your last turn ended: ${describeStatus(last)}.`,
     "Start from evidence, not memory: check the repository, the tests and any running job against each part of the objective, then do the most valuable remaining work in this turn, committing at each coherent point.",
     "Wait only on a process, job or tool run you can show is still live, and wait for it inside this turn where you can; ending a turn just to poll again is no progress. A timeout while reading a live job is not a reason to restart it.",
+    GOAL_PROGRESS_REMINDER,
+    openWorkBlock(goal),
     GOAL_STATUS_RULE,
     "A turn that makes no tool call hands the goal to the director, and a second in a row stops it. Automatic continuation also stops after turns that do no new work (no repository change, no new finding, nothing new tried), and after the same blocker three turns running.",
-  ].join("\n\n");
+  ].filter(Boolean).join("\n\n");
 }
 
 function directedTurn({ judgement, verification, auditRejected }: GoalTurnDirection): string {
@@ -805,6 +829,7 @@ export class GoalRunner {
   }
 
   start(): void {
+    this.backfillStepStatus();
     this.broadcast();
     if (!this.unsubscribe) {
       this.unsubscribe = this.hub.subscribe((e) => {
@@ -837,6 +862,54 @@ export class GoalRunner {
     const step = this.db.listOpenGoalSteps().find((s) => s.threadId === threadId);
     const goal = step ? this.db.getGoal(step.goalId) : null;
     return step && goal ? stepWrapUpReason(goal, step, this.host.roster(), this.now(), provider ?? step.provider) : null;
+  }
+
+  /**
+   * The goal step a task carries: by its recorded thread, or, in the moment before the dispatch wrote the
+   * thread back, the open step whose exact board title and workspace it has (the match `adoptOrphan` uses).
+   */
+  stepOfTask(threadId: string): GoalStep | null {
+    const step = this.db.goalStepOfThread(threadId);
+    if (step) return step;
+    const thread = this.db.getThread(threadId);
+    if (!thread) return null;
+    for (const open of this.db.listOpenGoalSteps()) {
+      if (open.threadId) continue;
+      const goal = this.db.getGoal(open.goalId);
+      if (goal?.workspace === thread.workspace && stepTitle(goal, open.seq, open.title) === thread.title) return open;
+    }
+    return null;
+  }
+
+  /**
+   * A step agent's milestone report (`report_goal_progress`, or a CLI `GOAL_PROGRESS:` line): merged into
+   * its goal's milestones by key and broadcast at once. The reply lists every milestone, so the agent
+   * sees the ids to reuse. Refused, with what to fix, when the task is no goal step or the report is invalid.
+   */
+  recordWork(threadId: string, raw: unknown): { ok: true; message: string } | { ok: false; error: string } {
+    const step = this.stepOfTask(threadId);
+    if (!step) return { ok: false, error: "this task is not a step of a goal" };
+    const goal = this.db.getGoal(step.goalId);
+    if (!goal) return { ok: false, error: "its goal no longer exists" };
+    const parsed = parseGoalWorkReport(raw);
+    if (!parsed.ok) return parsed;
+    const merged = mergeGoalWork(goal.workItems, parsed.items, threadId, this.now());
+    if (!merged.ok) return merged;
+    this.db.saveGoalWorkItems(goal.id, merged.rows);
+    this.broadcast();
+    const counts = [merged.added ? `${merged.added} new` : "", merged.updated ? `${merged.updated} updated` : ""].filter(Boolean).join(", ");
+    return { ok: true, message: `Recorded on the goal "${goal.title}" (${counts}). Its milestones now:\n${goalWorkList(this.db.listGoalWorkItems(goal.id), RECORDED_LIST_CHARS)}` };
+  }
+
+  /** Steps that ended a turn before status lines were recorded get theirs from the task's report, once:
+   *  a settled step from its last turn, a running one from the turn before the current. */
+  private backfillStepStatus(): void {
+    for (const step of this.db.listGoalStepsWithUnreadStatus()) {
+      const report = step.settledAt != null
+        ? this.db.goalTurnActivity(step.threadId!, step.turnStartedAt).report
+        : this.db.goalReportBefore(step.threadId!, step.turnStartedAt);
+      this.db.updateGoalStep(step.id, { lastStatus: readGoalStatusLine(report) });
+    }
   }
 
   create(input: GoalInput): GoalResult {
@@ -1138,6 +1211,7 @@ export class GoalRunner {
       outcome,
       agentClaimedComplete: claimed,
       settledAt: this.now(),
+      lastStatus: status,
       ...(evidence ? { turnFingerprint: evidence.fingerprint } : {}),
     });
     this.hub.log("info", `Goal "${goal.title}" step ${step.seq} ended ${outcome ?? "(task missing)"}${claimed ? " — agent declared the objective complete" : ""}.`);
