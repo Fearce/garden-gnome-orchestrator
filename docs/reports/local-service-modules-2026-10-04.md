@@ -130,3 +130,28 @@ One of the five loaded owner-message samples took 405 ms. The other four stayed 
 monitor saw no event-loop block. That fits a single slow disk write on a loaded machine, not a busy GGO
 process; the earlier run measured 80 ms max for the same phase. Worker memory: 72 MB (Script Hub), 79 MB
 (Surveillance, recording 5 cameras), 56 MB (Home), 56 MB (Sidekick).
+
+### Live, build 24dfe20f
+
+The owner had started recording on the previous build, with five cameras, before modes existed. The
+worker was restarted onto the new build with the supervisor restart, which keeps the armed marker. It
+logged "a recording started before recording modes existed is kept going as 24/7 recording" and resumed
+all five cameras after about three seconds. The gate now covers that path as well.
+
+A live headless browser run passed 14 checks on desktop and phone without changing the mode or any
+setting:
+- the plan reads "Recording 24/7 · 5 of 5 cameras" with 24/7 selected;
+- the settings dialog offers five record switches (all on), seven schedule days, a file length, an empty
+  keep-days field ("Keep everything") and an empty size cap;
+- the browser lists all five cameras, and a real recorded segment played in 113 ms;
+- the MP4 download is a 206 attachment;
+- an encoded traversal gets 400 and a request without a login is refused;
+- both views fit a phone;
+- afterwards all five cameras were still recording.
+
+A direct read returned a live JPEG for each camera, under 0.5 s old.
+
+The run's 40 HTTP and WebSocket samples measured 2.6 / 9.4 / 1603.9 and 2.1 / 8.9 / 1603.4 ms. GGO's
+monitor recorded two event-loop blocks in that five-minute window, worst 4.8 s, both blamed on
+`ThreadManager.liveAgentThreads` reading the threads table during the post-deploy agent resume. Module
+traffic runs in the worker processes and was not involved.
