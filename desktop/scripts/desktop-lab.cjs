@@ -567,17 +567,24 @@ function squat() {
     const offered = await browserTab.waitForSelector('.shell-switch[aria-label="Open in desktop"]', { timeout: 15_000 }).then(() => true).catch(() => false);
     check("the browser console offers Open in desktop on this machine", offered);
     const ticketCall = browserTab.waitForResponse((r) => r.url().endsWith("/api/desktop/ticket"), { timeout: 10_000 }).catch(() => null);
+    // External protocols need not produce an HTTP request or console message. Observe the renderer's
+    // actual navigation request, so a missing handoff cannot silently count as a passing check.
+    const launchSession = await fresh.newCDPSession(browserTab);
+    await launchSession.send("Page.enable");
+    let launchTimer;
     const launchAttempt = new Promise((resolve) => {
-      const done = (text) => resolve(text);
-      browserTab.on("console", (m) => /ggo:\/\/open/.test(m.text()) && done(m.text()));
-      browserTab.on("request", (r) => r.url().startsWith("ggo:") && done(r.url()));
-      setTimeout(() => done(null), 6_000);
+      launchSession.on("Page.frameRequestedNavigation", ({ url }) => url.startsWith("ggo:") && resolve(url));
+      launchTimer = setTimeout(() => resolve(null), 6_000);
     });
     await browserTab.click('.shell-switch[aria-label="Open in desktop"]');
     const ticketResponse = await ticketCall;
     check("Open in desktop asks the server for a ticket", ticketResponse?.status() === 200, String(ticketResponse?.status()));
     const attempt = await launchAttempt;
-    check("…and launches a ggo://open link carrying it and the task", !attempt || new RegExp(`ggo://open/?\\?ticket=[A-Za-z0-9_-]{43}&server=${encodeURIComponent(new URL(BASE).origin)}&thread=${TASK}`).test(attempt), String(attempt));
+    clearTimeout(launchTimer);
+    await launchSession.detach();
+    const issuedTicket = ticketResponse?.ok() ? (await ticketResponse.json()).ticket : null;
+    const handedOff = attempt ? new URL(attempt) : null;
+    check("…and launches a ggo://open link carrying it and the task", !!issuedTicket && handedOff?.protocol === "ggo:" && handedOff.hostname === "open" && handedOff.searchParams.get("ticket") === issuedTicket && handedOff.searchParams.get("server") === new URL(BASE).origin && handedOff.searchParams.get("thread") === TASK, String(attempt));
     await browserTab.screenshot({ path: path.join(shots, "08-open-in-desktop-offered.png") });
     await fresh.close();
 
