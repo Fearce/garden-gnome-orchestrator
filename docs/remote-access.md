@@ -76,8 +76,22 @@ URL while signed out. It closes the link again unless the probe finds sign-in re
 offered, no password field, and `/api/deploy/status` and `/api/health` refused. `status` runs the
 same probe. Exit codes: 0 fine, 1 unlocked or a command failed, 2 an owner step is missing.
 
-The link survives reboots: Tailscale keeps the Funnel setting and starts with Windows. It only
-works while this PC is on and GGO is running.
+The background Funnel setting is saved. On Windows, enable **Preferences > Run unattended**
+in the Tailscale tray app from the Windows account that owns its configuration so Tailscale
+stays connected after sign-out or reboot. The link only works while this PC is on, Tailscale
+is connected, and GGO is running. See [Tailscale's unattended mode guide](https://tailscale.com/docs/how-to/run-unattended).
+
+## Windows account access errors
+
+`401 Unauthorized: Tailscale already in use by ...` means the current Windows account cannot
+access the Tailscale configuration owned by another Windows session. The remote-access script
+reports this error; it cannot determine whether the Funnel link is on or off from that account.
+
+From the owning account's Windows session, check `tailscale status` and `tailscale funnel status`.
+Enable **Run unattended** there, then run `npm run remote-access --prefix server`. If the link
+is off, restore it with `npm run remote-access --prefix server -- on`; this checks the remote
+sign-in gate before leaving the link open. A working local GGO does not prove the public tunnel
+is reachable.
 
 ## Verification
 

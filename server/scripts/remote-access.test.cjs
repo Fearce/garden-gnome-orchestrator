@@ -76,6 +76,39 @@ function harness({ env = READY_ENV, state = "Running", funnel = "{}", probe = "l
 }
 
 (async () => {
+  // CLI access failures must remain visible, rather than look like logout or a closed link.
+  for (const command of ["status", "on"]) {
+    const h = harness();
+    h.deps.tailscale = (args) => {
+      h.calls.push(args.join(" "));
+      return { status: 1, stderr: "401 Unauthorized: Tailscale already in use by EXAMPLE\\sam, pid 1234" };
+    };
+    assert.equal(await runCommand(command, h.deps), 1);
+    assert.deepEqual(h.calls, ["status --json"], "does not change the tunnel after an access failure");
+    assert.match(h.lines.join("\n"), /401 Unauthorized/);
+    assert.match(h.lines.join("\n"), /Windows session/);
+    assert.match(h.lines.join("\n"), /Run unattended/);
+    assert.doesNotMatch(h.lines.join("\n"), /Sign in first|tailscale up/);
+  }
+  for (const result of [
+    { status: 1, stderr: "permission denied" },
+    { status: 1, stdout: "daemon unavailable" },
+    { status: 1 },
+    { status: 0, stdout: "invalid json" },
+  ]) {
+    const h = harness();
+    const cli = h.deps.tailscale;
+    h.deps.tailscale = (args) => args[0] === "status" ? cli(args) : result;
+    assert.equal(await runCommand("status", h.deps), 1);
+    assert.match(h.lines.join("\n"), /funnel status --json failed/);
+    assert.doesNotMatch(h.lines.join("\n"), /Remote link is off/);
+  }
+  {
+    const h = harness();
+    h.deps.tailscale = () => ({ status: 1, stdout: "daemon unavailable" });
+    assert.equal(await runCommand("status", h.deps), 1);
+    assert.match(h.lines.join("\n"), /daemon unavailable/);
+  }
   {
     const h = harness({ env: {} });
     assert.equal(await runCommand("on", h.deps), 2);

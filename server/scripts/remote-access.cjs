@@ -122,12 +122,32 @@ function defaultSleep(ms) {
 
 function tailscaleState(tailscale) {
   const res = tailscale(["status", "--json"]);
+  const error = cliError(res);
+  if (error) return { error };
   return parseTailscaleStatus(res.stdout || "");
 }
 
 function funnelState(tailscale, port) {
   const res = tailscale(["funnel", "status", "--json"]);
+  const error = cliError(res);
+  if (error) return { error };
+  if (!parseJson(res.stdout || "")) return { error: "Tailscale returned invalid Funnel status JSON." };
   return parseFunnelStatus(res.stdout || "{}", port);
+}
+
+function cliError(res) {
+  if (res.status === 0) return null;
+  return (res.stderr || res.stdout || "").trim() || `Tailscale command exited with status ${res.status}.`;
+}
+
+function reportCliError(log, command, error) {
+  log(`tailscale ${command} failed: ${error}`);
+  if (/already in use by/i.test(error)) {
+    log("Another Windows account owns Tailscale on this PC. Run the command from that account's Windows session.");
+    log("In that session, enable Tailscale tray > Preferences > Run unattended to keep it connected after sign-out or reboot.");
+    log("Then check tailscale funnel status and retry npm run remote-access --prefix server.");
+  }
+  return 1;
 }
 
 function reportLock(log, url, lock) {
@@ -158,6 +178,7 @@ async function runCommand(command, deps) {
   }
 
   const ts = tailscaleState(tailscale);
+  if (ts.error) return reportCliError(log, "status --json", ts.error);
   if (ts.state !== "Running" || !ts.dnsName) {
     log(`Tailscale is ${ts.state}. Sign in first: run "tailscale up" (or open the Tailscale tray app) and log in.`);
     return 2;
@@ -167,6 +188,7 @@ async function runCommand(command, deps) {
 
   if (command === "status") {
     const funnel = funnelState(tailscale, port);
+    if (funnel.error) return reportCliError(log, "funnel status --json", funnel.error);
     for (const warning of ready.warnings) log(`note: ${warning}`);
     if (!funnel.public) {
       log(`Remote link is off. Turn it on with: npm run remote-access --prefix server -- on (would be ${publicUrl})`);
