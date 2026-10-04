@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { config } from "../config.js";
 import { logCrash } from "../crashLog.js";
+import { NATIVE_MEMORY_ENV } from "../memory/agentHooks.js";
 import type { AgentEvent, RateLimitInfo, TokenUsage } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { InputLedger } from "./inputLedger.js";
@@ -53,6 +54,9 @@ export interface AgentRunConfig {
   /** Tokens of context at which the CLI auto-compacts; unset = `config.autoCompactWindowTokens`,
    *  0 = the CLI's own (model-sized) window. */
   autoCompactWindow?: number;
+  /** GGO's native memory hooks (recall + extraction). When set, the run's env tells user-level memory
+   *  hook scripts to stand down so a memory is never injected twice. */
+  memoryHooks?: Options["hooks"];
 }
 
 export type SendOpts = { shouldQuery?: boolean; priority?: "now" | "next" | "later" };
@@ -336,6 +340,10 @@ export class AgentRun implements AgentRunLike {
     if (this.cfg.canUseTool) options.canUseTool = this.cfg.canUseTool;
     if (this.cfg.resume) options.resume = this.cfg.resume;
     if (this.cfg.forkSession) options.forkSession = this.cfg.forkSession;
+    if (this.cfg.memoryHooks) {
+      options.hooks = this.cfg.memoryHooks;
+      options.env = { ...options.env, [NATIVE_MEMORY_ENV]: "1" };
+    }
 
     try {
       this.q = query({ prompt: this.input, options });

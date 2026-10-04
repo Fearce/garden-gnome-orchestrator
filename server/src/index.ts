@@ -30,6 +30,11 @@ import { startSearchIndexBackfill } from "./db/searchIndex.js";
 import { startLatestMessagePreviewBackfill } from "./db/previewBackfill.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
+import { HAIKU_MODEL } from "./memory/models.js";
+import { codexLunaLaunch } from "./memory/lunaLaunch.js";
+import { MemorySettingsStore } from "./memory/settings.js";
+import { isPrimaryMemoryOwner, MemoryEndpoint } from "./memory/endpoint.js";
+import { registerMemoryRoutes } from "./memory/routes.js";
 import { AccountManager, type PersistedAccountUsage } from "./accounts/accountManager.js";
 import { ResetStagger } from "./accounts/resetStagger.js";
 import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
@@ -118,7 +123,6 @@ async function main(): Promise<void> {
   new WalCheckpointer(db.raw, config.dbPath, { onFault: logCrash }).start();
   const freeProviders = new FreeProviderService(db);
   const hub = new EventHub();
-  const memory = new FileMemoryService();
   // One shared 5h-reset coordinator across every participant — the Claude subs AND Codex — so idle
   // window restarts are placed dynamically around each other's live reset phases (see resetStagger.ts).
   const stagger = new ResetStagger();
@@ -139,6 +143,18 @@ async function main(): Promise<void> {
       save: (id, usage) => db.kvSet(`account_usage_${id}`, JSON.stringify(usage)),
     },
   });
+  // Memory's model calls ride the same subscriptions as agents: Haiku on whichever Claude account has
+  // room (its rate-limit headers feed the same usage tracking), then Luna on the Codex ChatGPT plan.
+  const memorySettings = new MemorySettingsStore({ get: (key) => db.kvGet(key), set: (key, value) => db.kvSet(key, value) });
+  const memory = new FileMemoryService(config.memoryDir, {
+    settings: () => memorySettings.get(),
+    models: {
+      claudeAccount: (excluded) => accounts.auxAccount(excluded, HAIKU_MODEL),
+      onClaudeRateLimit: (accountId, info) => accounts.updateFromRateLimit(accountId, info),
+      lunaLaunch: codexLunaLaunch((): boolean => manager.settings().codexEnabled, () => memorySettings.get().lunaFallback),
+    },
+  });
+  const memoryEndpoint = new MemoryEndpoint(config.memoryDir);
   const manager = new ThreadManager(db, hub, memory, accounts, freeProviders);
   const patchNoteDigests = new PatchNoteDigests({ get: (key) => db.kvGet(key), set: (key, value) => db.kvSet(key, value) }, haikuDigestModel(() => accounts.auxToken()));
   const cowork = new CoworkManager(db, hub, {
@@ -399,6 +415,7 @@ async function main(): Promise<void> {
     registerCalendarRoutes(app, calendar, isAuthed);
     registerRemoteControlRoutes(app, remoteControl, isAuthed);
     registerModuleRoutes(app, modules, isAuthed);
+    registerMemoryRoutes(app, { memory, settings: memorySettings, endpoint: memoryEndpoint, isAuthed });
     registerPortalLink(app, isAuthed);
     registerDesktopRoutes(app, {
       isAuthed,
@@ -900,6 +917,10 @@ async function main(): Promise<void> {
 
   try {
     await httpApp.listen({ port: config.port, host: config.host });
+    if (isPrimaryMemoryOwner()) {
+      memory.start();
+      void memoryEndpoint.publish(config.host, config.port).catch((err: unknown) => logCrash("memory endpoint publish", err));
+    }
     let httpsLine: string;
     if (httpsApp) {
       try {

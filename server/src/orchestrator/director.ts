@@ -402,7 +402,7 @@ export class Director {
       this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId);
       this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
     }, this.scheduler, this.notes, () => this.turnTaskMode(), this.goals);
-    const memory = createMemoryServer(this.api.memory);
+    const memory = createMemoryServer(this.api.memory, { write: true });
     const { conciseAgentCommunication: conciseCommunication, directorDirectives: directives } = this.api.settings();
     const cfg = directorConfig(
       { director, memory },

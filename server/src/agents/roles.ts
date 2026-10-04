@@ -264,7 +264,7 @@ export function researcherConfig(
     // External-info-only: the researcher gathers web/docs/changelogs + the owner's memory, never the
     // codebase. Read/Grep/Glob are disallowed (the planner owns code reading) so it can't duplicate
     // that work even if tempted — its system prompt forbids it too.
-    allowedTools: ["WebSearch", "WebFetch", T.searchMemory, ...BUS_TOOLS, ...OFFICE_TOOLS],
+    allowedTools: ["WebSearch", "WebFetch", T.searchMemory, T.readMemory, ...BUS_TOOLS, ...OFFICE_TOOLS],
     disallowedTools: ["Read", "Grep", "Glob", "AskUserQuestion"],
     mcpServers: { [BUS_SERVER]: servers.bus, [MEMORY_SERVER]: servers.memory, [OFFICE_SERVER]: servers.office },
     settingSources: ["project"],

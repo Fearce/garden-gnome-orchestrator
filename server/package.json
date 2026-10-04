@@ -117,6 +117,7 @@
     "test:task-search": "tsx src/tests/taskSearch.test.ts",
     "test:performance-paths": "tsx src/tests/performancePaths.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/socket-startup.test.ts",
     "test:memory-mirrors": "tsx src/tests/memoryMirrors.test.ts",
+    "test:memory-rag": "tsx src/tests/memoryRag.test.ts",
     "test:wal-checkpointer": "tsx src/tests/walCheckpointer.test.ts",
     "test:search-index": "tsx src/tests/searchIndex.test.ts",
     "test:probe-text": "tsx src/tests/probeText.test.ts",

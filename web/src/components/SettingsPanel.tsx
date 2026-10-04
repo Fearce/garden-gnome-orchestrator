@@ -8,6 +8,7 @@ import { useCoarseNow } from "../lib/timing.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { FreeProviders } from "./FreeProviders.js";
 import { LiveBenchRankings } from "./LiveBenchRankings.js";
+import { MemorySettings } from "./MemorySettings.js";
 import { RemoteControlSetup } from "./remote/RemoteControlSetup.js";
 import { useRemoteControlEnabled } from "./remote/remoteApi.js";
 import { BOARD_TABS, isHideableTab, isModuleView } from "../lib/boardTabs.js";
@@ -19,7 +20,7 @@ import { setBetaGnomes, setOldGnomesBeta, useBetaGnomes, useOldGnomesBeta } from
 import { BetaGnome } from "./BetaGnome.js";
 import { Gnome } from "./Gnome.js";
 
-type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "livebench" | "voice-alerts" | "remote-control" | "office" | "appearance" | "interface";
+type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "livebench" | "memory" | "voice-alerts" | "remote-control" | "office" | "appearance" | "interface";
 
 interface SettingsCategory {
   id: SettingsCategoryId;
@@ -36,6 +37,7 @@ const SETTINGS_CATEGORIES = [
   { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits.", keywords: "claude anthropic codex openai chatgpt grok xai zai glm api keys accounts models effort weekly safety cli update upgrade version sdk runtime new model" },
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
   { id: "livebench", section: "Providers", label: "LiveBench rankings", description: "Compare models on the newest cached LiveBench leaderboard; click any column to sort.", keywords: "livebench benchmark leaderboard rankings scores models compare reasoning coding agentic mathematics data analysis language instruction following global average organization" },
+  { id: "memory", section: "Workspace", label: "Memory", description: "Your long-term memory files, how agents recall them, and what recall costs.", keywords: "memory memories recall rag remember forget haiku luna cards extraction index search knowledge notes ollama embeddings" },
   { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
   { id: "remote-control", section: "Workspace", label: "Remote control", description: "Set up controlling this PC from the console, e.g. from a tablet.", keywords: "remote desktop control screen stream mouse keyboard tablet anydesk vnc rdp display monitor ffmpeg nvenc" },
   { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles.", keywords: "relay collaboration coworkers team machine url password presence chatroom" },
@@ -510,6 +512,10 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               <LiveBenchRankings active={!isSearching && activeCategoryId === "livebench"} />
             </SettingsCategoryPanel>
 
+            <SettingsCategoryPanel id="memory" active={!isSearching && activeCategoryId === "memory"}>
+              <MemorySettings active={!isSearching && activeCategoryId === "memory"} shell={{ Group, ToggleRow }} />
+            </SettingsCategoryPanel>
+
             <SettingsCategoryPanel id="voice-alerts" active={!isSearching && activeCategoryId === "voice-alerts"}>
               <Group label="Voice mode">
                 <VoiceSection />
@@ -954,6 +960,7 @@ function SettingsCategoryIcon({ category }: { category: SettingsCategoryId }) {
   if (category === "subscriptions") return <svg {...common}><rect x="3" y="5" width="18" height="14" rx="2" /><path d="M3 10h18M7 15h4" /></svg>;
   if (category === "free-ai") return <svg {...common}><path d="m12 3 1.2 4.2L17 9l-3.8 1.8L12 15l-1.2-4.2L7 9l3.8-1.8L12 3Z" /><path d="m18.5 14 .7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7.7-2.3Z" /><path d="M5 14v6M2 17h6" /></svg>;
   if (category === "livebench") return <svg {...common}><path d="M4 20h16" /><rect x="5" y="11" width="3.5" height="6" rx="0.5" /><rect x="10.25" y="5" width="3.5" height="12" rx="0.5" /><rect x="15.5" y="8.5" width="3.5" height="8.5" rx="0.5" /></svg>;
+  if (category === "memory") return <svg {...common}><path d="M12 5a3 3 0 0 0-5.6-1.5A3 3 0 0 0 4 8a3 3 0 0 0 .4 5.6A3.5 3.5 0 0 0 9 18a3 3 0 0 0 3 2" /><path d="M12 5a3 3 0 0 1 5.6-1.5A3 3 0 0 1 20 8a3 3 0 0 1-.4 5.6A3.5 3.5 0 0 1 15 18a3 3 0 0 1-3 2" /><path d="M12 5v15" /></svg>;
   if (category === "voice-alerts") return <svg {...common}><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" /><path d="M10 21h4" /></svg>;
   if (category === "office") return <svg {...common}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8" /></svg>;
   if (category === "appearance") return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 3a9 9 0 0 1 0 18Z" fill="currentColor" stroke="none" /></svg>;

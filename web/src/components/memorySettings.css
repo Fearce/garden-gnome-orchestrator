@@ -1,0 +1,71 @@
+/* Settings → Memory. Shares the settings page's 24px gutter, its type scale (13/11px) and its tokens. */
+
+.mem-status { padding: 4px 24px 10px; display: grid; gap: 12px; }
+
+.mem-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0; background: var(--line); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.mem-stat { background: var(--bg-1); padding: 10px 12px; min-width: 0; }
+.mem-stat dt { font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint); }
+.mem-stat dd { margin: 4px 0 0; display: grid; gap: 2px; }
+.mem-stat-value { font-family: var(--font-mono); font-size: 17px; color: var(--text); font-variant-numeric: tabular-nums; }
+.mem-stat-note { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 720px) { .mem-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.mem-providers { display: grid; gap: 6px; }
+.mem-provider { display: grid; grid-template-columns: 8px auto auto 1fr; align-items: baseline; column-gap: 8px; row-gap: 2px; font-size: 12px; }
+.mem-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); align-self: center; }
+.mem-provider[data-available="true"] .mem-dot { background: var(--ok); }
+.mem-provider[data-available="false"] .mem-dot { background: var(--warn); }
+.mem-provider-name { color: var(--text); font-weight: 500; }
+.mem-provider-role { color: var(--text-faint); }
+.mem-provider-detail { color: var(--text-dim); font-size: 11px; overflow-wrap: anywhere; }
+.mem-provider-error { grid-column: 2 / -1; font-size: 11px; color: var(--warn); }
+
+.mem-usage { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+.mem-usage th { text-align: left; font-weight: 500; color: var(--text-faint); padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line); }
+.mem-usage td { padding: 4px 8px 4px 0; color: var(--text-dim); font-variant-numeric: tabular-nums; border-bottom: 1px solid color-mix(in oklch, var(--line) 50%, transparent); }
+.mem-usage td.mono { font-size: 11px; }
+.mem-failures { color: var(--warn); }
+
+.mem-status-foot { display: flex; align-items: center; gap: 12px; }
+.mem-path { flex: 1; min-width: 0; font-size: 11px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-warn { color: var(--warn); }
+
+.mem-recall { display: grid; gap: 8px; padding-bottom: 8px; }
+.mem-recall-form { display: flex; gap: 8px; margin: 0 24px; }
+.mem-recall-form .text-input:first-child { flex: 1; min-width: 0; }
+.mem-mode { flex: 0 0 auto; width: auto; }
+.mem-recall-result { margin: 0 24px; }
+.mem-recall-meta { margin: 0 0 6px; font-size: 11px; color: var(--text-faint); }
+.mem-hits { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; background: var(--line); }
+.mem-hit { background: var(--bg-1); padding: 8px 10px; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; }
+.mem-hit-name { font-size: 12.5px; color: var(--text); }
+.mem-hit-desc, .mem-hit-file { grid-column: 1 / -1; font-size: 11px; color: var(--text-dim); }
+.mem-hit-file { color: var(--text-faint); }
+
+.mem-badge { font-family: var(--font-mono); font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--text-dim); align-self: start; }
+.mem-badge.model { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, transparent); }
+
+.mem-browser { display: grid; gap: 8px; padding-bottom: 8px; }
+.mem-browser-bar { display: flex; gap: 8px; margin: 0 24px; }
+.mem-browser-bar .text-input { flex: 1; min-width: 0; }
+.mem-list { list-style: none; margin: 0 24px; padding: 0; border: 1px solid var(--line); border-radius: var(--r-sm); max-height: 420px; overflow-y: auto; }
+.mem-list li + li { border-top: 1px solid var(--line); }
+.mem-list-item { all: unset; box-sizing: border-box; width: 100%; cursor: pointer; display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 8px 10px; }
+.mem-list-item:hover { background: var(--bg-2); }
+.mem-list-item:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.mem-list-name { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-list-type { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+.mem-list-desc { grid-column: 1 / -1; font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-list-meta { grid-column: 1 / -1; font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem-list-foot { margin: 0 24px; display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--text-faint); }
+
+.mem-editor { margin: 0 24px 8px; display: grid; gap: 10px; }
+.mem-editor-head { display: flex; align-items: center; gap: 8px; }
+.mem-editor-title { font-family: var(--font-mono); font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+.mem-editor-fields { display: grid; gap: 10px; }
+.mem-field { display: grid; gap: 4px; font-size: 11px; color: var(--text-dim); }
+.mem-body { resize: vertical; min-height: 180px; font-size: 12px; line-height: 1.5; }
+.mem-editor-actions { display: flex; gap: 8px; }
+.mem-delete { margin-left: auto; }
+.mem-editor .settings-note.tight, .mem-recall .settings-note.tight { margin-left: 0; margin-right: 0; }
+.mem-recall > .settings-note.tight { margin: 2px 24px 0; }

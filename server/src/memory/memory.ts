@@ -1,128 +1,261 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { config } from "../config.js";
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
+import { ExtractionOffsets, memoryAgentHooks, type AgentMemory } from "./agentHooks.js";
+import { CardBuilder, type CardBuilderStatus } from "./cards.js";
+import { MemoryCorpus, safeMemoryFile, type MemoryPatch, type NewMemory } from "./corpus.js";
+import { ExtractionQueue, type ExtractionItem, type ExtractionStatus } from "./extraction.js";
+import type { IndexStatus, IndexedFile } from "./indexStore.js";
+import { MemoryModels, type MemoryModelDeps, type ProviderState } from "./models.js";
+import { MemoryRecall, type RecallMode, type RecallResult } from "./recall.js";
+import { MemoryWorkerClient } from "./workerClient.js";
 
 export interface MemorySearchHit {
   name: string;
   description: string;
+  /** The memory's file name inside the memory directory; `read` accepts it. */
+  file: string;
   path: string;
   score: number;
+  judgedBy: "model" | "lexical";
 }
 
-export interface MemoryService {
+export interface MemoryService extends AgentMemory {
+  readonly dir: string;
   search(query: string, k?: number): Promise<MemorySearchHit[]>;
-  /** Full content of one memory file by its frontmatter name, filename, or path. Scoped to the memory dir. */
-  read(nameOrPath: string): string | null;
-  index(): string;
+  /** Full content of one memory file by its frontmatter name or file name. Scoped to the memory dir. */
+  read(nameOrFile: string): Promise<string | null>;
+  /** SDK hooks giving a Claude-based agent run native recall and extraction; undefined when off. */
+  agentHooks(): Options["hooks"] | undefined;
+  /** Recall for a Codex run, which takes it as a prompt prefix; undefined when agent recall is off. */
+  codexMemory(): { service: AgentMemory; dir: string } | undefined;
+  /** Write a new memory file; returns its file name. */
+  create(input: NewMemory): Promise<string>;
+  update(file: string, patch: MemoryPatch): Promise<boolean>;
+  /** Move a memory into the directory's trash; returns its new path, or null when it did not exist. */
+  remove(file: string): Promise<string | null>;
 }
 
-const STOP = new Set([
-  "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "is", "are", "be",
-  "with", "this", "that", "it", "as", "at", "by", "from", "we", "i", "you", "do",
-  "if", "so", "but", "not", "no", "my", "me", "our", "your",
-]);
-
-function tokenize(s: string): string[] {
-  return s
-    .toLowerCase()
-    .split(/[^a-z0-9]+/)
-    .filter((t) => t.length > 2 && !STOP.has(t));
+export interface MemorySettings {
+  /** Let Haiku (or Luna) judge relevance at query time; off = lexical ranking only. */
+  modelRanking: boolean;
+  /** Build retrieval cards for new and edited memories in the background. */
+  cards: boolean;
+  /** Process the automatic-extraction queue. */
+  extraction: boolean;
+  /** Fall back to Codex Luna when no Claude subscription can take a memory call. */
+  lunaFallback: boolean;
+  /** Give GGO's agents recall and extraction natively (SDK hooks for Claude, a prompt prefix for Codex). */
+  agentRecall: boolean;
 }
 
-interface MemoryDoc {
-  name: string;
-  description: string;
-  path: string;
-  haystack: Set<string>;
+export const DEFAULT_MEMORY_SETTINGS: MemorySettings = { modelRanking: true, cards: true, extraction: true, lunaFallback: true, agentRecall: true };
+
+export interface MemoryServiceOptions {
+  /** Where the derived search index lives. */
+  indexPath?: string;
+  /** Subscription access for Haiku and Luna; omitted, memory works lexically only. */
+  models?: Omit<MemoryModelDeps, "runLuna" | "recordUsage">;
+  settings?: () => MemorySettings;
+  ownerName?: () => string;
+  workerIdleMs?: number;
 }
+
+export interface MemoryStatus {
+  dir: string;
+  indexPath: string;
+  workerRunning: boolean;
+  index: IndexStatus;
+  providers: { haiku: ProviderState; luna: ProviderState } | null;
+  cards: CardBuilderStatus | null;
+  extraction: ExtractionStatus | null;
+  settings: MemorySettings;
+}
+
+const SNIPPET_LIMIT = 20_000;
 
 /**
- * Lexical search over the owner's global memory dir. Dependency-free (no pgvector /
- * Ollama call to guess), so it degrades gracefully if those are down: reads the
- * markdown memory files, parses frontmatter name/description, and ranks by token
- * overlap. The director can then Read specific files for full detail.
+ * The owner's memory: Markdown files in `dir` (the source of truth, shared with Claude Code's own memory
+ * tooling), a derived SQLite FTS index owned by an on-demand worker thread, and Haiku/Luna for relevance
+ * judgement, retrieval cards and automatic extraction. Without model access it still searches, reads
+ * and writes — lexically.
  */
 export class FileMemoryService implements MemoryService {
-  private cache: { at: number; docs: MemoryDoc[] } | null = null;
-  private readonly ttlMs = 60_000;
+  readonly corpus: MemoryCorpus;
+  readonly indexPath: string;
+  private readonly worker: MemoryWorkerClient;
+  private readonly models: MemoryModels | null;
+  private readonly recaller: MemoryRecall;
+  private readonly cards: CardBuilder | null;
+  private readonly extraction: ExtractionQueue | null;
+  private readonly settings: () => MemorySettings;
+  private offsets: ExtractionOffsets | null = null;
 
-  constructor(private readonly dir: string = config.memoryDir) {}
+  constructor(readonly dir: string = config.memoryDir, options: MemoryServiceOptions = {}) {
+    this.corpus = new MemoryCorpus(dir);
+    this.indexPath = options.indexPath ?? defaultIndexPath(dir);
+    this.settings = options.settings ?? (() => DEFAULT_MEMORY_SETTINGS);
+    this.worker = new MemoryWorkerClient(this.indexPath, dir, {
+      idleMs: options.workerIdleMs,
+      onIndexChanged: () => {
+        this.recaller?.clearCache();
+        this.cards?.poke();
+      },
+    });
+    this.models = options.models
+      ? new MemoryModels({
+          ...options.models,
+          runLuna: (request) => this.worker.luna(request),
+          recordUsage: (record) => void this.worker.recordUsage(record).catch(() => {}),
+        })
+      : null;
+    this.recaller = new MemoryRecall((query, limit) => this.worker.search(query, limit), this.models, () => this.settings().modelRanking);
+    const models = this.models;
+    this.cards = models
+      ? new CardBuilder({
+          jobs: (limit, exclude) => this.worker.cardJobs(limit, exclude),
+          store: (cards) => this.worker.storeCards(cards),
+          models,
+          enabled: () => this.settings().cards,
+        })
+      : null;
+    this.extraction = models
+      ? new ExtractionQueue({
+          corpus: this.corpus,
+          models,
+          search: (query, limit) => this.worker.search(query, limit),
+          ownerName: options.ownerName ?? (() => config.ownerName),
+          enabled: () => this.settings().extraction,
+          onWrite: () => this.changed(),
+        })
+      : null;
+  }
 
-  index(): string {
-    const p = join(this.dir, "MEMORY.md");
-    if (!existsSync(p)) return "(no MEMORY.md index found)";
-    const text = readFileSync(p, "utf8");
-    return text.length > 8000 ? text.slice(0, 8000) + "\n…(truncated)" : text;
+  /** Start the background jobs (card building, the extraction queue). Tests and tools skip this. */
+  start(): void {
+    this.cards?.start();
+    this.extraction?.start();
+  }
+
+  async close(): Promise<void> {
+    this.cards?.stop();
+    this.extraction?.stop();
+    await this.worker.close();
   }
 
   async search(query: string, k = 6): Promise<MemorySearchHit[]> {
-    const docs = this.load();
-    const terms = tokenize(query);
-    if (!terms.length) return [];
-    const scored = docs.map((d) => {
-      let score = 0;
-      for (const t of terms) {
-        if (d.haystack.has(t)) score += 1;
-        if (d.name.includes(t)) score += 1; // name match is a strong signal
-      }
-      return { name: d.name, description: d.description, path: d.path, score };
-    });
-    return scored
-      .filter((s) => s.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, k);
+    const result = await this.recall(query, "search", k, 12_000);
+    return result.memories.map((memory) => ({
+      name: memory.name,
+      description: memory.description,
+      file: memory.file,
+      path: join(this.dir, memory.file),
+      score: memory.score,
+      judgedBy: memory.judgedBy,
+    }));
   }
 
-  read(nameOrPath: string): string | null {
-    const raw = (nameOrPath ?? "").trim();
+  agentHooks(): Options["hooks"] | undefined {
+    if (!this.settings().agentRecall) return undefined;
+    this.offsets ??= new ExtractionOffsets();
+    return memoryAgentHooks(this, this.dir, this.offsets);
+  }
+
+  codexMemory(): { service: AgentMemory; dir: string } | undefined {
+    return this.settings().agentRecall ? { service: this, dir: this.dir } : undefined;
+  }
+
+  recall(query: string, mode: RecallMode, limit: number, timeoutMs: number): Promise<RecallResult> {
+    return this.recaller.recall(query, mode, limit, timeoutMs);
+  }
+
+  async read(nameOrFile: string): Promise<string | null> {
+    const file = await this.resolve(nameOrFile);
+    const text = file ? await this.corpus.read(file) : null;
+    if (text == null) return null;
+    return text.length > SNIPPET_LIMIT ? `${text.slice(0, SNIPPET_LIMIT)}\n…(truncated)` : text;
+  }
+
+  /** Untruncated text plus index metadata, for the editor. */
+  async get(file: string): Promise<{ meta: IndexedFile | null; text: string } | null> {
+    const safe = safeMemoryFile(file);
+    const text = safe ? await this.corpus.read(safe) : null;
+    if (!safe || text == null) return null;
+    return { meta: await this.worker.file(safe), text };
+  }
+
+  list(offset: number, limit: number, filter: string): Promise<{ total: number; files: IndexedFile[] }> {
+    return this.worker.list(offset, limit, filter);
+  }
+
+  async create(input: NewMemory): Promise<string> {
+    const file = await this.corpus.create(input);
+    this.changed();
+    return file;
+  }
+
+  async update(file: string, patch: MemoryPatch): Promise<boolean> {
+    const ok = await this.corpus.update(file, patch);
+    if (ok) this.changed();
+    return ok;
+  }
+
+  /** Moves the file into the memory directory's trash; returns where it went. */
+  async remove(file: string): Promise<string | null> {
+    const moved = await this.corpus.remove(file);
+    if (moved) this.changed();
+    return moved;
+  }
+
+  async enqueueExtraction(item: Omit<ExtractionItem, "version" | "createdAt">): Promise<"queued" | "too-short" | "unavailable"> {
+    if (!this.extraction) return "unavailable";
+    return (await this.extraction.enqueue(item)) ? "queued" : "too-short";
+  }
+
+  /** Wake the background jobs after a toggle, so re-enabling one takes effect now rather than at its next timer. */
+  settingsChanged(): void {
+    this.recaller.clearCache();
+    this.cards?.poke(true);
+    this.extraction?.kick(true);
+  }
+
+  /** Re-read every file (a full rebuild of the derived rows; cards are kept). */
+  async reindex(): Promise<void> {
+    await this.worker.sync(true);
+    this.recaller.clearCache();
+    this.cards?.poke();
+  }
+
+  async status(): Promise<MemoryStatus> {
+    return {
+      dir: this.dir,
+      indexPath: this.indexPath,
+      workerRunning: this.worker.running,
+      index: await this.worker.status(),
+      providers: this.models ? await this.models.providers() : null,
+      cards: this.cards?.status() ?? null,
+      extraction: this.extraction ? await this.extraction.status() : null,
+      settings: this.settings(),
+    };
+  }
+
+  private async resolve(nameOrFile: string): Promise<string | null> {
+    const raw = (nameOrFile ?? "").trim();
     if (!raw) return null;
-    // 1) exact frontmatter-name match (what search_memory returns as `name`).
-    const byName = this.load().find((d) => d.name === raw);
-    if (byName) return readSafe(byName.path);
-    // 2) treat as a filename: strip to basename + safe chars so it can't escape the memory dir.
-    const base = basename(raw).replace(/\.md$/i, "").replace(/[^a-z0-9_-]/gi, "");
-    if (!base) return null;
-    const p = join(this.dir, `${base}.md`);
-    if (existsSync(p) && statSync(p).isFile()) return readSafe(p);
-    return null;
+    const byName = await this.worker.findByName(raw);
+    return byName ?? safeMemoryFile(raw);
   }
 
-  private load(): MemoryDoc[] {
-    const now = Date.now();
-    if (this.cache && now - this.cache.at < this.ttlMs) return this.cache.docs;
-    const docs: MemoryDoc[] = [];
-    if (existsSync(this.dir)) {
-      for (const entry of readdirSync(this.dir)) {
-        if (!entry.endsWith(".md")) continue;
-        if (entry === "MEMORY.md" || entry.startsWith("ARCHIVE")) continue;
-        const path = join(this.dir, entry);
-        try {
-          if (!statSync(path).isFile()) continue;
-          const body = readFileSync(path, "utf8");
-          const description = matchFrontmatter(body, "description") ?? "";
-          const name = matchFrontmatter(body, "name") ?? entry.replace(/\.md$/, "");
-          const haystack = new Set([...tokenize(name), ...tokenize(description), ...tokenize(body.slice(0, 1200))]);
-          docs.push({ name, description, path, haystack });
-        } catch {
-          /* skip unreadable file */
-        }
-      }
-    }
-    this.cache = { at: now, docs };
-    return docs;
+  /** Something outside GGO wrote to the memory directory: re-read changed files before the next query. */
+  changed(): void {
+    this.worker.markDirty();
+    this.recaller.clearCache();
+    this.cards?.poke();
   }
 }
 
-function readSafe(path: string): string | null {
-  try {
-    const body = readFileSync(path, "utf8");
-    return body.length > 20000 ? body.slice(0, 20000) + "\n…(truncated)" : body;
-  } catch {
-    return null;
-  }
-}
-
-function matchFrontmatter(body: string, key: string): string | null {
-  const m = body.match(new RegExp(`^${key}:\\s*(.+)$`, "m"));
-  return m && m[1] ? m[1].trim() : null;
+/** The default memory directory's index lives with GGO's other data; any other directory (a test's, a
+ *  second owner's) keeps its own index beside it, so two directories never share one. */
+function defaultIndexPath(dir: string): string {
+  return dir === config.memoryDir ? join(config.dataDir, "memory-index.sqlite") : join(dir, ".ggo-memory-index.sqlite");
 }

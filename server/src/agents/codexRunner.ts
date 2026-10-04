@@ -8,6 +8,7 @@ import { config } from "../config.js";
 import { trackBlockingSync } from "../eventLoopMonitor.js";
 import { logCrash } from "../crashLog.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } from "../types.js";
+import { NATIVE_MEMORY_ENV, promptRecallBlock, sessionRecallBlock, type AgentMemory } from "../memory/agentHooks.js";
 import { withAgentToolPath } from "./env.js";
 import { InputLedger } from "./inputLedger.js";
 import { extractCliBridgeMessages } from "./officeBridge.js";
@@ -65,6 +66,9 @@ export interface CodexRunConfig {
   /** Director turns use a server-executed JSON action bridge and must never touch a repository. Keep the
    *  CLI's shell in a read-only sandbox instead of the implementor's unrestricted mode. */
   directorMode?: boolean;
+  /** The owner's memory. Codex has no in-process hooks, so recalled memories are prefixed to each turn's
+   *  prompt, and the run carries GGO_MEMORY_NATIVE so a user-level Codex memory hook stands down. */
+  memory?: { service: AgentMemory; dir: string };
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Image blocks are handled
@@ -543,6 +547,18 @@ export class CodexAgentRun implements AgentRunLike {
 
   /** Spawn one `codex exec` (or `codex exec resume <id>`) turn and stream its JSONL events. Any pasted
    *  images are written to temp files and attached via `--image` (both subcommands accept it). */
+  /** The prompt with the owner's recalled memories ahead of it; a fresh session also gets the ones
+   *  relevant to its working directory. A failed recall leaves the prompt as it was. */
+  private async withRecall(prompt: string, fresh: boolean): Promise<string> {
+    const memory = this.cfg.memory;
+    if (!memory) return prompt;
+    const [session, turn] = await Promise.all([
+      fresh ? sessionRecallBlock(memory.service, this.cfg.cwd, memory.dir) : "",
+      promptRecallBlock(memory.service, prompt, memory.dir),
+    ]);
+    return [session, turn, prompt].filter(Boolean).join("\n\n");
+  }
+
   private async runTurn(prompt: string, resumeId?: string, images: CodexImage[] = [], inputIds: string[] = []): Promise<void> {
     if (this.stopped) return;
     this.turnInputIds = inputIds;
@@ -575,6 +591,11 @@ export class CodexAgentRun implements AgentRunLike {
     // that file into the dedicated CODEX_HOME (isolated from the operator's personal ~/.codex), PREFERRING
     // a ChatGPT-plan login and falling back to the API key, and returns the resolved mode. CODEX_HOME
     // must exist before spawn or codex errors + exits 1.
+    const turnPrompt = await this.withRecall(prompt, !resumeId);
+    if (this.stopped) {
+      this.turnStarting = false;
+      return;
+    }
     await mkdir(config.codex.home, { recursive: true }).catch(() => {});
     const authMode = await seedCodexAuth(this.cfg.apiKey).catch(() => "none" as const);
     await this.usageMeter.beginTurn(resumeId).catch(() => {});
@@ -611,6 +632,7 @@ export class CodexAgentRun implements AgentRunLike {
     const key = this.cfg.apiKey?.trim();
     if (authMode === "apikey" && key) env.OPENAI_API_KEY = key;
     else delete env.OPENAI_API_KEY;
+    if (this.cfg.memory) env[NATIVE_MEMORY_ENV] = "1";
     let child: ChildProcess;
     try {
       child = trackBlockingSync("codex agent CLI (spawn)", () =>
@@ -625,7 +647,7 @@ export class CodexAgentRun implements AgentRunLike {
     // write — if the child died instantly, writing to a closed pipe would throw an unhandled EPIPE.
     child.stdin?.on("error", () => {});
     try {
-      child.stdin?.end(prompt);
+      child.stdin?.end(turnPrompt);
     } catch {
       /* child already gone; onTurnClose will synthesize the failure */
     }

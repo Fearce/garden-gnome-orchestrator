@@ -13,6 +13,9 @@ export const GIT_SERVER = "git";
 export const T = {
   searchMemory: `mcp__${MEMORY_SERVER}__search_memory`,
   readMemory: `mcp__${MEMORY_SERVER}__read_memory`,
+  rememberMemory: `mcp__${MEMORY_SERVER}__remember_memory`,
+  updateMemory: `mcp__${MEMORY_SERVER}__update_memory`,
+  forgetMemory: `mcp__${MEMORY_SERVER}__forget_memory`,
   postFinding: `mcp__${BUS_SERVER}__post_finding`,
   postDeliverable: `mcp__${BUS_SERVER}__post_deliverable`,
   handoffManualDeployment: `mcp__${BUS_SERVER}__handoff_manual_deployment`,
@@ -64,6 +67,9 @@ export const READER_TOOLS = [T.gitRead, ...BUS_TOOLS, ...OFFICE_TOOLS];
 export const DIRECTOR_TOOLS = [
   T.searchMemory,
   T.readMemory,
+  T.rememberMemory,
+  T.updateMemory,
+  T.forgetMemory,
   T.askUser,
   T.findWorkspace,
   T.dispatch,

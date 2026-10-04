@@ -1147,6 +1147,25 @@ export class AccountManager {
     return pick.account.token;
   }
 
+  /** An account for a recurring ancillary call that must respect the owner's controls: like auxToken it
+   *  rides a running window first and never touches dispatch state, but it skips disabled accounts,
+   *  cap-rejected ones, accounts at the hard or safety limit, `model`'s own pool cap, and `excludedIds`
+   *  (the accounts this call already tried). Undefined when no subscription has room. */
+  auxAccount(excludedIds: readonly string[] = [], model?: string): { id: string; token: string } | undefined {
+    const now = Date.now();
+    const excluded = new Set(excludedIds);
+    const states = [...this.states.values()].filter((s) => {
+      if (!s.enabled || !s.account.token || excluded.has(s.account.id)) return false;
+      const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
+      return !limited && accountHasHardHeadroom(s, now) && this.accountHasSafetyHeadroom(s, now) && !(model && this.isModelLimited(s.account.id, model));
+    });
+    const live = (s: AccountState): boolean => s.fiveHourReset != null && s.fiveHourReset > now && !this.inHold(s, now);
+    const pick = states.find((s) => s.account.id === this.preferredId && live(s)) ?? states.find(live) ?? states[0];
+    if (!pick) return undefined;
+    this.releaseHold(pick);
+    return { id: pick.account.id, token: pick.account.token };
+  }
+
   /** How many Claude subscriptions are configured (one account per setup-token; a single synthetic
    *  "logged-in" account when none are). Lets callers phrase an all-capped message for the real count
    *  instead of assuming two. */
