@@ -37,6 +37,8 @@ const crashLogPath = path.join(dataDir, "crash.log");
 
 // Kept in sync with SUPERVISED_RESTART_CODE in server/src/crashLog.ts.
 const SUPERVISED_RESTART_CODE = 75;
+// Kept in sync with DUPLICATE_OWNER_EXIT_CODE in server/src/crashLog.ts.
+const DUPLICATE_OWNER_EXIT_CODE = 78;
 
 // Timings are env-tunable ONLY so the integration test (supervise.itest.cjs) can run fast; prod uses the
 // defaults below.
@@ -181,6 +183,12 @@ function start() {
       fastFails = 0;
       log(`server requested restart (exit ${code}) after ${Math.round(uptimeMs / 1000)}s — respawning`);
       setTimeout(start, RESTART_SETTLE_MS);
+      return;
+    }
+    if (code === DUPLICATE_OWNER_EXIT_CODE) {
+      // Respawning would re-run the same losing boot every few hundred ms for as long as the owner lives.
+      log(`another GG Orchestrator already owns ${dataDir} — leaving it running and stopping this supervisor`);
+      process.exit(0);
       return;
     }
     // Any other exit is unexpected — the crash we're here to survive and record.

@@ -19,7 +19,7 @@ import { restartRoute } from "./selfRestart.js";
 import { config } from "./config.js";
 import { buildInfo } from "./buildInfo.js";
 import { providerRuntimeVersions } from "./providerRuntime.js";
-import { installCrashGuards, logBoot, logCrash, logLifecycle, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
+import { DUPLICATE_OWNER_EXIT_CODE, installCrashGuards, logBoot, logCrash, logLifecycle, logRestartReconcile, registerCrashContext, startMemoryMonitor } from "./crashLog.js";
 import { reportSlowChildWaits } from "./childRunner.js";
 import { eventLoopHealth, startEventLoopMonitor } from "./eventLoopMonitor.js";
 import { startSlowStatementReporter } from "./db/slowStatements.js";
@@ -949,7 +949,7 @@ if (unsafeTestBoot) {
 } else if (!instanceGuard) {
   // eslint-disable-next-line no-console
   console.error(`GG Orchestrator already has an owner for ${config.dbPath}; duplicate boot exits before recovery.`);
-  process.exitCode = 0;
+  process.exitCode = DUPLICATE_OWNER_EXIT_CODE;
 } else {
   process.once("exit", () => instanceGuard.release());
   installCrashGuards();

@@ -131,6 +131,37 @@ async function main() {
     check(!/exited unexpectedly/.test(crashText), "a requested restart (75) is NOT logged as a crash");
   }
 
+  // ---- Scenario 3: a duplicate boot (78) stops the supervisor instead of respawning ------------------
+  console.log("\n3. Exit code 78 (another server owns the data dir) → supervisor stops, no respawn loop");
+  {
+    const dataDir = path.join(tmp, "duplicate");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const counter = path.join(dataDir, "launches.txt");
+    const childScript = path.join(tmp, "duplicate.cjs");
+    fs.writeFileSync(childScript, `require('fs').appendFileSync(${JSON.stringify(counter)},'x');process.exit(78);`);
+    const proc = spawn(process.execPath, [superviseScript], {
+      cwd: path.resolve(__dirname, ".."),
+      windowsHide: true,
+      env: { ...process.env, DATA_DIR: dataDir, ORCH_SUPERVISE_TEST_CHILD: childScript, ORCH_SUPERVISE_SETTLE_MS: "50" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const exitCode = await new Promise((resolve) => {
+      const to = setTimeout(() => {
+        proc.kill("SIGKILL");
+        resolve("still running after 6s");
+      }, 6000);
+      proc.on("exit", (code) => {
+        clearTimeout(to);
+        resolve(code);
+      });
+    });
+    const launches = fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").length : 0;
+    check(exitCode === 0, `the supervisor exits cleanly on its own (exit: ${exitCode})`);
+    check(launches === 1, `the duplicate child was launched once, not looped (launched ${launches}×)`);
+    const crashLog = path.join(dataDir, "crash.log");
+    check(!fs.existsSync(crashLog) || !/exited unexpectedly/.test(fs.readFileSync(crashLog, "utf8")), "a duplicate boot is not logged as a crash");
+  }
+
   try {
     fs.rmSync(tmp, { recursive: true, force: true });
   } catch {

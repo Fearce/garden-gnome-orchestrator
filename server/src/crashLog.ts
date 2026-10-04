@@ -16,6 +16,10 @@ const MAX_BYTES = 5 * 1024 * 1024;
  *  backoff. Mirrored as a literal `75` in supervise.cjs — keep the two in sync. */
 export const SUPERVISED_RESTART_CODE = 75;
 
+/** Exit code of a boot that found another live server owning its data directory. The supervisor stops on it
+ *  instead of respawning into the same refusal. Mirrored as a literal `78` in supervise.cjs. */
+export const DUPLICATE_OWNER_EXIT_CODE = 78;
+
 /** Extra context appended to every crash entry — registered by the owners of live state (e.g. ThreadManager
  *  contributes the active-task snapshot) so a crash record shows what the process was DOING when it died. */
 const contextProviders: Array<{ label: string; fn: () => string }> = [];
