@@ -59,6 +59,15 @@ receives one unsolicited `hello`, and the client applies its receipts before rep
 messages. Settings, Co-work, schedules, notes, Supervisor, Git and the IDE load on demand. The phone
 defers its hidden Director until first use, then retains it to preserve drafts.
 
+**Local service tabs (`server/src/modules/`).** Script Hub, Surveillance, Home and Sidekick are optional,
+hidden-by-default board tabs. Each runs in its own on-demand worker process that `ModuleSupervisor` starts on the
+first request, outside GGO's process tree (a deploy leaves it running), on a loopback port guarded by a per-start
+token. GGO only proxies `/api/modules/<id>/api/*` and ticketed `/stream` sockets, so camera decoding, ffmpeg,
+process enumeration and device I/O never touch the console's event loop. Workers idle out after 10 minutes unless
+the owner started work (a recording, kept in `armed.json`). Settings live in gitignored
+`<DATA_DIR>/modules/<id>/config.json`, imported once from the Script Hub's settings. Details:
+[`local-service-modules.md`](local-service-modules.md); gate `test:modules`, browser lab `modules-lab`.
+
 `npm run probe:startup` measures cold/warm desktop and throttled-phone startup without interacting
 with live tasks. `ORCH_URL` accepts a mounted URL; `PERF_OUT` selects the JSON report.
 `npm run startup-lab --prefix server` verifies compression, both mounts, reconnects and retained
