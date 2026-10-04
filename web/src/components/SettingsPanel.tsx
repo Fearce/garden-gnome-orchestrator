@@ -10,7 +10,7 @@ import { FreeProviders } from "./FreeProviders.js";
 import { LiveBenchRankings } from "./LiveBenchRankings.js";
 import { RemoteControlSetup } from "./remote/RemoteControlSetup.js";
 import { useRemoteControlEnabled } from "./remote/remoteApi.js";
-import { BOARD_TABS, isHideableTab } from "../lib/boardTabs.js";
+import { BOARD_TABS, isHideableTab, isModuleView } from "../lib/boardTabs.js";
 import { ThemePicker } from "./ThemePicker.js";
 import { FontPicker } from "./FontPicker.js";
 import { DISPLAY_FONTS, MONO_FONTS, UI_FONTS } from "../lib/font.js";
@@ -692,6 +692,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               </Group>
               <Group label="Board tabs">
                 <BoardTabToggles />
+              </Group>
+              <Group label="Local service tabs">
+                <ModuleTabToggles />
               </Group>
             </SettingsCategoryPanel>
           </div>
@@ -2495,6 +2498,28 @@ function BoardTabToggles() {
         />
       ))}
       <div className="settings-note tight">The Tasks tab is always shown.</div>
+    </>
+  );
+}
+
+/** The optional local-service tabs, off until switched on. Showing one only adds the tab: its service
+ *  starts when the tab is first opened and stops on its own once nothing uses it. */
+function ModuleTabToggles() {
+  const shown = useStore((s) => s.shownModuleTabs);
+  const setModuleTabShown = useStore((s) => s.setModuleTabShown);
+  const tabs = BOARD_TABS.filter((tab) => isModuleView(tab.view));
+  return (
+    <>
+      {tabs.map((tab) => (
+        <ToggleRow
+          key={tab.view}
+          label={`${tab.label} tab`}
+          hint={`${tab.title}. On: the tab joins the board header and the phone's area menu. Its service starts only when you open the tab. Stored in this browser.`}
+          on={isModuleView(tab.view) && shown.includes(tab.view)}
+          onChange={(on) => { if (isModuleView(tab.view)) setModuleTabShown(tab.view, on); }}
+        />
+      ))}
+      <div className="settings-note tight">Off by default. Recording and other work you start in a tab keeps running after you leave it; stop it there.</div>
     </>
   );
 }

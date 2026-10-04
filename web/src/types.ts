@@ -356,7 +356,9 @@ export const MAX_GOAL_BURN_RATE_PCT = 500;
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
 /** Co-work is not a pane: its sessions are cards on the task board, and a conversation opens as a popup
  *  over whatever pane is showing so the rest of the work stays in sight. */
-export type BoardView = "tasks" | "notes" | "calendar" | "schedules" | "goals" | "supervisor" | "patchnotes" | "ide" | "remote";
+export type BoardView = "tasks" | "notes" | "calendar" | "schedules" | "goals" | "supervisor" | "patchnotes" | "ide" | "remote" | ModuleView;
+/** The optional local-service tabs; each is off until the owner switches it on in Settings. */
+export type ModuleView = "scripthub" | "surveillance" | "home" | "sidekick";
 
 /** A layer opened on top of the selected task. Store-owned rather than component state so browser
  *  Back/Forward can close and reopen it (lib/navHistory.ts). `memoId` / `findingId` name what to show. */

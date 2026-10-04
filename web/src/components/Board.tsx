@@ -28,7 +28,7 @@ import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
 import { PatchNotes } from "./PatchNotes.js";
 import { usePatchNotesWatch, useUnseenPatchNotes } from "../lib/patchNotes.js";
-import { visibleBoardTabs } from "../lib/boardTabs.js";
+import { isModuleView, visibleBoardTabs } from "../lib/boardTabs.js";
 import { useRemoteControlEnabled } from "./remote/remoteApi.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { CoworkPopup, NewCoworkButton } from "./CoWork.js";
@@ -39,6 +39,11 @@ import type { DragCardProps } from "../lib/dragCard.js";
 const Ide = lazy(() => import("./ide/Ide.js").then(m => ({ default: m.Ide })));
 const RemoteViewer = lazy(() => import("./remote/RemoteViewer.js").then(m => ({ default: m.RemoteViewer })));
 const Calendar = lazy(() => import("./calendar/Calendar.js").then(m => ({ default: m.Calendar })));
+// The optional local-service tabs load only when opened, so a console that never shows them never downloads them.
+const ScriptHubTab = lazy(() => import("./modules/ScriptHub.js").then(m => ({ default: m.ScriptHub })));
+const SurveillanceTab = lazy(() => import("./modules/Surveillance.js").then(m => ({ default: m.Surveillance })));
+const HomeTab = lazy(() => import("./modules/Home.js").then(m => ({ default: m.Home })));
+const SidekickTab = lazy(() => import("./modules/Sidekick.js").then(m => ({ default: m.Sidekick })));
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -296,6 +301,14 @@ export function Board() {
         <LazyChunkBoundary label="Remote control" className="ide-load-error"><Suspense fallback={<p>Opening Remote control…</p>}><RemoteViewer /></Suspense></LazyChunkBoundary>
       ) : boardView === "calendar" ? (
         <LazyChunkBoundary label="Calendar" className="ide-load-error"><Suspense fallback={<p>Opening the calendar…</p>}><Calendar /></Suspense></LazyChunkBoundary>
+      ) : boardView === "scripthub" ? (
+        <LazyChunkBoundary label="Script Hub" className="ide-load-error"><Suspense fallback={<p>Opening Script Hub…</p>}><ScriptHubTab /></Suspense></LazyChunkBoundary>
+      ) : boardView === "surveillance" ? (
+        <LazyChunkBoundary label="Surveillance" className="ide-load-error"><Suspense fallback={<p>Opening Surveillance…</p>}><SurveillanceTab /></Suspense></LazyChunkBoundary>
+      ) : boardView === "home" ? (
+        <LazyChunkBoundary label="Home" className="ide-load-error"><Suspense fallback={<p>Opening Home…</p>}><HomeTab /></Suspense></LazyChunkBoundary>
+      ) : boardView === "sidekick" ? (
+        <LazyChunkBoundary label="Sidekick" className="ide-load-error"><Suspense fallback={<p>Opening Sidekick…</p>}><SidekickTab /></Suspense></LazyChunkBoundary>
       ) : boardView === "schedules" ? (
         <ScheduledTasks />
       ) : boardView === "goals" ? (
@@ -357,9 +370,16 @@ function BoardTabs() {
   // The tab exists only once remote control is set up; turned off elsewhere, the board falls back to tasks.
   useEffect(() => { if (!remoteEnabled && boardView === "remote") setBoardView("tasks"); }, [remoteEnabled, boardView, setBoardView]);
   const hiddenTabs = useStore((s) => s.hiddenBoardTabs);
-  const tabs = visibleBoardTabs(hiddenTabs, remoteEnabled, boardView);
-  const counts = {
+  const shownModules = useStore((s) => s.shownModuleTabs);
+  // A switched-off optional tab cannot stay open: a reload or a stale link falls back to tasks.
+  useEffect(() => { if (isModuleView(boardView) && !shownModules.includes(boardView)) setBoardView("tasks"); }, [shownModules, boardView, setBoardView]);
+  const tabs = visibleBoardTabs(hiddenTabs, remoteEnabled, boardView, shownModules);
+  const counts: Record<BoardView, number | null> = {
     tasks: null,
+    scripthub: null,
+    surveillance: null,
+    home: null,
+    sidekick: null,
     ide: null,
     remote: null,
     calendar: null,
