@@ -161,7 +161,7 @@ async function main() {
   console.log(line("owner message", result.ownerMessage));
   const loop = result.eventLoop;
   if (loop) console.log(`event loop     worst stall ${loop.worstLagMs}ms, ${loop.blocks} block(s), ${loop.blockedMs}ms blocked in the last ${Math.round(loop.windowMs / 1000)}s${loop.worstBlame ? ` (worst: ${loop.worstBlame})` : ""}`);
-  if (Array.isArray(services)) console.log(`modules        ${services.map((s) => `${s.id}=${s.state}`).join("  ")}`);
+  if (Array.isArray(services)) console.log(`modules        ${services.map((s) => `${s.module}=${s.state}`).join("  ")}`);
 }
 
 if (require.main === module) {
