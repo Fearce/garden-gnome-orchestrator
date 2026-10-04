@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Full calendar for events, reminders and scheduled tasks** (Almanac Wren, 2026-10-04).
 
 ## Ready (priority order)
 
