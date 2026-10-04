@@ -15,6 +15,7 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 - **Move Script Hub, Surveillance, Home Automation and Sidekick from the Dashboard Deck into optional GGO tabs** (Ferrule Juniper, 2026-10-04, branch ggo/deck-modules-migration-cad0786a).
+- **QA: finish Supervisor delivery recovery and verify fresh repeated-text receipts** (Bramble Gauge, 2026-10-04): Supervisor omits pending delivery controls; receipts-lab checked the old row before the repeated injection arrived.
 
 ## Ready (priority order)
 
