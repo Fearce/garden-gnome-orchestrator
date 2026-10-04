@@ -334,7 +334,9 @@ export async function handleCommand(
         socket,
         cmd.threadId,
         "inject",
-        await injectThreadWithReceipt(ctx.db, ctx.manager, cmd),
+        await injectThreadWithReceipt(ctx.db, ctx.manager, cmd, () => {
+          if (cmd.clientId) send(socket, { type: "thread.inject.accepted", threadId: cmd.threadId, clientId: cmd.clientId });
+        }),
         cmd.clientId,
       );
       break;

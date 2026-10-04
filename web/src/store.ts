@@ -91,7 +91,8 @@ interface ThreadDraft {
   text: string;
 }
 
-export type OutboundDeliveryStatus = "sending" | "failed";
+/** "accepted": the server has durably stored it and is still applying it (task injections only). */
+export type OutboundDeliveryStatus = "sending" | "accepted" | "failed";
 
 interface OutboundBase {
   id: string;
@@ -99,6 +100,8 @@ interface OutboundBase {
   createdAt: number;
   status: OutboundDeliveryStatus;
   error?: string;
+  /** A failed message whose command is still held, so "Send again" can resend it under a new id. */
+  resendable?: boolean;
 }
 
 /** Client-held owner messages. They render immediately, then disappear only when the matching
@@ -440,6 +443,10 @@ interface State {
   // Stop the director when it's busy but spinning (looping without replying or dispatching).
   cancelDirector: () => void;
   answer: (questionId: string, answer: string) => void;
+  /** Replay an unconfirmed message now (same id, so it cannot land twice), or resend a failed one. */
+  retryOutbound: (id: string) => void;
+  /** Drop a failed message from the console. */
+  dismissOutbound: (id: string) => void;
   inject: (
     threadId: string,
     message: string,
@@ -978,6 +985,8 @@ const outboundTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // clientId, so replaying it after a reconnect is safe: the server returns the original receipt
 // instead of performing the owner action twice.
 const outboundCommands = new Map<string, ClientCommand>();
+/** Commands of messages that failed, kept only so the owner can send them again. Never replayed. */
+const failedCommands = new Map<string, ClientCommand>();
 // Co-work creates that asked for a separate worktree, by clientId, with the folder they named. A server
 // that predates the option strips the flag and creates the session in that folder itself, which reads as
 // success; comparing the answer with the request is the only way the console can tell and say so.
@@ -1094,13 +1103,44 @@ function addOutbound(message: OutboundMessage): void {
 
 function failOutbound(id: string, error: string): void {
   clearOutboundTimer(id);
+  const command = outboundCommands.get(id);
   outboundCommands.delete(id);
+  if (command) failedCommands.set(id, command);
   forgetPersistedOutbound(id);
   useStore.setState((s) => ({
     outboundMessages: s.outboundMessages.map((message) =>
-      message.id === id ? { ...message, status: "failed", error } : message,
+      message.id === id ? { ...message, status: "failed", error, resendable: !!command } : message,
     ),
   }));
+}
+
+/** The server holds this injection durably; keep replaying until its final result, but stop "Sending…". */
+function acceptOutbound(id: string): void {
+  useStore.setState((s) => ({
+    outboundMessages: s.outboundMessages.map((message) =>
+      message.id === id && message.status === "sending" ? { ...message, status: "accepted" } : message,
+    ),
+  }));
+}
+
+/** Replay now rather than at the next confirmation tick. The correlation id is unchanged, so the server
+ *  answers a message it already has with the original result instead of applying it twice. */
+function replayOutboundNow(id: string): void {
+  const command = outboundCommands.get(id);
+  if (!command) return;
+  if (sendCommand(command)) scheduleOutboundConfirmation(id);
+  else if (!socket || socket.readyState === WebSocket.CLOSED) connect();
+}
+
+function resendFailedOutbound(id: string): void {
+  const message = useStore.getState().outboundMessages.find((m) => m.id === id);
+  const command = failedCommands.get(id);
+  if (!message || message.status !== "failed" || !command || !("clientId" in command)) return;
+  failedCommands.delete(id);
+  useStore.setState((s) => ({ outboundMessages: s.outboundMessages.filter((m) => m.id !== id) }));
+  const clientId = newOutboundId();
+  const { error: _error, resendable: _resendable, ...rest } = message;
+  sendOutbound({ ...rest, id: clientId, createdAt: Date.now(), status: "sending" }, { ...command, clientId } as ClientCommand);
 }
 
 function acknowledgeOutbound(ids: Iterable<string>): Set<string> {
@@ -1128,7 +1168,7 @@ function sendOutbound(message: OutboundMessage, command: ClientCommand): boolean
 
 function replaySendingOutbound(): void {
   for (const message of useStore.getState().outboundMessages) {
-    if (message.status !== "sending") continue;
+    if (message.status === "failed") continue;
     const command = outboundCommands.get(message.id);
     if (!command) {
       failOutbound(message.id, "The console lost this unconfirmed message before it could be replayed. Resend it when the console is online.");
@@ -1660,6 +1700,15 @@ export const useStore = create<State>((set) => ({
   },
   cancelDirector: () => sendCommand({ type: "director.cancel" }),
   answer: (questionId, answer) => sendCommand({ type: "question.answer", questionId, answer }),
+  retryOutbound: (id) => {
+    const message = useStore.getState().outboundMessages.find((m) => m.id === id);
+    if (message?.status === "failed") resendFailedOutbound(id);
+    else replayOutboundNow(id);
+  },
+  dismissOutbound: (id) => {
+    failedCommands.delete(id);
+    set((s) => ({ outboundMessages: s.outboundMessages.filter((m) => m.id !== id || m.status !== "failed") }));
+  },
   inject: (threadId, message, mode, images, recipient) => {
     const content = message.trim();
     if (!content) return Promise.resolve(false);
@@ -2746,6 +2795,9 @@ function applyEvent(ev: ServerEvent): void {
       if (fi) pushFeed(ev.threadId, fi);
       break;
     }
+    case "thread.inject.accepted":
+      acceptOutbound(ev.clientId);
+      break;
     case "thread.action":
       resolvePendingThreadAction(ev.threadId, ev.action, ev.ok, ev.clientId);
       if (ev.clientId) {

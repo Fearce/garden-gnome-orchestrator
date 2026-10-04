@@ -208,6 +208,8 @@ export type ServerEvent =
   // One recipient's read receipt for an injected feed message changed (orchestrator/injectionReceipts.ts).
   | { type: "thread.receipt"; threadId: string; receipt: InjectionReceipt }
   | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: Thread["state"]; error?: string; message?: string; result: ThreadActionResult }
+  // A task injection is durably stored (its final thread.action follows once the instruction is applied).
+  | { type: "thread.inject.accepted"; threadId: string; clientId: string }
   | {
       type: "thread.history";
       threadId: string;

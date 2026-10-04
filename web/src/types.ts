@@ -1554,6 +1554,8 @@ export type ServerEvent =
   | { type: "thread.reset"; threadId: string; deliverables: Finding[] }
   | { type: "thread.message"; threadId: string; message: Message }
   | { type: "thread.action"; threadId: string; action: string; clientId?: string; ok: boolean; state?: ThreadState; error?: string; message?: string; result: ThreadActionResult }
+  // A task injection is durably stored (its final thread.action follows once the instruction is applied).
+  | { type: "thread.inject.accepted"; threadId: string; clientId: string }
   // Optional only for rolling compatibility with a console bundle loaded just before the server restart.
   | {
       type: "thread.history";
@@ -1790,7 +1792,7 @@ export type FeedItem =
   | { kind: "tool"; at: number; role: Role; runId: string; id?: string; name: string; input: unknown }
   | { kind: "tool_result"; at: number; runId: string; id: string; messageId?: string; isError: boolean; preview: string }
   | { kind: "finding"; at: number; finding: Finding }
-  | { kind: "system"; at: number; id?: string; text: string; role?: Role; attachments?: AttachmentRef[]; delivery?: "sending" | "failed"; deliveryError?: string };
+  | { kind: "system"; at: number; id?: string; text: string; role?: Role; attachments?: AttachmentRef[]; delivery?: "sending" | "accepted" | "failed" };
 
 export interface DirectorItem {
   id: string;

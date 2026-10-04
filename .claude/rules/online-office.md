@@ -72,7 +72,9 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
   additive optional field is). Both ends refuse a mismatch at the handshake — for the office, a bump is an outage
   until every machine redeploys, which is why the fork fix above added optional fields instead.
 - **`repoIdentity` is async (it shells out to git); the office gate is sync.** `remotePeers` answers from a
-  cache and warms a miss in the background — a git read must never block `officeNote`. A presence change
+  cache and warms a miss in the background — a git read must never block `officeNote`. `repoIdentity` shares
+  one pending read per workspace: every roster pass asks again, and before that each ask spawned its own
+  `git config` behind the shared child pool (`test:online-office` counts the spawns). A presence change
   re-fires `onRemoteJoin`, so a teammate found a tick late still wakes the live implementor.
 - **A remote peer is NOT a working-tree peer.** Their edits never reach `git status`; the collision is at
   the remote, and `officeNote`/`remoteChatPush`/`remoteJoinPush` say so — don't "simplify" that into the

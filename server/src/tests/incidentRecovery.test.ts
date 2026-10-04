@@ -107,8 +107,12 @@ try {
     },
   };
 
-  const initial = injectThreadWithReceipt(db, target, command);
-  const concurrentReplay = injectThreadWithReceipt(db, target, command);
+  let accepted = 0;
+  const initial = injectThreadWithReceipt(db, target, command, () => { accepted += 1; });
+  assert.equal(accepted, 1, "the console hears the instruction is held before the slow injection settles");
+  assert.equal(db.ownerCommandReceipt(command.clientId!)?.status, "accepted", "…and only once it is durable");
+  const concurrentReplay = injectThreadWithReceipt(db, target, command, () => { accepted += 1; });
+  assert.equal(accepted, 2, "a replay while it is still applying is told the same");
   release();
   assert.deepEqual(await concurrentReplay, await initial, "concurrent replay shares the original result");
   assert.equal(calls, 1, "one correlation id cannot execute twice in one process");

@@ -1,5 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useStore, type OutboundMessage } from "../store.js";
+import { DeliveryReceipt } from "./DeliveryReceipt.js";
 import type { AgentRun, FeedItem, InjectionReceipt, Role, SubAgentProvider, SubTaskSpec, Thread } from "../types.js";
 import { agentName, isCollaborationRoom, repoRoom } from "../types.js";
 import { canAutoReview, clock, formatDuration, FROZEN_CONTROL_TOOLTIP, isCapParked, isDoneable, isTerminal, modelEffortLabel, roleColor, runActive, sevColor, stateColor, stateLabel, threadRunning } from "../lib/format.js";
@@ -305,6 +306,20 @@ function itemRoleOf(f: FeedItem, runRole: Record<string, Role>): Role | null {
   if (f.kind === "finding") return f.finding.fromRole ?? null;
   if (f.kind === "system") return f.role ?? null;
   return null;
+}
+
+/** Browser and server clocks can disagree by a little; an echo may carry a slightly earlier timestamp. */
+const ECHO_SKEW_MS = 2_000;
+
+/** Whether the server already wrote this outgoing injection into the feed, where it carries its own read
+ *  receipts. Its optimistic copy would only repeat it until the final reply lands. Each feed line can
+ *  stand in for one outgoing message, so sending the same words twice still shows both. */
+function claimEcho(feed: FeedItem[], message: { content: string; createdAt: number }, claimed: Set<FeedItem>): boolean {
+  const echo = feed.find(
+    (item) => item.kind === "system" && !claimed.has(item) && item.at >= message.createdAt - ECHO_SKEW_MS && item.text.includes(message.content),
+  );
+  if (echo) claimed.add(echo);
+  return !!echo;
 }
 
 /** Stable, position-independent key for a feed row — required so the rendered window can grow
@@ -705,8 +720,10 @@ export function ThreadDetail() {
   const taskMemos = id ? implementationMemos[id] ?? [] : [];
   const feed = useMemo(() => {
     if (!id) return persistedFeed;
+    const echoes = new Set<FeedItem>();
     const sending: FeedItem[] = outbound
       .filter((message): message is Extract<OutboundMessage, { surface: "task" }> => message.surface === "task" && message.threadId === id)
+      .filter((message) => message.status === "failed" || !claimEcho(persistedFeed, message, echoes))
       .map((message) => ({
         kind: "system",
         id: message.id,
@@ -719,7 +736,6 @@ export function ThreadDetail() {
               ? `↪ Interrupting with: ${message.content}`
               : `↪ Injecting: ${message.content}`,
         delivery: message.status,
-        deliveryError: message.error,
       }));
     return [...persistedFeed, ...sending].sort((a, b) => a.at - b.at);
   }, [id, persistedFeed, outbound]);
@@ -1704,12 +1720,7 @@ const FeedRow = memo(function FeedRow({
           <div className="body">{source ? `${source} · ${item.text}` : item.text}</div>
           <MessageThumbs refs={item.attachments} />
           {receipts?.length ? <ReceiptMarks receipts={receipts} nameFor={nameFor} /> : null}
-          {item.delivery ? (
-            <span className={"delivery-receipt " + item.delivery} role="status" title={item.deliveryError}>
-              {item.delivery === "sending" ? <span className="delivery-spinner" aria-hidden="true" /> : <span aria-hidden="true">!</span>}
-              {item.delivery === "sending" ? "Sending…" : "Not delivered"}
-            </span>
-          ) : null}
+          {item.delivery && item.id ? <DeliveryReceipt id={item.id} /> : null}
         </div>
       );
     default:

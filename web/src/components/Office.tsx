@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { useStore } from "../store.js";
+import { useStore, type OutboundDeliveryStatus } from "../store.js";
+import { DeliveryReceipt } from "./DeliveryReceipt.js";
 import type { ChatMessage, ChatRoomSummary, RelayDirector, RelayPresentAgent, Role, SharedRepo, Thread } from "../types.js";
 import { agentName, CHAT_PAGE_SIZE, DIRECTORS_ROOM, GENERAL_ROOM, homeWorkspace, isCollaborationRoom, normalizeWorkspace, repoRoom, ROLES } from "../types.js";
 import { clock, isCapParked, pacePeriodForModel, roleColor } from "../lib/format.js";
@@ -52,7 +53,7 @@ interface Group {
 // How long a freshly-posted message floats as a bubble above its gnome.
 const BUBBLE_MS = 9000;
 
-type DisplayChatMessage = ChatMessage & { delivery?: "sending" | "failed"; deliveryError?: string };
+type DisplayChatMessage = ChatMessage & { delivery?: OutboundDeliveryStatus };
 
 // A pacing gnome doesn't march non-stop — after some laps it stops and takes a breather. We decide this
 // in JS (not a fixed CSS cycle) so each gnome idles independently rather than all resting in lockstep.
@@ -552,7 +553,6 @@ function OfficePanel() {
         senderName: directorName,
         createdAt: message.createdAt,
         delivery: message.status,
-        deliveryError: message.error,
       }));
     return [...persisted, ...sending].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
   }, [roomHistory, chat, officeRoom, outbound, directorName]);
@@ -796,12 +796,7 @@ function OfficeMsg({ m, title, name, onOpenTask }: { m: DisplayChatMessage; titl
               line crossed the internet, so a room's cross-machine half is visible without reading names. */}
           {m.remoteInstance ? <span className="office-msg-remote" title={`From ${m.remoteInstance} — another machine`}>🌐</span> : null}
           {title ? <span className="office-msg-task">on “{trim(title, 32)}”</span> : null}
-          {m.delivery ? (
-            <span className={"delivery-receipt " + m.delivery} role="status" title={m.deliveryError}>
-              {m.delivery === "sending" ? <span className="delivery-spinner" aria-hidden="true" /> : <span aria-hidden="true">!</span>}
-              {m.delivery === "sending" ? "Sending…" : "Not delivered"}
-            </span>
-          ) : null}
+          {m.delivery ? <DeliveryReceipt id={m.id} /> : null}
           <span className="office-msg-ts">{clock(m.createdAt)}</span>
           <button
             type="button"

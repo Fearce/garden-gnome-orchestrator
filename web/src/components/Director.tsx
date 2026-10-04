@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { useStore } from "../store.js";
+import { useStore, type OutboundDeliveryStatus } from "../store.js";
+import { DeliveryReceipt } from "./DeliveryReceipt.js";
 import { apiUrl } from "../lib/base.js";
 import { AttachButton, ComposerThumbs, MessageThumbs, useAttachments } from "../lib/attachments.js";
 import { FolderPicker } from "./FolderPicker.js";
@@ -116,7 +117,7 @@ export function Director() {
   const selectedThreadId = useStore((s) => s.selectedThreadId);
   const select = useStore((s) => s.select);
   const att = useAttachments();
-  const transcriptItems = useMemo<Array<{ item: DirectorItem; delivery?: "sending" | "failed"; deliveryError?: string }>>(
+  const transcriptItems = useMemo<Array<{ item: DirectorItem; delivery?: OutboundDeliveryStatus }>>(
     () =>
       [
         ...items.map((item) => ({ item })),
@@ -125,7 +126,6 @@ export function Director() {
           .map((message) => ({
             item: { id: message.id, kind: "user" as const, text: message.content, at: message.createdAt },
             delivery: message.status,
-            deliveryError: message.error,
           })),
       ].sort((a, b) => a.item.at - b.item.at),
     [items, outbound],
@@ -457,8 +457,8 @@ export function Director() {
               dispatches the smallest capable route for the task.
             </div>
           )}
-          {transcriptItems.map(({ item, delivery, deliveryError }) => (
-            <DirectorBubble key={item.id} item={item} delivery={delivery} deliveryError={deliveryError} />
+          {transcriptItems.map(({ item, delivery }) => (
+            <DirectorBubble key={item.id} item={item} delivery={delivery} />
           ))}
           {draft && (
             <div className="msg director draft">
@@ -1207,11 +1207,9 @@ function AgentToggles() {
 const DirectorBubble = memo(function DirectorBubble({
   item,
   delivery,
-  deliveryError,
 }: {
   item: DirectorItem;
-  delivery?: "sending" | "failed";
-  deliveryError?: string;
+  delivery?: OutboundDeliveryStatus;
 }) {
   const directorName = useStore((s) => s.settings.directorName);
   if (item.kind === "tool") {
@@ -1232,7 +1230,7 @@ const DirectorBubble = memo(function DirectorBubble({
       <time className="msg-time" dateTime={new Date(item.at).toISOString()} title={new Date(item.at).toLocaleString()}>
         {bubbleTime(item.at)}
       </time>
-      {delivery ? <DeliveryReceipt status={delivery} error={deliveryError} /> : null}
+      {delivery ? <DeliveryReceipt id={item.id} /> : null}
     </div>
   );
 });
@@ -1242,15 +1240,6 @@ function bubbleTime(ts: number): string {
   const when = new Date(ts);
   const clock = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   return when.toDateString() === new Date().toDateString() ? clock : resultDate(ts);
-}
-
-function DeliveryReceipt({ status, error }: { status: "sending" | "failed"; error?: string }) {
-  return (
-    <span className={"delivery-receipt " + status} role="status" title={error}>
-      {status === "sending" ? <span className="delivery-spinner" aria-hidden="true" /> : <span aria-hidden="true">!</span>}
-      {status === "sending" ? "Sending…" : "Not delivered"}
-    </span>
-  );
 }
 
 /** Search results, shown in place of the transcript while a query is active. Two sections: the tasks

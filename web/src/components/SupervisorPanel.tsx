@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useStore } from "../store.js";
+import { useStore, type OutboundDeliveryStatus } from "../store.js";
+import { DeliveryReceipt } from "./DeliveryReceipt.js";
 import type { SupervisorChatTurn, SupervisorEvent, SupervisorSnapshot, Thread } from "../types.js";
 import { useCoarseNow } from "../lib/timing.js";
 import { since } from "../lib/format.js";
@@ -7,7 +8,7 @@ import { supervisorOrigin } from "../lib/codeNav.js";
 import { CodeContextBar } from "./CodeContextBar.js";
 
 const TARGET_LIMIT = 8;
-type DisplaySupervisorTurn = SupervisorChatTurn & { delivery?: "sending" | "failed"; deliveryError?: string };
+type DisplaySupervisorTurn = SupervisorChatTurn & { delivery?: OutboundDeliveryStatus };
 
 /** Existing-task conversation plus the watchdog's live audit trail. The two jobs are deliberately
  * separate in the layout: chat is an explicit owner control and remains usable while background
@@ -116,7 +117,6 @@ function SupervisorChat({ supervisor, now }: { supervisor: SupervisorSnapshot; n
           createdAt: delivery.createdAt,
           updatedAt: delivery.createdAt,
           delivery: delivery.status,
-          deliveryError: delivery.error,
         })),
     ].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id)),
     [serverTurns, outbound, threadsById],
@@ -351,6 +351,7 @@ function SupervisorTurn({ turn, now }: { turn: DisplaySupervisorTurn; now: numbe
         ) : <div className="supervisor-turn-targets faint">Board-wide</div>}
         <div className="supervisor-bubble-text">{turn.content}</div>
         <time className="supervisor-bubble-time" title={new Date(turn.createdAt).toLocaleString()}>{since(now, turn.createdAt)} ago</time>
+        {turn.delivery === "failed" ? <DeliveryReceipt id={turn.id} /> : null}
       </div>
       <div className="supervisor-bubble supervisor-agent-bubble">
         <div className="supervisor-bubble-top">

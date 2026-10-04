@@ -32,6 +32,7 @@ server/.task-header-lab-dist/
 server/.livebench-lab-dist/
 server/.repo-chips-lab-dist/
 server/.calendar-lab-dist/
+server/.receipt-lab-dist/
 server/.lab-web-dist*/
 web/dist/
 relay/dist/

@@ -63,11 +63,15 @@ function acceptedAfterRestart(db: Db, receipt: OwnerCommandReceipt): ThreadActio
  * accepted immediately after invoking it, so a process death can lose the final WebSocket response but not
  * the owner's intent. Replaying an accepted receipt after boot acknowledges that durable intent without
  * steering the new run twice; a fully completed receipt returns its exact original result.
+ *
+ * `onAccepted` fires once the instruction is durable, before the slow part (an agent launch can take
+ * seconds), so the console can stop showing "Sending…" for a message GGO already holds.
  */
 export async function injectThreadWithReceipt(
   db: Db,
   target: ThreadInjectionTarget,
   command: ThreadInjectionCommand,
+  onAccepted?: () => void,
 ): Promise<ThreadActionResult> {
   if (!command.clientId) {
     return target.injectThread(command.threadId, command.message, command.mode, command.images, {
@@ -91,7 +95,10 @@ export async function injectThreadWithReceipt(
   if (completed) return completed;
 
   const running = inFlight.get(command.clientId);
-  if (running) return running;
+  if (running) {
+    onAccepted?.();
+    return running;
+  }
   if (claim.receipt.status === "accepted") return acceptedAfterRestart(db, claim.receipt);
 
   const operation = (async (): Promise<ThreadActionResult> => {
@@ -102,6 +109,7 @@ export async function injectThreadWithReceipt(
         recipient: command.recipient,
       });
       db.acceptOwnerCommandReceipt(command.clientId!);
+      onAccepted?.();
       const result = await resultPromise;
       db.completeOwnerCommandReceipt(command.clientId!, result);
       return result;

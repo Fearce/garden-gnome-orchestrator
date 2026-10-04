@@ -477,9 +477,15 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
 
   Every owner-facing composer uses the same delivery contract. The browser renders an optimistic message with
   a UUID and **Sending…** receipt immediately; Director, Office, and Supervisor persist that UUID as the row id,
-  and the returning server event replaces the placeholder. Task injection reconciles against its persisted
-  feed echo and correlated `thread.action` receipt. Socket loss or a missing confirmation becomes a visible
-  delivery failure, never a cleared composer followed by unexplained silence.
+  and the returning server event replaces the placeholder. Task injection reconciles against its correlated
+  `thread.action` receipt, and the server sends `thread.inject.accepted` the moment the instruction is durable
+  (before an agent launch that can take seconds), so the receipt reads **Received** instead of spinning; once
+  the server's own feed echo is on screen the optimistic copy hides behind it. Silence is never treated as
+  loss: an unconfirmed command replays under its UUID every minute and on reconnect (the server answers a
+  replay with the original result, so it cannot land twice), shows **Waiting for connection** while the socket
+  is down, offers **Retry now** after 15s, and survives a reload through the localStorage outbox. Only a
+  server refusal reads **Not delivered**, with its reason, **Send again** (a fresh UUID) and **Dismiss**
+  (`components/DeliveryReceipt.tsx`; gate `test:incident-recovery`, browser lab `delivery-receipt-lab`).
 - **A hand-back buys a fix round, not a trip to your desk** (`runReviewFixRound`). Because the reviewer
   is read-only, what blocks a task is routinely work an implementor finishes in a minute — the case this
   was built for handed back a whole task because a report file sat outside the workspace, costing a
