@@ -129,7 +129,7 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
   The worker runs `docker start|stop` itself; the lookup, the start or stop and the re-check share one
   80-second deadline, under the console proxy's 90-second answer limit. Opening the tab never starts it, GGO
   never creates a container, and the container's restart policy is left as the owner set it.
-  Each Home Assistant vacuum card also shows its **cleaning schedule** (`worker/home/schedule.ts`). The
+  Each Home Assistant vacuum card also shows its **cleaning schedule** (`server/src/modules/worker/home/schedule.ts`). The
   schedule is two Home Assistant automations, so it keeps running with GGO closed. The **auto-start**
   starts the docked vacuum once its battery reaches a set level, inside a daily window and on chosen days;
   it re-checks at the window's start and every 30 minutes. The **quiet-hours guard** docks the vacuum
