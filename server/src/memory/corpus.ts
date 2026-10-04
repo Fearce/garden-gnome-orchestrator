@@ -149,8 +149,10 @@ export function slugify(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 60) || "memory";
 }
 
+/** The local calendar date, as the hand-written memories and the hook scripts stamp it. */
 export function today(now = new Date()): string {
-  return now.toISOString().slice(0, 10);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
 export interface NewMemory {

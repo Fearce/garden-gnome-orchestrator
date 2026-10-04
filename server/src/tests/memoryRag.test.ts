@@ -14,7 +14,7 @@ mkdirSync(process.env.DATA_DIR, { recursive: true });
 const { FileMemoryService, DEFAULT_MEMORY_SETTINGS } = await import("../memory/memory.js");
 const { HAIKU_MODEL } = await import("../memory/models.js");
 const { QUEUE_DIR } = await import("../memory/extraction.js");
-const { TRASH_DIR, REVIEW_SECTION, memoryChunks, parseMemory } = await import("../memory/corpus.js");
+const { TRASH_DIR, REVIEW_SECTION, memoryChunks, parseMemory, today } = await import("../memory/corpus.js");
 const { memoryAgentHooks, stripTaskEnvelope, userText, ExtractionOffsets } = await import("../memory/agentHooks.js");
 const { MemorySettingsStore } = await import("../memory/settings.js");
 const { MemoryEndpoint, isPrimaryMemoryOwner } = await import("../memory/endpoint.js");
@@ -165,6 +165,9 @@ try {
     assert.ok(chunks.every((c) => c.text.length <= 1600), "no chunk exceeds the budget");
     assert.ok(chunks.slice(1).every((c) => c.text.startsWith("Build farm maintenance log")), "every body chunk carries the memory's name");
     assert.equal(memoryChunks(parseMemory("short.md", "---\nname: Short\ndescription: d\n---\n\nOne line.\n")).length, 2, "a short memory stays one head and one body chunk");
+    // Either end of the local day falls on a different UTC date on a box east or west of UTC.
+    assert.equal(today(new Date(2026, 9, 5, 0, 30)), "2026-10-05", "created_at/last_verified use the local date just after midnight");
+    assert.equal(today(new Date(2026, 9, 5, 23, 30)), "2026-10-05", "created_at/last_verified use the local date just before midnight");
     unlinkSync(join(dir, "reference_build_farm.md"));
     memory.changed();
 
