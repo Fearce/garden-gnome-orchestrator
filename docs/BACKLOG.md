@@ -16,7 +16,7 @@ same commit as the fix. Git history keeps the record.
 
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 - **Independent QA: verify and deploy the camera-proxy and Home Assistant controls** (2026-10-04, Codex QA; task cad0786a).
-  Review the latest migration commits, real browser lifecycle, configuration preservation, deliverable serving and current full gates before live acceptance.
+  Live a6eba134 verified; 74/74 isolated and 13/13 live browser checks pass. Overall review remains red on Calendar's daily-collapse gate (228/229 covered gates pass); evidence in docs/reports/local-service-modules-independent-qa-2026-10-04.md.
 - **QA: camera pictures behind the Deck proxy, and an explicit Start for Home Assistant** (2026-10-04, Claude QA; task cad0786a).
   The module socket returned 403 behind `/orchestrator/` (Chromium sends no Sec-Fetch-Site on a WebSocket handshake and the proxy rewrites Host). Home Assistant's container had exited and the Home tab offered no way to start it.
 
@@ -33,6 +33,8 @@ same commit as the fix. Git history keeps the record.
 
 1. **Resolve Electron clean-exit verification before accepting the desktop app** (2026-10-04, Moss Gauge): desktop lab 52/55; three 20-second app-exit timeouts, and packaged-window-close verification timed out at 15 seconds. Live HTTP/WS load probe completed without a desktop-open regression.
 2. **Surface the desktop distribution and all retained validation artifacts** (2026-10-04, Moss Gauge): installer and retained screenshots/metrics have no deliverable cards; existing eight cards serve. Installer exceeds the 25 MB serving cap and needs a supported delivery path.
+1. **Resolve Calendar's every-five-minutes daily-collapse gate before module migration acceptance** (Codex QA, 2026-10-04).
+  `test:calendar` fails at server/src/tests/calendar.test.ts:486 in both the full run and focused retry; Calendar code/test match the integration base. Its separate task owns the repair.
 1. **Investigate console smoke served/local bundle mismatch and browser shutdown timeout**: 2026-10-03 probe reports ws=live with no console errors, served index-C8zofTVy.js versus local index-BHXtYnz4.js, and browser shutdown exceeded 5000ms; authenticated HTTP bundle verification passed earlier in the same task.
 
 ## Blocked / waiting
