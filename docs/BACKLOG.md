@@ -19,8 +19,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Auto-burn subscriptions within 24 hours of weekly reset** (2026-10-04, Moss Spark).
-  Default-off switch; 21/21 browser checks, routing/Codex/boundary regression checks, typechecks/build and focused gates pass. Integration and deployment pending.
 
 - **QA: serialize Sidekick rule edits before checking their revisions** (Codex QA, 2026-10-04).
   Concurrent-save regressions and authenticated worker edits pass: one save returns 200, the stale one 409, and retry succeeds. 33 module checks, typecheck and privacy pass; server deploy pending.
@@ -45,6 +43,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-04 **Auto-burn subscriptions within 24 hours of weekly reset** (1a3e8dba, Moss Spark): pushed to master and live build verified; authenticated live hello reports autoBurn=false and the served entry matches dist with the new control. Browser lab 21/21; routing/Codex/boundary regression, burn/model/goal/Director gates, typechecks/build, README and privacy checks pass.
 
 - 2026-10-04 **Optional Electron desktop app with Open in desktop / Open in web handoff** (8521a443..c2283ee4, Quillhatch): server live as 5712fdf2; the packaged Windows app reached the live server's sign-in in 928 ms with the bridge and no Node in the renderer; desktop lab 51/51; live load probe under 7 implementing agents moved no HTTP/WS percentile (/api/me p95 6.0 to 6.5 ms, WS ping p95 1.4 to 2.6 ms); live web portal check passed.
 - 2026-10-04 **QA: Surveillance 24/7 and scheduled recording (off by default), recording options, recordings browser, hub-less start** (07ebac86..24dfe20f, Ferrule Juniper): live build 24dfe20f carried the owner's running 5-camera recording over as 24/7. 14/14 live desktop and phone checks covered the mode shown, the options dialog, a real segment played in 113ms, a 206 MP4 download, a traversal refused with 400, and the recording left untouched. Isolated lab 58/58; 228/228 gates; module gate 32 checks, including the legacy-recording carry-over.
@@ -76,4 +76,3 @@ No open entries.
 
 - 2026-10-03 **Preserve console smoke evidence when browser shutdown times out** (Mosswick): syntax and test:console-probe pass; live timeout reproduces and now prints websocket, error, bundle and UI assertion results while retaining exit code 1. Probe script change requires no service restart.
 - 2026-10-03 **Start immediately for queued tasks over both concurrency limits** (f70f5e8, Mosswick): 32 queue assertions, 9 desktop/phone browser checks, typechecks and slot/token-freeze/restart gates pass; deployed build matches f70f5e89 and authenticated served bundle contains the action. Production browser smoke hit a shutdown timeout.
-- 2026-10-03 **Fill parallel-goal slots beyond the live critical path** (68cd577, Bramble Fuse): goal gates/typechecks pass; deployed build verified; goal steps 17/19/20 all implementing with running codex:gpt-6.1-sol runs. Authenticated per-repo cap increased 5→7 to fit four other active tasks in that repo; global cap remains 15, goal cap 3.
