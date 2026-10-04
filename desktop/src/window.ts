@@ -11,7 +11,7 @@ export const BACKGROUND = "#0e1016";
 const CONNECT_TITLE_BAR: TitleBarStyle = { background: "#15171f", symbol: "#a6abb8", height: 40 };
 
 /** The settings every page in this app runs with, the main window and any child window alike. */
-export function securePreferences(preload?: string, version?: string): WebPreferences {
+export function securePreferences(preload?: string, version?: string, linksRegistered = true): WebPreferences {
   return {
     contextIsolation: true,
     sandbox: true,
@@ -22,7 +22,7 @@ export function securePreferences(preload?: string, version?: string): WebPrefer
     webviewTag: false,
     spellcheck: true,
     ...(preload ? { preload } : {}),
-    ...(version ? { additionalArguments: [`--ggo-desktop-version=${version}`] } : {}),
+    ...(version ? { additionalArguments: [`--ggo-desktop-version=${version}`, `--ggo-desktop-links=${linksRegistered ? 1 : 0}`] } : {}),
   };
 }
 
@@ -34,13 +34,31 @@ function visibleOnSomeDisplay(bounds: WindowBounds): boolean {
   });
 }
 
+/**
+ * GGO_DESKTOP_BACKGROUND=1 (the lab and the load probe): open on a monitor other than the primary one
+ * and never take focus, so a test run never lands on top of whatever the owner is doing.
+ */
+export const backgroundWindows = process.env.GGO_DESKTOP_BACKGROUND === "1";
+
 function initialBounds(saved: WindowBounds | null): Partial<WindowBounds> {
   if (saved && visibleOnSomeDisplay(saved)) return saved;
-  const { workArea } = screen.getPrimaryDisplay();
-  return { width: Math.min(1600, Math.round(workArea.width * 0.86)), height: Math.min(1000, Math.round(workArea.height * 0.88)) };
+  const primary = screen.getPrimaryDisplay();
+  const display = backgroundWindows ? (screen.getAllDisplays().find((d) => d.id !== primary.id) ?? primary) : primary;
+  const { workArea } = display;
+  const width = Math.min(1600, Math.round(workArea.width * 0.86));
+  const height = Math.min(1000, Math.round(workArea.height * 0.88));
+  if (display === primary) return { width, height };
+  return { x: workArea.x + Math.round((workArea.width - width) / 2), y: workArea.y + Math.round((workArea.height - height) / 2), width, height };
 }
 
-export function createMainWindow(options: { saved: WindowBounds | null; preload: string; icon: string; version: string }): BrowserWindow {
+/** Bring the window up: in front and focused, or quietly behind the owner's work in background mode. */
+export function revealWindow(win: BrowserWindow): void {
+  if (backgroundWindows) return win.showInactive();
+  win.show();
+  win.focus();
+}
+
+export function createMainWindow(options: { saved: WindowBounds | null; preload: string; icon: string; version: string; linksRegistered: boolean }): BrowserWindow {
   const { x, y, width, height } = initialBounds(options.saved);
   const win = new BrowserWindow({
     x,
@@ -57,10 +75,10 @@ export function createMainWindow(options: { saved: WindowBounds | null; preload:
     titleBarStyle: "hidden",
     titleBarOverlay: overlayOptions(CONNECT_TITLE_BAR),
     autoHideMenuBar: true,
-    webPreferences: securePreferences(options.preload, options.version),
+    webPreferences: securePreferences(options.preload, options.version, options.linksRegistered),
   });
   if (options.saved?.maximized && visibleOnSomeDisplay(options.saved)) win.maximize();
-  win.once("ready-to-show", () => win.show());
+  win.once("ready-to-show", () => (backgroundWindows ? win.showInactive() : win.show()));
   return win;
 }
 
@@ -86,9 +104,15 @@ export function resetTitleBarStyle(win: BrowserWindow): void {
 /** A console page opened in its own window (a deliverable preview): same session, no preload, no
  *  further windows, and any navigation off the console goes to the system browser. */
 export function childWindowOptions(parent: BrowserWindow, icon: string): Electron.BrowserWindowConstructorOptions {
+  const outer = parent.getBounds();
+  const width = Math.round(outer.width * 0.7);
+  const height = Math.round(outer.height * 0.85);
   return {
-    width: Math.round(parent.getBounds().width * 0.7),
-    height: Math.round(parent.getBounds().height * 0.85),
+    // Centred on the app, so it opens on the app's monitor rather than wherever the OS picks.
+    x: outer.x + Math.round((outer.width - width) / 2),
+    y: outer.y + Math.round((outer.height - height) / 2),
+    width,
+    height,
     icon,
     backgroundColor: BACKGROUND,
     autoHideMenuBar: true,

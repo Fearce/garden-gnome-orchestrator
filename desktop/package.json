@@ -13,7 +13,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test \"dist/tests/*.test.js\"",
     "dist": "npm run build && electron-builder --win --x64 --publish never",
-    "lab": "npm run build && node scripts/desktop-lab.cjs"
+    "lab": "npm run build && node scripts/desktop-lab.cjs",
+    "probe:load": "npm run build && node scripts/load-probe.cjs"
   },
   "devDependencies": {
     "@fontsource/inter-tight": "^5.2.5",

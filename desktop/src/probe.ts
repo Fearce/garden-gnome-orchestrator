@@ -18,13 +18,20 @@ export async function probeServer(session: Session, server: string, timeoutMs = 
   } catch {
     return "none";
   }
-  // A remote link without Google sign-in configured refuses everything with 403; it is still GGO.
-  if (response.status === 401 || response.status === 403) return "ggo";
-  if (!response.ok) return "other";
+  return (await isGgoAnswer(response)) ? "ggo" : "other";
+}
+
+/** Whether a `/api/me` response is GGO's. */
+export async function isGgoAnswer(response: Response): Promise<boolean> {
+  if (response.status !== 200 && response.status !== 403) return false;
+  let body: { authed?: unknown; error?: unknown };
   try {
-    const body = (await response.json()) as { authed?: unknown };
-    return typeof body.authed === "boolean" ? "ggo" : "other";
+    body = (await response.json()) as typeof body;
   } catch {
-    return "other";
+    return false;
   }
+  if (response.status === 200) return typeof body.authed === "boolean";
+  // A remote link without Google sign-in configured refuses everything with this 403
+  // (server/src/remoteAccess.ts); it is still GGO. Any other 403 is somebody else's.
+  return typeof body.error === "string" && body.error.startsWith("remote access needs Google sign-in");
 }

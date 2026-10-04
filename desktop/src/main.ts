@@ -39,7 +39,11 @@ function boot(): void {
   });
   app.on("second-instance", (_event, argv) => {
     const link = deepLinkFromArgv(argv);
-    if (!controller) return;
+    if (!controller) {
+      // Still starting: the newest link wins, as it would a moment later.
+      if (link) pendingLink = link;
+      return;
+    }
     if (link) controller.handleDeepLink(link);
     else controller.focus();
   });
@@ -56,6 +60,7 @@ function boot(): void {
         preload: join(__dirname, "preload.js"),
         icon: staticPath(__dirname, "icon.png"),
         checkoutSearch: [app.getAppPath(), dirname(process.execPath)],
+        linksRegistered: !isolatedProfile,
       },
       app.getVersion(),
     );

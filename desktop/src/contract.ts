@@ -25,6 +25,9 @@ export interface ConnectionView {
   local: boolean;
   /** The GGO checkout a local server would be started from, when one was found. */
   checkout: string | null;
+  /** The port that checkout's server listens on, when it isn't the address's port: starting it would
+   *  never answer here, so the screen offers that address instead of Start. */
+  checkoutPort: number | null;
   /** A system Node.js was found to run it. */
   nodeFound: boolean;
   /** Something that is not GGO answers at the address, so starting a server there would collide. */

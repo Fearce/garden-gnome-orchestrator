@@ -11,8 +11,18 @@ export function isTicket(value: unknown): value is string {
 }
 
 export type DeepLink =
-  | { kind: "open"; thread: string | null; ticket: string | null }
+  /** `server` is the origin of the console that made the link: its ticket and task belong to it. */
+  | { kind: "open"; thread: string | null; ticket: string | null; server: string | null }
   | { kind: "auth"; ticket: string };
+
+function isOrigin(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Parse a `ggo://open?thread=…&ticket=…` or `ggo://auth?ticket=…` link. Any page on the internet can
@@ -30,10 +40,12 @@ export function parseDeepLink(raw: string): DeepLink | null {
   if (url.protocol !== `${PROTOCOL}:`) return null;
   const ticket = url.searchParams.get("ticket");
   const thread = url.searchParams.get("thread");
+  const server = url.searchParams.get("server");
   if (ticket !== null && !isTicket(ticket)) return null;
   if (thread !== null && !isThreadId(thread)) return null;
+  if (server !== null && !isOrigin(server)) return null;
   const action = url.hostname || url.pathname.replace(/^\/+|\/+$/g, "");
-  if (action === "open") return { kind: "open", thread, ticket };
+  if (action === "open") return { kind: "open", thread, ticket, server };
   if (action === "auth" && ticket) return { kind: "auth", ticket };
   return null;
 }

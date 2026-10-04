@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { downloadPath } from "../downloadPath";
-import { findCheckout, isCheckout, portInUse, serverLogPath } from "../localServer";
+import { checkoutPort, findCheckout, isCheckout, portInUse, serverLogPath, startDetachedServer, urlPort } from "../localServer";
 import { loadSettings, saveSettings } from "../settings";
 import { DEFAULT_SERVER_URL } from "../serverUrl";
 
@@ -51,11 +51,41 @@ test("the checkout is found from inside it, or from a chosen folder", () => {
   assert.equal(findCheckout(join(scratch, "settings"), [unpacked]), checkout, "a chosen folder that is not a checkout is ignored");
 });
 
-test("the server log follows DATA_DIR in server/.env", () => {
+test("the server log follows the environment's DATA_DIR, as the supervisor that writes it does", () => {
   const checkout = fakeCheckout(join(scratch, "logs"));
-  assert.equal(serverLogPath(checkout), join(checkout, "server", "data", "server.log"));
+  assert.equal(serverLogPath(checkout, {}), join(checkout, "server", "data", "server.log"));
   writeFileSync(join(checkout, "server", ".env"), "AUTH_PASSWORD=unused\nDATA_DIR=\"./state\"\n");
-  assert.equal(serverLogPath(checkout), join(checkout, "server", "state", "server.log"));
+  assert.equal(serverLogPath(checkout, {}), join(checkout, "server", "data", "server.log"), "the supervisor never reads server/.env");
+  assert.equal(serverLogPath(checkout, { DATA_DIR: "./state" }), join(checkout, "server", "state", "server.log"));
+  assert.equal(serverLogPath(checkout, { DATA_DIR: join(scratch, "elsewhere") }), join(scratch, "elsewhere", "server.log"));
+});
+
+test("the checkout's port comes from the environment, then server/.env, then 4317", () => {
+  const checkout = fakeCheckout(join(scratch, "ports"));
+  assert.equal(checkoutPort(checkout, {}), 4317);
+  writeFileSync(join(checkout, "server", ".env"), "AUTH_PASSWORD=unused\nPORT=\"4400\"\n");
+  assert.equal(checkoutPort(checkout, {}), 4400);
+  assert.equal(checkoutPort(checkout, { PORT: "4500" }), 4500, "the server loads .env without overriding the environment");
+  assert.equal(checkoutPort(checkout, { PORT: "not-a-port" }), 4317);
+  assert.equal(urlPort("http://127.0.0.1:4317/"), 4317);
+  assert.equal(urlPort("https://example.com/orchestrator/"), 443);
+  assert.equal(urlPort("http://example.com/"), 80);
+});
+
+test("Start GGO launches the supervisor from a checkout path PowerShell would misread", { skip: process.platform !== "win32" }, async () => {
+  const checkout = fakeCheckout(join(scratch, "ggo [1] \u2019s copy"));
+  const marker = join(checkout, "server", "started.json");
+  writeFileSync(
+    join(checkout, "server", "scripts", "supervise.cjs"),
+    `require("node:fs").writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ cwd: process.cwd(), argv: process.argv.slice(1) }));\n`,
+  );
+  const { pid } = await startDetachedServer(checkout, process.execPath);
+  assert.ok(pid > 0);
+  const deadline = Date.now() + 20_000;
+  while (!existsSync(marker) && Date.now() < deadline) await new Promise((done) => setTimeout(done, 100));
+  const started = JSON.parse(readFileSync(marker, "utf8")) as { cwd: string; argv: string[] };
+  assert.equal(started.cwd, join(checkout, "server"), "the supervisor runs in server/, where a relative DATA_DIR resolves");
+  assert.deepEqual(started.argv, [join(checkout, "server", "scripts", "supervise.cjs")]);
 });
 
 test("a port is in use only while something listens on it", async () => {

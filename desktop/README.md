@@ -20,8 +20,9 @@ never starts the app or anything desktop-only.
 | Google sign-in | In the page | In your browser, then handed to the app |
 
 Switch any time: the top bar has **Open in web** in the app and **Open in desktop** in the browser
-(the latter only on a machine where the app has run). Either way you land signed in, on the task you
-had open.
+(the latter only on a machine where the installed app has run). Either way you land signed in, on the
+task you had open. A link carries the address of the console that made it: if the app points at a
+different server, it opens without using the link's sign-in or task.
 
 ## Platforms
 
@@ -69,7 +70,9 @@ What the connection screen shows:
 
 - **Connecting**: looking for the server.
 - **GGO isn't running**: nothing answers. It retries on its own (1.5 s, growing to 15 s) and, for a
-  local address, offers **Start GGO**.
+  local address, offers **Start GGO**. If your checkout's server listens on another port (`PORT` in
+  the environment or `server/.env`), it offers **Use port N** instead, since a server started there
+  would never answer at this address.
 - **Can't reach GGO**: the same for a remote address; check the address and that the server is up.
 - **Something other than GGO answers**: another program holds the port. The app won't start a
   server into it.
@@ -94,18 +97,24 @@ HTTP address on this machine, or a properly signed HTTPS one.
 The server is detached. **Closing the window never stops it**, so agents keep working; reopening the
 app reconnects to it. To stop it, stop it the way you would any `npm run serve`: close it from your
 process manager, or end the `node` processes running `supervise.cjs` and `src/index.ts`. Its log is
-`server/data/server.log` (or your `DATA_DIR`); **Open server log** opens it if a start doesn't come up.
+`server/data/server.log`, or `server.log` in the `DATA_DIR` of the environment the app was launched
+from (the supervisor writes it and does not read `server/.env`); **Open server log** opens it if a
+start doesn't come up.
 
-The app never starts a second server: it checks the address first, and the server's own data-folder
-lock makes a duplicate exit (code 78) rather than run beside the first. It also never starts itself at
-login and leaves nothing running in the background once you quit it.
+The app checks the address and the port before starting anything, starts once per click (the button
+gives way to the starting screen at once), and never starts into a port another program holds. If a
+server from the same data folder is running anyway, the newcomer's data-folder lock makes it exit
+(code 78); its supervisor retries for up to a minute, in case the other one was only shutting down,
+then stops rather than run beside it. The app never starts itself at login and leaves nothing running
+in the background once you quit it.
 
 ## Signing in
 
 - **Password**: type it in the window, as in the browser.
 - **Google**: Google blocks sign-in inside embedded browsers, so the app opens the sign-in in your
   default browser. When it finishes, the browser asks to open GG Orchestrator and hands the window a
-  one-time ticket.
+  one-time ticket. Only that sign-in's own callback issues the ticket; no other page can make the
+  browser mint one.
 
 Sessions are the console's normal 30-day cookie, kept in the app's own profile (encrypted at rest in
 the packaged app; a run from source keeps Chromium's default cookie store).
@@ -142,6 +151,16 @@ The lab needs a web bundle built for labs; from `web/`:
 `GGO_LAB_WEB_DIST=.lab-web-dist-desktop`. Add `-- --shots ../server/data/desktop-lab-shots` to keep
 its screenshots and timings. It starts its own server on `:4397` from this checkout, so nothing runs
 against your real GGO, and stubs the system browser and notifications.
+
+A run with `GGO_DESKTOP_USER_DATA` (the lab, `npm run probe:load`) uses a throwaway profile: it
+registers no `ggo://` handler and so never tells the server that this machine should offer
+**Open in desktop**. Both also set `GGO_DESKTOP_BACKGROUND=1`, which opens the window on a monitor
+other than the primary one (the primary only when there is no other) and never takes focus, so a
+test run doesn't land on top of whatever you're doing.
+
+`npm run probe:load --prefix desktop -- --out <folder>` measures a running GGO's `/api/me` and
+WebSocket latency with the app closed, open and closed again, plus the app's startup time, memory
+and CPU, and writes `desktop-load-probe.json`. It signs in with `AUTH_PASSWORD` and only reads.
 
 Layout: `src/main.ts` (app lifecycle, IPC), `src/controller.ts` (the window and its connection),
 `src/localServer.ts` (finding and starting a server), `src/navigationPolicy.ts` (what may load

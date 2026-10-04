@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { deepLinkFromArgv, isTicket, parseDeepLink } from "../deepLink";
 import { classifyNavigation, classifyWindowOpen, isAppPage, permissionAllowed } from "../navigationPolicy";
-import { consoleUrl, isLocalServer, isServerPage, normalizeServerUrl, redeemUrl } from "../serverUrl";
+import { isGgoAnswer } from "../probe";
+import { consoleUrl, isLocalServer, isServerPage, normalizeServerUrl, redeemUrl, sameServer } from "../serverUrl";
 import { parseTitleBarStyle } from "../titleBarStyle";
 
 const LOCAL = "http://127.0.0.1:4317/";
@@ -45,10 +46,16 @@ test("console and redeem links carry only a valid thread", () => {
 });
 
 test("deep links are parsed strictly: one bad part drops the whole link", () => {
-  assert.deepEqual(parseDeepLink(`ggo://open?thread=${THREAD}&ticket=${TICKET}`), { kind: "open", thread: THREAD, ticket: TICKET });
-  assert.deepEqual(parseDeepLink("ggo://open"), { kind: "open", thread: null, ticket: null });
+  assert.deepEqual(parseDeepLink(`ggo://open?thread=${THREAD}&ticket=${TICKET}`), { kind: "open", thread: THREAD, ticket: TICKET, server: null });
+  assert.deepEqual(parseDeepLink("ggo://open"), { kind: "open", thread: null, ticket: null, server: null });
   assert.deepEqual(parseDeepLink(`ggo://auth?ticket=${TICKET}`), { kind: "auth", ticket: TICKET });
-  assert.deepEqual(parseDeepLink(`ggo:///open/?thread=${THREAD}`), { kind: "open", thread: THREAD, ticket: null }, "Windows may pass a path-form link");
+  assert.deepEqual(parseDeepLink(`ggo:///open/?thread=${THREAD}`), { kind: "open", thread: THREAD, ticket: null, server: null }, "Windows may pass a path-form link");
+  assert.deepEqual(
+    parseDeepLink(`ggo://open?ticket=${TICKET}&server=${encodeURIComponent("https://example.com:8443")}&thread=${THREAD}`),
+    { kind: "open", thread: THREAD, ticket: TICKET, server: "https://example.com:8443" },
+  );
+  assert.equal(parseDeepLink(`ggo://open?server=${encodeURIComponent("https://example.com/path")}`), null, "the server is an origin, nothing more");
+  assert.equal(parseDeepLink(`ggo://open?server=${encodeURIComponent("file:///etc")}`), null);
   assert.equal(parseDeepLink("ggo://auth"), null, "auth without a ticket means nothing");
   assert.equal(parseDeepLink("ggo://open?ticket=short"), null);
   assert.equal(parseDeepLink("ggo://open?thread=../../etc"), null);
@@ -58,6 +65,27 @@ test("deep links are parsed strictly: one bad part drops the whole link", () => 
   assert.equal(isTicket(TICKET), true);
   assert.equal(isTicket(`${TICKET}=`), false);
   assert.equal(isTicket(42), false);
+});
+
+test("a link's server matches the app's only on the same scheme, host and port", () => {
+  assert.equal(sameServer("http://127.0.0.1:4317", LOCAL), true);
+  assert.equal(sameServer("http://localhost:4317", LOCAL), true, "loopback names reach the same server");
+  assert.equal(sameServer("http://127.0.0.1:4400", LOCAL), false);
+  assert.equal(sameServer("https://127.0.0.1:4317", LOCAL), false);
+  assert.equal(sameServer("http://192.0.2.10:4317", LOCAL), false);
+  assert.equal(sameServer("https://example.com", MOUNTED), true, "a mounted console is still its origin's server");
+  assert.equal(sameServer("https://example.org", MOUNTED), false);
+});
+
+test("only GGO's own /api/me answers read as GGO", async () => {
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  assert.equal(await isGgoAnswer(json(200, { authed: false, required: true })), true);
+  assert.equal(await isGgoAnswer(json(403, { error: "remote access needs Google sign-in configured on the server" })), true, "GGO behind its remote gate");
+  assert.equal(await isGgoAnswer(json(200, { user: "alex" })), false);
+  assert.equal(await isGgoAnswer(json(401, { error: "unauthorized" })), false, "another app's auth wall");
+  assert.equal(await isGgoAnswer(json(403, { error: "forbidden" })), false);
+  assert.equal(await isGgoAnswer(new Response("<html></html>", { status: 200 })), false);
+  assert.equal(await isGgoAnswer(json(404, {})), false);
 });
 
 test("a launched link is found among the process arguments", () => {

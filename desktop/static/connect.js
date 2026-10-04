@@ -21,7 +21,14 @@ let ticker = 0;
 
 /** @param {ConnectionView} v */
 function canStart(v) {
-  return v.local && !!v.checkout && v.nodeFound && !v.conflict;
+  return v.local && !!v.checkout && v.checkoutPort === null && v.nodeFound && !v.conflict;
+}
+
+/** This address on the port the checkout's server is configured for. @param {ConnectionView} v @param {number} port */
+function onPort(v, port) {
+  const url = new URL(v.server);
+  url.port = String(port);
+  return url.href;
 }
 
 /** @param {ConnectionView} v @returns {{ title: string, lead: string, progress: boolean, actions: Action[], note: string }} */
@@ -67,6 +74,10 @@ function describe(v) {
       if (canStart(v)) {
         actions.push(start);
         note = startNote;
+      } else if (v.local && !v.conflict && v.checkout && v.checkoutPort !== null) {
+        const port = v.checkoutPort;
+        actions.push({ label: `Use port ${port}`, primary: true, run: () => api.setServer(onPort(v, port)) });
+        note = `Your GGO folder is set to port ${port} (PORT in server/.env), so a server started from it would never answer at ${host}.`;
       } else if (v.local && !v.conflict && !v.checkout) {
         actions.push(choose);
         note = "Choose your GG Orchestrator folder so this app can start it, or run npm run serve in it yourself.";

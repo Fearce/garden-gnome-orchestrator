@@ -21,7 +21,7 @@ const os = require("node:os");
 const path = require("node:path");
 const Database = require("../../server/node_modules/better-sqlite3");
 const harness = require("../../server/scripts/lab-harness.cjs");
-const { globalModuleRoots } = require("../../server/scripts/findPlaywright.cjs");
+const { loadPlaywright } = require("./loadPlaywright.cjs");
 
 const PORT = 4397;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -38,24 +38,14 @@ const check = harness.createChecks();
 const timings = {};
 const metrics = {};
 
-function loadPlaywright() {
-  for (const root of globalModuleRoots()) {
-    const candidate = path.join(root, "playwright");
-    if (fs.existsSync(path.join(candidate, "package.json"))) return require(candidate);
-  }
-  for (const fallback of [path.join(process.env.APPDATA ?? "", "npm", "node_modules", "playwright")]) {
-    if (fs.existsSync(fallback)) return require(fallback);
-  }
-  throw new Error("Playwright not found in any global module root");
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const verbose = process.argv.includes("--verbose");
 const step = (n) => console.log(`[step ${n}]`);
 
 /** Everything the app (and so the server it starts) inherits: the lab instance's env from the harness. */
 function appEnv(dataDir, profile) {
-  return { ...harness.labChildEnv({ dataDir, port: PORT }), GGO_DESKTOP_USER_DATA: profile, ELECTRON_ENABLE_LOGGING: "0" };
+  // Background mode: the windows open on a secondary monitor without taking focus.
+  return { ...harness.labChildEnv({ dataDir, port: PORT }), GGO_DESKTOP_USER_DATA: profile, GGO_DESKTOP_BACKGROUND: "1", ELECTRON_ENABLE_LOGGING: "0" };
 }
 
 function seedProfile(profile) {
@@ -206,21 +196,43 @@ async function appMemoryMb(app) {
   return { processes: all.length, workingSetMb: sum("kb"), privateMb: sum("privateKb"), byType: all.map((m) => `${m.type}:${Math.round(m.kb / 1024)}MB`).join(" ") };
 }
 
-/** The window as the user sees it, OS title-bar buttons included (a page screenshot leaves them out). */
+/**
+ * The window as the user sees it, OS title-bar buttons included (a page screenshot leaves them out).
+ * Drawn by the window itself (PrintWindow), never copied off the screen: a background-mode window sits
+ * behind the owner's own windows, and a screen copy would capture those instead.
+ */
 async function captureWindow(app, file) {
-  const b = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds());
+  const { hwnd, minimized } = await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    return { hwnd: win.getNativeWindowHandle().readBigInt64LE(0).toString(), minimized: win.isMinimized() };
+  });
+  // Minimized (the owner put it away): it paints nothing, and restoring it would put it back in their way.
+  if (minimized) return console.log(`  (no ${path.basename(file)}: the window is minimized)`);
   const script = path.join(os.tmpdir(), `desktop-lab-capture-${process.pid}.ps1`);
   fs.writeFileSync(
     script,
     [
       "Add-Type -AssemblyName System.Drawing",
-      "Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class Dpi { [DllImport(\"user32.dll\")] public static extern bool SetProcessDPIAware(); }'",
-      "[Dpi]::SetProcessDPIAware() | Out-Null",
-      `$scale = ${await app.evaluate(({ screen }) => screen.getPrimaryDisplay().scaleFactor)}`,
-      `$x = [int](${b.x} * $scale); $y = [int](${b.y} * $scale); $w = [int](${b.width} * $scale); $h = [int](${b.height} * $scale)`,
-      "$bmp = New-Object System.Drawing.Bitmap $w, $h",
+      "Add-Type -TypeDefinition @'",
+      "using System; using System.Runtime.InteropServices;",
+      "public class LabWin {",
+      "  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }",
+      '  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();',
+      '  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);',
+      '  [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);',
+      "}",
+      "'@",
+      "[LabWin]::SetProcessDPIAware() | Out-Null",
+      `$h = [IntPtr]::new([long]${hwnd})`,
+      "$r = New-Object LabWin+RECT",
+      "if (-not [LabWin]::GetWindowRect($h, [ref]$r)) { exit 1 }",
+      "$bmp = New-Object System.Drawing.Bitmap ($r.Right - $r.Left), ($r.Bottom - $r.Top)",
       "$g = [System.Drawing.Graphics]::FromImage($bmp)",
-      "$g.CopyFromScreen($x, $y, 0, 0, $bmp.Size)",
+      "$hdc = $g.GetHdc()",
+      // 2 = PW_RENDERFULLCONTENT: needed for Chromium's composited content.
+      "$ok = [LabWin]::PrintWindow($h, $hdc, 2)",
+      "$g.ReleaseHdc($hdc)",
+      "if (-not $ok) { exit 1 }",
       `$bmp.Save('${file.replace(/'/g, "''")}', [System.Drawing.Imaging.ImageFormat]::Png)`,
     ].join("\n"),
   );
@@ -246,6 +258,8 @@ async function closeApp(app) {
   }
   return quit;
 }
+
+const redeemLink = (ticket) => `${BASE}/api/desktop/redeem?ticket=${ticket}`;
 
 /** Something that is not GGO, holding the port: what a port conflict looks like to the app. */
 function squat() {
@@ -320,6 +334,13 @@ function squat() {
     // ---- 3. password sign-in and the console's own bridge ----
     step("3");
     await page.screenshot({ path: path.join(shots, "04-sign-in.png") });
+    const signInChrome = await page.evaluate(() => {
+      const scrim = document.querySelector(".scrim");
+      const strip = scrim && getComputedStyle(scrim, "::before");
+      const region = (style) => style?.getPropertyValue("-webkit-app-region") || style?.getPropertyValue("app-region");
+      return { strip: region(strip), height: strip?.height, modal: region(getComputedStyle(document.querySelector(".modal.login"))) };
+    });
+    check("the sign-in screen has a title strip that moves the window", signInChrome.strip === "drag" && parseFloat(signInChrome.height) >= 28 && signInChrome.modal === "no-drag", JSON.stringify(signInChrome));
     // Seeded before the first signed-in connection, as the other labs do: a task written into the
     // database under an already-connected console does not reach its board.
     seed(dataDir);
@@ -329,12 +350,14 @@ function squat() {
     const bridge = await page.evaluate(() => ({
       shell: document.documentElement.dataset.shell,
       desktop: Object.keys(window.ggoDesktop ?? {}).sort(),
+      links: window.ggoDesktop?.linksRegistered,
+      version: window.ggoDesktop?.version,
       connect: typeof window.ggoConnect,
       require: typeof window.require,
       process: typeof process,
       ua: navigator.userAgent.includes("GGODesktop/"),
     }));
-    check("the console runs in desktop mode with only the narrow bridge", bridge.shell === "desktop" && bridge.desktop.join(",") === "onOpenThread,openInBrowser,platform,setTitleBarStyle,version" && bridge.connect === "undefined", JSON.stringify(bridge));
+    check("the console runs in desktop mode with only the narrow bridge", bridge.shell === "desktop" && bridge.desktop.join(",") === "linksRegistered,onOpenThread,openInBrowser,platform,setTitleBarStyle,version" && bridge.connect === "undefined", JSON.stringify(bridge));
     check("no Node.js reaches the console page", bridge.require === "undefined" && bridge.process === "undefined", JSON.stringify(bridge));
     check("the window identifies itself as the desktop app", bridge.ua);
     const chrome = await page.evaluate(() => {
@@ -438,6 +461,13 @@ function squat() {
     check("a file:// navigation is refused outright", !external.some((u) => u.startsWith("file:")) && page.url().startsWith(BASE));
     const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length);
     check("no extra windows were opened", windows === 1, String(windows));
+    const settled = await app.evaluate(({ BrowserWindow }) => !BrowserWindow.getAllWindows()[0].webContents.isLoading());
+    check("…and the console is left idle and usable", settled && (await page.evaluate(() => !!document.querySelector(".detail-head"))));
+    // Playwright keeps waiting on a navigation the app cancelled in will-navigate, so every later click
+    // would stall on it; a reload hands it a fresh document. The window itself is fine, as checked above.
+    await page.reload();
+    await waitForConsole(page);
+    await openTask(page, TASK_TITLE);
 
     // ---- 7. Open in web hands the browser a one-time sign-in on this task ----
     step("7");
@@ -460,7 +490,16 @@ function squat() {
 
     // ---- 8. Open in desktop: offered where the app has run, and its link signs a fresh profile in ----
     step("8");
+    const availability = async () => (await fetch(`${BASE}/api/desktop/availability`, { headers: { cookie: await sessionCookie(app) } })).json();
+    const unregistered = await availability();
+    check("an app on a throwaway profile (no ggo:// handler) never offers itself to browsers", unregistered.available === false && bridge.links === false, JSON.stringify({ unregistered, links: bridge.links }));
+    // What an installed app, which does register ggo://, reports on connecting.
+    await fetch(`${BASE}/api/desktop/presence`, { method: "POST", headers: { cookie: await sessionCookie(app), "user-agent": `Mozilla/5.0 GGODesktop/${bridge.version}` } });
     const browserTab = landed;
+    await browserTab.reload();
+    await browserTab.waitForSelector(".accounts .acct", { state: "attached", timeout: 45_000 });
+    // The reload lands on the board (the address bar no longer names the task), so reopen it.
+    await openTask(browserTab, TASK_TITLE);
     const offered = await browserTab.waitForSelector('.shell-switch[aria-label="Open in desktop"]', { timeout: 15_000 }).then(() => true).catch(() => false);
     check("the browser console offers Open in desktop on this machine", offered);
     const ticketCall = browserTab.waitForResponse((r) => r.url().endsWith("/api/desktop/ticket"), { timeout: 10_000 }).catch(() => null);
@@ -474,13 +513,13 @@ function squat() {
     const ticketResponse = await ticketCall;
     check("Open in desktop asks the server for a ticket", ticketResponse?.status() === 200, String(ticketResponse?.status()));
     const attempt = await launchAttempt;
-    check("…and launches a ggo://open link carrying it and the task", !attempt || new RegExp(`ggo://open/?\\?ticket=[A-Za-z0-9_-]{43}&thread=${TASK}`).test(attempt), String(attempt));
+    check("…and launches a ggo://open link carrying it and the task", !attempt || new RegExp(`ggo://open/?\\?ticket=[A-Za-z0-9_-]{43}&server=${encodeURIComponent(new URL(BASE).origin)}&thread=${TASK}`).test(attempt), String(attempt));
     await browserTab.screenshot({ path: path.join(shots, "08-open-in-desktop-offered.png") });
     await fresh.close();
 
     // A fresh profile opened by such a link lands signed in on the task, with no password typed.
     const ticketForB = (await (await fetch(`${BASE}/api/desktop/ticket`, { method: "POST", headers: { cookie: await sessionCookie(app) } })).json()).ticket;
-    const runB = await launchApp(playwright, dataDir, profileB, [`ggo://open?ticket=${ticketForB}&thread=${OTHER}`]);
+    const runB = await launchApp(playwright, dataDir, profileB, [`ggo://open?ticket=${ticketForB}&server=${encodeURIComponent(new URL(BASE).origin)}&thread=${OTHER}`]);
     apps.push(runB.app);
     const bOnTask = await runB.page.waitForFunction((t) => document.querySelector(".detail-head")?.textContent?.includes(t), OTHER_TITLE, { timeout: 60_000 }).then(() => true).catch(() => false);
     check("a ggo://open link signs a fresh desktop profile in, on its task", bOnTask, runB.page.url());
@@ -494,10 +533,22 @@ function squat() {
     });
     const bSwitched = await runB.page.waitForFunction((t) => document.querySelector(".detail-head")?.textContent?.includes(t), TASK_TITLE, { timeout: 20_000 }).then(() => true).catch(() => false);
     check("a second launch exits and forwards its link to the open window", secondExit === 0 && bSwitched, `exit ${secondExit}, switched ${bSwitched}`);
+
+    // A link minted by a console on another server: its ticket and task mean nothing here.
+    const foreignTicket = (await (await fetch(`${BASE}/api/desktop/ticket`, { method: "POST", headers: { cookie: await sessionCookie(app) } })).json()).ticket;
+    const foreign = spawn(ELECTRON, [DESKTOP, `ggo://open?ticket=${foreignTicket}&server=${encodeURIComponent("http://192.0.2.10:4317")}&thread=${OTHER}`], { cwd: DESKTOP, env: appEnv(dataDir, profileB), stdio: "ignore", windowsHide: true });
+    await new Promise((done) => {
+      foreign.once("exit", done);
+      setTimeout(done, 30_000);
+    });
+    await sleep(3_000);
+    const stayed = await runB.page.evaluate((t) => document.querySelector(".detail-head")?.textContent?.includes(t), TASK_TITLE);
+    const unspent = await fetch(redeemLink(foreignTicket), { redirect: "manual" });
+    check("a link from another server's console neither redeems its ticket nor switches the task", stayed && !/e=desktop/.test(unspent.headers.get("location") ?? ""), JSON.stringify({ stayed, location: unspent.headers.get("location") }));
     check("the second profile's app quits cleanly", await closeApp(runB.app));
     apps.splice(apps.indexOf(runB.app), 1);
-    const presence = await (await fetch(`${BASE}/api/desktop/availability`, { headers: { cookie: await sessionCookie(app) } })).json();
-    check("the app registered this machine for Open in desktop", presence.available === true, JSON.stringify(presence));
+    const presence = await availability();
+    check("an installed app's registration makes this machine offer Open in desktop", presence.available === true, JSON.stringify(presence));
 
     // ---- 9. a server restart: the console reconnects on its own ----
     step("9");
@@ -527,18 +578,41 @@ function squat() {
 
     // ---- 11. a crashed renderer ----
     step("11");
+    // Playwright's page dies with the renderer it was attached to, so the window is read through the
+    // main process from here until the relaunch in step 12.
+    // executeJavaScript never settles while the renderer is gone, so each call is bounded.
+    const windowState = () => app.evaluate(({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents;
+      return { url: contents.getURL(), crashed: contents.isCrashed(), loading: contents.isLoading() };
+    });
+    const inWindow = (script) =>
+      Promise.race([app.evaluate(({ BrowserWindow }, source) => BrowserWindow.getAllWindows()[0].webContents.executeJavaScript(source), script).catch(() => null), sleep(3_000).then(() => null)]);
+    const settledOn = async (prefix) => {
+      const s = await windowState();
+      return s.url.startsWith(prefix) && !s.crashed && !s.loading;
+    };
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.forcefullyCrashRenderer());
-    const crashed = await connectTitle(page, "This window stopped", 20_000);
-    await page.screenshot({ path: path.join(shots, "11-crashed.png") }).catch(() => undefined);
-    if (crashed) await page.click('#actions button:text-is("Reload")');
-    await waitForConsole(page).catch(() => undefined);
-    check("a crashed window says so and Reload brings the console back", crashed && page.url().startsWith(BASE), page.url());
+    const crashed = await waitFor(async () => (await settledOn("ggo-app:")) && (await inWindow(`document.getElementById("title")?.textContent`)) === "This window stopped", 20_000, 300);
+    const atCrash = await windowState();
+    await sleep(500);
+    await captureWindow(app, path.join(shots, "11-crashed.png"));
+    if (crashed) await inWindow(`[...document.querySelectorAll("#actions button")].find((b) => b.textContent === "Reload")?.click()`);
+    const recovered = await waitFor(async () => (await settledOn(BASE)) && (await inWindow(`!!document.querySelector(".accounts .acct")`)) === true, 60_000);
+    check("a crashed window says so and Reload brings the console back", crashed && recovered, JSON.stringify({ crashed, recovered, atCrash, now: await windowState() }));
 
     // ---- 12. closing the window never stops the server; reopening lands straight in the console ----
     step("12");
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setBounds({ x: 120, y: 90, width: 1320, height: 860 }));
+    // Moved within whichever monitor the window is on, so the lab never drags it onto the main one. A
+    // minimized window ignores the move; it must then come back at the bounds it had before.
+    const setTo = await app.evaluate(({ BrowserWindow, screen }) => {
+      const win = BrowserWindow.getAllWindows()[0];
+      const { workArea } = screen.getDisplayMatching(win.getNormalBounds());
+      if (!win.isMinimized()) win.setBounds({ x: workArea.x + 40, y: workArea.y + 30, width: 1320, height: 860 });
+      return win.getNormalBounds();
+    });
     const serverBefore = serverProcesses();
     check("the app quits cleanly with its server still running", await closeApp(app));
+    const savedSettings = fs.readFileSync(path.join(profileA, "desktop-settings.json"), "utf8");
     apps.splice(apps.indexOf(app), 1);
     await sleep(2_000);
     check("closing the window leaves the server running", (await answers()) && alive(serverBefore.server) && alive(serverBefore.supervisor), JSON.stringify(serverBefore));
@@ -560,7 +634,7 @@ function squat() {
     timings.relaunchToLiveConsoleMs = Date.now() - run.started;
     check("reopening skips sign-in: the session persisted", (await page.locator('input[type="password"]').count()) === 0);
     const bounds = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getNormalBounds());
-    check("the window reopens where it was", Math.abs(bounds.x - 120) <= 2 && Math.abs(bounds.width - 1320) <= 2, JSON.stringify(bounds));
+    check("the window reopens where it was", Math.abs(bounds.x - setTo.x) <= 2 && Math.abs(bounds.y - setTo.y) <= 2 && Math.abs(bounds.width - setTo.width) <= 2, JSON.stringify({ bounds, setTo, savedSettings }));
     await openTask(page, TASK_TITLE);
     check("work done while it was closed is there on reopen", await feedHas(page, lateNote));
     await sleep(8_000);

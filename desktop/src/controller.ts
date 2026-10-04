@@ -1,12 +1,12 @@
 import { BrowserWindow, dialog, session, shell, type WebContents } from "electron";
 import type { ConnectionPhase, ConnectionView, SetServerResult } from "./contract";
 import { isTicket, parseDeepLink } from "./deepLink";
-import { findCheckout, findNode, isCheckout, portInUse, serverLogPath, startDetachedServer } from "./localServer";
+import { checkoutPort, findCheckout, findNode, isCheckout, portInUse, serverLogPath, startDetachedServer, urlPort } from "./localServer";
 import { APP_ORIGIN, classifyNavigation, classifyWindowOpen, isAppPage } from "./navigationPolicy";
 import { probeServer } from "./probe";
-import { consoleUrl, isLocalServer, isServerPage, isThreadId, normalizeServerUrl, redeemUrl } from "./serverUrl";
+import { consoleUrl, isLocalServer, isServerPage, isThreadId, normalizeServerUrl, redeemUrl, sameServer } from "./serverUrl";
 import { loadSettings, saveSettings, type DesktopSettings } from "./settings";
-import { applyTitleBarStyle, childWindowOptions, createMainWindow, currentBounds, openExternal, resetTitleBarStyle } from "./window";
+import { applyTitleBarStyle, childWindowOptions, createMainWindow, currentBounds, openExternal, resetTitleBarStyle, revealWindow } from "./window";
 
 const CONNECT_PAGE = `${APP_ORIGIN}/connect.html`;
 /** Seconds between automatic retries while nothing answers; the last value repeats. */
@@ -23,6 +23,8 @@ export interface ControllerPaths {
   icon: string;
   /** Where to look upward for the GGO checkout this copy of the app belongs to. */
   checkoutSearch: string[];
+  /** This run registered itself for `ggo://` links (a throwaway profile does not). */
+  linksRegistered: boolean;
 }
 
 /**
@@ -72,15 +74,19 @@ export class DesktopController {
   focus(): void {
     if (!this.win) return this.open(null);
     if (this.win.isMinimized()) this.win.restore();
-    this.win.show();
-    this.win.focus();
+    revealWindow(this.win);
   }
 
   handleDeepLink(raw: string): void {
     const link = parseDeepLink(raw);
     if (!this.win) this.createWindow();
     this.focus();
-    if (!link) return;
+    // A link this version can't read, or one from a console on another server (whose ticket and task
+    // mean nothing here), still brings the app up; a fresh window must start connecting.
+    if (!link || (link.kind === "open" && link.server && !sameServer(link.server, this.server))) {
+      if (!this.onConsole() && !this.onConnectPage()) this.connect(null);
+      return;
+    }
     const thread = link.kind === "open" ? link.thread : null;
     if (link.ticket) return this.connect(redeemUrl(this.server, link.ticket, thread));
     if (thread && this.onConsole()) {
@@ -100,19 +106,23 @@ export class DesktopController {
 
   async startServer(): Promise<void> {
     const checkout = this.view.checkout;
-    if (!this.view.local || !checkout || !this.node || this.view.phase === "starting") return;
+    if (!this.view.local || !checkout || !this.node || this.view.checkoutPort !== null || this.view.phase === "starting") return;
     const attempt = this.supersede();
+    // "starting" at once: it hides Start GGO and blocks a second click while the checks below run.
+    this.show("starting");
     const found = await probeServer(session.defaultSession, this.server);
     if (attempt !== this.attempt) return;
     if (found === "ggo") return this.loadConsole();
-    if (found === "other" || (await portInUse(this.server))) {
-      return this.show("offline", { conflict: true, detail: `Another program is using ${new URL(this.server).host}, so GGO can't start there.` });
-    }
+    const busy = found === "other" || (await portInUse(this.server));
+    if (attempt !== this.attempt) return;
+    if (busy) return this.show("offline", { conflict: true, detail: `Another program is using ${new URL(this.server).host}, so GGO can't start there.` });
     try {
       await startDetachedServer(checkout, this.node);
     } catch (error) {
-      return this.show("offline", { detail: `Couldn't start GGO: ${error instanceof Error ? error.message : String(error)}` });
+      if (attempt === this.attempt) this.show("offline", { detail: `Couldn't start GGO: ${error instanceof Error ? error.message : String(error)}` });
+      return;
     }
+    if (attempt !== this.attempt) return;
     this.show("starting", { logPath: serverLogPath(checkout) });
     this.pollStartingServer(attempt, Date.now() + START_TIMEOUT_MS);
   }
@@ -239,11 +249,14 @@ export class DesktopController {
 
   private freshView(phase: ConnectionPhase): ConnectionView {
     const local = isLocalServer(this.server);
+    const checkout = local ? findCheckout(this.settings.checkoutDir, this.paths.checkoutSearch) : null;
+    const port = checkout ? checkoutPort(checkout) : null;
     return {
       phase,
       server: this.server,
       local,
-      checkout: local ? findCheckout(this.settings.checkoutDir, this.paths.checkoutSearch) : null,
+      checkout,
+      checkoutPort: port !== null && port !== urlPort(this.server) ? port : null,
       nodeFound: !!this.node,
       conflict: false,
       detail: null,
@@ -277,7 +290,7 @@ export class DesktopController {
   // ---- the window ----
 
   private createWindow(): void {
-    const win = createMainWindow({ saved: this.settings.bounds, preload: this.paths.preload, icon: this.paths.icon, version: this.version });
+    const win = createMainWindow({ saved: this.settings.bounds, preload: this.paths.preload, icon: this.paths.icon, version: this.version, linksRegistered: this.paths.linksRegistered });
     this.win = win;
     this.guardNavigation(win.webContents);
     this.watchLoads(win.webContents);

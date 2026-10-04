@@ -32,6 +32,15 @@ export function isLocalServer(server: string): boolean {
   return host === "localhost" || host === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(host);
 }
 
+/** Whether `origin` (an origin a ggo:// link names) is the server at `server`. Loopback names count as
+ *  one host, since `localhost` and `127.0.0.1` reach the same local server. */
+export function sameServer(origin: string, server: string): boolean {
+  const a = new URL(origin);
+  const b = new URL(server);
+  if (a.protocol !== b.protocol || a.port !== b.port) return false;
+  return a.hostname === b.hostname || (isLocalServer(a.href) && isLocalServer(b.href));
+}
+
 /** Whether `candidate` is a page of the console at `server`: same origin and inside its mount path. */
 export function isServerPage(candidate: string, server: string): boolean {
   let target: URL;

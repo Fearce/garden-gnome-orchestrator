@@ -16,6 +16,7 @@ function subscribe<T>(channel: PushChannel, callback: (value: T) => void): () =>
 }
 
 const version = process.argv.find((arg) => arg.startsWith("--ggo-desktop-version="))?.split("=")[1] ?? "";
+const linksRegistered = !process.argv.includes("--ggo-desktop-links=0");
 
 if (location.protocol === "ggo-app:") {
   contextBridge.exposeInMainWorld("ggoConnect", {
@@ -32,6 +33,7 @@ if (location.protocol === "ggo-app:") {
   contextBridge.exposeInMainWorld("ggoDesktop", {
     version,
     platform: process.platform,
+    linksRegistered,
     openInBrowser: (threadId: string | null, ticket: string | null) => invoke<void>("console:open-in-browser", threadId, ticket),
     onOpenThread: (callback: (threadId: string) => void) => subscribe("console:open-thread", callback),
     setTitleBarStyle: (style: TitleBarStyle) => invoke<void>("console:title-bar", style),
