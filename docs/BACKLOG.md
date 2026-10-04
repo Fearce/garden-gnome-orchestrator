@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-
+- **QA: verify desktop startup, checkout selection and clean window exit** (2026-10-04, Moss Gauge).
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 - **Independent QA: verify and deploy the camera-proxy and Home Assistant controls** (2026-10-04, Codex QA; task cad0786a).
   Review the latest migration commits, real browser lifecycle, configuration preservation, deliverable serving and current full gates before live acceptance.
