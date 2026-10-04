@@ -222,7 +222,7 @@ export function EventForm({ initial, editing, allDayTime, onSaved, onCancel }: P
           </div>
         ) : (
           <button type="submit" className="btn primary" disabled={!!problem || busy}>
-            {busy ? "SavingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦" : editing ? "Save changes" : "Create event"}
+            {busy ? "Saving…" : editing ? "Save changes" : "Create event"}
           </button>
         )}
       </div>
