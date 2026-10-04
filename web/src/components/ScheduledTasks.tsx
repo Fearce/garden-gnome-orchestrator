@@ -45,6 +45,7 @@ function until(nowMs: number, ts: number): string {
 export function ScheduledTasks() {
   const schedules = useStore((s) => s.schedules);
   const [editing, setEditing] = useState<ScheduledTask | "new" | null>(null);
+  const setBoardView = useStore((s) => s.setBoardView);
   const sorted = [...schedules].sort((a, b) => a.createdAt - b.createdAt);
 
   return (
@@ -53,9 +54,14 @@ export function ScheduledTasks() {
         <span className="faint mono" style={{ fontSize: 11 }}>
           {schedules.length} {schedules.length === 1 ? "schedule" : "schedules"}
         </span>
-        <button className="btn primary sm" onClick={() => setEditing("new")} title="Create a new scheduled task">
-          <PlusIcon /> New schedule
-        </button>
+        <span className="sched-toolbar-actions">
+          <button className="btn ghost sm" onClick={() => setBoardView("calendar")} title="See every reminder and scheduled run on the calendar">
+            Calendar view
+          </button>
+          <button className="btn primary sm" onClick={() => setEditing("new")} title="Create a new scheduled task">
+            <PlusIcon /> New schedule
+          </button>
+        </span>
       </div>
 
       {sorted.length === 0 ? (
@@ -200,19 +206,28 @@ function ScheduleCard({ sched, onEdit }: { sched: ScheduledTask; onEdit: () => v
   );
 }
 
-/** Create/edit modal. New when `initial` is null; otherwise prefilled from the schedule being edited. */
-function ScheduleEditor({ initial, onClose }: { initial: ScheduledTask | null; onClose: () => void }) {
+/** What a new schedule opens with when started from somewhere else (the calendar's date or reminder form). */
+export interface ScheduleDraft {
+  title?: string;
+  reminder?: string;
+  cron: string;
+  runOnce: boolean;
+}
+
+/** Create/edit modal. New when `initial` is null (prefilled from `draft` when given); otherwise prefilled
+ *  from the schedule being edited. */
+export function ScheduleEditor({ initial, draft, onClose }: { initial: ScheduledTask | null; draft?: ScheduleDraft; onClose: () => void }) {
   const createSchedule = useStore((s) => s.createSchedule);
   const updateSchedule = useStore((s) => s.updateSchedule);
 
-  const [title, setTitle] = useState(initial?.title ?? "");
+  const [title, setTitle] = useState(initial?.title ?? draft?.title ?? "");
   const [workspace, setWorkspace] = useState(initial?.workspace ?? "");
   const [prompt, setPrompt] = useState(initial?.prompt ?? "");
-  const [reminder, setReminder] = useState(initial?.reminder ?? "");
+  const [reminder, setReminder] = useState(initial?.reminder ?? draft?.reminder ?? "");
   const [effort, setEffort] = useState<Effort | "">(initial?.effort ?? "");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
-  const [runOnce, setRunOnce] = useState(initial?.runOnce ?? false);
-  const [rec, setRec] = useState<Recurrence>(initial ? cronToRecurrence(initial.cron) : DEFAULT_RECURRENCE);
+  const [runOnce, setRunOnce] = useState(initial?.runOnce ?? draft?.runOnce ?? false);
+  const [rec, setRec] = useState<Recurrence>(initial ? cronToRecurrence(initial.cron) : draft ? cronToRecurrence(draft.cron) : DEFAULT_RECURRENCE);
 
   const settings = useStore((s) => s.settings);
   // Resolved against the rosters as they stand with nothing pinned, so an id a backend still publishes

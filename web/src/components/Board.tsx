@@ -38,6 +38,7 @@ import { LazyChunkBoundary } from "./LazyChunkBoundary.js";
 import type { DragCardProps } from "../lib/dragCard.js";
 const Ide = lazy(() => import("./ide/Ide.js").then(m => ({ default: m.Ide })));
 const RemoteViewer = lazy(() => import("./remote/RemoteViewer.js").then(m => ({ default: m.RemoteViewer })));
+const Calendar = lazy(() => import("./calendar/Calendar.js").then(m => ({ default: m.Calendar })));
 
 // Pipeline order for laying out the role pips. The path is agent-routed, so which of these
 // actually run varies (the researcher is conditional) — pips are derived from real runs below.
@@ -293,6 +294,8 @@ export function Board() {
       <CoworkPopup />
       {boardView === "ide" ? null : boardView === "remote" ? (
         <LazyChunkBoundary label="Remote control" className="ide-load-error"><Suspense fallback={<p>Opening Remote control…</p>}><RemoteViewer /></Suspense></LazyChunkBoundary>
+      ) : boardView === "calendar" ? (
+        <LazyChunkBoundary label="Calendar" className="ide-load-error"><Suspense fallback={<p>Opening the calendar…</p>}><Calendar /></Suspense></LazyChunkBoundary>
       ) : boardView === "schedules" ? (
         <ScheduledTasks />
       ) : boardView === "goals" ? (
@@ -359,6 +362,7 @@ function BoardTabs() {
     tasks: null,
     ide: null,
     remote: null,
+    calendar: null,
     notes: useStore((s) => s.notes.length),
     schedules: useStore((s) => s.schedules.length),
     goals: useStore((s) => s.goals.filter((g) => g.status === "active").length),

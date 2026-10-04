@@ -137,6 +137,9 @@ export type ServerEvent =
   | { type: "model.stats"; stats: ModelStat[] }
   // The full scheduled-task list, rebroadcast on every create/update/delete/fire (it's small and bounded).
   | { type: "schedules"; schedules: ScheduledTask[] }
+  // A calendar event (or a skipped schedule run) changed. Carries no personal content: an open calendar
+  // re-reads its visible range over the authenticated /api/calendar routes.
+  | { type: "calendar.changed"; at: number }
   // Every goal-directed task with its newest steps, rebroadcast on every create/edit/status change/step.
   | { type: "goals"; goals: Goal[] }
   // The owner's note list, rebroadcast whole on every post/delete (hard-capped, so it stays small).

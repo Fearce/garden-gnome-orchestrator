@@ -267,8 +267,61 @@ CREATE TABLE IF NOT EXISTS scheduled_tasks (
   last_run_at    INTEGER,
   next_run_at    INTEGER,
   last_thread_id TEXT,
+  -- A run moved off a recurring schedule on the calendar: the schedule it came from, whose runs it
+  -- must not overlap.
+  origin_id      TEXT,
   created_at     INTEGER NOT NULL,
   updated_at     INTEGER NOT NULL
+);
+
+-- One fire of a recurring schedule the owner removed from the calendar ("skip this run"). The tick
+-- consumes the row instead of firing. slot_at is the fire's epoch ms, exactly as next_run_at holds it.
+CREATE TABLE IF NOT EXISTS schedule_skips (
+  schedule_id TEXT NOT NULL,
+  slot_at     INTEGER NOT NULL,
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (schedule_id, slot_at)
+);
+
+-- The owner's personal calendar (calendar/calendarService.ts). Personal content: it lives only in this
+-- local DB, never in git. start/end are wall-clock text in time_zone ("YYYY-MM-DD" when all_day, with an
+-- inclusive end; else "YYYY-MM-DDTHH:MM"). recurrence and reminder are JSON (calendar/types.ts).
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id          TEXT PRIMARY KEY,
+  title       TEXT NOT NULL,
+  notes       TEXT,
+  all_day     INTEGER NOT NULL DEFAULT 0,
+  start_at    TEXT NOT NULL,
+  end_at      TEXT NOT NULL,
+  time_zone   TEXT NOT NULL,
+  recurrence  TEXT,
+  reminder    TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+
+-- One occurrence of a recurring event changed on its own, keyed by the date it originally started on.
+CREATE TABLE IF NOT EXISTS calendar_event_exceptions (
+  event_id    TEXT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+  occurrence  TEXT NOT NULL,
+  cancelled   INTEGER NOT NULL DEFAULT 0,
+  all_day     INTEGER,
+  start_at    TEXT,
+  end_at      TEXT,
+  title       TEXT,
+  notes       TEXT,
+  updated_at  INTEGER NOT NULL,
+  PRIMARY KEY (event_id, occurrence)
+);
+
+-- Event reminders already sent, so a restart or a second tick never repeats one. remind_at is part of
+-- the key: moving an occurrence changes when its reminder is due, and the new time is a new reminder.
+CREATE TABLE IF NOT EXISTS calendar_reminder_log (
+  event_id    TEXT NOT NULL REFERENCES calendar_events(id) ON DELETE CASCADE,
+  occurrence  TEXT NOT NULL,
+  remind_at   INTEGER NOT NULL,
+  sent_at     INTEGER NOT NULL,
+  PRIMARY KEY (event_id, occurrence, remind_at)
 );
 
 -- Goal-directed tasks (orchestrator/goals.ts): a standing objective the director keeps a step task

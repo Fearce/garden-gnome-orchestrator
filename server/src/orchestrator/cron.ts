@@ -90,13 +90,7 @@ export function isValidCron(expr: string): boolean {
 function matches(p: ParsedCron, d: Date): boolean {
   if (!p.minute.values.has(d.getMinutes())) return false;
   if (!p.hour.values.has(d.getHours())) return false;
-  if (!p.month.values.has(d.getMonth() + 1)) return false;
-  const domOk = p.dom.values.has(d.getDate());
-  const dowOk = p.dow.values.has(d.getDay());
-  // Vixie-cron OR rule: with both day fields restricted, either satisfies; otherwise the unrestricted
-  // one is always-true (its set covers the whole range), so the effect is a plain AND.
-  if (p.dom.restricted && p.dow.restricted) return domOk || dowOk;
-  return domOk && dowOk;
+  return daysMatch(p, d);
 }
 
 // A minute-stepping search is simple and provably correct; the cap bounds the pathological
@@ -114,8 +108,78 @@ export function nextRun(expr: string, afterMs: number): number | null {
   d.setSeconds(0, 0);
   d.setMinutes(d.getMinutes() + 1); // strictly after — never re-fire the current minute
   for (let i = 0; i < MAX_MINUTES; i++) {
-    if (matches(p, d)) return d.getTime();
+    // In a fall-back's repeated hour a local minute step lands on the hour's FIRST instance, an hour
+    // back, so a match must still be checked against the start.
+    if (matches(p, d) && d.getTime() > afterMs) return d.getTime();
     d.setMinutes(d.getMinutes() + 1);
   }
   return null;
+}
+
+function daysMatch(p: ParsedCron, d: Date): boolean {
+  if (!p.month.values.has(d.getMonth() + 1)) return false;
+  const domOk = p.dom.values.has(d.getDate());
+  const dowOk = p.dow.values.has(d.getDay());
+  // Vixie-cron OR rule: with both day fields restricted, either satisfies; otherwise the unrestricted
+  // one is always-true (its set covers the whole range), so the effect is a plain AND.
+  if (p.dom.restricted && p.dow.restricted) return domOk || dowOk;
+  return domOk && dowOk;
+}
+
+/**
+ * Visits every slot the expression fires at in [fromMs, toMs), in order, in server-local time — the
+ * calendar's view of a schedule. It agrees with `nextRun` slot for slot (both step local minutes), but
+ * jumps over non-matching days and hours, so walking a six-week grid stays cheap even for a schedule
+ * that fires every minute. `visit` returning false stops the walk.
+ */
+export function forEachRun(expr: string, fromMs: number, toMs: number, visit: (ms: number) => boolean): void {
+  const p = parseCron(expr);
+  const d = new Date(fromMs);
+  d.setSeconds(0, 0);
+  if (d.getTime() < fromMs) d.setMinutes(d.getMinutes() + 1);
+  for (let guard = 0; d.getTime() < toMs && guard < MAX_MINUTES; guard++) {
+    if (!daysMatch(p, d)) {
+      d.setDate(d.getDate() + 1);
+      d.setHours(0, 0, 0, 0);
+      continue;
+    }
+    if (!p.hour.values.has(d.getHours())) {
+      d.setHours(d.getHours() + 1, 0, 0, 0);
+      continue;
+    }
+    // Fall-back can step back into the repeated hour's first instance, before the range (see nextRun).
+    if (p.minute.values.has(d.getMinutes()) && d.getTime() >= fromMs && !visit(d.getTime())) return;
+    d.setMinutes(d.getMinutes() + 1);
+  }
+}
+
+/** A one-off date cron for an instant, in server-local time: what a run-once schedule needs to fire then. */
+export function cronAtInstant(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getMinutes()} ${d.getHours()} ${d.getDate()} ${d.getMonth() + 1} *`;
+}
+
+/**
+ * The expression with every fire moved by `deltaMinutes`, or null when its shape cannot be shifted
+ * exactly. Only a fixed minute and hour can move, and a move across midnight can only carry the
+ * weekday list: a day-of-month or month restriction would need per-month knowledge to stay truthful.
+ */
+export function shiftCron(expr: string, deltaMinutes: number): string | null {
+  const f = expr.trim().split(/\s+/);
+  if (f.length !== 5 || !isValidCron(expr)) return null;
+  const [mi, ho, dom, mon, dow] = f as [string, string, string, string, string];
+  if (!/^\d+$/.test(mi) || !/^\d+$/.test(ho)) return null;
+  const total = Number(ho) * 60 + Number(mi) + Math.round(deltaMinutes);
+  const carry = Math.floor(total / 1440);
+  const within = total - carry * 1440;
+  let days = dow;
+  if (carry !== 0) {
+    if (dom !== "*" || mon !== "*") return null;
+    if (dow !== "*") {
+      const parsed = parseField(dow, 0, 7, "day-of-week");
+      if (parsed.values.delete(7)) parsed.values.add(0);
+      days = [...new Set([...parsed.values].map((v) => (((v + carry) % 7) + 7) % 7))].sort((a, b) => a - b).join(",");
+    }
+  }
+  return `${within % 60} ${Math.floor(within / 60)} ${dom} ${mon} ${days}`;
 }

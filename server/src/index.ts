@@ -42,6 +42,8 @@ import { CodeContextService } from "./orchestrator/codeContext.js";
 import { OperatorNotes } from "./orchestrator/notes.js";
 import { RestartCoordinator } from "./orchestrator/restartCoordinator.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
+import { CalendarService } from "./calendar/calendarService.js";
+import { registerCalendarRoutes } from "./calendar/routes.js";
 import { GoalRunner } from "./orchestrator/goals.js";
 import { OnlineOffice } from "./office/onlineOffice.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
@@ -168,13 +170,17 @@ async function main(): Promise<void> {
   // Standalone (depends only on manager.dispatch), so scheduled runs use whatever provider/model is
   // active, exactly like a hand-dispatched task. The director can also create/edit schedules via its tools.
   // A schedule's reminder is DMed by the scheduler itself; the note list catches one Discord refused.
-  const scheduler = new Scheduler(db, hub, (input) => manager.dispatch(input), {
+  const reminderChannel = {
     ready: () => manager.supervisorDiscordReady(),
-    send: (title, text) => manager.remindOwner(title, text),
-    fallback: (title, text, why) => {
+    send: (title: string, text: string) => manager.remindOwner(title, text),
+    fallback: (title: string, text: string, why: string) => {
       notes.add({ body: `⏰ ${title}: ${text}`, threadTitle: `Reminder not delivered on Discord: ${why}` });
     },
-  });
+  };
+  const scheduler = new Scheduler(db, hub, (input) => manager.dispatch(input), reminderChannel);
+  // The owner's calendar: personal events beside the schedules above. An event starts no agent; its
+  // optional reminder goes out through the same direct DM channel as a schedule's.
+  const calendar = new CalendarService(db, hub, scheduler, reminderChannel);
   // Goal-directed tasks: keeps a step task working on each active goal. A sequential goal continues in
   // its task's own session; the director plans the first step, audits completion claims and replans when
   // conditions change, picking the model and effort from the live roster.
@@ -278,6 +284,7 @@ async function main(): Promise<void> {
       () => onlineOffice.start(),
       () => accounts.start(),
       () => scheduler.start(),
+      () => calendar.start(),
       () => goals.start(),
       () => manager.startModelCatalog(),
       () => freeProviders.start(),
@@ -368,6 +375,7 @@ async function main(): Promise<void> {
     registerWs(app, { db, hub, manager, director, accounts, scheduler, goals, notes, repos, onlineOffice, cowork, codeContext, cliUpdater });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
     registerIdeRoutes(app, ide, isAuthed);
+    registerCalendarRoutes(app, calendar, isAuthed);
     registerRemoteControlRoutes(app, remoteControl, isAuthed);
     registerPortalLink(app, isAuthed);
 

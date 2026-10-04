@@ -713,6 +713,9 @@ and feed rows but every prior work revision stays auditable ([archived agent gui
 The console also re-renders the latest useful report as the LAST card of a done/review task's feed, and
 with "Summarize done task deliverables" on, a Sonnet summary of it (stored in
 `stage_outputs.deliverableSummary`) leads that card; same § for the trigger and freshness rules.
+The Calendar's own events are `calendar_events` + `calendar_event_exceptions` (wall-clock times plus an
+IANA zone, never epochs). `calendar_reminder_log` is the once-only claim per sent event reminder, and
+`schedule_skips` holds the single runs of a schedule the owner skipped (§9 "Calendar").
 `threads.stage_outputs` (JSON, nullable) holds the per-stage outputs that make a
 task resumable (§5) — kept off the WS wire (it can be multi-KB) and read only by
 the resume path, not folded into the `Thread` DTO. The one exception is `deliverableSummary`, which
@@ -734,7 +737,8 @@ a single discriminated union (`zod`-validated). Highlights:
   `thread.deliverableSummary` (the opt-in Sonnet summary that closes a done/review feed;
   `thread.history` carries the stored one),
   `thread.changes`, `director.delta` / `director.message` / `director.tool` /
-  `director.busy`, `news` (the highlighted-news list — new model releases), `log`.
+  `director.busy`, `news` (the highlighted-news list — new model releases), `log`,
+  `calendar.changed` (content-free; the Calendar refetches `/api/calendar/range` over REST).
 - C→S: `prompt.new`, `question.answer`, `thread.inject`, `thread.interrupt`,
   `thread.resume`, `thread.cancel`, `thread.close`, `thread.restore`, `thread.dismiss`,
   `thread.history`, `thread.approve` / `approval.set`, `thread.changes`, `snapshot.request`,
@@ -795,6 +799,18 @@ while the server holds undismissed news — today only a newly released Claude o
 Codex model, spotted by `ModelCatalog` and kept current by the agent-CLI
 auto-updater (`server/src/toolchain/cliAutoUpdate.ts`, status under Settings →
 Subscriptions). Browser check: `npm run news-lab --prefix server`.
+
+**Calendar** (board tab, `web/src/components/calendar/`, server `server/src/calendar/`) shows three
+kinds side by side: the owner's own events, reminders (scheduler rows with no prompt) and scheduled
+tasks. It has month, week, day and agenda views, in the browser's time zone. Events live in their own
+tables. Schedules are only *projected* as occurrences, so viewing never creates a job. A plain event
+sends nothing. An event with a reminder is sent by `CalendarService`'s 30-second tick through the
+scheduler's shared `deliverReminder` path (Discord DM, note-list fallback). It is claimed once per
+occurrence, so a moved or deleted event can never fire a stale reminder, and a failed DM's retry
+re-reads the event first (and the schedule, for a scheduler reminder). From the calendar the owner
+can skip, move, pause or edit a schedule's run. Personal calendar content stays in the local DB:
+the WS event carries no content, and the REST API is owner-authenticated and same-origin only. Gate
+`test:calendar`, browser check `calendar-lab`, traps in `.claude/rules/calendar.md`.
 
 **Themes** (Settings → Appearance) are a per-browser choice between *Classic*
 — `styles.css` itself, with no attribute on `<html>` — and *Nocturne*, whose

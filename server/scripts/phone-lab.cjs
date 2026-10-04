@@ -88,6 +88,7 @@ function declaredTabs() {
 const PANEL_ROOT = {
   tasks: ".lanes, .board .empty",
   notes: ".notes-view",
+  calendar: ".cal-view",
   schedules: ".sched-view",
   supervisor: ".supervisor-view",
   ide: ".ide",

@@ -637,6 +637,7 @@ function rowToScheduledTask(r: Row): ScheduledTask {
     lastRunAt: (r.last_run_at as number | null) ?? null,
     nextRunAt: (r.next_run_at as number | null) ?? null,
     lastThreadId: (r.last_thread_id as string | null) ?? null,
+    originId: (r.origin_id as string | null) ?? null,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
   };
@@ -1002,6 +1003,7 @@ export class Db {
       "ALTER TABLE scheduled_tasks ADD COLUMN provider TEXT",
       "ALTER TABLE scheduled_tasks ADD COLUMN run_once INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE scheduled_tasks ADD COLUMN reminder TEXT",
+      "ALTER TABLE scheduled_tasks ADD COLUMN origin_id TEXT",
       "ALTER TABLE threads ADD COLUMN latest_message_preview TEXT",
       "ALTER TABLE goals ADD COLUMN effort TEXT",
       "ALTER TABLE goals ADD COLUMN provider TEXT",
@@ -3823,7 +3825,7 @@ export class Db {
 
   updateScheduledTask(
     id: string,
-    patch: Partial<Pick<ScheduledTask, "title" | "workspace" | "prompt" | "reminder" | "cron" | "enabled" | "effort" | "model" | "provider" | "runOnce" | "lastRunAt" | "nextRunAt" | "lastThreadId">>,
+    patch: Partial<Pick<ScheduledTask, "title" | "workspace" | "prompt" | "reminder" | "cron" | "enabled" | "effort" | "model" | "provider" | "runOnce" | "lastRunAt" | "nextRunAt" | "lastThreadId" | "originId">>,
   ): ScheduledTask | null {
     const current = this.getScheduledTask(id);
     if (!current) return null;
@@ -3843,6 +3845,7 @@ export class Db {
       lastRunAt: "last_run_at",
       nextRunAt: "next_run_at",
       lastThreadId: "last_thread_id",
+      originId: "origin_id",
     };
     for (const [k, col] of Object.entries(map)) {
       if (k in patch) {
@@ -3858,7 +3861,30 @@ export class Db {
   }
 
   deleteScheduledTask(id: string): boolean {
+    this.raw.prepare("DELETE FROM schedule_skips WHERE schedule_id = ?").run(id);
     return this.raw.prepare("DELETE FROM scheduled_tasks WHERE id = ?").run(id).changes > 0;
+  }
+
+  /** Mark one fire of a schedule as skipped. Idempotent. */
+  skipScheduleSlot(scheduleId: string, slotAt: number): void {
+    this.raw.prepare("INSERT OR IGNORE INTO schedule_skips(schedule_id, slot_at, created_at) VALUES(?, ?, ?)").run(scheduleId, slotAt, now());
+  }
+
+  /** Remove a skip; returns whether one existed. The tick uses the same call to consume a due one. */
+  unskipScheduleSlot(scheduleId: string, slotAt: number): boolean {
+    return this.raw.prepare("DELETE FROM schedule_skips WHERE schedule_id = ? AND slot_at = ?").run(scheduleId, slotAt).changes > 0;
+  }
+
+  listScheduleSkips(fromMs: number, toMs: number): { scheduleId: string; slotAt: number }[] {
+    return (this.raw.prepare("SELECT schedule_id, slot_at FROM schedule_skips WHERE slot_at >= ? AND slot_at < ?").all(fromMs, toMs) as Row[]).map((r) => ({
+      scheduleId: r.schedule_id as string,
+      slotAt: r.slot_at as number,
+    }));
+  }
+
+  /** Drop skips for slots long past (a cadence edit can leave ones that will never come due). */
+  pruneScheduleSkips(beforeMs: number): void {
+    this.raw.prepare("DELETE FROM schedule_skips WHERE slot_at < ?").run(beforeMs);
   }
 
   // ---- goals (goal-directed tasks) ----

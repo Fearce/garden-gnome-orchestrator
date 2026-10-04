@@ -13,6 +13,7 @@ export const BOARD_TABS: readonly BoardTab[] = [
   { view: "ide", label: "IDE", title: "Edit workspace files and manage Git" },
   { view: "remote", label: "Remote control", title: "See and control this PC" },
   { view: "notes", label: "Notes", title: "Branches, PRs and reminders waiting on you" },
+  { view: "calendar", label: "Calendar", title: "Your events, reminders and scheduled tasks by day, week and month" },
   { view: "schedules", label: "Scheduled Tasks", title: "View and manage scheduled tasks" },
   { view: "goals", label: "Goals", title: "Goal-directed tasks: standing objectives the director keeps working on until they are met" },
   { view: "supervisor", label: "Supervisor", title: "The Director Supervisor watchdog: its state, budget and recent checks/actions" },

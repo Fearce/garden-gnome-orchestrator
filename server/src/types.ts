@@ -264,6 +264,9 @@ export interface ScheduledTask {
   lastRunAt?: number | null; // epoch ms of the last fire, or null if it hasn't run yet
   nextRunAt?: number | null; // epoch ms of the next fire while enabled, else null
   lastThreadId?: string | null; // the task id created by the most recent fire (jump target in the UI)
+  /** Set on a run moved off a recurring schedule on the calendar: the schedule it came from. The two
+   *  share one busy-predecessor guard, so the moved run never overlaps the schedule's own runs. */
+  originId?: string | null;
   createdAt: number;
   updatedAt: number;
 }

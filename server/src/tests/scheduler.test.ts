@@ -371,8 +371,14 @@ async function main(): Promise<void> {
   for (let i = 0; i < 5; i++) await settle();
   check(`retries are bounded (${reminded.length} attempts)`, reminded.length === 3);
   check("…and the note is posted once, not per attempt", fallbacks.length === 1);
-  refuseReminders = 0;
+  // A retry delivers the reminder as it is now: none at all once it is deleted.
+  refuseReminders = 1;
+  reminded.length = 0;
+  await retrying.runNow(lost);
   retrying.remove(lost);
+  for (let i = 0; i < 5; i++) await settle();
+  check(`a deleted reminder is not retried (${reminded.length} attempts)`, reminded.length === 1);
+  refuseReminders = 0;
   scheduler.remove(remindId);
 
   console.log("scheduler: delete");

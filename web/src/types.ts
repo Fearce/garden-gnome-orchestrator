@@ -215,6 +215,8 @@ export interface ScheduledTask {
   lastRunAt?: number | null;
   nextRunAt?: number | null;
   lastThreadId?: string | null;
+  /** The schedule a run moved off on the calendar came from. */
+  originId?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -354,7 +356,7 @@ export const MAX_GOAL_BURN_RATE_PCT = 500;
 /** Which pane the center board shows: the live task lanes, the owner's note list, or the schedules. */
 /** Co-work is not a pane: its sessions are cards on the task board, and a conversation opens as a popup
  *  over whatever pane is showing so the rest of the work stays in sight. */
-export type BoardView = "tasks" | "notes" | "schedules" | "goals" | "supervisor" | "patchnotes" | "ide" | "remote";
+export type BoardView = "tasks" | "notes" | "calendar" | "schedules" | "goals" | "supervisor" | "patchnotes" | "ide" | "remote";
 
 /** A layer opened on top of the selected task. Store-owned rather than component state so browser
  *  Back/Forward can close and reopen it (lib/navHistory.ts). `memoId` / `findingId` name what to show. */
@@ -1503,6 +1505,7 @@ export type ServerEvent =
   | { type: "accounts"; accounts: AccountDTO[] }
   | { type: "model.stats"; stats: ModelStat[] }
   | { type: "schedules"; schedules: ScheduledTask[] }
+  | { type: "calendar.changed"; at: number }
   | { type: "goals"; goals: Goal[] }
   | { type: "notes"; notes: OperatorNote[] }
   | { type: "news"; news: HighlightNewsItem[] }

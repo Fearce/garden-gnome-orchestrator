@@ -83,6 +83,7 @@ import { mergeImplementationMemos } from "./implementationMemos.js";
 import { deliverablesByThread, mergeDeliverableIndexes, mergeThreadDeliverables } from "./threadDeliverables.js";
 import { mergeRunIndex, pruneRunIndex } from "./lib/runAttribution.js";
 import { tokenSafetyBoxKey } from "./lib/tokenSafety.js";
+import { notifyCalendarChanged } from "./lib/calendarApi.js";
 
 interface ThreadDraft {
   runId: string;
@@ -2392,6 +2393,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "schedules":
       useStore.setState({ schedules: ev.schedules });
+      break;
+    case "calendar.changed":
+      notifyCalendarChanged();
       break;
     case "goals":
       useStore.setState({ goals: ev.goals });
