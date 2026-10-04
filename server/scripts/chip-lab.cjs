@@ -103,7 +103,7 @@ const CODEX_STATES = {
     sevenDayReset: at + 5 * DAY,
     planType: "prolite",
     updatedAt: at - 60_000,
-    credits: { balance: 55094.2434125, hasCredits: true, unlimited: false },
+    credits: { balance: 12344.2434125, hasCredits: true, unlimited: false },
   }),
 };
 

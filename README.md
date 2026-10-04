@@ -175,6 +175,11 @@ still matter without treating one task as a whole weekly burn. If none can, the 
 limiting windows and waits for the first reset that actually makes a compatible pool viable, then
 resumes automatically.
 
+The Codex top-bar chip shows the reported ChatGPT credit balance in place of the 5-hour
+meter when the plan has no 5-hour window, while keeping the weekly usage meter. The balance
+is rounded up to a whole credit; hover for the decimal balance. Credits are display-only
+and do not change routing or cap checks.
+
 An optional free task pool (**Settings > Free AI connections**) can run the planner or
 reader of a small, low-risk task on a free-tier API. Everything else stays on the
 subscription backends. See [docs/free-ai-provider-connections.md](docs/free-ai-provider-connections.md).

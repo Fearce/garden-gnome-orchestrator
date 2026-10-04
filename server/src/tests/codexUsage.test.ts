@@ -257,12 +257,12 @@ try {
   }
 
   // --- ChatGPT credits: a plan without a 5h window (Pro Lite) reports a credit balance instead, in both
-  // wire shapes. Verified live 2026-10-05: `credits: { hasCredits, unlimited, balance: "55094.2434125000" }`. ---
+  // wire shapes. Synthetic decimal-string example: `credits: { hasCredits, unlimited, balance: "12344.2434125000" }`. ---
   {
-    const live = parseCodexCredits({ hasCredits: true, unlimited: false, balance: "55094.2434125000" });
+    const live = parseCodexCredits({ hasCredits: true, unlimited: false, balance: "12344.2434125000" });
     check(
       "the app-server credit block parses its decimal-string balance",
-      live?.balance === 55094.2434125 && live.hasCredits && !live.unlimited,
+      live?.balance === 12344.2434125 && live.hasCredits && !live.unlimited,
       JSON.stringify(live),
     );
     const rollout = parseCodexCredits({ has_credits: false, unlimited: false, balance: "0" });
@@ -286,7 +286,7 @@ try {
         rate_limits: {
           primary: { used_percent: 12, window_minutes: 7 * 24 * 60, resets_at: Math.floor((at + 86_400_000) / 1000) },
           secondary: null,
-          credits: { has_credits: true, unlimited: false, balance: "55094.2434125000" },
+          credits: { has_credits: true, unlimited: false, balance: "12344.2434125000" },
           plan_type: "prolite",
         },
       },
@@ -296,7 +296,7 @@ try {
     const fromRollout = readCodexUsage();
     check(
       "a rollout snapshot carries the credit balance to the chip",
-      fromRollout?.fiveHour == null && fromRollout?.credits?.balance === 55094.2434125,
+      fromRollout?.fiveHour == null && fromRollout?.credits?.balance === 12344.2434125,
       JSON.stringify(fromRollout),
     );
 
@@ -308,13 +308,13 @@ try {
       sevenDayReset: at + 86_400_000,
       planType: "prolite",
       updatedAt: at + 1_000,
-      credits: { balance: 55000.5, hasCredits: true, unlimited: false },
+      credits: { balance: 12300.5, hasCredits: true, unlimited: false },
     });
     const persisted = JSON.parse(readFileSync(join(root, "data", "codex-usage-cache.json"), "utf8")) as { credits?: { balance?: number } };
-    check("the live ping's balance is mirrored to the on-disk cache", persisted.credits?.balance === 55000.5, JSON.stringify(persisted.credits));
+    check("the live ping's balance is mirrored to the on-disk cache", persisted.credits?.balance === 12300.5, JSON.stringify(persisted.credits));
     check(
       "the presentation snapshot shows the live ping's balance",
-      readCodexUsageForSnapshot()?.credits?.balance === 55000.5,
+      readCodexUsageForSnapshot()?.credits?.balance === 12300.5,
       JSON.stringify(readCodexUsageForSnapshot()?.credits),
     );
   }

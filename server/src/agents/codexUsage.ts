@@ -72,7 +72,7 @@ interface RateLimits {
 
 /**
  * Parse a `credits` block from either wire shape: the app-server's camelCase
- * (`{ hasCredits, unlimited, balance: "55094.2434125000" }`) or a rollout's snake_case `has_credits`.
+ * (`{ hasCredits, unlimited, balance: "12344.2434125000" }`) or a rollout's snake_case `has_credits`.
  * The balance arrives as a decimal string. Anything unreadable is null (unknown), never a zero balance.
  */
 export function parseCodexCredits(raw: unknown): CodexCreditsDTO | null {
