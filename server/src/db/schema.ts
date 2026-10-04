@@ -147,6 +147,10 @@ CREATE TABLE IF NOT EXISTS implementation_memos (
 
 CREATE INDEX IF NOT EXISTS idx_implementation_memos_thread_revision
   ON implementation_memos(thread_id, revision);
+-- implementationMemoForRun runs at every implementor run end; without this it scanned and sorted every
+-- memo's report (1,470 page reads on the live DB, a 2.9s event-loop stall when cold).
+CREATE INDEX IF NOT EXISTS idx_implementation_memos_run
+  ON implementation_memos(run_id, created_at);
 
 CREATE TABLE IF NOT EXISTS questions (
   id           TEXT PRIMARY KEY,
@@ -665,6 +669,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_thread_time ON messages(thread_id, creat
 CREATE INDEX IF NOT EXISTS idx_messages_run ON messages(run_id);
 CREATE INDEX IF NOT EXISTS idx_questions_thread ON questions(thread_id);
 CREATE INDEX IF NOT EXISTS idx_chat_room       ON chat_messages(room, created_at);
+-- ensureGroup's durable "already announced in this room" check, on every grouping pass. idx_chat_room
+-- alone walks the room's whole history row by row (833 page reads on the live DB) to find one thread.
+CREATE INDEX IF NOT EXISTS idx_chat_room_thread ON chat_messages(room, thread_id);
 -- listRecentChat (the hello/reconnect snapshot's live-feed slice) has no room filter, so it can't use
 -- idx_chat_room above; without this it's a full-table scan + sort on every connect.
 CREATE INDEX IF NOT EXISTS idx_chat_messages_created ON chat_messages(created_at);
@@ -683,6 +690,8 @@ CREATE INDEX IF NOT EXISTS idx_findings_created ON findings(created_at);
 CREATE INDEX IF NOT EXISTS idx_director_messages_created ON director_messages(created_at);
 CREATE INDEX IF NOT EXISTS idx_supervisor_events_thread  ON supervisor_events(thread_id);
 CREATE INDEX IF NOT EXISTS idx_supervisor_events_created ON supervisor_events(created_at);
+-- supervisorWatchingCount (every Supervisor snapshot) answers from this index alone instead of the table.
+CREATE INDEX IF NOT EXISTS idx_supervisor_events_action ON supervisor_events(action, created_at, thread_id);
 CREATE INDEX IF NOT EXISTS idx_supervisor_chat_created   ON supervisor_chat_turns(created_at);
 CREATE INDEX IF NOT EXISTS idx_auto_review_status        ON auto_review_episodes(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_review_injections_thread   ON review_injections(thread_id, created_at, id);

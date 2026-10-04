@@ -38,6 +38,7 @@ import type { AccountManager } from "../accounts/accountManager.js";
 import type { OnlineOffice as OnlineOfficeType } from "../office/onlineOffice.js";
 import type { ClientFrame, RelayChat, RelayPresentAgent, ServerFrame } from "../office/onlineProtocol.js";
 import { runGit } from "../gitService.js";
+import { childRunnerState } from "../childRunner.js";
 
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
@@ -326,6 +327,25 @@ async function main(): Promise<void> {
       check("a workspace that isn't a repo has no identity", none === null);
 
       check("an ordinary single-remote checkout declares no aliases", a?.aliases.length === 0, JSON.stringify(a));
+
+      // Asks that arrive while a read is pending share it. Each used to spawn its own git read behind the
+      // shared child pool, and after a restart that flood was most of a 93-deep queue.
+      forgetRepoIdentity();
+      const soloStart = childRunnerState().started;
+      await repoIdentity(cloned);
+      const solo = childRunnerState().started - soloStart;
+      forgetRepoIdentity();
+      const burstStart = childRunnerState().started;
+      const burst = await Promise.all(Array.from({ length: 12 }, () => repoIdentity(cloned)));
+      const burstReads = childRunnerState().started - burstStart;
+      check("twelve concurrent asks cost the git reads of one", solo > 0 && burstReads === solo, `${burstReads} vs ${solo}`);
+      check("…and all get the same identity", burst.every((id) => id?.key === a?.key), JSON.stringify(burst.map((id) => id?.key)));
+      forgetRepoIdentity();
+      const stale = repoIdentity(cloned);
+      forgetRepoIdentity(cloned);
+      const fresh = repoIdentity(cloned);
+      check("a forget during a read starts a new one instead of joining it", stale !== fresh);
+      await Promise.all([stale, fresh]);
 
       // A FORK checkout: `origin` is the contributor's own copy, `upstream` the canonical repo. Keying on
       // origin alone is what put Robin and Sam in two rooms while both edited this repository.

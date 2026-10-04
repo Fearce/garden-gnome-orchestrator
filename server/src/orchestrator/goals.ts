@@ -912,7 +912,7 @@ export class GoalRunner {
   private backfillStepStatus(): void {
     for (const step of this.db.listGoalStepsWithUnreadStatus()) {
       const report = step.settledAt != null
-        ? this.db.goalTurnActivity(step.threadId!, step.turnStartedAt).report
+        ? this.db.goalTurnReport(step.threadId!, step.turnStartedAt)
         : this.db.goalReportBefore(step.threadId!, step.turnStartedAt);
       this.db.updateGoalStep(step.id, { lastStatus: readGoalStatusLine(report) });
     }
@@ -1459,7 +1459,7 @@ export class GoalRunner {
     if (this.silentTurns.get(goal.id)?.threadId === carrier.threadId) return false;
     const { replanAt } = this.db.goalLoopState(goal.id);
     if (replanAt != null && replanAt >= carrier.turnStartedAt) return false;
-    const last = readGoalStatusLine(this.db.goalTurnActivity(carrier.threadId!, carrier.turnStartedAt).report);
+    const last = readGoalStatusLine(this.db.goalTurnReport(carrier.threadId!, carrier.turnStartedAt));
     if (last?.kind === "waiting" && goal.nextCheckAt == null) {
       // Each check that found the job still running and nothing new doubles the wait, so a long job's watch
       // costs a turn an hour at most instead of a turn every few minutes.

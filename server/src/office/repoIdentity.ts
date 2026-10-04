@@ -58,16 +58,34 @@ export function repoLeaf(key: string): string {
 export async function repoIdentity(workspace: string): Promise<RepoIdentity | null> {
   const cached = cache.get(workspace);
   if (cached && Date.now() - cached.at < TTL_MS) return cached.identity;
-  const identity = await resolve(workspace);
-  cache.set(workspace, { at: Date.now(), identity });
-  return identity;
+  // Callers ask on every roster pass and relay message, and a git read waits behind the shared child
+  // pool. Without sharing the pending read, each ask while one was queued spawned another `git config`
+  // (179 waited over 5s in one minute after a restart), which deepened the queue they were waiting in.
+  const pending = resolving.get(workspace);
+  if (pending) return pending;
+  const read: Promise<RepoIdentity | null> = resolve(workspace)
+    .then((identity) => {
+      // A forget during the read means its answer may already be stale; the next ask reads again.
+      if (resolving.get(workspace) === read) cache.set(workspace, { at: Date.now(), identity });
+      return identity;
+    })
+    .finally(() => {
+      if (resolving.get(workspace) === read) resolving.delete(workspace);
+    });
+  resolving.set(workspace, read);
+  return read;
 }
 
 /** Drop a resolved identity so the next lookup re-reads git — used when a task's repo may have changed
  *  under us (a remote added, a workspace re-pointed). */
 export function forgetRepoIdentity(workspace?: string): void {
-  if (workspace) cache.delete(workspace);
-  else cache.clear();
+  if (workspace) {
+    cache.delete(workspace);
+    resolving.delete(workspace);
+  } else {
+    cache.clear();
+    resolving.clear();
+  }
 }
 
 /**
@@ -113,6 +131,7 @@ export function remoteLabel(url: string): string {
 
 const TTL_MS = 5 * 60_000;
 const cache = new Map<string, { at: number; identity: RepoIdentity | null }>();
+const resolving = new Map<string, Promise<RepoIdentity | null>>();
 
 async function resolve(workspace: string): Promise<RepoIdentity | null> {
   const root = await resolveRepoRoot(workspace);

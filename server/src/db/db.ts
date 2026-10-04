@@ -4170,9 +4170,7 @@ export class Db {
    * backend that does not report tool calls (Grok), so "no tool call" is concluded only where observable.
    */
   goalTurnActivity(threadId: string, since: number): GoalTurnActivity {
-    const report = this.raw
-      .prepare("SELECT content FROM messages WHERE thread_id = ? AND role = 'implementor' AND kind = 'text' AND created_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
-      .get(threadId, since) as { content: string } | undefined;
+    const report = this.goalTurnReport(threadId, since);
     const tools = (this.raw
       .prepare("SELECT COUNT(*) AS n FROM messages WHERE thread_id = ? AND role = 'implementor' AND kind = 'tool' AND created_at >= ?")
       .get(threadId, since) as { n: number }).n;
@@ -4180,7 +4178,16 @@ export class Db {
       .prepare("SELECT account FROM agent_runs WHERE thread_id = ? AND role = 'implementor' AND started_at >= ?")
       .all(threadId, since) as { account: string | null }[];
     const observable = tools > 0 || !runs.length || runs.some((r) => providerOfRunAccount(r.account) !== "grok");
-    return { report: report?.content ?? null, toolCalls: observable ? tools : null, runs: runs.length };
+    return { report, toolCalls: observable ? tools : null, runs: runs.length };
+  }
+
+  /** The implementor's last report written since `since`. Counting the turn's tool calls reads every row of
+   *  the turn, so a caller that needs only the report (the goal loop, every minute) asks for it alone. */
+  goalTurnReport(threadId: string, since: number): string | null {
+    const row = this.raw
+      .prepare("SELECT content FROM messages WHERE thread_id = ? AND role = 'implementor' AND kind = 'text' AND created_at >= ? ORDER BY created_at DESC, rowid DESC LIMIT 1")
+      .get(threadId, since) as { content: string } | undefined;
+    return row?.content ?? null;
   }
 
   /** A goal's token spend across the runs of its step tasks since its metering baseline (see `summarizeRunUsage`). */

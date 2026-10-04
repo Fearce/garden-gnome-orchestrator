@@ -248,6 +248,46 @@ try {
     assert.ok(detail.includes("COVERING INDEX idx_chat_project_rollup"), `chat-room roll-up reads the table: ${detail}`);
   }
 
+  // ---- lookups crash.log named in event-loop stalls are seeks, not scans ----
+  //
+  // 2026-10-04: with the box's disk at ~20ms a read, the slow-statement line named these one-row lookups
+  // at 1-3s each. On a snapshot of the live DB they read 1,470 (memo by run), 833 (room membership) and
+  // 182 (supervisor watch count) pages; with their indexes, ~10 each.
+  const seekSql = (call: () => unknown, table: string): string[] => {
+    const seen: string[] = [];
+    const original = db.raw.prepare.bind(db.raw);
+    db.raw.prepare = ((sql: string) => {
+      if (new RegExp(`FROM ${table}\\b`).test(sql)) seen.push(sql);
+      return original(sql);
+    }) as typeof db.raw.prepare;
+    try {
+      call();
+    } finally {
+      db.raw.prepare = original;
+    }
+    assert.ok(seen.length > 0, `no ${table} query was issued`);
+    return seen;
+  };
+  const planOf = (sql: string, args: unknown[]): string =>
+    (db.raw.prepare("EXPLAIN QUERY PLAN " + sql).all(...args) as Array<{ detail: string }>).map((row) => row.detail).join(" | ");
+  const stallLookups: Array<[string, () => unknown, string, unknown[], string]> = [
+    ["implementation memo by run", () => db.implementationMemoForRun("run-x"), "implementation_memos", ["run-x"], "idx_implementation_memos_run"],
+    ["project room membership", () => db.chatThreadInRoom("repo:x", thread.id), "chat_messages", ["repo:x", thread.id], "idx_chat_room_thread"],
+    ["supervisor watch count", () => db.supervisorWatchingCount(0), "supervisor_events", [0], "idx_supervisor_events_action"],
+  ];
+  for (const [label, call, table, args, index] of stallLookups) {
+    for (const sql of seekSql(call, table)) {
+      const detail = planOf(sql, args);
+      assert.ok(detail.includes(index), `${label} did not use ${index}: ${detail}`);
+      assert.ok(!new RegExp(`SCAN (${table}|se)\\b`).test(detail), `${label} scans its table: ${detail}`);
+    }
+  }
+  // The goal loop asks for a carrier's last report every minute; only a settling turn needs the tool count,
+  // which walks every row of the turn.
+  const reportSql = seekSql(() => db.goalTurnReport(thread.id, 0), "messages");
+  assert.equal(reportSql.length, 1, `the per-minute goal report is one query: ${reportSql.join(" ; ")}`);
+  assert.ok(!/COUNT\(/i.test(reportSql[0]!), `the per-minute goal report counts the turn's rows: ${reportSql[0]}`);
+
   // ---- the connect snapshot is not rebuilt per reconnect ----
   //
   // 2026-09-16: the console's watchdog force-closes a socket after 35s of server silence, so a stall
