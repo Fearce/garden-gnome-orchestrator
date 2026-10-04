@@ -25,8 +25,9 @@ const READ_TIMEOUT_MS = 30_000;
 /** Ignored folders that are shared rather than reinstalled: reinstalling them per task costs minutes
  *  and hundreds of MB, and a task that changes dependencies is told to replace the link. */
 const LINKED_DIRS = new Set(["node_modules", ".venv", "venv"]);
-/** Ignored files copied in: the local secrets a test or dev server needs to start at all. */
-const COPIED_FILE = /^\.env(\..+)?$/;
+/** Ignored files copied in: the local secrets a test or dev server needs to start at all, and the
+ *  privacy guard's private word list, without which `privacy:check` in a worktree passes on far fewer words. */
+const COPIED_FILE = /^(\.env(\..+)?|\.privacy-terms)$/;
 
 export type WorktreeResult = { ok: true; worktree: TaskWorktree } | { ok: false; error: string };
 

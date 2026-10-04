@@ -61,7 +61,8 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, windowsHide: true }).trim();
 }
 
-/** A repo on master with one commit, an ignored node_modules holding a package, and an ignored .env. */
+/** A repo on master with one commit, an ignored node_modules holding a package, an ignored .env, and an
+ *  ignored server/.privacy-terms (the privacy guard's private word list, under a tracked folder). */
 function makeRepo(parent: string, name: string, origin?: string): string {
   const repo = join(parent, name);
   mkdirSync(repo, { recursive: true });
@@ -71,12 +72,15 @@ function makeRepo(parent: string, name: string, origin?: string): string {
   git(repo, "config", "commit.gpgsign", "false");
   git(repo, "config", "core.autocrlf", "false");
   if (origin) git(repo, "remote", "add", "origin", origin);
-  writeFileSync(join(repo, ".gitignore"), "node_modules/\n.env\n");
+  writeFileSync(join(repo, ".gitignore"), "node_modules/\n.env\nserver/.privacy-terms\n");
   writeFileSync(join(repo, "README.md"), "base\n");
   mkdirSync(join(repo, "node_modules", "left-pad"), { recursive: true });
   writeFileSync(join(repo, "node_modules", "left-pad", "index.js"), "module.exports = 1;\n");
   writeFileSync(join(repo, ".env"), "SECRET=1\n");
-  git(repo, "add", ".gitignore", "README.md");
+  mkdirSync(join(repo, "server"));
+  writeFileSync(join(repo, "server", "index.js"), "\n");
+  writeFileSync(join(repo, "server", ".privacy-terms"), "alexsurname\n");
+  git(repo, "add", ".gitignore", "README.md", "server/index.js");
   git(repo, "commit", "--quiet", "-m", "initial");
   return realpathSync(repo);
 }
@@ -118,6 +122,8 @@ try {
   check("...recorded as a link", !!wt.links?.includes("node_modules"), wt.links?.join(","));
   check("...that reaches the main checkout's packages", existsSync(join(wt.path, "node_modules", "left-pad", "index.js")));
   check(".env is copied", readFileSync(join(wt.path, ".env"), "utf8") === "SECRET=1\n");
+  const terms = join(wt.path, "server", ".privacy-terms");
+  check("server/.privacy-terms is copied, so the privacy guard checks the same words", existsSync(terms) && readFileSync(terms, "utf8") === "alexsurname\n");
   check("a repo without the commit-only origin may push", wt.commitOnly === false);
   check("the main checkout stays on master", git(repo, "branch", "--show-current") === "master");
   const NAMED = "5ec874c0-1111-2222-3333-444455556666";

@@ -670,7 +670,7 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   names outranks the advice: the agent works on it where it is checked out and claims nothing. A claim cuts branch
   `ggo/<name>-<id8>` in `<repo-parent>/<repo>.worktrees/<name>` (the agent's `name`, or
   `worktreeName.ts`'s model name for the brief) from the main checkout's current branch, with ignored
-  `node_modules`/`.venv` junctioned back and `.env*` copied. It is recorded in `thread.worktrees`
+  `node_modules`/`.venv` junctioned back and `.env*` and `.privacy-terms` copied. It is recorded in `thread.worktrees`
   WITHOUT changing `thread.workspace`, because the agent's session is keyed by its cwd. So the
   Changes view, code-context bar and progress fingerprints (`taskWorkCheckout`) and deliverable
   containment (`resolveTaskDeliverable`) follow the claim explicitly, and later kickoffs (QA rounds, resumes) name it with the integration step: rebase,
