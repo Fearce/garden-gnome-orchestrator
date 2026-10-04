@@ -3,7 +3,7 @@
  *  kept on disk), retrieval cards, automatic extraction, the agent hooks and the HTTP surface. Haiku is a
  *  fake fetch and Luna is reported unavailable, so no provider is called. */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,7 +14,7 @@ mkdirSync(process.env.DATA_DIR, { recursive: true });
 const { FileMemoryService, DEFAULT_MEMORY_SETTINGS } = await import("../memory/memory.js");
 const { HAIKU_MODEL } = await import("../memory/models.js");
 const { QUEUE_DIR } = await import("../memory/extraction.js");
-const { TRASH_DIR, REVIEW_SECTION } = await import("../memory/corpus.js");
+const { TRASH_DIR, REVIEW_SECTION, memoryChunks, parseMemory } = await import("../memory/corpus.js");
 const { memoryAgentHooks, stripTaskEnvelope, userText, ExtractionOffsets } = await import("../memory/agentHooks.js");
 const { MemorySettingsStore } = await import("../memory/settings.js");
 const { MemoryEndpoint, isPrimaryMemoryOwner } = await import("../memory/endpoint.js");
@@ -149,6 +149,25 @@ try {
     writeFileSync(join(dir, "feedback_external.md"), "---\nname: Written by another tool\ndescription: A memory written outside GGO\nmetadata:\n  type: feedback\n---\n\nPrefer tabs in makefiles.\n");
     memory.changed();
     await until("an externally written memory to be indexed", async () => (await memory.search("makefiles tabs", 1))[0]?.file === "feedback_external.md");
+
+    // The whole of a long memory is searchable, not a prefix: the defect the retired pgvector chunker
+    // shipped (28.5% of the corpus sat past its embedded prefix, 2026-08-17).
+    const paragraphs = Array.from({ length: 40 }, (_, i) => `Paragraph ${i} about routine maintenance of the build farm and its many machines.`);
+    const longText = (tail: string) => `---\nname: Build farm maintenance log\ndescription: Long running notes on the build farm\nmetadata:\n  type: reference\n---\n\n${paragraphs.join("\n\n")}\n\n${tail}\n`;
+    writeFileSync(join(dir, "reference_build_farm.md"), longText("The last entry mentions the quokka rack."));
+    memory.changed();
+    await until("a word at the end of a long memory to be found", async () => (await memory.search("quokka rack", 1))[0]?.file === "reference_build_farm.md");
+    writeFileSync(join(dir, "reference_build_farm.md"), longText("The last entry mentions the quokka rack.\n\nAn appended note about the narwhal switch."));
+    memory.changed();
+    await until("text appended to a long memory to be found", async () => (await memory.search("narwhal switch", 1))[0]?.file === "reference_build_farm.md");
+    const chunks = memoryChunks(parseMemory("reference_build_farm.md", longText("tail")), 1600);
+    assert.ok(chunks.length > 2, "a long memory splits into several chunks");
+    assert.ok(chunks.every((c) => c.text.length <= 1600), "no chunk exceeds the budget");
+    assert.ok(chunks.slice(1).every((c) => c.text.startsWith("Build farm maintenance log")), "every body chunk carries the memory's name");
+    assert.equal(memoryChunks(parseMemory("short.md", "---\nname: Short\ndescription: d\n---\n\nOne line.\n")).length, 2, "a short memory stays one head and one body chunk");
+    unlinkSync(join(dir, "reference_build_farm.md"));
+    memory.changed();
+
     const status = await memory.status();
     assert.equal(status.index.files, 5);
     assert.equal(status.providers, null, "no model access is reported as such");

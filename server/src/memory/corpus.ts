@@ -125,7 +125,7 @@ export function memoryChunks(memory: ParsedMemory, maxChars = 1600): MemoryChunk
   const head = [memory.name, memory.description, ...memory.triggers, memory.tags.join(" ")].filter(Boolean).join("\n");
   const label = `${memory.name}\n${memory.description}`.trim();
   const chunks: MemoryChunk[] = [{ kind: "head", text: head }];
-  const budget = Math.max(400, maxChars - label.length);
+  const budget = Math.max(400, maxChars - label.length - 2);
   let current = "";
   const flush = () => {
     if (current.trim()) chunks.push({ kind: "body", text: `${label}\n\n${current.trim()}` });
