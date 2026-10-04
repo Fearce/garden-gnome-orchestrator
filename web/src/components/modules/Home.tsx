@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Field, Icon, Loading, ModuleDialog, ModuleFrame, Notice } from "./ModuleFrame.js";
 import { usePoll } from "./hooks.js";
+import { VacuumSchedule } from "./HomeSchedule.js";
 import { ModuleRequestError, errorText, formatAgo, moduleJson } from "./moduleApi.js";
 
 type Bridge = "auto" | "home-assistant" | "xiaomi-miio";
@@ -334,6 +335,8 @@ function DeviceCard({ device, homeAssistantDown }: { device: Device; homeAssista
           <Icon name="refresh" size={13} /> Refresh
         </button>
       </div>
+
+      <VacuumSchedule deviceId={device.id} deviceName={device.name} paused={unreachable} />
 
       <footer className="home-foot">
         {message ? <span className={message.tone === "ok" ? "ok" : "bad"}>{message.text}</span> : <span />}

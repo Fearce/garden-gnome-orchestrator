@@ -9,6 +9,7 @@ import { bridgeFor, emptyHomeConfig, maskDevice, newDevice, normalizeDevice, nor
 import { controlHomeAssistantContainer, findHomeAssistantContainer, type HomeAssistantContainer } from "./container.js";
 import { HomeAssistantBridge, type VacuumStatus } from "./homeAssistant.js";
 import { miioRequest } from "./miio.js";
+import { normalizeScheduleInput, readSchedule, saveSchedule, setRuleEnabled } from "./schedule.js";
 
 const ACTIONS = new Set(["start", "pause", "home", "find"]);
 
@@ -52,6 +53,29 @@ export const createHomeModule: ModuleFactory = async (ctx) => {
     else await miioRequest(stored.value.pythonPath, device, action);
     ctx.log(`${device.name}: ${action} sent through ${bridge}`);
     return { ok: true, action, bridge, at: Date.now() };
+  });
+
+  // The schedule is Home Assistant automations, so it runs with GGO closed; a miIO-only device has none.
+  router.get("/devices/:id/schedule", async ({ params }) => {
+    const device = findDevice(params.id!);
+    if (bridgeFor(device) !== "home-assistant") return unsupportedSchedule(device);
+    return readSchedule(homeAssistant, device);
+  });
+
+  router.put("/devices/:id/schedule", async ({ params, body }) => {
+    const device = scheduleDevice(params.id!);
+    const view = await saveSchedule(homeAssistant, device, normalizeScheduleInput(body));
+    ctx.log(`${device.name}: cleaning schedule saved in Home Assistant`);
+    return view;
+  });
+
+  router.post("/devices/:id/schedule/enabled", async ({ params, body }) => {
+    const device = scheduleDevice(params.id!);
+    const input = (body && typeof body === "object" ? body : {}) as { entityId?: unknown; enabled?: unknown };
+    if (typeof input.entityId !== "string" || typeof input.enabled !== "boolean") throw new HttpError(400, "Send the automation's entityId and enabled: true or false");
+    const view = await setRuleEnabled(homeAssistant, device, input.entityId, input.enabled);
+    ctx.log(`${device.name}: ${input.entityId} switched ${input.enabled ? "on" : "off"}`);
+    return view;
   });
 
   /**
@@ -102,12 +126,22 @@ export const createHomeModule: ModuleFactory = async (ctx) => {
     return device;
   }
 
+  function scheduleDevice(id: string): VacuumDevice {
+    const device = findDevice(id);
+    if (bridgeFor(device) !== "home-assistant") throw new HttpError(409, unsupportedSchedule(device).reason);
+    return device;
+  }
+
   function view() {
     return { origin: stored.origin, importedAt: stored.importedAt, homeAssistant: stored.value.homeAssistant, pythonPath: stored.value.pythonPath, devices: stored.value.devices.map(maskDevice) };
   }
 
   return { router, busy: () => null, shutdown: async () => undefined };
 };
+
+function unsupportedSchedule(device: VacuumDevice) {
+  return { supported: false as const, reason: `${device.name} is controlled over local miIO; a cleaning schedule needs it in Home Assistant, which runs the schedule while GGO is closed` };
+}
 
 function statusView(device: VacuumDevice, bridge: string, status: VacuumStatus | null, entityId: string | null) {
   return { id: device.id, bridge, entityId, status, at: Date.now() };

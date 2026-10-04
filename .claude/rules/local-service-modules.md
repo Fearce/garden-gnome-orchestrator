@@ -3,6 +3,8 @@ paths:
   - "server/src/modules/**"
   - "server/src/tests/modules.test.ts"
   - "server/scripts/modules-lab.cjs"
+  - "server/scripts/home-schedule-lab.cjs"
+  - "server/src/tests/homeSchedule.test.ts"
   - "server/scripts/module-latency.cjs"
   - "web/src/components/modules/**"
   - "web/scripts/module-tabs.test.ts"
@@ -19,6 +21,7 @@ Design, data layout, Deck import and lifecycle are in `docs/local-service-module
 - **The proxy forwards the raw, still-encoded path** (`forwardedPath(req.url)` in `routes.ts`). Never build it from Fastify's `req.params["*"]`: that one is decoded, and the worker's WHATWG URL parser turns a decoded `\` or `/` into a separator and resolves `..` over it, so `segments/..%5C..%5Cx/file` silently became another route.
 - **A module socket's guard is its ticket, not Origin.** `isStreamHandshake` in `routes.ts` skips the Origin-vs-Host fallback for `/api/modules/<id>/stream` only: Chromium sends no `Sec-Fetch-Site` on a WebSocket handshake and the Deck proxy rewrites `Host`, so that fallback showed the owner "Waiting for a picture…" behind the Deck. Keep ordinary module requests on `isCrossSiteRequest`.
 - **Home Assistant starts and stops only on the owner's click.** `container.ts` finds an existing container by the config folder mounted at `/config` and runs bounded `docker start|stop` in the worker, all steps under one `CONTROL_DEADLINE_MS` (80s) so the answer beats the proxy's 90s limit; give any new docker step a share of that `budget()`, not its own fresh timeout. Never call it from the probe's success path, a timer or boot, and never change the container's restart policy.
+- **A vacuum schedule lives only in Home Assistant.** `home/schedule.ts` reads and edits automations through Home Assistant's config API; GGO stores no copy and runs no timer of its own. GGO manages only an automation that is exactly its own shape (`sameRule` rebuilds it from the parsed fields and compares). Never loosen that to a partial parse: a save replaces the whole automation, and a looser check silently dropped an owner's extra conditions in review. Anything else is listed under `others` with an on/off switch only. Switching is limited to automations whose config names the device's vacuum entity exactly. A save waits for Home Assistant's post-write reload (`applyEnabled`) before switching. Verify with `homeSchedule.test.ts` and `npm run home-schedule-lab --prefix server`.
 - **Tabs poll only while visible.** Use `usePoll`/`usePageVisible` from `web/src/components/modules/hooks.ts` and close sockets and EventSources in effect cleanup. `modules-lab` checks that no `/api/modules/` request leaves the page on another tab, and that frame and log streams close on leaving.
 - **An explicit worker Stop closes its view too.** `ModuleFrame` unmounts the module body before stopping, then shows Start. Keep request hooks inside that body; a hook outside it can start the worker again. Delayed action refreshes must be cancelled on unmount. The browser lab waits past each module's polling tick after Stop.
 - **Sidekick rule edits serialize the entire read/check/write operation.** Keep the revision check inside the per-settings-file queue in `rules.ts`; otherwise concurrent editors both pass and one silently loses its save. A rejected edit must release the queue so a refreshed revision can be retried.

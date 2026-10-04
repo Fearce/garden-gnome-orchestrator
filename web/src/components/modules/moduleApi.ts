@@ -101,5 +101,6 @@ export function formatAgo(at: number | string | null, now = Date.now()): string 
   if (ms < 5_000) return "just now";
   if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
   if (ms < 3_600_000) return `${Math.round(ms / 60_000)} min ago`;
-  return `${Math.round(ms / 3_600_000)} h ago`;
+  if (ms < 48 * 3_600_000) return `${Math.round(ms / 3_600_000)} h ago`;
+  return `${Math.round(ms / 86_400_000)} d ago`;
 }

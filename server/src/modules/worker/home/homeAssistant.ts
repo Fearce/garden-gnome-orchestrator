@@ -23,6 +23,23 @@ interface RegistryEntity {
   unique_id?: string;
 }
 
+export interface ScheduleTargets {
+  vacuum: string;
+  battery: string | null;
+  /** The vacuum's own "start charge" button, which docks the G1 more reliably than return_to_base. */
+  dock: string | null;
+}
+
+export interface HaAutomation {
+  /** The automation's config id, which Home Assistant's config API edits it by. */
+  id: string;
+  entityId: string;
+  name: string;
+  enabled: boolean;
+  lastTriggered: string | null;
+  config: Record<string, unknown>;
+}
+
 interface HaState {
   entity_id: string;
   state: string;
@@ -30,6 +47,8 @@ interface HaState {
 }
 
 const STATES_CACHE_MS = 2_000;
+/** Config reads per schedule read; one per automation, so an install with many stays gentle on Home Assistant. */
+const CONFIG_READS_AT_ONCE = 6;
 const SERVICES: Record<string, [string, string]> = {
   start: ["vacuum", "start"],
   pause: ["vacuum", "pause"],
@@ -88,6 +107,55 @@ export class HomeAssistantBridge {
     if (!service) throw new HttpError(400, `Unknown vacuum action "${action}"`);
     await this.api("POST", `/api/services/${service[0]}/${service[1]}`, { entity_id: entity.entity_id });
     return { entityId: entity.entity_id };
+  }
+
+  /** The vacuum entity and the companions a schedule needs: its battery sensor and its dock button. */
+  async scheduleTargets(device: VacuumDevice): Promise<ScheduleTargets> {
+    const entities = await this.entities();
+    const entity = await this.vacuumFor(device, entities);
+    return {
+      vacuum: entity.entity_id.toLowerCase(),
+      battery: related_(entities, entity.device_id, "sensor", "battery_level")?.entity_id.toLowerCase() ?? null,
+      dock: related_(entities, entity.device_id, "button", "start_charge")?.entity_id.toLowerCase() ?? null,
+    };
+  }
+
+  /** Every automation with a config id (so it can be edited) that names `entityId` exactly, read fresh. */
+  async automationsFor(entityId: string): Promise<HaAutomation[]> {
+    this.states = null;
+    const states = [...(await this.stateMap()).values()].filter((state) => state.entity_id.startsWith("automation.") && typeof state.attributes?.id === "string");
+    const configs = await mapLimited(states, CONFIG_READS_AT_ONCE, async (state) => {
+      const config = await this.api("GET", `/api/config/automation/config/${encodeURIComponent(state.attributes!.id as string)}`, undefined, { missingOk: true });
+      return config && typeof config === "object" ? (config as Record<string, unknown>) : null;
+    });
+    const mention = new RegExp(`(^|[^a-z0-9_.])${entityId.toLowerCase().replace(/\./g, "\\.")}($|[^a-z0-9_])`);
+    return states
+      .map((state, i) => ({ state, config: configs[i] }))
+      .filter((entry): entry is { state: HaState; config: Record<string, unknown> } => entry.config !== null && mention.test(JSON.stringify(entry.config).toLowerCase()))
+      .map(({ state, config }) => ({
+        id: state.attributes!.id as string,
+        entityId: state.entity_id,
+        name: typeof state.attributes?.friendly_name === "string" ? state.attributes.friendly_name : state.entity_id,
+        enabled: state.state === "on",
+        lastTriggered: typeof state.attributes?.last_triggered === "string" ? state.attributes.last_triggered : null,
+        config,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** Creates or replaces an automation through Home Assistant's own editor API. It answers before its reload finishes. */
+  async saveAutomation(id: string, config: Record<string, unknown>, createOnly = false): Promise<void> {
+    if (createOnly) {
+      const existing = await this.api("GET", `/api/config/automation/config/${encodeURIComponent(id)}`, undefined, { missingOk: true });
+      if (existing !== null) throw new HttpError(409, `Automation ${id} already exists with custom settings; rename it in Home Assistant before adding this schedule`);
+    }
+    this.states = null;
+    await this.api("POST", `/api/config/automation/config/${encodeURIComponent(id)}`, config);
+  }
+
+  async setAutomationEnabled(entityId: string, enabled: boolean): Promise<void> {
+    this.states = null;
+    await this.api("POST", `/api/services/automation/${enabled ? "turn_on" : "turn_off"}`, { entity_id: entityId });
   }
 
   private async vacuumFor(device: VacuumDevice, entities: RegistryEntity[]): Promise<RegistryEntity> {
@@ -159,13 +227,14 @@ export class HomeAssistantBridge {
     return this.access.token;
   }
 
-  private async api(method: string, path: string, body?: unknown, retry = true): Promise<unknown> {
+  private async api(method: string, path: string, body?: unknown, options: { retry?: boolean; missingOk?: boolean } = {}): Promise<unknown> {
     const token = await this.accessToken();
     const res = await this.fetchJson(path, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }, 15_000);
-    if ((res.status === 401 || res.status === 403) && retry) {
+    if ((res.status === 401 || res.status === 403) && options.retry !== false) {
       this.access = null;
-      return this.api(method, path, body, false);
+      return this.api(method, path, body, { ...options, retry: false });
     }
+    if (res.status === 404 && options.missingOk) return null;
     const data = res.data;
     if (!res.ok) throw new HttpError(502, (data as { message?: string } | null)?.message ?? `Home Assistant answered HTTP ${res.status}`);
     return data;
@@ -223,4 +292,17 @@ function chargeState(vacuumState: string, raw: string | null): string | null {
   if (["docked", "returning", "charging"].includes(state) && charge === "not charging") return "Charging";
   if (["cleaning", "sweeping", "mopping"].includes(state) && charge === "charging") return "Not charging";
   return raw;
+}
+
+async function mapLimited<T, R>(items: T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await run(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }

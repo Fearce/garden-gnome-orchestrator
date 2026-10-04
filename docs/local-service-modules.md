@@ -129,6 +129,28 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
   The worker runs `docker start|stop` itself; the lookup, the start or stop and the re-check share one
   80-second deadline, under the console proxy's 90-second answer limit. Opening the tab never starts it, GGO
   never creates a container, and the container's restart policy is left as the owner set it.
+  Each Home Assistant vacuum card also shows its **cleaning schedule** (`worker/home/schedule.ts`). The
+  schedule is two Home Assistant automations, so it keeps running with GGO closed. The **auto-start**
+  starts the docked vacuum once its battery reaches a set level, inside a daily window and on chosen days;
+  it re-checks at the window's start and every 30 minutes. The **quiet-hours guard** docks the vacuum
+  whenever it cleans outside that window, through the vacuum's own start-charge button when it has one.
+  GGO manages an automation only when it is exactly the shape GGO writes, checked by rebuilding it from the
+  parsed window, days, battery sensor and dock button and comparing triggers, conditions, actions and
+  mode. So the owner's hand-written pair is adopted whatever its id. An automation with one more condition
+  or step, or a numeric condition on a sensor other than the vacuum's battery, is never rewritten: it is
+  listed as "Also starts it", "Also docks it" or "Also uses it" with its own on/off switch, and the edit
+  dialog warns before GGO adds its own rule beside it. An automation counts as the vacuum's only when its
+  config names the vacuum entity exactly, so a second vacuum's automations stay off this card. The card
+  reads the schedule through Home Assistant's config API (`/api/config/automation/config/<id>`, at most six
+  reads at once) when it opens and when the browser tab becomes visible again, with no timer. A save
+  rewrites only an automation whose fields changed, keeping its id, battery sensor and dock button but
+  regenerating its alias and description, which name the times. Home Assistant's editor API rewrites
+  `automations.yaml` on such a save, so YAML comments in that file are dropped. A rule that does not
+  exist yet gets a `ggo_<vacuum>_auto_start` or `ggo_<vacuum>_quiet_hours_guard` id, and one left off is
+  not created. Home Assistant answers a write before its reload finishes, so the save waits up to 10
+  seconds for new automations to appear before switching each on or off (`automation.turn_on|turn_off`).
+  Days apply only to a window within one day: Home Assistant checks a weekday against the calendar day,
+  so a window past midnight must run every day. A miIO-only device has no schedule.
 - **Sidekick** edits the companion-launcher tray app's rules in place, rejecting stale edits by file
   revision. Concurrent edits are serialized before checking that revision, so two editors cannot both
   save from the same snapshot and overwrite each other. It shows each rule's trigger and companion liveness and the app's launch log, and starts or
@@ -172,6 +194,11 @@ from a stale page cannot turn recording on or off.
   stale builds, Deck import (including a machine with no hub), secret masking, auth, unreachable
   upstreams, tab visibility, the recording modes and schedule, retention, and the recordings routes
   (ranges, MP4 playback, refused paths), using real worker processes and a stand-in hub.
+  `homeSchedule.test.ts` covers reading, adopting, rewriting and switching vacuum schedules against a
+  stand-in Home Assistant.
+- `npm run home-schedule-lab --prefix server` drives the vacuum schedule in a browser against a fake Home
+  Assistant: the card, its on/off switch, and an edit saved through the dialog. It uses the same isolated
+  builds as `modules-lab` and never contacts the real Home Assistant.
 - `npm run modules-lab --prefix server` drives all four tabs in a browser against a throwaway instance;
   the header of `server/scripts/modules-lab.cjs` lists the build steps. It never starts or stops a
   script, never sends a vacuum command and never toggles Sidekick. It turns 24/7 on with one-minute files

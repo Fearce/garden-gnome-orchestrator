@@ -121,7 +121,8 @@ The board has a tab for each area. Any tab except Tasks can be hidden per browse
   process that starts the first time you open the tab and exits when idle. Surveillance shows
   live cameras and browses and plays recordings. Nothing records until you choose 24/7 or a
   weekly schedule. Recording then runs on through restarts until you turn it off, with
-  per-camera recording, file length, and optional keep-days or size caps. See
+  per-camera recording, file length, and optional keep-days or size caps. Home controls robot
+  vacuums and edits their cleaning schedule, which runs as Home Assistant automations. See
   [docs/local-service-modules.md](docs/local-service-modules.md).
 
 ![The scheduled tasks view with three recurring briefs](docs/assets/scheduled.png)
