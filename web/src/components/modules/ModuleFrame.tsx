@@ -39,7 +39,8 @@ export function ModuleFrame({ id, title, lede, actions, children }: { id: Module
 function ServiceChip({ service }: { service: ServiceControl }) {
   const status = service.status;
   const state = service.pending === "start" || service.pending === "restart" ? "starting" : (status?.state ?? "stopped");
-  const detail = status?.state === "running" ? `pid ${status.pid} · ${formatBytes(status.rssBytes)}` : status?.lastError ? "last start failed" : "starts when needed";
+  const detail =
+    status?.state === "running" ? `pid ${status.pid} · ${formatBytes(status.rssBytes)}` : state === "starting" ? "launching its worker" : status?.lastError ? "last start failed" : "starts when needed";
   const stop = async () => {
     const busy = status?.busy;
     if (busy && !window.confirm(`This service is ${busy}. Stopping it ends that too. Stop anyway?`)) return;

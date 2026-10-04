@@ -71,6 +71,9 @@ export function usePoll<T>(load: (signal: AbortSignal) => Promise<T>, intervalMs
   return { data, error, loading, refresh };
 }
 
+/** How long after opening a tab a "stopped" worker is re-read quickly, since the tab's own first request is starting it. */
+const SETTLE_MS = 20_000;
+
 export interface ServiceControl {
   status: ServiceStatus | null;
   error: string | null;
@@ -79,9 +82,18 @@ export interface ServiceControl {
   refresh: () => Promise<void>;
 }
 
-/** The module's worker process as the tab's header shows it. Read every 15 s while the tab is open. */
+/**
+ * The module's worker process as the tab's header shows it. Read every 15 s while the tab is open, and every
+ * second while it settles: the tab's first request starts the worker in parallel with this read.
+ */
 export function useService(id: ModuleView): ServiceControl {
-  const poll = usePoll((signal) => fetchServiceStatus(id, signal), 15_000);
+  const [settling, setSettling] = useState(true);
+  const poll = usePoll((signal) => fetchServiceStatus(id, signal), settling ? 1_000 : 15_000);
+  const openedAt = useRef(Date.now());
+  const state = poll.data?.state;
+  useEffect(() => {
+    setSettling(state === undefined || state === "starting" || (state === "stopped" && Date.now() - openedAt.current < SETTLE_MS));
+  }, [state, poll.data]);
   const [pending, setPending] = useState<ServiceControl["pending"]>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const act = useCallback(

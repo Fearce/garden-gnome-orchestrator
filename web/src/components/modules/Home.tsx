@@ -110,6 +110,7 @@ function bridgeOf(device: Device): "home-assistant" | "xiaomi-miio" {
 function HomeBody({ config, onEdit }: { config: HomeConfig; onEdit: () => void }) {
   const usesHomeAssistant = config.devices.some((device) => bridgeOf(device) === "home-assistant");
   const probe = usePoll((signal) => moduleJson<HomeAssistantProbe>("home", "/home-assistant", { signal }), 30_000, usesHomeAssistant);
+  const homeAssistantDown = Boolean(usesHomeAssistant && probe.data && !probe.data.reachable);
   if (!config.devices.length) {
     return (
       <div className="mod-empty">
@@ -122,7 +123,7 @@ function HomeBody({ config, onEdit }: { config: HomeConfig; onEdit: () => void }
   }
   return (
     <>
-      {usesHomeAssistant && probe.data && !probe.data.reachable ? (
+      {homeAssistantDown && probe.data ? (
         <Notice tone="warn" title="Home Assistant is not answering" onRetry={() => void probe.refresh()}>
           Nothing answers at <code>{probe.data.url}</code>. Start Home Assistant on this PC; devices that use it come back on their next refresh.
         </Notice>
@@ -134,19 +135,21 @@ function HomeBody({ config, onEdit }: { config: HomeConfig; onEdit: () => void }
       ) : null}
       <div className="home-grid">
         {config.devices.map((device) => (
-          <DeviceCard key={device.id} device={device} />
+          <DeviceCard key={device.id} device={device} homeAssistantDown={homeAssistantDown} />
         ))}
       </div>
     </>
   );
 }
 
-function DeviceCard({ device }: { device: Device }) {
+/** `homeAssistantDown` comes from the page's own probe, which already says so once for every device. */
+function DeviceCard({ device, homeAssistantDown }: { device: Device; homeAssistantDown: boolean }) {
   const status = usePoll((signal) => moduleJson<StatusAnswer>("home", `/devices/${encodeURIComponent(device.id)}/status`, { signal }), device.refreshMs || null);
   const [running, setRunning] = useState<Action | null>(null);
   const [message, setMessage] = useState<{ tone: "ok" | "bad"; text: string } | null>(null);
   const bridge = status.data?.bridge ?? bridgeOf(device);
   const vacuum = status.data?.status ?? null;
+  const unreachable = bridge === "home-assistant" && homeAssistantDown;
 
   const act = useCallback(
     async (action: Action, label: string) => {
@@ -177,7 +180,7 @@ function DeviceCard({ device }: { device: Device }) {
         <span className={`mod-badge mod-badge-${vacuum?.error && vacuum.error !== "none" ? "error" : vacuum?.state ? "running" : "stopped"}`}>{vacuum?.state ?? (status.loading ? "reading" : "unknown")}</span>
       </header>
 
-      {status.error ? (
+      {status.error && !unreachable ? (
         <Notice tone="bad" title={status.error instanceof ModuleRequestError && status.error.upstreamDown ? "Home Assistant is not answering" : "Status could not be read"} onRetry={() => void status.refresh()}>
           {errorText(status.error)}
         </Notice>
@@ -198,7 +201,7 @@ function DeviceCard({ device }: { device: Device }) {
 
       <div className="home-actions">
         {ACTIONS.map(({ action, label, icon, tone }) => (
-          <button key={action} className={`btn sm${tone ? ` ${tone}` : ""}`} disabled={running !== null} onClick={() => void act(action, label)}>
+          <button key={action} className={`btn sm${tone ? ` ${tone}` : ""}`} disabled={running !== null || unreachable} title={unreachable ? "Home Assistant is not answering" : undefined} onClick={() => void act(action, label)}>
             <Icon name={icon} size={13} /> {running === action ? `${label}…` : label}
           </button>
         ))}

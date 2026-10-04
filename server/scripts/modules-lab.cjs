@@ -159,7 +159,8 @@ async function soft(label, fn) {
       report.coldStartMs = { scripthub: Date.now() - started };
       const cards = await page.locator(".sh-card").count();
       check("Script Hub renders the hub's scripts", cards > 0, `${cards} cards, first paint ${report.coldStartMs.scripthub}ms`);
-      await page.waitForSelector(".mod-service-running", { timeout: 15_000 });
+      const headerRunning = await page.waitForSelector(".mod-service-running", { timeout: 5_000 }).then(() => true, () => false);
+      check("the header shows the worker running within seconds, not on the next 15 s read", headerRunning, await page.locator(".mod-service-text").first().textContent());
       check("opening the tab started its service", (await services(cookie)).find((s) => s.module === "scripthub")?.state === "running");
       const first = ((await page.locator(".sh-card h4").first().textContent()) ?? "").trim();
       await page.fill('[aria-label="Search scripts"]', first);
@@ -283,6 +284,10 @@ async function soft(label, fn) {
       const ha = (await api(cookie, "GET", "/api/modules/home/api/home-assistant")).json;
       report.homeAssistant = ha;
       check("Home Assistant's state is reported, not hung", ha !== null, JSON.stringify(ha)?.slice(0, 200));
+      if (ha && !ha.reachable) {
+        check("a Home Assistant outage is reported once, not once per device", notices.filter((n) => /not answering/.test(n ?? "")).length === 1, JSON.stringify(notices));
+        check("...and its devices' controls are disabled meanwhile", await page.locator(".home-actions button:has-text('Start')").first().isDisabled());
+      }
       await page.screenshot({ path: path.join(shots, "home.png") });
     });
 
