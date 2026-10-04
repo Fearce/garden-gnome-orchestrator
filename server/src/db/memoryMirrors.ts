@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { Thread, ThreadSummary } from "../types.js";
+import type { Message, Thread, ThreadSummary } from "../types.js";
 
 // In-memory copies of two small, hot tables, so the reads that run on every connect, every periodic
 // sweep and every crash-log line stop going to disk.
@@ -31,6 +31,19 @@ function watchTableWrites(raw: Database.Database, table: string, keyColumn: stri
       BEGIN SELECT ${fn}(old.${keyColumn}); SELECT ${fn}(new.${keyColumn}) WHERE new.${keyColumn} IS NOT old.${keyColumn}; END;
     CREATE TEMP TRIGGER IF NOT EXISTS ggo_${table}_mirror_ad AFTER DELETE ON main.${table}
       BEGIN SELECT ${fn}(old.${keyColumn}); END;
+  `);
+}
+
+/** Call `onDelete(threadId)` for every message this connection deletes: a retry reset, a task delete's
+ *  cascade, a raw statement. Inserts, the hottest write in the database, fire nothing. */
+export function watchMessageDeletes(raw: Database.Database, onDelete: (threadId: string) => void): void {
+  raw.function("ggo_message_deleted", { deterministic: false }, (threadId: unknown) => {
+    if (typeof threadId === "string") onDelete(threadId);
+    return null;
+  });
+  raw.exec(`
+    CREATE TEMP TRIGGER IF NOT EXISTS ggo_messages_deleted AFTER DELETE ON main.messages
+      BEGIN SELECT ggo_message_deleted(old.thread_id); END;
   `);
 }
 
@@ -129,5 +142,52 @@ export class KvMirror {
     const value = this.read(key);
     this.values.set(key, value);
     return value;
+  }
+}
+
+/** One recorded tool call, as `ToolCallDigest` reads it. `seq` is the message rowid. */
+export interface ToolCallRow {
+  seq: number;
+  role: Message["role"];
+  content: string;
+}
+
+/** Per-task state folded from the task's recorded tool calls. Each read after the first reads only the
+ *  calls recorded since the previous one, so asking every few seconds costs nothing once the task's
+ *  history is folded. A deleted message (a retry reset deletes them all) or another connection's commit
+ *  discards the folded state, and the next read starts again from the task's first call. Inside a
+ *  transaction the read is uncached, because a rolled-back insert fires no delete trigger. Treat the
+ *  returned state as read-only: it is the cached copy. */
+export class ToolCallDigest<T> {
+  private readonly folded = new Map<string, { seq: number; state: T }>();
+  private readonly foreign: ForeignCommitWatch;
+
+  constructor(
+    private readonly raw: Database.Database,
+    private readonly readAfter: (threadId: string, afterSeq: number) => ToolCallRow[],
+    private readonly start: () => T,
+    private readonly add: (state: T, call: ToolCallRow) => void,
+  ) {
+    this.foreign = new ForeignCommitWatch(raw);
+  }
+
+  read(threadId: string): T {
+    if (this.raw.inTransaction) return this.fold({ seq: 0, state: this.start() }, threadId).state;
+    if (this.foreign.changed()) this.folded.clear();
+    const entry = this.fold(this.folded.get(threadId) ?? { seq: 0, state: this.start() }, threadId);
+    this.folded.set(threadId, entry);
+    return entry.state;
+  }
+
+  forget(threadId: string): void {
+    this.folded.delete(threadId);
+  }
+
+  private fold(entry: { seq: number; state: T }, threadId: string): { seq: number; state: T } {
+    for (const call of this.readAfter(threadId, entry.seq)) {
+      this.add(entry.state, call);
+      entry.seq = Math.max(entry.seq, call.seq);
+    }
+    return entry;
   }
 }

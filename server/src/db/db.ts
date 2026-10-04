@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
-import { KvMirror, type ListedThread, ThreadListingMirror } from "./memoryMirrors.js";
+import { KvMirror, type ListedThread, ThreadListingMirror, ToolCallDigest, type ToolCallRow, watchMessageDeletes } from "./memoryMirrors.js";
 import { instrumentStatements } from "./slowStatements.js";
 import { config } from "../config.js";
 import { manualDeploymentSummary, parseManualDeployment, parseManualDeploymentClaim } from "../orchestrator/manualDeployment.js";
@@ -919,6 +919,7 @@ export class Db {
   /** Null until migrate() finishes, so a migration always reads the file as it is at that moment. */
   private threadListing: ThreadListingMirror | null = null;
   private kv: KvMirror | null = null;
+  private readonly toolCallDigests = new Set<ToolCallDigest<unknown>>();
   private runCreatedListeners: Array<(run: AgentRun) => void> = [];
 
   constructor(path: string) {
@@ -940,6 +941,28 @@ export class Db {
       },
     });
     this.kv = new KvMirror(this.raw, (key) => this.readKv(key));
+    watchMessageDeletes(this.raw, (threadId) => {
+      for (const digest of this.toolCallDigests) digest.forget(threadId);
+    });
+  }
+
+  /** A per-task fold of recorded tool calls (`ToolCallDigest`). Make one per kind of state and keep it:
+   *  every read after a task's first reads only the tool calls recorded since. */
+  toolCallDigest<T>(start: () => T, add: (state: T, call: ToolCallRow) => void): ToolCallDigest<T> {
+    const digest = new ToolCallDigest(this.raw, (threadId, afterSeq) => this.toolCallsAfter(threadId, afterSeq), start, add);
+    this.toolCallDigests.add(digest as ToolCallDigest<unknown>);
+    return digest;
+  }
+
+  /** Pinned to the thread index, where the rowid bound is checked on the index entry: a call already
+   *  folded never touches the table. The planner could otherwise pick the rowid range, walking every
+   *  task's messages above `afterSeq`. */
+  private toolCallsAfter(threadId: string, afterSeq: number): ToolCallRow[] {
+    return this.raw
+      .prepare(
+        "SELECT rowid AS seq, role, content FROM messages INDEXED BY idx_messages_thread_time WHERE thread_id = ? AND rowid > ? AND kind = 'tool' ORDER BY created_at ASC, rowid ASC",
+      )
+      .all(threadId, afterSeq) as ToolCallRow[];
   }
 
   private migrate(): void {

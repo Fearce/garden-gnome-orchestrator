@@ -1,5 +1,6 @@
 import { isAbsolute, join, resolve } from "node:path";
 import type { Db } from "../db/db.js";
+import type { ToolCallDigest } from "../db/memoryMirrors.js";
 import type { Role, Thread } from "../types.js";
 import { resolveTaskDeliverable } from "./deliverablePath.js";
 
@@ -133,18 +134,35 @@ export function collectTaskWrittenFiles(db: Db, thread: Thread): string[] {
   const wsKey = workspaceKey(thread.workspace);
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const m of db.listMessages(thread.id)) {
-    if (m.kind !== "tool" || !PRODUCING_ROLES.has(m.role)) continue;
-    for (const path of taskWrittenPaths(m.content)) {
-      const key = canonicalKey(thread.workspace, path);
-      if (!isInsideWorkspace(wsKey, key)) continue; // out-of-workspace files aren't this task's own tree
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(absPath(thread.workspace, path));
-      if (out.length >= MAX_TASK_FILES) return out;
-    }
+  for (const path of writtenPathsDigest(db).read(thread.id)) {
+    const key = canonicalKey(thread.workspace, path);
+    if (!isInsideWorkspace(wsKey, key)) continue; // out-of-workspace files aren't this task's own tree
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(absPath(thread.workspace, path));
+    if (out.length >= MAX_TASK_FILES) return out;
   }
   return out;
+}
+
+// The Changes chip asks for a task's written files on every refresh, and reading a long task's whole feed
+// for them took 2-3s cold (crash.log, 2026-10-04). Each task's distinct written paths, in first-written
+// order and before the workspace filter (a task can move to a worktree), are folded once per database.
+const writtenPathDigests = new WeakMap<Db, ToolCallDigest<Set<string>>>();
+
+function writtenPathsDigest(db: Db): ToolCallDigest<Set<string>> {
+  let digest = writtenPathDigests.get(db);
+  if (!digest) {
+    digest = db.toolCallDigest(
+      () => new Set<string>(),
+      (paths, call) => {
+        if (!PRODUCING_ROLES.has(call.role)) return;
+        for (const path of taskWrittenPaths(call.content)) paths.add(path);
+      },
+    );
+    writtenPathDigests.set(db, digest);
+  }
+  return digest;
 }
 
 /** The absolute, resolved form of a written path (relative paths resolve against the workspace) — the

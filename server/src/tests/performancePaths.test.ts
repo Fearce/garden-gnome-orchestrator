@@ -8,7 +8,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { Db } from "../db/db.js";
+import { collectTaskWrittenFiles } from "../orchestrator/deliverableCheck.js";
 import { startLatestMessagePreviewBackfill } from "../db/previewBackfill.js";
 import { EventHub } from "../events.js";
 import { BRIEF_PREVIEW_CHARS } from "../types.js";
@@ -287,6 +289,87 @@ try {
   const reportSql = seekSql(() => db.goalTurnReport(thread.id, 0), "messages");
   assert.equal(reportSql.length, 1, `the per-minute goal report is one query: ${reportSql.join(" ; ")}`);
   assert.ok(!/COUNT\(/i.test(reportSql[0]!), `the per-minute goal report counts the turn's rows: ${reportSql[0]}`);
+
+  // ---- the Changes chip reads only a task's new tool calls ----
+  //
+  // 2026-10-04: every Changes status/summary request read the task's whole feed (`SELECT *`, tool results
+  // and all) to find the files it wrote — 2-3s cold on a 26k-message task, several times a minute.
+  const rowsRead = (call: () => unknown): number => {
+    let rows = 0;
+    const original = db.raw.prepare.bind(db.raw);
+    db.raw.prepare = ((sql: string) => {
+      const statement = original(sql);
+      if (!/FROM messages\b/.test(sql) || /^EXPLAIN/.test(sql)) return statement;
+      return new Proxy(statement, {
+        get(target, key) {
+          const value = Reflect.get(target, key, target);
+          if (typeof value !== "function") return value;
+          if (key !== "all") return value.bind(target);
+          return (...args: unknown[]) => {
+            const result = value.apply(target, args) as unknown[];
+            rows += result.length;
+            return result;
+          };
+        },
+      });
+    }) as typeof db.raw.prepare;
+    try {
+      call();
+    } finally {
+      db.raw.prepare = original;
+    }
+    return rows;
+  };
+  const writer = db.createThread({ title: "Writes files", workspace: dir, rawPrompt: "write", brief: "write" });
+  const toolCall = (role: "implementor" | "qa", tool: string, path: string) =>
+    db.addMessage({ threadId: writer.id, role, kind: "tool", content: `${tool} ${JSON.stringify({ file_path: path })}` });
+  toolCall("implementor", "Write", join(dir, "notes.md"));
+  toolCall("qa", "Write", join(dir, "qa-scratch.md"));
+  toolCall("implementor", "Edit", "src/app.ts");
+  toolCall("implementor", "Write", join(tmpdir(), "outside-the-workspace.md"));
+  for (let i = 0; i < 40; i++) db.addMessage({ threadId: writer.id, role: "implementor", kind: "result", content: "result ".repeat(200) });
+  const taskFiles = () => collectTaskWrittenFiles(db, db.getThread(writer.id)!);
+  const expected = [join(dir, "notes.md"), join(dir, "src", "app.ts")];
+  assert.deepEqual(taskFiles(), expected, "a producing agent's in-workspace writes, QA scratch and outside paths excluded");
+  assert.equal(rowsRead(taskFiles), 0, "asking again reads no rows when nothing new was recorded");
+  toolCall("implementor", "Write", "docs/report.md");
+  db.addMessage({ threadId: writer.id, role: "implementor", kind: "result", content: "ok" });
+  assert.equal(rowsRead(taskFiles), 1, "a later ask reads only the tool call recorded since");
+  assert.deepEqual(taskFiles(), [...expected, join(dir, "docs", "report.md")]);
+  for (const sql of seekSql(taskFiles, "messages")) {
+    const detail = planOf(sql, [writer.id, 0]);
+    assert.ok(detail.includes("idx_messages_thread_time"), `the tool-call read must use the thread index: ${detail}`);
+    assert.ok(!/SCAN messages\b/.test(detail), `the tool-call read scans messages: ${detail}`);
+  }
+  assert.deepEqual(
+    collectTaskWrittenFiles(db, { ...db.getThread(writer.id)!, workspace: join(dir, "src") }),
+    [join(dir, "src", "src", "app.ts"), join(dir, "src", "docs", "report.md")],
+    "a moved workspace re-filters what was already read: relative paths resolve against it, an absolute one now outside it drops",
+  );
+
+  db.resetThreadForRetry(writer.id);
+  assert.deepEqual(taskFiles(), [], "a retry reset deletes the feed, so the old attempt's files are gone too");
+  toolCall("implementor", "Write", "fresh.md");
+  assert.deepEqual(taskFiles(), [join(dir, "fresh.md")]);
+
+  const foreign = new Database(join(dir, "orchestrator.sqlite"));
+  try {
+    foreign.prepare("DELETE FROM messages WHERE thread_id = ?").run(writer.id);
+  } finally {
+    foreign.close();
+  }
+  assert.deepEqual(taskFiles(), [], "another connection's delete is seen too");
+
+  try {
+    db.raw.transaction(() => {
+      toolCall("implementor", "Write", "rolled-back.md");
+      assert.deepEqual(taskFiles(), [join(dir, "rolled-back.md")], "inside a transaction the read is direct");
+      throw new Error("roll back");
+    })();
+  } catch (error) {
+    if ((error as Error).message !== "roll back") throw error;
+  }
+  assert.deepEqual(taskFiles(), [], "…and a rolled-back write never reaches the cached files");
 
   // ---- the connect snapshot is not rebuilt per reconnect ----
   //
