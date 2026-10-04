@@ -12,6 +12,7 @@ import { CODEX_SUB_ID } from "../types.js";
 /** The persisted burn. `windowReset` anchors it to the weekly window it was started against; it is null
  *  only while that window's reset is still unknown (no usage reading yet), and is filled in by the first. */
 export interface ResetBurn {
+  automatic?: boolean;
   subId: string;
   startedAt: number;
   windowReset: number | null;
@@ -44,7 +45,7 @@ export function parseResetBurn(raw: string | null | undefined): ResetBurn | null
     const { subId, startedAt, windowReset } = value as Record<string, unknown>;
     if (typeof subId !== "string" || !subId || typeof startedAt !== "number" || !Number.isFinite(startedAt)) return null;
     const anchored = typeof windowReset === "number" && Number.isFinite(windowReset) ? windowReset : null;
-    return { subId, startedAt, windowReset: anchored };
+    return { subId, startedAt, windowReset: anchored, ...((value as Record<string, unknown>).automatic === true ? { automatic: true } : {}) };
   } catch {
     return null;
   }

@@ -900,6 +900,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   tokenLimitPercent: 80,
   fastUsagePolling: false,
   spreadUsage: false,
+  autoBurn: false,
   resetBurn: null,
   tokenConservationMode: false,
   usageSaving: {},

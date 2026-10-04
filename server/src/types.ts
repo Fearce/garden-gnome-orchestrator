@@ -1305,6 +1305,7 @@ export interface OrchestratorSettings {
   // when the specific compatible provider window has enough headroom again.
   // ---- Fast usage polling: opt-in tighter cadence for the account usage ping ----
   fastUsagePolling: boolean; // off (default) → 10-min ping; on → poll every ~30s so the strip tracks the live burn within ~1-2%
+  autoBurn: boolean; // default off: automatically burn subscriptions resetting within 24 hours
   resetBurn: ResetBurnDTO | null; // "prepare a sub for reset": the one subscription routed to first so it maxes out before its banked reset is spent; null = off. Written via the patch-only `resetBurnSubId`
   spreadUsage: boolean; // off (default) → burn the soonest-resetting provider/sub first; on → always dispatch to the provider (Claude sub, Codex, or Grok) with the lowest weekly usage, balancing burn across every enabled platform
   // Token conservation mode: off (default) → normal model routing. on → once the Codex general pool sits

@@ -855,6 +855,7 @@ export interface OrchestratorSettings {
   spreadUsage: boolean;
   // "Prepare a sub for reset": the one subscription routed to first so it maxes out before its banked
   // reset is spent. Null = off. Set it with the patch-only `resetBurnSubId` (null stops it).
+  autoBurn: boolean; // default off: automatically burn subscriptions resetting within 24 hours
   resetBurn: ResetBurnDTO | null;
   // Token conservation mode: off (default) = normal model routing. on = once the Codex general pool
   // sits in the last 10% of its weekly window (and isn't resetting within 24h), every role dispatched

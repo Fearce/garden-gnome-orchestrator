@@ -2584,6 +2584,12 @@ function ResetBurnSection() {
           </select>
         }
       />
+      <ToggleRow
+        label="Auto-burn"
+        hint="Automatically burn enabled Claude or Codex subscriptions whose known weekly reset is within 24 hours. Off by default. The soonest reset goes first; capped subscriptions are skipped. Manual burn choices take priority. Turn this off to stop automatic burns; it never spends a banked reset for you."
+        on={settings.autoBurn}
+        onChange={(autoBurn) => setSettings({ autoBurn })}
+      />
       {burn ? <ResetBurnStatus burn={burn} target={target} /> : null}
     </>
   );

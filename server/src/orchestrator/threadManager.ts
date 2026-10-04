@@ -1660,7 +1660,10 @@ export class ThreadManager implements OrchestratorApi {
     // (hasHeadroom gates it, so a too-early sweep before the first ping simply no-ops and the interval
     // catches it) — mirroring the boot auto-resume's deferral.
     setTimeout(() => this.resumeCapParked(), AUTO_RESUME_DELAY_MS).unref?.();
-    this.capSupervisor = setInterval(() => this.resumeCapParked(), config.capRetryMs);
+    this.capSupervisor = setInterval(() => {
+      this.resetBurn(); // enter the 24-hour auto-burn window even without a new usage reading
+      this.resumeCapParked();
+    }, config.capRetryMs);
     this.capSupervisor.unref?.();
     this.armCapResumeWake();
   }
@@ -3258,6 +3261,7 @@ export class ThreadManager implements OrchestratorApi {
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
       fastUsagePolling: this.settingBool("setting_fast_usage_polling", false),
       spreadUsage: this.settingBool("setting_spread_usage", false),
+      autoBurn: this.settingBool("setting_auto_burn", false),
       resetBurn: this.resetBurnSetting(),
       tokenConservationMode: this.settingBool("setting_token_conservation_mode", false),
       usageSaving: this.usageSavingSettings(),
@@ -5643,6 +5647,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.db.kvSet("setting_spread_usage", patch.spreadUsage ? "1" : "0");
       this.accounts.setSpreadUsage(patch.spreadUsage);
     }
+    if (patch.autoBurn !== undefined) this.db.kvSet("setting_auto_burn", patch.autoBurn ? "1" : "0");
     if (patch.resetBurnSubId !== undefined) this.setResetBurn(patch.resetBurnSubId);
     if (patch.tokenConservationMode !== undefined) this.db.kvSet("setting_token_conservation_mode", patch.tokenConservationMode ? "1" : "0");
     if (patch.usageSaving !== undefined) this.db.kvSet("setting_usage_saving", JSON.stringify(sanitizeUsageSaving(patch.usageSaving)));
@@ -6402,7 +6407,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  anchors on the first known reset and ends once that window is gone (reset naturally or spent early). */
   resetBurn(): ResetBurn | null {
     const burn = parseResetBurn(this.db.kvGet("setting_reset_burn"));
-    if (!burn) return null;
+    if (!burn || burn.automatic) return this.autoResetBurn(burn);
     if (!resetBurnEligible(burn.subId, this.claudeAccountIds())) {
       this.endResetBurn(burn, "it is no longer a configured subscription");
       return null;
@@ -6421,6 +6426,42 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return burn;
   }
 
+  /** Auto-burn shares the existing single-target routing; manual selections always take precedence. */
+  private autoResetBurn(current: ResetBurn | null): ResetBurn | null {
+    const now = Date.now();
+    const candidates: Array<{ subId: string; reset: number }> = [];
+    const add = (subId: string, reset: number | null | undefined, ready: boolean): void => {
+      const redeemed = Number(this.db.kvGet(`auto_burn_redeemed_${subId}`) ?? 0);
+      if (ready && reset != null && Number.isFinite(reset) && reset > now && reset <= now + 24 * 60 * 60_000
+        && (redeemed === 0 || reset > redeemed + 60 * 60_000)) candidates.push({ subId, reset });
+    };
+    if (this.settingBool("setting_auto_burn", false)) {
+      for (const account of this.accounts.dto()) {
+        add(account.id, account.sevenDayReset, account.enabled && !account.rateLimited
+          && (account.fiveHour ?? 0) < 98 && (account.sevenDay ?? 0) < 98
+          && (account.holdUntil == null || account.holdUntil <= now));
+      }
+      const usage = readCodexUsage();
+      const key = this.openaiApiKey();
+      add(CODEX_SUB_ID, usage?.sevenDayReset, this.settingBool("setting_codex_enabled", false)
+        && codexAuthAvailable(!!key && /^sk-/.test(key))
+        && (this.codexCapUntil == null || this.codexCapUntil <= now) && usage?.limitState !== "reached"
+        && (usage?.wakeAt == null || usage.wakeAt <= now)
+        && (usage?.fiveHour ?? 0) < 98 && (usage?.sevenDay ?? 0) < 98);
+    }
+    candidates.sort((a, b) => a.reset - b.reset || a.subId.localeCompare(b.subId));
+    const target = candidates[0];
+    if (current && target?.subId === current.subId && stepResetBurn(current, target.reset, now).kind === "keep") return current;
+    if (current) this.endResetBurn(current, "auto-burn eligibility changed");
+    if (!target) return null;
+    const burn = { ...startResetBurn(target.subId, target.reset, now), automatic: true };
+    this.db.kvSet("setting_reset_burn", JSON.stringify(burn));
+    this.applyResetBurn(burn);
+    this.hub.log("info", `Auto-burn: preparing ${this.subLabel(target.subId)} for its weekly reset within 24 hours.`);
+    this.publishSettingsSoon();
+    return burn;
+  }
+
   /** While a sub is being burned and has room, auto model selection and goal steps choose among its
    *  models only; an empty narrowing (the target can't take work) leaves the roster untouched. */
   private burningEntries<T extends { provider: ImplementorProvider; candidate: ProviderCandidate }>(entries: T[], demand: CapacityDemand): { entries: T[]; burning: ImplementorProvider | undefined } {
@@ -6432,7 +6473,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  rather than waiting for the next usage reading to show the window rolled. */
   resetCreditRedeemed(subId: string): void {
     const burn = parseResetBurn(this.db.kvGet("setting_reset_burn"));
-    if (burn?.subId === subId) this.endResetBurn(burn, "its banked reset was spent");
+    if (burn?.subId === subId) {
+      this.db.kvSet(`auto_burn_redeemed_${subId}`, String(this.weeklyResetOf(subId) ?? burn.windowReset ?? 0));
+      this.endResetBurn(burn, "its banked reset was spent");
+    }
   }
 
   /** Does this provider/account spend the sub being prepared for its reset? The Director follows it too. */
@@ -6447,7 +6491,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   private setResetBurn(subId: string | null): void {
     const current = this.resetBurn();
-    if (subId && (current?.subId === subId || !resetBurnEligible(subId, this.claudeAccountIds()))) return;
+    if (subId && ((current?.subId === subId && !current.automatic) || !resetBurnEligible(subId, this.claudeAccountIds()))) return;
     if (current) this.endResetBurn(current, subId ? `you chose ${this.subLabel(subId)} instead` : "you stopped it", false);
     if (!subId) return;
     const burn = startResetBurn(subId, this.weeklyResetOf(subId), Date.now());

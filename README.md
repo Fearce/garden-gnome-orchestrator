@@ -178,6 +178,12 @@ An optional free task pool (**Settings > Free AI connections**) can run the plan
 reader of a small, low-risk task on a free-tier API. Everything else stays on the
 subscription backends. See [docs/free-ai-provider-connections.md](docs/free-ai-provider-connections.md).
 
+In Settings ? Usage & limits ? Prepare a sub for reset, **Auto-burn** (off by default)
+automatically enables burn routing for enabled Claude or Codex subscriptions with a known weekly
+reset within 24 hours. The soonest reset goes first, capped subscriptions are skipped, and manual
+burn choices take priority. Turning Auto-burn off stops automatic burns. It does not redeem banked
+resets; existing burn routing still respects hard limits and task model/provider choices.
+
 **More than one Claude subscription?** Set `ACCOUNT_1_TOKEN`, `ACCOUNT_2_TOKEN` and so on
 (up to 8). Dispatches route to burn the perishable weekly allowance first, and the top bar
 shows live 5-hour and weekly usage per subscription. Perishable-first remains the tiebreaker

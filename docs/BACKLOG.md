@@ -14,11 +14,13 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Auto-burn subscriptions within 24 hours of weekly reset** (2026-10-04, Moss Spark).
 
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 
 ## Shipped, awaiting live proof
+
+- **Auto-burn subscriptions within 24 hours of weekly reset** (2026-10-04, Moss Spark).
+  Default-off switch; 21/21 browser checks, routing/Codex/boundary regression checks, typechecks/build and focused gates pass. Integration and deployment pending.
 
 - **QA: serialize Sidekick rule edits before checking their revisions** (Codex QA, 2026-10-04).
   Concurrent-save regressions and authenticated worker edits pass: one save returns 200, the stale one 409, and retry succeeds. 33 module checks, typecheck and privacy pass; server deploy pending.

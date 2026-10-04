@@ -157,6 +157,74 @@ check("a burn whose weekly window passed ends itself", manager.settings().resetB
 manager.setSettings({ resetBurnSubId: "not-an-account" });
 check("an unknown sub is refused", manager.settings().resetBurn === null);
 
+// Auto-burn exercises the real settings persistence and existing cross-provider burn routing.
+{
+  const realDto = accountStub.dto;
+  const realPreview = accountStub.dispatchPreview;
+  const realWeeklyReset = internals.weeklyResetOf;
+  const realNow = Date.now;
+  const now = realNow();
+  Date.now = () => now;
+  let rows = [
+    { id: "claude-a", label: "Claude A", enabled: true, rateLimited: false, fiveHour: 10, sevenDay: 80, sevenDayReset: now + 24 * 60 * 60_000 },
+    { id: "claude-b", label: "Claude B", enabled: true, rateLimited: false, fiveHour: 10, sevenDay: 80, sevenDayReset: now + 2 * 60 * 60_000 },
+  ];
+  accountStub.dto = () => rows;
+  accountStub.dispatchPreview = () => ({ ...realPreview.call(accountStub), account: { id: JSON.parse(db.kvGet("setting_reset_burn") ?? "null")?.subId ?? "claude-a", label: "Claude" } });
+  internals.weeklyResetOf = (id: string) => rows.find((a) => a.id === id)?.sevenDayReset ?? realWeeklyReset.call(internals, id);
+  try {
+    check("auto-burn defaults off even with imminent weekly resets", manager.settings().autoBurn === false && manager.settings().resetBurn === null);
+    manager.setSettings({ autoBurn: true });
+    check("auto-burn persists its opt-in and chooses the soonest reset", db.kvGet("setting_auto_burn") === "1" && manager.settings().resetBurn?.subId === "claude-b");
+    check("automatic burns use normal cross-provider routing", internals.preferredProviderCandidate([personalCandidate, codexCandidate]).provider === "claude");
+    rows[1]!.sevenDay = 98;
+    check("auto-burn skips a maxed sub and includes the exact 24-hour boundary", manager.settings().resetBurn?.subId === "claude-a");
+    rows[0]!.sevenDayReset += 1;
+    check("auto-burn excludes resets beyond 24 hours", manager.settings().resetBurn === null);
+    rows[1]!.sevenDay = 80;
+    rows[1]!.enabled = false;
+    check("auto-burn excludes disabled subscriptions", manager.settings().resetBurn === null);
+    rows[1]!.enabled = true;
+    rows[1]!.rateLimited = true;
+    check("auto-burn excludes capped subscriptions", manager.settings().resetBurn === null);
+    rows[1]!.rateLimited = false;
+    check("auto-burn starts when usage becomes eligible", manager.settings().resetBurn?.subId === "claude-b");
+    manager.setSettings({ resetBurnSubId: "claude-a" });
+    check("manual choices override the automatic target", manager.settings().resetBurn?.subId === "claude-a" && !JSON.parse(db.kvGet("setting_reset_burn")!).automatic);
+    manager.setSettings({ autoBurn: false });
+    check("turning auto-burn off preserves a manual burn", manager.settings().resetBurn?.subId === "claude-a");
+    manager.setSettings({ resetBurnSubId: null, autoBurn: true });
+    check("clearing a manual choice restores automatic selection", manager.settings().resetBurn?.subId === "claude-b");
+    manager.resetCreditRedeemed("claude-b");
+    check("redeeming a reset cannot restart auto-burn from a stale usage reading", manager.settings().resetBurn === null);
+    rows[1]!.sevenDayReset = now + 7 * 24 * 60 * 60_000;
+    check("a freshly reset weekly window is not burned", manager.settings().resetBurn === null);
+    rows[0]!.sevenDayReset = now - 1;
+    check("elapsed weekly resets are not burned", manager.settings().resetBurn === null);
+    const realKey = internals.openaiApiKey;
+    internals.openaiApiKey = () => "sk-test-placeholder";
+    db.kvSet("setting_codex_enabled", "1");
+    noteCodexPing({ fiveHour: 10, sevenDay: 80, fiveHourReset: now + 4 * 60 * 60_000,
+      sevenDayReset: now + 60 * 60_000, planType: "test", updatedAt: now, limitState: "none" });
+    check("auto-burn includes an enabled authenticated Codex subscription", manager.settings().resetBurn?.subId === "codex");
+    db.kvSet("setting_codex_enabled", "0");
+    check("disabling Codex stops its automatic burn", manager.settings().resetBurn === null);
+    internals.openaiApiKey = realKey;
+    __codexUsageTestHooks.reset();
+    manager.setSettings({ autoBurn: false });
+    rows[0]!.sevenDayReset = now + 60_000;
+    manager.setSettings({ autoBurn: true });
+    manager.setSettings({ autoBurn: false });
+    check("turning auto-burn off stops its automatic target", manager.settings().resetBurn === null && db.kvGet("setting_reset_burn") === null);
+  } finally {
+    Date.now = realNow;
+    accountStub.dto = realDto;
+    accountStub.dispatchPreview = realPreview;
+    internals.weeklyResetOf = realWeeklyReset;
+    manager.setSettings({ autoBurn: false, resetBurnSubId: null });
+  }
+}
+
 const realGrokImplementorReady = internals.grokImplementorReady;
 const providers: string[] = [];
 const verdict: QaOutput = { pass: true, summary: "Claude completed the review", issues: [] };

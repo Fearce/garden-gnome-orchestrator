@@ -28,10 +28,10 @@ const LAB_ENV = { ACCOUNT_1_LABEL: "personal", ACCOUNT_2_LABEL: "team" };
 
 const check = createChecks();
 
-function readPersisted(dataDir) {
+function readPersisted(dataDir, key = KV_KEY) {
   try {
     const db = new Database(path.join(dataDir, "orchestrator.sqlite"), { readonly: true });
-    const row = db.prepare("SELECT value FROM kv WHERE key = ?").get(KV_KEY);
+    const row = db.prepare("SELECT value FROM kv WHERE key = ?").get(key);
     db.close();
     return row?.value ?? null;
   } catch {
@@ -46,11 +46,11 @@ function writePersisted(dataDir, value) {
 }
 
 /** The picker updates through the server. Wait for SQLite, the server-owned state, before trusting it. */
-async function waitForPersisted(dataDir, predicate, timeoutMs = 15_000) {
+async function waitForPersisted(dataDir, predicate, timeoutMs = 15_000, key = KV_KEY) {
   const deadline = Date.now() + timeoutMs;
   let actual = null;
   while (Date.now() < deadline) {
-    actual = readPersisted(dataDir);
+    actual = readPersisted(dataDir, key);
     if (predicate(actual)) return actual;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -86,6 +86,15 @@ async function verifyPick(browser, dataDir) {
 
     check("the group renders exactly once, on the Usage page", (await page.locator(GROUP).count()) === 1);
     check("a fresh installation has no burn", (await page.inputValue(PICKER)) === "" && readPersisted(dataDir) === null);
+    const auto = page.getByRole("switch", { name: "Auto-burn", exact: true });
+    check("auto-burn defaults off", (await auto.getAttribute("aria-checked")) === "false");
+    await auto.click();
+    const autoStored = await waitForPersisted(dataDir, (value) => value === "1", 15_000, "setting_auto_burn");
+    check("auto-burn toggle persists on the server", autoStored === "1");
+    await page.reload();
+    await page.click('[aria-label="Open settings"]');
+    await page.click('[data-settings-category="usage"]');
+    check("auto-burn survives reload", (await auto.getAttribute("aria-checked")) === "true");
     check("no status line while off", (await statusText(page)) === "");
     const options = await page.locator(`${PICKER} option`).allInnerTexts();
     check("the picker lists Off and both Claude subs", options[0] === "Off" && options.some((o) => o.startsWith("personal")) && options.some((o) => o.startsWith("team")), options.join(" | "));
@@ -114,6 +123,7 @@ async function verifyAnchoredAfterRestart(browser, dataDir) {
   try {
     const page = await context.newPage();
     await openUsageSettings(page, { login: true });
+    check("auto-burn survives a real restart", (await page.getByRole("switch", { name: "Auto-burn", exact: true }).getAttribute("aria-checked")) === "true");
     check("the burn survives a real restart", (await page.inputValue(PICKER)) === "acct2");
     const status = await statusText(page);
     check("an anchored burn counts down to its weekly reset", status.includes("Ends when its weekly window resets, in 2d"), status);
@@ -128,11 +138,16 @@ async function verifyAnchoredAfterRestart(browser, dataDir) {
   }
 }
 
-async function verifyPhone(browser) {
+async function verifyPhone(browser, dataDir) {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   try {
     const page = await context.newPage();
     await openUsageSettings(page, { login: true });
+    const auto = page.getByRole("switch", { name: "Auto-burn", exact: true });
+    check("auto-burn is visible on a phone", await auto.isVisible());
+    await auto.click();
+    await page.waitForFunction(() => document.querySelector('[role="switch"][aria-label="Auto-burn"]')?.getAttribute("aria-checked") === "false");
+    check("phone toggle off persists", await waitForPersisted(dataDir, (value) => value === "0", 15_000, "setting_auto_burn") === "0");
     const box = await page.locator(PICKER).boundingBox();
     check("the picker fits a phone screen", !!box && box.x >= 0 && box.x + box.width <= 390.5, JSON.stringify(box));
     await page.locator(GROUP).screenshot({ path: path.join(os.tmpdir(), "reset-burn-lab-phone.png") });
@@ -176,7 +191,7 @@ async function main() {
     writePersisted(dataDir, JSON.stringify({ ...burn, windowReset: Date.now() + 60 * 60 * 60_000 }));
     await boot({ dataDir, port: PORT, env: LAB_ENV });
     await verifyAnchoredAfterRestart(browser, dataDir);
-    await verifyPhone(browser);
+    await verifyPhone(browser, dataDir);
 
     const code = check.summary();
     succeeded = code === 0;
