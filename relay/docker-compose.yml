@@ -1,7 +1,7 @@
-# Runs the Online Office relay as its OWN compose project alongside (but independent of) the Sprogbroen
-# stack on the same host. It publishes no host port: Caddy — which owns 80/443 there — reaches it by
-# container name over Sprogbroen's existing network, so the relay's lifecycle is never entangled with
-# Sprogbroen's CI deploys. Deploy with `deploy.sh`; secrets live in `.env` beside this file.
+# Runs the Online Office relay as its OWN compose project on a host that already has a reverse proxy
+# (e.g. Caddy) owning 80/443. It publishes no host port: the proxy reaches it by container name over the
+# proxy's existing docker network, named by RELAY_PROXY_NETWORK in `.env`, so the relay's lifecycle is never
+# entangled with whatever else runs there. Deploy with `deploy.sh`; secrets live in `.env` beside this file.
 
 name: gg-office-relay
 
@@ -31,10 +31,10 @@ services:
       - proxy
 
 networks:
-  # The network Caddy is already on. External, so this project never creates or owns it.
+  # The network the reverse proxy is already on. External, so this project never creates or owns it.
   proxy:
     external: true
-    name: sprogbroen-prod_default
+    name: ${RELAY_PROXY_NETWORK:?set RELAY_PROXY_NETWORK in .env to the docker network your reverse proxy is on}
 
 volumes:
   relay-data:

@@ -1,19 +1,24 @@
 #!/usr/bin/env bash
 # Ship this directory to the relay host and (re)build the container there. Idempotent, and it never
-# touches the host's `.env` once it exists — the join code and admin token are set on the box, not here.
+# overwrites the host's `.env` once it exists — the join code and admin token are set on the box, not here.
 #
-#   ./deploy.sh                      # defaults below (the Sprogbroen Hetzner box)
-#   OFFICE_RELAY_HOST=deploy@1.2.3.4 ./deploy.sh
+#   ./deploy.sh                      # host, key and proxy network from deploy.env (see deploy.env.example)
+#   OFFICE_RELAY_HOST=deploy@203.0.113.10 OFFICE_RELAY_NETWORK=caddy_default ./deploy.sh
 #   OFFICE_RELAY_RECEIVER=1 OFFICE_RELAY_KEY=~/.ssh/id_ed25519 ./deploy.sh   # relay-only key (README)
 set -euo pipefail
 
-HOST="${OFFICE_RELAY_HOST:-deploy@77.42.40.176}"
-KEY="${OFFICE_RELAY_KEY:-$HOME/.ssh/sprogbroen_ci}"
-# Under the deploy user's home, not /opt: `deploy` has no sudo on the Sprogbroen box (root put
-# /opt/sprogbroen there), and the relay needs nothing outside its own directory and the docker socket.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The host is one operator's server, so it lives in the gitignored deploy.env, never in this public file.
+# shellcheck source=/dev/null
+if [ -f "$here/deploy.env" ]; then . "$here/deploy.env"; fi
+
+HOST="${OFFICE_RELAY_HOST:?set OFFICE_RELAY_HOST (user@host) in relay/deploy.env or the environment; see deploy.env.example}"
+KEY="${OFFICE_RELAY_KEY:-$HOME/.ssh/id_ed25519}"
+NETWORK="${OFFICE_RELAY_NETWORK:-}"
+# Under the deploy user's home, not /opt: a deploy user usually has no sudo, and the relay needs
+# nothing outside its own directory and the docker socket.
 # Expanded on the REMOTE side, so every remote command below quotes it with double quotes.
 DIR="${OFFICE_RELAY_DIR:-\$HOME/gg-office-relay}"
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ssh_do() { ssh -i "$KEY" -o BatchMode=yes "$HOST" "$@"; }
 
@@ -45,6 +50,17 @@ if ! ssh_do "cd \"$DIR\" && [ -f .env ]"; then
      ssh -i "$KEY" $HOST 'cd $DIR && nano .env'
 
 EOF
+  exit 1
+fi
+
+# docker-compose.yml joins the reverse proxy's network named by RELAY_PROXY_NETWORK, which compose reads
+# from the host's .env (so the relay-only receiver sees it too). Add the key only when it is missing.
+if [ -n "$NETWORK" ]; then
+  ssh_do "cd \"$DIR\" && { grep -q '^RELAY_PROXY_NETWORK=' .env || printf '\nRELAY_PROXY_NETWORK=%s\n' '$NETWORK' >> .env; }"
+fi
+if ! ssh_do "cd \"$DIR\" && grep -q '^RELAY_PROXY_NETWORK=.' .env"; then
+  echo "!! ${HOST}:${DIR}/.env has no RELAY_PROXY_NETWORK. Set OFFICE_RELAY_NETWORK in deploy.env to the" >&2
+  echo "   docker network your reverse proxy is on, then run this script again." >&2
   exit 1
 fi
 

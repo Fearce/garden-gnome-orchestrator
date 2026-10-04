@@ -49,6 +49,15 @@ server/data/
 .env.local
 */.env
 */.env.local
+*.pfx
+*.p12
+*.pem
+*.key
+.claude/settings.local.json
+# one operator's relay host / key / proxy network (template: relay/deploy.env.example)
+relay/deploy.env
+# the operator's private words for the privacy guard (server/scripts/privacy-guard.cjs)
+server/.privacy-terms
 
 # agent scratch probes (throwaway e2e / db dumps; deliverable detector also ignores _*)
 server/src/tests/_*

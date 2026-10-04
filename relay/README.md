@@ -2,7 +2,7 @@
 
 The internet-side half of the [Online Office](../CLAUDE.md#the-online-office-cross-machine-coordination):
 a small WebSocket server that lets orchestrator instances on **different machines** see each other's
-agents and coordinate per repository. Two people working `card-marker` from two houses get one shared
+agents and coordinate per repository. Two people working `storefront` from two houses get one shared
 project room; two people working unrelated repos never hear from each other.
 
 It moves **presence and short coordination messages only** — no repository contents, no credentials, no
@@ -74,44 +74,58 @@ worth stating rather than assuming:
 `./deploy.sh` copies the source to the host, builds the image there and restarts the container. It never
 overwrites an existing `.env`.
 
+Point it at your host once: copy [`deploy.env.example`](deploy.env.example) to `deploy.env` (gitignored)
+and set `OFFICE_RELAY_HOST` (the SSH user@host), `OFFICE_RELAY_KEY` and `OFFICE_RELAY_NETWORK`. Each can
+also be passed as an environment variable. The script refuses to run without a host.
+
 On a host that has **no** `.env` yet it seeds one from `.env.example` and then **stops without starting
 anything**: the example ships an empty `JOIN_CODE`, and the relay refuses to boot without one or with a
 placeholder-shaped one. Set the code (`openssl rand -base64 24 | tr -d /+=`) and run the script again.
 Starting an office whose code came out of a public repository is the one mistake that cannot be undone
 by fixing it afterwards.
 
-On the Sprogbroen box the relay runs as its own compose project at `~deploy/gg-office-relay`, attached to
-the **existing** `sprogbroen-prod_default` network and publishing no host port — Caddy, which owns
-80/443 there, proxies `office.sprogbroen.dk` to `gg-office-relay:8787`. That Caddy site block lives in
-the Sprogbroen repository's `infra/Caddyfile` (it is git-tracked and its deploy does `git checkout
-<sha>`, so editing it on the box would break Sprogbroen's next deploy). Nothing else about Sprogbroen is
-touched, and a Sprogbroen deploy never restarts the relay.
+The relay runs as its own compose project in `~/gg-office-relay` under the deploy user, attached to the
+reverse proxy's **existing** docker network and publishing no host port. `docker-compose.yml` reads that
+network's name from `RELAY_PROXY_NETWORK` in the host's `.env`; the first deploy that finds it missing
+adds it from `OFFICE_RELAY_NETWORK`. Point your proxy's site block for the relay hostname at
+`gg-office-relay:8787`, for example in a Caddyfile:
+
+```
+office.example.com {
+	reverse_proxy gg-office-relay:8787
+}
+```
+
+Keep that block wherever the proxy's own configuration is versioned. Nothing else on the host is touched,
+and redeploying other stacks on it never restarts the relay.
 
 ### Relay-only deploy keys
 
 A collaborator who should be able to ship relay changes, but not control the box, gets a key bound to
-`deploy-receiver.py` instead of a shell. `deploy` is in the docker group, so a plain key is effectively
-root on a host that also runs Sprogbroen production. The receiver accepts only `package.json`,
-`package-lock.json`, `tsconfig.json` and `src/`; the box keeps its own `Dockerfile`, `docker-compose.yml`
-and `.env`, which decide what the container can mount and join. A deploy that fails restores the previous
-source. Every call is appended to `~/gg-office-relay-deploy/deploys.log`.
+`deploy-receiver.py` instead of a shell. The deploy user is in the docker group, so a plain key is
+effectively root on that host. The receiver accepts only `package.json`, `package-lock.json`,
+`tsconfig.json` and `src/`; the box keeps its own `Dockerfile`, `docker-compose.yml` and `.env`, which
+decide what the container can mount and join. A deploy that fails restores the previous source. Every call
+is appended to `~/gg-office-relay-deploy/deploys.log`.
 
 Install or update the receiver with the owner's key. It lives outside the relay directory so a deploy
 cannot rewrite it:
 
 ```bash
-ssh -i ~/.ssh/sprogbroen_ci deploy@77.42.40.176 'mkdir -p ~/gg-office-relay-deploy && cat > ~/gg-office-relay-deploy/receive.py' < deploy-receiver.py
+. ./deploy.env
+ssh -i "$OFFICE_RELAY_KEY" "$OFFICE_RELAY_HOST" 'mkdir -p ~/gg-office-relay-deploy && cat > ~/gg-office-relay-deploy/receive.py' < deploy-receiver.py
 ```
 
-Then bind the collaborator's key in `~deploy/.ssh/authorized_keys`:
+Then bind the collaborator's key in the deploy user's `~/.ssh/authorized_keys`:
 
 ```
 restrict,command="/usr/bin/python3 /home/deploy/gg-office-relay-deploy/receive.py" ssh-ed25519 AAAA... name
 ```
 
-The collaborator deploys with `OFFICE_RELAY_RECEIVER=1 OFFICE_RELAY_KEY=<their key> ./deploy.sh`. They can
-also run `ssh deploy@77.42.40.176 status` or `ssh deploy@77.42.40.176 logs`. A change to the Dockerfile
-or compose file still needs an owner deploy (plain `./deploy.sh`).
+The collaborator sets `OFFICE_RELAY_HOST` in their own `deploy.env` and deploys with
+`OFFICE_RELAY_RECEIVER=1 OFFICE_RELAY_KEY=<their key> ./deploy.sh`. They can also run
+`ssh <user@host> status` or `ssh <user@host> logs`. A change to the Dockerfile or compose file still needs
+an owner deploy (plain `./deploy.sh`).
 
 ## Tests
 

@@ -1,6 +1,6 @@
 # The Online Office relay. Deliberately tiny: one runtime dependency (ws), no database, no native
-# build — so it can be built ON the 4 GB Hetzner box without the OOM thrash that forced Sprogbroen's
-# own images onto a GitHub runner.
+# build — so it builds directly on a small (4 GB) VPS without the out-of-memory thrash that heavier
+# images hit there.
 FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
