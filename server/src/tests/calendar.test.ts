@@ -19,7 +19,7 @@ import { CalendarService } from "../calendar/calendarService.js";
 import { registerCalendarRoutes } from "../calendar/routes.js";
 import { occurrenceDates } from "../calendar/recurrence.js";
 import type { CalendarOccurrence, CalendarRange } from "../calendar/types.js";
-import { epochToWall, formatDate, formatDateTime, parseDate, wallToEpoch, dayNumber } from "../calendar/zoned.js";
+import { epochToWall, formatDate, formatDateTime, parseDate, wallToEpoch, dayNumber, addDays } from "../calendar/zoned.js";
 
 let failures = 0;
 function check(name: string, cond: boolean, detail?: unknown): void {
@@ -483,7 +483,11 @@ async function schedulesOnTheCalendar(): Promise<void> {
   check("its first slot is the scheduler's own next run", of(daily.schedule!.id)[0]!.startAt === scheduler.list().find((s) => s.id === daily.schedule!.id)!.nextRunAt);
   check("a reminder-only schedule is a reminder", of(remind.schedule!.id).every((o) => o.kind === "reminder" && o.hasReminder));
   check("a disabled schedule's slots are marked paused", of(paused.schedule!.id).length > 0 && of(paused.schedule!.id).every((o) => o.status === "paused"));
-  check("an every-5-minutes schedule collapses to one item a day", of(busy.schedule!.id).every((o) => o.count != null && o.allDay) && of(busy.schedule!.id).length >= 7);
+  // After 23:00, today has too few remaining fires to qualify as dense. Use seven complete
+  // future days so this assertion checks aggregation at every time of day, including near midnight.
+  const todayDate = parseDate(today)!;
+  const denseDays = range(formatDate(addDays(todayDate, 1)), formatDate(addDays(todayDate, 7))).occurrences.filter((o) => o.id === busy.schedule!.id);
+  check("an every-5-minutes schedule collapses to one item a day", denseDays.length === 7 && denseDays.every((o) => o.count != null && o.allDay));
   check("viewing the calendar created no schedule and dispatched nothing", scheduler.list().length === rowsBefore && dispatched.length === 0);
 
   // Skip one fire: the tick must neither dispatch nor remind for that slot, then fire the next one.
