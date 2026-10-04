@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA: wait for Home's page-wide probe before checking outage controls** (2026-10-05, Codex QA; task cad0786a).
+  The browser lab matched a device's earlier outage notice while container discovery was pending; live settled controls are correct.
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 
 ## Shipped, awaiting live proof
