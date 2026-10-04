@@ -15,17 +15,11 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
-- **QA: camera pictures behind the Deck proxy, and an explicit Start for Home Assistant** (2026-10-04, Claude QA; task cad0786a).
-  The module socket returned 403 behind `/orchestrator/` (Chromium sends no Sec-Fetch-Site on a WebSocket handshake and the proxy rewrites Host). Home Assistant's container had exited and the Home tab offered no way to start it.
 
 ## Shipped, awaiting live proof
 
 - **QA: harden desktop settings, checkout selection, download names and load-probe cleanup** (2026-10-04, Moss Gauge).
   Desktop units 19/19 and new real-window regressions pass; application types/builds, Windows packaging and privacy pass. Clean-exit lab failures and distribution delivery remain under Ready.
-- **QA: serialize Sidekick rule edits before checking their revisions** (Codex QA, 2026-10-04).
-  Concurrent-save regressions and authenticated worker edits pass: one save returns 200, the stale one 409, and retry succeeds. 33 module checks, typecheck and privacy pass; server deploy pending.
-- **QA: keep an explicitly stopped module stopped while its tab remains open** (Codex QA, 2026-10-04).
-  Isolated browser lab 72/72, including Stop/Start on all four open tabs and phone Surveillance; 228/228 gates, typechecks and privacy pass. Frontend deploy and live check pending.
 
 ## Ready (priority order)
 
@@ -48,7 +42,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
-- 2026-10-04 **Independent module deployment QA** (a6eba134, 38078a69; Codex QA): 74/74 isolated and 13/13 live proxy/browser checks, preserved local configurations and recording, authenticated report downloads; all 229 gates covered green after the Calendar task's 28a0706f repair. Evidence: docs/reports/local-service-modules-independent-qa-2026-10-04.md; QA documentation awaits independent review.
+- 2026-10-04 **Independent module deployment QA** (a6eba134, 38078a69; Codex QA): 74/74 isolated and 13/13 live proxy/browser checks, preserved local configurations and recording, authenticated report downloads; all 229 gates covered green after the Calendar task's 28a0706f repair. Includes the Deck-proxy camera socket and explicit Home Assistant Start (d8481ca2), serialized Sidekick rule saves (e9ce82a3) and explicit Stop that holds with the tab open (58e13ef5), all live in 38078a69. Evidence: docs/reports/local-service-modules-independent-qa-2026-10-04.md.
 - 2026-10-04 **Auto-burn subscriptions within 24 hours of weekly reset** (1a3e8dba, Moss Spark): pushed to master and live build verified; authenticated live hello reports autoBurn=false and the served entry matches dist with the new control. Browser lab 21/21; routing/Codex/boundary regression, burn/model/goal/Director gates, typechecks/build, README and privacy checks pass.
 
 - 2026-10-04 **Optional Electron desktop app with Open in desktop / Open in web handoff** (8521a443..c2283ee4, Quillhatch): server live as 5712fdf2; the packaged Windows app reached the live server's sign-in in 928 ms with the bridge and no Node in the renderer; desktop lab 51/51; live load probe under 7 implementing agents moved no HTTP/WS percentile (/api/me p95 6.0 to 6.5 ms, WS ping p95 1.4 to 2.6 ms); live web portal check passed.
