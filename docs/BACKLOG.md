@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Move Script Hub, Surveillance, Home Automation and Sidekick from the Dashboard Deck into optional GGO tabs** (Ferrule Juniper, 2026-10-04, branch ggo/deck-modules-migration-cad0786a).
 
 ## Ready (priority order)
 
