@@ -736,8 +736,14 @@ const CONTINUATION_WORK_CHARS = 400;
 const GOAL_PROGRESS_REMINDER =
   "Keep the owner's Goals view current: report milestones with `report_goal_progress` (on a CLI backend, one standalone line `GOAL_PROGRESS: {\"items\":[{\"id\":\"…\",\"title\":\"…\",\"status\":\"working\"}]}`) whenever one starts, finishes, gets blocked or needs the owner's approval, reusing the recorded ids. Titles of 3-6 words, notes one short sentence. Statuses: planned, working, blocked, awaiting_approval, done, dropped; add `verified: true` only for a result you checked.";
 
+/** A continuation into a session with no milestones on record: a session that started before milestone
+ *  reporting existed never saw the full rule, and "report whenever one starts" alone left it silent. */
+const GOAL_FIRST_PROGRESS =
+  "No milestones are recorded for this goal yet. Early in this turn, report the objective's milestones in one call: a handful of outcomes, each with a stable `id`, those already finished as `done` (with `verified: true` only for results you checked), the one you are on as `working`, the rest as `planned`.";
+
 /** The open milestones a continuation lists, so the session reuses their ids after a compaction. */
 function openWorkBlock(goal: Goal): string {
+  if (!goal.workItems.length) return GOAL_FIRST_PROGRESS;
   const open = goal.workItems.filter((i) => i.status !== "done" && i.status !== "dropped");
   const done = goal.workItems.filter((i) => i.status === "done").length;
   if (!open.length && !done) return "";

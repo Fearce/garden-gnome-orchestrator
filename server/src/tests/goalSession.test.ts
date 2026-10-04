@@ -175,6 +175,7 @@ async function sessionReuse(): Promise<void> {
   check("a continuation carries the objective, the last status and the rule", msg.includes("GOAL CONTINUATION") && msg.includes("Ship the parser with docs and tests.") && msg.includes(`CONTINUE — part ${TURNS}`) && msg.includes("GOAL STATUS: COMPLETE"));
   check("a continuation is short next to a fresh brief", msg.length < 2_500);
   check("a continuation reminds the session to report milestones", msg.includes("report_goal_progress") && msg.includes("GOAL_PROGRESS:"));
+  check("with none recorded, a continuation asks for the first milestone report", msg.includes("No milestones are recorded for this goal yet."));
 
   console.log("goal session: a resumed session keeps its milestones");
   const items = Array.from({ length: 30 }, (_, i) => ({ id: `part-${i}`, title: `Parser part ${i}: a deliberately long milestone title to fill the list`, status: i < 3 ? ("done" as const) : ("planned" as const) }));
@@ -183,6 +184,7 @@ async function sessionReuse(): Promise<void> {
   await h.runner.evaluate(id);
   const resumed = h.continued.at(-1)!.message;
   check("the next turn lists the open milestones by id", resumed.includes("3 milestones recorded done.") && resumed.includes("- part-3 [working]: Parser part 3"));
+  check("once milestones are recorded, the first-report request is gone", !resumed.includes("No milestones are recorded"));
   check(`a long milestone list is clipped, and the continuation stays short (${resumed.length} chars, ${msg.length} without milestones)`, resumed.includes("more not shown") && resumed.length < 2_500);
   check("the milestones stay on the goal across turns", goalOf(h, id).workItems.length === 30);
 

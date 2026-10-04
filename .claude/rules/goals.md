@@ -182,7 +182,9 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   backfilled, and the view shows counts, never percentages.
 - **The continuation carries a short reminder and the first open milestones only** (`GOAL_PROGRESS_REMINDER`,
   `CONTINUATION_WORK_CHARS`), because `goalSession.test.ts` keeps a continuation under 2,500 characters.
-  The full list is in the fresh brief, the judge prompt and every tool reply.
+  The full list is in the fresh brief, the judge prompt and every tool reply. While a goal has no milestones
+  on record, the continuation instead asks for a first full report (`GOAL_FIRST_PROGRESS`): a session that
+  started before milestone reporting shipped never saw the full rule in its brief.
 
 Verify: `npm run test:goals --prefix server` (server loop + the web store/view gate), then typecheck.
 The tree in a real browser (desktop + iPhone, live update, restart): `npm run goal-tree-lab --prefix server`.
