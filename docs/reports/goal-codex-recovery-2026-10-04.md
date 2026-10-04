@@ -45,3 +45,18 @@ The server had already restarted onto subscription-safety commit `e96b4ea4f0ce5c
 This report records operational recovery, not completion of either game objective.
 Existing game development, deployment dependencies and owner approval requirements remain with
 the original goals. Execution can encounter later capacity limits; this is a timestamped live check.
+
+## Checklist for future parked-goal model switches
+
+1. Read the live goal and its existing step task. Record their IDs, task state, strict model request,
+   capacity park and latest run. Confirm the owner's exact provider/model choice.
+2. Use authenticated `goal.update` with `patch: { provider, model }` for future steps. Also use
+   `thread.model` with `{ threadId, provider, model }` for the existing pending task: a goal setting
+   change alone did not replace its strict task pin in this recovery. Require a successful action result.
+   This control safely interrupts a live implementor before persisting the new pin.
+3. Use `thread.resume` on that same task ID. Preserve the objective, progress, branches and owner
+   approval gates; do not create a replacement goal or disable capacity and burn-rate guards.
+4. Read back the goal, task and `thread.history`. Verify both settings, the resolved model/account,
+   new session/run IDs and actual tool activity. A successful control response alone is insufficient.
+   If capacity blocks execution, report the exact park reason and next eligible time as queued work,
+   and verify that the obsolete provider-only pin is gone. Never report queued work as resumed.
