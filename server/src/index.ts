@@ -62,6 +62,8 @@ import { IdeService } from "./ide/service.js";
 import { registerIdeRoutes } from "./ide/routes.js";
 import { RemoteControlService } from "./remoteControl/service.js";
 import { registerRemoteControlRoutes } from "./remoteControl/routes.js";
+import { ModuleSupervisor } from "./modules/supervisor.js";
+import { registerModuleRoutes } from "./modules/routes.js";
 import { randomUUID } from "node:crypto";
 import { acquireInstanceGuard } from "./instanceGuard.js";
 import { testInvocationUsesDefaultData } from "./runtimeIsolation.js";
@@ -209,6 +211,16 @@ async function main(): Promise<void> {
   const codeContext = new CodeContextService(db, ide);
   const remoteControl = new RemoteControlService(db, config.dataDir);
   process.once("exit", () => remoteControl.shutdown());
+  // Optional tabs (Script Hub, Surveillance, Home, Sidekick). Their workers are separate processes that
+  // start on first use and outlive a GGO restart; nothing here runs until a tab or a recording asks.
+  const stamp = buildInfo();
+  const modules = new ModuleSupervisor({
+    dataDir: config.dataDir,
+    build: stamp?.commit ? `${stamp.commit.slice(0, 12)}@${stamp.at ?? 0}` : "source",
+    hubUrl: (process.env.SCRIPT_HUB_URL || "http://127.0.0.1:3939").replace(/\/$/, ""),
+    log: (line) => hub.publish({ type: "log", level: "info", message: line }),
+  });
+  process.once("exit", () => modules.dispose());
   // A planned deploy/update restart fires immediately. The bounce tree-kills every CLI child and boot
   // auto-resumes the interrupted work; admission closes only for the few hundred ms the restart takes.
   const restartCoordinator = new RestartCoordinator({
@@ -290,6 +302,7 @@ async function main(): Promise<void> {
       () => accounts.start(),
       () => scheduler.start(),
       () => calendar.start(),
+      () => void modules.resumeArmed(),
       () => goals.start(),
       () => manager.startModelCatalog(),
       () => freeProviders.start(),
@@ -382,6 +395,7 @@ async function main(): Promise<void> {
     registerIdeRoutes(app, ide, isAuthed);
     registerCalendarRoutes(app, calendar, isAuthed);
     registerRemoteControlRoutes(app, remoteControl, isAuthed);
+    registerModuleRoutes(app, modules, isAuthed);
     registerPortalLink(app, isAuthed);
 
     // Settings → LiveBench rankings: the same cached release auto model selection reads.
