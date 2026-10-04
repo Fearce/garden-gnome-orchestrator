@@ -22,7 +22,8 @@ const { handleCommand, withLiveSettings } = await import("../ws/hub.js");
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
-const { ThreadManager, normalizeRecentRepo } = await import("../orchestrator/threadManager.js");
+const { ThreadManager } = await import("../orchestrator/threadManager.js");
+const { normalizeRecentRepo, recentRepoKey } = await import("../types.js");
 const { Director } = await import("../orchestrator/director.js");
 
 // ---- path spelling ----
@@ -30,6 +31,19 @@ assert.equal(normalizeRecentRepo("  C:\\work\\app\\  "), "C:\\work\\app", "trail
 assert.equal(normalizeRecentRepo("/srv/app//"), "/srv/app");
 assert.equal(normalizeRecentRepo("C:\\"), "C:\\", "a drive root keeps its separator");
 assert.equal(normalizeRecentRepo("/"), "/", "the POSIX root keeps its separator");
+assert.equal(normalizeRecentRepo("c:/work//app/"), "C:\\work\\app", "a Windows path takes one spelling: backslashes, upper-case drive, single separators");
+assert.equal(normalizeRecentRepo("c:/"), "C:\\", "a forward-slash drive root becomes the backslash root");
+assert.equal(normalizeRecentRepo("//nas/share/repo/"), "\\\\nas\\share\\repo", "a UNC path keeps its leading pair");
+assert.equal(normalizeRecentRepo("/srv/App"), "/srv/App", "a POSIX path keeps its case");
+for (const variant of ["C:/repos/App", "c:\\repos\\app", "C:\\Repos\\APP\\", "c:/repos//app/"]) {
+  assert.equal(recentRepoKey(variant), recentRepoKey("C:\\repos\\App"), `${variant} is the same Windows workspace`);
+}
+assert.notEqual(recentRepoKey("/srv/App"), recentRepoKey("/srv/app"), "POSIX paths stay case-sensitive");
+assert.notEqual(
+  recentRepoKey("C:\\repos\\wowforever_summon_overlay"),
+  recentRepoKey("C:\\repos\\wowforever_summon_overlay.worktrees\\x\\wowforever_summon_overlay"),
+  "a worktree with the same folder name is a different workspace",
+);
 
 // ---- the WebSocket boundary ----
 assert.deepEqual(clientCommandSchema.parse({ type: "recentRepos.remember", path: " C:\\a " }), { type: "recentRepos.remember", path: "C:\\a" });
@@ -63,6 +77,7 @@ const db = new Db(join(dir, "orchestrator.sqlite"));
 const hub = new EventHub();
 const memory = new FileMemoryService(join(dir, "memory"));
 const mgr = new ThreadManager(db, hub, memory, new StubAccounts() as unknown as AccountManager);
+let rebooted: InstanceType<typeof ThreadManager> | undefined;
 const broadcasts: string[][] = [];
 hub.subscribe((event) => {
   if (event.type === "settings") broadcasts.push(event.settings.recentRepos);
@@ -84,6 +99,24 @@ try {
   assert.deepEqual(mgr.settings().recentRepos, [gamma, beta], "capped at maxRecentRepos");
   mgr.setSettings({ maxRecentRepos: 5, recentRepos: [alpha, `${alpha}/`, " ", beta] });
   assert.deepEqual(mgr.settings().recentRepos, [alpha, beta], "a pre-fix console's whole-list write is still cleaned");
+
+  // ---- one chip per workspace, whatever spelling reached the server ----
+  const wow = "C:\\repos\\wowforever_summon_overlay";
+  const wowTree = "C:\\repos\\wowforever_summon_overlay.worktrees\\chips\\wowforever_summon_overlay";
+  mgr.setSettings({ recentRepos: [] });
+  mgr.rememberRecentRepo(wow);
+  mgr.rememberRecentRepo("C:/repos/wowforever_summon_overlay");
+  assert.deepEqual(mgr.settings().recentRepos, [wow], "a forward-slash spelling of a remembered repo adds no chip");
+  mgr.rememberRecentRepo("c:\\claude-orchestrator");
+  mgr.rememberRecentRepo("C:/claude-orchestrator/");
+  assert.deepEqual(mgr.settings().recentRepos, ["C:\\claude-orchestrator", wow], "nor does a drive-case or trailing-slash spelling");
+  mgr.rememberRecentRepo(wowTree);
+  assert.deepEqual(mgr.settings().recentRepos, [wowTree, "C:\\claude-orchestrator", wow], "a same-named worktree keeps its own chip");
+  mgr.forgetRecentRepo("c:/REPOS/wowforever_summon_overlay/");
+  assert.deepEqual(mgr.settings().recentRepos, [wowTree, "C:\\claude-orchestrator"], "forget removes the repo under any spelling, and only that repo");
+  mgr.setSettings({ maxRecentRepos: 2, recentRepos: [wow, "c:/repos/wowforever_summon_overlay", "C:\\claude-orchestrator"] });
+  assert.deepEqual(mgr.settings().recentRepos, [wow, "C:\\claude-orchestrator"], "a duplicate never takes a capped slot from a real repo");
+  mgr.setSettings({ maxRecentRepos: 5 });
 
   // ---- Director: an owner dispatch with a path remembers it, server-side ----
   mgr.setSettings({ recentRepos: [alpha], skipDirectorRetitle: false });
@@ -117,11 +150,41 @@ try {
   const other = { type: "pong", at: 1 } as ServerEvent;
   assert.equal(withLiveSettings(() => other, () => mgr.settings())(), other, "other events pass through untouched");
 
+  // ---- a list stored before canonical spellings: read clean, repaired once at boot ----
+  // The live row behind the duplicated chips reported on 2026-10-04, verbatim.
+  const legacy = [
+    "c:\\claude-orchestrator",
+    "C:\\repos\\wowforever_summon_overlay",
+    "C:/repos/wowforever_summon_overlay",
+    "C:\\repos\\d2r_summon_overlay",
+    "C:/claude-orchestrator",
+    "C:\\",
+    "c:\\trading_orchestrator",
+    "C:\\vota\\vota-graphql-api",
+    "C:/Users/theke/AppData/Local/Temp/sonnet-probe",
+  ];
+  const repaired = [
+    "C:\\claude-orchestrator",
+    "C:\\repos\\wowforever_summon_overlay",
+    "C:\\repos\\d2r_summon_overlay",
+    "C:\\",
+    "C:\\trading_orchestrator",
+    "C:\\vota\\vota-graphql-api",
+    "C:\\Users\\theke\\AppData\\Local\\Temp\\sonnet-probe",
+  ];
+  mgr.setSettings({ maxRecentRepos: 9 });
+  db.kvSet("setting_recent_repos", JSON.stringify(legacy));
+  assert.deepEqual(mgr.settings().recentRepos, repaired, "a stored list with spelling duplicates reads back one chip per workspace");
+  rebooted = new ThreadManager(db, hub, memory, new StubAccounts() as unknown as AccountManager);
+  assert.deepEqual(JSON.parse(db.kvGet("setting_recent_repos") ?? "null"), repaired, "boot rewrites the stored row without losing a repo");
+  assert.deepEqual(rebooted.settings().recentRepos, repaired);
+
   console.log("PASS: recent repos");
 } finally {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const i = mgr as any;
-  for (const key of ["capSupervisor", "tokenResumeTimer", "capResumeWake"]) if (i[key]) clearTimeout(i[key]);
+  for (const i of [mgr, rebooted] as any[]) {
+    for (const key of ["capSupervisor", "tokenResumeTimer", "capResumeWake"]) if (i?.[key]) clearTimeout(i[key]);
+  }
   db.raw.close();
   rmSync(dir, { recursive: true, force: true });
 }

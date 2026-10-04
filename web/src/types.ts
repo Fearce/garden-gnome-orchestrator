@@ -644,6 +644,23 @@ export function repoRoom(workspace: string): string {
   return "repo:" + normalizeWorkspace(workspace);
 }
 
+/** One spelling per recent repo, mirrored byte-for-byte from server/src/types.ts: the server stores this
+ *  spelling, so an optimistic chip must use it too. */
+export function normalizeRecentRepo(path: string): string {
+  const p = path.trim();
+  if (!/^(?:[A-Za-z]:|[\\/]{2}[^\\/])/.test(p)) return p.replace(/\/{2,}/g, "/").replace(/(.)\/$/, "$1");
+  const body = p.replace(/[\\/]+/g, "\\").replace(/\\$/, "");
+  const spelled = /^[\\/]{2}/.test(p) ? `\\${body}` : body.charAt(0).toUpperCase() + body.slice(1);
+  return /^[A-Z]:$/.test(spelled) ? `${spelled}\\` : spelled;
+}
+
+/** Identity of a recent repo (case-folded for Windows paths only), mirrored byte-for-byte from
+ *  server/src/types.ts so the active chip and removal match what the server dedupes. */
+export function recentRepoKey(path: string): string {
+  const p = normalizeRecentRepo(path);
+  return /^(?:[A-Z]:|\\\\)/.test(p) ? p.toLowerCase() : p;
+}
+
 /** The folder a task was dispatched to — its project — even while it runs in its own worktree. Grouping,
  *  the project room and the card's folder chip key on this, as the server does. */
 export function homeWorkspace(thread: Pick<Thread, "workspace" | "homeWorkspace">): string {

@@ -10,6 +10,7 @@ import { DirectorDirectives } from "./DirectorDirectives.js";
 import { Markdown } from "./Markdown.js";
 import { CLAUDE_EFFORTS, CODEX_SUB_ID, DEFAULT_SUB_ID, codexEffortsForModel, type CodexEffort, type DirectorItem, type DirectorMessage, type DirectorStatus, type Effort, type OrchestratorSettings, type Role, type TaskSearchHit } from "../types.js";
 import { codexModelOptions } from "../lib/models.js";
+import { isSameRepo } from "../lib/recentRepos.js";
 import { effortLabel, modelLabel, stateColor, stateLabel } from "../lib/format.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { columnDragMax, useColumnResize } from "./useColumnResize.js";
@@ -487,7 +488,7 @@ export function Director() {
         <div className={"recent-repos" + (isCompact && !isPhone ? " compact" : "")} role="group" aria-label="Recent repositories">
               <span className="recent-repos-label mono">repos</span>
               {recentRepos.slice(0, maxRecentRepos).map((p) => {
-                const active = p === ws.trim();
+                const active = isSameRepo(p, ws);
                 return (
                   <span key={p} className={"repo-chip" + (active ? " on" : "")} title={p}>
                     <button

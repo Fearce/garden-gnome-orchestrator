@@ -63,6 +63,8 @@ the --title-lines clamp and its "Show full title" by click, tap and Enter, chevr
 everything, filters and transcript still reachable, and the board card not scrolling sideways),
 `director-phone-lab.cjs` (the Director pane at 320–430px: the
 conversation's share of the pane, 44px targets, the pipeline menu, search, the options sheet, a send),
+`repo-chips-lab.cjs` (the composer's REPOS chips: a seeded slash/case-duplicated row repaired at boot, the
+active chip for a variant path, `+` and `×` under variant spellings, a same-named worktree kept, a reload),
 `board-head-lab.cjs` (the board header's controls clear of an open detail pane at 1000–2560px,
 Hide done across a reload, Settings → Board tabs on the strip, the narrow select and the phone menu),
 `agent-names-lab.cjs` (a fresh QA run and a backfilled legacy one both show "QA (Name, model)" in the

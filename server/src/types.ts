@@ -641,6 +641,26 @@ export function normalizeWorkspace(p: string): string {
   return p.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
 }
 
+/** One spelling per recent repo, so a chip and a dispatch read the same path. A Windows path (drive or
+ *  UNC) gets backslashes, an upper-case drive letter, single separators and no trailing separator; a
+ *  POSIX path only loses repeated and trailing slashes. A bare root keeps its separator, because there it
+ *  is the path. Mirrored byte-for-byte in web/src/types.ts so the composer's optimistic edits agree. */
+export function normalizeRecentRepo(path: string): string {
+  const p = path.trim();
+  if (!/^(?:[A-Za-z]:|[\\/]{2}[^\\/])/.test(p)) return p.replace(/\/{2,}/g, "/").replace(/(.)\/$/, "$1");
+  const body = p.replace(/[\\/]+/g, "\\").replace(/\\$/, "");
+  const spelled = /^[\\/]{2}/.test(p) ? `\\${body}` : body.charAt(0).toUpperCase() + body.slice(1);
+  return /^[A-Z]:$/.test(spelled) ? `${spelled}\\` : spelled;
+}
+
+/** Identity of a recent repo: its canonical spelling, case-folded only for Windows paths, whose file
+ *  system ignores case. `C:/Repo` and `c:\repo\` are one workspace; `/srv/App` and `/srv/app` are two.
+ *  Mirrored byte-for-byte in web/src/types.ts so the active chip and removal match the server. */
+export function recentRepoKey(path: string): string {
+  const p = normalizeRecentRepo(path);
+  return /^(?:[A-Z]:|\\\\)/.test(p) ? p.toLowerCase() : p;
+}
+
 export const GENERAL_ROOM = "general";
 
 /** The local key for the cross-machine directors' room (the same name the relay routes it under). */

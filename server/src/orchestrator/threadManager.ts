@@ -250,7 +250,7 @@ import type {
   WorkspaceMode,
   ZaiEffort,
 } from "../types.js";
-import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, DIRECTORS_ROOM, EFFORTS, GENERAL_ROOM, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeWorkspace, NOTE_MAX_CHARS, repoRoom, resolveClaudeEffort, resolveCodexEffort, resolveZaiEffort, unnamedAgentLabel, zaiEffortsForModel, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
+import { agentKey, CLAUDE_EFFORTS, claudeEffortsForModel, CODEX_EFFORTS, CODEX_SUB_ID, codexEffortsForModel, DEFAULT_SUB_ID, DIRECTORS_ROOM, EFFORTS, GENERAL_ROOM, grokEffortsForModel, GROK_EFFORTS, GROK_SUB_ID, isRole, MODEL_ROLES, normalizeRecentRepo, normalizeWorkspace, NOTE_MAX_CHARS, recentRepoKey, repoRoom, resolveClaudeEffort, resolveCodexEffort, resolveZaiEffort, unnamedAgentLabel, zaiEffortsForModel, ZAI_EFFORTS, ZAI_SUB_ID } from "../types.js";
 import type { LocalAgentSnapshot, OnlineOffice } from "../office/onlineOffice.js";
 import { OFFICE_ROOM as ONLINE_OFFICE_ROOM } from "../office/onlineProtocol.js";
 import type { RelayChat, RelayPresentAgent } from "../office/onlineProtocol.js";
@@ -311,12 +311,15 @@ function withoutQaWhenSkipped(stage: StageOutputs, decision: RouteDecision): Rou
 /** Validate an incoming model-overrides map: keep only known roles, trim + length-cap the model ids,
  *  drop blanks, drop subscriptions left with no entries, and cap the number of subscriptions. Bounds a
  *  client-supplied blob before it's persisted (subscription ids and model ids both originate from the client). */
-/** One spelling per recent repo: trimmed and without a trailing separator, so `C:\x\` and `C:\x` are one
- *  chip. A bare root such as `/` or `C:\` keeps its separator, because there it is the path. */
-export function normalizeRecentRepo(path: string): string {
-  const p = path.trim();
-  const stripped = p.replace(/[/\\]+$/, "");
-  return !stripped || /^[A-Za-z]:$/.test(stripped) ? p : stripped;
+/** The recent-repo list in canonical spellings, one entry per workspace, keeping each workspace's first
+ *  (most recent) position. */
+function uniqueRecentRepos(list: readonly string[]): string[] {
+  const byKey = new Map<string, string>();
+  for (const raw of list) {
+    const p = normalizeRecentRepo(raw);
+    if (p && !byKey.has(recentRepoKey(p))) byKey.set(recentRepoKey(p), p);
+  }
+  return [...byKey.values()];
 }
 
 function sanitizeModelOverrides(input: ModelOverrides): ModelOverrides {
@@ -1324,6 +1327,7 @@ export class ThreadManager implements OrchestratorApi {
     this.accounts.setSpreadUsage(this.settingBool("setting_spread_usage", false));
     // The burn superseded an unexposed owner-only kv priority; that key is retired, not migrated.
     this.db.kvDelete("temporary_claude_account_priority");
+    this.repairRecentRepos();
     this.applyResetBurn(this.resetBurn());
     this.loadCodexCap();
     this.loadPoolCaps();
@@ -5130,16 +5134,26 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   /** The persisted recent-repo paths (most-recent first), trimmed to the configured cap. Stored as a
    *  JSON array in kv; a corrupt/absent value degrades to an empty list rather than throwing. */
   private recentRepos(): string[] {
+    return uniqueRecentRepos(this.storedRecentRepos()).slice(0, this.settingNum("setting_max_recent_repos", 5, 1, 20));
+  }
+
+  private storedRecentRepos(): string[] {
     const raw = this.db.kvGet("setting_recent_repos");
     if (!raw) return [];
     try {
       const v = JSON.parse(raw) as unknown;
-      const list = Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-      const max = this.settingNum("setting_max_recent_repos", 5, 1, 20);
-      return list.slice(0, max);
+      return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
     } catch {
       return [];
     }
+  }
+
+  /** Rewrite a list stored before canonical spellings (`C:/x` beside `C:\x`) once at boot. Uncapped, so
+   *  entries hidden by a lowered max survive exactly as a normal write would leave them. */
+  private repairRecentRepos(): void {
+    const stored = this.storedRecentRepos();
+    const repaired = uniqueRecentRepos(stored);
+    if (JSON.stringify(repaired) !== JSON.stringify(stored)) this.db.kvSet("setting_recent_repos", JSON.stringify(repaired));
   }
 
   /** Move a repo the owner just dispatched to (or added from the composer) to the front of the recent
@@ -5154,16 +5168,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   forgetRecentRepo(path: string): void {
-    const p = normalizeRecentRepo(path);
-    this.writeRecentRepos(this.recentRepos().filter((x) => normalizeRecentRepo(x) !== p));
+    const key = recentRepoKey(path);
+    this.writeRecentRepos(this.recentRepos().filter((x) => recentRepoKey(x) !== key));
     this.hub.publish({ type: "settings", settings: this.settings() });
   }
 
-  /** Persist the recent-repo list most-recent first: trailing separators dropped, blanks and duplicates
-   *  removed, capped at the display max so the stored list can never outgrow what a client sends. */
+  /** Persist the recent-repo list most-recent first: canonical spellings, blanks dropped, one entry per
+   *  workspace, capped at the display max so the stored list can never outgrow what a client sends. */
   private writeRecentRepos(list: readonly string[], max = this.settingNum("setting_max_recent_repos", 5, 1, 20)): void {
-    const cleaned = list.map(normalizeRecentRepo).filter(Boolean);
-    this.db.kvSet("setting_recent_repos", JSON.stringify([...new Set(cleaned)].slice(0, Math.min(max, 20))));
+    this.db.kvSet("setting_recent_repos", JSON.stringify(uniqueRecentRepos(list).slice(0, Math.min(max, 20))));
   }
 
   /** The director persona's operator-chosen display name. Defaults to a conspicuous placeholder so a

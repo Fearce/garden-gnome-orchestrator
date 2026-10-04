@@ -63,8 +63,9 @@ import type {
   TokenSafetyState,
   ToggleableRole,
 } from "./types.js";
-import { agentKey, GENERAL_ROOM, normalizeWorkspace, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
+import { agentKey, GENERAL_ROOM, normalizeRecentRepo, normalizeWorkspace, THREAD_HISTORY_PAGE_SIZE } from "./types.js";
 import { notify } from "./lib/notify.js";
+import { withoutRecentRepo, withRecentRepo } from "./lib/recentRepos.js";
 import { applyTheme, DEFAULT_THEME, isThemeId, type ThemeId } from "./lib/theme.js";
 import {
   applyFonts,
@@ -1715,18 +1716,15 @@ export const useStore = create<State>((set) => ({
   // Projected only once the command is on the wire: a chip shown for a write the socket dropped would
   // sit there until the next hello silently took it away again, which is the bug this replaced.
   rememberRepo: (path) => {
-    const p = path.trim();
+    const p = normalizeRecentRepo(path);
     if (!p || !sendCommand({ type: "recentRepos.remember", path: p })) return;
     set((s) => ({
-      settings: {
-        ...s.settings,
-        recentRepos: [p, ...s.settings.recentRepos.filter((x) => x !== p)].slice(0, s.settings.maxRecentRepos),
-      },
+      settings: { ...s.settings, recentRepos: withRecentRepo(s.settings.recentRepos, p, s.settings.maxRecentRepos) },
     }));
   },
   forgetRepo: (path) => {
     if (!sendCommand({ type: "recentRepos.forget", path })) return;
-    set((s) => ({ settings: { ...s.settings, recentRepos: s.settings.recentRepos.filter((x) => x !== path) } }));
+    set((s) => ({ settings: { ...s.settings, recentRepos: withoutRecentRepo(s.settings.recentRepos, path) } }));
   },
   setDirectorDirectives: (text) => {
     const sent = sendCommand({ type: "settings.set", settings: { directorDirectives: text } });
