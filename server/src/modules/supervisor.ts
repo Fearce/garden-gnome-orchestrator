@@ -57,6 +57,8 @@ const LOG_ROTATE_BYTES = 4 * 1024 * 1024;
  */
 export class ModuleSupervisor {
   private readonly starting = new Map<ModuleId, Promise<WorkerConnection>>();
+  /** Modules whose worker process is being launched right now; `starting` also covers a mere health re-check. */
+  private readonly launching = new Set<ModuleId>();
   private readonly lastError = new Map<ModuleId, string>();
   private readonly known = new Map<ModuleId, { connection: WorkerConnection; checkedAt: number }>();
   private armedTimer: NodeJS.Timeout | null = null;
@@ -93,7 +95,7 @@ export class ModuleSupervisor {
   async status(id: ModuleId): Promise<ServiceStatus> {
     const armed = await this.armedReason(id);
     const base: ServiceStatus = { module: id, state: "stopped", pid: null, startedAt: null, stale: false, busy: null, armed, rssBytes: null, lastError: this.lastError.get(id) ?? null };
-    if (this.starting.has(id)) return { ...base, state: "starting" };
+    if (this.launching.has(id)) return { ...base, state: "starting" };
     const record = await this.readRecord(id);
     if (!record) return base;
     const health = await this.health(record);
@@ -189,6 +191,7 @@ export class ModuleSupervisor {
         await killWorker(existing.pid);
       }
     }
+    this.launching.add(id);
     try {
       const connection = await this.start(id);
       this.lastError.delete(id);
@@ -197,6 +200,8 @@ export class ModuleSupervisor {
       const message = error instanceof Error ? error.message : String(error);
       this.lastError.set(id, message);
       throw new ModuleError(message);
+    } finally {
+      this.launching.delete(id);
     }
   }
 

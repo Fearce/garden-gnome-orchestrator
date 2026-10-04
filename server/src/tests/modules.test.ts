@@ -401,6 +401,16 @@ try {
     assert.equal((await api("/api/modules/scripthub/service")).body.state, "running");
   });
 
+  await test("a routine health re-check of a running worker reads as running, not starting", async () => {
+    const pid = (await supervisor.ensure("home")).health.pid;
+    supervisor.forget("home");
+    const recheck = supervisor.ensure("home");
+    const during = await supervisor.status("home");
+    await recheck;
+    assert.equal(during.state, "running");
+    assert.equal(during.pid, pid);
+  });
+
   await test("Stop ends the worker process and clears its record", async () => {
     const before = (await api("/api/modules/home/service")).body.pid as number;
     const stopped = await api("/api/modules/home/service/stop", { method: "POST", body: {} });
