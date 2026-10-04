@@ -152,8 +152,8 @@ export class HomeAssistantBridge {
       .sort((a, b) => Date.parse(b.last_used_at ?? "0") - Date.parse(a.last_used_at ?? "0"))[0];
     if (!refresh) throw new HttpError(409, "Home Assistant has no usable owner login yet; sign in to Home Assistant once in a browser");
     const body = new URLSearchParams({ grant_type: "refresh_token", client_id: refresh.client_id || `${this.url}/`, refresh_token: refresh.token! });
-    const res = await this.fetch("/auth/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: body.toString() }, 12_000);
-    const data = (await res.json().catch(() => null)) as { access_token?: string; expires_in?: number } | null;
+    const res = await this.fetchJson("/auth/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: body.toString() }, 12_000);
+    const data = res.data as { access_token?: string; expires_in?: number } | null;
     if (!res.ok || !data?.access_token) throw new HttpError(502, `Home Assistant refused GGO's sign-in (HTTP ${res.status})`);
     this.access = { token: data.access_token, expiresAt: Date.now() + Number(data.expires_in ?? 1800) * 1000 };
     return this.access.token;
@@ -161,21 +161,33 @@ export class HomeAssistantBridge {
 
   private async api(method: string, path: string, body?: unknown, retry = true): Promise<unknown> {
     const token = await this.accessToken();
-    const res = await this.fetch(path, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }, 15_000);
+    const res = await this.fetchJson(path, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }, 15_000);
     if ((res.status === 401 || res.status === 403) && retry) {
       this.access = null;
       return this.api(method, path, body, false);
     }
-    const data = await res.json().catch(() => null);
+    const data = res.data;
     if (!res.ok) throw new HttpError(502, (data as { message?: string } | null)?.message ?? `Home Assistant answered HTTP ${res.status}`);
     return data;
   }
 
-  private async fetch(path: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  private async fetchJson(path: string, init: RequestInit, timeoutMs: number): Promise<{ ok: boolean; status: number; data: unknown }> {
+    const signal = AbortSignal.timeout(timeoutMs);
     try {
-      return await fetch(`${this.url}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      const response = await fetch(`${this.url}${path}`, { ...init, signal });
+      // Consume the body under the same deadline, including rejected credentials before retrying.
+      // Catching json() separately used to turn an aborted body into a successful empty status read.
+      const text = await response.text();
+      let data: unknown = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        if (response.ok) throw new HttpError(502, "Home Assistant returned an invalid JSON response");
+      }
+      return { ok: response.ok, status: response.status, data };
     } catch (error) {
-      if ((error as Error).name === "TimeoutError") throw new HttpError(504, `Home Assistant did not answer within ${timeoutMs / 1000}s`, { haDown: true });
+      if (error instanceof HttpError) throw error;
+      if (signal.aborted || (error as Error).name === "TimeoutError") throw new HttpError(504, `Home Assistant did not answer within ${timeoutMs / 1000}s`, { haDown: true });
       throw new HttpError(503, `Home Assistant is not running at ${this.url}`, { haDown: true });
     }
   }
