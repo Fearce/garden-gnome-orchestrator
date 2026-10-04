@@ -788,6 +788,10 @@ function workMerge(): void {
   const approvalRows: GoalWorkItem[] = approval.ok ? approval.rows.map((r) => ({ ...r, id: "a", goalId: "g", position: 1, createdAt: now })) : [];
   const repeat = mergeGoalWork(approvalRows, [{ title: "Ship", status: "awaiting_approval", note: "Build sent" }], "t1", now + 1);
   check("a repeated approval keeps its recorded blocker", repeat.ok && repeat.rows[0]?.blocker === "Owner tests on iPhone" && repeat.rows[0]?.note === "Build sent");
+  for (const status of ["blocked", "awaiting_approval"] as const) {
+    const cleared = mergeGoalWork(approvalRows, [{ title: "Ship", status, blocker: "  " }], "t1", now + 1);
+    check(`an explicit blank blocker refuses a ${status} report instead of erasing the dependency`, !cleared.ok);
+  }
   const approved = mergeGoalWork(approvalRows, [{ title: "Ship", status: "done" }], "t1", now + 2);
   check("leaving an owner status clears the blocker", approved.ok && approved.rows[0]?.blocker === null);
   const reopened = mergeGoalWork(approved.ok ? approved.rows.map((r) => ({ ...r, id: "a", goalId: "g", position: 1, createdAt: now })) : [], [{ title: "Ship", status: "working" }], "t1", now + 3);

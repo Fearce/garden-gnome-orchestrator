@@ -91,7 +91,8 @@ export function mergeGoalWork(existing: GoalWorkItem[], report: GoalWorkReportIt
     if (!key) return { ok: false, error: `${where} needs an id or title with letters or digits` };
     const prior = rows.get(key) ?? byKey.get(key) ?? (item.id?.trim() ? undefined : byTitle.get(workItemKey(title)));
     const blocker = clipText(item.blocker, DETAIL_MAX);
-    if (OWNER_STATUSES.has(item.status) && !(blocker ?? (prior && OWNER_STATUSES.has(prior.status) ? prior.blocker : null))) {
+    const dependency = blocker === undefined && prior && OWNER_STATUSES.has(prior.status) ? prior.blocker : blocker;
+    if (OWNER_STATUSES.has(item.status) && !dependency) {
       return { ok: false, error: `${where} is ${item.status} but says nothing in \`blocker\` about what it waits on` };
     }
     if (!prior) added++;
