@@ -3,7 +3,7 @@
 The Node/Fastify server is in `server/`; the React/Vite console is in `web/`. Follow the owner's current brief and steering. Complete the requested work, verify it, commit it, and push when the task requires it. Avoid placeholders and unrelated refactors. Detailed historical guidance is archived at [docs/agent-reference/AGENTS-full.md](docs/agent-reference/AGENTS-full.md); read the relevant section when troubleshooting. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains the pipeline. Check [docs/DECISIONS.md](docs/DECISIONS.md) before reopening a settled design decision.
 
 ## Shared memory
-If the operator keeps a cross-project memory bank, it is at `$HOME/.claude/memory/`. Hook-injected matches are pointers: open the named Markdown file before relying on one and verify time-sensitive facts. If a relevant match is missing, use `python $HOME/.claude/memory/scripts/rag.py retrieve --query "<topic>" --top-k 10 --min-score 0.3 --json`. For an explicit remember/forget request, follow `$HOME/.claude/commands/remember.md` or `forget.md`.
+If the operator keeps a cross-project memory bank, it is at `~/.claude/memory/`. Hook-injected matches are pointers: open the named Markdown file before relying on one and verify time-sensitive facts. If a relevant match is missing, use `python ~/.claude/memory/scripts/rag.py retrieve --query "<topic>" --top-k 10 --min-score 0.3 --json`. For an explicit remember/forget request, follow `~/.claude/commands/remember.md` or `forget.md`.
 
 ## Run and verify
 - `npm run typecheck` checks types. `npm run test:gates` runs free gates and writes `server/data/gates-last.log`. Run focused gates for changed behavior. Browser-test changed UI in Playwright.
@@ -14,5 +14,5 @@ If the operator keeps a cross-project memory bank, it is at `$HOME/.claude/memor
 
 ## Shared checkout and outputs
 - Coordinate through the office when another task shares this repo. Before committing, inspect `git status`, `git diff`, and `git diff --cached`. Never use `git add -A`, `git add .`, a bare `git commit`, `--no-verify`, or force-push main/master.
-- Use Conventional Commits. For separate files, use the safe-commit helper (`safe_commit.py -m "type: summary" -- path/to/file`); if another agent changed the same file, use `stage_my_hunks.py` as described in the archived shared-worktree section. Their location differs per machine, so find them with `python $HOME/.claude/scripts/findtool.py safe commit` (or `stage hunks`) instead of guessing a path.
+- Use Conventional Commits. For separate files, use the safe-commit helper (`safe_commit.py -m "type: summary" -- path/to/file`); if another agent changed the same file, use `stage_my_hunks.py` as described in the archived shared-worktree section. Their location differs per machine, so find them with `python ~/.claude/scripts/findtool.py safe commit` (or `stage hunks`) instead of guessing a path.
 - Surface generated owner-facing files as deliverables with absolute paths inside the task workspace. Ordinary source/config files are not deliverables. See the archived deliverables section.

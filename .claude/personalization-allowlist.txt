@@ -5,6 +5,6 @@
 # A public press-release URL whose document id is 19 digits, not an account id
 alibabagroup\.com/en-US/document-\d+
 # The operator's own agent config, named by its generic location rather than a machine's path
-\$HOME/\.claude/
+~/.claude/(memory|commands|scripts)/
 # The neutral fixture user the tests and docs use in place of a real home directory
 [A-Za-z]:/Users/alex/

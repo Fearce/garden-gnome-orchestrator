@@ -91,7 +91,7 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
 `relay/deploy.sh` ships the WORKING TREE's `src/` and rebuilds on the box (`~/gg-office-relay`; the
 `deploy` user has no sudo, hence not `/opt`). Several agents share this checkout, so deploy from a clean
 export or you ship their WIP: `git archive HEAD relay | tar -x -C /tmp/x` and run it from there. Host, SSH key
-and proxy network come from the gitignored `relay/deploy.env` (template `relay/deploy.env.example`). The
+and proxy network come from the gitignored `deploy.env` in `relay/` (template `relay/deploy.env.example`). The
 proxy's site block for the relay hostname is versioned with that host's own infrastructure — edit it
 there, never on the server. Join code + admin key:
 `server/data/online-office-credentials.txt` (gitignored).
