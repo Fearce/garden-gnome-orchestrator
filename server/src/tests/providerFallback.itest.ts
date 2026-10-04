@@ -20,6 +20,10 @@ import type { QaOutput } from "../types.js";
 // Keep live Codex-usage fixtures and their persisted cache out of the real server data directory.
 const testDataRoot = mkdtempSync(join(tmpdir(), "provider-fallback-data-"));
 process.env.DATA_DIR = testDataRoot;
+// The machine's real Codex homes hold rollouts written by live Codex tasks; a rollout newer than a test
+// ping would win `readCodexUsage` and make the Codex checks below depend on what else is running.
+process.env.CODEX_HOME_DIR = join(testDataRoot, "codex-home");
+process.env.CODEX_SOURCE_HOME = join(testDataRoot, "codex-source");
 
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
