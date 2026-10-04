@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
+import { isCrossSiteRequest } from "../crossSite.js";
 import type { CalendarResult, CalendarService } from "./calendarService.js";
 import { MAX_COUNT, MAX_INTERVAL } from "./recurrence.js";
 import { MAX_REMINDER_DAYS, MAX_REMINDER_MINUTES, MAX_REMINDERS, NOTES_MAX, TITLE_MAX } from "./validate.js";
@@ -62,14 +63,7 @@ export function registerCalendarRoutes(app: FastifyInstance, calendar: CalendarS
     routes.addHook("onRequest", async (req, res) => {
       res.header("cache-control", "no-store");
       if (!isAuthed(req.headers.cookie)) return res.code(401).send({ error: "unauthorized" });
-      if (req.headers["sec-fetch-site"] === "cross-site") return res.code(403).send({ error: "Cross-site calendar requests are refused." });
-      if (req.headers.origin) {
-        try {
-          if (new URL(req.headers.origin).host !== req.headers.host) return res.code(403).send({ error: "Origin does not match this console." });
-        } catch {
-          return res.code(403).send({ error: "Invalid origin." });
-        }
-      }
+      if (isCrossSiteRequest(req)) return res.code(403).send({ error: "Cross-site calendar requests are refused." });
     });
     routes.setErrorHandler((error, _req, res) => {
       if (error instanceof z.ZodError) return res.code(400).send({ error: `Invalid calendar request: ${error.issues.map((i) => i.path.join(".") || "body").join(", ")}.` });

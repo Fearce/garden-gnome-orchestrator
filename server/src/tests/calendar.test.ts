@@ -554,6 +554,15 @@ async function api(): Promise<void> {
   check("a cross-site write is refused", cross.statusCode === 403);
   const foreign = await app.inject({ method: "POST", url: "/api/calendar/events", headers: { ...authed, origin: "http://evil.example" }, payload: {} });
   check("a foreign origin is refused", foreign.statusCode === 403);
+  const sameSite = await app.inject({ method: "POST", url: "/api/calendar/events", headers: { ...authed, "sec-fetch-site": "same-site" }, payload: {} });
+  check("a same-site (other port or subdomain) write is refused", sameSite.statusCode === 403);
+  // The deck's proxy rewrites Host to the loopback listener but forwards the browser's Origin untouched.
+  const proxied = { cookie: "session=ok", host: "127.0.0.1:4317", origin: "https://deck.example.com:3940", "sec-fetch-site": "same-origin" };
+  const viaProxy = await app.inject({ method: "POST", url: "/api/calendar/events", headers: proxied, payload: { title: "Synthetic proxied event", allDay: true, start: "2026-10-22", end: "2026-10-22", timeZone: CPH } });
+  const proxiedId = viaProxy.statusCode === 200 ? (JSON.parse(viaProxy.body) as { event: { id: string } }).event.id : "";
+  check("a same-origin create through the deck's proxy succeeds", viaProxy.statusCode === 200 && !!proxiedId, viaProxy.body);
+  const proxiedDelete = await app.inject({ method: "DELETE", url: `/api/calendar/events/${proxiedId || "none"}?scope=series`, headers: proxied });
+  check("a same-origin delete through the deck's proxy succeeds", proxiedDelete.statusCode === 200 && !!proxiedId && !calendar.getEvent(proxiedId), proxiedDelete.body);
   const secret = "Synthetic private note 12345";
   const bad = await app.inject({ method: "POST", url: "/api/calendar/events", headers: authed, payload: { title: "x", notes: secret, allDay: "yes", start: "2026-10-05", end: "2026-10-05", timeZone: CPH } });
   check("a malformed body is a 400 that does not echo its content", bad.statusCode === 400 && !bad.body.includes(secret), bad.body);

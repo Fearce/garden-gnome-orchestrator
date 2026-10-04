@@ -83,8 +83,10 @@ America/New_York against the box's zone, over New York's DST change. Run it on a
   `server/data/orchestrator.sqlite` (gitignored). Tests and the lab use synthetic titles only. Never
   add a fixture, screenshot or deliverable built from the live DB.
 - The WS event `calendar.changed` carries no content, only a timestamp. Clients refetch
-  `/api/calendar/range` over authenticated REST. Routes reject cross-site and foreign-origin
-  requests. Their errors never echo the submitted body (not even an unknown zone name). Activity-log
+  `/api/calendar/range` over authenticated REST. Routes reject cross-site requests through
+  `isCrossSiteRequest` (`server/src/crossSite.ts`). It trusts `Sec-Fetch-Site`, never Origin vs Host:
+  the deck's `/orchestrator/` proxy rewrites Host, so that comparison refused every create, edit and
+  delete made through it (2026-10-04). Route errors never echo the submitted body (not even an unknown zone name). Activity-log
   lines name an event by id (`Calendar reminder (event ab12cd34)`), never by title, and the scheduler
   names a reminder-only schedule by id too (`Scheduled reminder ab12cd34`). The scheduler's own
   `schedules` WS broadcast still carries reminder titles and text: the console needs them, and the
