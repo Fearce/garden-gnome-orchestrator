@@ -816,6 +816,7 @@ export interface ResetBurnDTO {
   startedAt: number;
   endsAt: number;
   anchored: boolean;
+  automatic: boolean; // started by Auto-burn rather than picked by the owner
 }
 
 /** Operator-tunable pipeline settings — server-authoritative (persisted in the DB kv table, broadcast

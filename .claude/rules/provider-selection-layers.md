@@ -55,6 +55,14 @@ reset spent in the native app) — so read it through `resetBurn()`, never the r
 `test:reset-burn` (lifecycle), `test:account-usage` + `test:provider-fallback` (routing,
 failover, redeem), `test:auto-model` (roster), `reset-burn-lab` (the picker in a real browser).
 
+**Auto-burn** (kv `setting_auto_burn`, default off; `ThreadManager.autoResetBurn`) fills the same
+single burn slot automatically, flagged `automatic: true` in the kv and the DTO. With no manual burn,
+it targets the enabled, uncapped Claude account or Codex with the soonest known weekly reset within
+24h. The cap supervisor tick re-evaluates it as well as each usage refresh. A manual pick always
+replaces it. Turning the setting off ends an automatic burn, but never a manual one.
+`auto_burn_redeemed_<sub>` stops a stale usage reading from re-burning a sub whose reset was just
+spent. Tests: the auto-burn block in `test:provider-fallback`.
+
 ## Conventions that bite
 - Codex/Grok usage is real and comparable: their weekly `sevenDay` % comes from
   `codexUsagePing` / `grokUsagePing` and each carries a `weeklySafetyPct`. Don't assume

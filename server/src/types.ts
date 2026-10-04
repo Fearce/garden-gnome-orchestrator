@@ -1269,6 +1269,7 @@ export interface ResetBurnDTO {
   startedAt: number;
   endsAt: number;
   anchored: boolean;
+  automatic: boolean; // started by Auto-burn rather than picked by the owner
 }
 
 /**

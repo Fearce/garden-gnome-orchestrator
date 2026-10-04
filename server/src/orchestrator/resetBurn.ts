@@ -76,5 +76,5 @@ export function stepResetBurn(burn: ResetBurn, currentReset: number | null, now:
 }
 
 export function resetBurnDTO(burn: ResetBurn): ResetBurnDTO {
-  return { subId: burn.subId, startedAt: burn.startedAt, endsAt: resetBurnEndsAt(burn), anchored: burn.windowReset != null };
+  return { subId: burn.subId, startedAt: burn.startedAt, endsAt: resetBurnEndsAt(burn), anchored: burn.windowReset != null, automatic: burn.automatic === true };
 }

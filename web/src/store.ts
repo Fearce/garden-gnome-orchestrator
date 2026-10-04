@@ -151,7 +151,7 @@ function optimisticResetBurn(current: ResetBurnDTO | null, subId: string | null 
   if (!subId) return { resetBurn: null };
   if (current?.subId === subId) return { resetBurn: current };
   const now = Date.now();
-  return { resetBurn: { subId, startedAt: now, endsAt: now + 7 * 24 * 60 * 60_000, anchored: false } };
+  return { resetBurn: { subId, startedAt: now, endsAt: now + 7 * 24 * 60 * 60_000, anchored: false, automatic: false } };
 }
 
 interface State {

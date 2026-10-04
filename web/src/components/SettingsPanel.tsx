@@ -2605,7 +2605,7 @@ function ResetBurnStatus({ burn, target }: { burn: ResetBurnDTO; target: ResetBu
     : `Ends when its weekly window resets, or as soon as you spend the reset. That reset time has not been read yet, so the burn stops within ${timeLeft(burn.endsAt - now)} at the latest.`;
   return (
     <p className="settings-note tight reset-burn-status" role="status">
-      Preparing <strong>{target?.label ?? burn.subId}</strong> for its reset{meters ? ` (${meters})` : ""}, started {now - burn.startedAt < 60_000 ? "just now" : `${since(now, burn.startedAt)} ago`}. {ends}
+      {burn.automatic ? "Auto-burn is preparing " : "Preparing "}<strong>{target?.label ?? burn.subId}</strong> for its reset{meters ? ` (${meters})` : ""}, started {now - burn.startedAt < 60_000 ? "just now" : `${since(now, burn.startedAt)} ago`}. {ends}{burn.automatic ? " Turn Auto-burn off to stop it; picking another sub takes over." : ""}
     </p>
   );
 }
