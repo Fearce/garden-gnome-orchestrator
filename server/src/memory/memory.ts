@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { config } from "../config.js";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import { ExtractionOffsets, memoryAgentHooks, type AgentMemory } from "./agentHooks.js";
+import { ExtractionOffsets, memoryAgentHooks, type AgentMemory, type AgentRunKind } from "./agentHooks.js";
 import { CardBuilder, type CardBuilderStatus } from "./cards.js";
 import { MemoryCorpus, safeMemoryFile, type MemoryPatch, type NewMemory } from "./corpus.js";
 import { ExtractionQueue, type ExtractionItem, type ExtractionStatus } from "./extraction.js";
@@ -28,7 +28,7 @@ export interface MemoryService extends AgentMemory {
   /** Full content of one memory file by its frontmatter name or file name. Scoped to the memory dir. */
   read(nameOrFile: string): Promise<string | null>;
   /** SDK hooks giving a Claude-based agent run native recall and extraction; undefined when off. */
-  agentHooks(): Options["hooks"] | undefined;
+  agentHooks(run: AgentRunKind): Options["hooks"] | undefined;
   /** Recall for a Codex run, which takes it as a prompt prefix; undefined when agent recall is off. */
   codexMemory(): { service: AgentMemory; dir: string } | undefined;
   /** Write a new memory file; returns its file name. */
@@ -158,10 +158,10 @@ export class FileMemoryService implements MemoryService {
     }));
   }
 
-  agentHooks(): Options["hooks"] | undefined {
+  agentHooks(run: AgentRunKind): Options["hooks"] | undefined {
     if (!this.settings().agentRecall) return undefined;
     this.offsets ??= new ExtractionOffsets();
-    return memoryAgentHooks(this, this.dir, this.offsets);
+    return memoryAgentHooks(this, this.dir, run, this.offsets);
   }
 
   codexMemory(): { service: AgentMemory; dir: string } | undefined {
@@ -210,8 +210,9 @@ export class FileMemoryService implements MemoryService {
     return moved;
   }
 
-  async enqueueExtraction(item: Omit<ExtractionItem, "version" | "createdAt">): Promise<"queued" | "too-short" | "unavailable"> {
+  async enqueueExtraction(item: Omit<ExtractionItem, "version" | "createdAt">): Promise<"queued" | "too-short" | "disabled" | "unavailable"> {
     if (!this.extraction) return "unavailable";
+    if (!this.settings().extraction) return "disabled";
     return (await this.extraction.enqueue(item)) ? "queued" : "too-short";
   }
 

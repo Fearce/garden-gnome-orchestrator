@@ -95,7 +95,11 @@ keyword match over the files and say so in the injected block. The extractor wri
 straight into the queue directory instead.
 
 Inside GGO's own runs the hooks stand down (`GGO_MEMORY_NATIVE=1`) because GGO injects
-recall itself: SDK hooks for Claude and z.ai runs, a prompt prefix for Codex runs.
+recall itself: SDK hooks for Claude and z.ai runs, a prompt prefix for Codex runs. Their
+PreCompact/SessionEnd hooks queue only the owner's own words for extraction: a task run's user
+turns are GGO's kickoff, QA and office text, so only its `[OWNER STEERING]` blocks go in; a
+Co-work run's turns are the owner's chat, queued without GGO's policy wrapper. The Settings →
+Memory extraction toggle governs these runs too.
 
 ## Extraction
 

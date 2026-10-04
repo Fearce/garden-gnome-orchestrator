@@ -15,7 +15,9 @@ const { FileMemoryService, DEFAULT_MEMORY_SETTINGS } = await import("../memory/m
 const { HAIKU_MODEL } = await import("../memory/models.js");
 const { QUEUE_DIR } = await import("../memory/extraction.js");
 const { TRASH_DIR, REVIEW_SECTION, MemoryCorpus, dropRelated, memoryChunks, parseMemory, patchMemoryText, today } = await import("../memory/corpus.js");
-const { memoryAgentHooks, stripTaskEnvelope, userText, ExtractionOffsets } = await import("../memory/agentHooks.js");
+const { memoryAgentHooks, ownerWords, stripTaskEnvelope, userText, ExtractionOffsets } = await import("../memory/agentHooks.js");
+const { acknowledgedInjection } = await import("../orchestrator/injection.js");
+const { withCommunicationTurnPolicy } = await import("../agents/communicationPolicy.js");
 const { MemorySettingsStore } = await import("../memory/settings.js");
 const { MemoryEndpoint, isPrimaryMemoryOwner } = await import("../memory/endpoint.js");
 const { registerMemoryRoutes } = await import("../memory/routes.js");
@@ -134,6 +136,34 @@ async function corpusEditsKeepTheOwnersLayouts(dir: string): Promise<void> {
   assert.ok(!/(^|[^\r])\n/.test(dropRelated(crlf, "gone.md") ?? "\n"), "dropping a related link keeps CRLF");
 }
 
+/** A task run's user turns are mostly GGO's own text (kickoff, QA, office); only steering blocks are the
+ *  owner's. A Co-work run's user turns are the owner's chat, minus GGO's policy wrapper. */
+async function extractionReadsOnlyTheOwnersWords(dir: string): Promise<void> {
+  const kickoff = "## Brief\nNever use git add -A; commit only your own hunks.\n## Plan\nsteps";
+  const steering = acknowledgedInjection("From now on, write every reply in British English.");
+  assert.equal(ownerWords(`${kickoff}\n\n${steering}\n\nQA: two tests fail`, "task"), "From now on, write every reply in British English.", "a task run keeps only the steering block's message");
+  assert.equal(ownerWords(kickoff, "task"), "", "a task run without steering has no owner words");
+  const cowork = withCommunicationTurnPolicy("I always want the changelog updated with each release.", false) as string;
+  assert.equal(ownerWords(cowork, "cowork"), "I always want the changelog updated with each release.", "a Co-work turn loses only GGO's wrapper");
+
+  seed(dir);
+  const off = service(dir, { haiku: fakeHaiku(), settings: () => ({ ...DEFAULT_MEMORY_SETTINGS, extraction: false }) });
+  assert.equal(await off.enqueueExtraction({ source: "test", sessionId: null, text: "always ".repeat(80) }), "disabled", "the extraction toggle also governs agent runs");
+  assert.equal(existsSync(join(dir, QUEUE_DIR)) ? readdirSync(join(dir, QUEUE_DIR)).filter((f) => f.endsWith(".json")).length : 0, 0, "nothing is queued while extraction is off");
+  await off.close();
+
+  const offsetsFile = join(dir, "offsets.json");
+  const offsets = new ExtractionOffsets(offsetsFile);
+  await Promise.all(Array.from({ length: 40 }, (_, i) => offsets.set(`t${i}`, i)));
+  assert.equal(Object.keys(JSON.parse(readFileSync(offsetsFile, "utf8"))).length, 40, "concurrent offset writes leave valid JSON holding every transcript");
+  const lru = new ExtractionOffsets(join(dir, "lru.json"));
+  await lru.set("kept", 1);
+  for (let i = 0; i < 499; i++) await lru.set(`filler${i}`, i);
+  await lru.set("kept", 2);
+  await lru.set("one-more", 1);
+  assert.equal(await new ExtractionOffsets(join(dir, "lru.json")).get("kept"), 2, "trimming keeps the most recently used transcripts");
+}
+
 async function until(label: string, check: () => Promise<boolean> | boolean, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -228,7 +258,7 @@ try {
     assert.ok(usage.some((u) => u.provider === "claude" && u.purpose === "recall" && u.calls >= 1), "model calls land in the usage ledger");
 
     // Native agent hooks give a Claude-based run the same recall.
-    const hooks = memoryAgentHooks(memory, dir, new ExtractionOffsets(join(root, "offsets.json")));
+    const hooks = memoryAgentHooks(memory, dir, "task", new ExtractionOffsets(join(root, "offsets.json")));
     const hook = hooks.UserPromptSubmit![0]!.hooks[0]!;
     const out = (await hook({ hook_event_name: "UserPromptSubmit", prompt: "## Brief\nthe office kettle needs descaling, chalky taste\n## Plan\nunrelated", session_id: "s", transcript_path: "", cwd: dir } as never, undefined, { signal: AbortSignal.timeout(5_000) })) as { hookSpecificOutput?: { additionalContext?: string } };
     assert.match(out.hookSpecificOutput?.additionalContext ?? "", /Descale the office kettle monthly/);
@@ -312,10 +342,10 @@ try {
     const result = await memory.recall("the water boiler tastes chalky", "prompt", 2, 5_000);
     assert.equal(result.fallbackReason, "model ranking is turned off");
     assert.equal(haiku.calls.length, 0);
-    assert.equal(memory.agentHooks(), undefined, "agent recall off means no hooks");
+    assert.equal(memory.agentHooks("task"), undefined, "agent recall off means no hooks");
     assert.equal(memory.codexMemory(), undefined, "and no Codex prompt prefix");
     settings = { ...settings, agentRecall: true };
-    assert.ok(memory.agentHooks()?.UserPromptSubmit);
+    assert.ok(memory.agentHooks("task")?.UserPromptSubmit);
     assert.equal(memory.codexMemory()?.dir, dir);
     await memory.close();
 
@@ -341,6 +371,7 @@ try {
     ]),
     "first owner line\n\nsecond owner line",
   );
+  await extractionReadsOnlyTheOwnersWords(join(root, "owner-words"));
   assert.equal(isPrimaryMemoryOwner({}, ["node", "dist/index.js"]), true);
   assert.equal(isPrimaryMemoryOwner({}), false, "a test run never owns the memory directory");
   assert.equal(isPrimaryMemoryOwner({ DATA_DIR: "/tmp/lab" }, ["node", "dist/index.js"]), false, "a lab with its own data dir never owns the memory directory");

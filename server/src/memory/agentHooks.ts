@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { HookCallback, HookCallbackMatcher, HookEvent, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.js";
@@ -14,8 +15,12 @@ export const NATIVE_MEMORY_ENV = "GGO_MEMORY_NATIVE";
 
 export interface AgentMemory {
   recall(query: string, mode: RecallMode, limit: number, timeoutMs: number): Promise<RecallResult>;
-  enqueueExtraction(item: { source: string; sessionId: string | null; text: string }): Promise<"queued" | "too-short" | "unavailable">;
+  enqueueExtraction(item: { source: string; sessionId: string | null; text: string }): Promise<"queued" | "too-short" | "disabled" | "unavailable">;
 }
+
+/** Whose words a run's user turns are: a task run's are mostly GGO's own (kickoff, QA bounces, office
+ *  messages), a Co-work run's are the owner's chat. */
+export type AgentRunKind = "task" | "cowork";
 
 const SESSION_LIMIT = 4;
 const PROMPT_LIMIT = 2;
@@ -23,6 +28,11 @@ const RECALL_TIMEOUT_MS = 9_000;
 const HOOK_TIMEOUT_S = 15;
 const MIN_PROMPT_CHARS = 8;
 const OFFSETS_FILE = "memory-extraction-offsets.json";
+/** GGO's frame around a live owner message (orchestrator/injection.ts `steeringFrame`; the memory gate
+ *  checks this against the real frame). Imported text cannot wear it: office chat is neutralised. */
+const STEERING_BLOCK = /\[OWNER STEERING[^\]\n]*\]\r?\n([\s\S]*?)\r?\n\[\/OWNER STEERING\]/g;
+const POLICY_BLOCK = /<ggo_communication_policy\b[\s\S]*?<\/ggo_communication_policy>/g;
+const CONTENT_TAG = /<\/?ggo_owner_or_task_content>/g;
 
 /** The task envelope GGO wraps around a brief is process prose shared by every task; matching on it
  *  surfaces the same process memories every time. Recall reads only the `## Brief` section when there is one. */
@@ -72,7 +82,7 @@ export async function sessionRecallBlock(memory: AgentMemory, cwd: string, dir: 
 }
 
 /** The SDK hook set for one Claude-based agent run. */
-export function memoryAgentHooks(memory: AgentMemory, dir: string, offsets = new ExtractionOffsets()): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
+export function memoryAgentHooks(memory: AgentMemory, dir: string, run: AgentRunKind, offsets = new ExtractionOffsets()): Partial<Record<HookEvent, HookCallbackMatcher[]>> {
   const one = (hook: HookCallback): HookCallbackMatcher[] => [{ hooks: [hook], timeout: HOOK_TIMEOUT_S }];
   return {
     SessionStart: one(async (input) => {
@@ -85,20 +95,20 @@ export function memoryAgentHooks(memory: AgentMemory, dir: string, offsets = new
       const context = await promptRecallBlock(memory, input.prompt, dir);
       return context ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context } } : {};
     }),
-    PreCompact: one((input) => queueTranscript(memory, input, offsets)),
-    SessionEnd: one((input) => queueTranscript(memory, input, offsets)),
+    PreCompact: one((input) => queueTranscript(memory, input, offsets, run)),
+    SessionEnd: one((input) => queueTranscript(memory, input, offsets, run)),
   };
 }
 
-async function queueTranscript(memory: AgentMemory, input: HookInput, offsets: ExtractionOffsets): Promise<Record<string, never>> {
+async function queueTranscript(memory: AgentMemory, input: HookInput, offsets: ExtractionOffsets, run: AgentRunKind): Promise<Record<string, never>> {
   try {
     const path = input.transcript_path;
     if (!path) return {};
     const lines = (await readFile(path, "utf8")).split(/\r?\n/);
     const from = await offsets.get(path);
     if (from >= lines.length) return {};
-    const text = userText(lines.slice(from));
-    const outcome = await memory.enqueueExtraction({ source: "ggo-agent", sessionId: input.session_id ?? null, text });
+    const text = ownerWords(userText(lines.slice(from)), run);
+    const outcome = text ? await memory.enqueueExtraction({ source: "ggo-agent", sessionId: input.session_id ?? null, text }) : "too-short";
     if (outcome !== "unavailable") await offsets.set(path, lines.length);
   } catch {
     // A transcript that cannot be read now is retried from the same offset at the next compaction.
@@ -128,9 +138,19 @@ export function userText(lines: string[]): string {
   return chunks.join("\n\n");
 }
 
+/** The owner's own words in a run's user text: steering blocks in a task run, everything but GGO's
+ *  policy wrapper in a Co-work run. Extraction quotes these verbatim, so GGO's process rules must not be in them. */
+export function ownerWords(text: string, run: AgentRunKind): string {
+  if (run === "cowork") return text.replace(POLICY_BLOCK, "").replace(CONTENT_TAG, "").trim();
+  return [...text.matchAll(STEERING_BLOCK)].map((m) => m[1]!.trim()).filter(Boolean).join("\n\n");
+}
+
 /** How far into each transcript extraction has already read, kept across restarts. */
 export class ExtractionOffsets {
   private cache: Record<string, number> | null = null;
+  /** Parallel runs share one instance; their writes go one at a time so the file is never interleaved. */
+  private writing: Promise<void> = Promise.resolve();
+  private loading: Promise<Record<string, number>> | null = null;
 
   constructor(private readonly file = join(config.dataDir, OFFSETS_FILE)) {}
 
@@ -140,20 +160,30 @@ export class ExtractionOffsets {
 
   async set(transcript: string, line: number): Promise<void> {
     const all = await this.load();
+    delete all[transcript];
     all[transcript] = line;
     const entries = Object.entries(all);
-    // Bounded: only the most recently touched transcripts matter.
+    // Bounded: only the most recently touched transcripts matter (insertion order is recency).
     if (entries.length > 500) this.cache = Object.fromEntries(entries.slice(-400));
-    await writeFile(this.file, JSON.stringify(this.cache), "utf8");
+    const write = this.writing.then(() => this.persist());
+    this.writing = write.catch(() => undefined);
+    await write;
+  }
+
+  private async persist(): Promise<void> {
+    const temp = `${this.file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+    await writeFile(temp, JSON.stringify(this.cache), "utf8");
+    await rename(temp, this.file);
   }
 
   private async load(): Promise<Record<string, number>> {
     if (this.cache) return this.cache;
-    try {
-      this.cache = JSON.parse(await readFile(this.file, "utf8")) as Record<string, number>;
-    } catch {
-      this.cache = {};
-    }
+    // Concurrent first calls share one read, so none of them replaces the map another already wrote to.
+    this.loading ??= readFile(this.file, "utf8")
+      .then((text) => JSON.parse(text) as Record<string, number>)
+      .catch(() => ({}));
+    const loaded = await this.loading;
+    this.cache ??= loaded;
     return this.cache;
   }
 }
