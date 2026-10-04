@@ -84,6 +84,13 @@ totaling 5,076 ms, worst 2,565 ms, attributed by the server to SQLite finding
 persistence. This is not evidence of zero production stalls or of a module-caused
 regression. The separate server-stalls task owns that behavior.
 
+The final live repeat on build `38078a69` passed the same 13 checks. Thirty samples
+per phase measured HTTP 2.6 / 21.2 / 111.3 ms and WebSocket 1.9 / 28.8 / 110.9 ms
+before the module-view load, then HTTP 2.5 / 9.3 / 111.9 ms and WebSocket
+1.7 / 8.4 / 113.5 ms under that load. Both monitor windows contained the same
+three SQLite tool-message-read stalls, totaling 6,924 ms, worst 2,634 ms.
+The recording worker remained the same process and continued recording five cameras.
+
 ## Deliverables and documentation
 
 Both previously recorded report cards resolve inside the task's claimed worktree,
