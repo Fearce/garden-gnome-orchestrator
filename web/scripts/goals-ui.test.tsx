@@ -333,6 +333,11 @@ assert.match(historical, /Last turn: Continue[\s\S]*Replay remains\./, "the step
 assert.match(historical, /No milestones reported in this step\./);
 assert.doesNotMatch(historical.slice(historical.indexOf("goal-work"), historical.indexOf("sched-actions")), /%/, "no percentage is made up for an old goal");
 
+const { workItems: omittedWorkItems, ...oldSnapshot } = goal;
+const duringUpgrade = render([oldSnapshot as Goal]);
+assert.match(duringUpgrade, /Offline support/, "the Goals page opens while the older server is still running");
+assert.match(duringUpgrade, /Steps and milestones[\s\S]*no milestones reported yet/, "an older snapshot keeps its step tree without inventing milestones");
+
 const ended = render([{ ...goal, status: "achieved", endedAt: 5, workItems }]);
 assert.doesNotMatch(ended, /goal-needs/, "an ended goal asks the owner for nothing");
 assert.doesNotMatch(ended, /goal-item-now/, "nothing is current on an ended goal");

@@ -734,12 +734,12 @@ const CONTINUATION_WORK_CHARS = 400;
 
 /** The progress rule in a continuation: the session already had the full rule in its brief. */
 const GOAL_PROGRESS_REMINDER =
-  "Keep the owner's Goals view current: report milestones with `report_goal_progress` (on a CLI backend, one standalone line `GOAL_PROGRESS: {\"items\":[{\"id\":\"…\",\"title\":\"…\",\"status\":\"working\"}]}`) whenever one starts, finishes, gets blocked or needs the owner's approval, reusing the recorded ids. Titles of 3-6 words, notes one short sentence. Statuses: planned, working, blocked, awaiting_approval, done, dropped; add `verified: true` only for a result you checked.";
+  "Keep the owner's Goals view current: report milestones with `report_goal_progress` (CLI: one standalone line `GOAL_PROGRESS: {\"items\":[{\"id\":\"…\",\"title\":\"…\",\"status\":\"working\"}]}`) as milestones change. Reuse ids; titles 3-6 words, notes one sentence. Statuses: planned, working, blocked, awaiting_approval, done, dropped. For blocked or awaiting_approval, include `blocker` naming the dependency. Keep approval pending until the owner explicitly approves. Only checked results get `verified: true` and `verification` saying how.";
 
 /** A continuation into a session with no milestones on record: a session that started before milestone
  *  reporting existed never saw the full rule, and "report whenever one starts" alone left it silent. */
 const GOAL_FIRST_PROGRESS =
-  "No milestones are recorded for this goal yet. Early in this turn, report the objective's milestones in one call: a handful of outcomes, each with a stable `id`, those already finished as `done` (with `verified: true` only for results you checked), the one you are on as `working`, the rest as `planned`.";
+  "No milestones are recorded for this goal yet. Early in this turn, report a handful of outcomes with stable ids: finished work as done, current work as working, remaining work as planned, and unresolved dependencies as blocked or awaiting_approval. Owner testing and approval stay pending until explicitly approved.";
 
 /** The open milestones a continuation lists, so the session reuses their ids after a compaction. */
 function openWorkBlock(goal: Goal): string {

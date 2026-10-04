@@ -101,7 +101,10 @@ export function Goals() {
   );
 }
 
-function GoalCard({ goal, onEdit }: { goal: Goal; onEdit: () => void }) {
+function GoalCard({ goal: receivedGoal, onEdit }: { goal: Goal; onEdit: () => void }) {
+  // A newly built console can connect before the server update has restarted.
+  // Older snapshots have step history but no milestone collection yet.
+  const goal = { ...receivedGoal, workItems: receivedGoal.workItems ?? [] };
   const now = useCoarseNow();
   const setGoalStatus = useStore((s) => s.setGoalStatus);
   const deleteGoal = useStore((s) => s.deleteGoal);

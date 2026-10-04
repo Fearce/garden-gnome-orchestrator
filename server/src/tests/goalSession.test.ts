@@ -176,6 +176,8 @@ async function sessionReuse(): Promise<void> {
   check("a continuation is short next to a fresh brief", msg.length < 2_500);
   check("a continuation reminds the session to report milestones", msg.includes("report_goal_progress") && msg.includes("GOAL_PROGRESS:"));
   check("with none recorded, a continuation asks for the first milestone report", msg.includes("No milestones are recorded for this goal yet."));
+  check("legacy sessions can report blockers and verification without the old brief", msg.includes("include `blocker`") && msg.includes("`verification` saying how"));
+  check("the first report preserves pending owner testing and approval", msg.includes("unresolved dependencies as blocked or awaiting_approval") && msg.includes("Owner testing and approval stay pending until explicitly approved"));
 
   console.log("goal session: a resumed session keeps its milestones");
   const items = Array.from({ length: 30 }, (_, i) => ({ id: `part-${i}`, title: `Parser part ${i}: a deliberately long milestone title to fill the list`, status: i < 3 ? ("done" as const) : ("planned" as const) }));
