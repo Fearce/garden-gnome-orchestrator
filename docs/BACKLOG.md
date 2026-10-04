@@ -15,8 +15,6 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
-- **Independent QA: verify and deploy the camera-proxy and Home Assistant controls** (2026-10-04, Codex QA; task cad0786a).
-  Live a6eba134 verified; 74/74 isolated and 13/13 live browser checks pass. Overall review remains red on Calendar's daily-collapse gate (228/229 covered gates pass); evidence in docs/reports/local-service-modules-independent-qa-2026-10-04.md.
 - **QA: camera pictures behind the Deck proxy, and an explicit Start for Home Assistant** (2026-10-04, Claude QA; task cad0786a).
   The module socket returned 403 behind `/orchestrator/` (Chromium sends no Sec-Fetch-Site on a WebSocket handshake and the proxy rewrites Host). Home Assistant's container had exited and the Home tab offered no way to start it.
 
@@ -33,8 +31,6 @@ same commit as the fix. Git history keeps the record.
 
 1. **Resolve Electron clean-exit verification before accepting the desktop app** (2026-10-04, Moss Gauge): desktop lab 52/55; three 20-second app-exit timeouts, and packaged-window-close verification timed out at 15 seconds. Live HTTP/WS load probe completed without a desktop-open regression.
 2. **Surface the desktop distribution and all retained validation artifacts** (2026-10-04, Moss Gauge): installer and retained screenshots/metrics have no deliverable cards; existing eight cards serve. Installer exceeds the 25 MB serving cap and needs a supported delivery path.
-1. **Resolve Calendar's every-five-minutes daily-collapse gate before module migration acceptance** (Codex QA, 2026-10-04).
-  `test:calendar` fails at server/src/tests/calendar.test.ts:486 in both the full run and focused retry; Calendar code/test match the integration base. Its separate task owns the repair.
 1. **Investigate console smoke served/local bundle mismatch and browser shutdown timeout**: 2026-10-03 probe reports ws=live with no console errors, served index-C8zofTVy.js versus local index-BHXtYnz4.js, and browser shutdown exceeded 5000ms; authenticated HTTP bundle verification passed earlier in the same task.
 
 ## Blocked / waiting
@@ -52,6 +48,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-04 **Independent module deployment QA** (a6eba134, 38078a69; Codex QA): 74/74 isolated and 13/13 live proxy/browser checks, preserved local configurations and recording, authenticated report downloads; all 229 gates covered green after the Calendar task's 28a0706f repair. Evidence: docs/reports/local-service-modules-independent-qa-2026-10-04.md; QA documentation awaits independent review.
 - 2026-10-04 **Auto-burn subscriptions within 24 hours of weekly reset** (1a3e8dba, Moss Spark): pushed to master and live build verified; authenticated live hello reports autoBurn=false and the served entry matches dist with the new control. Browser lab 21/21; routing/Codex/boundary regression, burn/model/goal/Director gates, typechecks/build, README and privacy checks pass.
 
 - 2026-10-04 **Optional Electron desktop app with Open in desktop / Open in web handoff** (8521a443..c2283ee4, Quillhatch): server live as 5712fdf2; the packaged Windows app reached the live server's sign-in in 928 ms with the bridge and no Node in the renderer; desktop lab 51/51; live load probe under 7 implementing agents moved no HTTP/WS percentile (/api/me p95 6.0 to 6.5 ms, WS ping p95 1.4 to 2.6 ms); live web portal check passed.

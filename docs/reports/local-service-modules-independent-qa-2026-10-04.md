@@ -1,16 +1,19 @@
 # Local service modules: independent deployment QA
 
-The migration's browser behavior and live deployment pass this review's focused
-checks. The overall tree **does not pass QA** because `test:calendar` reproducibly
-fails its every-five-minutes schedule collapse assertion. Calendar code and its
-test match the integration base; the separate Calendar task owns that repair.
-No owner decision or external dependency is needed to resolve this gate.
+The migration's browser behavior, live deployment and required checks pass.
+The initial Calendar gate failure was resolved by its owning task in `28a0706f`:
+the test now checks seven complete future days, since a partial day near midnight
+has too few occurrences to qualify for daily collapse. The focused Calendar gate
+passes after the final rebase. This review changed QA documentation, so another
+reviewer must inspect those edits before acceptance.
 
 ## Deployment and checks
 
 The reviewed Home Assistant response repair and camera-proxy/container-control
 changes were rebased onto current master, fast-forwarded and pushed. Live server
 build **a6eba134** was confirmed by `npm run deploy --prefix server -- --verify`.
+After subsequent upstream integration, live build **38078a69** was also verified;
+the migrated module code is unchanged between those two deployed builds.
 The existing recording worker was preserved rather than restarted; its older-build
 badge is expected. Script Hub, Home and Sidekick workers report the current build.
 
@@ -29,9 +32,12 @@ badge is expected. Script Hub, Home and Sidekick workers report the current buil
 - `npm run probe:doc-paths --prefix server`: passed.
 - All **229 free gates were exercised**: 98 passed before deployment interrupted
   the full runner; the 131 remaining or failed gates were then run explicitly,
-  with 130 passing. Combined coverage is **228/229 passing**, not a green full
-  suite. Provider fallback's automatic Codex-burn assertion failed under the first
-  run's load and passed on retry. Calendar's daily-collapse check failed twice.
+  with 130 passing. Calendar's owning task then corrected the partial-day test;
+  `npm run test:calendar --prefix server` passed after rebasing onto that repair.
+  Thus all **229/229 gates have passing coverage across the runs**, rather than a
+  single uninterrupted suite pass. Provider fallback's automatic Codex-burn
+  assertion failed under the first run's load and passed on retry. Final-base
+  module, desktop and provider-fallback gates and typechecks were rerun.
 
 ## Live behavior and preserved data
 
@@ -87,11 +93,10 @@ durable memory entry describe the current module locations and service lifecycle
 they are supporting instructions, not owner-facing generated artifacts. Memory
 graph validation found no errors. This report is this review's new deliverable.
 
-## Remaining issue
+## Final disposition
 
-`server/src/tests/calendar.test.ts:486` fails:
-"an every-5-minutes schedule collapses to one item a day". The assertion requires
-every collapsed occurrence to be all-day with a count, with at least seven days
-returned. Repair or explicitly resolve this gate with the Calendar task before
-acceptance. This review changed its backlog records and produced this report;
-another QA pass must inspect those changes.
+There is no unresolved module-migration defect or missing deliverable. The owner
+can explicitly start Home Assistant through the new control; opening Home never
+starts its automations. Existing user-started recording continues. This review
+changed its backlog records and produced this report, so another QA pass must
+inspect those changes.
