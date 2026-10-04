@@ -14,7 +14,8 @@
     "test": "npm run build && node --test \"dist/tests/*.test.js\"",
     "dist": "npm run build && electron-builder --win --x64 --publish never",
     "lab": "npm run build && node scripts/desktop-lab.cjs",
-    "probe:load": "npm run build && node scripts/load-probe.cjs"
+    "probe:load": "npm run build && node scripts/load-probe.cjs",
+    "test:probe": "node --test scripts/load-probe.test.cjs"
   },
   "devDependencies": {
     "@fontsource/inter-tight": "^5.2.5",

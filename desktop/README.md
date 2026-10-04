@@ -145,6 +145,7 @@ parsed strictly: a malformed part drops the whole link. The packaged app disable
 ```bash
 npm run build --prefix desktop      # compile to desktop/dist
 npm test --prefix desktop           # unit tests (Node's test runner)
+npm run test:probe --prefix desktop # failed HTTP and stalled WebSocket measurement regressions
 npm run lab --prefix desktop        # the real app end to end, against a throwaway server
 ```
 
@@ -167,6 +168,7 @@ WebSocket latency with the app closed, open and closed again, plus the app's sta
 and CPU, and writes `desktop-load-probe.json`. It signs in with `AUTH_PASSWORD` and only reads.
 If the app does not exit within 20 seconds, the probe fails and cleans up its test process rather
 than recording a misleading "app closed again" measurement.
+Failed HTTP responses and HTTP/WebSocket samples stalled for 15 seconds fail the probe too.
 
 Layout: `src/main.ts` (app lifecycle, IPC), `src/controller.ts` (the window and its connection),
 `src/localServer.ts` (finding and starting a server), `src/navigationPolicy.ts` (what may load

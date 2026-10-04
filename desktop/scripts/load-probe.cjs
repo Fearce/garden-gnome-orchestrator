@@ -26,6 +26,8 @@ const arg = (name, fallback) => {
 const BASE = arg("--url", "http://127.0.0.1:4317").replace(/\/+$/, "");
 const OUT = arg("--out", null);
 const SAMPLES = Number(arg("--samples", "120"));
+if (!Number.isInteger(SAMPLES) || SAMPLES < 1 || SAMPLES > 10_000) throw new Error("--samples must be an integer from 1 to 10000");
+const REQUEST_TIMEOUT_MS = 15_000;
 const IDLE_MS = 15_000;
 const DESKTOP = path.resolve(__dirname, "..");
 const ELECTRON = electronBinary();
@@ -48,7 +50,8 @@ async function httpLatency(cookie) {
   const times = [];
   for (let i = 0; i < SAMPLES; i++) {
     const started = performance.now();
-    const response = await fetch(`${BASE}/api/me`, { headers: { cookie } });
+    const response = await fetch(`${BASE}/api/me`, { headers: { cookie }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+    if (!response.ok) throw new Error(`HTTP latency sample failed: /api/me returned HTTP ${response.status}`);
     await response.arrayBuffer();
     times.push(performance.now() - started);
     await sleep(50);
@@ -61,10 +64,17 @@ function openSocket(cookie) {
   return new Promise((done, fail) => {
     const started = performance.now();
     const socket = new WebSocket(url, { headers: { cookie, origin: BASE } });
-    socket.once("error", fail);
+    const timer = setTimeout(() => {
+      socket.terminate();
+      fail(new Error("WebSocket hello did not arrive within 15 seconds"));
+    }, REQUEST_TIMEOUT_MS);
+    const reject = (error) => { clearTimeout(timer); fail(error); };
+    socket.once("error", reject);
+    socket.once("close", () => reject(new Error("WebSocket closed before its hello")));
     socket.on("message", function first(data) {
       const message = JSON.parse(String(data));
       if (message.type !== "hello") return;
+      clearTimeout(timer);
       socket.off("message", first);
       done({ socket, helloMs: performance.now() - started, hello: message });
     });
@@ -85,12 +95,24 @@ async function wsLatency(cookie) {
   const rtts = [];
   for (let i = 0; i < SAMPLES; i++) {
     const started = performance.now();
-    await new Promise((done) => {
+    await new Promise((done, fail) => {
+      const finish = (error) => {
+        clearTimeout(timer);
+        socket.off("message", onMessage);
+        socket.off("error", onError);
+        socket.off("close", onClose);
+        if (error) fail(error);
+        else done();
+      };
+      const onError = (error) => finish(error);
+      const onClose = () => finish(new Error("WebSocket closed before its pong"));
+      const timer = setTimeout(() => finish(new Error("WebSocket pong did not arrive within 15 seconds")), REQUEST_TIMEOUT_MS);
       const onMessage = (data) => {
         if (JSON.parse(String(data)).type !== "pong") return;
-        socket.off("message", onMessage);
-        done();
+        finish();
       };
+      socket.once("error", onError);
+      socket.once("close", onClose);
       socket.on("message", onMessage);
       socket.send(JSON.stringify({ type: "ping" }));
     });
