@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA: require an observed browser-to-desktop handoff and repeat native shutdown checks** (2026-10-05, Codex QA; task 70393577).
+
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 
 ## Shipped, awaiting live proof
