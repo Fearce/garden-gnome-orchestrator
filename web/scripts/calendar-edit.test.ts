@@ -6,7 +6,8 @@
  */
 import assert from "node:assert/strict";
 import { draftEvent, movedSpan, remindersForAllDay } from "../src/lib/calendarEdit.js";
-import { describeReminder } from "../src/lib/calendarLayout.js";
+import { describeReminder, monthCellItems } from "../src/lib/calendarLayout.js";
+import type { CalendarOccurrence } from "../src/lib/calendarApi.js";
 import { dateOf, parseDate, wallToEpoch } from "../src/lib/calendarTime.js";
 
 const CPH = "Europe/Copenhagen";
@@ -43,4 +44,14 @@ assert.deepEqual(remindersForAllDay([{ kind: "before", minutes: 15 }, { kind: "b
 const startOnly = { allDay: false, start: "2027-03-17T18:30", end: "2027-03-17T18:30" };
 const movedPoint = movedSpan(startOnly, CPH, { at: wallToEpoch({ y: 2027, m: 3, d: 18, hh: 20, mi: 0 }, CPH) });
 assert.deepEqual(movedPoint, { allDay: false, start: "2027-03-18T20:00", end: "2027-03-18T20:00" }, "dragging a start-only event does not invent a duration");
+
+// A month cell lists its own happenings before a day full of automation runs.
+const at = (hh: number, mi = 0) => wallToEpoch({ y: 2027, m: 3, d: 17, hh, mi }, CPH);
+const item = (key: string, kind: CalendarOccurrence["kind"], startAt: number, allDay = false): CalendarOccurrence => ({
+  key, kind, source: kind === "event" ? "event" : "schedule", id: key, title: key, allDay, startAt, endAt: kind === "event" ? startAt + 3_600_000 : startAt,
+  ...(allDay ? { startDate: "2027-03-17", endDate: "2027-03-17" } : {}), recurring: false, hasReminder: false, status: "upcoming",
+});
+const cell = monthCellItems([item("task-1", "task", at(1)), item("task-2", "task", at(2)), item("evening", "event", at(19)), item("nudge", "reminder", at(8)), item("holiday", "event", at(0), true), item("task-3", "task", at(3))], parseDate("2027-03-17")!, CPH);
+assert.deepEqual(cell.map((o) => o.key), ["holiday", "nudge", "evening", "task-1", "task-2", "task-3"], "all-day, then events and reminders, then task runs, each in time order");
+
 console.log("All calendar edit checks passed.");

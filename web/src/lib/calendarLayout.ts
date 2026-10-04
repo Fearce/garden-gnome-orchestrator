@@ -46,6 +46,17 @@ export function itemsOn(list: readonly CalendarOccurrence[], date: CivilDate, ti
   return { allDay, timed };
 }
 
+/**
+ * A month cell's items in the order it lists them: all-day items, then timed events and reminders,
+ * then scheduled-task runs, each group in time order. A cell shows only a few items, and a dozen daily
+ * automation runs must not fold the owner's own happenings into "+N more".
+ */
+export function monthCellItems(list: readonly CalendarOccurrence[], date: CivilDate, timeZone: string): CalendarOccurrence[] {
+  const { allDay, timed } = itemsOn(list, date, timeZone);
+  const rank = (o: CalendarOccurrence) => (o.allDay ? 0 : o.kind === "task" ? 2 : 1);
+  return [...allDay, ...timed].sort((a, b) => rank(a) - rank(b) || a.startAt - b.startAt);
+}
+
 /** A schedule fire has no length; on a time grid it is drawn this tall so it can be read and grabbed. */
 export const POINT_MINUTES = 30;
 const DAY_MINUTES = 1440;

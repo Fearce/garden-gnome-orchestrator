@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import type { CalendarOccurrence } from "../../lib/calendarApi.js";
 import { type CivilDate, addDays, dateOf, formatCivil, formatDate } from "../../lib/calendarTime.js";
-import { itemsOn, sameDate, weeksOf } from "../../lib/calendarLayout.js";
+import { monthCellItems, sameDate, weeksOf } from "../../lib/calendarLayout.js";
 import { CalendarItem, isCalendarDrag, type ViewActions } from "./CalendarItem.js";
 
 /** How many items a month cell lists before folding the rest into "+N more". */
@@ -60,8 +60,7 @@ export function MonthView({ from, to, anchor, occurrences, actions, onCursor }: 
           <div className="cal-month-week" role="row" key={formatDate(week[0]!)}>
             {week.map((date) => {
               const key = formatDate(date);
-              const { allDay, timed } = itemsOn(occurrences, date, actions.timeZone);
-              const items = [...allDay, ...timed];
+              const items = monthCellItems(occurrences, date, actions.timeZone);
               const shown = items.slice(0, items.length > CELL_ITEMS + 1 ? CELL_ITEMS : CELL_ITEMS + 1);
               const hidden = items.length - shown.length;
               const isToday = sameDate(date, today);
