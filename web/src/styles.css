@@ -5114,3 +5114,40 @@ html.theme-transition * {
 @media (prefers-reduced-motion: reduce) {
   .swipe-settling { transition: none !important; }
 }
+
+/* ---- top-bar shell switch (components/DesktopSwitch.tsx) ---- */
+.shell-switch {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  height: 28px; padding: 0 9px 0 8px; border-radius: var(--r-sm); cursor: pointer;
+  border: 1px solid var(--line); background: var(--bg-2); color: var(--text-dim);
+  font: 500 12px/1 var(--font-sans); white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s;
+}
+.shell-switch svg { color: var(--text-faint); transition: color 0.12s; }
+.shell-switch:hover { color: var(--text); border-color: var(--line-strong); }
+.shell-switch:hover svg { color: var(--accent); }
+.shell-switch:disabled { cursor: progress; opacity: 0.7; }
+@media (max-width: 1365.98px) {
+  .shell-switch { width: 28px; padding: 0; justify-content: center; }
+  .shell-switch > span { display: none; }
+}
+@media (max-width: 899.98px), (pointer: coarse) and (max-width: 1365.98px) {
+  .shell-switch { width: var(--tap); height: var(--tap); }
+}
+
+/* ---- inside the desktop app (desktop/, lib/desktop.ts sets data-shell) ----
+   The top bar is the window's title bar: its background drags the window and the OS draws the window
+   buttons over its right end, in the bar's colour, so the bar is one flat colour here. Drag regions
+   ignore stacking, so every layer that can cover the bar must opt out or its clicks would move the
+   window instead. */
+html[data-shell="desktop"] { --shell-bar: var(--bg-1); }
+html[data-shell="desktop"] .topbar {
+  background: var(--shell-bar);
+  -webkit-app-region: drag; app-region: drag;
+  padding-right: calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw) + 12px);
+}
+html[data-shell="desktop"] .topbar > :not(.brand, .stat, .spacer, .conn),
+html[data-shell="desktop"] :is(.scrim, .settings-scrim, .modal-load-error, .git-scrim, .gc-scrim, .office-scrim, .office-panel,
+  .accounts-scrim, .accounts.phone-open, .news-panel, .notice-stack, .lightbox, .lightbox-close, .dl-pop, .detail, .gs-root) {
+  -webkit-app-region: no-drag; app-region: no-drag;
+}

@@ -99,6 +99,8 @@
   background: linear-gradient(to bottom, var(--bg-2), var(--bg));
   box-shadow: 0 14px 34px -30px oklch(0 0 0 / 0.9);
 }
+/* In the desktop app the bar is one flat colour (styles.css): Nocturne's is the top of its gradient. */
+[data-theme="nocturne"][data-shell="desktop"] { --shell-bar: var(--bg-2); }
 /* Nocturne's bar is deliberately taller than Classic's, and that height ties with `.topbar.focus` on
    specificity while loading later — so focus mode has to be answered here too or it stays 58px. */
 [data-theme="nocturne"] .topbar.focus { min-height: 44px; }

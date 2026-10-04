@@ -8,6 +8,7 @@ import { QuestionModal } from "./components/QuestionModal.js";
 import { Accounts } from "./components/Accounts.js";
 import { NewsChip } from "./components/NewsChip.js";
 import { PortalLink } from "./components/PortalLink.js";
+import { DesktopSwitch } from "./components/DesktopSwitch.js";
 import { Office } from "./components/Office.js";
 import { NoticeBanner } from "./components/NoticeBanner.js";
 import { LazyChunkBoundary } from "./components/LazyChunkBoundary.js";
@@ -86,6 +87,7 @@ export function App() {
           </div>
         </div>
         <PortalLink />
+        <DesktopSwitch />
         <FocusToggle />
         <RailToggle />
         {focusMode ? null : (
@@ -259,6 +261,8 @@ function Login() {
         <div className="login-body">
           {authError === "forbidden" ? (
             <p className="login-err">That Google account isn't allowed — only the owner can open this console.</p>
+          ) : authError === "desktop" ? (
+            <p className="login-err">That sign-in link was already used or has expired — sign in here instead.</p>
           ) : authError ? (
             <p className="login-err">Google sign-in didn't complete — try again.</p>
           ) : null}
