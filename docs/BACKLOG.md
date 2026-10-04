@@ -15,6 +15,7 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
+- **Show and edit the robot vacuum's cleaning schedule (Home Assistant automations) in the Home tab** (2026-10-05, Dustpan Wren; task 98dc4600).
 
 ## Shipped, awaiting live proof
 
