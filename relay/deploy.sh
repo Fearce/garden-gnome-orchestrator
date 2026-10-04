@@ -9,8 +9,13 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The host is one operator's server, so it lives in the gitignored deploy.env, never in this public file.
-# shellcheck source=/dev/null
-if [ -f "$here/deploy.env" ]; then . "$here/deploy.env"; fi
+# A variable already set in the environment wins, so a one-off `OFFICE_RELAY_KEY=... ./deploy.sh` still works.
+if [ -f "$here/deploy.env" ]; then
+  while IFS='=' read -r name value || [ -n "$name" ]; do
+    case "$name" in OFFICE_RELAY_*) ;; *) continue ;; esac
+    if [ -z "${!name:-}" ]; then eval "$name=\"${value%$'\r'}\""; fi
+  done < "$here/deploy.env"
+fi
 
 HOST="${OFFICE_RELAY_HOST:?set OFFICE_RELAY_HOST (user@host) in relay/deploy.env or the environment; see deploy.env.example}"
 KEY="${OFFICE_RELAY_KEY:-$HOME/.ssh/id_ed25519}"
