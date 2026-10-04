@@ -8,6 +8,7 @@ import {
   addDays,
   type CivilDate,
   dayNumber,
+  epochToWall,
   formatDate,
   formatDateTime,
   fromWallMinutes,
@@ -52,8 +53,12 @@ export function spanOf(allDay: boolean, start: string, end: string, timeZone: st
   const e = parseDateTime(end);
   if (!s || !e) return null;
   const startAt = wallToEpoch(s, timeZone);
-  // A start in the spring-forward gap moves forward an hour; the end must not fall before it.
-  return { startAt, endAt: Math.max(wallToEpoch(e, timeZone), startAt + (wallMinutes(e) - wallMinutes(s)) * 60_000) };
+  // Keep the requested wall-clock end across clock changes. Only a start in a nonexistent
+  // spring-forward time shifts the whole span forward; ordinary spans may have fewer elapsed
+  // minutes in spring (or more in autumn) than their wall-clock length.
+  const gapShift = wallMinutes(epochToWall(startAt, timeZone)) - wallMinutes(s);
+  const shiftedEnd = fromWallMinutes(wallMinutes(e) + gapShift);
+  return { startAt, endAt: wallToEpoch(shiftedEnd, timeZone) };
 }
 
 /** The wall-clock start/end the series itself gives an occurrence on `date` (before any exception). */

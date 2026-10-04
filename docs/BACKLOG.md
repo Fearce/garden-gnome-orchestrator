@@ -14,10 +14,13 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Calendar QA: preserve DST end times and weekdays when moving following occurrences** (Moss Lantern, 2026-10-04).
-
 - **Owner messages stuck on "Sending…": GGO event-loop stalls and receipt states** (Wickfern, 2026-10-04, branch ggo/event-loop-stalls-913d9247).
   Stalls up to 45.8s on 2026-10-04 16:14Z delayed an inject that was delivered once (receipt ffaa6433 read); diagnostics 31192a9 live; fix + receipt UI in progress.
+
+## Shipped, awaiting live proof
+
+- **Calendar QA: DST spans, following weekdays, paused moves, modal focus and Today navigation** (Moss Lantern, 2026-10-04).
+  Calendar/scheduler/cron gates, typechecks, web build and privacy guard pass; calendar-lab 72/72; awaiting deployment of the QA fixes.
 
 ## Ready (priority order)
 

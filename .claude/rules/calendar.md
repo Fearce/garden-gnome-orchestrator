@@ -75,7 +75,9 @@ America/New_York against the box's zone, over New York's DST change. Run it on a
 - One run of a schedule: **skip** inserts `schedule_skips(schedule_id, slot_at)`, and the
   scheduler tick consumes the row instead of firing. **Move one run** of a recurring schedule = a
   skip + a run-once copy. **Move every run** rewrites the cron (`shiftCron`). A run-once schedule
-  just gets its cron rewritten. `deleteScheduledTask` drops its skips.
+  just gets its cron rewritten. Moving a paused run keeps it paused (including the run-once copy).
+  Moving "this and following" rotates an inherited weekly rule before normalization, so the old
+  weekdays do not survive as extra occurrences. `deleteScheduledTask` drops its skips.
 
 ## Privacy (the repo is public)
 

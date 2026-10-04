@@ -239,9 +239,16 @@ export class CalendarService {
     // The edit form sends the rule back unchanged; only a real change replaces the remaining count.
     const ruleChanged = changes.recurrence !== undefined && !sameRule(changes.recurrence, rule, startDateOf(event.start)!);
     const inherited = ruleChanged ? changes.recurrence! : { ...rule, count: rule.count ? rule.count - countBefore(rule, startDateOf(event.start)!, fromDate) : null };
-    const fields = sanitizeEvent(merge({ ...event, start: atOccurrence.start, end: atOccurrence.end, recurrence: inherited }, { ...changes, recurrence: undefined }));
+    const input = merge({ ...event, start: atOccurrence.start, end: atOccurrence.end, recurrence: inherited }, { ...changes, recurrence: undefined });
+    const newStart = parseDate(input.start.slice(0, 10));
+    const shift = newStart ? dayNumber(newStart) - dayNumber(fromDate) : 0;
+    // An inherited weekly pattern moves with the dates, just as an "all events" edit does.
+    // Rotate before sanitizing: normalization adds the new start weekday to the rule.
+    if (!ruleChanged && input.recurrence?.freq === "weekly") {
+      input.recurrence = { ...input.recurrence, weekdays: rotateWeekdays(normalizeRecurrence(rule, startDateOf(event.start)!).weekdays ?? [], shift) };
+    }
+    const fields = sanitizeEvent(input);
     if (typeof fields === "string") return { ok: false, error: fields };
-    const shift = dayNumber(parseDate(fields.start.slice(0, 10))!) - dayNumber(fromDate);
     const handedOver = fields.recurrence
       ? event.exceptions.filter((e) => e.date >= from && e.cancelled).map((e) => ({ date: shiftDate(e.date, shift), cancelled: true }))
       : [];
@@ -323,7 +330,7 @@ export class CalendarService {
       if (toAt <= now) return { ok: false, error: "A run can only be moved to a time in the future." };
       if (nextRun(cron, now) !== Math.floor(toAt / 60_000) * 60_000) return { ok: false, error: "A one-off run can be set up to a year ahead." };
       if (s.runOnce) {
-        const r = this.scheduler.update(id, { cron, enabled: true });
+        const r = this.scheduler.update(id, { cron });
         return { ok: r.ok, error: r.error };
       }
       if (!isSlotOf(s.cron, slotAt)) return { ok: false, error: "That time is not one of this schedule's runs." };
@@ -333,7 +340,7 @@ export class CalendarService {
         prompt: s.prompt,
         reminder: s.reminder ?? null,
         cron,
-        enabled: true,
+        enabled: s.enabled,
         effort: s.effort ?? null,
         model: s.model ?? null,
         provider: s.provider ?? null,

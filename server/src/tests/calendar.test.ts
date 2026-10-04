@@ -262,6 +262,31 @@ function editEdgeCases(): void {
   const gap = eventsIn(range("2027-03-14", "2027-03-14", NY)).find((o) => o.id === night.event!.id);
   check("an occurrence in the spring-forward gap keeps its length", !!gap && gap.endAt - gap.startAt === 45 * 60_000, gap && (gap.endAt - gap.startAt) / 60_000);
   calendar.deleteEvent(night.event!.id, "series");
+
+  for (const [start, end, elapsedMinutes] of [
+    ["2027-03-14T01:30", "2027-03-14T03:30", 60],
+    ["2027-11-07T00:30", "2027-11-07T02:30", 180],
+    ["2027-03-13T23:30", "2027-03-14T04:30", 240],
+  ] as const) {
+    const crossing = calendar.createEvent({ title: "Synthetic clock change", allDay: false, start, end, timeZone: NY });
+    const occurrence = eventsIn(range(start.slice(0, 10), end.slice(0, 10), NY)).find((o) => o.id === crossing.event!.id)!;
+    check(`a DST-spanning event keeps its requested end (${start})`, formatDateTime(epochToWall(occurrence.endAt, NY)) === end && occurrence.endAt - occurrence.startAt === elapsedMinutes * 60_000);
+    calendar.deleteEvent(crossing.event!.id, "series");
+  }
+
+  // Dragging "this and following" inherits the weekly rule, shifted by the moved days.
+  // Test both the drag payload (no rule) and the form payload (unchanged rule).
+  for (const includeRule of [false, true]) {
+    const series = calendar.createEvent({ title: "Synthetic shifted lesson", allDay: false, start: "2026-11-02T09:00", end: "2026-11-02T10:00", timeZone: CPH, recurrence: { freq: "weekly", interval: 1, weekdays: [1, 3], count: 8 } }).event!;
+    calendar.deleteEvent(series.id, "occurrence", "2026-11-16");
+    const tail = calendar.updateEvent(series.id, "following", "2026-11-09", { start: "2026-11-10T09:00", end: "2026-11-10T10:00", ...(includeRule ? { recurrence: series.recurrence } : {}) }).event!;
+    const occurrences = eventsIn(range("2026-11-09", "2026-11-30")).filter((o) => o.id === tail.id);
+    check(`moving following shifts only inherited weekdays (${includeRule ? "form" : "drag"})`, JSON.stringify(tail.recurrence?.weekdays) === "[2,4]", tail.recurrence);
+    check("the split preserves its remaining count and shifted cancellation", tail.recurrence?.count === 6 && tail.exceptions.some((e) => e.date === "2026-11-17" && e.cancelled));
+    check("the moved tail has no old-weekday or duplicate occurrences", occurrences.map((o) => wallOf(o).slice(0, 10)).join() === "2026-11-10,2026-11-12,2026-11-19,2026-11-24,2026-11-26", occurrences.map((o) => wallOf(o)));
+    calendar.deleteEvent(series.id, "series");
+    calendar.deleteEvent(tail.id, "series");
+  }
 }
 
 async function eventReminders(id: string): Promise<void> {
@@ -478,6 +503,12 @@ async function schedulesOnTheCalendar(): Promise<void> {
   const series = calendar.moveScheduleRun(remind.schedule!.id, of(remind.schedule!.id)[1]?.slotAt ?? slot.slotAt!, slot.slotAt! + 3_600_000, "series");
   check("moving every run shifts the cron", series.ok && db.getScheduledTask(remind.schedule!.id)!.cron === "0 20 * * 2", db.getScheduledTask(remind.schedule!.id)!.cron);
   check("a stepped cron cannot be shifted", !calendar.moveScheduleRun(busy.schedule!.id, 0, 3_600_000, "series").ok);
+
+  const pausedSlot = of(paused.schedule!.id)[0]!.slotAt!;
+  check("one run of a paused schedule can move", calendar.moveScheduleRun(paused.schedule!.id, pausedSlot, pausedSlot + 3_600_000, "occurrence").ok);
+  const pausedCopy = scheduler.list().find((s) => s.originId === paused.schedule!.id)!;
+  check("moving a paused recurring run does not enable its copy", !pausedCopy.enabled && pausedCopy.nextRunAt == null);
+  check("moving the paused one-off again keeps it paused", calendar.moveScheduleRun(pausedCopy.id, pausedSlot + 3_600_000, pausedSlot + 2 * 3_600_000, "occurrence").ok && !db.getScheduledTask(pausedCopy.id)!.enabled);
 
   // A run moved off a task schedule is still that schedule: it waits while the schedule's last run works.
   const working = db.createThread({ title: "Synthetic nightly", workspace: ws, brief: "do work", rawPrompt: "do work" });

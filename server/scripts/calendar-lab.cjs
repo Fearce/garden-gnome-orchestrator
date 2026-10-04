@@ -108,6 +108,12 @@ async function monthAndNavigation(page, dataDir) {
   const zone = await page.textContent(".cal-zone");
   check("the zone label names the view zone and the differing server zone", zone.includes(ZONE) && zone.includes("server"), zone);
 
+  const currentMonth = await page.textContent(".cal-title");
+  await page.click('button[aria-label="Previous month"]');
+  check("Today remains enabled in another month, even when today is in its padding", await page.locator('.cal-nav button:text-is("Today")').isEnabled());
+  await page.click('.cal-nav button:text-is("Today")');
+  check("Today returns to the current month", await page.textContent(".cal-title") === currentMonth);
+
   await jump(page, "2027-03-10");
   check("the date jump moves the month", (await page.textContent(".cal-title")).includes("March 2027"));
   await page.click('button[aria-label="Next month"]');
@@ -286,7 +292,46 @@ async function agendaAndKeyboard(page, shots) {
   await page.keyboard.press("Enter");
   await modal(page).waitFor({ timeout: 10000 });
   check("Enter on a day opens the new form for it", (await page.inputValue('input[aria-label="Start date"]')) === "2027-03-09");
+  await page.fill('.cal-modal input[placeholder="e.g. Dentist"]', "Synthetic keyboard draft");
+  await page.focus('.cal-modal button:text-is("Create event")');
+  await page.keyboard.press("Tab");
+  check("Tab from the last modal control wraps to Close", await page.locator('.cal-modal button[aria-label="Close"]').evaluate((el) => el === document.activeElement));
+  await page.keyboard.press("Shift+Tab");
+  check("Shift+Tab from Close wraps to the last modal control", await page.locator('.cal-modal button:text-is("Create event")').evaluate((el) => el === document.activeElement));
   await closeModal(page);
+}
+
+async function recurrenceRegressions(page, dataDir) {
+  await setView(page, "Month");
+  await jump(page, "2027-03-14");
+  await clickCellSpace(page, "2027-03-14");
+  const title = "Synthetic DST crossing";
+  await page.fill('.cal-modal input[placeholder="e.g. Dentist"]', title);
+  await page.uncheck('.cal-modal label:has-text("All day") input');
+  await page.fill('input[aria-label="Start time"]', "01:30");
+  await page.fill('input[aria-label="End time"]', "03:30");
+  await page.click('.cal-modal button:text-is("Create event")');
+  await modal(page).waitFor({ state: "detached" });
+  await item(cell(page, "2027-03-14"), title).click();
+  check("the DST-crossing event details keep the entered end time", (await page.textContent('.cal-details-list')).includes("01:30 – 03:30"));
+  await closeModal(page);
+
+  await jump(page, "2027-04-05");
+  await clickCellSpace(page, "2027-04-05");
+  const repeating = "Synthetic shifted weekly lesson";
+  await page.fill('.cal-modal input[placeholder="e.g. Dentist"]', repeating);
+  await page.selectOption('.cal-modal select[aria-label="Repeat"]', "weekly");
+  await page.click('.cal-modal button:text-is("Create event")');
+  await modal(page).waitFor({ state: "detached" });
+  await item(cell(page, "2027-04-12"), repeating).click();
+  await page.click('.cal-modal button:text-is("Edit")');
+  await page.fill('input[aria-label="Start date"]', "2027-04-13");
+  await page.click('.cal-modal button:text-is("This and following")');
+  await modal(page).waitFor({ state: "detached" });
+  await item(cell(page, "2027-04-13"), repeating).waitFor();
+  check("moving following in the form shifts the weekly rule", readDb(dataDir, "SELECT recurrence FROM calendar_events WHERE title = ? AND start_at = '2027-04-13'", repeating).some((r) => JSON.stringify(JSON.parse(r.recurrence).weekdays) === "[2]"));
+  check("the moved series shows only on the new weekday", await item(cell(page, "2027-04-20"), repeating).count() === 1 && await item(cell(page, "2027-04-19"), repeating).count() === 0);
+  await jump(page, "2027-03-19");
 }
 
 async function deletes(page, dataDir) {
@@ -479,6 +524,7 @@ async function narrowLayout(browser, cookies, shots) {
     await filters(page, shots);
     await skipAndRestoreRun(page, dataDir);
     await agendaAndKeyboard(page, shots);
+    await recurrenceRegressions(page, dataDir);
     await deletes(page, dataDir);
     await reminderDelivery(page, dataDir);
     await createReminderSchedule(page, dataDir);

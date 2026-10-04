@@ -274,7 +274,7 @@ export function Calendar() {
           <button type="button" className="btn ghost sm cal-icon-btn" onClick={() => setAnchor(stepAnchor(view, anchor, -1))} aria-label={`Previous ${view === "agenda" ? "30 days" : view}`} title="Previous (←)">
             <ChevronIcon dir="left" />
           </button>
-          <button type="button" className="btn ghost sm" onClick={() => setAnchor(today)} disabled={showsToday && view !== "agenda" && view !== "day"} title="Go to today (T)">
+          <button type="button" className="btn ghost sm" onClick={() => setAnchor(today)} disabled={view === "month" ? anchor.y === today.y && anchor.m === today.m : view === "week" && showsToday} title="Go to today (T)">
             Today
           </button>
           <button type="button" className="btn ghost sm cal-icon-btn" onClick={() => setAnchor(stepAnchor(view, anchor, 1))} aria-label={`Next ${view === "agenda" ? "30 days" : view}`} title="Next (→)">
@@ -527,6 +527,7 @@ function ScopeChoice({ options, onDone }: { options: { label: string; run: () =>
 
 /** The calendar's dialog: Escape and the backdrop close it, and focus goes back where it came from. */
 function CalendarModal({ title, wide, onClose, children }: { title: string; wide: boolean; onClose(): void; children: ReactNode }) {
+  const modal = useRef<HTMLDivElement>(null);
   const opener = useRef<Element | null>(document.activeElement);
   const close = useRef(onClose);
   close.current = onClose;
@@ -534,6 +535,17 @@ function CalendarModal({ title, wide, onClose, children }: { title: string; wide
     const back = opener.current;
     // On the window, not the dialog: an action button that disables itself drops focus to <body>.
     const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Tab" && modal.current) {
+        const focusable = Array.from(modal.current.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [tabindex]'))
+          .filter((el) => el.tabIndex >= 0 && !el.matches(":disabled") && el.getClientRects().length > 0);
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (first && last && (!modal.current.contains(document.activeElement) || (e.shiftKey ? document.activeElement === first : document.activeElement === last))) {
+          e.preventDefault();
+          (e.shiftKey ? last : first).focus();
+        }
+        return;
+      }
       if (e.key !== "Escape" || e.defaultPrevented) return;
       e.preventDefault();
       close.current();
@@ -547,6 +559,7 @@ function CalendarModal({ title, wide, onClose, children }: { title: string; wide
   return (
     <div className="scrim" onMouseDown={onClose}>
       <div
+        ref={modal}
         className={"modal cal-modal" + (wide ? " wide" : "")}
         role="dialog"
         aria-modal="true"
