@@ -14,7 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Move Script Hub, Surveillance, Home Automation and Sidekick from the Dashboard Deck into optional GGO tabs** (Ferrule Juniper, 2026-10-04, branch ggo/deck-modules-migration-cad0786a).
 - **QA: finish Supervisor delivery recovery and verify fresh repeated-text receipts** (Bramble Gauge, 2026-10-04): Supervisor omits pending delivery controls; receipts-lab checked the old row before the repeated injection arrived.
 
 ## Ready (priority order)
@@ -35,6 +34,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-04 **Script Hub, Surveillance, Home and Sidekick moved from the Dashboard Deck into optional GGO tabs** (5c79e582..d4d23aa1, Ferrule Juniper): live build ec829269 passed 16/16 browser checks (hidden by default, reload persistence, on-demand start, migrated 5 cameras/1 vacuum/287 scripts/3 Sidekick rules, no secrets in responses, socket and polling cleanup); isolated lab 42/42 incl. explicit recording start/stop and worker recovery; live HTTP p95 4.5ms before, 3.8ms with modules under load, zero event-loop stalls (docs/reports/local-service-modules-2026-10-04.md); Deck cards retired (kevsclaw ac14700).
 
 - 2026-10-04 **Owner messages stuck on "Sending…": event-loop stalls and receipt states** (ae00dada..0db6a2d7, Wickfern): the calendar inject ffaa6433 was delivered once and read, not lost; the cause was event-loop stalls (worst 45.8s at 16:15Z). Live build 0db6a2d7 ran 10 min under agent load with zero ≥1s block reports (pre-fix windows: 34.3s/45.8s worst, 355s/136s blocked). Live browser inject at 17:52:28Z was acknowledged 73ms after send, and "Sending…" cleared by 152ms; HTTP p50 4ms. The receipt UI and lab (94a011a6) cover failure, disconnect and reload.
 
