@@ -107,8 +107,8 @@ async function soft(label, fn) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "modules-lab-"));
   const shots = shotDir(dataDir);
   killInstance(PORT);
-  const child = await boot({ dataDir, port: PORT });
-  const cookie = await login(BASE, authPassword());
+  let child = await boot({ dataDir, port: PORT });
+  let cookie = await login(BASE, authPassword());
   const report = { at: new Date().toISOString() };
   let browser = null;
   try {
@@ -259,6 +259,17 @@ async function soft(label, fn) {
       const rec = (await api(cookie, "GET", "/api/modules/surveillance/api/recording")).json;
       check("the recording keeps going after the owner leaves the tab", rec?.active === true, JSON.stringify(rec?.cameras?.map((c) => c.state)));
       check("...and it is remembered across a GGO restart", fs.existsSync(path.join(dataDir, "modules", "surveillance", "armed.json")));
+      const recordingPid = (await services(cookie)).find((s) => s.module === "surveillance")?.pid;
+      child.kill();
+      killInstance(PORT);
+      child = await boot({ dataDir, port: PORT });
+      cookie = await login(BASE, authPassword());
+      await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
+      await page.reload();
+      await waitHello(page);
+      const resumed = await api(cookie, "GET", "/api/modules/surveillance/api/recording");
+      const resumedPid = (await services(cookie)).find((s) => s.module === "surveillance")?.pid;
+      check("the recording survives an actual GGO restart in the same worker", resumed.json?.active === true && recordingPid != null && resumedPid === recordingPid);
       const files = fs.readdirSync(recordDir, { recursive: true }).filter((f) => /\.(mp4|mkv|ts)$/i.test(String(f)));
       check("...writing files into the chosen folder", files.length > 0, `${files.length} file(s)`);
 
@@ -300,14 +311,14 @@ async function soft(label, fn) {
       const state = (await api(cookie, "GET", "/api/modules/sidekick/api/state")).json;
       check("Sidekick renders the tray app's rules", rules === (state?.rules?.length ?? -1), `${rules} rules on screen, ${state?.rules?.length} in its settings`);
       if (rules > 0) {
-        const before = state.revision;
+        const before = state.settingsRevision;
         await page.locator(".sk-rule .mod-icon-btn[aria-label^='Edit']").first().click();
         await page.waitForSelector('[role="dialog"].mod-dialog');
         await page.screenshot({ path: path.join(shots, "sidekick-editor.png") });
         await page.keyboard.press("Escape");
         await page.waitForSelector('[role="dialog"].mod-dialog', { state: "detached" });
         const again = (await api(cookie, "GET", "/api/modules/sidekick/api/state")).json;
-        check("cancelling the editor writes nothing", again?.revision === before);
+        check("cancelling the editor writes nothing", typeof before === "string" && again?.settingsRevision === before);
       }
       await page.screenshot({ path: path.join(shots, "sidekick.png") });
     });

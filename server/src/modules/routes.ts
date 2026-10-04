@@ -12,6 +12,7 @@ const RESPONSE_TIMEOUT_MS = 90_000;
 const TICKET_TTL_MS = 60_000;
 const PASSED_REQUEST_HEADERS = ["accept", "accept-encoding", "content-type", "last-event-id"];
 const PASSED_RESPONSE_HEADERS = ["content-type", "content-length", "content-encoding", "vary", "x-frame-at"];
+const MAX_STREAM_BUFFERED_BYTES = 4 * 1024 * 1024;
 
 /**
  * The console's door to the module workers. Every route needs the owner's session and refuses cross-site
@@ -182,7 +183,9 @@ async function relayStream(supervisor: ModuleSupervisor, id: ModuleId, browser: 
     if (upstream.readyState === upstream.OPEN || upstream.readyState === upstream.CONNECTING) upstream.terminate();
   };
   upstream.on("message", (data: RawData, isBinary: boolean) => {
-    if (browser.readyState === browser.OPEN) browser.send(data as Buffer, { binary: isBinary, compress: false });
+    // The worker's socket drains into this relay even when the browser is slow. Bound the relay too,
+    // otherwise camera frames accumulate in GGO itself despite the worker's own backpressure guard.
+    if (browser.readyState === browser.OPEN && browser.bufferedAmount <= MAX_STREAM_BUFFERED_BYTES) browser.send(data as Buffer, { binary: isBinary, compress: false });
   });
   browser.on("message", (data: RawData, isBinary: boolean) => {
     if (upstream.readyState === upstream.OPEN) upstream.send(data as Buffer, { binary: isBinary });

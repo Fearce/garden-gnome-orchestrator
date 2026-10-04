@@ -80,13 +80,21 @@ export function bridgeFor(device: VacuumDevice): "home-assistant" | "xiaomi-miio
 }
 
 export function maskDevice(device: VacuumDevice): VacuumDevice & { tokenSet: boolean } {
-  return { ...device, token: device.token ? SECRET_MASK : "", tokenSet: Boolean(device.token) };
+  return { ...device, token: device.token ? SECRET_MASK : "", tokenSet: Boolean(device.token), statusNote: device.token ? device.statusNote.split(device.token).join(SECRET_MASK) : device.statusNote };
 }
 
 export function restoreDeviceSecrets(incoming: VacuumDevice, stored: VacuumDevice | undefined): VacuumDevice {
-  if (incoming.token !== SECRET_MASK) return incoming;
-  if (!stored) throw new HttpError(400, `${incoming.name}: enter the miIO token again`);
-  return { ...incoming, token: stored.token };
+  const restored = { ...incoming };
+  if (incoming.token === SECRET_MASK) {
+    if (!stored) throw new HttpError(400, `${incoming.name}: enter the miIO token again`);
+    restored.token = stored.token;
+  }
+  if (incoming.statusNote.includes(SECRET_MASK)) {
+    const hiddenCount = stored?.token ? stored.statusNote.split(stored.token).length - 1 : 0;
+    if (incoming.statusNote.split(SECRET_MASK).length - 1 !== hiddenCount) throw new HttpError(400, `${incoming.name}: enter the token in the notes in full when changing masked entries`);
+    restored.statusNote = incoming.statusNote.split(SECRET_MASK).join(stored!.token);
+  }
+  return restored;
 }
 
 function text(value: unknown, max: number): string {

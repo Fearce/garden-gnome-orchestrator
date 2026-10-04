@@ -36,6 +36,11 @@ export async function hubFetch(hubUrl: string, path: string, init: RequestInit &
 /** One section of the hub's own settings file, where the Dashboard Deck kept these modules' config. Null
  *  when the section is empty; throws when the hub cannot be reached. */
 export async function readHubSettings<T>(hubUrl: string, section: string): Promise<T | null> {
-  const body = await hubJson<{ value?: T }>(hubUrl, `/api/settings/${encodeURIComponent(section)}`, { timeoutMs: 8_000 });
-  return body?.value ?? null;
+  try {
+    const body = await hubJson<{ value?: T }>(hubUrl, `/api/settings/${encodeURIComponent(section)}`, { timeoutMs: 8_000 });
+    return body?.value ?? null;
+  } catch (error) {
+    if (error instanceof HttpError && error.status === 404) return null;
+    throw error;
+  }
 }

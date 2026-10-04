@@ -27,27 +27,22 @@ export async function loadOrImport<T>(options: {
   const stored = await options.file.read();
   if (stored?.version === 1) return stored;
   const imported = await importFromDeck(options);
-  if (imported) {
-    await options.file.write(imported);
-    if (imported.origin === "dashboard-deck") options.log(`imported settings from the Dashboard Deck (${options.sections.join(", ")})`);
-    return imported;
-  }
-  return { version: 1, origin: "new", importedAt: null, value: options.empty() };
+  await options.file.write(imported);
+  if (imported.origin === "dashboard-deck") options.log(`imported settings from the Dashboard Deck (${options.sections.join(", ")})`);
+  return imported;
 }
 
-/** Null while the hub cannot be reached. A reachable Deck with nothing to carry over yields an empty config. */
+/** A failed read throws; only a reachable Deck with nothing to carry over yields an empty config. */
 export async function importFromDeck<T>(options: {
   hubUrl: string;
   sections: string[];
   fromDeck: (sections: Record<string, unknown>) => T | null;
   empty: () => T;
-}): Promise<StoredConfig<T> | null> {
+}): Promise<StoredConfig<T>> {
   const sections: Record<string, unknown> = {};
-  try {
-    for (const section of options.sections) sections[section] = await readHubSettings<unknown>(options.hubUrl, section);
-  } catch {
-    return null;
-  }
+  // Refuse to expose editable defaults while the old settings cannot be read. Saving those defaults
+  // would create config.json and permanently prevent the next start from importing the owner's setup.
+  for (const section of options.sections) sections[section] = await readHubSettings<unknown>(options.hubUrl, section);
   const value = options.fromDeck(sections);
   return value === null
     ? { version: 1, origin: "new", importedAt: null, value: options.empty() }

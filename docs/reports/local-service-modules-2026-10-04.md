@@ -57,3 +57,27 @@ No camera password or device token appeared in any API response the browser rece
 Home Assistant was not running on the machine during these checks, so Home showed its outage notice and
 disabled the controls of the vacuum bridged through it. That is the unavailable-upstream path working, not a
 migration gap.
+
+## Editing QA verification
+
+The independent review passed 43 browser checks, including an actual GGO restart while five cameras
+recorded: the same Surveillance worker kept recording, and explicit Stop ended it. The Sidekick cancel
+check now compares its real settings revision. Local comparisons confirmed camera ids and passwords,
+the recording folder, device tokens and hidden-script preferences were retained. The evidence card
+served this report with bytes matching the file in the task workspace.
+
+QA fixed three runtime gaps: an unavailable first Deck import now fails without saving defaults,
+device notes mask and restore miIO tokens, and GGO's camera relay bounds queued frames for slow browsers.
+The focused module gate passed 25 checks plus tab visibility; typechecks and the privacy guard passed.
+The full suite passed 226 of 228 gates before the normal build existed; after `npm run build`, the two
+build-dependent gates (`test:doc-paths` and `test:park-classify`) passed on the targeted rerun.
+
+The final isolated browser run sampled these results while the free gate suite also ran on the machine:
+
+| Phase | HTTP | WebSocket ping | Owner message echo | Event-loop stalls |
+| --- | --- | --- | --- | --- |
+| Modules idle | 2.0 / 3.8 / 70.6 | 1.6 / 4.4 / 70.1 | 17.1 / 93.4 / 93.4 | 0 |
+| Recording five cameras and polling three modules | 1.9 / 3.1 / 3.4 | 1.0 / 1.8 / 2.3 | 15.5 / 29.7 / 29.7 | 0 |
+
+Worker resident memory under that load was 72 MB (Script Hub), 92 MB (Surveillance), 57 MB (Home) and
+76 MB (Sidekick). All workers and camera processes stopped at the end of the lab.

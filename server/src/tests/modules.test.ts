@@ -25,6 +25,8 @@ import { fromDeckSection, maskCamera, maskUrl, normalizeCamera, restoreSecrets, 
 import { FramePush, type Frame, type FrameSource } from "../modules/worker/surveillance/frames.js";
 import { ffmpegTag } from "../modules/worker/surveillance/processes.js";
 import { LineThrottle } from "../modules/worker/surveillance/logThrottle.js";
+import { JsonFile } from "../modules/worker/configStore.js";
+import { loadOrImport, type StoredConfig } from "../modules/worker/legacyImport.js";
 
 let checks = 0;
 async function test(name: string, fn: () => Promise<void> | void) {
@@ -104,6 +106,53 @@ await test("home: the miIO token is masked, restored, and picks the bridge", () 
   assert.equal(bridgeFor({ ...stored, token: "" }), "home-assistant");
   assert.equal(bridgeFor({ ...stored, platform: "home-assistant" }), "home-assistant");
   assert.equal(normalizeDevice({ refreshMs: 500 }).refreshMs, 2_000, "no faster than every 2 s");
+});
+
+await test("home: a token written in device notes stays masked and survives an unrelated edit", () => {
+  const stored = normalizeDevice({ id: "vac-1", token: TOKEN, statusNote: `Local token: ${TOKEN}. Source: ${TOKEN}.` });
+  const masked = maskDevice(stored);
+  assert.ok(!JSON.stringify(masked).includes(TOKEN));
+  const edited = normalizeDevice({ ...masked, name: "Hall vacuum", statusNote: `${masked.statusNote}\nMoved downstairs.` });
+  const restored = restoreDeviceSecrets(edited, stored);
+  assert.equal(restored.token, TOKEN);
+  assert.equal(restored.statusNote, `${stored.statusNote}\nMoved downstairs.`);
+  assert.throws(() => restoreDeviceSecrets({ ...edited, statusNote: SECRET_MASK }, stored), /notes/);
+});
+
+await test("Deck import refuses failed reads without saving defaults, recovers, and accepts missing sections", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ggo-import-"));
+  let status = 500;
+  const source = createServer((_req, res) => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(status === 200 ? { value: { saved: "owner-config" } } : { error: "unavailable" }));
+  });
+  await new Promise<void>((resolve) => source.listen(0, "127.0.0.1", resolve));
+  const hubUrl = `http://127.0.0.1:${(source.address() as AddressInfo).port}`;
+  const configPath = join(dir, "config.json");
+  const options = {
+    file: new JsonFile<StoredConfig<{ saved: string }>>(configPath), hubUrl, sections: ["sample"],
+    fromDeck: (sections: Record<string, unknown>) => sections.sample as { saved: string } | null,
+    empty: () => ({ saved: "" }), log: () => undefined,
+  };
+  try {
+    await assert.rejects(loadOrImport(options), /unavailable/);
+    assert.equal(existsSync(configPath), false, "a failed import never writes editable defaults");
+    status = 200;
+    assert.equal((await loadOrImport(options)).value.saved, "owner-config");
+    await rm(configPath);
+    status = 404;
+    assert.equal((await loadOrImport(options)).origin, "new", "a missing section is a valid empty setup");
+    await rm(configPath);
+    await new Promise<void>((resolve) => source.close(() => resolve()));
+    await assert.rejects(loadOrImport(options), /not running/);
+    assert.equal(existsSync(configPath), false);
+    await new Promise<void>((resolve) => source.listen(Number(new URL(hubUrl).port), "127.0.0.1", resolve));
+    status = 200;
+    assert.equal((await loadOrImport(options)).value.saved, "owner-config", "retry imports after an outage");
+  } finally {
+    await new Promise<void>((resolve) => source.close(() => resolve()));
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 await test("sidekick: process names match like the tray app and the log parses both clock styles", () => {
@@ -399,6 +448,7 @@ try {
     assert.equal(down.body.hubDown, true);
     assert.equal((await api("/api/modules/services")).status, 200);
     assert.equal((await api("/api/modules/scripthub/service")).body.state, "running");
+    await new Promise<void>((resolve) => hub.listen(hubPort, "127.0.0.1", resolve));
   });
 
   await test("a routine health re-check of a running worker reads as running, not starting", async () => {

@@ -79,14 +79,14 @@ section from the Script Hub at `SCRIPT_HUB_URL` (`GET /api/settings/<section>`, 
 | Home | `home-control` | Home Assistant URL and config folder, each vacuum with its entities, miIO host and token. |
 | Sidekick | none | Sidekick's rules stay in the tray app's own `settings.json` and are edited in place, so nothing is copied. |
 
-If the hub cannot be reached, nothing is written, so the import runs again on the next start. A hub
+If the hub cannot be reached, startup fails visibly and nothing is written, so the import runs again on the next start. A hub
 without that section (`404`) counts as nothing to import. A hub that answers with a server error fails
 the start visibly instead of saving an empty config. To redo an import,
 stop the module's service, delete its `config.json` and open the tab again.
 
 **Secrets stay on the server.** Camera passwords, credentials inside stream URLs, miIO tokens and the
 Home Assistant token never reach the browser: the API shows `********`, and saving a form with the mask
-keeps the stored value. A camera's notes get the same treatment: its password, its URL passwords and any
+keeps the stored value. A vacuum's notes mask its miIO token too. A camera's notes get the same treatment: its password, its URL passwords and any
 `scheme://user:pass@` password written into the notes show as the mask and are put back on save.
 
 ## The four modules
