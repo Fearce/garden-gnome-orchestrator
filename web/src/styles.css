@@ -5151,3 +5151,10 @@ html[data-shell="desktop"] :is(.scrim, .settings-scrim, .modal-load-error, .git-
   .accounts-scrim, .accounts.phone-open, .news-panel, .notice-stack, .lightbox, .lightbox-close, .dl-pop, .detail, .gs-root) {
   -webkit-app-region: no-drag; app-region: no-drag;
 }
+/* Signed out there is no top bar, so the sign-in screen gets a bare title strip to move the window by. */
+html[data-shell="desktop"] .scrim:has(> .modal.login)::before {
+  content: ""; position: fixed; inset: 0 0 auto; height: env(titlebar-area-height, 32px);
+  background: var(--shell-bar);
+  -webkit-app-region: drag; app-region: drag;
+}
+html[data-shell="desktop"] .modal.login { -webkit-app-region: no-drag; app-region: no-drag; }

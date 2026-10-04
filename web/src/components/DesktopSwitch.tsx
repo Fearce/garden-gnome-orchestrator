@@ -51,6 +51,8 @@ function OpenInDesktop() {
     }
     const link = new URL("ggo://open");
     link.searchParams.set("ticket", ticket);
+    // The app redeems the ticket only if it points at this same server.
+    link.searchParams.set("server", location.origin);
     const thread = useStore.getState().selectedThreadId;
     if (thread) link.searchParams.set("thread", thread);
     watchForLaunch();

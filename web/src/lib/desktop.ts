@@ -9,6 +9,9 @@ import { useStore } from "../store.js";
 export interface DesktopBridge {
   version: string;
   platform: string;
+  /** This app handles `ggo://` links, so browsers on this machine may offer Open in desktop. Absent in
+   *  older app builds, which always registered. */
+  linksRegistered?: boolean;
   /** Open this console in the system browser — signed in when given a ticket — on this task. */
   openInBrowser(threadId: string | null, ticket: string | null): Promise<void>;
   /** A `ggo://open?thread=…` link arrived while the window was already open. */
@@ -32,7 +35,7 @@ export function startDesktopShell(): void {
   document.documentElement.dataset.shell = "desktop";
   desktopBridge.onOpenThread(openWhenKnown);
   syncTitleBar(desktopBridge);
-  reportPresenceOnceConnected();
+  if (desktopBridge.linksRegistered !== false) reportPresenceOnceConnected();
 }
 
 /** A one-time sign-in ticket, so the other side ("Open in desktop" / "Open in web") lands signed in. */
@@ -150,13 +153,16 @@ function syncTitleBar(bridge: DesktopBridge): void {
 const SINGLE_ROW_MAX = 64;
 const WRAPPED_ROW = 40;
 
+/** Signed out, the window buttons sit on the sign-in screen's plain title strip. */
+const SIGNED_OUT_ROW = 32;
+
 function readTitleBarStyle(): { background: string; symbol: string; height: number } | null {
   const bar = document.querySelector<HTMLElement>(".topbar");
-  if (!bar) return null;
-  const style = getComputedStyle(bar);
+  const style = getComputedStyle(bar ?? document.documentElement);
   const background = toRgb(style.getPropertyValue("--shell-bar").trim());
   const symbol = toRgb(style.getPropertyValue("--text-dim").trim());
   if (!background || !symbol) return null;
+  if (!bar) return { background, symbol, height: SIGNED_OUT_ROW };
   const height = Math.round(bar.getBoundingClientRect().height);
   return { background, symbol, height: height > SINGLE_ROW_MAX ? WRAPPED_ROW : Math.max(28, height) };
 }
