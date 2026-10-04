@@ -28,8 +28,10 @@ console for that problem.
 
 ## How a task runs
 
-A dispatched task is a **thread**, and the pipeline assembles itself. There is no fixed
-sequence: each agent decides what happens next.
+A dispatched task is a **thread**. Its route is chosen per task, from the task's own brief,
+before any agent starts: a contained fix goes straight to an implementor, while broad,
+ambiguous or risky work gets the full pipeline. The route note on the card says which
+stages it chose and why.
 
 - **Planner, task-selected.** Available for broad, ambiguous, or high-risk work, where it
   reads the codebase, writes the plan, and can request external research. Enabled means
@@ -50,20 +52,23 @@ read-only agent answers by posting a finding, and the card gets a `READ` badge. 
 question turns out to need an edit, it automatically promotes the same task to the
 smallest capable implementation route instead of half-answering.
 
+**Bigger jobs have two opt-in modes.** A *timed* task keeps working for a window you set
+("work on this for 8 hours"); the deadline survives restarts and provider hand-offs, and
+it never aborts a turn that is already running. A *shotgun* task splits the work across
+several agents and integrates their results. An implementor can also hand a slice of its
+job to a **sub-task** on any enabled backend and model; the sub-task is its own card you
+can open and talk to.
+
+**Several agents in one repo stay out of each other's way.** Agents on the same checkout
+share a chat room to divide files. When another agent shares the repo, a task claims its
+own branch in a linked git worktree, then rebases and fast-forwards it back into the base
+branch when it is done. A task alone in its repo just works in place.
+
 **When a task parks for your review, you can delegate that too.** "Auto-review and mark
 done" hands your review to a reviewer agent that inspects the change, runs the project's
 checks, and asks you directly about anything only you can decide. It then marks the task
 done in your place or hands it back with the reasons it could not sign off. It reviews
 only: it never edits or commits.
-
-**Need a careful watch without an always-on swarm?** Settings can opt into **Director
-Supervisor**. It is off by default; when on, it uses lifecycle checks and an adaptive
-backstop sweep, spending a short no-tools agent judgement only for genuinely stalled or
-forgotten work. Every check, reason, action, token/cost estimate and notification decision
-appears in its Supervisor tab. A normal review handoff can be delegated to the existing
-auto-reviewer, which alone can inspect the workspace and accept a task as done; the supervisor
-never directly accepts work. Its action set is intentionally small: note, live-agent
-correction, safe resume, or owner alert — never cancel, retry, delete, or mark a task done.
 
 ## A look around
 
@@ -77,21 +82,54 @@ Findings are how agents talk to each other and to you. An agent posts one the mo
 learns something that changes the plan, so a discovery made by the researcher is in front
 of the implementor before it writes the wrong thing.
 
-**Recurring work runs itself.** A nightly audit or a weekly flake sweep is a schedule, not
-a reminder to dispatch it by hand.
+The board has a tab for each area. Any tab except Tasks can be hidden per browser.
+
+- **Tasks.** The live board. A **Co-work** session also lives here: a conversation you lead
+  turn by turn, where one agent does what you ask, verifies it and hands control back.
+  Co-work never becomes a task, so no planner or QA steps in.
+- **IDE.** Browse, search and edit any workspace's files, with a git surface for branches,
+  diffs, commits, history, fetch, pull and push. See [docs/ide-workspace.md](docs/ide-workspace.md).
+- **Notes.** One list of what waits on you personally. Agents post a branch or a PR here
+  when they need you to look; you click it, deal with it, and delete the line.
+- **Calendar.** Month, week, day and agenda views of your own events, your reminders and
+  every scheduled task, in your browser's time zone. A plain event sends nothing. An event
+  with a reminder, or a standalone reminder, reaches you as a Discord DM when phone
+  notifications are set up, and on the note list otherwise. From the calendar you can skip,
+  move, pause or edit a scheduled run. Calendar content stays in the local database.
+- **Scheduled Tasks.** Recurring briefs on a cron schedule, each optionally pinned to an
+  exact backend, model and effort. Every fire is a full task that can edit, commit and push, so a nightly
+  audit or a weekly flake sweep runs itself.
+- **Goals.** A standing objective the director drives until it is met. It runs one step
+  task at a time (up to 8 in parallel if you allow it). The director judges each step's
+  report and plans the next, and stops only when the agent's completion claim survives its
+  audit. Each goal card shows its steps, the milestones the agent reported, and anything
+  blocked or waiting on you. An optional burn-rate guard paces the goal's quota use.
+- **Supervisor.** The opt-in **Director Supervisor**, off by default. When on, it uses
+  lifecycle checks and an adaptive backstop sweep, and spends a short no-tools agent
+  judgement only on genuinely stalled or forgotten work. The tab shows every check, reason,
+  action, token/cost estimate and notification decision. It can add a note, correct a live
+  agent, safely resume a task, alert you, or hand a review to the auto-reviewer. It never
+  cancels, retries, deletes or marks a task done itself.
+- **Patch notes.** What changed in your install, and what the next update brings, read
+  straight from its git history.
+- **Remote control** (Windows only, appears once set up in Settings). Streams this
+  machine's desktop into the console and sends mouse, touch and keyboard back. It needs
+  an ffmpeg with Desktop Duplication capture, and setup can install a pinned copy.
 
 ![The scheduled tasks view with three recurring briefs](docs/assets/scheduled.png)
 
-**Anything waiting on you personally lands in one list.** Agents post a branch or a PR here
-when they need you to look; you click it, deal with it, and delete the line.
-
 ![The notes view listing a pushed branch and a PR waiting for review](docs/assets/notes.png)
 
-Also in the console: a per-repo chat room so concurrent agents on the same checkout do not
-clobber each other, an in-app git surface for branches, diffs and commits, search across
-every task's full conversation, opt-in browser, Discord or webhook notifications when
-a task finishes or needs you, and a Patch notes area that lists what changed in your install
-(and what the next update brings) straight from its git history.
+Also in the console:
+
+- **Search** across every task's full conversation.
+- **Notifications.** Browser notifications, a generic webhook, and Discord messages when a
+  task finishes, needs you or fails. With Discord set up, you can also DM the bot to talk
+  to the director.
+- **The Online Office.** An optional link to orchestrators on other machines. When agents on
+  different machines work in the same repository, they see each other and share its chat
+  room. It needs the small relay service in [`relay/`](relay/README.md), which you host
+  yourself.
 
 ## Runtime model
 
@@ -112,6 +150,11 @@ which drives the Claude Code binary and inherits your existing CLI login. Defaul
 | Reader (read lane) | `claude-opus-5-5` |
 | Reviewer (auto-review) | `claude-opus-5-5` |
 
+While a role's model is left on Auto in Settings, a narrow, well-scoped task routes its
+implementor and QA to Claude Sonnet 5.5 instead, and the read lane runs on Sonnet too.
+Goal steps, timed and shotgun work, and open-ended or flagship-grade work stay on Opus.
+Settings > Auto model selection > "Sonnet for well-scoped work" turns this off.
+
 Three other backends are optional, off by default, and enabled per machine under
 **Settings > Subscriptions**: **OpenAI Codex** (ChatGPT plan), **xAI Grok** (SuperGrok),
 and **Zhipu z.ai** (GLM Coding Plan). If Claude caps mid-task, work fails over to whichever
@@ -123,6 +166,10 @@ still matter without treating one task as a whole weekly burn. If none can, the 
 limiting windows and waits for the first reset that actually makes a compatible pool viable, then
 resumes automatically.
 
+An optional free task pool (**Settings > Free AI connections**) can run the planner or
+reader of a small, low-risk task on a free-tier API. Everything else stays on the
+subscription backends. See [docs/free-ai-provider-connections.md](docs/free-ai-provider-connections.md).
+
 **More than one Claude subscription?** Set `ACCOUNT_1_TOKEN`, `ACCOUNT_2_TOKEN` and so on
 (up to 8). Dispatches route to burn the perishable weekly allowance first, and the top bar
 shows live 5-hour and weekly usage per subscription. Perishable-first remains the tiebreaker
@@ -131,7 +178,8 @@ among subscriptions with enough task-sized runway.
 ## Quick start
 
 Requires **Node 22 or newer** (not enforced anywhere, but that is what it is developed and
-run against) and a working `claude` CLI login.
+run against) and a working `claude` CLI login. `git` must be on your PATH for the git
+surfaces, worktrees and patch notes.
 
 ```bash
 git clone https://github.com/Fearce/garden-gnome-orchestrator.git
@@ -155,7 +203,7 @@ mint a subscription token and put it in `server/.env`:
 claude setup-token   # then: CLAUDE_CODE_OAUTH_TOKEN=... in server/.env
 ```
 
-Runs on macOS, Linux and Windows.
+The console runs on macOS, Linux and Windows. Remote control is the one Windows-only area.
 
 <details>
 <summary><b>Linux and npm 12: two extra first-run steps</b></summary>
@@ -179,7 +227,9 @@ needed to boot. Re-run this whenever you delete `node_modules`.
 
 Per-machine settings live in `server/.env`, which is gitignored. Copy
 [`server/.env.example`](server/.env.example) and fill in only what you need; every value is
-documented inline there. The ones worth knowing about:
+documented inline there. Most feature switches (backends, notifications, the supervisor,
+remote control, the Online Office) live in the console's Settings panel instead. The
+environment variables worth knowing about:
 
 | Variable | What it does |
 | --- | --- |
@@ -187,8 +237,10 @@ documented inline there. The ones worth knowing about:
 | `ACCOUNT_<n>_TOKEN`, `_LABEL`, `_ID` | Additional Claude subscriptions to balance across (n = 1..8). |
 | `AUTH_PASSWORD` or `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` | Gates the listener. Required before the server will bind to anything but localhost. |
 | `OWNER_NAME` | Your name, woven into the agent prompts. |
-| `NO_PUSH_REPO_PATTERN` | Agents commit but never push any repo whose origin contains this substring. |
+| `NO_PUSH_REPO_PATTERN` | Agents commit but never push any repo whose origin URL matches this pattern. |
 | `DEFAULT_WORKSPACE`, `WORKSPACE_SEARCH_ROOTS` | Where the console looks for your repos. |
+| `DISCORD_BOT_TOKEN`, `DISCORD_USER_ID` | Fallbacks for the Discord notifications and reminder DMs; the Settings panel wins. |
+| `NOTIFY_WEBHOOK_URL` | A webhook pinged when a task needs you or finishes. |
 | `DATA_DIR` | SQLite state and logs. Defaults to `server/data`. |
 | `PORT`, `HTTPS_PORT` | Default `4317` and `4319`. TLS is optional and skipped if no cert is present. |
 
@@ -197,6 +249,11 @@ non-local without a password or Google sign-in configured, the server refuses an
 to `127.0.0.1`. Do not put it on the public internet directly. For access from anywhere, use
 the Google-locked Tailscale Funnel link in [docs/remote-access.md](docs/remote-access.md)
 (`npm run remote-access -- on`), which keeps the listener on `127.0.0.1`.
+
+**What stays local:** the database (with your attachments), logs and every credential live
+under `server/data/` and `server/.env`, both gitignored. Your tasks,
+transcripts, notes and calendar never leave the machine, except through the backends you
+enable, the notification channels you set up, and the Online Office relay if you join one.
 
 ### Run modes
 
@@ -215,10 +272,11 @@ server/   Fastify HTTP + WebSocket backend, the Agent SDK runtime, SQLite state
 web/      React + Vite director console
 relay/    Optional standalone relay, so orchestrators on different machines
           can see each other's agents on a shared repo
-docs/     ARCHITECTURE.md, the design contract
+docs/     ARCHITECTURE.md (the design contract), DECISIONS.md, feature guides
 ```
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is the full design, and it is kept current.
+[docs/DECISIONS.md](docs/DECISIONS.md) records what was adopted or rejected and why.
 
 ## Contributing
 
@@ -228,6 +286,12 @@ Issues and pull requests are welcome. Before opening a PR:
 - Use [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`,
   `refactor:`, `chore:`), matching the existing history.
 - Keep one concern per commit.
+- Use neutral examples in code, tests and docs: `example.com`, the `192.0.2.x`
+  documentation addresses, `alex`/`sam` for people. The repo is public, and
+  `node server/scripts/privacy-guard.cjs` (part of the gate suite) fails on home-directory
+  paths, public IP addresses, real-looking account ids, tailnet names and personal e-mail
+  addresses. Put your own names and project words, one regex per line, in the gitignored
+  `server/.privacy-terms` so the guard catches them too.
 
 There is no CI on this repo yet, so the local gates are the gate.
 
