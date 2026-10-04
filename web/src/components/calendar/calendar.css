@@ -227,6 +227,12 @@
 .cal-fieldset { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .cal-fieldset legend { padding: 0; margin-bottom: 6px; }
 .cal-recur-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cal-reminders { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+/* .sched-field stretches every select to the full width; a reminder row keeps its controls on one line. */
+.sched-field .cal-reminders select { width: auto; padding: 6px 8px; font-size: 13.5px; border-radius: var(--r-sm); }
+.cal-reminders li > select { min-width: 13rem; }
+.cal-add-reminder { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; }
+.cal-lede { margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-dim); }
 .cal-weekdays { display: flex; gap: 5px; flex-wrap: wrap; }
 .cal-weekdays .sched-day:disabled { opacity: 1; cursor: default; }
 .cal-radios { display: flex; flex-direction: column; gap: 6px; }

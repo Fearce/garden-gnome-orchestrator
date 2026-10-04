@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import type { CalendarResult, CalendarService } from "./calendarService.js";
 import { MAX_COUNT, MAX_INTERVAL } from "./recurrence.js";
-import { MAX_REMINDER_DAYS, MAX_REMINDER_MINUTES, NOTES_MAX, TITLE_MAX } from "./validate.js";
+import { MAX_REMINDER_DAYS, MAX_REMINDER_MINUTES, MAX_REMINDERS, NOTES_MAX, TITLE_MAX } from "./validate.js";
 
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 const wall = z.string().regex(/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/);
@@ -31,7 +31,7 @@ const eventFields = {
   end: wall,
   timeZone: z.string().min(1).max(64),
   recurrence: recurrence.nullish(),
-  reminder: reminder.nullish(),
+  reminders: z.array(reminder).max(MAX_REMINDERS).nullish(),
 };
 
 const createBody = z.object(eventFields).strict();
@@ -40,6 +40,9 @@ const updateBody = z.object({ scope, occurrenceDate: date.nullish(), changes: z.
 const deleteQuery = z.object({ scope: scope.default("series"), occurrenceDate: date.optional() });
 const rangeQuery = z.object({ from: date, to: date, tz: z.string().min(1).max(64) });
 const idParams = z.object({ id: z.string().min(1).max(64) });
+const settingsBody = z
+  .object({ reminderLeads: z.array(z.number().int().min(0).max(MAX_REMINDER_MINUTES)).max(MAX_REMINDERS), allDayTime: z.string().regex(/^\d{2}:\d{2}$/) })
+  .strict();
 const slotBody = z.object({ slotAt: z.number().int().nonnegative() }).strict();
 const moveBody = z.object({ slotAt: z.number().int().nonnegative(), toAt: z.number().int().nonnegative(), scope: z.enum(["occurrence", "series"]) }).strict();
 
@@ -86,7 +89,11 @@ export function registerCalendarRoutes(app: FastifyInstance, calendar: CalendarS
     });
     routes.post("/api/calendar/events", (req, res) => {
       const b = createBody.parse(req.body);
-      return reply(res, calendar.createEvent({ ...b, notes: b.notes ?? null, recurrence: b.recurrence ?? null, reminder: b.reminder ?? null }));
+      return reply(res, calendar.createEvent({ ...b, notes: b.notes ?? null, recurrence: b.recurrence ?? null, reminders: b.reminders === undefined ? undefined : (b.reminders ?? []) }));
+    });
+    routes.put("/api/calendar/settings", (req, res) => {
+      const result = calendar.setDefaults(settingsBody.parse(req.body));
+      return result.ok ? { ok: true, defaults: result.defaults } : res.code(400).send({ error: result.error });
     });
     routes.patch("/api/calendar/events/:id", (req, res) => {
       const { id } = idParams.parse(req.params);

@@ -28,6 +28,7 @@ const STANDUP = "Synthetic standup";
 const PROBE = "Synthetic reminder probe";
 const PROBE_NOTES = "Synthetic probe notes 4711";
 const NEW_REMINDER = "Synthetic library books";
+const DEFAULTED = "Synthetic dentist check";
 
 function readDb(dataDir, sql, ...args) {
   const db = new Database(path.join(dataDir, "orchestrator.sqlite"), { readonly: true });
@@ -137,7 +138,7 @@ async function createLunch(page, dataDir) {
   const row = eventRow(dataDir, LUNCH);
   check(
     "the event is stored as wall-clock time in the browser's zone",
-    row?.start_at === "2027-03-17T12:30" && row?.end_at === "2027-03-17T13:30" && row?.time_zone === ZONE && row?.all_day === 0 && row?.reminder === null,
+    row?.start_at === "2027-03-17T12:30" && row?.end_at === "2027-03-17T13:30" && row?.time_zone === ZONE && row?.all_day === 0 && row?.reminders === null,
     JSON.stringify(row),
   );
 }
@@ -319,12 +320,14 @@ async function reminderDelivery(page, dataDir) {
   if (await page.isChecked('.cal-modal label:has-text("All day") input')) await page.uncheck('.cal-modal label:has-text("All day") input');
   await page.fill('input[aria-label="Start date"]', start.date);
   await page.fill('input[aria-label="Start time"]', start.time);
-  await page.selectOption('.cal-modal select[aria-label="Reminder"]', "b:15");
+  check("with no defaults a new event starts without reminders", (await page.locator('.cal-modal select[aria-label^="Reminder "]').count()) === 0);
+  await page.click('.cal-modal button:has-text("Add reminder")');
+  await page.selectOption('.cal-modal select[aria-label="Reminder 1"]', "b:15");
   await page.fill(".cal-modal textarea", PROBE_NOTES);
   await page.click('.cal-modal button:text-is("Create event")');
   await modal(page).waitFor({ state: "detached", timeout: 10000 });
   const event = await poll(() => eventRow(dataDir, PROBE));
-  check("the probe event saved with a 15-minute reminder", event && JSON.parse(event.reminder).minutes === 15, JSON.stringify(event));
+  check("the probe event saved with a 15-minute reminder", event && JSON.stringify(JSON.parse(event.reminders)) === '[{"kind":"before","minutes":15}]', JSON.stringify(event));
 
   // Due five minutes ago, the event still ahead: the next tick (every 30s) must send it once.
   const notes = () => readDb(dataDir, "SELECT body, thread_title FROM operator_notes").filter((n) => n.body.includes(PROBE_NOTES));
@@ -357,6 +360,42 @@ async function createReminderSchedule(page, dataDir) {
   await jump(page, tomorrow);
   await item(cell(page, tomorrow), NEW_REMINDER).waitFor({ timeout: 10000 });
   check("…and it shows on the calendar as a reminder", /k-reminder/.test(await item(cell(page, tomorrow), NEW_REMINDER).getAttribute("class")));
+}
+
+async function defaultReminders(page, dataDir, shots) {
+  await page.click('.cal-toolbar button:has-text("Default reminders")');
+  await modal(page).waitFor({ timeout: 10000 });
+  await page.click('.cal-modal button:has-text("Add reminder")');
+  await page.click('.cal-modal button:has-text("Add reminder")');
+  const lead = async (n) => [await page.inputValue(`input[aria-label="Default reminder ${n}"]`), await page.inputValue(`select[aria-label="Default reminder ${n} unit"]`)];
+  check("the defaults form suggests a week, then a day", JSON.stringify([await lead(1), await lead(2)]) === '[["1","10080"],["1","1440"]]', JSON.stringify([await lead(1), await lead(2)]));
+  await page.screenshot({ path: path.join(shots, "calendar-default-reminders.png") });
+  await page.click('.cal-modal button:text-is("Save defaults")');
+  await modal(page).waitFor({ state: "detached", timeout: 10000 });
+  const stored = await poll(() => readDb(dataDir, "SELECT value FROM kv WHERE key = 'calendar.default_reminders'")[0]?.value);
+  check("the defaults are stored", stored === '{"reminderLeads":[10080,1440],"allDayTime":"09:00"}', stored);
+
+  await setView(page, "Month");
+  await jump(page, "2027-03-25");
+  await page.waitForSelector('.cal-day[data-date="2027-03-25"]', { timeout: 10000 });
+  await clickCellSpace(page, "2027-03-25");
+  const chosen = async () => [await page.inputValue('.cal-modal select[aria-label="Reminder 1"]'), await page.inputValue('.cal-modal select[aria-label="Reminder 2"]')];
+  check("a new all-day event starts with the defaults as days before", JSON.stringify(await chosen()) === '["d:7:09:00","d:1:09:00"]', JSON.stringify(await chosen()));
+  await page.fill('.cal-modal input[placeholder="e.g. Dentist"]', DEFAULTED);
+  await page.uncheck('.cal-modal label:has-text("All day") input');
+  check("…and as a week and a day before once it has a time", JSON.stringify(await chosen()) === '["b:10080","b:1440"]', JSON.stringify(await chosen()));
+  await page.screenshot({ path: path.join(shots, "calendar-event-reminders.png") });
+  await page.click('.cal-modal button[aria-label="Remove reminder 2"]');
+  check("removing a reminder leaves the other", (await page.locator('.cal-modal select[aria-label^="Reminder "]').count()) === 1);
+  await page.click('.cal-modal button:text-is("Create event")');
+  await modal(page).waitFor({ state: "detached", timeout: 10000 });
+  const row = await poll(() => eventRow(dataDir, DEFAULTED));
+  check("the event saves the reminders the form showed", row?.reminders === '[{"kind":"before","minutes":10080}]', JSON.stringify(row));
+  await item(cell(page, "2027-03-25"), DEFAULTED).click();
+  await modal(page).waitFor({ timeout: 10000 });
+  const shown = await modal(page).textContent();
+  check("the details list the reminder", shown.includes("1 week before"), shown);
+  await closeModal(page);
 }
 
 async function persistence(page) {
@@ -442,6 +481,7 @@ async function narrowLayout(browser, cookies, shots) {
     await deletes(page, dataDir);
     await reminderDelivery(page, dataDir);
     await createReminderSchedule(page, dataDir);
+    await defaultReminders(page, dataDir, shots);
     await persistence(page);
 
     check("no event or reminder started a task", threadCount(dataDir) === 0, String(threadCount(dataDir)));

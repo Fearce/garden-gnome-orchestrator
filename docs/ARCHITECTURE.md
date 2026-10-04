@@ -714,7 +714,8 @@ The console also re-renders the latest useful report as the LAST card of a done/
 with "Summarize done task deliverables" on, a Sonnet summary of it (stored in
 `stage_outputs.deliverableSummary`) leads that card; same § for the trigger and freshness rules.
 The Calendar's own events are `calendar_events` + `calendar_event_exceptions` (wall-clock times plus an
-IANA zone, never epochs). `calendar_reminder_log` is the once-only claim per sent event reminder, and
+IANA zone, never epochs), each with a JSON list of `reminders`; the owner's default reminders for new
+events are kv `calendar.default_reminders`. `calendar_reminder_log` is the once-only claim per sent event reminder, and
 `schedule_skips` holds the single runs of a schedule the owner skipped (§9 "Calendar").
 `threads.stage_outputs` (JSON, nullable) holds the per-stage outputs that make a
 task resumable (§5) — kept off the WS wire (it can be multi-KB) and read only by
@@ -804,7 +805,8 @@ Subscriptions). Browser check: `npm run news-lab --prefix server`.
 kinds side by side: the owner's own events, reminders (scheduler rows with no prompt) and scheduled
 tasks. It has month, week, day and agenda views, in the browser's time zone. Events live in their own
 tables. Schedules are only *projected* as occurrences, so viewing never creates a job. A plain event
-sends nothing. An event with a reminder is sent by `CalendarService`'s 30-second tick through the
+sends nothing. A new event starts with the owner's default reminders (toolbar "Default reminders"),
+and an event can carry up to five. Each is sent by `CalendarService`'s 30-second tick through the
 scheduler's shared `deliverReminder` path (Discord DM, note-list fallback). It is claimed once per
 occurrence, so a moved or deleted event can never fire a stale reminder, and a failed DM's retry
 re-reads the event first (and the schedule, for a scheduler reminder). From the calendar the owner

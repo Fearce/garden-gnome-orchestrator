@@ -295,7 +295,8 @@ CREATE TABLE IF NOT EXISTS calendar_events (
   end_at      TEXT NOT NULL,
   time_zone   TEXT NOT NULL,
   recurrence  TEXT,
-  reminder    TEXT,
+  -- JSON list of reminders; NULL when the event sends none. Rows from before 2026-10-04 hold one object.
+  reminders   TEXT,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );

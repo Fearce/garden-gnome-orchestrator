@@ -126,7 +126,15 @@ function EventDetails({ occurrence: o, event, timeZone, onEditEvent, onClose }: 
             {o.edited ? <span className="cal-badge">this one changed</span> : null}
           </Row>
         ) : null}
-        <Row label="Reminder">{event.reminder ? <><BellIcon /> {describeReminder(event.reminder)}, to your Discord DMs</> : "None. This event sends nothing and starts nothing."}</Row>
+        <Row label={event.reminders.length > 1 ? "Reminders" : "Reminder"}>
+          {event.reminders.length ? (
+            <>
+              <BellIcon /> {event.reminders.map(describeReminder).join(", ")}, to your Discord DMs
+            </>
+          ) : (
+            "None. This event sends nothing and starts nothing."
+          )}
+        </Row>
         {notes ? (
           <Row label="Notes">
             <span className="cal-notes">{notes}</span>
@@ -167,7 +175,7 @@ function EventDetails({ occurrence: o, event, timeZone, onEditEvent, onClose }: 
           <button type="button" className="btn primary sm" onClick={() => onEditEvent(event, o.occurrenceDate)} autoFocus>
             Edit
           </button>
-          {event.reminder ? (
+          {event.reminders.length ? (
             <button type="button" className="btn ghost sm" disabled={busy} onClick={() => void test()} title="Send this occurrence's reminder to your Discord DMs now, to see what it says">
               Send test reminder
             </button>

@@ -3,6 +3,7 @@ import { useStore } from "../../store.js";
 import type { ScheduledTask } from "../../types.js";
 import { useCoarseNow } from "../../lib/timing.js";
 import {
+  type CalendarDefaults,
   type CalendarEvent,
   type CalendarItemKind,
   type CalendarOccurrence,
@@ -32,11 +33,12 @@ import {
 } from "../../lib/calendarTime.js";
 import { ScheduleEditor, type ScheduleDraft } from "../ScheduledTasks.js";
 import { AgendaView } from "./AgendaView.js";
-import { ChevronIcon, CloseIcon, KindIcon, PlusIcon, SearchIcon, type DropTarget, type ViewActions } from "./CalendarItem.js";
+import { BellIcon, ChevronIcon, CloseIcon, KindIcon, PlusIcon, SearchIcon, type DropTarget, type ViewActions } from "./CalendarItem.js";
 import { DetailsPanel } from "./DetailsPanel.js";
 import { EventForm } from "./EventForm.js";
 import { MonthView } from "./MonthView.js";
 import { ReminderForm, type ReminderDraft } from "./ReminderForm.js";
+import { DefaultRemindersForm } from "./RemindersField.js";
 import { TimeGrid } from "./TimeGrid.js";
 import "./calendar.css";
 
@@ -47,7 +49,8 @@ type Dialog =
   | { kind: "create"; tab: CreateKind; date: CivilDate; minutes: number | null }
   | { kind: "editEvent"; event: CalendarEvent; occurrenceDate?: string }
   | { kind: "editReminder"; draft: ReminderDraft }
-  | { kind: "moveScope"; title: string; options: { label: string; run: () => Promise<unknown> }[] };
+  | { kind: "moveScope"; title: string; options: { label: string; run: () => Promise<unknown> }[] }
+  | { kind: "defaults" };
 
 const VIEWS: { mode: CalendarViewMode; label: string; key: string }[] = [
   { mode: "month", label: "Month", key: "m" },
@@ -55,6 +58,8 @@ const VIEWS: { mode: CalendarViewMode; label: string; key: string }[] = [
   { mode: "day", label: "Day", key: "d" },
   { mode: "agenda", label: "Agenda", key: "a" },
 ];
+
+const NO_DEFAULTS: CalendarDefaults = { reminderLeads: [], allDayTime: "09:00" };
 
 const VIEW_KEY = "ggo-calendar-view";
 const FILTER_KEY = "ggo-calendar-filters";
@@ -143,6 +148,7 @@ export function Calendar() {
   const shown = range ? applyFilters(range.occurrences, filters) : [];
   const filtered = !!range && shown.length !== range.occurrences.length;
   const serverTimeZone = range?.serverTimeZone ?? timeZone;
+  const defaults = range?.defaults ?? NO_DEFAULTS;
   const eventOf = (id: string) => range?.events.find((e) => e.id === id) ?? null;
   const scheduleOf = (id: string) => schedules.find((s) => s.id === id) ?? null;
   // An open details panel follows the refetched range, so a skip or restore shows its new status.
@@ -282,6 +288,9 @@ export function Calendar() {
         <button type="button" className="btn ghost sm cal-manage" onClick={() => setBoardView("schedules")} title="The list of every reminder and scheduled task, with Run now">
           Manage schedules
         </button>
+        <button type="button" className="btn ghost sm cal-manage" onClick={() => setDialog({ kind: "defaults" })} title="The reminders every new event starts with">
+          <BellIcon size={12} /> Default reminders
+        </button>
         <div className="cal-modes" role="radiogroup" aria-label="Calendar view">
           {VIEWS.map((v) => (
             <button key={v.mode} type="button" role="radio" aria-checked={view === v.mode} className={"cal-mode" + (view === v.mode ? " on" : "")} onClick={() => setView(v.mode)} title={`${v.label} (${v.key.toUpperCase()})`}>
@@ -354,6 +363,7 @@ export function Calendar() {
           ) : dialog.kind === "create" ? (
             <CreateTabs
               dialog={dialog}
+              defaults={defaults}
               timeZone={timeZone}
               serverTimeZone={serverTimeZone}
               onTab={(tab) => setDialog({ ...dialog, tab })}
@@ -362,7 +372,13 @@ export function Calendar() {
               onAdvanced={(draft) => openAdvanced(null, draft)}
             />
           ) : dialog.kind === "editEvent" ? (
-            <EventForm initial={dialog.event} editing={{ event: dialog.event, occurrenceDate: dialog.occurrenceDate }} onSaved={() => setDialog(null)} onCancel={() => setDialog(null)} />
+            <EventForm
+              initial={dialog.event}
+              editing={{ event: dialog.event, occurrenceDate: dialog.occurrenceDate }}
+              allDayTime={defaults.allDayTime}
+              onSaved={() => setDialog(null)}
+              onCancel={() => setDialog(null)}
+            />
           ) : dialog.kind === "editReminder" ? (
             <ReminderForm
               draft={dialog.draft}
@@ -372,6 +388,8 @@ export function Calendar() {
               onCancel={() => setDialog(null)}
               onAdvanced={(draft) => openAdvanced(dialog.draft.schedule, draft)}
             />
+          ) : dialog.kind === "defaults" ? (
+            <DefaultRemindersForm initial={defaults} onDone={() => setDialog(null)} />
           ) : (
             <ScopeChoice options={dialog.options} onDone={() => setDialog(null)} />
           )}
@@ -395,6 +413,8 @@ function dialogTitle(d: Dialog): string {
       return "Edit reminder";
     case "moveScope":
       return d.title;
+    case "defaults":
+      return "Default reminders";
   }
 }
 
@@ -427,6 +447,7 @@ function StatusLine(p: { loading: boolean; hasData: boolean; loadError: string |
 
 function CreateTabs(p: {
   dialog: Extract<Dialog, { kind: "create" }>;
+  defaults: CalendarDefaults;
   timeZone: string;
   serverTimeZone: string;
   onTab(tab: CreateKind): void;
@@ -454,7 +475,7 @@ function CreateTabs(p: {
         </button>
       </div>
       {tab === "event" ? (
-        <EventForm initial={draftEvent(date, minutes, p.timeZone)} editing={null} onSaved={p.onDone} onCancel={p.onDone} />
+        <EventForm initial={draftEvent(date, minutes, p.timeZone, p.defaults)} editing={null} allDayTime={p.defaults.allDayTime} onSaved={p.onDone} onCancel={p.onDone} />
       ) : (
         <ReminderForm
           draft={{ schedule: null, date: formatDate(date), time: reminderTime, repeat: "none" }}

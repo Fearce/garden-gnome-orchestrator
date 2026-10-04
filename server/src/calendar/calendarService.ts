@@ -8,8 +8,8 @@ import { type EventInstance, instancesOverlapping, seriesTimesOn, startDateOf } 
 import { countBefore, isOccurrence, normalizeRecurrence } from "./recurrence.js";
 import { scheduleOccurrences } from "./scheduleOccurrences.js";
 import { CalendarStore } from "./store.js";
-import type { CalendarEvent, CalendarEventInput, CalendarException, CalendarOccurrence, CalendarRange, CalendarRecurrence, CalendarScope } from "./types.js";
-import { sanitizeEvent, TITLE_MAX, NOTES_MAX, validateSpan } from "./validate.js";
+import type { CalendarDefaults, CalendarEvent, CalendarEventInput, CalendarException, CalendarOccurrence, CalendarRange, CalendarRecurrence, CalendarScope } from "./types.js";
+import { defaultReminders, NO_DEFAULTS, normalizeDefaults, sanitizeEvent, TITLE_MAX, NOTES_MAX, validateDefaults, validateSpan } from "./validate.js";
 import { addDays, type CivilDate, dayNumber, epochToWall, formatDate, isValidTimeZone, parseDate, serverTimeZone, startOfDay, wallMinutes } from "./zoned.js";
 
 const TICK_MS = 30_000;
@@ -93,7 +93,7 @@ export class CalendarService {
     }
     occurrences.push(...this.scheduleOccurrencesIn(fromMs, toMs, now, timeZone));
     occurrences.sort((a, b) => a.startAt - b.startAt || a.title.localeCompare(b.title));
-    return { from, to, timeZone, serverTimeZone: serverTimeZone(), now, occurrences, events };
+    return { from, to, timeZone, serverTimeZone: serverTimeZone(), now, occurrences, events, defaults: this.defaults() };
   }
 
   private scheduleOccurrencesIn(fromMs: number, toMs: number, now: number, timeZone: string): CalendarOccurrence[] {
@@ -121,7 +121,8 @@ export class CalendarService {
   // ---- events ----
 
   createEvent(input: CalendarEventInput): CalendarResult {
-    const fields = sanitizeEvent(input);
+    const reminders = input.reminders === undefined ? defaultReminders(this.defaults(), input.allDay) : input.reminders;
+    const fields = sanitizeEvent({ ...input, reminders });
     if (typeof fields === "string") return { ok: false, error: fields };
     const event = this.store.create(fields, this.now());
     this.changed();
@@ -354,31 +355,47 @@ export class CalendarService {
 
   // ---- reminders ----
 
+  /** The owner's default reminders for new events (none until they choose some). */
+  defaults(): CalendarDefaults {
+    return this.store.defaults() ?? NO_DEFAULTS;
+  }
+
+  setDefaults(defaults: CalendarDefaults): { ok: boolean; error?: string; defaults?: CalendarDefaults } {
+    const error = validateDefaults(defaults);
+    if (error) return { ok: false, error };
+    const tidy = normalizeDefaults(defaults);
+    this.store.setDefaults(tidy);
+    this.changed();
+    return { ok: true, defaults: tidy };
+  }
+
   /** Send every event reminder that has come due. Public for tests; the timer drives it in production. */
   tick(now = this.now()): number {
     let sent = 0;
     for (const event of this.store.list()) {
-      if (!event.reminder) continue;
+      if (!event.reminders.length) continue;
       const fromMs = now - 2 * 86_400_000;
       const toMs = now + REMINDER_HORIZON_MS;
       const fromDay = dayNumber(epochToWall(fromMs, "UTC")) - 1;
       const toDay = dayNumber(epochToWall(toMs, "UTC")) + 1;
       for (const instance of instancesOverlapping(event, fromMs, toMs, fromDay, toDay)) {
-        const dueAt = remindAt(event.reminder, instance);
-        if (!reminderDue(dueAt, instance, now)) continue;
-        if (!this.store.claimReminder(event.id, instance.date, dueAt, now)) continue;
-        sent++;
-        void deliverReminder(
-          this.reminders,
-          this.hub,
-          {
-            title: instance.title,
-            text: reminderText(instance),
-            label: `Calendar reminder (event ${event.id.slice(0, 8)})`,
-            current: () => this.stillDue(event.id, instance.date, dueAt),
-          },
-          this.retryMs(),
-        );
+        for (const reminder of event.reminders) {
+          const dueAt = remindAt(reminder, instance);
+          if (!reminderDue(dueAt, instance, now)) continue;
+          if (!this.store.claimReminder(event.id, instance.date, dueAt, now)) continue;
+          sent++;
+          void deliverReminder(
+            this.reminders,
+            this.hub,
+            {
+              title: instance.title,
+              text: reminderText(instance),
+              label: `Calendar reminder (event ${event.id.slice(0, 8)})`,
+              current: () => this.stillDue(event.id, instance.date, dueAt),
+            },
+            this.retryMs(),
+          );
+        }
       }
     }
     if (now - this.lastPrune > 86_400_000) {
@@ -393,8 +410,8 @@ export class CalendarService {
    *  reminder time has gone — a moved occurrence's new time is a reminder of its own. */
   private stillDue(eventId: string, date: string, dueAt: number): { title: string; text: string } | null {
     const event = this.store.get(eventId);
-    const instance = event?.reminder ? this.instanceOn(event, date) : null;
-    if (!event?.reminder || !instance || remindAt(event.reminder, instance) !== dueAt) return null;
+    const instance = event ? this.instanceOn(event, date) : null;
+    if (!event || !instance || !event.reminders.some((r) => remindAt(r, instance) === dueAt)) return null;
     return { title: instance.title, text: reminderText(instance) };
   }
 
@@ -421,13 +438,13 @@ function eventOccurrence(i: EventInstance, now: number): CalendarOccurrence {
     recurring: !!i.event.recurrence,
     occurrenceDate: i.date,
     edited: i.edited,
-    hasReminder: !!i.event.reminder,
+    hasReminder: i.event.reminders.length > 0,
     status: i.endAt <= now ? "past" : "upcoming",
   };
 }
 
 /** The event's fields with an edit applied, as a create would take them. */
-function merge(event: Pick<CalendarEvent, "title" | "notes" | "allDay" | "start" | "end" | "timeZone" | "recurrence" | "reminder">, changes: EventChanges): CalendarEventInput {
+function merge(event: Pick<CalendarEvent, "title" | "notes" | "allDay" | "start" | "end" | "timeZone" | "recurrence" | "reminders">, changes: EventChanges): CalendarEventInput {
   return {
     title: changes.title ?? event.title,
     notes: changes.notes !== undefined ? changes.notes : event.notes,
@@ -436,7 +453,7 @@ function merge(event: Pick<CalendarEvent, "title" | "notes" | "allDay" | "start"
     end: changes.end ?? event.end,
     timeZone: changes.timeZone ?? event.timeZone,
     recurrence: changes.recurrence !== undefined ? changes.recurrence : event.recurrence,
-    reminder: changes.reminder !== undefined ? changes.reminder : event.reminder,
+    reminders: changes.reminders !== undefined ? changes.reminders : event.reminders,
   };
 }
 

@@ -149,11 +149,13 @@ export function describeReminder(reminder: CalendarReminder): string {
   if (reminder.kind === "before") {
     const m = reminder.minutes;
     if (m === 0) return "At the start";
+    if (m % 10080 === 0) return `${m / 10080} ${m === 10080 ? "week" : "weeks"} before`;
     if (m % 1440 === 0) return `${m / 1440} ${m === 1440 ? "day" : "days"} before`;
     if (m % 60 === 0) return `${m / 60} ${m === 60 ? "hour" : "hours"} before`;
     return `${m} minutes before`;
   }
-  const day = reminder.daysBefore === 0 ? "On the day" : reminder.daysBefore === 1 ? "The day before" : `${reminder.daysBefore} days before`;
+  const days = reminder.daysBefore;
+  const day = days === 0 ? "On the day" : days === 1 ? "The day before" : days % 7 === 0 ? `${days / 7} ${days === 7 ? "week" : "weeks"} before` : `${days} days before`;
   return `${day} at ${reminder.time}`;
 }
 

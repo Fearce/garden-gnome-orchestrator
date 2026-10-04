@@ -150,7 +150,7 @@ function eventsCrudAndPersistence(): string {
     end: "2026-10-05T09:30",
     timeZone: CPH,
     recurrence: { freq: "weekly", interval: 1, weekdays: [1, 3] },
-    reminder: { kind: "before", minutes: 10 },
+    reminders: [{ kind: "before", minutes: 10 }],
   });
   check("a valid event is created", created.ok && !!created.event, created.error);
   check("a create announces calendar.changed", changedEvents === 1);
@@ -184,7 +184,7 @@ function eventsCrudAndPersistence(): string {
   scheduler = new Scheduler(db, hub, dispatch, reminders);
   calendar = new CalendarService(db, hub, scheduler, reminders, { now: () => clock, retryMs: [] });
   const reread = calendar.getEvent(id);
-  check("the event reads back after reopening the database", reread?.title === "Synthetic standup" && reread.recurrence?.freq === "weekly" && reread.reminder?.kind === "before");
+  check("the event reads back after reopening the database", reread?.title === "Synthetic standup" && reread.recurrence?.freq === "weekly" && reread.reminders[0]?.kind === "before");
   calendar.deleteEvent(allDay.event!.id, "series");
   return id;
 }
@@ -284,22 +284,22 @@ async function eventReminders(id: string): Promise<void> {
   check("the reminder fires at the moved time", calendar.tick() === 1);
 
   // A deleted event leaves nothing behind.
-  const gone = calendar.createEvent({ title: "Synthetic dentist", allDay: false, start: "2026-10-07T12:00", end: "2026-10-07T13:00", timeZone: CPH, reminder: { kind: "before", minutes: 30 } });
+  const gone = calendar.createEvent({ title: "Synthetic dentist", allDay: false, start: "2026-10-07T12:00", end: "2026-10-07T13:00", timeZone: CPH, reminders: [{ kind: "before", minutes: 30 }] });
   calendar.deleteEvent(gone.event!.id, "series");
   clock = at("2026-10-07T11:31:00+02:00");
   check("a deleted event's reminder never fires", calendar.tick() === 0);
 
   // Created while already under way: no ping about something that has started.
   clock = at("2026-10-07T12:10:00+02:00");
-  calendar.createEvent({ title: "Synthetic running meeting", allDay: false, start: "2026-10-07T12:00", end: "2026-10-07T13:00", timeZone: CPH, reminder: { kind: "before", minutes: 15 } });
+  calendar.createEvent({ title: "Synthetic running meeting", allDay: false, start: "2026-10-07T12:00", end: "2026-10-07T13:00", timeZone: CPH, reminders: [{ kind: "before", minutes: 15 }] });
   check("an event saved after it started does not remind", calendar.tick() === 0);
 
   // Starts in five minutes with a fifteen-minute lead: the reminder is late but useful, so it goes now.
-  calendar.createEvent({ title: "Synthetic soon", allDay: false, start: "2026-10-07T12:15", end: "2026-10-07T12:45", timeZone: CPH, reminder: { kind: "before", minutes: 15 } });
+  calendar.createEvent({ title: "Synthetic soon", allDay: false, start: "2026-10-07T12:15", end: "2026-10-07T12:45", timeZone: CPH, reminders: [{ kind: "before", minutes: 15 }] });
   check("an event saved inside its reminder lead reminds at once", calendar.tick() === 1);
 
   // An all-day event's "the day before at 18:00" reminder, in its own zone.
-  calendar.createEvent({ title: "Synthetic birthday", allDay: true, start: "2026-10-09", end: "2026-10-09", timeZone: CPH, reminder: { kind: "day", daysBefore: 1, time: "18:00" } });
+  calendar.createEvent({ title: "Synthetic birthday", allDay: true, start: "2026-10-09", end: "2026-10-09", timeZone: CPH, reminders: [{ kind: "day", daysBefore: 1, time: "18:00" }] });
   clock = at("2026-10-08T17:59:00+02:00");
   check("an all-day reminder waits for its clock time", calendar.tick() === 0);
   clock = at("2026-10-08T18:00:30+02:00");
@@ -316,7 +316,7 @@ async function reminderFreshness(): Promise<void> {
   const sentFor = (title: string) => sent.filter((s) => s.title === title).length;
 
   // Editing one occurrence must not change what the series' other occurrences remind about.
-  const market = calendar.createEvent({ title: "Synthetic market", allDay: true, start: "2026-11-07", end: "2026-11-07", timeZone: CPH, recurrence: { freq: "weekly", interval: 1 }, reminder: { kind: "day", daysBefore: 0, time: "09:00" } });
+  const market = calendar.createEvent({ title: "Synthetic market", allDay: true, start: "2026-11-07", end: "2026-11-07", timeZone: CPH, recurrence: { freq: "weekly", interval: 1 }, reminders: [{ kind: "day", daysBefore: 0, time: "09:00" }] });
   clock = at("2026-11-07T09:00:10+01:00");
   calendar.updateEvent(market.event!.id, "occurrence", "2026-11-14", { title: "Synthetic market, late opening" });
   calendar.tick();
@@ -331,7 +331,7 @@ async function reminderFreshness(): Promise<void> {
 
   // A long event stays remindable for its whole span, so its sent record must outlive the span.
   clock = at("2027-01-01T08:00:00+01:00");
-  const leave = calendar.createEvent({ title: "Synthetic sabbatical", allDay: true, start: "2027-01-01", end: "2027-04-30", timeZone: CPH, reminder: { kind: "day", daysBefore: 0, time: "09:00" } });
+  const leave = calendar.createEvent({ title: "Synthetic sabbatical", allDay: true, start: "2027-01-01", end: "2027-04-30", timeZone: CPH, reminders: [{ kind: "day", daysBefore: 0, time: "09:00" }] });
   clock = at("2027-01-01T09:00:30+01:00");
   calendar.tick();
   clock = at("2027-03-15T12:00:00+01:00");
@@ -357,7 +357,7 @@ async function reminderFreshness(): Promise<void> {
   const failOnce = async (title: string, startHour: number): Promise<string> => {
     clock = at(`2027-05-03T08:00:00+02:00`);
     const hh = String(startHour).padStart(2, "0");
-    const id = retrying.createEvent({ title, allDay: false, start: `2027-05-03T${hh}:00`, end: `2027-05-03T${hh}:30`, timeZone: CPH, reminder: { kind: "before", minutes: 30 } }).event!.id;
+    const id = retrying.createEvent({ title, allDay: false, start: `2027-05-03T${hh}:00`, end: `2027-05-03T${hh}:30`, timeZone: CPH, reminders: [{ kind: "before", minutes: 30 }] }).event!.id;
     clock = at(`2027-05-03T${String(startHour - 1).padStart(2, "0")}:30:10+02:00`);
     refuse = 1;
     attempts.length = 0;
@@ -379,6 +379,49 @@ async function reminderFreshness(): Promise<void> {
   await afterRetry();
   check("a moved event's retry is dropped (its new time is a new reminder)", attempts.join() === "Synthetic moved call", attempts);
   retrying.deleteEvent(moved, "series");
+}
+
+async function severalAndDefaultReminders(): Promise<void> {
+  console.log("calendar: several reminders and the owner's defaults");
+  const sentFor = (title: string) => sent.filter((s) => s.title === title).length;
+  clock = at("2027-06-01T08:00:00+02:00");
+  const ferry = calendar.createEvent({ title: "Synthetic ferry", allDay: false, start: "2027-06-10T10:00", end: "2027-06-10T11:00", timeZone: CPH, reminders: [{ kind: "before", minutes: 1440 }, { kind: "before", minutes: 7 * 1440 }] });
+  check("an event keeps several reminders, longest lead first", JSON.stringify(ferry.event?.reminders) === JSON.stringify([{ kind: "before", minutes: 7 * 1440 }, { kind: "before", minutes: 1440 }]), ferry.event?.reminders);
+  clock = at("2027-06-03T10:00:30+02:00");
+  calendar.tick();
+  clock = at("2027-06-09T10:00:30+02:00");
+  calendar.tick();
+  calendar.tick();
+  await settle();
+  check("each reminder goes out once, at its own time", sentFor("Synthetic ferry") === 2, sentFor("Synthetic ferry"));
+  calendar.deleteEvent(ferry.event!.id, "series");
+  const six = [1, 2, 3, 4, 5, 6].map((minutes) => ({ kind: "before" as const, minutes }));
+  check("at most five reminders per event", !calendar.createEvent({ title: "x", allDay: false, start: "2027-06-10T10:00", end: "2027-06-10T11:00", timeZone: CPH, reminders: six }).ok);
+
+  const plain = { allDay: false, start: "2027-06-20T14:00", end: "2027-06-20T15:00", timeZone: CPH };
+  const bare = calendar.createEvent({ title: "Synthetic before defaults", ...plain });
+  check("with no defaults set, a new event gets no reminder", calendar.defaults().reminderLeads.length === 0 && bare.event!.reminders.length === 0);
+  check("a negative lead is refused", !calendar.setDefaults({ reminderLeads: [-5], allDayTime: "09:00" }).ok);
+  check("a malformed all-day time is refused", !calendar.setDefaults({ reminderLeads: [60], allDayTime: "9am" }).ok);
+  check("more than five defaults are refused", !calendar.setDefaults({ reminderLeads: [1, 2, 3, 4, 5, 6], allDayTime: "09:00" }).ok);
+  check("defaults can be set", calendar.setDefaults({ reminderLeads: [1440, 7 * 1440, 1440], allDayTime: "08:30" }).ok);
+  const reopened = new CalendarService(db, hub, scheduler, reminders, { now: () => clock, retryMs: [] });
+  check("…and persist, sorted and without duplicates", JSON.stringify(reopened.defaults()) === JSON.stringify({ reminderLeads: [7 * 1440, 1440], allDayTime: "08:30" }), reopened.defaults());
+  const timed = calendar.createEvent({ title: "Synthetic check-up", ...plain });
+  check("a timed event created without reminders gets the defaults", JSON.stringify(timed.event!.reminders) === JSON.stringify([{ kind: "before", minutes: 7 * 1440 }, { kind: "before", minutes: 1440 }]), timed.event!.reminders);
+  const allDay = calendar.createEvent({ title: "Synthetic name day", allDay: true, start: "2027-06-21", end: "2027-06-21", timeZone: CPH });
+  check(
+    "an all-day event gets them as whole days before, at the default time",
+    JSON.stringify(allDay.event!.reminders) === JSON.stringify([{ kind: "day", daysBefore: 7, time: "08:30" }, { kind: "day", daysBefore: 1, time: "08:30" }]),
+    allDay.event!.reminders,
+  );
+  const none = calendar.createEvent({ title: "Synthetic no ping", ...plain, reminders: [] });
+  check("an explicit empty list means no reminder", none.event!.reminders.length === 0);
+  check("an edit never re-applies the defaults", calendar.updateEvent(none.event!.id, "series", null, { title: "Synthetic still no ping" }).event!.reminders.length === 0);
+  const shown = range("2027-06-20", "2027-06-21");
+  check("the range carries the defaults for the create form", shown.defaults.reminderLeads.length === 2 && shown.defaults.allDayTime === "08:30");
+  for (const e of [bare, timed, allDay, none]) calendar.deleteEvent(e.event!.id, "series");
+  calendar.setDefaults({ reminderLeads: [], allDayTime: "09:00" });
 }
 
 async function schedulesOnTheCalendar(): Promise<void> {
@@ -482,6 +525,21 @@ function migration(): void {
   const shown = cal.range(day, day, CPH);
   check("an existing reminder appears on the calendar without being copied", typeof shown !== "string" && shown.occurrences.some((o) => o.id === kept.schedule!.id && o.kind === "reminder") && upgradedScheduler.list().length === 1);
   upgraded.raw.close();
+
+  // A calendar from before events took several reminders: one `reminder` column holding one object.
+  const singlePath = join(dir, "single.sqlite");
+  const single = new Db(singlePath);
+  single.raw.exec("DROP TABLE calendar_reminder_log; DROP TABLE calendar_event_exceptions; DROP TABLE calendar_events;");
+  single.raw.exec(`CREATE TABLE calendar_events (id TEXT PRIMARY KEY, title TEXT NOT NULL, notes TEXT, all_day INTEGER NOT NULL DEFAULT 0,
+    start_at TEXT NOT NULL, end_at TEXT NOT NULL, time_zone TEXT NOT NULL, recurrence TEXT, reminder TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+  single.raw
+    .prepare("INSERT INTO calendar_events VALUES('old', 'Synthetic old event', NULL, 1, '2027-02-01', '2027-02-01', ?, NULL, ?, 1, 1)")
+    .run(CPH, JSON.stringify({ kind: "day", daysBefore: 7, time: "09:00" }));
+  single.raw.close();
+  const reopenedSingle = new Db(singlePath);
+  const old = new CalendarService(reopenedSingle, hub, new Scheduler(reopenedSingle, hub, dispatch, reminders), reminders).getEvent("old");
+  check("an event saved with one reminder reads back as a list of one", JSON.stringify(old?.reminders) === JSON.stringify([{ kind: "day", daysBefore: 7, time: "09:00" }]), old?.reminders);
+  reopenedSingle.raw.close();
 }
 
 async function api(): Promise<void> {
@@ -512,6 +570,13 @@ async function api(): Promise<void> {
   check("an authenticated delete succeeds", del.statusCode === 200 && !calendar.getEvent(id));
   const missing = await app.inject({ method: "DELETE", url: `/api/calendar/events/${id}`, headers: authed });
   check("deleting a missing event is a 404", missing.statusCode === 404);
+  const anonSettings = await app.inject({ method: "PUT", url: "/api/calendar/settings", payload: { reminderLeads: [60], allDayTime: "09:00" } });
+  check("unauthenticated settings writes are refused", anonSettings.statusCode === 401);
+  const badSettings = await app.inject({ method: "PUT", url: "/api/calendar/settings", headers: authed, payload: { reminderLeads: [-1], allDayTime: "09:00" } });
+  check("bad default reminders are a 400", badSettings.statusCode === 400);
+  const setSettings = await app.inject({ method: "PUT", url: "/api/calendar/settings", headers: authed, payload: { reminderLeads: [10080, 1440], allDayTime: "09:00" } });
+  check("default reminders can be saved over the API", setSettings.statusCode === 200 && calendar.defaults().reminderLeads.join() === "10080,1440", setSettings.body);
+  calendar.setDefaults({ reminderLeads: [], allDayTime: "09:00" });
   await app.close();
 }
 
@@ -524,6 +589,7 @@ async function main(): Promise<void> {
   editEdgeCases();
   await eventReminders(id);
   await reminderFreshness();
+  await severalAndDefaultReminders();
   await schedulesOnTheCalendar();
   migration();
   await api();

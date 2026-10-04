@@ -1,5 +1,5 @@
 import { useId } from "react";
-import type { CalendarFreq, CalendarRecurrence, CalendarReminder, MonthlyBy } from "../../lib/calendarApi.js";
+import type { CalendarFreq, CalendarRecurrence, MonthlyBy } from "../../lib/calendarApi.js";
 import { type CivilDate, addDays, daysInMonth, formatDate, weekday } from "../../lib/calendarTime.js";
 import { describeRecurrence } from "../../lib/calendarLayout.js";
 
@@ -128,83 +128,5 @@ export function RecurrenceEditor({ value, start, onChange }: { value: CalendarRe
 
       {value ? <div className="cal-hint">{describeRecurrence(value, start)}</div> : null}
     </fieldset>
-  );
-}
-
-const TIMED_PRESETS = [0, 5, 10, 15, 30, 60, 120, 1440];
-const ALL_DAY_PRESETS: { daysBefore: number; time: string }[] = [
-  { daysBefore: 0, time: "09:00" },
-  { daysBefore: 1, time: "09:00" },
-  { daysBefore: 1, time: "18:00" },
-  { daysBefore: 2, time: "09:00" },
-  { daysBefore: 7, time: "09:00" },
-];
-
-const presetKey = (r: CalendarReminder | null): string => (!r ? "none" : r.kind === "before" ? `b:${r.minutes}` : `d:${r.daysBefore}:${r.time}`);
-
-function presetLabel(r: CalendarReminder): string {
-  if (r.kind === "before") {
-    const m = r.minutes;
-    if (m === 0) return "At the start";
-    if (m < 60) return `${m} minutes before`;
-    if (m < 1440) return `${m / 60} ${m === 60 ? "hour" : "hours"} before`;
-    return `${m / 1440} ${m === 1440 ? "day" : "days"} before`;
-  }
-  const day = r.daysBefore === 0 ? "On the day" : r.daysBefore === 1 ? "The day before" : r.daysBefore === 7 ? "A week before" : `${r.daysBefore} days before`;
-  return `${day} at ${r.time}`;
-}
-
-/** The event's optional reminder: common choices in one menu, with a custom lead underneath. */
-export function ReminderPicker({ value, allDay, onChange }: { value: CalendarReminder | null; allDay: boolean; onChange(next: CalendarReminder | null): void }) {
-  const presets: CalendarReminder[] = allDay ? ALL_DAY_PRESETS.map((p) => ({ kind: "day", ...p })) : TIMED_PRESETS.map((minutes) => ({ kind: "before", minutes }));
-  const isPreset = !value || presets.some((p) => presetKey(p) === presetKey(value));
-  const choose = (key: string) => {
-    if (key === "none") return onChange(null);
-    if (key === "custom") return onChange(allDay ? { kind: "day", daysBefore: 3, time: "09:00" } : { kind: "before", minutes: 45 });
-    onChange(presets.find((p) => presetKey(p) === key) ?? null);
-  };
-  return (
-    <div className="sched-field">
-      <span className="sched-label">Reminder</span>
-      <div className="cal-recur-row">
-        <select aria-label="Reminder" value={isPreset ? presetKey(value) : "custom"} onChange={(e) => choose(e.target.value)}>
-          <option value="none">No reminder</option>
-          {presets.map((p) => (
-            <option key={presetKey(p)} value={presetKey(p)}>
-              {presetLabel(p)}
-            </option>
-          ))}
-          <option value="custom">Custom…</option>
-        </select>
-        {!isPreset && value?.kind === "before" ? (
-          <CustomLead minutes={value.minutes} onChange={(minutes) => onChange({ kind: "before", minutes })} />
-        ) : null}
-        {!isPreset && value?.kind === "day" ? (
-          <span className="cal-inline">
-            <input type="number" min={0} max={28} aria-label="Days before" value={value.daysBefore} onChange={(e) => onChange({ ...value, daysBefore: Math.max(0, Math.min(28, Math.round(Number(e.target.value) || 0))) })} />
-            days before at
-            <input type="time" aria-label="Reminder time" value={value.time} onChange={(e) => e.target.value && onChange({ ...value, time: e.target.value })} />
-          </span>
-        ) : null}
-      </div>
-      <div className="cal-hint">{value ? "Sent to your Discord DMs. No agent is started." : "The event sends nothing and starts nothing."}</div>
-    </div>
-  );
-}
-
-function CustomLead({ minutes, onChange }: { minutes: number; onChange(m: number): void }) {
-  const unit = minutes % 1440 === 0 && minutes > 0 ? 1440 : minutes % 60 === 0 && minutes > 0 ? 60 : 1;
-  const amount = minutes / unit;
-  const max = Math.floor(40320 / unit);
-  return (
-    <span className="cal-inline">
-      <input type="number" min={0} max={max} aria-label="Reminder lead" value={amount} onChange={(e) => onChange(Math.max(0, Math.min(max, Math.round(Number(e.target.value) || 0))) * unit)} />
-      <select aria-label="Reminder lead unit" value={unit} onChange={(e) => onChange(Math.min(40320, amount * Number(e.target.value)))}>
-        <option value={1}>minutes</option>
-        <option value={60}>hours</option>
-        <option value={1440}>days</option>
-      </select>
-      before
-    </span>
   );
 }

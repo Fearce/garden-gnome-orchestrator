@@ -25,10 +25,19 @@ America/New_York against the box's zone, over New York's DST change. Run it on a
   with more than 12 runs collapses into one item (`DENSE_PER_DAY`). Both step LOCAL minutes, which at
   fall-back jump back to the repeated hour's first instance; each therefore checks its lower bound
   (`nextRun` once answered a past instant there, which made the scheduler fire twice).
-- **A plain event sends nothing and starts nothing.** Only an event with a `reminder` produces output:
+- **A plain event sends nothing and starts nothing.** Only an event with `reminders` produces output:
   `CalendarService.tick` (every 30s) derives due reminders from the events themselves and sends them
   through `deliverReminder`. That is the same path as scheduler reminders: a Discord DM, retries,
   and the note list as fallback.
+- **Several reminders per event, plus the owner's defaults.** `calendar_events.reminders` is a JSON
+  list (≤ `MAX_REMINDERS` = 5, deduped, longest lead first; NULL = none). The column was `reminder`
+  (one object) before 2026-10-04: `db.ts` renames it on boot and `parseReminders` still reads an old
+  single object as a list of one. The defaults are kv `calendar.default_reminders`
+  (`{reminderLeads: minutes[], allDayTime: "HH:MM"}`; code default: none) and travel in
+  `range.defaults`. A **create** that omits `reminders` gets them server-side; an explicit `[]` means
+  none; edits never re-apply them, and changing the defaults never touches existing events. An all-day
+  event gets each lead as whole days before (floored, capped at 28) at `allDayTime`. The web mirrors
+  this in `calendarEdit.defaultReminders`; keep the two in step.
 - **No stale notifications, by construction.** Nothing is queued per event. A reminder is "sent" only
   when `calendar_reminder_log` claims `(event_id, occurrence, remind_at)`. Moving or deleting an event
   changes what the tick derives, so the old instant is never due. A moved event whose reminder time
@@ -61,7 +70,7 @@ America/New_York against the box's zone, over New York's DST change. Run it on a
   there are superseded by the new series' values. "All events" applies the
   occurrence's *delta* to the series start (`seriesSpanFromOccurrenceEdit`), not the occurrence's
   absolute time.
-- The repeat, the reminder and the zone are series-only. The form disables "Only this event" when
+- The repeat, the reminders and the zone are series-only. The form disables "Only this event" when
   any of them changed. The server refuses them on `scope: "occurrence"` too.
 - One run of a schedule: **skip** inserts `schedule_skips(schedule_id, slot_at)`, and the
   scheduler tick consumes the row instead of firing. **Move one run** of a recurring schedule = a

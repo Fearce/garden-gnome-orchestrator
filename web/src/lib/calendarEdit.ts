@@ -2,7 +2,7 @@
 // occurrence means for the whole series, where a drag lands, and the plain repeat choices a reminder
 // form offers turned into (and read back from) the scheduler's cron.
 
-import type { CalendarEvent, CalendarEventInput } from "./calendarApi.js";
+import type { CalendarDefaults, CalendarEvent, CalendarEventInput, CalendarReminder } from "./calendarApi.js";
 import {
   type CivilDate,
   type WallTime,
@@ -86,11 +86,50 @@ export function movedSpan(span: Span, eventZone: string, target: { date: CivilDa
   return { allDay: false, start: formatDateTime(begin), end: formatDateTime(fromWallMinutes(wallMinutes(begin) + length)) };
 }
 
-/** A new event's starting values for a clicked date (all-day) or time slot (one hour). */
-export function draftEvent(date: CivilDate, minutes: number | null, timeZone: string): CalendarEventInput {
-  if (minutes == null) return { title: "", notes: null, allDay: true, start: formatDate(date), end: formatDate(date), timeZone, recurrence: null, reminder: null };
+/** A new event's starting values for a clicked date (all-day) or time slot (one hour), with the owner's
+ *  default reminders. */
+export function draftEvent(date: CivilDate, minutes: number | null, timeZone: string, defaults: CalendarDefaults): CalendarEventInput {
+  if (minutes == null) {
+    return { title: "", notes: null, allDay: true, start: formatDate(date), end: formatDate(date), timeZone, recurrence: null, reminders: defaultReminders(defaults, true) };
+  }
   const begin: WallTime = { ...date, hh: Math.floor(minutes / 60), mi: minutes % 60 };
-  return { title: "", notes: null, allDay: false, start: formatDateTime(begin), end: formatDateTime(fromWallMinutes(wallMinutes(begin) + 60)), timeZone, recurrence: null, reminder: null };
+  const end = formatDateTime(fromWallMinutes(wallMinutes(begin) + 60));
+  return { title: "", notes: null, allDay: false, start: formatDateTime(begin), end, timeZone, recurrence: null, reminders: defaultReminders(defaults, false) };
+}
+
+export const MAX_REMINDERS = 5;
+export const MAX_REMINDER_DAYS = 28;
+
+/** The reminders the defaults give an event: whole days before, at the default time, when all-day.
+ *  Mirrors the server's defaultReminders. */
+export function defaultReminders(d: CalendarDefaults, allDay: boolean): CalendarReminder[] {
+  return tidyReminders(
+    d.reminderLeads.map((minutes): CalendarReminder =>
+      allDay ? { kind: "day", daysBefore: Math.min(MAX_REMINDER_DAYS, Math.floor(minutes / 1440)), time: d.allDayTime } : { kind: "before", minutes },
+    ),
+  );
+}
+
+/** The same reminders after the all-day switch flips: a lead becomes whole days before, and back. */
+export function remindersForAllDay(list: CalendarReminder[], allDay: boolean, allDayTime: string): CalendarReminder[] {
+  return tidyReminders(
+    list.map((r): CalendarReminder => {
+      if (allDay) return r.kind === "day" ? r : { kind: "day", daysBefore: Math.min(MAX_REMINDER_DAYS, Math.floor(r.minutes / 1440)), time: allDayTime };
+      return r.kind === "before" ? r : { kind: "before", minutes: r.daysBefore * 1440 };
+    }),
+  );
+}
+
+/** Each reminder once, longest lead first, as the server stores them. */
+export function tidyReminders(list: CalendarReminder[]): CalendarReminder[] {
+  const unique = new Map(list.map((r) => [JSON.stringify(r), r]));
+  return [...unique.values()].sort((a, b) => leadMinutes(b) - leadMinutes(a));
+}
+
+function leadMinutes(r: CalendarReminder): number {
+  if (r.kind === "before") return r.minutes;
+  const [hh, mi] = r.time.split(":").map(Number);
+  return r.daysBefore * 1440 - ((hh ?? 0) * 60 + (mi ?? 0));
 }
 
 // ---- reminders (scheduler entries with no prompt) ----

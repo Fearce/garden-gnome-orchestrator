@@ -52,7 +52,8 @@ export interface CalendarEvent {
   end: string;
   timeZone: string;
   recurrence: CalendarRecurrence | null;
-  reminder: CalendarReminder | null;
+  /** Every reminder the event sends, longest lead first. Empty: it sends nothing. */
+  reminders: CalendarReminder[];
   exceptions: CalendarException[];
   createdAt: number;
   updatedAt: number;
@@ -67,7 +68,17 @@ export interface CalendarEventInput {
   end: string;
   timeZone: string;
   recurrence?: CalendarRecurrence | null;
-  reminder?: CalendarReminder | null;
+  /** Omitted on a create: the owner's default reminders. An empty list: none. */
+  reminders?: CalendarReminder[] | null;
+}
+
+/**
+ * The owner's default reminders, which a new event starts with. A lead is minutes before a timed start;
+ * an all-day event gets the same number of whole days before, at `allDayTime`.
+ */
+export interface CalendarDefaults {
+  reminderLeads: number[];
+  allDayTime: string;
 }
 
 /** Which part of a recurring series an edit or delete applies to. */
@@ -119,4 +130,6 @@ export interface CalendarRange {
   occurrences: CalendarOccurrence[];
   /** Every event series with an occurrence in the range, for the details/edit panel. */
   events: CalendarEvent[];
+  /** What a new event's form starts with. */
+  defaults: CalendarDefaults;
 }

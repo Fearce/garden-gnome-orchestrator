@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db/db.js";
-import type { CalendarEvent, CalendarException, CalendarRecurrence, CalendarReminder } from "./types.js";
+import type { CalendarDefaults, CalendarEvent, CalendarException, CalendarRecurrence, CalendarReminder } from "./types.js";
+
+const DEFAULTS_KEY = "calendar.default_reminders";
 
 type Row = Record<string, unknown>;
 
@@ -40,20 +42,20 @@ export class CalendarStore {
     const id = randomUUID();
     this.raw
       .prepare(
-        `INSERT INTO calendar_events(id, title, notes, all_day, start_at, end_at, time_zone, recurrence, reminder, created_at, updated_at)
+        `INSERT INTO calendar_events(id, title, notes, all_day, start_at, end_at, time_zone, recurrence, reminders, created_at, updated_at)
          VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(id, fields.title, fields.notes, fields.allDay ? 1 : 0, fields.start, fields.end, fields.timeZone, json(fields.recurrence), json(fields.reminder), at, at);
+      .run(id, fields.title, fields.notes, fields.allDay ? 1 : 0, fields.start, fields.end, fields.timeZone, json(fields.recurrence), remindersJson(fields.reminders), at, at);
     return this.get(id)!;
   }
 
   update(id: string, fields: StoredEventFields, at = Date.now()): CalendarEvent | null {
     const changed = this.raw
       .prepare(
-        `UPDATE calendar_events SET title = ?, notes = ?, all_day = ?, start_at = ?, end_at = ?, time_zone = ?, recurrence = ?, reminder = ?, updated_at = ?
+        `UPDATE calendar_events SET title = ?, notes = ?, all_day = ?, start_at = ?, end_at = ?, time_zone = ?, recurrence = ?, reminders = ?, updated_at = ?
          WHERE id = ?`,
       )
-      .run(fields.title, fields.notes, fields.allDay ? 1 : 0, fields.start, fields.end, fields.timeZone, json(fields.recurrence), json(fields.reminder), at, id).changes;
+      .run(fields.title, fields.notes, fields.allDay ? 1 : 0, fields.start, fields.end, fields.timeZone, json(fields.recurrence), remindersJson(fields.reminders), at, id).changes;
     return changed ? this.get(id) : null;
   }
 
@@ -122,6 +124,15 @@ export class CalendarStore {
     this.raw.prepare("DELETE FROM calendar_reminder_log WHERE event_id = ? AND occurrence >= ?").run(fromId, fromDate);
   }
 
+  /** The owner's saved default reminders, or null before any were saved. */
+  defaults(): CalendarDefaults | null {
+    return parseJson<CalendarDefaults>(this.db.kvGet(DEFAULTS_KEY));
+  }
+
+  setDefaults(defaults: CalendarDefaults): void {
+    this.db.kvSet(DEFAULTS_KEY, JSON.stringify(defaults));
+  }
+
   pruneReminderLog(beforeMs: number): void {
     this.raw.prepare("DELETE FROM calendar_reminder_log WHERE remind_at < ?").run(beforeMs);
   }
@@ -144,7 +155,7 @@ export class CalendarStore {
       end: r.end_at as string,
       timeZone: r.time_zone as string,
       recurrence: parseJson<CalendarRecurrence>(r.recurrence),
-      reminder: parseJson<CalendarReminder>(r.reminder),
+      reminders: parseReminders(r.reminders),
       exceptions,
       createdAt: r.created_at as number,
       updatedAt: r.updated_at as number,
@@ -154,4 +165,15 @@ export class CalendarStore {
 
 function json(value: unknown): string | null {
   return value == null ? null : JSON.stringify(value);
+}
+
+function remindersJson(list: CalendarReminder[]): string | null {
+  return list.length ? JSON.stringify(list) : null;
+}
+
+/** A row's reminders. A row saved before events took several holds one reminder object. */
+function parseReminders(value: unknown): CalendarReminder[] {
+  const parsed = parseJson<CalendarReminder | CalendarReminder[]>(value);
+  if (!parsed) return [];
+  return Array.isArray(parsed) ? parsed : [parsed];
 }

@@ -950,6 +950,10 @@ export class Db {
       this.raw.exec("ALTER TABLE threads ADD COLUMN owner_title_locked INTEGER NOT NULL DEFAULT 0");
       this.raw.exec("UPDATE threads SET owner_title_locked = 1");
     }
+    // Calendar events took a list of reminders on 2026-10-04; the store still reads an old row's single object.
+    if ((this.raw.pragma("table_info(calendar_events)") as Array<{ name: string }>).some((column) => column.name === "reminder")) {
+      this.raw.exec("ALTER TABLE calendar_events RENAME COLUMN reminder TO reminders");
+    }
     // Add columns introduced after a DB may already exist. Duplicate-column
     // errors are expected on an up-to-date DB and ignored.
     for (const stmt of [

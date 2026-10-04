@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { type CalendarEvent, type CalendarEventInput, type CalendarScope, createEvent, updateEvent } from "../../lib/calendarApi.js";
-import { type Span, occurrenceSpan, seriesSpanFromOccurrenceEdit } from "../../lib/calendarEdit.js";
+import { type Span, occurrenceSpan, remindersForAllDay, seriesSpanFromOccurrenceEdit } from "../../lib/calendarEdit.js";
 import {
   addDays,
   dayNumber,
@@ -13,7 +13,8 @@ import {
   parseDateTime,
   wallMinutes,
 } from "../../lib/calendarTime.js";
-import { RecurrenceEditor, ReminderPicker } from "./RecurrenceEditor.js";
+import { RecurrenceEditor } from "./RecurrenceEditor.js";
+import { RemindersField } from "./RemindersField.js";
 
 export interface EventEditing {
   event: CalendarEvent;
@@ -24,6 +25,8 @@ export interface EventEditing {
 interface Props {
   initial: CalendarEventInput;
   editing: EventEditing | null;
+  /** The clock time the owner's defaults give an all-day event's reminders. */
+  allDayTime: string;
   onSaved(): void;
   onCancel(): void;
 }
@@ -31,7 +34,7 @@ interface Props {
 const SCOPE_LABEL: Record<CalendarScope, string> = { occurrence: "Only this event", following: "This and following", series: "All events" };
 
 /** Create or edit a calendar event. A recurring event's save asks which part of the series it means. */
-export function EventForm({ initial, editing, onSaved, onCancel }: Props) {
+export function EventForm({ initial, editing, allDayTime, onSaved, onCancel }: Props) {
   const before: Span | null = editing ? occurrenceSpan(editing.event, editing.occurrenceDate) : null;
   const exception = editing?.event.exceptions.find((x) => x.date === editing.occurrenceDate);
   const [title, setTitle] = useState(exception?.title ?? initial.title);
@@ -43,7 +46,7 @@ export function EventForm({ initial, editing, onSaved, onCancel }: Props) {
   const [endTime, setEndTime] = useState(timeOf(before?.end ?? initial.end, "10:00"));
   const [timeZone, setTimeZone] = useState(initial.timeZone);
   const [recurrence, setRecurrence] = useState(initial.recurrence);
-  const [reminder, setReminder] = useState(initial.reminder);
+  const [reminders, setReminders] = useState(initial.reminders ?? []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const zones = useMemo(knownTimeZones, []);
@@ -55,7 +58,7 @@ export function EventForm({ initial, editing, onSaved, onCancel }: Props) {
   const recurring = !!editing?.event.recurrence;
   // One occurrence can change its own title, notes and times; anything else belongs to the series.
   const seriesOnlyChanged =
-    !!editing && (JSON.stringify(recurrence) !== JSON.stringify(editing.event.recurrence) || JSON.stringify(reminder) !== JSON.stringify(editing.event.reminder) || timeZone !== editing.event.timeZone);
+    !!editing && (JSON.stringify(recurrence) !== JSON.stringify(editing.event.recurrence) || JSON.stringify(reminders) !== JSON.stringify(editing.event.reminders) || timeZone !== editing.event.timeZone);
 
   /** Moving the start keeps the length, like any calendar. */
   const moveStart = (date: string, time: string) => {
@@ -84,10 +87,10 @@ export function EventForm({ initial, editing, onSaved, onCancel }: Props) {
       setStartTime("09:00");
       setEndTime("10:00");
     }
-    if (reminder) setReminder(next ? { kind: "day", daysBefore: 0, time: "09:00" } : { kind: "before", minutes: 15 });
+    setReminders(remindersForAllDay(reminders, next, allDayTime));
   };
 
-  const fields = (): CalendarEventInput => ({ title: title.trim(), notes: notes.trim() || null, allDay, start, end, timeZone, recurrence, reminder });
+  const fields = (): CalendarEventInput => ({ title: title.trim(), notes: notes.trim() || null, allDay, start, end, timeZone, recurrence, reminders });
 
   const save = async (scope: CalendarScope) => {
     if (problem || busy) return;
@@ -161,7 +164,7 @@ export function EventForm({ initial, editing, onSaved, onCancel }: Props) {
 
       {startCivil ? <RecurrenceEditor value={recurrence} start={startCivil} onChange={setRecurrence} /> : null}
 
-      <ReminderPicker value={reminder} allDay={allDay} onChange={setReminder} />
+      <RemindersField value={reminders} allDay={allDay} allDayTime={allDayTime} onChange={setReminders} />
 
       <label className="sched-field">
         <span className="sched-label">Notes</span>

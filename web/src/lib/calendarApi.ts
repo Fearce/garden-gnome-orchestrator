@@ -37,7 +37,8 @@ export interface CalendarEvent {
   end: string;
   timeZone: string;
   recurrence: CalendarRecurrence | null;
-  reminder: CalendarReminder | null;
+  /** Longest lead first; empty when the event sends nothing. */
+  reminders: CalendarReminder[];
   exceptions: CalendarException[];
   createdAt: number;
   updatedAt: number;
@@ -51,7 +52,14 @@ export interface CalendarEventInput {
   end: string;
   timeZone: string;
   recurrence: CalendarRecurrence | null;
-  reminder: CalendarReminder | null;
+  reminders: CalendarReminder[];
+}
+
+/** The owner's default reminders for new events: leads in minutes, and the clock time an all-day
+ *  event's reminders use. Mirrors the server's CalendarDefaults. */
+export interface CalendarDefaults {
+  reminderLeads: number[];
+  allDayTime: string;
 }
 
 export type CalendarScope = "occurrence" | "following" | "series";
@@ -87,6 +95,7 @@ export interface CalendarRange {
   now: number;
   occurrences: CalendarOccurrence[];
   events: CalendarEvent[];
+  defaults: CalendarDefaults;
 }
 
 export class CalendarApiError extends Error {
@@ -125,6 +134,8 @@ export const fetchRange = (from: string, to: string, tz: string): Promise<Calend
 type EventReply = { ok: true; event: CalendarEvent | null };
 
 export const createEvent = (input: CalendarEventInput): Promise<EventReply> => call("/api/calendar/events", json("POST", input));
+
+export const saveDefaults = (defaults: CalendarDefaults): Promise<{ ok: true; defaults: CalendarDefaults }> => call("/api/calendar/settings", json("PUT", defaults));
 
 export const updateEvent = (id: string, scope: CalendarScope, occurrenceDate: string | null, changes: Partial<CalendarEventInput>): Promise<EventReply> =>
   call(`/api/calendar/events/${encodeURIComponent(id)}`, json("PATCH", { scope, occurrenceDate, changes }));

@@ -3,7 +3,7 @@
 
 import { normalizeRecurrence, validateRecurrence } from "./recurrence.js";
 import type { StoredEventFields } from "./store.js";
-import type { CalendarEventInput, CalendarReminder } from "./types.js";
+import type { CalendarDefaults, CalendarEventInput, CalendarReminder } from "./types.js";
 import { dayNumber, isValidTimeZone, parseClock, parseDate, parseDateTime, wallMinutes, wallToEpoch } from "./zoned.js";
 
 export const TITLE_MAX = 200;
@@ -12,6 +12,8 @@ const MAX_ALL_DAY_SPAN_DAYS = 366;
 const MAX_TIMED_SPAN_MINUTES = 31 * 1440;
 export const MAX_REMINDER_MINUTES = 4 * 7 * 1440;
 export const MAX_REMINDER_DAYS = 28;
+export const MAX_REMINDERS = 5;
+export const NO_DEFAULTS: CalendarDefaults = { reminderLeads: [], allDayTime: "09:00" };
 
 export function validateReminder(reminder: CalendarReminder): string | null {
   if (reminder.kind === "before") {
@@ -62,8 +64,9 @@ export function sanitizeEvent(input: CalendarEventInput): StoredEventFields | st
     if (error) return error;
     recurrence = normalizeRecurrence(recurrence, startDate);
   }
-  const reminder = input.reminder ?? null;
-  if (reminder) {
+  const reminders = input.reminders ?? [];
+  if (reminders.length > MAX_REMINDERS) return `An event can have at most ${MAX_REMINDERS} reminders.`;
+  for (const reminder of reminders) {
     const error = validateReminder(reminder);
     if (error) return error;
   }
@@ -75,8 +78,39 @@ export function sanitizeEvent(input: CalendarEventInput): StoredEventFields | st
     end: input.end,
     timeZone: input.timeZone,
     recurrence,
-    reminder: reminder ? normalizeReminder(reminder) : null,
+    reminders: tidyReminders(reminders),
   };
+}
+
+/** Problems with the owner's default reminders, or null. */
+export function validateDefaults(d: CalendarDefaults): string | null {
+  if (d.reminderLeads.length > MAX_REMINDERS) return `At most ${MAX_REMINDERS} default reminders.`;
+  if (!d.reminderLeads.every((m) => Number.isInteger(m) && m >= 0 && m <= MAX_REMINDER_MINUTES)) {
+    return `A default reminder can be 0 to ${MAX_REMINDER_MINUTES / 1440} days before.`;
+  }
+  return parseClock(d.allDayTime) == null ? "The all-day reminder time must be HH:MM." : null;
+}
+
+/** Defaults as stored: each lead once, longest first. */
+export function normalizeDefaults(d: CalendarDefaults): CalendarDefaults {
+  return { reminderLeads: [...new Set(d.reminderLeads)].sort((a, b) => b - a), allDayTime: d.allDayTime };
+}
+
+/** The reminders a new event starts with, from the defaults: whole days before for an all-day event. */
+export function defaultReminders(d: CalendarDefaults, allDay: boolean): CalendarReminder[] {
+  return tidyReminders(
+    d.reminderLeads.map((minutes) => (allDay ? { kind: "day", daysBefore: Math.min(MAX_REMINDER_DAYS, Math.floor(minutes / 1440)), time: d.allDayTime } : { kind: "before", minutes })),
+  );
+}
+
+/** Each reminder once, longest lead first. */
+function tidyReminders(list: CalendarReminder[]): CalendarReminder[] {
+  const unique = new Map(list.map((r) => [JSON.stringify(normalizeReminder(r)), normalizeReminder(r)]));
+  return [...unique.values()].sort((a, b) => leadMinutes(b) - leadMinutes(a));
+}
+
+function leadMinutes(r: CalendarReminder): number {
+  return r.kind === "before" ? r.minutes : r.daysBefore * 1440 - (parseClock(r.time) ?? 0);
 }
 
 function normalizeReminder(r: CalendarReminder): CalendarReminder {
