@@ -101,7 +101,7 @@ import {
 {
   const body =
     "Do both, but serialize them: give deliberate auto-play/replay sessions priority, triage and fix reproducible " +
-    "Bobfish Live reports between games, and let the new idle manager suspend training whenever Hearthstone or real " +
+    "Arena Live reports between games, and let the new idle manager suspend training whenever the game or real " +
     "input is active and resume it after 10 idle minutes. This preserves fresh live evidence without sacrificing the " +
     "many hours when the PC is genuinely unused.";
   const { visible, posts } = extractOfficeChat(`OFFICE[team]: ${body}`, { detectGluedTurns: false });
@@ -114,8 +114,8 @@ import {
 // marker that OPENED with a wrapper may treat a backtick as its closing delimiter.
 {
   const body =
-    "I’m resuming the search idle-sale improvement in `src/bobfish/search.py`, `src/bobfish/train.py`, " +
-    "`tools/head_to_head.py`, `tests/test_search.py`, and its evidence/report only. I will avoid Bobfish Live queue " +
+    "I’m resuming the search idle-sale improvement in `src/arena/search.py`, `src/arena/train.py`, " +
+    "`tools/head_to_head.py`, `tests/test_search.py`, and its evidence/report only. I will avoid Arena Live queue " +
     "files and re-check before commit.";
   const { posts } = extractOfficeChat(`Status before the claim.\n\nOFFICE[team]: ${body}`, { detectGluedTurns: false });
   assert.deepEqual(posts, [{ scope: "project", body }]);
@@ -150,21 +150,21 @@ import {
   assert.equal(visible, "Just normal implementor narration.\nNo office.");
 }
 
-// REAL prod failure (Mads/trading_orchestrator, 2026-07-20): Grok glued successive model turns into
+// REAL prod failure (a production repo, 2026-07-20): Grok glued successive model turns into
 // one blob. The first OFFICE claim must NOT swallow the following narration, and a second OFFICE
 // later in the blob must still post as its own short message. Prior extractor produced one mega-body
 // that included "Implementing…", "Next up…", and a nested second OFFICE[team] marker.
 {
   const raw =
     "I will integrate Grok." +
-    "OFFICE[team]: claiming trading_orchestrator grok integration — orchestrator.py, agent_spawn.ps1, new grok_agent_loop.ps1, selftest, README; plus script-hub agent-orchestrator SCHEMA/HTML" +
+    "OFFICE[team]: claiming batch_runner grok integration — orchestrator.py, agent_spawn.ps1, new grok_agent_loop.ps1, selftest, README; plus script-hub agent-orchestrator SCHEMA/HTML" +
     "Implementing the multi-provider failover, Grok account row, spawn/loop scripts, and dashboard wiring." +
     "Next up: spawn path and Grok agent loop." +
     "Accounts show Grok live. Committing and pushing both repos, then restarting the services." +
-    "OFFICE[team]: Grok fully integrated in trading_orchestrator — accounts row, 3-way failover, spawn ";
+    "OFFICE[team]: Grok fully integrated in batch_runner — accounts row, 3-way failover, spawn ";
   const { visible, posts } = extractOfficeChat(raw);
   assert.equal(posts.length, 2, `expected 2 posts, got ${posts.length}: ${JSON.stringify(posts)}`);
-  assert.match(posts[0]!.body, /^claiming trading_orchestrator/);
+  assert.match(posts[0]!.body, /^claiming batch_runner/);
   assert.ok(!posts[0]!.body.includes("Implementing"), `first body swallowed narration: ${posts[0]!.body}`);
   assert.ok(!posts[0]!.body.includes("OFFICE["), `first body nested a second marker: ${posts[0]!.body}`);
   assert.match(posts[1]!.body, /^Grok fully integrated/);

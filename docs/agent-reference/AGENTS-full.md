@@ -208,9 +208,9 @@ Gate: `test:office-gating`.
 
 The index is shared too. Before committing, inspect both `git diff --cached` and `git diff`; never use
 `git add -A`, `git add .`, or a bare `git commit`. For separate files, use
-`python C:/Users/theke/.claude/scripts/safe_commit.py -m "type: summary" -- path/to/file` so foreign
+`python <safe_commit.py> -m "type: summary" -- path/to/file` so foreign
 staged work cannot enter the commit. When another agent changed the same file, use
-`python C:/Users/theke/.claude/scripts/stage_my_hunks.py --list path/to/file`, select only your hunks,
+`python <stage_my_hunks.py> --list path/to/file` (locate both with `findtool.py`), select only your hunks,
 verify the cached diff, then commit exactly the tree you verified. A plain `git commit` re-reads the
 shared index, and a peer staging between your check and your commit lands their files in it (hit
 2026-09-28). Freeze the tree at verification and commit it atomically:

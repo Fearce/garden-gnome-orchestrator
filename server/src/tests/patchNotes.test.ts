@@ -90,8 +90,8 @@ function classification(): void {
   const breaking = classifyCommit("feat(api)!: rename the route", "");
   assert.equal(breaking.breaking, true);
   assert.equal(classifyCommit("fix: y", "Details\n\nBREAKING CHANGE: the old flag is gone").breaking, true);
-  const freeForm = classifyCommit("Replace Mikkel with the user across codebase", "");
-  assert.deepEqual([freeForm.kind, freeForm.type, freeForm.summary], ["other", null, "Replace Mikkel with the user across codebase"]);
+  const freeForm = classifyCommit("Replace Sam with the user across codebase", "");
+  assert.deepEqual([freeForm.kind, freeForm.type, freeForm.summary], ["other", null, "Replace Sam with the user across codebase"]);
   assert.equal(classifyCommit("wip(thing): unknown type", "").kind, "other");
   console.log("  ok  commits are classified by Conventional-Commit type, trailers stripped");
 }

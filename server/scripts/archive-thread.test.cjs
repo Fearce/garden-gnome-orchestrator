@@ -77,7 +77,7 @@ const thread = {
   id: "8fe5c1bf-d37b-473d-81cf-74725c7306f0",
   title: CUT,
   state: "cancelled",
-  workspace: "C:\\Users\\Mikkel\\projects",
+  workspace: "C:\\Users\\sam\\projects",
   brief: "Tilebreaker ball polish round.\n\n```\nfenced brief\n```",
   stage_outputs: JSON.stringify({ standingDirectives: ["keep it on master", "no visible windows"] }),
   created_at: at - 90_000,

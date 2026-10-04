@@ -59,7 +59,7 @@ async function seed(dataDir, workspace) {
     row("eviction", "Cache eviction", "done", t1, { completedAt: at }),
     row("queue-writes", "Queue writes while offline in IndexedDB with a retry budget per write", "working", t2, { note: "Queue in place; wiring the service worker next.", startedAt: at }),
     row("replay", "Replay on reconnect", "planned", t2),
-    row("iphone", "iPhone build approval", "awaiting_approval", t2, { blocker: "Mikkel installs the TestFlight build and approves it." }),
+    row("iphone", "iPhone build approval", "awaiting_approval", t2, { blocker: "Sam installs the TestFlight build and approves it." }),
     row("polling", "Poll for connectivity", "dropped", t2),
   ]);
 
@@ -194,7 +194,7 @@ async function geometry(page, title) {
     check("iPhone: milestone rows are tap-sized", rowHeight >= 40, String(rowHeight));
     await card(phone, ACTIVE).screenshot({ path: path.join(shots, "goal-tree-iphone.png") });
     await card(phone, ACTIVE).locator(".goal-item.ws-awaiting_approval .goal-item-row").tap();
-    check("iPhone: a tap opens a milestone's blocker", /Needs approval: Mikkel installs/.test(await card(phone, ACTIVE).locator(".goal-item.ws-awaiting_approval .goal-item-detail").textContent()));
+    check("iPhone: a tap opens a milestone's blocker", /Needs approval: Sam installs/.test(await card(phone, ACTIVE).locator(".goal-item.ws-awaiting_approval .goal-item-detail").textContent()));
     await phoneContext.close();
 
     // ---- a restart keeps everything ----

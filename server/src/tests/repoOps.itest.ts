@@ -478,9 +478,9 @@ try {
   console.log("\nL. remoteWebUrl — every remote spelling becomes a browsable link, or none at all");
   {
     check("SSH scp-style", remoteWebUrl("git@github.com:Fearce/garden-gnome-orchestrator.git", "master") === "https://github.com/Fearce/garden-gnome-orchestrator/tree/master");
-    check("HTTPS", remoteWebUrl("https://github.com/Fearce/repo.git", "main") === "https://github.com/Fearce/repo/tree/main");
-    check("ssh:// with a port", remoteWebUrl("ssh://git@github.com:22/Fearce/repo.git", "dev") === "https://github.com/Fearce/repo/tree/dev");
-    check("no branch → the repo root", remoteWebUrl("https://github.com/Fearce/repo.git", null) === "https://github.com/Fearce/repo");
+    check("HTTPS", remoteWebUrl("https://github.com/Acme/repo.git", "main") === "https://github.com/Acme/repo/tree/main");
+    check("ssh:// with a port", remoteWebUrl("ssh://git@github.com:22/Acme/repo.git", "dev") === "https://github.com/Acme/repo/tree/dev");
+    check("no branch → the repo root", remoteWebUrl("https://github.com/Acme/repo.git", null) === "https://github.com/Acme/repo");
     // GitHub resolves slashes in a branch ref as PATH — a %2F there does not resolve — but anything
     // odd inside a segment still has to be escaped.
     check("a slash in a branch stays a slash", remoteWebUrl("git@github.com:o/r.git", "feature/x") === "https://github.com/o/r/tree/feature/x", String(remoteWebUrl("git@github.com:o/r.git", "feature/x")));
@@ -494,9 +494,9 @@ try {
 
     // …and the state carries it through for a real repo.
     const { work } = setupClone(root, "weburl");
-    git(work, "remote", "set-url", "origin", "git@github.com:Fearce/sample.git");
+    git(work, "remote", "set-url", "origin", "git@github.com:Acme/sample.git");
     const s = await getRepoState(work);
-    check("getRepoState exposes the link for the current branch", s.webUrl === "https://github.com/Fearce/sample/tree/master", String(s.webUrl));
+    check("getRepoState exposes the link for the current branch", s.webUrl === "https://github.com/Acme/sample/tree/master", String(s.webUrl));
   }
 
   // ---- M. slow git ----------------------------------------------------------------------------------

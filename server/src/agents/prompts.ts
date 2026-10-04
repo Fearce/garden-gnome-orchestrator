@@ -15,7 +15,7 @@ const OWNER = config.ownerName;
 const NO_PUSH = config.noPushRepoPattern;
 
 // The owner's git rule for repos many agents share at once. A temporary-index commit or bare
-// update-ref onto a checked-out branch is the failure it names (2026-10-04, wowforever).
+// update-ref onto a checked-out branch is the failure it names (2026-10-04).
 const SHARED_CHECKOUT_GIT = `Finish with the local checkout clean: none of your work uncommitted, nothing to pull, rebase or push. Commit only through the checkout's own index (where other agents share the checkout, \`git commit --only <your paths>\`) and integrate with ordinary \`git pull --rebase\` or \`merge --ff-only\`. Never commit through a temporary \`GIT_INDEX_FILE\`, \`git commit-tree\` or \`git update-ref\` onto a checked-out branch: the branch moves while that checkout's index stays behind, so every newer commit shows there as a staged reversal.`;
 
 // Absolute path to a Playwright module the agents can `require()` for browser tests

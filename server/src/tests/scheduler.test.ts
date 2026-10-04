@@ -299,10 +299,10 @@ async function main(): Promise<void> {
   // the generic "Done — <title>" notice, never the reminder itself (and nothing at all unless the task
   // ended Done). A reminder is now a message the scheduler sends itself, at the moment it fires.
   check("a schedule needs a prompt or a reminder", !scheduler.create({ title: "Empty", workspace: ws, prompt: "", cron: "0 9 * * *" }).ok);
-  const remindOnly = scheduler.create({ title: "Vota reset", workspace: "", prompt: "", reminder: "  Use your Vota reset before Oct 22.  ", cron: "0 9 15 10 *", runOnce: true });
+  const remindOnly = scheduler.create({ title: "Domain renewal", workspace: "", prompt: "", reminder: "  Renew the example.com domain before Oct 22.  ", cron: "0 9 15 10 *", runOnce: true });
   check("a reminder needs no prompt and no repo", remindOnly.ok && remindOnly.schedule?.prompt === "" && remindOnly.schedule?.workspace === "");
-  check("the reminder text is stored trimmed", remindOnly.schedule?.reminder === "Use your Vota reset before Oct 22.");
-  check("a reload reads the reminder back", db.getScheduledTask(remindOnly.schedule!.id)?.reminder === "Use your Vota reset before Oct 22.");
+  check("the reminder text is stored trimmed", remindOnly.schedule?.reminder === "Renew the example.com domain before Oct 22.");
+  check("a reload reads the reminder back", db.getScheduledTask(remindOnly.schedule!.id)?.reminder === "Renew the example.com domain before Oct 22.");
   check("a prompt still needs a repo", !scheduler.create({ title: "No repo", workspace: "", prompt: "audit", cron: "0 9 * * *" }).ok);
   check("an ordinary schedule has no reminder", db.getScheduledTask(id)?.reminder == null);
   const remindId = remindOnly.schedule!.id;
@@ -311,7 +311,7 @@ async function main(): Promise<void> {
   reminded.length = 0;
   tick();
   await settle();
-  check("a due reminder is sent to the owner", reminded.length === 1 && reminded[0]!.text === "Use your Vota reset before Oct 22." && reminded[0]!.title === "Vota reset");
+  check("a due reminder is sent to the owner", reminded.length === 1 && reminded[0]!.text === "Renew the example.com domain before Oct 22." && reminded[0]!.title === "Domain renewal");
   check("a reminder-only fire starts no agent", dispatched.length === beforeRemind);
   check("a fired run-once reminder switches itself off", db.getScheduledTask(remindId)!.enabled === false && db.getScheduledTask(remindId)!.nextRunAt == null);
   check("the fire is recorded as its last run", db.getScheduledTask(remindId)!.lastRunAt != null);

@@ -542,7 +542,7 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   likely cold) → **compressed resume**. `RESUME_FULL_SESSION=1` forces full resume regardless of age.
   **A warm session that is already big is compressed anyway.** A warm cache makes a full resume cheap
   to *start*, not to *run*: every later call re-reads the whole context. Each turn-ceiling continuation
-  of one long task used to resume in full, so its context only grew (a measured d2r task: 300K → 450K →
+  of one long task used to resume in full, so its context only grew (a measured long task: 300K → 450K →
   550K → 900K tokens, until the CLI compacted near its 1M window), and on 2026-09-27/28 51–70% of all
   implementor tokens were spent at a context above 300K (measured per call by `probe:token-burn`). So when the session's latest call carried more than
   `config.resumeReseedContextTokens` (`RESUME_RESEED_CONTEXT_TOKENS`, default 200K; `0` disables) —

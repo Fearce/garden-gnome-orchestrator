@@ -3,7 +3,7 @@
 // The SSR gate (`test:tools-filter-narration`) proves which rows the panel renders with tools hidden.
 // This drives the part it cannot: a real click on the toggle, the preference surviving a reload, and the
 // narration still on screen once the history reply rebuilds the feed from the database. Reported: with
-// tools off, an implementor's narration ("…I'll verify which host is currently serving gnomerang.com")
+// tools off, an implementor's narration ("…I'll verify which host is currently serving app.example.com")
 // vanished together with the tool calls.
 //
 // Boots its own throwaway instance. Not in GATES: it needs a browser + an instance, like the other labs.
@@ -17,7 +17,7 @@ const check = createChecks();
 const TASK = "dddddddd-1111-4111-8111-dddddddddddd";
 const IMPL_RUN = "dddddddd-2222-4222-8222-000000000001";
 const QA_RUN = "dddddddd-2222-4222-8222-000000000002";
-const NARRATION = "NARRATION: I found two manual deploy scripts. Before writing the workflow, I'll verify which host is currently serving gnomerang.com.";
+const NARRATION = "NARRATION: I found two manual deploy scripts. Before writing the workflow, I'll verify which host is currently serving app.example.com.";
 
 function seed(dataDir) {
   const Database = require(path.join(__dirname, "..", "node_modules", "better-sqlite3"));
@@ -31,7 +31,7 @@ function seed(dataDir) {
   insRun.run(QA_RUN, TASK, "qa", "claude-opus-5-5", "personal", "high", "done", now - 250_000, now - 100_000);
   const insMsg = db.prepare("INSERT INTO messages (id, thread_id, run_id, role, kind, content, created_at) VALUES (?,?,?,?,?,?,?)");
   insMsg.run("m-think", TASK, IMPL_RUN, "implementor", "thinking", NARRATION, now - 850_000);
-  insMsg.run("m-tool", TASK, IMPL_RUN, "implementor", "tool", 'TOOLCALL_Bash {"command":"dig gnomerang.com"}', now - 840_000);
+  insMsg.run("m-tool", TASK, IMPL_RUN, "implementor", "tool", 'TOOLCALL_Bash {"command":"dig app.example.com"}', now - 840_000);
   insMsg.run("m-result", TASK, IMPL_RUN, "implementor", "result", "TOOLRESULT_46.225.138.103", now - 839_000);
   insMsg.run("m-text", TASK, IMPL_RUN, "implementor", "text", "PROSE: the workflow deploys over SSH.", now - 400_000);
   insMsg.run("m-qa-think", TASK, QA_RUN, "qa", "thinking", "QA NARRATION: re-running the deploy check.", now - 200_000);

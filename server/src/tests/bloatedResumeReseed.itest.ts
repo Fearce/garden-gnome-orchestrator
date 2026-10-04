@@ -5,7 +5,7 @@
  * suspect long running tasks doing something costly on turn limits"): every turn-ceiling continuation,
  * stall nudge and steering resume inside the cache-warm window resumed the FULL session. A 100-turn
  * implementor's context therefore only ever grew across continuations — 300k → 450k → 550k → 900k
- * tokens in the measured d2r task — until the CLI's own compaction at the ~1M window, and every call of
+ * tokens in a measured long-running task — until the CLI's own compaction at the ~1M window, and every call of
  * every later session re-read all of it. The warm path assumed "cache warm = cheap"; a cache READ of
  * 900k tokens per call is not cheap. Past `config.resumeReseedContextTokens`, the resume now takes the
  * existing compressed-handoff reseed instead.

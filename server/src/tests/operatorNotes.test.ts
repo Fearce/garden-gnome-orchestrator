@@ -116,7 +116,7 @@ function main(): void {
   check("a bare branch name is refused as a url", !notes.add({ body: "check it", url: "feature/foo" }).ok);
   check("nothing landed from any of those", notes.list().length === 0);
   check("https is accepted", notes.add({ body: "ok", url: "https://github.com/acme/project/pull/1" }).ok);
-  check("http is accepted", notes.add({ body: "ok", url: "http://192.168.0.122:4317/" }).ok);
+  check("http is accepted", notes.add({ body: "ok", url: "http://192.168.1.50:4317/" }).ok);
   notes.clear();
 
   console.log("notes: a link written into the sentence still becomes the click target");

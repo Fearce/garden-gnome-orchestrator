@@ -58,7 +58,7 @@ const OPUS = "claude-opus-5-5";
 const ROSTER = [OPUS, SONNET, "claude-fable-5-1", "claude-sonnet-5", "claude-haiku-4-5-20251001"];
 
 const SCOPED_BRIEF = "Fix the typo 'recieve' in README.md.";
-const AGENTIC_BRIEF = "Investigate why QA keeps timing out on the d2r repo and figure out the root cause.";
+const AGENTIC_BRIEF = "Investigate why QA keeps timing out on the overlay repo and figure out the root cause.";
 
 /** Models whose own pool the stub reports as capped. */
 const limited = new Set<string>();

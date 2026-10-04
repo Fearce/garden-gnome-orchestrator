@@ -3,7 +3,7 @@
  * one-time walk that builds it cannot lose or double-count a message while it runs.
  *
  * Background: `Db.searchTasks` was `content LIKE '%q%'` over `messages` — 371,789 rows / 105 MB of
- * tool output on Kevin's box, unindexable by construction, re-read synchronously on every keystroke
+ * tool output on Robin's box, unindexable by construction, re-read synchronously on every keystroke
  * (~0.6s with the pages cached, ~30s without, blocking the server's only thread the whole time).
  * `messages_fts` makes it an index lookup. The risk that buys is silence: a search that returns
  * FEWER results looks exactly like a search whose term genuinely isn't there, so the only assertion

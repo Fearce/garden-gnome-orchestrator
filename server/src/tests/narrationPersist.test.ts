@@ -1,5 +1,5 @@
 // Regression: Opus 5.5 writes its progress narration ("I found two manual deploy scripts… I'll verify which
-// host is currently serving gnomerang.com") inside THINKING blocks. The Claude runner only ever streamed
+// host is currently serving app.example.com") inside THINKING blocks. The Claude runner only ever streamed
 // those as ephemeral thinking_delta, so the line lived as a live draft, vanished on reload, and never
 // reached the feed as a row. Codex reasoning summaries had the same gap. Each runner must commit a
 // non-empty reasoning block as a durable `thinking` event, which ThreadManager persists as a message.
@@ -11,7 +11,7 @@ import { CodexAgentRun } from "../agents/codexRunner.js";
 import type { AgentEvent } from "../types.js";
 
 const NARRATION =
-  "I found two manual deploy scripts in the repo. Before writing the workflow, I'll verify which host is currently serving gnomerang.com.\n";
+  "I found two manual deploy scripts in the repo. Before writing the workflow, I'll verify which host is currently serving app.example.com.\n";
 
 function collect(run: { onEvent(cb: (e: AgentEvent) => void): unknown }): AgentEvent[] {
   const events: AgentEvent[] = [];
@@ -31,12 +31,12 @@ const thinkingOf = (events: AgentEvent[]): string[] =>
   handle({ type: "assistant", message: { content: [{ type: "thinking", thinking: "", signature: "sig-only" }] } });
   handle({ type: "assistant", message: { content: [{ type: "thinking", thinking: "  \n", signature: "sig" }] } });
   handle({ type: "assistant", message: { content: [{ type: "redacted_thinking", data: "opaque" }] } });
-  handle({ type: "assistant", message: { content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "dig gnomerang.com" } }] } });
-  handle({ type: "assistant", message: { content: [{ type: "thinking", thinking: "The A record points at the Hetzner box.", signature: "s" }, { type: "text", text: "Deploying." }] } });
+  handle({ type: "assistant", message: { content: [{ type: "tool_use", id: "tu1", name: "Bash", input: { command: "dig app.example.com" } }] } });
+  handle({ type: "assistant", message: { content: [{ type: "thinking", thinking: "The A record points at the VPS.", signature: "s" }, { type: "text", text: "Deploying." }] } });
 
   assert.deepEqual(
     thinkingOf(events),
-    [NARRATION, "The A record points at the Hetzner box."],
+    [NARRATION, "The A record points at the VPS."],
     "every non-empty thinking block commits as a durable thinking event; signature-only and blank blocks do not",
   );
   assert.equal(

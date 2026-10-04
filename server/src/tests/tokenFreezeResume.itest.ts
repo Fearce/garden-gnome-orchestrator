@@ -1,7 +1,7 @@
 /**
  * Integration test — token-freeze → usage-reset → auto-resume, against the REAL orchestrator machinery.
  *
- * Reproduces Mikkel's 4-step mock scenario deterministically, in seconds, with no real API limit hit:
+ * Reproduces Sam's 4-step mock scenario deterministically, in seconds, with no real API limit hit:
  *   1. Start a (mock) long task and freeze it mid-work.
  *   2. Simulate hitting the usage/token limit (force utilization over the threshold) — the task should
  *      FREEZE (pause / cap-park), not die, and the orchestrator should ARM a reset-timed auto-resume.

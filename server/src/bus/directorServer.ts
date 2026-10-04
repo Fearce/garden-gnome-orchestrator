@@ -347,7 +347,7 @@ export function createDirectorServer(
       reminder: z
         .string()
         .optional()
-        .describe(`The reminder text DMed to ${config.ownerName} on Discord on every fire, in their language and addressed to them (e.g. "Your Vota reset expires 22 October. Use it before then."). Omit for a plain task.`),
+        .describe(`The reminder text DMed to ${config.ownerName} on Discord on every fire, in their language and addressed to them (e.g. "Your domain renewal is due 22 October. Renew it before then."). Omit for a plain task.`),
       cron: z.string().describe(`The cron schedule. ${cronHelp}`),
       enabled: z.boolean().default(true).describe("Whether it starts active (default true)."),
       effort: z.enum(["low", "medium", "high", "max"]).optional().describe(`Implementor effort for each run, ONLY when ${config.ownerName} named one. Omit otherwise; the pipeline then picks per run (never above high).`),

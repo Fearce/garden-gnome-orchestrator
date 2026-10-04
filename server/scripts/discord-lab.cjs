@@ -125,24 +125,24 @@ async function main() {
 
       // The channel field takes what Discord's UI actually gives you. A pasted channel LINK is the common
       // paste, and storing it verbatim is a 404 on every notice, so the server keeps only the digits.
-      await setField(page, CHANNEL_FIELD, "https://discord.com/channels/1422860693161381909/1542104062156079144");
-      const channel = await waitForPersisted(dataDir, "setting_discord_channel_id", "1542104062156079144");
-      check("a pasted channel link stores the CHANNEL, not the guild", channel === "1542104062156079144", String(channel));
+      await setField(page, CHANNEL_FIELD, "https://discord.com/channels/300000000000000003/200000000000000002");
+      const channel = await waitForPersisted(dataDir, "setting_discord_channel_id", "200000000000000002");
+      check("a pasted channel link stores the CHANNEL, not the guild", channel === "200000000000000002", String(channel));
       // The field is optimistic — it holds the pasted LINK until the server's broadcast replaces it with
       // what was actually kept. Waiting on the kv row is not the same instant, so wait on the correction
       // itself: the operator must not be left looking at a value the server didn't store.
       // NB: poll the LOCATOR, never `page.waitForFunction` — GROUP carries `:text-is()`, a Playwright-only
       // pseudo-class, so a `document.querySelector(GROUP)` inside the page throws SyntaxError and a
       // `.catch(() => false)` around it reports a healthy field as broken.
-      const shown = await waitForField(page, CHANNEL_FIELD, "1542104062156079144");
-      check("…and the field is corrected to what was kept", shown === "1542104062156079144", shown);
+      const shown = await waitForField(page, CHANNEL_FIELD, "200000000000000002");
+      check("…and the field is corrected to what was kept", shown === "200000000000000002", shown);
 
       // A user id moves every notice to the owner's DMs; a pasted `<@!id>` mention keeps only the id.
-      await setField(page, USER_FIELD, "<@!111909686583828480>");
-      const user = await waitForPersisted(dataDir, "setting_discord_user_id", "111909686583828480");
-      check("a pasted user mention stores the bare user id", user === "111909686583828480", String(user));
-      const userShown = await waitForField(page, USER_FIELD, "111909686583828480");
-      check("…and the field is corrected to what was kept", userShown === "111909686583828480", userShown);
+      await setField(page, USER_FIELD, "<@!100000000000000001>");
+      const user = await waitForPersisted(dataDir, "setting_discord_user_id", "100000000000000001");
+      check("a pasted user mention stores the bare user id", user === "100000000000000001", String(user));
+      const userShown = await waitForField(page, USER_FIELD, "100000000000000001");
+      check("…and the field is corrected to what was kept", userShown === "100000000000000001", userShown);
       check("the channel field says it is unused while DMs are on", (await page.locator(GROUP).innerText()).includes("Unused while your user ID is set"));
 
       // The write-only token: typed here, stored server-side, and never sent back to any client.
@@ -183,8 +183,8 @@ async function main() {
       // still reads as present when the browser has never been told what it is.
       const second = await openSettings(browser);
       check("the toggle survives a reload", (await second.getAttribute(TOGGLE, "aria-checked")) === "true", await second.getAttribute(TOGGLE, "aria-checked"));
-      check("the channel survives a reload", (await second.locator(CHANNEL_FIELD).inputValue()) === "1542104062156079144");
-      check("the user id survives a reload", (await second.locator(USER_FIELD).inputValue()) === "111909686583828480");
+      check("the channel survives a reload", (await second.locator(CHANNEL_FIELD).inputValue()) === "200000000000000002");
+      check("the user id survives a reload", (await second.locator(USER_FIELD).inputValue()) === "100000000000000001");
       check("DM the director stays off after a reload", (await second.getAttribute(INBOX_TOGGLE, "aria-checked")) === "false");
       check("the stored token is still known to be there", (await second.locator(`${GROUP} .sub-btn:text-is("Remove")`).count()) === 1);
       check("…and is still not in the page", !(await second.content()).includes(TYPED_TOKEN));

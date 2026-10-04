@@ -328,9 +328,9 @@ try {
     reason: "All checks passed.",
     verdictJson: JSON.stringify({ accept: true, summary: "Verified", issues: [] }),
   });
-  seedReviewed("parked", "review", "Kevin must choose the deployment target.", {
-    reason: "Kevin must choose the deployment target.",
-    verdictJson: JSON.stringify({ accept: false, summary: "Needs input", issues: ["Kevin must choose"] }),
+  seedReviewed("parked", "review", "Robin must choose the deployment target.", {
+    reason: "Robin must choose the deployment target.",
+    verdictJson: JSON.stringify({ accept: false, summary: "Needs input", issues: ["Robin must choose"] }),
   });
   seedReviewed("restart", "review", "Auto-review was interrupted by a server restart.", {
     source: "reconciled",

@@ -15,13 +15,13 @@ function check(label: string, condition: boolean): void {
 }
 const same = (a: readonly string[], b: readonly string[]) => JSON.stringify(a) === JSON.stringify(b);
 
-const wow = "C:\\repos\\wowforever_summon_overlay";
-const wowTree = "C:\\repos\\wowforever_summon_overlay.worktrees\\chips\\wowforever_summon_overlay";
+const wow = "C:\\repos\\map_overlay";
+const wowTree = "C:\\repos\\map_overlay.worktrees\\chips\\map_overlay";
 const ggo = "C:\\claude-orchestrator";
 
 console.log("\nA. adding a repo");
 check("a forward-slash spelling of a listed repo moves it instead of adding a chip",
-  same(withRecentRepo([ggo, wow], "C:/repos/wowforever_summon_overlay/", 9), [wow, ggo]));
+  same(withRecentRepo([ggo, wow], "C:/repos/map_overlay/", 9), [wow, ggo]));
 check("a lower-case drive spelling is stored canonically", same(withRecentRepo([wow], "c:\\claude-orchestrator", 9), [ggo, wow]));
 check("a folder-case variant replaces the chip rather than joining it",
   same(withRecentRepo(["C:\\Repos\\App", ggo], "c:/repos/app", 9), ["C:\\repos\\app", ggo]));
@@ -31,7 +31,7 @@ check("the cap still applies", same(withRecentRepo([ggo, wow], wowTree, 2), [wow
 check("a blank path changes nothing", same(withRecentRepo([ggo], "   ", 9), [ggo]));
 
 console.log("\nB. removing a repo");
-check("forget matches any spelling of the workspace", same(withoutRecentRepo([wowTree, ggo, wow], "c:/repos/WOWFOREVER_summon_overlay/"), [wowTree, ggo]));
+check("forget matches any spelling of the workspace", same(withoutRecentRepo([wowTree, ggo, wow], "c:/repos/MAP_overlay/"), [wowTree, ggo]));
 
 console.log("\nC. the active chip");
 check("a typed lower-case path lights the canonical chip", isSameRepo(ggo, "c:\\claude-orchestrator"));

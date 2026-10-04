@@ -33,7 +33,7 @@ const baseThread = (over: Partial<Thread>): Thread =>
   ({
     brief: "",
     rawPrompt: "",
-    workspace: "fixture-workspace/d2r",
+    workspace: "fixture-workspace/overlay",
     state: "implementing",
     createdAt: at,
     updatedAt: at + 5_000,

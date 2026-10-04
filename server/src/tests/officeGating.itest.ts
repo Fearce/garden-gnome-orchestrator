@@ -286,10 +286,10 @@ async function main(): Promise<void> {
       const thread = h.thread("Sol bridge round-trip", REPO_A);
       const projectBody =
         "Do both, but serialize them: give deliberate auto-play/replay sessions priority, triage and fix reproducible " +
-        "Bobfish Live reports between games, and let the new idle manager suspend training whenever Hearthstone or real " +
+        "Arena Live reports between games, and let the new idle manager suspend training whenever the game or real " +
         "input is active and resume it after 10 idle minutes. This preserves fresh live evidence without sacrificing the " +
         "many hours when the PC is genuinely unused.\n\n" +
-        "Files: `src/bobfish/search.py`, `tests/test_search.py` — Ångström / 東京 / ✅\n" +
+        "Files: `src/arena/search.py`, `tests/test_search.py` — Ångström / 東京 / ✅\n" +
         `Payload past every old bound: ${"x".repeat(4_500)}\nEND-OF-SOL-MESSAGE`;
       const posted = h.mgr.chatPost({ threadId: thread.id, role: "implementor", scope: "project", body: projectBody });
       const generalBody = "General room — exact Unicode and newline:\nsecond line ✅";

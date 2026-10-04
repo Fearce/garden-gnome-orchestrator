@@ -253,14 +253,14 @@ console.log("\nRoutine Director briefs stay at medium");
 {
   // Task a1460046 (2026-09-30): a contained UI classification bug plus a regression test. It ran at MAX
   // because "Never force-push" read as data-migration risk and its length read as scale.
-  const narration = `BUG: In the GGO task detail view, implementor narration and thinking messages get classified as "tools" noise. When Kevin filters tools out using the "TOOLS" toggle, prose messages that are clearly the implementor talking disappear along with the raw tool calls. They should stay visible.
+  const narration = `BUG: In the GGO task detail view, implementor narration and thinking messages get classified as "tools" noise. When Robin filters tools out using the "TOOLS" toggle, prose messages that are clearly the implementor talking disappear along with the raw tool calls. They should stay visible.
 
-SCREENSHOT (Kevin attached): The task panel for "Auto-deploy gnomerang.com on every push to main" (task 86e05fa7, 3m 54s, MAX effort, IMPLEMENTING). The filter chips read "ALL 29", "DIRECTOR DIR 3", "IMPLEMENTOR IMPL 26", and a "TOOLS" toggle button. The feed shows:
+SCREENSHOT (Robin attached): The task panel for "Auto-deploy app.example.com on every push to main" (task 86e05fa7, 3m 54s, MAX effort, IMPLEMENTING). The filter chips read "ALL 29", "DIRECTOR DIR 3", "IMPLEMENTOR IMPL 26", and a "TOOLS" toggle button. The feed shows:
 - A tool-result block with memory file content ("name: Shipping a change means DEPLOYING it to production…").
 - IMPLEMENTOR (Pipewright Pim, Opus 5.5 Max) 02:06:19 PM: a Bash tool call.
 - IMPLEMENTOR 02:06:22 PM: an ssh Bash tool call.
-- IMPLEMENTOR, circled in red by Kevin: an entry with a thought-bubble icon, in italic text: "I found two manual deploy scripts in the repo. Before writing the workflow, I'll verify which host is currently serving gnomerang.com."
-Kevin: "this message should not have been hidden under 'TOOLS' - this reads like an actual implementor message that should be visible even with tools filtered out."
+- IMPLEMENTOR, circled in red by Robin: an entry with a thought-bubble icon, in italic text: "I found two manual deploy scripts in the repo. Before writing the workflow, I'll verify which host is currently serving app.example.com."
+Robin: "this message should not have been hidden under 'TOOLS' - this reads like an actual implementor message that should be visible even with tools filtered out."
 
 WHAT TO DO:
 - Find how feed entries are classified for the TOOLS filter (client and/or server event typing). Classify them by the real message kind: assistant prose/narration/thinking stays visible when tools are hidden. Only actual tool calls and tool results get hidden.
@@ -308,8 +308,8 @@ DONE: With TOOLS filtered out, messages like the circled one stay visible and to
   check("a comma-chained 'never' guardrail is still stripped", !chained.signals.includes("data migration/backfill"), chained.signals.join("; "));
 
   // Task 86e05fa7: a CI deploy workflow that handles SSH secrets — risky, so high is fair; never max.
-  const deploy = route(`GOAL: Set up CI/CD (GitHub Actions) so gnomerang.com automatically deploys on every push to main.
-- Work out how gnomerang.com is deployed today and mirror the existing manual deploy path in CI.
+  const deploy = route(`GOAL: Set up CI/CD (GitHub Actions) so app.example.com automatically deploys on every push to main.
+- Work out how app.example.com is deployed today and mirror the existing manual deploy path in CI.
 - Secrets (SSH key, host, tokens) go in GitHub repo secrets. Never commit them.
 - The workflow must end with a verification step that proves the live site serves the new commit.
 Commit and push. Never force-push main, never --no-verify.`);

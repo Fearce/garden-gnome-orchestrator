@@ -146,14 +146,14 @@ console.log("\nA. the message a phone actually shows");
 
   // Discord's UI hands the operator three shapes and only one is the bare id. A link stored verbatim
   // 404s on every notice, which reads as a broken feature rather than a bad paste.
-  const CHANNEL = "1542104062156079144";
+  const CHANNEL = "200000000000000002";
   check("a bare channel id is kept", parseChannelId(CHANNEL) === CHANNEL);
-  check("Copy Link gives guild/channel — the CHANNEL is the last one", parseChannelId(`https://discord.com/channels/1422860693161381909/${CHANNEL}`) === CHANNEL);
+  check("Copy Link gives guild/channel — the CHANNEL is the last one", parseChannelId(`https://discord.com/channels/300000000000000003/${CHANNEL}`) === CHANNEL);
   check("a <#id> mention is unwrapped", parseChannelId(`<#${CHANNEL}>`) === CHANNEL);
   check("surrounding whitespace/quotes don't survive", parseChannelId(` "${CHANNEL}" `) === CHANNEL);
   check("nothing id-shaped degrades to empty, not to junk", parseChannelId("#general") === "");
 
-  const USER = "111909686583828480";
+  const USER = "100000000000000001";
   check("a bare user id is kept", parseUserId(USER) === USER);
   check("a <@!id> user mention is unwrapped", parseUserId(`<@!${USER}>`) === USER);
 }
@@ -188,9 +188,9 @@ console.log("\nB. nothing is sent unless it is switched on AND configured");
 console.log("\nC. the HTTP call, and what happens when Discord says no");
 {
   reset();
-  notifierFor({ enabled: true, token: "tok-123", channelId: "1542104062156079144" }).notify(NOTICE);
+  notifierFor({ enabled: true, token: "tok-123", channelId: "200000000000000002" }).notify(NOTICE);
   await settle();
-  check("posts to the channel's messages endpoint", posted[0]?.url.endsWith("/channels/1542104062156079144/messages") === true);
+  check("posts to the channel's messages endpoint", posted[0]?.url.endsWith("/channels/200000000000000002/messages") === true);
   check("authenticates as a BOT, not a bearer token", posted[0]?.auth === "Bot tok-123");
 
   reset([429]);
@@ -225,17 +225,17 @@ console.log("\nC. the HTTP call, and what happens when Discord says no");
   check("the test button says what is missing before it sends", !unset.ok && unset.message.includes("bot token"));
 
   reset();
-  const dm = notifierFor({ enabled: true, token: "t", channelId: "1542104062156079144", userId: "111909686583828480" });
+  const dm = notifierFor({ enabled: true, token: "t", channelId: "200000000000000002", userId: "100000000000000001" });
   dm.notify(NOTICE);
   await settle();
-  check("a user id opens a DM with that user", posted[0]?.url.endsWith("/users/@me/channels") === true && posted[0]?.recipient === "111909686583828480");
-  check("…and the notice goes to the DM, not the channel", posted.length === 2 && posted[1]?.url.endsWith("/channels/dm-111909686583828480/messages") === true, posted.map((p) => p.url).join(", "));
+  check("a user id opens a DM with that user", posted[0]?.url.endsWith("/users/@me/channels") === true && posted[0]?.recipient === "100000000000000001");
+  check("…and the notice goes to the DM, not the channel", posted.length === 2 && posted[1]?.url.endsWith("/channels/dm-100000000000000001/messages") === true, posted.map((p) => p.url).join(", "));
   check("…with the notice itself intact", posted[1]?.content === formatNotice(NOTICE).content);
 
   reset();
   dm.notify(NOTICE);
   await settle();
-  check("the DM channel is opened once, not once per notice", posted.length === 1 && posted[0]?.url.endsWith("/channels/dm-111909686583828480/messages") === true);
+  check("the DM channel is opened once, not once per notice", posted.length === 1 && posted[0]?.url.endsWith("/channels/dm-100000000000000001/messages") === true);
 
   reset([200, 403]);
   const blocked = await notifierFor({ enabled: true, token: "t", userId: "222222222222222222" }).test();
@@ -265,7 +265,7 @@ const accounts = new AccountManager(config.accounts, hub, config.accountPingMs, 
 // NB: accounts.start() is deliberately NOT called — no pings/timers, so the process stays deterministic.
 const manager = new ThreadManager(db, hub, memory, accounts);
 const priv = manager as unknown as Priv;
-manager.setSettings({ discordNotify: true, discordChannelId: "1542104062156079144", discordBotToken: "tok-abc" });
+manager.setSettings({ discordNotify: true, discordChannelId: "200000000000000002", discordBotToken: "tok-abc" });
 
 function newThread(title: string): string {
   return db.createThread({ title, workspace: dir, rawPrompt: "x" }).id;
@@ -288,7 +288,7 @@ async function afterTransition(run: () => void): Promise<Posted[]> {
   // The detail is MASKED: when this fails, whatever won is a real bot token from the environment, and a
   // failure message is exactly the string that ends up pasted into a log or a report.
   check("the token typed into Settings beats the env fallback", sent[0]?.auth === "Bot tok-abc", `used ••••${(sent[0]?.auth ?? "").slice(-4)}`);
-  check("…and so does the channel typed into Settings", sent[0]?.url.endsWith("/channels/1542104062156079144/messages") === true);
+  check("…and so does the channel typed into Settings", sent[0]?.url.endsWith("/channels/200000000000000002/messages") === true);
 }
 {
   const sent = await afterTransition(() => priv.setState(newThread("Menu ingest"), "review", "QA found two blockers."));
@@ -327,11 +327,11 @@ async function afterTransition(run: () => void): Promise<Posted[]> {
   check("a director-scoped question still reaches the phone", sent.length === 1 && (sent[0]?.content ?? "").includes("Which repo?"));
 }
 {
-  manager.setSettings({ discordUserId: "<@111909686583828480>" });
+  manager.setSettings({ discordUserId: "<@100000000000000001>" });
   const sent = await afterTransition(() => priv.setState(newThread("Straight to my DMs"), "done"));
-  check("a user id set in Settings moves notices to the owner's DMs", sent.at(-1)?.url.endsWith("/channels/dm-111909686583828480/messages") === true, sent.map((p) => p.url).join(", "));
-  check("…and the pasted mention was stored as the bare id", manager.settings().discordUserId === "111909686583828480");
-  check("…with nothing posted in the channel", !sent.some((p) => p.url.includes("/channels/1542104062156079144/")));
+  check("a user id set in Settings moves notices to the owner's DMs", sent.at(-1)?.url.endsWith("/channels/dm-100000000000000001/messages") === true, sent.map((p) => p.url).join(", "));
+  check("…and the pasted mention was stored as the bare id", manager.settings().discordUserId === "100000000000000001");
+  check("…with nothing posted in the channel", !sent.some((p) => p.url.includes("/channels/200000000000000002/")));
   manager.setSettings({ discordUserId: "" });
 }
 {
@@ -343,15 +343,15 @@ async function afterTransition(run: () => void): Promise<Posted[]> {
 // ---- E. scheduled reminders ------------------------------------------------------------------------
 console.log("\nE. a scheduled reminder reaches the DM with its own words");
 {
-  const msg = formatReminder("Vota reset", "Use your Vota reset before Oct 22.");
-  check("the reminder text itself is in content, where the phone preview reads it", msg.content.includes("Use your Vota reset before Oct 22."));
-  check("…under its title", msg.content.includes("Vota reset") && msg.content.indexOf("Vota reset") < msg.content.indexOf("Use your"));
+  const msg = formatReminder("Domain renewal", "Renew the example.com domain before Oct 22.");
+  check("the reminder text itself is in content, where the phone preview reads it", msg.content.includes("Renew the example.com domain before Oct 22."));
+  check("…under its title", msg.content.includes("Domain renewal") && msg.content.indexOf("Domain renewal") < msg.content.indexOf("Renew the"));
   check("…and reads as a reminder", msg.content.includes("Reminder"));
   check("a long reminder still fits one Discord message", formatReminder("t".repeat(300), "x".repeat(5000)).content.length <= 2000);
 
   reset();
-  const delivered = await notifierFor({ enabled: true, token: "t", userId: "111909686583828480" }).remind("Vota reset", "Use your Vota reset before Oct 22.");
-  check("a reminder is DMed to the owner", delivered.ok && posted.at(-1)?.url.endsWith("/channels/dm-111909686583828480/messages") === true);
+  const delivered = await notifierFor({ enabled: true, token: "t", userId: "100000000000000001" }).remind("Domain renewal", "Renew the example.com domain before Oct 22.");
+  check("a reminder is DMed to the owner", delivered.ok && posted.at(-1)?.url.endsWith("/channels/dm-100000000000000001/messages") === true);
   check("…carrying the reminder text", posted.at(-1)?.content === msg.content);
 
   reset();
@@ -365,7 +365,7 @@ console.log("\nE. a scheduled reminder reaches the DM with its own words");
   check("a refused reminder is reported, not swallowed", !refused.ok && refused.message.includes("500"));
 
   // Through the real manager, as the scheduler calls it.
-  manager.setSettings({ discordNotify: true, discordUserId: "111909686583828480" });
+  manager.setSettings({ discordNotify: true, discordUserId: "100000000000000001" });
   reset();
   const live = await manager.remindOwner("Cloud credits", "Use them before Nov 5.");
   check("the manager sends a reminder with the settings as they stand", live.ok && posted.at(-1)?.content.includes("Use them before Nov 5.") === true, live.ok ? "" : live.message);

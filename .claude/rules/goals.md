@@ -69,7 +69,7 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   director judges the report and its `next` reaches the same session, even when it repeated the report
   before it (a refusal usually does); `GOAL_SILENT_TURNS` (2) in a row stop as `blocked`. An objective edit
   or Resume clears the count. Never make the first one a stop: a turn that ends on its report alone is a normal ending
-  (the d2r goal blocked that way on 2026-10-02). A turn with progress (`assessSessionProgress`: ≥3 novel tool calls, a new finding, or a git
+  (a long game-overlay goal blocked that way on 2026-10-02). A turn with progress (`assessSessionProgress`: ≥3 novel tool calls, a new finding, or a git
   fingerprint change) resets the idle count and the wait backoff whatever status it ended on, and always
   continues, even under the same words; otherwise a clean turn stops on a repeated report digest (the
   WAITING/BLOCKED turns update the digest too, so "repeated" means the turn just before) or on
@@ -91,7 +91,7 @@ Read before touching `orchestrator/goals.ts`, the `goals`/`goal_steps` tables, t
   `priorTurnsEndedAt`: `persistedImageBlocks` skips owner screenshots older than it and the in-memory
   `threadImages` are dropped, and the earlier-turn heading calls those requests already acted on (re-open only
   on current evidence). The cold reseed (`composeResumeKickoff`) puts them beside the handoff, never in its
-  "Current authoritative" block. On 2026-10-02 the d2r step re-attached a 14:53 green-window screenshot and
+  "Current authoritative" block. On 2026-10-02 a game-overlay step re-attached a 14:53 green-window screenshot and
   ranked "fix the green artifacts" above the handoff that recorded the fix, so every fresh session redid a
   fix finished hours earlier. The receipt note names the instruction it acknowledges (`quoteInstruction`), not
   "the instruction(s) above". Gate: `test:goal-continuation` J + `test:injection-receipts`.

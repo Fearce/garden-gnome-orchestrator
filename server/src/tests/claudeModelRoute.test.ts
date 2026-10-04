@@ -43,7 +43,7 @@ console.log("\n=== claude model route — the route alone ===\n");
   );
 }
 {
-  const route = selectRoute({ title: "Investigate flaky QA", brief: "Investigate why QA keeps timing out on the d2r repo and figure out the root cause." });
+  const route = selectRoute({ title: "Investigate flaky QA", brief: "Investigate why QA keeps timing out on the overlay repo and figure out the root cause." });
   check("an open-ended investigation stays on Opus", route.claudeModel?.tier === "opus", show(route.claudeModel));
   check("…and no plan can move it", route.claudeModel?.planRefinable === false, show(route.claudeModel));
 }

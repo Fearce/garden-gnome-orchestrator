@@ -42,9 +42,9 @@ const NOT_ASKS: string[] = [
   // Policy about other work, negated.
   "Our goal tasks should not run with high effort. Effort and model should be selectable in the goal creation && edit box.",
   // A pasted log line is cited, not asked.
-  `x "info director(Kevin) 01:52:41 PM Auto-selected gpt-6-astra at high effort for this task Strong autonomous coder"`,
+  `x "info director(Robin) 01:52:41 PM Auto-selected gpt-6-astra at high effort for this task Strong autonomous coder"`,
   // …including one spanning several lines (2026-09-13).
-  `Pls fix "info\ndirector(Kevin)\n01:52:41 PM\nAuto-selected gpt-6-astra at high effort for this task\nStrong autonomous coder."`,
+  `Pls fix "info\ndirector(Robin)\n01:52:41 PM\nAuto-selected gpt-6-astra at high effort for this task\nStrong autonomous coder."`,
   // 2026-09-14: describes what a setting should allow, not this task.
   "This way we can set it to low tier models on low effort and keep working even when nearing usage limits without interruptions.",
   // Settings requests about models, not this task's implementor.

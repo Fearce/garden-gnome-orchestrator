@@ -180,7 +180,7 @@ async function main(): Promise<void> {
   check("from-scratch retry retains the task-local pin", db.getThread(dispatchedId)?.modelRequest?.model === SPARK);
 
   const legacy = db.createThread({
-    title: "Legacy Bobfish-style task",
+    title: "Legacy overnight-style task",
     workspace,
     rawPrompt: "",
     brief: "Use GPT Luna capacity as persistent overnight training capacity. Continue the work.",

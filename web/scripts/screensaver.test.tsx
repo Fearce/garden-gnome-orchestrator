@@ -89,7 +89,7 @@ function check(label: string, ok: boolean, detail?: string): void {
 const NOW = 1_700_000_000_000;
 const thread = (over: Partial<Thread> & { id: string; state: ThreadState }): Thread => ({
   title: `task ${over.id}`,
-  workspace: "C:\\Users\\Mikkel\\projects\\garden-gnome-orchestrator",
+  workspace: "C:\\Users\\sam\\projects\\garden-gnome-orchestrator",
   createdAt: NOW - 600_000,
   updatedAt: NOW - 1_000,
   ...over,

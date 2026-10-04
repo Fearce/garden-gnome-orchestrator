@@ -226,32 +226,32 @@ try {
   check("a task_worktree claim works on a repo inside the umbrella", viaTool.ok && viaTool.worktree.branch === umbrellaBranch);
 
   console.log("H. briefing");
-  const own = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: true });
+  const own = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Robin", autoPush: true });
   check("own: names the branch and folder", !!own && own.includes(wt.branch) && own.includes(wt.path));
   check("own: integrates by rebase + fast-forward + push", !!own && /rebase/.test(own) && /--ff-only/.test(own) && /push `master`/.test(own));
   check("own: forbids git worktree remove", !!own && own.includes("Never run `git worktree remove`"));
-  const noPush = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: false });
+  const noPush = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Robin", autoPush: false });
   check("auto-push off: never says to push the base", !!noPush && !/then push/.test(noPush) && /do not push/.test(noPush));
-  const vota = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [{ ...wt, commitOnly: true }], owner: "Kevin", autoPush: true });
-  check("commit-only: integrates locally by rebase + fast-forward", !!vota && /rebase/.test(vota) && /--ff-only/.test(vota) && vota.includes(`git fetch . ${wt.branch}:master`));
-  check("commit-only: never pushes, and never leaves the fast-forward to the owner", !!vota && /Never push/.test(vota) && !/then push/.test(vota) && /Never leave the fast-forward to Kevin/.test(vota));
-  check("commit-only: reports the base and its new head", !!vota && /name `master` and its new head commit/.test(vota));
-  const borrowed = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Kevin", autoPush: true, borrowed: true });
+  const commitOnlyBrief = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [{ ...wt, commitOnly: true }], owner: "Robin", autoPush: true });
+  check("commit-only: integrates locally by rebase + fast-forward", !!commitOnlyBrief && /rebase/.test(commitOnlyBrief) && /--ff-only/.test(commitOnlyBrief) && commitOnlyBrief.includes(`git fetch . ${wt.branch}:master`));
+  check("commit-only: never pushes, and never leaves the fast-forward to the owner", !!commitOnlyBrief && /Never push/.test(commitOnlyBrief) && !/then push/.test(commitOnlyBrief) && /Never leave the fast-forward to Robin/.test(commitOnlyBrief));
+  check("commit-only: reports the base and its new head", !!commitOnlyBrief && /name `master` and its new head commit/.test(commitOnlyBrief));
+  const borrowed = worktreeBriefing({ threadId: THREAD, workspace: wt.path, mode: "worktree", worktrees: [wt], owner: "Robin", autoPush: true, borrowed: true });
   check("borrowed: works in the parent's worktree without integrating", !!borrowed && borrowed.includes("parent task") && !/--ff-only/.test(borrowed));
-  const umb = worktreeBriefing({ threadId: THREAD, workspace: umbrella, mode: "umbrella", worktrees: [], owner: "Kevin", autoPush: true });
+  const umb = worktreeBriefing({ threadId: THREAD, workspace: umbrella, mode: "umbrella", worktrees: [], owner: "Robin", autoPush: true });
   check("umbrella: points at task_worktree and the exact branch convention", !!umb && umb.includes("task_worktree") && umb.includes(`-${THREAD.slice(0, 8)}`) && umb.includes("ggo/<name>"));
   check("umbrella: the agent names the branch itself, not from the title", !!umb && /`name`/.test(umb) && !umb.includes(umbrellaBranch));
-  check("umbrella: integrates every branch itself and pushes only outside commit-only repos", !!umb && /integrate every task branch yourself/.test(umb) && /except in a commit-only/.test(umb) && /Never leave a merge or fast-forward for Kevin/.test(umb));
+  check("umbrella: integrates every branch itself and pushes only outside commit-only repos", !!umb && /integrate every task branch yourself/.test(umb) && /except in a commit-only/.test(umb) && /Never leave a merge or fast-forward for Robin/.test(umb));
   check("umbrella: a branch the owner named overrides the worktree rule", !!umb && /names the branch to work on in a repository/.test(umb) && /checkout that already has it/.test(umb));
-  const guided = worktreeBriefing({ threadId: THREAD, workspace: join(repo, "web"), repoRoot: repo, mode: "guided", worktrees: [], owner: "Kevin", autoPush: true });
+  const guided = worktreeBriefing({ threadId: THREAD, workspace: join(repo, "web"), repoRoot: repo, mode: "guided", worktrees: [], owner: "Robin", autoPush: true });
   check("guided: work here while alone, claim a worktree when the repo is shared", !!guided && /alone in this repository/.test(guided) && /another agent works in this repository/.test(guided) && guided.includes("task_worktree"));
   check("guided: the CLI fallback names the repo root and the branch convention", !!guided && guided.includes(`git -C "${repo}" worktree add -b ggo/<name>-${THREAD.slice(0, 8)}`) && guided.includes(worktreesHome(repo)));
   check("guided: no integration step before a claim", !!guided && !/--ff-only/.test(guided));
   check("guided: a branch the owner named outranks the worktree advice", !!guided && /names the branch to work on/.test(guided) && /claim no worktree and create no branch/.test(guided));
-  const guidedClaimed = worktreeBriefing({ threadId: THREAD, workspace: repo, repoRoot: repo, mode: "guided", worktrees: [wt], owner: "Kevin", autoPush: true });
+  const guidedClaimed = worktreeBriefing({ threadId: THREAD, workspace: repo, repoRoot: repo, mode: "guided", worktrees: [wt], owner: "Robin", autoPush: true });
   check("guided + claimed: the own-worktree rules and integration", !!guidedClaimed && guidedClaimed.includes(wt.path) && /--ff-only/.test(guidedClaimed) && /never there/.test(guidedClaimed));
-  check("guided sub-task of an unclaimed parent: no section", worktreeBriefing({ threadId: THREAD, workspace: repo, mode: "guided", worktrees: [], owner: "Kevin", autoPush: true, borrowed: true }) === null);
-  check("in-place: no section",worktreeBriefing({ threadId: THREAD, workspace: repo, mode: "in-place", worktrees: [], owner: "Kevin", autoPush: true }) === null);
+  check("guided sub-task of an unclaimed parent: no section", worktreeBriefing({ threadId: THREAD, workspace: repo, mode: "guided", worktrees: [], owner: "Robin", autoPush: true, borrowed: true }) === null);
+  check("in-place: no section",worktreeBriefing({ threadId: THREAD, workspace: repo, mode: "in-place", worktrees: [], owner: "Robin", autoPush: true }) === null);
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

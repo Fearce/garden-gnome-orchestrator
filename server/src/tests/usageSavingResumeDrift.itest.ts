@@ -199,7 +199,7 @@ console.log("\n=== B. usage saving deactivated: the stale sonnet session is drop
   });
   const priorRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model: "claude-sonnet-5", account: "Claude A" });
   h.db.updateRun(priorRun.id, { sessionId: "sess-1" });
-  h.accounts.sevenDay = 69; // ...but has since dropped back under the threshold, like the real vota account did
+  h.accounts.sevenDay = 69; // ...but has since dropped back under the threshold, like the real team account did
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const internals = h.mgr as any;
   const result = await internals.startResumedImplementor(h.thread, "kickoff", "sess-1", {
@@ -228,7 +228,7 @@ console.log("\n=== B. usage saving deactivated: the stale sonnet session is drop
 
 console.log("\n=== B2. a strict owner pin outranks active saving: the sonnet session is dropped for the pinned model ===");
 {
-  // The reported defect (2026-09-18): the owner pinned claude-opus-5-5 on a vota task, resumed, and the
+  // The reported defect (2026-09-18): the owner pinned claude-opus-5-5 on a team-account task, resumed, and the
   // resume ran claude-sonnet-5 — usage saving deliberately outranked the pin, and the pin's own feed
   // message promises "No fallback model is allowed". Saving stays ACTIVE throughout this case: that is
   // what separates it from B, where the pin is absent and the window merely rolled back under.

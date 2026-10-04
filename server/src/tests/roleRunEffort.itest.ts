@@ -155,7 +155,7 @@ console.log("\n=== D. history: earlier Claude QA/reviewer rows get the effort th
     const t = before.createThread({ title: "history", workspace: dir, rawPrompt: "p", brief: "b" });
     const rows = {
       qa: before.createRun({ threadId: t.id, role: "qa", model: "claude-opus-5-5", account: "personal" }).id,
-      reviewer: before.createRun({ threadId: t.id, role: "reviewer", model: "claude-opus-5-5", account: "vota" }).id,
+      reviewer: before.createRun({ threadId: t.id, role: "reviewer", model: "claude-opus-5-5", account: "team" }).id,
       planner: before.createRun({ threadId: t.id, role: "planner", model: "claude-opus-5-5", account: "personal" }).id,
       codexQa: before.createRun({ threadId: t.id, role: "qa", model: "gpt-5.6-sol", account: "codex:gpt-5.6-sol" }).id,
       zaiQa: before.createRun({ threadId: t.id, role: "qa", model: "glm-5.3", account: "zai:glm-5.3" }).id,

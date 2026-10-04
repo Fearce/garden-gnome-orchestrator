@@ -16,7 +16,8 @@ import { managedFfmpegPath, type QualityId } from "../src/remoteControl/ffmpeg.j
 import { RemoteSession, pickDisplay } from "../src/remoteControl/session.js";
 
 const require = createRequire(import.meta.url);
-const { chromium } = require("C:/Users/theke/AppData/Roaming/npm/node_modules/playwright") as typeof import("playwright");
+const { loadChromium } = require("./findPlaywright.cjs") as { loadChromium: () => typeof import("playwright").chromium };
+const chromium = loadChromium();
 const esbuild = require("esbuild") as typeof import("esbuild");
 
 const BRAVE = "C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe";

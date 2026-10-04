@@ -7,7 +7,7 @@
  * `director_messages`) is what reframed the task. The probe exists so the next agent reads that in one
  * command. Two of its properties are easy to break and invisible when broken:
  *   • it must open the live file READ-ONLY. `new Db(path)` runs migrations, so a probe written the
- *     obvious way writes to Kevin's production database just by looking at it.
+ *     obvious way writes to Robin's production database just by looking at it.
  *   • it must discover columns from the schema. Hardcoding them means a column added later is silently
  *     never searched, and the probe reports a confident "not here".
  *

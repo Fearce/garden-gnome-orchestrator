@@ -1,4 +1,4 @@
-# Is `office.sprogbroen.dk` safe to leave fully public?
+# Is the Online Office relay safe to leave fully public?
 
 **Verdict: yes — the public part was already the right shape, but the deploy path around it was not.**
 Anonymous callers get three integers and nothing else, and every surface that names a person, a
@@ -93,7 +93,7 @@ a log line (a newline in a joining instance's name could forge container-log ent
   nothing today needs.
 - **A joined device token lasts 180 days of silence** and slides forward on every connect, so a machine in
   regular use never re-authenticates. If a joined laptop is lost, revoke it — expiry will not do it for you.
-- **Chat bodies sit in a docker volume** on the Sprogbroen box. Root on that host can read them.
+- **Chat bodies sit in a docker volume** on the relay host. Root on that host can read them.
 - **The counts are an activity oracle.** Anyone polling `/api/health` learns when agents are running. That
   is the same information the status page exists to give, so it stays; only the number of *joined devices*
   moved behind the admin key, to match what the page already promised.

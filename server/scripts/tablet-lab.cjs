@@ -1,5 +1,5 @@
 // Drive the console the way a tablet does — a real headless browser in a TOUCH context, at both
-// orientations of Kevin's Lenovo TB328FU (1920×1200 at dpr 1.5 ⇒ 1280×800 landscape, 800×1280
+// orientations of Robin's Lenovo TB328FU (1920×1200 at dpr 1.5 ⇒ 1280×800 landscape, 800×1280
 // portrait) — against a throwaway instance, without touching prod.
 //
 //   npm run tablet-lab --prefix server
@@ -108,8 +108,8 @@ function seed(dataDir) {
   db.prepare("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(
     "setting_recent_repos",
     JSON.stringify([
-      SERVER_ROOT, "C:\\claude-orchestrator", "C:\\trading_orchestrator", "C:\\repos\\bobfish",
-      "C:\\repos", "C:\\private-work\\graphql-api", "C:\\repos\\Battlemons", "C:\\", "D:\\work\\sprogbroen",
+      SERVER_ROOT, "C:\\claude-orchestrator", "C:\\batch_runner", "C:\\repos\\game-overlay",
+      "C:\\repos", "C:\\work\\acme-api", "C:\\repos\\Arcade", "C:\\", "D:\\work\\storefront",
     ]),
   );
   db.close();

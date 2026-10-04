@@ -294,11 +294,11 @@ async function drive(page, work, keep) {
   // The fixture's origin is a local bare repo, which has no web page — so the button is correctly
   // absent until the remote points at a host.
   check("no Open button for a remote with no web page", (await page.$('a.gc-btn:has-text("Open")')) === null);
-  execFileSync("git", ["remote", "set-url", "origin", "git@github.com:Fearce/sample.git"], { cwd: work, windowsHide: true });
+  execFileSync("git", ["remote", "set-url", "origin", "git@github.com:Acme/sample.git"], { cwd: work, windowsHide: true });
   await page.click('.gc-sync .gc-btn:has-text("Fetch")'); // any action re-reads the repo
   await settle(page);
   const href = await page.getAttribute('a.gc-btn:has-text("Open")', "href");
-  check("an Open link appears, deep-linked to the current branch", href === "https://github.com/Fearce/sample/tree/feature/from-console", String(href));
+  check("an Open link appears, deep-linked to the current branch", href === "https://github.com/Acme/sample/tree/feature/from-console", String(href));
   check("it opens in a new tab", (await page.getAttribute('a.gc-btn:has-text("Open")', "target")) === "_blank");
 
   const shot = path.join(SERVER_ROOT, "data", "git-console.png");

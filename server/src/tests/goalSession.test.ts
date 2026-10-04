@@ -110,7 +110,7 @@ function harness(): Harness {
       return h.fingerprints.get(id) ?? "git-0";
     },
   };
-  h.runner = new GoalRunner(db, new EventHub(), host, { ownerName: "Kevin", now: () => h.clock.t, tickMs: 3_600_000, retryMs: 300_000 });
+  h.runner = new GoalRunner(db, new EventHub(), host, { ownerName: "Robin", now: () => h.clock.t, tickMs: 3_600_000, retryMs: 300_000 });
   return h;
 }
 
@@ -743,7 +743,7 @@ function existingGoals(): void {
   console.log("goal session: goals that existed before this build");
   const path = join(mkdtempSync(join(tmpdir(), "goal-session-legacy-")), "t.sqlite");
   const db = new Db(path);
-  const paused = db.createGoal({ title: "D2R", objective: "o", workspace: process.cwd(), effort: null, provider: null, model: null, maxConcurrent: 1, burnConservation: true, burnRatePct: 100 });
+  const paused = db.createGoal({ title: "Overlay", objective: "o", workspace: process.cwd(), effort: null, provider: null, model: null, maxConcurrent: 1, burnConservation: true, burnRatePct: 100 });
   db.updateGoal(paused.id, { status: "paused", statusReason: "Paused by the owner." });
   db.raw.prepare("UPDATE goals SET usage_since = NULL").run();
   db.raw.close();

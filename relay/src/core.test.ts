@@ -31,8 +31,8 @@ function agent(over: Partial<RelayAgent> = {}): RelayAgent {
     name: "Rune",
     role: "implementor",
     title: "Fix the marker parser",
-    repoKey: "github.com/fearce/card-marker",
-    repoLabel: "Fearce/card-marker",
+    repoKey: "github.com/acme/map-overlay",
+    repoLabel: "Acme/map-overlay",
     ...over,
   };
 }
@@ -63,11 +63,11 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
 // A joining instance gets a welcome carrying its identity and the office backlog.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin", "Kevin's tower");
-  core.attach(kevin);
-  const welcome = kevin.sent.find((f) => f.t === "welcome");
+  const robin = fakePeer("i-robin", "Robin's tower");
+  core.attach(robin);
+  const welcome = robin.sent.find((f) => f.t === "welcome");
   assert.ok(welcome && welcome.t === "welcome");
-  assert.equal(welcome.instanceName, "Kevin's tower");
+  assert.equal(welcome.instanceName, "Robin's tower");
   assert.deepEqual(welcome.recent, []);
 }
 
@@ -75,90 +75,90 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
 // persisted its own copy locally — an echo would double every line in the console feed).
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  kevin.drain();
-  mikkel.drain();
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
+  core.attach(robin);
+  core.attach(sam);
+  robin.drain();
+  sam.drain();
 
-  assert.equal(core.onFrame(kevin.connId, { t: "chat", room: OFFICE_ROOM, body: "morning", senderName: "Rune", role: "implementor" }), null);
-  assert.equal(chats(kevin.drain()).length, 0);
-  const got = chats(mikkel.drain());
+  assert.equal(core.onFrame(robin.connId, { t: "chat", room: OFFICE_ROOM, body: "morning", senderName: "Rune", role: "implementor" }), null);
+  assert.equal(chats(robin.drain()).length, 0);
+  const got = chats(sam.drain());
   assert.equal(got.length, 1);
   assert.equal(got[0]!.t === "chat" && got[0]!.msg.body, "morning");
-  assert.equal(got[0]!.t === "chat" && got[0]!.msg.instanceId, "i-kevin");
+  assert.equal(got[0]!.t === "chat" && got[0]!.msg.instanceId, "i-robin");
 }
 
 // A repo-room message reaches only instances that currently have an agent in THAT repository — the
 // whole reason rooms are keyed on repo identity rather than broadcast to everyone.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
   const stranger = fakePeer("i-stranger");
-  for (const p of [kevin, mikkel, stranger]) core.attach(p);
+  for (const p of [robin, sam, stranger]) core.attach(p);
 
-  core.onFrame(kevin.connId, { t: "presence", agents: [agent()] });
-  core.onFrame(mikkel.connId, { t: "presence", agents: [agent({ key: "t9::implementor", name: "Sif" })] });
+  core.onFrame(robin.connId, { t: "presence", agents: [agent()] });
+  core.onFrame(sam.connId, { t: "presence", agents: [agent({ key: "t9::implementor", name: "Sif" })] });
   core.onFrame(stranger.connId, { t: "presence", agents: [agent({ key: "t7::qa", repoKey: "github.com/other/thing", repoLabel: "other/thing" })] });
-  kevin.drain();
-  mikkel.drain();
+  robin.drain();
+  sam.drain();
   stranger.drain();
 
-  const room = relayRepoRoom("github.com/fearce/card-marker");
-  assert.equal(core.onFrame(kevin.connId, { t: "chat", room, body: "taking parser.ts", senderName: "Rune", role: "implementor" }), null);
-  assert.equal(chats(mikkel.drain()).length, 1);
+  const room = relayRepoRoom("github.com/acme/map-overlay");
+  assert.equal(core.onFrame(robin.connId, { t: "chat", room, body: "taking parser.ts", senderName: "Rune", role: "implementor" }), null);
+  assert.equal(chats(sam.drain()).length, 1);
   assert.equal(chats(stranger.drain()).length, 0, "an instance in a different repo must not see the room");
-  assert.equal(chats(kevin.drain()).length, 0);
+  assert.equal(chats(robin.drain()).length, 0);
 }
 
 // Entering a repo room replays that room's backlog — and only to the instance that just entered.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  core.onFrame(kevin.connId, { t: "presence", agents: [agent()] });
-  const room = relayRepoRoom("github.com/fearce/card-marker");
-  core.onFrame(kevin.connId, { t: "chat", room, body: "claiming parser.ts", senderName: "Rune", role: "implementor" });
-  kevin.drain();
-  mikkel.drain();
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
+  core.attach(robin);
+  core.attach(sam);
+  core.onFrame(robin.connId, { t: "presence", agents: [agent()] });
+  const room = relayRepoRoom("github.com/acme/map-overlay");
+  core.onFrame(robin.connId, { t: "chat", room, body: "claiming parser.ts", senderName: "Rune", role: "implementor" });
+  robin.drain();
+  sam.drain();
 
-  core.onFrame(mikkel.connId, { t: "presence", agents: [agent({ key: "t9::implementor" })] });
-  const replay = mikkel.sent.filter((f) => f.t === "history");
+  core.onFrame(sam.connId, { t: "presence", agents: [agent({ key: "t9::implementor" })] });
+  const replay = sam.sent.filter((f) => f.t === "history");
   assert.equal(replay.length, 1);
   assert.equal(replay[0]!.t === "history" && replay[0]!.room, room);
   assert.equal(replay[0]!.t === "history" && replay[0]!.messages.length, 1);
-  assert.equal(kevin.sent.filter((f) => f.t === "history").length, 0);
+  assert.equal(robin.sent.filter((f) => f.t === "history").length, 0);
 
   // Re-sending the same presence must not replay it again — an agent would read its teammates' lines twice.
-  mikkel.drain();
-  core.onFrame(mikkel.connId, { t: "presence", agents: [agent({ key: "t9::implementor" })] });
-  assert.equal(mikkel.sent.filter((f) => f.t === "history").length, 0);
+  sam.drain();
+  core.onFrame(sam.connId, { t: "presence", agents: [agent({ key: "t9::implementor" })] });
+  assert.equal(sam.sent.filter((f) => f.t === "history").length, 0);
 }
 
 // Presence broadcasts on a real change, and stays silent when an instance re-reports the same agents
 // (the client publishes on a timer, so an unchanged snapshot must cost nothing).
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  kevin.drain();
-  mikkel.drain();
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
+  core.attach(robin);
+  core.attach(sam);
+  robin.drain();
+  sam.drain();
 
-  core.onFrame(kevin.connId, { t: "presence", agents: [agent()] });
-  assert.equal(presences(mikkel.drain()).length, 1);
-  kevin.drain();
+  core.onFrame(robin.connId, { t: "presence", agents: [agent()] });
+  assert.equal(presences(sam.drain()).length, 1);
+  robin.drain();
 
-  core.onFrame(kevin.connId, { t: "presence", agents: [agent()] });
-  assert.equal(presences(mikkel.drain()).length, 0, "an unchanged presence snapshot must not re-broadcast");
+  core.onFrame(robin.connId, { t: "presence", agents: [agent()] });
+  assert.equal(presences(sam.drain()).length, 0, "an unchanged presence snapshot must not re-broadcast");
 
-  core.onFrame(kevin.connId, { t: "presence", agents: [] });
-  assert.equal(presences(mikkel.drain()).length, 1);
+  core.onFrame(robin.connId, { t: "presence", agents: [] });
+  assert.equal(presences(sam.drain()).length, 1);
 }
 
 // An instance is never handed its OWN agents. It already has them, and a console that receives them
@@ -166,23 +166,23 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
 // the office on, so every lone agent would believe it had a teammate (itself).
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin", "Kevin");
-  const mikkel = fakePeer("i-mikkel", "Mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  kevin.drain();
-  mikkel.drain();
-  core.onFrame(kevin.connId, { t: "presence", agents: [agent()] });
+  const robin = fakePeer("i-robin", "Robin");
+  const sam = fakePeer("i-sam", "Sam");
+  core.attach(robin);
+  core.attach(sam);
+  robin.drain();
+  sam.drain();
+  core.onFrame(robin.connId, { t: "presence", agents: [agent()] });
 
-  const toKevin = presences(kevin.drain()).pop();
-  assert.deepEqual(toKevin!.t === "presence" && toKevin!.agents, [], "an instance must not see itself in the roster");
-  const toMikkel = presences(mikkel.drain()).pop();
-  assert.equal(toMikkel!.t === "presence" && toMikkel!.agents.length, 1, "…while everyone else sees it");
+  const toRobin = presences(robin.drain()).pop();
+  assert.deepEqual(toRobin!.t === "presence" && toRobin!.agents, [], "an instance must not see itself in the roster");
+  const toSam = presences(sam.drain()).pop();
+  assert.equal(toSam!.t === "presence" && toSam!.agents.length, 1, "…while everyone else sees it");
   assert.equal(core.roster().length, 1, "the status page still sees the whole picture");
 
   // The same rule on the welcome frame — a joiner's first roster comes from there, not a broadcast.
-  const late = fakePeer("i-kevin", "Kevin");
-  Object.assign(late, { connId: "conn-kevin-late" });
+  const late = fakePeer("i-robin", "Robin");
+  Object.assign(late, { connId: "conn-robin-late" });
   core.attach(late);
   const welcome = late.sent.find((f) => f.t === "welcome");
   assert.deepEqual(welcome!.t === "welcome" && welcome!.presence, [], "a reconnecting instance is not welcomed with itself");
@@ -193,19 +193,19 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
 // every time it enters a room, which includes the first connect after every restart.
 {
   const core = newCore();
-  const room = relayRepoRoom("github.com/fearce/card-marker");
-  const kevin = fakePeer("i-kevin", "Kevin");
-  const mikkel = fakePeer("i-mikkel", "Mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
+  const room = relayRepoRoom("github.com/acme/map-overlay");
+  const robin = fakePeer("i-robin", "Robin");
+  const sam = fakePeer("i-sam", "Sam");
+  core.attach(robin);
+  core.attach(sam);
   // Both are in the repo room, and each says one thing.
-  core.onFrame(kevin.connId, { t: "presence", agents: [agent()] });
-  core.onFrame(mikkel.connId, { t: "presence", agents: [agent({ key: "t9::implementor" })] });
-  core.onFrame(kevin.connId, { t: "chat", room, body: "I'll take parser.ts", senderName: "Rune", role: "implementor" });
-  core.onFrame(mikkel.connId, { t: "chat", room, body: "taking exporter.ts", senderName: "Sif", role: "implementor" });
+  core.onFrame(robin.connId, { t: "presence", agents: [agent()] });
+  core.onFrame(sam.connId, { t: "presence", agents: [agent({ key: "t9::implementor" })] });
+  core.onFrame(robin.connId, { t: "chat", room, body: "I'll take parser.ts", senderName: "Rune", role: "implementor" });
+  core.onFrame(sam.connId, { t: "chat", room, body: "taking exporter.ts", senderName: "Sif", role: "implementor" });
 
-  // Kevin reconnects and re-enters the room: the replay must hold Mikkel's line and NOT his own.
-  const again = { ...fakePeer("i-kevin", "Kevin"), connId: "conn-kevin-again" };
+  // Robin reconnects and re-enters the room: the replay must hold Sam's line and NOT Robin's own.
+  const again = { ...fakePeer("i-robin", "Robin"), connId: "conn-robin-again" };
   core.attach(again);
   core.onFrame(again.connId, { t: "presence", agents: [agent()] });
   const replay = again.sent.find((f) => f.t === "history");
@@ -220,23 +220,23 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
 // A departing instance drops out of everyone's roster.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  core.onFrame(kevin.connId, { t: "presence", agents: [agent()] });
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
+  core.attach(robin);
+  core.attach(sam);
+  core.onFrame(robin.connId, { t: "presence", agents: [agent()] });
   assert.equal(core.roster().length, 1);
-  core.detach(kevin.connId);
+  core.detach(robin.connId);
   assert.equal(core.roster().length, 0);
-  const last = presences(mikkel.sent).pop();
+  const last = presences(sam.sent).pop();
   assert.deepEqual(last!.t === "presence" && last!.agents, []);
 }
 
 // A reconnect that races its own close must not leave the instance in the roster twice.
 {
   const core = newCore();
-  const first = fakePeer("i-kevin");
-  const second = { ...fakePeer("i-kevin"), connId: "conn-kevin-2" };
+  const first = fakePeer("i-robin");
+  const second = { ...fakePeer("i-robin"), connId: "conn-robin-2" };
   core.attach(first);
   core.onFrame(first.connId, { t: "presence", agents: [agent()] });
   core.attach(second);
@@ -248,27 +248,27 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
 // sharedRepos is what the office exists for: a repo counts only when two DIFFERENT instances are in it.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin", "Kevin");
-  const mikkel = fakePeer("i-mikkel", "Mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  core.onFrame(kevin.connId, { t: "presence", agents: [agent(), agent({ key: "t2::qa", role: "qa" })] });
+  const robin = fakePeer("i-robin", "Robin");
+  const sam = fakePeer("i-sam", "Sam");
+  core.attach(robin);
+  core.attach(sam);
+  core.onFrame(robin.connId, { t: "presence", agents: [agent(), agent({ key: "t2::qa", role: "qa" })] });
   assert.deepEqual(core.sharedRepos(), [], "two agents of the SAME instance are not a collaboration");
-  core.onFrame(mikkel.connId, { t: "presence", agents: [agent({ key: "t9::implementor" })] });
+  core.onFrame(sam.connId, { t: "presence", agents: [agent({ key: "t9::implementor" })] });
   const shared = core.sharedRepos();
   assert.equal(shared.length, 1);
-  assert.deepEqual(shared[0]!.instances.sort(), ["Kevin", "Mikkel"]);
+  assert.deepEqual(shared[0]!.instances.sort(), ["Robin", "Sam"]);
 }
 
 // Room keys arrive from a client, so they are validated, not trusted.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  core.attach(kevin);
+  const robin = fakePeer("i-robin");
+  core.attach(robin);
   for (const room of ["", "repo:", "general", "repo:../../etc", "repo:UPPER/case", "x".repeat(400)]) {
-    assert.ok(core.onFrame(kevin.connId, { t: "chat", room, body: "hi", senderName: "Rune", role: "implementor" }), `room "${room}" must be refused`);
+    assert.ok(core.onFrame(robin.connId, { t: "chat", room, body: "hi", senderName: "Rune", role: "implementor" }), `room "${room}" must be refused`);
   }
-  assert.equal(core.onFrame(kevin.connId, { t: "chat", room: relayRepoRoom("github.com/a/b"), body: "hi", senderName: "Rune", role: "implementor" }), null);
+  assert.equal(core.onFrame(robin.connId, { t: "chat", room: relayRepoRoom("github.com/a/b"), body: "hi", senderName: "Rune", role: "implementor" }), null);
 }
 
 // Oversized legacy bodies are refused instead of silently clipped. Current clients split them into
@@ -276,17 +276,17 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
 // routes ONE exact logical message (Unicode, Markdown and newlines included).
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  mikkel.drain();
-  assert.ok(core.onFrame(kevin.connId, { t: "chat", room: OFFICE_ROOM, body: "   \n  ", senderName: "Rune", role: "implementor" }));
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
+  core.attach(robin);
+  core.attach(sam);
+  sam.drain();
+  assert.ok(core.onFrame(robin.connId, { t: "chat", room: OFFICE_ROOM, body: "   \n  ", senderName: "Rune", role: "implementor" }));
   assert.match(
-    core.onFrame(kevin.connId, { t: "chat", room: OFFICE_ROOM, body: "z".repeat(CHAT_MAX_CHARS + 1), senderName: "Rune", role: "implementor" }) ?? "",
+    core.onFrame(robin.connId, { t: "chat", room: OFFICE_ROOM, body: "z".repeat(CHAT_MAX_CHARS + 1), senderName: "Rune", role: "implementor" }) ?? "",
     /bounded chunks/,
   );
-  assert.equal(chats(mikkel.drain()).length, 0, "a rejected frame must not publish a clipped prefix");
+  assert.equal(chats(sam.drain()).length, 0, "a rejected frame must not publish a clipped prefix");
 
   const body = `First — Ångström 東京 \`src/search.py\`\n${"x".repeat(4_300)}\n- final ✅`;
   const parts = [body.slice(0, 1_900), body.slice(1_900, 3_800), body.slice(3_800)];
@@ -300,78 +300,78 @@ const presences = (frames: ServerFrame[]) => frames.filter((f) => f.t === "prese
     chunkIndex,
     chunkCount: parts.length,
   });
-  assert.equal(core.onFrame(kevin.connId, frame(1)), null);
-  assert.equal(core.onFrame(kevin.connId, frame(0)), null);
-  assert.equal(chats(mikkel.drain()).length, 0, "incomplete chunks never become orphan chat rows");
-  assert.equal(core.onFrame(kevin.connId, frame(2)), null);
-  const got = chats(mikkel.drain());
+  assert.equal(core.onFrame(robin.connId, frame(1)), null);
+  assert.equal(core.onFrame(robin.connId, frame(0)), null);
+  assert.equal(chats(sam.drain()).length, 0, "incomplete chunks never become orphan chat rows");
+  assert.equal(core.onFrame(robin.connId, frame(2)), null);
+  const got = chats(sam.drain());
   assert.equal(got.length, 1);
   assert.equal(got[0]!.t === "chat" && got[0]!.msg.body, body);
-  assert.equal(core.onFrame(kevin.connId, frame(2)), null, "a repeated final chunk is idempotent");
-  assert.equal(chats(mikkel.drain()).length, 0, "a repeated final chunk cannot duplicate the message");
+  assert.equal(core.onFrame(robin.connId, frame(2)), null, "a repeated final chunk is idempotent");
+  assert.equal(chats(sam.drain()).length, 0, "a repeated final chunk cannot duplicate the message");
 }
 
 // An agent entry with no repo identity is dropped rather than creating an unroutable room.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  core.attach(kevin);
-  core.onFrame(kevin.connId, { t: "presence", agents: [agent({ repoKey: "" }), agent({ key: "" })] });
+  const robin = fakePeer("i-robin");
+  core.attach(robin);
+  core.onFrame(robin.connId, { t: "presence", agents: [agent({ repoKey: "" }), agent({ key: "" })] });
   assert.deepEqual(core.roster(), []);
 }
 
 // ---- forks: one codebase, two remote identities ------------------------------------------------------
-// The live defect this covers (2026-08-26): Kevin's checkout advertised `Fearce/garden-gnome-orchestrator`
-// and Mikkel's advertised `prismicious/garden-gnome-orchestrator` — the same repository through his fork —
+// The live defect this covers (2026-08-26): Robin's checkout advertised `Fearce/garden-gnome-orchestrator`
+// and Sam's advertised `octo/garden-gnome-orchestrator` — the same repository through a fork —
 // so three agents edited one codebase in two rooms that could not see each other. Every existing check
-// read green, because the OTHER shared repo (`Fearce/card-marker`) matched on both sides.
+// read green, because the OTHER shared repo (`Acme/map-overlay`) matched on both sides.
 
 const UP = "github.com/fearce/garden-gnome-orchestrator";
-const FORK = "github.com/prismicious/garden-gnome-orchestrator";
+const FORK = "github.com/octo/garden-gnome-orchestrator";
 
-/** Kevin (has the fork configured as a second remote) and Mikkel (knows only his fork). */
+/** Robin (has the fork configured as a second remote) and Sam (knows only the fork). */
 function forkPair(opts: { withAlias: boolean }) {
   const core = newCore();
-  const kevin = fakePeer("i-kevin", "Kevin");
-  const mikkel = fakePeer("i-mikkel", "Mikkel's Nissefactory");
-  core.attach(kevin);
-  core.attach(mikkel);
-  core.onFrame(kevin.connId, {
+  const robin = fakePeer("i-robin", "Robin");
+  const sam = fakePeer("i-sam", "Sam's workstation");
+  core.attach(robin);
+  core.attach(sam);
+  core.onFrame(robin.connId, {
     t: "presence",
     agents: [agent({ key: "t-k::implementor", name: "Wren", repoKey: UP, repoLabel: "Fearce/garden-gnome-orchestrator", ...(opts.withAlias ? { repoAliases: [FORK] } : {}) })],
   });
-  core.onFrame(mikkel.connId, {
+  core.onFrame(sam.connId, {
     t: "presence",
-    agents: [agent({ key: "t-m::implementor", name: "Sten", repoKey: FORK, repoLabel: "prismicious/garden-gnome-orchestrator" })],
+    agents: [agent({ key: "t-m::implementor", name: "Sten", repoKey: FORK, repoLabel: "octo/garden-gnome-orchestrator" })],
   });
-  kevin.drain();
-  mikkel.drain();
-  return { core, kevin, mikkel };
+  robin.drain();
+  sam.drain();
+  return { core, robin, sam };
 }
 
 // Without the link declared, the two never meet — this is the bug, pinned so the fix can't silently rot.
 {
-  const { core, kevin, mikkel } = forkPair({ withAlias: false });
-  core.onFrame(mikkel.connId, { t: "chat", room: relayRepoRoom(FORK), body: "claiming web/", senderName: "Sten", role: "implementor" });
-  assert.deepEqual(chats(kevin.drain()), [], "no alias declared ⇒ the fork's line must not reach the upstream room");
-  core.onFrame(kevin.connId, { t: "chat", room: relayRepoRoom(UP), rooms: [relayRepoRoom(UP)], body: "claiming office/", senderName: "Wren", role: "implementor" });
-  assert.deepEqual(chats(mikkel.drain()), []);
+  const { core, robin, sam } = forkPair({ withAlias: false });
+  core.onFrame(sam.connId, { t: "chat", room: relayRepoRoom(FORK), body: "claiming web/", senderName: "Sten", role: "implementor" });
+  assert.deepEqual(chats(robin.drain()), [], "no alias declared ⇒ the fork's line must not reach the upstream room");
+  core.onFrame(robin.connId, { t: "chat", room: relayRepoRoom(UP), rooms: [relayRepoRoom(UP)], body: "claiming office/", senderName: "Wren", role: "implementor" });
+  assert.deepEqual(chats(sam.drain()), []);
   assert.deepEqual(core.sharedRepos(), [], "and the collaboration is invisible in the headline count");
 }
 
 // One side knowing the link is enough, and it works in BOTH directions.
 {
-  const { core, kevin, mikkel } = forkPair({ withAlias: true });
+  const { core, robin, sam } = forkPair({ withAlias: true });
 
-  // fork → upstream. Kevin joined the fork's room via his alias, so he simply receives it.
-  core.onFrame(mikkel.connId, { t: "chat", room: relayRepoRoom(FORK), body: "claiming web/", senderName: "Sten", role: "implementor" });
-  const toKevin = chats(kevin.drain());
-  assert.equal(toKevin.length, 1, "the fork's line reaches the upstream side exactly once");
-  assert.ok(toKevin[0]!.t === "chat" && toKevin[0]!.msg.body === "claiming web/");
+  // fork → upstream. Robin joined the fork's room via that alias, so it simply receives it.
+  core.onFrame(sam.connId, { t: "chat", room: relayRepoRoom(FORK), body: "claiming web/", senderName: "Sten", role: "implementor" });
+  const toRobin = chats(robin.drain());
+  assert.equal(toRobin.length, 1, "the fork's line reaches the upstream side exactly once");
+  assert.ok(toRobin[0]!.t === "chat" && toRobin[0]!.msg.body === "claiming web/");
 
-  // upstream → fork. Mikkel's client predates aliases: it matches an incoming room against its own key
+  // upstream → fork. Sam's client predates aliases: it matches an incoming room against its own key
   // exactly, so the relay must stamp the line with the room HE knows the repo by, not the sender's.
-  core.onFrame(kevin.connId, {
+  core.onFrame(robin.connId, {
     t: "chat",
     room: relayRepoRoom(UP),
     rooms: [relayRepoRoom(UP), relayRepoRoom(FORK)],
@@ -379,25 +379,25 @@ function forkPair(opts: { withAlias: boolean }) {
     senderName: "Wren",
     role: "implementor",
   });
-  const toMikkel = chats(mikkel.drain());
-  assert.equal(toMikkel.length, 1, "delivered ONCE, not once per room in the group");
-  assert.ok(toMikkel[0]!.t === "chat");
-  assert.equal(toMikkel[0]!.msg.room, relayRepoRoom(FORK), "stamped with the receiver's own room");
-  assert.equal(toMikkel[0]!.msg.body, "claiming office/");
+  const toSam = chats(sam.drain());
+  assert.equal(toSam.length, 1, "delivered ONCE, not once per room in the group");
+  assert.ok(toSam[0]!.t === "chat");
+  assert.equal(toSam[0]!.msg.room, relayRepoRoom(FORK), "stamped with the receiver's own room");
+  assert.equal(toSam[0]!.msg.body, "claiming office/");
 
   // One shared repository, not two — the number the status page and /api/health report.
   const shared = core.sharedRepos();
   assert.equal(shared.length, 1, JSON.stringify(shared));
   assert.equal(shared[0]!.repoKey, UP, "the representative is the lexicographically smallest key, so it is stable");
   assert.equal(shared[0]!.repoLabel, "Fearce/garden-gnome-orchestrator");
-  assert.deepEqual([...shared[0]!.instances].sort(), ["Kevin", "Mikkel's Nissefactory"]);
+  assert.deepEqual([...shared[0]!.instances].sort(), ["Robin", "Sam's workstation"]);
 }
 
 // A copy is filed under every room in the group, so the side that only knows the OTHER name still gets
 // the backlog when it enters — and the copies share ONE id, which is what the client's durable dedup keys on.
 {
-  const { core, kevin } = forkPair({ withAlias: true });
-  core.onFrame(kevin.connId, {
+  const { core, robin } = forkPair({ withAlias: true });
+  core.onFrame(robin.connId, {
     t: "chat",
     room: relayRepoRoom(UP),
     rooms: [relayRepoRoom(UP), relayRepoRoom(FORK)],
@@ -407,7 +407,7 @@ function forkPair(opts: { withAlias: boolean }) {
   });
   const late = fakePeer("i-late", "A third machine");
   core.attach(late);
-  core.onFrame(late.connId, { t: "presence", agents: [agent({ key: "t-l::implementor", repoKey: FORK, repoLabel: "prismicious/garden-gnome-orchestrator" })] });
+  core.onFrame(late.connId, { t: "presence", agents: [agent({ key: "t-l::implementor", repoKey: FORK, repoLabel: "octo/garden-gnome-orchestrator" })] });
   const replay = late.sent.filter((f) => f.t === "history");
   assert.equal(replay.length, 1, "entering the fork's room replays what was said under the upstream name");
   assert.ok(replay[0]!.t === "history" && replay[0]!.messages.length === 1);
@@ -416,12 +416,12 @@ function forkPair(opts: { withAlias: boolean }) {
 
 // An unrelated repository must not be pulled in by someone else's alias list.
 {
-  const { core, kevin } = forkPair({ withAlias: true });
+  const { core, robin } = forkPair({ withAlias: true });
   const other = fakePeer("i-other", "Someone else");
   core.attach(other);
   core.onFrame(other.connId, { t: "presence", agents: [agent({ key: "t-o::implementor", repoKey: "github.com/someone/utilities", repoLabel: "someone/utilities" })] });
   other.drain();
-  core.onFrame(kevin.connId, {
+  core.onFrame(robin.connId, {
     t: "chat",
     room: relayRepoRoom(UP),
     rooms: [relayRepoRoom(UP), relayRepoRoom(FORK)],
@@ -435,9 +435,9 @@ function forkPair(opts: { withAlias: boolean }) {
 // Aliases are agent-supplied, so they are cleaned and capped exactly like `repoKey` is.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  core.attach(kevin);
-  core.onFrame(kevin.connId, {
+  const robin = fakePeer("i-robin");
+  core.attach(robin);
+  core.onFrame(robin.connId, {
     t: "presence",
     agents: [agent({ repoKey: UP, repoAliases: ["repo:../../etc", "UPPER/Case", "", "github.com/a/b", UP, "github.com/a/b"] })],
   });
@@ -454,17 +454,17 @@ function forkPair(opts: { withAlias: boolean }) {
 // Backward compatibility: a client that sends no aliases and no `rooms` behaves exactly as it always did.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  for (const p of [kevin, mikkel]) core.onFrame(p.connId, { t: "presence", agents: [agent()] });
-  kevin.drain();
-  mikkel.drain();
-  core.onFrame(kevin.connId, { t: "chat", room: relayRepoRoom("github.com/fearce/card-marker"), body: "same as ever", senderName: "Rune", role: "implementor" });
-  const got = chats(mikkel.drain());
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
+  core.attach(robin);
+  core.attach(sam);
+  for (const p of [robin, sam]) core.onFrame(p.connId, { t: "presence", agents: [agent()] });
+  robin.drain();
+  sam.drain();
+  core.onFrame(robin.connId, { t: "chat", room: relayRepoRoom("github.com/acme/map-overlay"), body: "same as ever", senderName: "Rune", role: "implementor" });
+  const got = chats(sam.drain());
   assert.equal(got.length, 1);
-  assert.equal(got[0]!.t === "chat" && got[0]!.msg.room, relayRepoRoom("github.com/fearce/card-marker"));
+  assert.equal(got[0]!.t === "chat" && got[0]!.msg.room, relayRepoRoom("github.com/acme/map-overlay"));
   assert.equal(core.sharedRepos().length, 1);
 }
 
@@ -474,26 +474,26 @@ function forkPair(opts: { withAlias: boolean }) {
 // two people deciding what to start is exactly when the room earns its keep.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin", "Kevin's tower");
-  const mikkel = fakePeer("i-mikkel", "Mikkel's laptop");
-  core.attach(kevin);
-  core.attach(mikkel);
-  core.onFrame(kevin.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
-  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "Mikkel" } });
-  kevin.drain();
-  mikkel.drain();
+  const robin = fakePeer("i-robin", "Robin's tower");
+  const sam = fakePeer("i-sam", "Sam's laptop");
+  core.attach(robin);
+  core.attach(sam);
+  core.onFrame(robin.connId, { t: "presence", agents: [], director: { name: "Robin" } });
+  core.onFrame(sam.connId, { t: "presence", agents: [], director: { name: "Sam" } });
+  robin.drain();
+  sam.drain();
 
-  assert.equal(core.onFrame(kevin.connId, { t: "chat", room: DIRECTORS_ROOM, body: "deploying in 5", senderName: "Kevin", role: "director" }), null);
-  const got = chats(mikkel.drain());
+  assert.equal(core.onFrame(robin.connId, { t: "chat", room: DIRECTORS_ROOM, body: "deploying in 5", senderName: "Robin", role: "director" }), null);
+  const got = chats(sam.drain());
   assert.equal(got.length, 1, "the other director hears it");
   assert.equal(got[0]!.t === "chat" && got[0]!.msg.room, DIRECTORS_ROOM);
-  assert.equal(got[0]!.t === "chat" && got[0]!.msg.senderName, "Kevin");
-  assert.deepEqual(chats(kevin.drain()), [], "and it never echoes back to the sender");
+  assert.equal(got[0]!.t === "chat" && got[0]!.msg.senderName, "Robin");
+  assert.deepEqual(chats(robin.drain()), [], "and it never echoes back to the sender");
 
-  const roster = core.directorsFor("i-kevin");
+  const roster = core.directorsFor("i-robin");
   assert.deepEqual(
     roster.map((d) => [d.name, d.instanceName, d.agents]),
-    [["Mikkel", "Mikkel's laptop", 0]],
+    [["Sam", "Sam's laptop", 0]],
     "the roster is everyone BUT you, agents or no agents",
   );
   assert.equal(core.directors().length, 2, "…while the whole-office view holds both");
@@ -503,44 +503,44 @@ function forkPair(opts: { withAlias: boolean }) {
 // room into its own general office as agent chatter, so it must never be sent a line from here.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
+  const robin = fakePeer("i-robin");
   const legacy = fakePeer("i-legacy");
-  core.attach(kevin);
+  core.attach(robin);
   core.attach(legacy);
-  core.onFrame(kevin.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
+  core.onFrame(robin.connId, { t: "presence", agents: [], director: { name: "Robin" } });
   core.onFrame(legacy.connId, { t: "presence", agents: [agent()] }); // no director — an older client
-  kevin.drain();
+  robin.drain();
   legacy.drain();
 
-  core.onFrame(kevin.connId, { t: "chat", room: DIRECTORS_ROOM, body: "just us", senderName: "Kevin", role: "director" });
+  core.onFrame(robin.connId, { t: "chat", room: DIRECTORS_ROOM, body: "just us", senderName: "Robin", role: "director" });
   assert.deepEqual(chats(legacy.drain()), [], "a client that never declared a director hears nothing");
   assert.equal(
     core.onFrame(legacy.connId, { t: "chat", room: DIRECTORS_ROOM, body: "let me in", senderName: "Sif", role: "implementor" }),
     "declare a director before posting to the directors' room",
     "…and cannot post into it either",
   );
-  assert.deepEqual(chats(kevin.drain()), [], "so nothing reached the room");
-  assert.deepEqual(core.directorsFor("i-kevin"), [], "…and it is not listed as a person in the office");
+  assert.deepEqual(chats(robin.drain()), [], "so nothing reached the room");
+  assert.deepEqual(core.directorsFor("i-robin"), [], "…and it is not listed as a person in the office");
 }
 
 // Entering the room replays its backlog — minus your own lines, which you already have. This is the
 // same path a repo room uses, which is why the feature needed no new frame type.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  core.onFrame(kevin.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
-  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "Mikkel" } });
-  core.onFrame(kevin.connId, { t: "chat", room: DIRECTORS_ROOM, body: "morning", senderName: "Kevin", role: "director" });
-  core.onFrame(mikkel.connId, { t: "chat", room: DIRECTORS_ROOM, body: "morning back", senderName: "Mikkel", role: "director" });
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
+  core.attach(robin);
+  core.attach(sam);
+  core.onFrame(robin.connId, { t: "presence", agents: [], director: { name: "Robin" } });
+  core.onFrame(sam.connId, { t: "presence", agents: [], director: { name: "Sam" } });
+  core.onFrame(robin.connId, { t: "chat", room: DIRECTORS_ROOM, body: "morning", senderName: "Robin", role: "director" });
+  core.onFrame(sam.connId, { t: "chat", room: DIRECTORS_ROOM, body: "morning back", senderName: "Sam", role: "director" });
 
-  const back = fakePeer("i-kevin", "Kevin's tower"); // Kevin reconnects after a bounce
-  back.connId = "conn-kevin-2";
+  const back = fakePeer("i-robin", "Robin's tower"); // Robin reconnects after a bounce
+  back.connId = "conn-robin-2";
   core.attach(back);
   back.drain();
-  core.onFrame(back.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
+  core.onFrame(back.connId, { t: "presence", agents: [], director: { name: "Robin" } });
   const replay = back.drain().filter((f) => f.t === "history");
   assert.equal(replay.length, 1, "the room he just entered is replayed");
   assert.equal(replay[0]!.t === "history" && replay[0]!.room, DIRECTORS_ROOM);
@@ -552,66 +552,66 @@ function forkPair(opts: { withAlias: boolean }) {
 // line never reaches the directors' room.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  core.onFrame(kevin.connId, { t: "presence", agents: [agent()], director: { name: "Kevin" } });
-  core.onFrame(mikkel.connId, { t: "presence", agents: [agent()], director: { name: "Mikkel" } });
-  kevin.drain();
-  mikkel.drain();
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
+  core.attach(robin);
+  core.attach(sam);
+  core.onFrame(robin.connId, { t: "presence", agents: [agent()], director: { name: "Robin" } });
+  core.onFrame(sam.connId, { t: "presence", agents: [agent()], director: { name: "Sam" } });
+  robin.drain();
+  sam.drain();
 
-  core.onFrame(kevin.connId, {
+  core.onFrame(robin.connId, {
     t: "chat",
     room: DIRECTORS_ROOM,
-    rooms: [relayRepoRoom("github.com/fearce/card-marker")], // a client trying to fan it into a repo room
+    rooms: [relayRepoRoom("github.com/acme/map-overlay")], // a client trying to fan it into a repo room
     body: "between us",
-    senderName: "Kevin",
+    senderName: "Robin",
     role: "director",
   });
-  const seen = chats(mikkel.drain());
+  const seen = chats(sam.drain());
   assert.equal(seen.length, 1, "delivered exactly once");
   assert.equal(seen[0]!.t === "chat" && seen[0]!.msg.room, DIRECTORS_ROOM, "…and only ever as the directors' room");
 
-  core.onFrame(kevin.connId, { t: "chat", room: relayRepoRoom("github.com/fearce/card-marker"), body: "claiming parser.ts", senderName: "Rune", role: "implementor" });
-  const repoLine = chats(mikkel.drain());
+  core.onFrame(robin.connId, { t: "chat", room: relayRepoRoom("github.com/acme/map-overlay"), body: "claiming parser.ts", senderName: "Rune", role: "implementor" });
+  const repoLine = chats(sam.drain());
   assert.equal(repoLine.length, 1);
-  assert.equal(repoLine[0]!.t === "chat" && repoLine[0]!.msg.room, relayRepoRoom("github.com/fearce/card-marker"), "repo traffic stays in the repo room");
+  assert.equal(repoLine[0]!.t === "chat" && repoLine[0]!.msg.room, relayRepoRoom("github.com/acme/map-overlay"), "repo traffic stays in the repo room");
 }
 
 // A rename reaches the other consoles: the roster is what the strip draws people from, so a director
 // whose name changed must not sit there under the old one until something else moves.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  core.onFrame(kevin.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
-  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "Mikkel" } });
-  kevin.drain();
-  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "Mikkel the Deployer" } });
-  const broadcast = presences(kevin.drain()).at(-1);
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
+  core.attach(robin);
+  core.attach(sam);
+  core.onFrame(robin.connId, { t: "presence", agents: [], director: { name: "Robin" } });
+  core.onFrame(sam.connId, { t: "presence", agents: [], director: { name: "Sam" } });
+  robin.drain();
+  core.onFrame(sam.connId, { t: "presence", agents: [], director: { name: "Sam the Deployer" } });
+  const broadcast = presences(robin.drain()).at(-1);
   assert.ok(broadcast && broadcast.t === "presence");
-  assert.deepEqual((broadcast.directors ?? []).map((d) => d.name), ["Mikkel the Deployer"]);
+  assert.deepEqual((broadcast.directors ?? []).map((d) => d.name), ["Sam the Deployer"]);
   // A name longer than the wire cap is clipped, never trusted at length.
-  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "M".repeat(200) } });
-  assert.equal(core.directorsFor("i-kevin")[0]!.name.length, 40, "the declared name is bounded");
+  core.onFrame(sam.connId, { t: "presence", agents: [], director: { name: "M".repeat(200) } });
+  assert.equal(core.directorsFor("i-robin")[0]!.name.length, 40, "the declared name is bounded");
 }
 
 // Leaving takes the person out of the room: a disconnect must update everyone else's roster, or the
 // strip keeps drawing somebody who went home.
 {
   const core = newCore();
-  const kevin = fakePeer("i-kevin");
-  const mikkel = fakePeer("i-mikkel");
-  core.attach(kevin);
-  core.attach(mikkel);
-  core.onFrame(kevin.connId, { t: "presence", agents: [], director: { name: "Kevin" } });
-  core.onFrame(mikkel.connId, { t: "presence", agents: [], director: { name: "Mikkel" } });
-  kevin.drain();
-  core.detach(mikkel.connId);
-  const after = presences(kevin.drain()).at(-1);
+  const robin = fakePeer("i-robin");
+  const sam = fakePeer("i-sam");
+  core.attach(robin);
+  core.attach(sam);
+  core.onFrame(robin.connId, { t: "presence", agents: [], director: { name: "Robin" } });
+  core.onFrame(sam.connId, { t: "presence", agents: [], director: { name: "Sam" } });
+  robin.drain();
+  core.detach(sam.connId);
+  const after = presences(robin.drain()).at(-1);
   assert.ok(after && after.t === "presence");
   assert.deepEqual(after.directors ?? [], [], "the departed director is gone from the roster");
 }

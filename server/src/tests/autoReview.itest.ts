@@ -440,15 +440,15 @@ async function main(): Promise<void> {
       const id = seedParkedTask(h);
       h.setOutcome(okResult({
         accept: false,
-        summary: "Kevin must choose whether the destructive migration is acceptable",
+        summary: "Robin must choose whether the destructive migration is acceptable",
         issues: [{ severity: "blocker", description: "Owner approval is required before deleting legacy rows" }],
       }));
       await h.mgr.autoReview(id, "supervisor");
       await settle();
       const task = h.db.getThread(id);
       const episode = h.db.getAutoReviewEpisode(id);
-      check("needs-input remains visibly parked in review", task?.state === "review" && (task.error ?? "").includes("Kevin must choose"), JSON.stringify(task));
-      check("the unresolved human decision is persisted as a rejected verdict", episode?.status === "parked" && episode.verdict?.accept === false && (episode.reason ?? "").includes("Kevin must choose"), JSON.stringify(episode));
+      check("needs-input remains visibly parked in review", task?.state === "review" && (task.error ?? "").includes("Robin must choose"), JSON.stringify(task));
+      check("the unresolved human decision is persisted as a rejected verdict", episode?.status === "parked" && episode.verdict?.accept === false && (episode.reason ?? "").includes("Robin must choose"), JSON.stringify(episode));
       const retry = await h.mgr.autoReview(id, "supervisor");
       check("the Supervisor cannot turn a human decision into a retry loop", !retry.ok && h.roleCalls.length === 1, JSON.stringify(retry));
     } finally {

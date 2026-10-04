@@ -15,8 +15,8 @@ const { loadChromium, authPassword, requireBuild, boot, killInstance, createChec
 
 const PORT = 4407;
 const check = createChecks();
-const TITLE = "Vota reset";
-const TEXT = "Your Vota reset expires on 22 October. Use it before then.";
+const TITLE = "Domain renewal";
+const TEXT = "The example.com domain expires on 22 October. Renew it before then.";
 
 function readDb(dataDir, sql, ...args) {
   const db = new Database(path.join(dataDir, "orchestrator.sqlite"), { readonly: true });

@@ -113,7 +113,7 @@ console.log("Flagship capability floor");
 }
 
 {
-  const explicit = providerIntent("Kevin explicitly requires this recovery to run on GPT, not Grok. Do not route it to Grok.");
+  const explicit = providerIntent("Robin explicitly requires this recovery to run on GPT, not Grok. Do not route it to Grok.");
   check("an explicit GPT instruction resolves to Codex", explicit.preferred === "codex", String(explicit.preferred));
   check("an explicit negative provider instruction is preserved", explicit.excluded.has("grok"), JSON.stringify([...explicit.excluded]));
   const diagnostic = providerIntent("Grok produced no events within 60s and failed the startup watchdog.");

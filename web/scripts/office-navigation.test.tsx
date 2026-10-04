@@ -81,7 +81,7 @@ Object.assign(state, {
   chat: [
     { id: "m-local", room: soloRoom, scope: "project", role: "implementor", kind: "chat", threadId: "solo-thread", body: "local line", createdAt: at },
     { id: "m-gone", room: soloRoom, scope: "project", role: "qa", kind: "chat", threadId: "gone-thread", body: "gone line", createdAt: at + 1 },
-    { id: "m-remote", room: soloRoom, scope: "project", role: "planner", kind: "chat", threadId: "solo-thread", remoteInstance: "Mikkel's laptop", body: "remote line", createdAt: at + 2 },
+    { id: "m-remote", room: soloRoom, scope: "project", role: "planner", kind: "chat", threadId: "solo-thread", remoteInstance: "Sam's laptop", body: "remote line", createdAt: at + 2 },
   ],
 });
 const messagePanel = renderToStaticMarkup(React.createElement(Office));
@@ -122,9 +122,9 @@ Object.assign(state, {
     enabled: true,
     joined: true,
     state: "online",
-    instanceName: "Kevin's tower",
+    instanceName: "Robin's tower",
     directors: [
-      { instanceId: "inst-mikkel", instanceName: "Mikkel's laptop", name: "Mikkel", agents: 2, since: at },
+      { instanceId: "inst-sam", instanceName: "Sam's laptop", name: "Sam", agents: 2, since: at },
       { instanceId: "inst-ada", instanceName: "Ada's box", name: "Ada", agents: 0, since: at },
     ],
   },
@@ -137,7 +137,7 @@ assert.match(
 );
 assert.doesNotMatch(peopleStrip, /class="office-online"/, "…instead of a separate Online Office pill");
 assert.match(peopleStrip, /<span class="office-director-online">2<\/span>/, "…and carries a count of who else is on");
-assert.match(peopleStrip, /Mikkel on Mikkel&#x27;s laptop — 2 agents working/, "…naming each person, their machine and what they have running");
+assert.match(peopleStrip, /Sam on Sam&#x27;s laptop — 2 agents working/, "…naming each person, their machine and what they have running");
 assert.match(peopleStrip, /Ada on Ada&#x27;s box — nothing running/, "…including a director with nothing started");
 
 // Opening it: its own tab, its own copy, and — the containment that makes the room worth having — no
@@ -171,7 +171,7 @@ function huddleWith(localCount: number, remoteCount = 0): { gnomes: number; more
   }
   const remoteAgents = Array.from({ length: remoteCount }, (_, i) => ({
     key: `remote-${i}`, name: `Remote ${i}`, role: "qa", title: "remote", repoKey: "busy-key", repoLabel: "busy-repo",
-    instanceId: "inst-mikkel", instanceName: "Mikkel's laptop",
+    instanceId: "inst-sam", instanceName: "Sam's laptop",
   }));
   Object.assign(state, {
     officeRoom: null,

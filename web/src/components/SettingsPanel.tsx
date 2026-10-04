@@ -1053,7 +1053,7 @@ function PhoneNotificationsSection() {
         label="Your user ID"
         hint="Set to get notices as DMs from the bot — right-click your name → Copy User ID. The bot must share a server with you. Leave empty to post in the channel below."
         value={settings.discordUserId}
-        placeholder="111909686583828480"
+        placeholder="123456789012345678"
         maxLength={200}
         onChange={(v) => setSettings({ discordUserId: v })}
       />
@@ -1065,7 +1065,7 @@ function PhoneNotificationsSection() {
             : "The Discord channel to post in — right-click it → Copy Channel ID, or just paste the channel's link."
         }
         value={settings.discordChannelId}
-        placeholder="1542104062156079144"
+        placeholder="234567890123456789"
         // Long enough for a pasted channel LINK; the server lifts the id out of whatever arrives. A
         // 32-char cap silently truncated a paste to "https://discord.com/channels/142" and stored "142".
         maxLength={200}

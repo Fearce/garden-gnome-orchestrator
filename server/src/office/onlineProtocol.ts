@@ -34,7 +34,7 @@ export interface RelayAgent {
   role: string;
   title: string; // the task it is working on
   repoKey: string; // canonical repository identity
-  repoLabel: string; // human-readable repo name, e.g. "Fearce/card-marker"
+  repoLabel: string; // human-readable repo name, e.g. "Acme/storefront"
   /** The OTHER identities this checkout answers to — its remotes besides the one `repoKey` came from.
    *  A fork is why this exists: `upstream/gg` and `contributor/gg` are one codebase and two keys, so
    *  keying on `repoKey` alone puts the two people editing it in rooms that never meet. An instance

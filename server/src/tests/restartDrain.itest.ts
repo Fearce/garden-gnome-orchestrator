@@ -322,7 +322,7 @@ async function main(): Promise<void> {
   check("IPv4 loopback", isLoopbackAddress("127.0.0.1"));
   check("IPv6 loopback", isLoopbackAddress("::1"));
   check("IPv4-mapped loopback", isLoopbackAddress("::ffff:127.0.0.1"));
-  check("LAN is rejected", !isLoopbackAddress("192.168.0.122"));
+  check("LAN is rejected", !isLoopbackAddress("192.168.1.50"));
   check("hub ok:false is a refusal", hubRestartWasANoop({ ok: false }));
   check("an empty hub kill list is a refusal", hubRestartWasANoop({ ok: true, stop: { killed: [] } }));
 }

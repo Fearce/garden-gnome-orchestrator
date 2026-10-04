@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { looksLikeCommentary, titleFromBrief } from "../orchestrator/titleFromInjection.js";
 
-// 2026-08-14, thread e26b5a50 @ D:\WowPs — a World of Warcraft server bug reported in game terms.
+// 2026-08-14, thread e26b5a50 @ a game-server repo — a World of Warcraft server bug reported in game terms.
 // The titler answered the "what a coding task is being asked to do" framing by disputing it.
 const REAL_BAD = "This is not a coding task - it's a gaming bug report about World of…";
 const OBSERVED_BRIEF =

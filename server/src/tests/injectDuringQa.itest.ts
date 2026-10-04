@@ -1152,7 +1152,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // The Vota task 23f7fecf: QA hit its 100-turn ceiling in the same second an owner append arrived. The
+  // Task 23f7fecf: QA hit its 100-turn ceiling in the same second an owner append arrived. The
   // acknowledgement fence rewrote that cutoff into "QA ended without acknowledging", which skipped the
   // turn-ceiling continuation and parked the task the instant the owner injected.
   console.log("\nTest N3 — QA cut off at its turn ceiling with an owner append pending continues, carrying the instruction");

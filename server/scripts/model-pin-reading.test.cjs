@@ -68,9 +68,9 @@ check("an explicit expected model checks both persistence and runtime", () => {
 
 check("CLI parsing keeps multi-word title lookup and enables verification", () => {
   assert.deepEqual(
-    parseProbeArgs(["overnight", "Bobfish", "--prompt", "--verify-model-pin", "--expect-model", SPARK]),
+    parseProbeArgs(["overnight", "Arena", "--prompt", "--verify-model-pin", "--expect-model", SPARK]),
     {
-      query: "overnight Bobfish",
+      query: "overnight Arena",
       showPrompt: true,
       verifyModelPin: true,
       expectedModel: SPARK,

@@ -35,12 +35,12 @@ function recordingLaunch(): { launch: LaunchFileManager; calls: { cmd: string; a
 const source: WorkspaceSource = {
   listThreads: () => [{ workspace: dir }, { workspace: "  " }, { workspace: gone }],
   listCoworkSessions: () => [{ workspace: file }],
-  listScheduledTasks: () => [{ workspace: "C:\\Users\\Mikkel\\projects\\" }],
+  listScheduledTasks: () => [{ workspace: "C:\\Users\\sam\\projects\\" }],
 };
 const known = knownWorkspaces(source);
 
 assert.equal(known.has(dir.replace(/\\/g, "/").toLowerCase()), true, "a task workspace is openable");
-assert.equal(known.has("c:/users/mikkel/projects"), true, "a trailing separator is normalized away, and case is ignored");
+assert.equal(known.has("c:/users/sam/projects"), true, "a trailing separator is normalized away, and case is ignored");
 assert.equal(known.size, 4, "blank workspaces are dropped and duplicates collapse");
 
 // --- refusals ---------------------------------------------------------------------------------

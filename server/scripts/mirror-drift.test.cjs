@@ -9,7 +9,7 @@
 // That is the exact shape of a defect that ships green. A protocol constant added on one end and not the
 // other typechecks on both, passes every gate, and then two machines disagree about a room at runtime;
 // a grouping function that drifts puts the server and the console in different rooms for one workspace.
-// Kevin's own memory on knowingly-duplicated helpers is blunt about the odds: of the mirrored pairs
+// Robin's own memory on knowingly-duplicated helpers is blunt about the odds: of the mirrored pairs
 // audited there, exactly one had a lockstep test and every other had already drifted.
 //
 // So this gate reads the CLAIMS rather than a hardcoded list — a new mirror written anywhere under

@@ -3,7 +3,7 @@
  *
  * Reported with tools filtered out: a 💭 line from the implementor vanished — "I found two manual deploy
  * scripts in the repo… Before writing the workflow, I'll verify which host is currently serving
- * gnomerang.com." That line is narration. Opus 5.5 writes its progress updates inside thinking blocks,
+ * app.example.com." That line is narration. Opus 5.5 writes its progress updates inside thinking blocks,
  * and the toggle hid every reasoning row, live draft and persisted alike, together with the tool calls.
  *
  * This gate classifies every feed kind, then drives the real store over a fake socket through both
@@ -63,7 +63,7 @@ const at = 1_795_000_000_000;
 const THREAD = "tools-filter-task";
 const ROLES: Role[] = ["planner", "researcher", "implementor", "qa", "reviewer", "reader"];
 const NARRATION =
-  "I found two manual deploy scripts in the repo—one for the old Sprogbroen edge and one for Leon's Hetzner server. Before writing the workflow, I'll verify which host is currently serving gnomerang.com.";
+  "I found two manual deploy scripts in the repo—one for the legacy edge and one for a client's VPS. Before writing the workflow, I'll verify which host is currently serving app.example.com.";
 
 const runOf = (role: Role): AgentRun => ({
   id: `run-${role}`,
@@ -78,10 +78,10 @@ const runOf = (role: Role): AgentRun => ({
 });
 const thread = {
   id: THREAD,
-  title: "Deploy gnomerang.com from CI",
+  title: "Deploy app.example.com from CI",
   brief: "",
   rawPrompt: "",
-  workspace: "fixture-workspace/gnomerang",
+  workspace: "fixture-workspace/app",
   state: "implementing",
   createdAt: at - 1_000,
   updatedAt: at,
@@ -152,7 +152,7 @@ deliver({
 });
 
 const hidden = render(false);
-assert.ok(rendered(hidden, "verify which host is currently serving gnomerang.com"), "the reported narration stays visible with tools hidden");
+assert.ok(rendered(hidden, "verify which host is currently serving app.example.com"), "the reported narration stays visible with tools hidden");
 for (const role of ROLES) {
   assert.ok(rendered(hidden, `${role} narrates step`), `${role} reasoning stays visible with tools hidden`);
   assert.ok(rendered(hidden, `${role} reports in prose`), `${role} prose stays visible with tools hidden`);

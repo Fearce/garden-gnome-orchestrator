@@ -12,7 +12,7 @@ const READY_ENV = {
   REMOTE_ACCESS: "1",
   GOOGLE_CLIENT_ID: "id.apps.googleusercontent.com",
   GOOGLE_CLIENT_SECRET: "secret",
-  ALLOWED_EMAIL: "owner@gmail.com",
+  ALLOWED_EMAIL: "owner@example.com",
   SESSION_SECRET: "x".repeat(48),
   PUBLIC_ORIGIN: "https://pc.tail1234.ts.net",
 };

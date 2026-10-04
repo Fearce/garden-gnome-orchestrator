@@ -14,7 +14,7 @@ import { backfillMessageId, backfillThinking, runAt, thinkingFromLine } from "..
 const dir = mkdtempSync(join(tmpdir(), "gg-backfill-thinking-"));
 try {
   const db = new Db(join(dir, "orchestrator.sqlite"));
-  const thread = db.createThread({ title: "Deploy gnomerang.com", workspace: dir, rawPrompt: "p" });
+  const thread = db.createThread({ title: "Deploy app.example.com", workspace: dir, rawPrompt: "p" });
   const t0 = Date.parse("2026-09-30T10:00:00Z");
   const seedRun = (role: "implementor" | "qa", account: string, session: string, startedAt: number, endedAt: number | null) => {
     const run = db.createRun({ threadId: thread.id, role, model: "claude-opus-5-5", account });
@@ -23,7 +23,7 @@ try {
   };
   const first = seedRun("implementor", "personal", "sess-a", t0, t0 + 60_000);
   const resumed = seedRun("implementor", "personal", "sess-a", t0 + 120_000, t0 + 300_000);
-  const qa = seedRun("qa", "vota", "sess-q", t0 + 400_000, null);
+  const qa = seedRun("qa", "team", "sess-q", t0 + 400_000, null);
   seedRun("implementor", "codex:gpt-6-sol", "sess-codex", t0, null);
 
   const line = (uuid: string, at: number, content: unknown[]) =>
@@ -34,11 +34,11 @@ try {
   writeFileSync(
     join(root, "C--work", "sess-a.jsonl"),
     [
-      line("u1", t0 + 10_000, [thinking("I found two manual deploy scripts; checking which host serves gnomerang.com.")]),
+      line("u1", t0 + 10_000, [thinking("I found two manual deploy scripts; checking which host serves app.example.com.")]),
       line("u2", t0 + 20_000, [thinking("")]),
       line("u3", t0 + 20_500, [{ type: "tool_use", id: "t", name: "Bash", input: {} }]),
       JSON.stringify({ type: "user", uuid: "u4", timestamp: new Date(t0).toISOString(), message: { content: [{ type: "tool_result", content: "thinking" }] } }),
-      line("u5", t0 + 150_000, [thinking("The A record points at the Hetzner box.")]),
+      line("u5", t0 + 150_000, [thinking("The A record points at the VPS.")]),
       line("u6", t0 + 900_000, [thinking("Written long after both runs ended.")]),
       "not json",
     ].join("\n"),

@@ -202,7 +202,7 @@ function harness(): Harness {
     roster: () => h.roster,
     notify: (kind, title) => h.notices.push(`${kind}:${title}`),
   };
-  h.runner = new GoalRunner(db, hub, host, { ownerName: "Kevin", now: () => h.clock.t, tickMs: 3_600_000, retryMs: 300_000 });
+  h.runner = new GoalRunner(db, hub, host, { ownerName: "Robin", now: () => h.clock.t, tickMs: 3_600_000, retryMs: 300_000 });
   return h;
 }
 
@@ -436,7 +436,7 @@ async function burnHoldLoop(): Promise<void> {
   console.log("goals: preparing a sub for its reset releases a burn-rate hold at once");
   h = harness();
   h.roster = [paced(ROSTER[0]!, 70, h.clock.t), paced(ROSTER[1]!, 80, h.clock.t)];
-  const paused = h.runner.create({ title: "d2r", objective: "o", workspace: ws }).goal!;
+  const paused = h.runner.create({ title: "overlay", objective: "o", workspace: ws }).goal!;
   await h.runner.idle();
   check("the goal holds for burn rate first", h.dispatched.length === 0 && h.db.getGoal(paused.id)!.hold === "usage_limited");
   h.runner.start();
@@ -447,8 +447,8 @@ async function burnHoldLoop(): Promise<void> {
   check("a settings broadcast without a burn leaves the hold alone", h.dispatched.length === 0);
   // The roster marks the burn target (ThreadManager.implementorModelRoster); the clock does not move.
   h.roster = [{ ...paced(ROSTER[0]!, 70, h.clock.t), resetBurn: true }];
-  h.answers.push(answer("continue", "burn vota", { provider: "claude", model: "claude-opus-5-5", effort: "medium" }));
-  h.hub.publish({ type: "settings", settings: settingsWith("vota") });
+  h.answers.push(answer("continue", "burn team", { provider: "claude", model: "claude-opus-5-5", effort: "medium" }));
+  h.hub.publish({ type: "settings", settings: settingsWith("team") });
   await h.runner.idle();
   const released = h.db.getGoal(paused.id)!;
   check("starting a burn re-checks the held goal without waiting out its hold", h.dispatched.length === 1 && released.hold === null);

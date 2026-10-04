@@ -26,11 +26,11 @@ function check(label: string, condition: boolean): void {
   }
 }
 
-const WS = "C:\\Users\\Mikkel\\projects";
+const WS = "C:\\Users\\sam\\projects";
 
 console.log("\nA. path split");
-check("a Windows path splits into a dimmed parent and a bright leaf", JSON.stringify(splitWorkspace(WS)) === JSON.stringify({ parent: "C:\\Users\\Mikkel", leaf: "\\projects" }));
-check("a POSIX path splits the same way", JSON.stringify(splitWorkspace("/home/mikkel/projects")) === JSON.stringify({ parent: "/home/mikkel", leaf: "/projects" }));
+check("a Windows path splits into a dimmed parent and a bright leaf", JSON.stringify(splitWorkspace(WS)) === JSON.stringify({ parent: "C:\\Users\\sam", leaf: "\\projects" }));
+check("a POSIX path splits the same way", JSON.stringify(splitWorkspace("/home/sam/projects")) === JSON.stringify({ parent: "/home/sam", leaf: "/projects" }));
 check("a trailing separator never produces an empty leaf", splitWorkspace(WS + "\\").leaf === "\\projects");
 check("a bare drive root is all leaf", JSON.stringify(splitWorkspace("C:")) === JSON.stringify({ parent: "", leaf: "C:" }));
 
@@ -38,9 +38,9 @@ console.log("\nB. the chip on a board card");
 const chip = renderToStaticMarkup(<WorkspacePath path={WS} />);
 check("it renders as a button, so keyboard and screen readers get the action", chip.startsWith("<button") && chip.includes('type="button"'));
 check("it keeps the ws-path class the card styling hangs on", chip.includes('class="ws-path"'));
-check("the tooltip states the action and still shows the full path", chip.includes("Open in File Explorer") && chip.includes("C:\\Users\\Mikkel\\projects"));
-check("it carries an accessible name naming the folder", chip.includes('aria-label="Open C:\\Users\\Mikkel\\projects in File Explorer"'));
-check("the parent path is rendered dim and separate from the leaf", chip.includes('class="ws-parent">C:\\Users\\Mikkel</span>') && chip.includes('class="ws-leaf">\\projects</span>'));
+check("the tooltip states the action and still shows the full path", chip.includes("Open in File Explorer") && chip.includes("C:\\Users\\sam\\projects"));
+check("it carries an accessible name naming the folder", chip.includes('aria-label="Open C:\\Users\\sam\\projects in File Explorer"'));
+check("the parent path is rendered dim and separate from the leaf", chip.includes('class="ws-parent">C:\\Users\\sam</span>') && chip.includes('class="ws-leaf">\\projects</span>'));
 check("the folder icon is decorative, not an extra stop for a screen reader", chip.includes('class="ws-ico"') && chip.includes('aria-hidden="true"'));
 
 console.log("\nC. the detail-panel variant");

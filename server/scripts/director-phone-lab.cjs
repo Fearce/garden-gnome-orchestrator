@@ -70,7 +70,7 @@ async function seed(dataDir) {
   ];
   rows.forEach(([role, kind, content], i) => insert.run(`dpl-${i}`, role, kind, content, t0 + i * 60_000));
   const kv = db.prepare("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
-  kv.run("setting_recent_repos", JSON.stringify(["/work/claude-orchestrator", "/work/graphql-api", "/work/summon-overlay", "/work/defend-your-castle", "/work/automation/script-hub"]));
+  kv.run("setting_recent_repos", JSON.stringify(["/work/claude-orchestrator", "/work/acme-api", "/work/game-overlay", "/work/tower-defense", "/work/automation/script-hub"]));
   db.close();
 }
 

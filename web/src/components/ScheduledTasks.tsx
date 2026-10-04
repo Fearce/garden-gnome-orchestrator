@@ -293,7 +293,7 @@ export function ScheduleEditor({ initial, draft, onClose }: { initial: Scheduled
             <textarea
               className="sched-reminder-input"
               value={reminder}
-              placeholder="Optional. Sent to your Discord DMs each time this fires, e.g. “Your Vota reset expires 22 October.”"
+              placeholder="Optional. Sent to your Discord DMs each time this fires, e.g. “Your domain renewal is due 22 October.”"
               onChange={(e) => setReminder(e.target.value)}
             />
           </label>

@@ -409,7 +409,7 @@ export class RelayCore {
       for (const a of st.agents) {
         const group = canonical.get(a.repoKey) ?? a.repoKey;
         const e = byRepo.get(group) ?? { label: a.repoLabel || group, instances: new Set<string>() };
-        // The representative's own label reads best ("Fearce/gg", not whichever fork spoke first).
+        // The representative's own label reads best ("Acme/gg", not whichever fork spoke first).
         if (a.repoKey === group && a.repoLabel) e.label = a.repoLabel;
         e.instances.add(st.peer.instanceName);
         byRepo.set(group, e);

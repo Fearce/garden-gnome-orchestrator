@@ -804,7 +804,7 @@ async function main(): Promise<void> {
         title: "Use GPT for emergency recovery",
         workspace: h.workspace,
         rawPrompt: "Run this on GPT, not Grok.",
-        brief: "Kevin explicitly requires this recovery to run on GPT. Do not route it to Grok.",
+        brief: "Robin explicitly requires this recovery to run on GPT. Do not route it to Grok.",
       });
       h.db.updateThreadStageOutputs(requested.id, {
         modelPick: { provider: "grok", model: "grok-4.6", effort: "high", reason: "automatic pick" },

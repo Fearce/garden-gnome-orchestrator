@@ -2,8 +2,8 @@
 // Run: npm run test:auto-compact-window
 //
 // Opus 5.5's own window is ~1M tokens, and the CLI only compacts near it. A long implementor session
-// therefore re-read 500k-900k tokens on every call before compacting once (measured 2026-09-28, task
-// d2r step 8: 677 calls, 319M tokens of context, two compactions). The env var is the CLI's documented
+// therefore re-read 500k-900k tokens on every call before compacting once (measured 2026-09-28, a long
+// goal's step 8: 677 calls, 319M tokens of context, two compactions). The env var is the CLI's documented
 // override and takes precedence over settings, so it is what these runs must carry.
 
 delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;

@@ -11,12 +11,12 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
 `server/src/office/` or `relay/`. (Local gating: `office-coordination.md`; CLI bridge: `office-bridge.md`.)
 
 ## The pieces
-- `relay/` — a standalone one-dependency (`ws`) service, deployed to the Sprogbroen Hetzner box as its
-  own compose project. `relay/src/core.ts` is transport-free routing (gate `test:relay-core`);
+- `relay/` — a standalone one-dependency (`ws`) service, deployed to a small VPS behind its reverse proxy as
+  its own compose project. `relay/src/core.ts` is transport-free routing (gate `test:relay-core`);
   `relay/src/index.ts` is the HTTP + WebSocket shell; `relay/README.md` has the surfaces and the deploy.
 - `server/src/office/repoIdentity.ts` — `normalizeRemote` collapses every URL form of one remote to
   `host/owner/repo`. No remote ⇒ the identity of the clone(s) directly inside it when they all name one
-  repo (`C:\game` holding `d2r-summon-overlay`), else `name:<folder>`. **This is the hinge**: get it
+  repo (`C:\work` holding `game-overlay`), else `name:<folder>`. **This is the hinge**: get it
   wrong and nobody groups.
   An identity is a `key` (from `origin`) **plus `aliases`** — every OTHER remote of that checkout. Two
   identities are one repo when the sets INTERSECT (`identitiesMatch`), never when the keys are equal.
@@ -90,9 +90,10 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
 ## Deploying / operating
 `relay/deploy.sh` ships the WORKING TREE's `src/` and rebuilds on the box (`~/gg-office-relay`; the
 `deploy` user has no sudo, hence not `/opt`). Several agents share this checkout, so deploy from a clean
-export or you ship their WIP: `git archive HEAD relay | tar -x -C /tmp/x` and run it from there. The Caddy
-block for `office.sprogbroen.dk` lives in the **Sprogbroen** repo's git-tracked `infra/Caddyfile`, deployed
-by `git checkout <sha>` — editing it on the server breaks their next deploy. Join code + admin key:
+export or you ship their WIP: `git archive HEAD relay | tar -x -C /tmp/x` and run it from there. Host, SSH key
+and proxy network come from the gitignored `relay/deploy.env` (template `relay/deploy.env.example`). The
+proxy's site block for the relay hostname is versioned with that host's own infrastructure — edit it
+there, never on the server. Join code + admin key:
 `server/data/online-office-credentials.txt` (gitignored).
 
 ## Verify

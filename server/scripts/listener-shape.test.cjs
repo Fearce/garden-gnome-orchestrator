@@ -7,8 +7,8 @@ const { classifyListenerShape } = require("./listener-shape.cjs");
 {
   const cmd =
     '"C:\\Program Files\\nodejs\\node.exe" --require ' +
-    "C:\\Users\\Mikkel\\projects\\garden-gnome-orchestrator\\server\\node_modules\\tsx\\dist\\preflight.cjs --import " +
-    "file:///C:/Users/Mikkel/projects/garden-gnome-orchestrator/server/node_modules/tsx/dist/loader.mjs src/index.ts";
+    "C:\\Users\\sam\\projects\\garden-gnome-orchestrator\\server\\node_modules\\tsx\\dist\\preflight.cjs --import " +
+    "file:///C:/Users/sam/projects/garden-gnome-orchestrator/server/node_modules/tsx/dist/loader.mjs src/index.ts";
   assert.equal(classifyListenerShape(cmd), "source");
 }
 // The tsx CLI wrapper itself (the port owner's PARENT in the real tree) must not be mistaken for the

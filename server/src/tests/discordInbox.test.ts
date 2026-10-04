@@ -40,7 +40,7 @@ const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { Director } = await import("../orchestrator/director.js");
 
-const OWNER = "111909686583828480";
+const OWNER = "100000000000000001";
 const STRANGER = "222222222222222222";
 const DM_CHANNEL = "1500000000000000001";
 const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 5));
@@ -117,8 +117,8 @@ function makeHost(cfg: InboxConfig, lastSeen: string | null = null) {
   assert.equal(identify.intents, 1 << 12, "only the Direct Messages intent — no privileged intents");
   s0.frame({ op: 1 });
   assert.ok(s0.sent.some((f) => f.op === 1), "a server heartbeat request is answered at once");
-  s0.frame({ op: 0, s: 1, t: "READY", d: { session_id: "sess", resume_gateway_url: "wss://resume.example", user: { username: "kevclaude" } } });
-  assert.match(statuses.at(-1)!, /Listening — DM @kevclaude/);
+  s0.frame({ op: 0, s: 1, t: "READY", d: { session_id: "sess", resume_gateway_url: "wss://resume.example", user: { username: "ggo-bot" } } });
+  assert.match(statuses.at(-1)!, /Listening — DM @ggo-bot/);
   s0.frame({ op: 0, s: 2, t: "MESSAGE_CREATE", d: dmPayload({ id: "5001" }) });
   s0.frame({ op: 0, s: 3, t: "MESSAGE_CREATE", d: dmPayload({ id: "5002", author: { id: STRANGER } }) });
   assert.deepEqual(dms.map((d) => d.messageId), ["5001"], "only the owner's DM is handed over");
@@ -170,14 +170,14 @@ function makeHost(cfg: InboxConfig, lastSeen: string | null = null) {
     return new Response(JSON.stringify([
       dmPayload({ id: fresh2, content: "second" }),
       dmPayload({ id: fresh1, content: "first" }),
-      dmPayload({ id: snowflake(10_000, 4), author: { id: "1492466433605636157", bot: true }, content: "bot's own reply" }),
+      dmPayload({ id: snowflake(10_000, 4), author: { id: "400000000000000004", bot: true }, content: "bot's own reply" }),
       dmPayload({ id: staleId, content: "old" }),
     ]));
   }) as typeof fetch;
   let socket: FakeSocket | null = null;
   const inbox = new DiscordInbox(host, (url) => (socket = new FakeSocket(url)), fakeFetch);
   inbox.reconcile();
-  socket!.frame({ op: 0, s: 1, t: "READY", d: { session_id: "s", resume_gateway_url: "wss://r", user: { username: "kevclaude" } } });
+  socket!.frame({ op: 0, s: 1, t: "READY", d: { session_id: "s", resume_gateway_url: "wss://r", user: { username: "ggo-bot" } } });
   await settle();
   assert.ok(calls.some((c) => c.includes(`/channels/${DM_CHANNEL}/messages?after=${lastSeen}`)), "catch-up reads the DM channel after the last seen id");
   assert.deepEqual(dms.map((d) => d.text), ["first", "second"], "missed DMs are handed over oldest first, the bot's own skipped");
@@ -278,7 +278,7 @@ try {
   inbox.reconcile();
   assert.equal(mgr.discordInboxConfig().enabled, true, "the inbox is on by default");
 
-  socket!.frame({ op: 0, s: 1, t: "READY", d: { session_id: "s", user: { username: "kevclaude" } } });
+  socket!.frame({ op: 0, s: 1, t: "READY", d: { session_id: "s", user: { username: "ggo-bot" } } });
   const dmId = snowflake(0, 7);
   socket!.frame({ op: 0, s: 2, t: "MESSAGE_CREATE", d: dmPayload({ id: dmId, content: "Fix the login bug in my web app" }) });
   await settle();

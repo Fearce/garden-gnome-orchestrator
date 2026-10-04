@@ -128,7 +128,7 @@ function seed(dataDir) {
     "INSERT INTO agent_runs (id,thread_id,role,model,state,started_at,ended_at) VALUES (?,?,?,?,?,?,?)",
   );
   for (const t of SEED) {
-    thread.run(t.id, t.title, t.state, "C:\\Users\\Mikkel\\projects\\garden-gnome-orchestrator", `${t.title} brief line.`, t.title, t.createdAt, NOW - 30_000);
+    thread.run(t.id, t.title, t.state, "C:\\Users\\sam\\projects\\garden-gnome-orchestrator", `${t.title} brief line.`, t.title, t.createdAt, NOW - 30_000);
     t.runs.forEach((r, i) => agentRun.run(`${t.id}-run-${i}`, t.id, r.role, "claude-opus-5-5", r.state, r.startedAt, r.endedAt));
   }
   const message = db.prepare("INSERT INTO messages (id,thread_id,run_id,role,kind,content,created_at) VALUES (?,?,?,?,?,?,?)");

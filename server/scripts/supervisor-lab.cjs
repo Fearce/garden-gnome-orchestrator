@@ -1,5 +1,5 @@
 // Drive the SUPERVISOR pane the way a phone does — a real headless browser in a touch context at the
-// portrait widths Kevin actually holds — against a throwaway instance, without touching prod.
+// portrait widths Robin actually holds — against a throwaway instance, without touching prod.
 //
 //   npm run supervisor-lab --prefix server
 //   npm run supervisor-lab --prefix server -- --keep     (leave the instance up to poke at)
@@ -46,12 +46,12 @@ const TAP_MIN = 44;
 // bogus credentials, but each failure can still spend backend startup/failover time before it reports.
 const MANUAL_SWEEP_TIMEOUT_MS = 180_000;
 
-/** The portrait CSS viewports this lab measures. 360×800 is Kevin's own screenshot (a 1080×2400 Android
+/** The portrait CSS viewports this lab measures. 360×800 is Robin's own screenshot (a 1080×2400 Android
  *  panel at dpr 3, minus browser chrome); the rest are the other common Android/iOS portrait widths, and
  *  320 is the narrowest viewport the web still gets asked to render. */
 const WIDTHS = [
   { name: "320 (smallest phone)", width: 320, height: 720 },
-  { name: "360 (Kevin's screenshot)", width: 360, height: 740 },
+  { name: "360 (Robin's screenshot)", width: 360, height: 740 },
   { name: "390 (iPhone class)", width: 390, height: 844 },
   { name: "412 (large Android)", width: 412, height: 915 },
   { name: "430 (Pro Max class)", width: 430, height: 932 },
@@ -194,7 +194,7 @@ function seed(dataDir) {
 /** Anything wider than the screen. `.app` is overflow:hidden, so a spill is not a scrollbar you can
  *  chase — it is content that simply cannot be reached. `.board` is the one that went wrong: it is
  *  `overflow-y: auto`, which CSS promotes to `overflow-x: auto`, so its tab strip's spill became the
- *  horizontal scrollbar sitting above the bottom nav in Kevin's screenshot. */
+ *  horizontal scrollbar sitting above the bottom nav in Robin's screenshot. */
 const collectOverflow = () => {
   const out = [];
   const doc = document.documentElement;
@@ -572,7 +572,7 @@ async function delayNextChatCommand(page, type, delayMs = 900) {
   }, { type, delayMs });
 }
 
-/** Kevin's "literally all chats" acceptance pass. Each composer is exercised against the real
+/** Robin's "literally all chats" acceptance pass. Each composer is exercised against the real
  * authenticated websocket while its outgoing frame is held briefly in the browser. */
 async function driveAllChatReceipts(page) {
   console.log("\n════ CHAT RECEIPTS — immediate owner bubbles in every conversation surface");

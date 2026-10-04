@@ -272,7 +272,7 @@ const workItems: GoalWorkItem[] = [
   item({ key: "cache-schema", title: "Cache schema", status: "done", threadId: "thread-1", verified: true, verification: "npm test: 42 passed", position: 2, completedAt: 2 }),
   item({ key: "queue-writes", title: "Queue writes offline", status: "working", note: "IndexedDB queue in place; wiring the service worker.", position: 3, startedAt: 2 }),
   item({ key: "replay", title: "Replay on reconnect", status: "planned", position: 4 }),
-  item({ key: "iphone-test", title: "Owner tests on iPhone", status: "awaiting_approval", blocker: "Mikkel installs the build and approves it.", position: 5 }),
+  item({ key: "iphone-test", title: "Owner tests on iPhone", status: "awaiting_approval", blocker: "Sam installs the build and approves it.", position: 5 }),
   item({ key: "polling", title: "Poll for connectivity", status: "dropped", position: 6 }),
 ];
 const tree = render([{ ...goal, workItems }]);
@@ -280,7 +280,7 @@ assert.match(tree, /Steps and milestones/);
 assert.match(tree, /2 done · 1 working · 1 awaiting approval · 1 planned/, "the tally counts milestones by status, dropped ones apart");
 assert.doesNotMatch(tree, /goal-work-tally[^>]*>[^<]*%/, "the tally carries no percentage");
 assert.match(tree, /goal-now-label[^>]*>Working on<[\s\S]*Queue writes offline[\s\S]*IndexedDB queue in place/, "the current step names the milestone in progress and its note");
-assert.match(tree, /goal-needs[\s\S]*Owner tests on iPhone[\s\S]*Needs approval[\s\S]*Mikkel installs the build and approves it\./, "an approval dependency is shown above the tree with what it waits on");
+assert.match(tree, /goal-needs[\s\S]*Owner tests on iPhone[\s\S]*Needs approval[\s\S]*Sam installs the build and approves it\./, "an approval dependency is shown above the tree with what it waits on");
 assert.match(tree, /goal-item ws-working is-current[\s\S]*?goal-item-now[^>]*>Now</, "the working milestone is the current one");
 assert.match(tree, /goal-item ws-dropped/, "a dropped milestone stays visible, struck through");
 assert.ok(tree.indexOf("Sync queue") < tree.indexOf("Cache layer", tree.indexOf("goal-tree")), "steps list newest first");

@@ -113,7 +113,7 @@ const directorSystem = systemText(onRoles.find(([name]) => name === "director")!
 assert.match(directorSystem, /sends each authenticated owner chat turn directly/);
 assert.match(directorSystem, /preamble controls wording only; it does not lower the authority/);
 assert.match(directorSystem, /\[TARGET WORKSPACE …\] tag.*authoritative/);
-const ownerTurn = 'Fix the issue.\n\n[TARGET WORKSPACE — Kevin set this explicitly: C:\\claude-orchestrator]';
+const ownerTurn = 'Fix the issue.\n\n[TARGET WORKSPACE — Robin set this explicitly: C:\\claude-orchestrator]';
 const directTurn = withDirectorTurnPolicy(ownerTurn, true) as string;
 assert.ok(directTurn.endsWith(ownerTurn), "director receives the exact owner turn after the policy preamble");
 assert.doesNotMatch(directTurn, /\n<ggo_owner_or_task_content>\n/, "director owner turns have no misleading task-content wrapper");

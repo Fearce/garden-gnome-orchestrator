@@ -24,7 +24,7 @@ const SETTINGS = '[role="dialog"][aria-label="Settings"]';
 const GROUP = '.settings-group:has(.settings-group-label:text-is("Prepare a sub for reset"))';
 const PICKER = 'select[aria-label="Sub to prepare for reset"]';
 const STATUS = ".reset-burn-status";
-const LAB_ENV = { ACCOUNT_1_LABEL: "personal", ACCOUNT_2_LABEL: "vota" };
+const LAB_ENV = { ACCOUNT_1_LABEL: "personal", ACCOUNT_2_LABEL: "team" };
 
 const check = createChecks();
 
@@ -88,15 +88,15 @@ async function verifyPick(browser, dataDir) {
     check("a fresh installation has no burn", (await page.inputValue(PICKER)) === "" && readPersisted(dataDir) === null);
     check("no status line while off", (await statusText(page)) === "");
     const options = await page.locator(`${PICKER} option`).allInnerTexts();
-    check("the picker lists Off and both Claude subs", options[0] === "Off" && options.some((o) => o.startsWith("personal")) && options.some((o) => o.startsWith("vota")), options.join(" | "));
+    check("the picker lists Off and both Claude subs", options[0] === "Off" && options.some((o) => o.startsWith("personal")) && options.some((o) => o.startsWith("team")), options.join(" | "));
     check("Codex is not offered while it is off", !options.some((o) => o.startsWith("Codex")), options.join(" | "));
 
     await page.selectOption(PICKER, "acct2");
     const stored = await waitForPersisted(dataDir, (value) => value != null && JSON.parse(value).subId === "acct2");
-    check("picking vota reaches the server and persists", stored != null && JSON.parse(stored).subId === "acct2", String(stored));
+    check("picking team reaches the server and persists", stored != null && JSON.parse(stored).subId === "acct2", String(stored));
     await page.waitForSelector(STATUS, { timeout: 10_000 });
     const status = await statusText(page);
-    check("the status names the burned sub", status.includes("Preparing vota for its reset"), status);
+    check("the status names the burned sub", status.includes("Preparing team for its reset"), status);
     check("an unread weekly reset says when the burn stops at the latest", status.includes("has not been read yet") && /within (7d|6d 23h) at the latest/.test(status), status);
     check("the picker shows the choice", (await page.inputValue(PICKER)) === "acct2");
 

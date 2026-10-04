@@ -40,8 +40,8 @@ for (const variant of ["C:/repos/App", "c:\\repos\\app", "C:\\Repos\\APP\\", "c:
 }
 assert.notEqual(recentRepoKey("/srv/App"), recentRepoKey("/srv/app"), "POSIX paths stay case-sensitive");
 assert.notEqual(
-  recentRepoKey("C:\\repos\\wowforever_summon_overlay"),
-  recentRepoKey("C:\\repos\\wowforever_summon_overlay.worktrees\\x\\wowforever_summon_overlay"),
+  recentRepoKey("C:\\repos\\map_overlay"),
+  recentRepoKey("C:\\repos\\map_overlay.worktrees\\x\\map_overlay"),
   "a worktree with the same folder name is a different workspace",
 );
 
@@ -101,20 +101,20 @@ try {
   assert.deepEqual(mgr.settings().recentRepos, [alpha, beta], "a pre-fix console's whole-list write is still cleaned");
 
   // ---- one chip per workspace, whatever spelling reached the server ----
-  const wow = "C:\\repos\\wowforever_summon_overlay";
-  const wowTree = "C:\\repos\\wowforever_summon_overlay.worktrees\\chips\\wowforever_summon_overlay";
+  const wow = "C:\\repos\\map_overlay";
+  const wowTree = "C:\\repos\\map_overlay.worktrees\\chips\\map_overlay";
   mgr.setSettings({ recentRepos: [] });
   mgr.rememberRecentRepo(wow);
-  mgr.rememberRecentRepo("C:/repos/wowforever_summon_overlay");
+  mgr.rememberRecentRepo("C:/repos/map_overlay");
   assert.deepEqual(mgr.settings().recentRepos, [wow], "a forward-slash spelling of a remembered repo adds no chip");
   mgr.rememberRecentRepo("c:\\claude-orchestrator");
   mgr.rememberRecentRepo("C:/claude-orchestrator/");
   assert.deepEqual(mgr.settings().recentRepos, ["C:\\claude-orchestrator", wow], "nor does a drive-case or trailing-slash spelling");
   mgr.rememberRecentRepo(wowTree);
   assert.deepEqual(mgr.settings().recentRepos, [wowTree, "C:\\claude-orchestrator", wow], "a same-named worktree keeps its own chip");
-  mgr.forgetRecentRepo("c:/REPOS/wowforever_summon_overlay/");
+  mgr.forgetRecentRepo("c:/REPOS/map_overlay/");
   assert.deepEqual(mgr.settings().recentRepos, [wowTree, "C:\\claude-orchestrator"], "forget removes the repo under any spelling, and only that repo");
-  mgr.setSettings({ maxRecentRepos: 2, recentRepos: [wow, "c:/repos/wowforever_summon_overlay", "C:\\claude-orchestrator"] });
+  mgr.setSettings({ maxRecentRepos: 2, recentRepos: [wow, "c:/repos/map_overlay", "C:\\claude-orchestrator"] });
   assert.deepEqual(mgr.settings().recentRepos, [wow, "C:\\claude-orchestrator"], "a duplicate never takes a capped slot from a real repo");
   mgr.setSettings({ maxRecentRepos: 5 });
 
@@ -151,26 +151,26 @@ try {
   assert.equal(withLiveSettings(() => other, () => mgr.settings())(), other, "other events pass through untouched");
 
   // ---- a list stored before canonical spellings: read clean, repaired once at boot ----
-  // The live row behind the duplicated chips reported on 2026-10-04, verbatim.
+  // The live row behind the duplicated chips reported on 2026-10-04, with its repo names neutralized.
   const legacy = [
     "c:\\claude-orchestrator",
-    "C:\\repos\\wowforever_summon_overlay",
-    "C:/repos/wowforever_summon_overlay",
-    "C:\\repos\\d2r_summon_overlay",
+    "C:\\repos\\map_overlay",
+    "C:/repos/map_overlay",
+    "C:\\repos\\game_overlay",
     "C:/claude-orchestrator",
     "C:\\",
-    "c:\\trading_orchestrator",
-    "C:\\vota\\vota-graphql-api",
-    "C:/Users/theke/AppData/Local/Temp/sonnet-probe",
+    "c:\\batch_runner",
+    "C:\\work\\acme-api",
+    "C:/Users/alex/AppData/Local/Temp/sonnet-probe",
   ];
   const repaired = [
     "C:\\claude-orchestrator",
-    "C:\\repos\\wowforever_summon_overlay",
-    "C:\\repos\\d2r_summon_overlay",
+    "C:\\repos\\map_overlay",
+    "C:\\repos\\game_overlay",
     "C:\\",
-    "C:\\trading_orchestrator",
-    "C:\\vota\\vota-graphql-api",
-    "C:\\Users\\theke\\AppData\\Local\\Temp\\sonnet-probe",
+    "C:\\batch_runner",
+    "C:\\work\\acme-api",
+    "C:\\Users\\alex\\AppData\\Local\\Temp\\sonnet-probe",
   ];
   mgr.setSettings({ maxRecentRepos: 9 });
   db.kvSet("setting_recent_repos", JSON.stringify(legacy));

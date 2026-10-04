@@ -23,7 +23,7 @@
 const assert = require("node:assert/strict");
 const { SELF_ECHO_FIX, classifyOfficeRows, directorsRoomSummary, parseUnlinked, relaySummary, senderMachine, verdictFor } = require("./probe-office.cjs");
 
-const SELF = "Kevin";
+const SELF = "Robin";
 const FIX_AT = Date.parse("2026-08-25T08:30:00Z");
 const before = FIX_AT - 90 * 60_000; // the ninety minutes that broke the first design
 const after = FIX_AT + 60 * 60_000;
@@ -31,7 +31,7 @@ const after = FIX_AT + 60 * 60_000;
 const row = (over = {}) => ({ id: "r", room: "repo:c:/workspace", sender_name: null, remote_instance: null, created_at: after, ...over });
 
 // --- senderMachine: the only way to recover a machine from a pre-column row --------------------
-assert.equal(senderMachine("Sif @ Mikkel's laptop"), "Mikkel's laptop");
+assert.equal(senderMachine("Sif @ Sam's laptop"), "Sam's laptop");
 assert.equal(senderMachine("Eir"), null, "a local gnome name carries no machine");
 assert.equal(senderMachine(null), null);
 assert.equal(senderMachine("Sif @ Box @ Two"), "Box @ Two", "split on the FIRST separator — the rest is the machine");
@@ -39,7 +39,7 @@ assert.equal(senderMachine("Sif @ Box @ Two"), "Box @ Two", "split on the FIRST 
 // --- 1. a self-named line after the fix is a live regression -----------------------------------
 {
   const echo = classifyOfficeRows({
-    rows: [row({ sender_name: "Juni @ Kevin", created_at: after })],
+    rows: [row({ sender_name: "Juni @ Robin", created_at: after })],
     selfName: SELF,
     fixAt: FIX_AT,
   });
@@ -55,7 +55,7 @@ assert.equal(senderMachine("Sif @ Box @ Two"), "Box @ Two", "split on the FIRST 
 //     office; only a boundary that knows when the fixed build actually ran can tell them apart.
 {
   const echo = classifyOfficeRows({
-    rows: [row({ sender_name: "Juni @ Kevin", created_at: before })],
+    rows: [row({ sender_name: "Juni @ Robin", created_at: before })],
     selfName: SELF,
     fixAt: FIX_AT,
   });
@@ -67,7 +67,7 @@ assert.equal(senderMachine("Sif @ Box @ Two"), "Box @ Two", "split on the FIRST 
 // --- 3. no boundary yet ⇒ nothing can be judged a regression -----------------------------------
 {
   const echo = classifyOfficeRows({
-    rows: [row({ sender_name: "Juni @ Kevin", created_at: after })],
+    rows: [row({ sender_name: "Juni @ Robin", created_at: after })],
     selfName: SELF,
     fixAt: null,
   });
@@ -78,7 +78,7 @@ assert.equal(senderMachine("Sif @ Box @ Two"), "Box @ Two", "split on the FIRST 
 // --- a genuinely remote line is neither -------------------------------------------------------
 {
   const echo = classifyOfficeRows({
-    rows: [row({ sender_name: "Sif @ Mikkel's laptop", remote_instance: "Mikkel's laptop" })],
+    rows: [row({ sender_name: "Sif @ Sam's laptop", remote_instance: "Sam's laptop" })],
     selfName: SELF,
     fixAt: FIX_AT,
   });
@@ -88,7 +88,7 @@ assert.equal(senderMachine("Sif @ Box @ Two"), "Box @ Two", "split on the FIRST 
 // --- 5. a remote line with no stamp is a warning, not a failure --------------------------------
 {
   const echo = classifyOfficeRows({
-    rows: [row({ sender_name: "Sif @ Mikkel's laptop", remote_instance: null })],
+    rows: [row({ sender_name: "Sif @ Sam's laptop", remote_instance: null })],
     selfName: SELF,
     fixAt: FIX_AT,
   });
@@ -99,13 +99,13 @@ assert.equal(senderMachine("Sif @ Box @ Two"), "Box @ Two", "split on the FIRST 
 // --- 4. a cross-machine room the console will not show is a failure ----------------------------
 {
   const empty = { liveEcho: [], residue: [], unstamped: [] };
-  const reachable = { room: "repo:c:/repos/card_marker", remoteInstances: ["Mikkel's laptop"], reachable: true };
+  const reachable = { room: "repo:c:/repos/map_overlay", remoteInstances: ["Sam's laptop"], reachable: true };
   assert.equal(verdictFor({ echo: empty, rooms: [reachable] }).ok, true);
 
-  const hidden = { room: "repo:c:/repos/card_marker", remoteInstances: ["Mikkel's laptop"], reachable: false };
+  const hidden = { room: "repo:c:/repos/map_overlay", remoteInstances: ["Sam's laptop"], reachable: false };
   const v = verdictFor({ echo: empty, rooms: [hidden] });
   assert.equal(v.ok, false, "a room holding cross-machine talk that the console will not show is the defect this probe exists for");
-  assert.match(v.problems[0], /card_marker/, "name the room, or the verdict is unactionable");
+  assert.match(v.problems[0], /map_overlay/, "name the room, or the verdict is unactionable");
 
   // Unknown (server not built) must not be read as broken — that would fail every unbuilt checkout.
   const unknown = { room: "repo:x", remoteInstances: ["Someone"], reachable: null };
@@ -121,9 +121,9 @@ assert.ok(!("at" in SELF_ECHO_FIX), "a hardcoded timestamp is what made this che
 //     as an absence of activity — which is how the 2026-08-26 fork defect ran under a clean two-way ✓.
 //     The row is written by the SERVER, so this parser must survive an older or newer build's shape.
 {
-  const one = parseUnlinked(JSON.stringify([{ local: "Fearce/gg", remote: "prismicious/gg", instance: "Mikkel's Nissefactory" }]));
+  const one = parseUnlinked(JSON.stringify([{ local: "Acme/gg", remote: "octo/gg", instance: "Sam's workstation" }]));
   assert.equal(one.length, 1);
-  assert.equal(one[0].remote, "prismicious/gg");
+  assert.equal(one[0].remote, "octo/gg");
 
   assert.deepEqual(parseUnlinked(""), [], "an absent row is 'nothing to report', not a crash");
   assert.deepEqual(parseUnlinked("not json"), [], "a corrupt row must not take the whole sweep step down");
@@ -131,7 +131,7 @@ assert.ok(!("at" in SELF_ECHO_FIX), "a hardcoded timestamp is what made this che
   assert.deepEqual(parseUnlinked(JSON.stringify([null, 7, { local: "a" }, { local: "a", remote: "b" }])).length, 1, "entries missing a side are dropped");
 
   // A suggestion must never fail the sweep: the pair may be genuinely unrelated repos sharing a name
-  // (`Fearce/utilities` and `prismicious/utilities` are exactly that on this relay). Reporting it is the
+  // (`Acme/utilities` and `octo/utilities` are exactly that on this relay). Reporting it is the
   // whole job; reddening a healthy office over it is what makes a check stop being read.
   const empty6 = { liveEcho: [], residue: [], unstamped: [] };
   assert.equal(verdictFor({ echo: empty6, rooms: [] }).ok, true, "look-alikes are advisory — the verdict must not depend on them");
@@ -164,26 +164,26 @@ assert.ok(!("at" in SELF_ECHO_FIX), "a hardcoded timestamp is what made this che
   const rows = [];
   const db = { prepare: () => ({ all: () => rows }) };
   assert.deepEqual(
-    directorsRoomSummary(db, "Kevin's tower"),
+    directorsRoomSummary(db, "Robin's tower"),
     { lines: 0, mine: 0, machines: [], lastAt: 0, soloSoFar: false },
     "an empty room is empty, not a fault",
   );
 
   rows.push({ remote_instance: null, created_at: 10 }, { remote_instance: null, created_at: 20 });
-  const solo = directorsRoomSummary(db, "Kevin's tower");
+  const solo = directorsRoomSummary(db, "Robin's tower");
   assert.deepEqual([solo.lines, solo.mine, solo.machines.length, solo.lastAt], [2, 2, 0, 20]);
   assert.equal(solo.soloSoFar, true, "talking to nobody is the one thing worth saying out loud");
 
-  rows.push({ remote_instance: "Mikkel's laptop", created_at: 30 }, { remote_instance: "Mikkel's laptop", created_at: 40 });
-  const two = directorsRoomSummary(db, "Kevin's tower");
-  assert.deepEqual(two.machines, ["Mikkel's laptop"], "each other machine counted once");
+  rows.push({ remote_instance: "Sam's laptop", created_at: 30 }, { remote_instance: "Sam's laptop", created_at: 40 });
+  const two = directorsRoomSummary(db, "Robin's tower");
+  assert.deepEqual(two.machines, ["Sam's laptop"], "each other machine counted once");
   assert.equal(two.mine, 2, "…and our own lines stay ours");
   assert.equal(two.soloSoFar, false);
 
-  rows.push({ remote_instance: "Kevin's tower", created_at: 50 });
+  rows.push({ remote_instance: "Robin's tower", created_at: 50 });
   assert.deepEqual(
-    directorsRoomSummary(db, "Kevin's tower").machines,
-    ["Mikkel's laptop"],
+    directorsRoomSummary(db, "Robin's tower").machines,
+    ["Sam's laptop"],
     "a row stamped with THIS machine is never counted as company — the same rule as everywhere else here",
   );
 }

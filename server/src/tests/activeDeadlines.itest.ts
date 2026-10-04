@@ -158,7 +158,7 @@ async function liveExpiry(): Promise<void> {
   console.log("\nB — a busy task is durably parked before every live provider is stopped\n");
   const h = makeHarness("deadline-live-");
   try {
-    const t = task(h, "Bobfish-style long task");
+    const t = task(h, "Overnight-style long task");
     const run = h.db.createRun({ threadId: t.id, role: "implementor", model: "gpt-5.6-sol", account: "codex:gpt-5.6-sol" });
     h.db.updateRun(run.id, { state: "running", sessionId: "saved-session-123" });
 

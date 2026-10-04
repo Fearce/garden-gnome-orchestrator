@@ -2,8 +2,8 @@
  * Integration test — the Online Office (cross-machine agent coordination).
  *
  * The contract, in three parts:
- *  1. A repository's IDENTITY, not its local path, is what two machines agree on. `C:\repos\card-marker`
- *     and `~/dev/card-marker` must produce the same room key, or the whole feature never groups anybody.
+ *  1. A repository's IDENTITY, not its local path, is what two machines agree on. `C:\repos\map-overlay`
+ *     and `~/dev/map-overlay` must produce the same room key, or the whole feature never groups anybody.
  *  2. The client half really talks to a relay: it exchanges a join code for a device token, advertises
  *     the agents this instance has working (with their repo identity resolved), receives remote chat and
  *     remote presence, and treats a 401 as "re-join", not as something to retry forever.
@@ -267,10 +267,10 @@ function remoteAgent(over: Partial<RelayPresentAgent> = {}): RelayPresentAgent {
     name: "Sif",
     role: "implementor",
     title: "Rewrite the card exporter",
-    repoKey: "github.com/fearce/card-marker",
-    repoLabel: "Fearce/card-marker",
-    instanceId: "inst-mikkel",
-    instanceName: "Mikkel's laptop",
+    repoKey: "github.com/acme/map-overlay",
+    repoLabel: "Acme/map-overlay",
+    instanceId: "inst-sam",
+    instanceName: "Sam's laptop",
     ...over,
   };
 }
@@ -284,22 +284,22 @@ async function main(): Promise<void> {
   console.log("Test A — repo identity: every form of one remote collapses to one key");
   {
     const forms = [
-      "git@github.com:Fearce/card-marker.git",
-      "https://github.com/Fearce/card-marker",
-      "https://github.com/Fearce/card-marker.git/",
-      "ssh://git@github.com/Fearce/card-marker/",
-      "https://someone@github.com/fearce/card-marker.git",
+      "git@github.com:Acme/map-overlay.git",
+      "https://github.com/Acme/map-overlay",
+      "https://github.com/Acme/map-overlay.git/",
+      "ssh://git@github.com/Acme/map-overlay/",
+      "https://someone@github.com/acme/map-overlay.git",
     ];
     const keys = new Set(forms.map((f) => normalizeRemote(f)));
-    check("all five URL forms give one key", keys.size === 1 && [...keys][0] === "github.com/fearce/card-marker", [...keys].join(" | "));
-    check("a different repo gives a different key", normalizeRemote("https://github.com/fearce/other") !== [...keys][0]);
-    check("the label keeps the remote's own casing", remoteLabel("git@github.com:Fearce/card-marker.git") === "Fearce/card-marker");
+    check("all five URL forms give one key", keys.size === 1 && [...keys][0] === "github.com/acme/map-overlay", [...keys].join(" | "));
+    check("a different repo gives a different key", normalizeRemote("https://github.com/acme/other") !== [...keys][0]);
+    check("the label keeps the remote's own casing", remoteLabel("git@github.com:Acme/map-overlay.git") === "Acme/map-overlay");
     check("an explicit port isn't part of the identity", normalizeRemote("ssh://git@git.example.com:2222/team/app.git") === "git.example.com/team/app");
     check("junk is refused rather than becoming a room", normalizeRemote("not a url") === null && normalizeRemote("") === null);
 
     // The leaf is what makes a fork SUSPECTED of being the same project — never what groups it.
-    check("the repo leaf drops the host and owner", repoLeaf("github.com/fearce/card-marker") === "card-marker");
-    check("…and a fork shares it with its upstream", repoLeaf("github.com/prismicious/gg") === repoLeaf("github.com/fearce/gg"));
+    check("the repo leaf drops the host and owner", repoLeaf("github.com/acme/map-overlay") === "map-overlay");
+    check("…and a fork shares it with its upstream", repoLeaf("github.com/octo/gg") === repoLeaf("github.com/acme/gg"));
     check("…and a remote-less checkout still has one", repoLeaf("name:scratch") === "scratch");
 
     // A relay URL is what a human pastes, so it accepts the forms a human types.
@@ -314,51 +314,51 @@ async function main(): Promise<void> {
   {
     const root = mkdtempSync(join(tmpdir(), "online-office-repos-"));
     try {
-      const cloned = await makeRepo(mkdtempSync(join(root, "with-remote-")), "https://github.com/Fearce/card-marker.git");
-      const scratch = await makeRepo(mkdtempSync(join(root, "card-marker-")));
+      const cloned = await makeRepo(mkdtempSync(join(root, "with-remote-")), "https://github.com/Acme/map-overlay.git");
+      const scratch = await makeRepo(mkdtempSync(join(root, "map-overlay-")));
       forgetRepoIdentity();
       const a = await repoIdentity(cloned);
-      check("a checkout with a remote is keyed on the remote", a?.key === "github.com/fearce/card-marker", JSON.stringify(a));
-      check("…and labelled for humans", a?.label === "Fearce/card-marker", JSON.stringify(a));
+      check("a checkout with a remote is keyed on the remote", a?.key === "github.com/acme/map-overlay", JSON.stringify(a));
+      check("…and labelled for humans", a?.label === "Acme/map-overlay", JSON.stringify(a));
       const b = await repoIdentity(scratch);
-      check("a repo with NO remote falls back to its folder name", !!b && b.key.startsWith("name:card-marker-"), JSON.stringify(b));
+      check("a repo with NO remote falls back to its folder name", !!b && b.key.startsWith("name:map-overlay-"), JSON.stringify(b));
       const none = await repoIdentity(mkdtempSync(join(root, "not-a-repo-")));
       check("a workspace that isn't a repo has no identity", none === null);
 
       check("an ordinary single-remote checkout declares no aliases", a?.aliases.length === 0, JSON.stringify(a));
 
       // A FORK checkout: `origin` is the contributor's own copy, `upstream` the canonical repo. Keying on
-      // origin alone is what put Kevin and Mikkel in two rooms while both edited this repository.
-      const fork = await makeRepo(mkdtempSync(join(root, "fork-")), "https://github.com/prismicious/garden-gnome-orchestrator.git", {
+      // origin alone is what put Robin and Sam in two rooms while both edited this repository.
+      const fork = await makeRepo(mkdtempSync(join(root, "fork-")), "https://github.com/octo/garden-gnome-orchestrator.git", {
         upstream: "git@github.com:Fearce/garden-gnome-orchestrator.git",
       });
       forgetRepoIdentity();
       const f = await repoIdentity(fork);
-      check("a fork is still PRIMARY-keyed on its own origin", f?.key === "github.com/prismicious/garden-gnome-orchestrator", JSON.stringify(f));
+      check("a fork is still PRIMARY-keyed on its own origin", f?.key === "github.com/octo/garden-gnome-orchestrator", JSON.stringify(f));
       check("…and carries the upstream as an alias, which is what makes the two group", f?.aliases.includes("github.com/fearce/garden-gnome-orchestrator") === true, JSON.stringify(f?.aliases));
 
       // The upstream side can supply the link instead — one side knowing is enough.
       const upstream = await makeRepo(mkdtempSync(join(root, "upstream-")), "https://github.com/Fearce/garden-gnome-orchestrator.git", {
-        mikkel: "https://github.com/prismicious/garden-gnome-orchestrator.git",
+        sam: "https://github.com/octo/garden-gnome-orchestrator.git",
       });
       forgetRepoIdentity();
       const u = await repoIdentity(upstream);
-      check("a remote under any NAME becomes an alias, not just `upstream`", u?.aliases.includes("github.com/prismicious/garden-gnome-orchestrator") === true, JSON.stringify(u));
+      check("a remote under any NAME becomes an alias, not just `upstream`", u?.aliases.includes("github.com/octo/garden-gnome-orchestrator") === true, JSON.stringify(u));
       check("…and the primary key is unchanged, so its room never moves", u?.key === "github.com/fearce/garden-gnome-orchestrator", JSON.stringify(u?.key));
 
       // A remote-less scratch repo HOLDING the real clone: `C:\game` with the checkout in
-      // `C:\game\d2r-summon-overlay`. Keyed on the folder, its agents sat in `name:game`, a room nobody
-      // else was in, while the D2R office ran next door.
-      const d2rUrl = "https://github.com/Fearce/d2r-summon-overlay";
+      // `C:\game\game-overlay`. Keyed on the folder, its agents sat in `name:game`, a room nobody
+      // else was in, while the overlay's office ran next door.
+      const overlayUrl = "https://github.com/Acme/game-overlay";
       const game = await makeRepo(mkdtempSync(join(root, "game-")));
-      const clone = await makeRepo(subdir(game, "local-clone-name"), d2rUrl);
+      const clone = await makeRepo(subdir(game, "local-clone-name"), overlayUrl);
       mkdirSync(join(game, "node_modules", "dep", ".git"), { recursive: true }); // never a candidate
       forgetRepoIdentity();
       const g = await repoIdentity(game);
-      check("a remote-less repo holding one clone takes the CLONE's identity", g?.key === "github.com/fearce/d2r-summon-overlay", JSON.stringify(g));
-      check("…labelled as the clone, not the local folder", g?.label === "Fearce/d2r-summon-overlay", JSON.stringify(g));
+      check("a remote-less repo holding one clone takes the CLONE's identity", g?.key === "github.com/acme/game-overlay", JSON.stringify(g));
+      check("…labelled as the clone, not the local folder", g?.label === "Acme/game-overlay", JSON.stringify(g));
       check("…and its folder name is not smuggled in as an alias", g?.aliases.length === 0, JSON.stringify(g?.aliases));
-      const machineB = await makeRepo(mkdtempSync(join(root, "d2r-summon-overlay-")), "git@github.com:Fearce/d2r-summon-overlay.git");
+      const machineB = await makeRepo(mkdtempSync(join(root, "game-overlay-")), "git@github.com:Acme/game-overlay.git");
       const remoteB = await repoIdentity(machineB);
       check("…so it matches a plain clone of the same repo under any folder name", !!g && !!remoteB && identitiesMatch(g, identityKeys(remoteB)), JSON.stringify({ g, remoteB }));
 
@@ -370,11 +370,11 @@ async function main(): Promise<void> {
       await runGit(clone, ["worktree", "add", "-q", join(outerTree, "overlay")]);
       forgetRepoIdentity();
       const w = await repoIdentity(outerTree);
-      check("…and so does a worktree of it whose clone is a linked worktree", w?.key === "github.com/fearce/d2r-summon-overlay", JSON.stringify(w));
+      check("…and so does a worktree of it whose clone is a linked worktree", w?.key === "github.com/acme/game-overlay", JSON.stringify(w));
 
       // Two DIFFERENT repositories side by side: either choice would seat agents in a stranger's room.
       const mixed = await makeRepo(mkdtempSync(join(root, "mixed-")));
-      await makeRepo(subdir(mixed, "a"), d2rUrl);
+      await makeRepo(subdir(mixed, "a"), overlayUrl);
       await makeRepo(subdir(mixed, "b"), "https://github.com/someone/unrelated");
       forgetRepoIdentity();
       const m = await repoIdentity(mixed);
@@ -382,13 +382,13 @@ async function main(): Promise<void> {
       check("…and matches neither clone's room", !!m && !identitiesMatch(m, [g?.key ?? "", "github.com/someone/unrelated"]), JSON.stringify(m));
 
       // A repo with its OWN remote is never re-keyed by whatever it happens to contain.
-      const owned = await makeRepo(mkdtempSync(join(root, "owned-")), "https://github.com/Fearce/card-marker.git");
-      await makeRepo(subdir(owned, "vendored"), d2rUrl);
+      const owned = await makeRepo(mkdtempSync(join(root, "owned-")), "https://github.com/Acme/map-overlay.git");
+      await makeRepo(subdir(owned, "vendored"), overlayUrl);
       forgetRepoIdentity();
       const o = await repoIdentity(owned);
-      check("a repo with its own remote keeps its own key, not a nested clone's", o?.key === "github.com/fearce/card-marker" && o.aliases.length === 0, JSON.stringify(o));
+      check("a repo with its own remote keeps its own key, not a nested clone's", o?.key === "github.com/acme/map-overlay" && o.aliases.length === 0, JSON.stringify(o));
       const unrelated = await repoIdentity(cloned);
-      check("…and an unrelated repo never matches the D2R room", !!unrelated && !!g && !identitiesMatch(g, identityKeys(unrelated)), JSON.stringify(unrelated));
+      check("…and an unrelated repo never matches the overlay room", !!unrelated && !!g && !identitiesMatch(g, identityKeys(unrelated)), JSON.stringify(unrelated));
     } finally {
       rmTemp(root);
     }
@@ -402,7 +402,7 @@ async function main(): Promise<void> {
     const dir = mkdtempSync(join(tmpdir(), "online-office-client-"));
     const db = new Db(join(dir, "orchestrator.sqlite"));
     const hub = new EventHub();
-    const workspace = await makeRepo(mkdtempSync(join(dir, "repo-")), "git@github.com:Fearce/card-marker.git");
+    const workspace = await makeRepo(mkdtempSync(join(dir, "repo-")), "git@github.com:Acme/map-overlay.git");
     const chats: { msg: RelayChat; workspaces: string[] }[] = [];
     const joins: { repoLabel: string; workspaces: string[]; joiners: RelayPresentAgent[] }[] = [];
     const directorLines: RelayChat[] = [];
@@ -415,7 +415,7 @@ async function main(): Promise<void> {
       roster: () => [{ key: "t1::implementor", name: "Rune", role: "implementor", title: "Fix the parser", workspace }],
       onRemoteChat: (msg, workspaces) => chats.push({ msg, workspaces }),
       onDirectorChat: (msg) => directorLines.push(msg),
-      directorName: () => "Kevin",
+      directorName: () => "Robin",
       directorBusy: () => directorBusy,
       onRemoteJoin: (repoLabel, workspaces, joiners) => joins.push({ repoLabel, workspaces, joiners }),
     });
@@ -423,11 +423,11 @@ async function main(): Promise<void> {
       office.start();
       check("before joining, the office reports itself off", office.status().state === "off" && !office.status().joined);
 
-      const bad = await office.join({ url, code: "wrong", instanceName: "Kevin's tower" });
+      const bad = await office.join({ url, code: "wrong", instanceName: "Robin's tower" });
       check("a wrong join code is refused, with the relay's own reason", !bad.ok && /join code/i.test(bad.error ?? ""), bad.error);
       check("…and nothing is persisted", !db.kvGet("online_office_token"));
 
-      const ok = await office.join({ url, code: JOIN_CODE, instanceName: "Kevin's tower" });
+      const ok = await office.join({ url, code: JOIN_CODE, instanceName: "Robin's tower" });
       check("the right code joins", ok.ok, ok.error);
       check("the device token is persisted for next time", !!db.kvGet("online_office_token"));
       check("the socket connects", await until(() => office.status().state === "online" && relay.connected()));
@@ -435,10 +435,10 @@ async function main(): Promise<void> {
       check("presence is advertised", await until(() => relay.presence().length > 0));
       const agents = relay.presence().at(-1)!.agents;
       check("…with this instance's live agent", agents.length === 1 && agents[0]!.name === "Rune", JSON.stringify(agents));
-      check("…keyed on the repo IDENTITY, not the local path", agents[0]!.repoKey === "github.com/fearce/card-marker", agents[0]?.repoKey);
+      check("…keyed on the repo IDENTITY, not the local path", agents[0]!.repoKey === "github.com/acme/map-overlay", agents[0]?.repoKey);
       // Naming the director IS the opt-in: it is what puts this console in the room with the other
       // humans, and a client that never sends it must never be handed a line from there.
-      check("…and the presence frame names the human at this console", relay.presence().at(-1)!.director?.name === "Kevin", JSON.stringify(relay.presence().at(-1)!.director));
+      check("…and the presence frame names the human at this console", relay.presence().at(-1)!.director?.name === "Robin", JSON.stringify(relay.presence().at(-1)!.director));
       check("director can rest while its agents work", relay.presence().at(-1)!.director?.busy === false);
       directorBusy = true;
       hub.publish({ type: "director.busy", busy: true, idleSince: null });
@@ -450,11 +450,11 @@ async function main(): Promise<void> {
       // A remote agent appears in the same repository → the caller is told, and it becomes a peer.
       relay.push({ t: "presence", agents: [remoteAgent()] });
       check("a remote agent in our repo is announced as a joiner", await until(() => joins.length === 1), JSON.stringify(joins));
-      check("…naming the repo and our local workspace", joins[0]?.repoLabel === "Fearce/card-marker" && joins[0]?.workspaces[0] === workspace);
+      check("…naming the repo and our local workspace", joins[0]?.repoLabel === "Acme/map-overlay" && joins[0]?.workspaces[0] === workspace);
       check("…and shows up as a remote peer for that workspace", office.remotePeers(workspace).length === 1);
       check("…but not for a workspace we don't have", office.remotePeers("C:/nowhere").length === 0);
       const shared = office.status().sharedRepos;
-      check("the status DTO names the shared repo", shared.length === 1 && shared[0]!.repoLabel === "Fearce/card-marker", JSON.stringify(shared));
+      check("the status DTO names the shared repo", shared.length === 1 && shared[0]!.repoLabel === "Acme/map-overlay", JSON.stringify(shared));
       check("…and the LOCAL checkout of it, so the console can pair them up", shared[0]?.workspaces[0] === workspace, JSON.stringify(shared[0]?.workspaces));
 
       // The same roster again must NOT re-announce — presence is pushed on a timer.
@@ -476,25 +476,25 @@ async function main(): Promise<void> {
         t: "presence",
         agents: [remoteAgent()],
         directors: [
-          { instanceId: "inst-mikkel", instanceName: "Mikkel's laptop", name: "Mikkel", agents: 1, since: Date.now() },
-          { instanceId: "inst-local", instanceName: "Local tower", name: "Kevin", agents: 1, since: Date.now() },
+          { instanceId: "inst-sam", instanceName: "Sam's laptop", name: "Sam", agents: 1, since: Date.now() },
+          { instanceId: "inst-local", instanceName: "Local tower", name: "Robin", agents: 1, since: Date.now() },
         ],
       });
       check("the other directors reach the console", await until(() => office.status().directors.length === 1), JSON.stringify(office.status().directors));
-      check("…and an echo of OUR OWN director is refused, not drawn as company", office.status().directors[0]?.instanceId === "inst-mikkel", JSON.stringify(office.status().directors));
+      check("…and an echo of OUR OWN director is refused, not drawn as company", office.status().directors[0]?.instanceId === "inst-sam", JSON.stringify(office.status().directors));
 
       relay.push({
         t: "chat",
-        msg: { id: "self-1", room: relayRepoRoom("github.com/fearce/card-marker"), body: "I'll take parser.ts", senderName: "Rune", role: "implementor", instanceId: "inst-local", instanceName: "Local tower", repoLabel: "Fearce/card-marker", at: Date.now() },
+        msg: { id: "self-1", room: relayRepoRoom("github.com/acme/map-overlay"), body: "I'll take parser.ts", senderName: "Rune", role: "implementor", instanceId: "inst-local", instanceName: "Local tower", repoLabel: "Acme/map-overlay", at: Date.now() },
       });
       await sleep(120);
       check("an echo of our OWN chat line is dropped, not re-imported as a teammate's", chats.length === 0, JSON.stringify(chats.map((c) => c.msg.id)));
 
       // Inbound chat is routed to the local workspace behind that repo key.
-      const room = relayRepoRoom("github.com/fearce/card-marker");
+      const room = relayRepoRoom("github.com/acme/map-overlay");
       relay.push({
         t: "chat",
-        msg: { id: "m1", room, body: "taking exporter.ts", senderName: "Sif", role: "implementor", instanceId: "inst-mikkel", instanceName: "Mikkel's laptop", repoLabel: "Fearce/card-marker", at: Date.now() },
+        msg: { id: "m1", room, body: "taking exporter.ts", senderName: "Sif", role: "implementor", instanceId: "inst-sam", instanceName: "Sam's laptop", repoLabel: "Acme/map-overlay", at: Date.now() },
       });
       check("a remote line is delivered", await until(() => chats.length === 1));
       check("…resolved to the local checkout of that repo", chats[0]?.workspaces[0] === workspace, JSON.stringify(chats[0]?.workspaces));
@@ -503,13 +503,13 @@ async function main(): Promise<void> {
       // path, which would resolve it to a workspace and push it into a live implementor's session.
       relay.push({
         t: "chat",
-        msg: { id: "d1", room: RELAY_DIRECTORS_ROOM, body: "beers after this deploy?", senderName: "Mikkel", role: "director", instanceId: "inst-mikkel", instanceName: "Mikkel's laptop", repoLabel: null, at: Date.now() },
+        msg: { id: "d1", room: RELAY_DIRECTORS_ROOM, body: "beers after this deploy?", senderName: "Sam", role: "director", instanceId: "inst-sam", instanceName: "Sam's laptop", repoLabel: null, at: Date.now() },
       });
       check("a directors' line is delivered to the directors' sink", await until(() => directorLines.length === 1), JSON.stringify(directorLines));
       check("…and never through the agent-chat path", chats.length === 1, JSON.stringify(chats.map((c) => c.msg.id)));
       relay.push({
         t: "chat",
-        msg: { id: "d-self", room: RELAY_DIRECTORS_ROOM, body: "our own line back", senderName: "Kevin", role: "director", instanceId: "inst-local", instanceName: "Local tower", repoLabel: null, at: Date.now() },
+        msg: { id: "d-self", room: RELAY_DIRECTORS_ROOM, body: "our own line back", senderName: "Robin", role: "director", instanceId: "inst-local", instanceName: "Local tower", repoLabel: null, at: Date.now() },
       });
       await sleep(120);
       check("…and our own directors' line is not re-imported as somebody else's", directorLines.length === 1, JSON.stringify(directorLines.map((m) => m.id)));
@@ -521,7 +521,7 @@ async function main(): Promise<void> {
       office.postChat({ workspace: null, body: "morning", senderName: "Rune", role: "implementor" });
       check("…and an office-wide post goes to the office room", await until(() => relay.chats().some((c) => c.room === OFFICE_ROOM)));
 
-      office.postDirectorChat({ body: "deploying the relay in 5", senderName: "Kevin" });
+      office.postDirectorChat({ body: "deploying the relay in 5", senderName: "Robin" });
       check("a director's post reaches the relay", await until(() => relay.chats().some((c) => c.room === RELAY_DIRECTORS_ROOM)));
       const directorFrame = relay.chats().find((c) => c.room === RELAY_DIRECTORS_ROOM)!;
       check("…as the director, carrying no repository", directorFrame.role === "director" && !directorFrame.repoLabel && !directorFrame.rooms, JSON.stringify(directorFrame));
@@ -554,10 +554,10 @@ async function main(): Promise<void> {
   }
 
   // -- Test C2: a fork and its upstream are ONE repository --------------------------------------------
-  // The 2026-08-26 defect, from the client's side: Kevin's checkout advertised
-  // `Fearce/garden-gnome-orchestrator` and Mikkel's `prismicious/garden-gnome-orchestrator`, so agents
+  // The 2026-08-26 defect, from the client's side: Robin's checkout advertised
+  // `Fearce/garden-gnome-orchestrator` and Sam's `octo/garden-gnome-orchestrator`, so agents
   // editing one codebase on two machines were not peers, the office stayed switched off for both, and
-  // every check read green because the OTHER shared repo (card-marker) matched on both sides.
+  // every check read green because the OTHER shared repo (map-overlay) matched on both sides.
   console.log("\nTest C2 — a fork and its upstream group as one repository");
   {
     const relay = fakeRelay();
@@ -567,10 +567,10 @@ async function main(): Promise<void> {
     const hub = new EventHub();
     // This machine is the UPSTREAM side and happens to have the fork configured as a second remote.
     const workspace = await makeRepo(mkdtempSync(join(dir, "repo-")), "https://github.com/Fearce/garden-gnome-orchestrator.git", {
-      mikkel: "https://github.com/prismicious/garden-gnome-orchestrator.git",
+      sam: "https://github.com/octo/garden-gnome-orchestrator.git",
     });
     const UP = "github.com/fearce/garden-gnome-orchestrator";
-    const FORK = "github.com/prismicious/garden-gnome-orchestrator";
+    const FORK = "github.com/octo/garden-gnome-orchestrator";
     const chats: { msg: RelayChat; workspaces: string[] }[] = [];
     const joins: { repoLabel: string; workspaces: string[]; joiners: RelayPresentAgent[] }[] = [];
     forgetRepoIdentity();
@@ -581,12 +581,12 @@ async function main(): Promise<void> {
       roster: () => [{ key: "t1::implementor", name: "Wren", role: "implementor", title: "Office health", workspace }],
       onRemoteChat: (msg, workspaces) => chats.push({ msg, workspaces }),
       onDirectorChat: () => {},
-      directorName: () => "Kevin",
+      directorName: () => "Robin",
       onRemoteJoin: (repoLabel, workspaces, joiners) => joins.push({ repoLabel, workspaces, joiners }),
     });
     try {
       office.start();
-      const ok = await office.join({ url, code: JOIN_CODE, instanceName: "Kevin" });
+      const ok = await office.join({ url, code: JOIN_CODE, instanceName: "Robin" });
       check("joined", ok.ok, ok.error);
       check("connected", await until(() => office.status().state === "online" && relay.connected()));
       check("presence advertised", await until(() => relay.presence().length > 0));
@@ -595,8 +595,8 @@ async function main(): Promise<void> {
       check("the primary key is still the origin's, so this instance's room never moves", advertised?.repoKey === UP, advertised?.repoKey);
       check("…and the fork rides along as an alias the relay can group on", (advertised?.repoAliases ?? []).includes(FORK), JSON.stringify(advertised?.repoAliases));
 
-      // Mikkel's agent, advertising ONLY his fork — his instance need not know about ours at all.
-      const sten = remoteAgent({ instanceId: "inst-mikkel", instanceName: "Mikkel's Nissefactory", key: "t9::implementor", name: "Sten", repoKey: FORK, repoLabel: "prismicious/garden-gnome-orchestrator" });
+      // Sam's agent, advertising ONLY the fork — that instance need not know about ours at all.
+      const sten = remoteAgent({ instanceId: "inst-sam", instanceName: "Sam's workstation", key: "t9::implementor", name: "Sten", repoKey: FORK, repoLabel: "octo/garden-gnome-orchestrator" });
       relay.push({ t: "presence", agents: [sten] });
       check("an agent on the FORK is announced as joining our repo", await until(() => joins.length === 1), JSON.stringify(joins));
       check("…naming our local checkout", joins[0]?.workspaces[0] === workspace, JSON.stringify(joins[0]?.workspaces));
@@ -608,7 +608,7 @@ async function main(): Promise<void> {
       // still carries the fork's own room must resolve to our checkout too.
       relay.push({
         t: "chat",
-        msg: { id: "f1", room: relayRepoRoom(FORK), body: "I'm in web/ChatRoom.tsx", senderName: "Sten", role: "implementor", instanceId: "inst-mikkel", instanceName: "Mikkel's Nissefactory", repoLabel: "prismicious/garden-gnome-orchestrator", at: Date.now() },
+        msg: { id: "f1", room: relayRepoRoom(FORK), body: "I'm in web/ChatRoom.tsx", senderName: "Sten", role: "implementor", instanceId: "inst-sam", instanceName: "Sam's workstation", repoLabel: "octo/garden-gnome-orchestrator", at: Date.now() },
       });
       check("a line addressed to the FORK's room is delivered", await until(() => chats.length === 1));
       check("…and resolves to our local checkout of the same repository", chats[0]?.workspaces[0] === workspace, JSON.stringify(chats[0]?.workspaces));
@@ -665,12 +665,12 @@ async function main(): Promise<void> {
       roster: () => [],
       onRemoteChat: () => {},
       onDirectorChat: () => {},
-      directorName: () => "Kevin",
+      directorName: () => "Robin",
       onRemoteJoin: () => {},
     });
     try {
       office.start();
-      const ok = await office.join({ url, code: JOIN_CODE, instanceName: "Kevin's tower" });
+      const ok = await office.join({ url, code: JOIN_CODE, instanceName: "Robin's tower" });
       check("the join itself succeeds (the relay revoked it afterwards)", ok.ok, ok.error);
       check("the socket is refused and the office says so", await until(() => office.status().state === "error"));
       check("…with an owner-actionable reason", /re-join/i.test(office.status().error ?? ""), office.status().error ?? "(none)");
@@ -690,34 +690,34 @@ async function main(): Promise<void> {
   console.log("\nTest E — a remote agent switches the office ON and reaches the implementor");
   {
     const h = makeManagerHarness();
-    const WS = "C:/repos/card-marker";
+    const WS = "C:/repos/map-overlay";
     try {
       const t = h.thread("Fix the marker parser", WS);
       h.seedLive(t.id);
       check("alone in the repo AND alone in the office → no office note", h.internals.officeNote(t, "implementor", true) === undefined);
 
-      h.attachRemote([remoteAgent()], (ws) => (ws === WS ? "github.com/fearce/card-marker" : null));
+      h.attachRemote([remoteAgent()], (ws) => (ws === WS ? "github.com/acme/map-overlay" : null));
       const note = h.internals.officeNote(t, "implementor", true) as string | undefined;
       check("a remote agent in the same repo switches the office on", typeof note === "string");
-      check("…naming the machine it is on", !!note && note.includes("Mikkel's laptop"), note);
+      check("…naming the machine it is on", !!note && note.includes("Sam's laptop"), note);
       check("…and warning about the REMOTE, not the working tree", !!note && note.includes("pull before you push") && !note.includes("step on each other"), note);
 
       const roster = h.mgr.officeRoster(t.id);
       const remote = roster.find((r) => r.instance);
       check("officeRoster lists the remote coworker", !!remote && remote.name === "Sif", JSON.stringify(remote));
       check("…flagged as being in the caller's repo", !!remote?.sameRepo);
-      check("…with the repo label where a local peer has a path", remote?.workspace === "Fearce/card-marker");
+      check("…with the repo label where a local peer has a path", remote?.workspace === "Acme/map-overlay");
 
       // A remote line lands in the local project room and is pushed into the live implementor.
-      const room = relayRepoRoom("github.com/fearce/card-marker");
+      const room = relayRepoRoom("github.com/acme/map-overlay");
       const msg: RelayChat = {
         id: "m-remote-1", room, body: "taking exporter.ts", senderName: "Sif", role: "implementor",
-        instanceId: "inst-mikkel", instanceName: "Mikkel's laptop", repoLabel: "Fearce/card-marker", at: Date.now(),
+        instanceId: "inst-sam", instanceName: "Sam's laptop", repoLabel: "Acme/map-overlay", at: Date.now(),
       };
       h.mgr.receiveRemoteChat(msg, [WS]);
       const inRoom = h.db.listRoomMessages(repoRoom(WS), 50).filter((m) => m.kind === "chat");
       check("a remote line is persisted into the local project room", inRoom.length === 1, `count=${inRoom.length}`);
-      check("…attributed to the agent AND its machine", inRoom[0]?.senderName === "Sif @ Mikkel's laptop", inRoom[0]?.senderName ?? "");
+      check("…attributed to the agent AND its machine", inRoom[0]?.senderName === "Sif @ Sam's laptop", inRoom[0]?.senderName ?? "");
       check("…and pushed into the live implementor", h.sent.some((s) => s.includes("taking exporter.ts")), JSON.stringify(h.sent));
       check("…telling it the collision is at the remote", h.sent.some((s) => s.includes("git status")), JSON.stringify(h.sent));
 
@@ -749,15 +749,15 @@ async function main(): Promise<void> {
 
       // …and a remote join wakes the implementor the same way a local one does.
       h.sent.length = 0;
-      h.mgr.remoteTeammatesJoined("Fearce/card-marker", [WS], [remoteAgent({ key: "t-remote-2::qa", role: "qa", name: "Tor" })]);
-      check("a remote joiner wakes the live implementor", h.sent.some((s) => s.includes("Tor") && s.includes("Mikkel's laptop")), JSON.stringify(h.sent));
+      h.mgr.remoteTeammatesJoined("Acme/map-overlay", [WS], [remoteAgent({ key: "t-remote-2::qa", role: "qa", name: "Tor" })]);
+      check("a remote joiner wakes the live implementor", h.sent.some((s) => s.includes("Tor") && s.includes("Sam's laptop")), JSON.stringify(h.sent));
       check("…and is recorded in the project room", h.db.listRoomMessages(repoRoom(WS), 50).some((m) => m.kind === "system" && m.body.includes("Tor")));
 
       // The room is only REACHABLE in the console if it counts as a collaboration. This one holds a real
       // cross-machine conversation and yet NO local thread has spoken in it — our own agent hasn't
       // replied — so a rule counting local participants hides it behind a tab that never appears.
       const summary = h.db.listProjectRooms().find((r) => r.room === repoRoom(WS));
-      check("the room records the machines that took part", summary?.remoteInstances.length === 1 && summary.remoteInstances[0] === "Mikkel's laptop", JSON.stringify(summary));
+      check("the room records the machines that took part", summary?.remoteInstances.length === 1 && summary.remoteInstances[0] === "Sam's laptop", JSON.stringify(summary));
       check("…and no local task has spoken in it yet", summary?.threadIds.length === 0, JSON.stringify(summary?.threadIds));
       check("…yet it IS a collaboration: the room only exists here because we work this repo", !!summary && isCollaborationRoom(summary));
       check(
@@ -772,7 +772,7 @@ async function main(): Promise<void> {
 
       // Two machines arriving in one presence diff must leave a row per machine, or the second is
       // invisible to that count until one of its agents happens to speak.
-      h.mgr.remoteTeammatesJoined("Fearce/card-marker", [WS], [
+      h.mgr.remoteTeammatesJoined("Acme/map-overlay", [WS], [
         remoteAgent({ key: "t-r3::implementor", name: "Ilse", instanceId: "inst-ada", instanceName: "Ada's box" }),
         remoteAgent({ key: "t-r4::implementor", name: "Bo", instanceId: "inst-bo", instanceName: "Bo's box" }),
       ]);
@@ -787,11 +787,11 @@ async function main(): Promise<void> {
   console.log("\nTest F — a local agent's team post goes out to the office");
   {
     const h = makeManagerHarness();
-    const WS = "C:/repos/card-marker";
+    const WS = "C:/repos/map-overlay";
     try {
       const t = h.thread("Fix the marker parser", WS);
       h.seedLive(t.id);
-      const posted = h.attachRemote([remoteAgent()], () => "github.com/fearce/card-marker");
+      const posted = h.attachRemote([remoteAgent()], () => "github.com/acme/map-overlay");
       h.mgr.chatPost({ threadId: t.id, role: "implementor", scope: "project", body: "claiming parser.ts" });
       check("a team post is forwarded to the relay", posted.includes("claiming parser.ts"), JSON.stringify(posted));
       h.mgr.chatPost({ threadId: t.id, role: "implementor", scope: "general", body: "hello office" });
@@ -816,17 +816,17 @@ async function main(): Promise<void> {
             `INSERT INTO chat_messages(id, room, scope, workspace, thread_id, run_id, role, kind, body, sender_name, remote_instance, created_at)
              VALUES(@id, @room, 'project', @ws, NULL, NULL, 'implementor', 'chat', 'taking exporter.ts', @senderName, NULL, 1)`,
           )
-          .run({ id, room, ws: "C:/repos/card-marker", senderName });
-      legacy("legacy-remote", repoRoom("C:/repos/card-marker"), "Sif @ Mikkel's laptop");
+          .run({ id, room, ws: "C:/repos/map-overlay", senderName });
+      legacy("legacy-remote", repoRoom("C:/repos/map-overlay"), "Sif @ Sam's laptop");
       legacy("legacy-self", repoRoom("C:/workspace"), `Juni @ ${localInstance}`); // written by the self-echo, before it was fixed
       seed.raw.prepare("DELETE FROM kv WHERE key = 'remote_instance_backfill_v1'").run();
       seed.raw.close();
 
       const migrated = new Db(file); // the constructor IS the migration
       const rooms = migrated.listProjectRooms();
-      const card = rooms.find((r) => r.room === repoRoom("C:/repos/card-marker"));
+      const card = rooms.find((r) => r.room === repoRoom("C:/repos/map-overlay"));
       const soloRoom = rooms.find((r) => r.room === repoRoom("C:/workspace"));
-      check("a line from another machine recovers its machine from the sender stamp", card?.remoteInstances[0] === "Mikkel's laptop", JSON.stringify(card));
+      check("a line from another machine recovers its machine from the sender stamp", card?.remoteInstances[0] === "Sam's laptop", JSON.stringify(card));
       check("…so the room becomes a reachable collaboration", !!card && isCollaborationRoom(card));
       check(
         "…while a line the self-echo wrote is NOT counted as a remote machine",
@@ -850,7 +850,7 @@ async function main(): Promise<void> {
   console.log("\nTest H — the directors' room is the humans: persisted, deduped, and read by no agent");
   {
     const h = makeManagerHarness();
-    const WS = "C:/repos/card-marker";
+    const WS = "C:/repos/map-overlay";
     try {
       const t = h.thread("Fix the marker parser", WS);
       h.seedLive(t.id);
@@ -864,14 +864,14 @@ async function main(): Promise<void> {
       } as unknown as OnlineOfficeType);
 
       const msg: RelayChat = {
-        id: "d-remote-1", room: RELAY_DIRECTORS_ROOM, body: "I'm taking tonight's deploy", senderName: "Mikkel", role: "director",
-        instanceId: "inst-mikkel", instanceName: "Mikkel's laptop", repoLabel: null, at: Date.now(),
+        id: "d-remote-1", room: RELAY_DIRECTORS_ROOM, body: "I'm taking tonight's deploy", senderName: "Sam", role: "director",
+        instanceId: "inst-sam", instanceName: "Sam's laptop", repoLabel: null, at: Date.now(),
       };
       h.mgr.receiveDirectorChat(msg);
       const room = h.db.listRoomMessages(DIRECTORS_ROOM, 50);
       check("another director's line is persisted in the directors' room", room.length === 1 && room[0]?.body === msg.body, JSON.stringify(room));
       check("…scoped so no repository rollup can claim it", room[0]?.scope === "directors" && room[0]?.workspace === null, JSON.stringify(room[0]));
-      check("…attributed to the person AND their machine", room[0]?.senderName === "Mikkel @ Mikkel's laptop", room[0]?.senderName ?? "");
+      check("…attributed to the person AND their machine", room[0]?.senderName === "Sam @ Sam's laptop", room[0]?.senderName ?? "");
       check("…and pushed into NO agent session", h.sent.length === 0, JSON.stringify(h.sent));
 
       // The relay replays a room's backlog on every entry, including the first connect after a bounce.

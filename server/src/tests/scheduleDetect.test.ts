@@ -33,7 +33,7 @@ console.log("schedule-detect: cadence words WITHOUT an explicit schedule+task as
 // The message that regressed (screenshot): "weekly" + "run" used to be enough to fire the note.
 expect(
   "the weekly-burn-ratio regression",
-  "fix it so the trading fleet ALWAYS has 1 monitoring agent regardless of weekly burn ratios. If all are above target then just run whatever is lowest until a new weekly reset appears.",
+  "fix it so the agent fleet ALWAYS has 1 monitoring agent regardless of weekly burn ratios. If all are above target then just run whatever is lowest until a new weekly reset appears.",
   false,
 );
 // The earlier regression: a feature request that merely names a frequency.

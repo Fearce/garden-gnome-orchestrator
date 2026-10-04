@@ -29,7 +29,7 @@ export function identitiesMatch(a: RepoIdentity, keys: readonly string[]): boole
   return keys.some((k) => mine.has(k));
 }
 
-/** The repository's bare name — `github.com/fearce/card-marker` → `card-marker`, `name:scratch` →
+/** The repository's bare name — `github.com/acme/storefront` → `storefront`, `name:scratch` →
  *  `scratch`. Two keys sharing a leaf are SUSPECTED of being one repo (a fork), never assumed to be:
  *  two similarly named repos on different accounts can be unrelated,
  *  which is why a matching leaf reports a suggestion and an explicit remote is what actually links them. */
@@ -47,12 +47,12 @@ export function repoLeaf(key: string): string {
  * key is the repository's REMOTE identity — host + owner + name, stripped of scheme, credentials, `.git`
  * and case — which both checkouts agree on because they were cloned from it.
  *
- * A remote-less repo that HOLDS a clone (a scratch `git init` at `C:\game` with the real checkout in
- * `C:\game\d2r-summon-overlay`) is the clone's repository: that is what its agents edit, and a folder
+ * A remote-less repo that HOLDS a clone (a scratch `git init` at `C:\work` with the real checkout in
+ * `C:\work\game-overlay`) is the clone's repository: that is what its agents edit, and a folder
  * name chosen locally must not keep them out of the clone's room. See `nestedIdentity`.
  *
  * Otherwise a workspace with no remote falls back to `name:<folder>`. Two people who both have a
- * `card-marker` folder still meet; two people who don't, don't. That is the best available answer
+ * `storefront` folder still meet; two people who don't, don't. That is the best available answer
  * without a remote, and it is a strictly better default than not grouping at all.
  */
 export async function repoIdentity(workspace: string): Promise<RepoIdentity | null> {
@@ -74,9 +74,9 @@ export function forgetRepoIdentity(workspace?: string): void {
  * Normalize a git remote URL to a stable cross-machine key. Every form of the same remote collapses to
  * one string:
  *
- *   git@github.com:Fearce/card-marker.git   ┐
- *   https://github.com/Fearce/card-marker    ├─→  github.com/fearce/card-marker
- *   ssh://git@github.com/Fearce/card-marker/ ┘
+ *   git@github.com:Acme/storefront.git   ┐
+ *   https://github.com/Acme/storefront    ├─→  github.com/acme/storefront
+ *   ssh://git@github.com/Acme/storefront/ ┘
  *
  * Exported for the unit gate — this function is the whole feature's hinge, and it is pure.
  */
@@ -87,7 +87,7 @@ export function normalizeRemote(url: string): string | null {
   s = s.replace(/^[^/@]+@/, ""); // user (and any password already stripped with the scheme's authority)
   s = s.replace(/^([^/:]+):(?!\d)/, "$1/"); // scp-style "host:owner/repo" → "host/owner/repo"
   s = s.replace(/^([^/:]+):\d+\//, "$1/"); // an explicit port is not part of the identity
-  // Trailing slashes come off FIRST: a copied browser URL can end `…/card-marker.git/`, where stripping
+  // Trailing slashes come off FIRST: a copied browser URL can end `…/storefront.git/`, where stripping
   // `.git` before the slash leaves it in the key and silently forks the room.
   s = s.replace(/\/+$/, "").replace(/\.git$/i, "").replace(/\/+$/, "");
   s = s.replace(/\/{2,}/g, "/").toLowerCase();
@@ -97,7 +97,7 @@ export function normalizeRemote(url: string): string | null {
 }
 
 /** The human label for a normalized key: the last two segments, in the remote's own casing where we
- *  have it ("Fearce/card-marker"), else just the folder name. */
+ *  have it ("Acme/storefront"), else just the folder name. */
 export function remoteLabel(url: string): string {
   const bare = url
     .trim()

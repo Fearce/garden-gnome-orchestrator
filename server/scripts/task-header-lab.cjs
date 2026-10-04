@@ -49,11 +49,11 @@ const TASKS = [
     id: "thl-long-0000-4000-8000-000000000001",
     key: "goal-step",
     title:
-      "Build autonomous Sorc-first progression for one account · step 1: Build and verify autonomous single-account Sorc-first progression through Summon Controls",
+      "Build autonomous route-first progression for one account · step 1: Build and verify autonomous single-account route-first progression through Route Controls",
     state: "review",
     effort: "medium",
     pin: { requested: "GPT-6 Astra", provider: "codex", model: "gpt-6-astra", strict: true },
-    worktree: "ggo/autonomous-sorc-first-progression-single-account-1a2b3c4d",
+    worktree: "ggo/autonomous-route-first-progression-single-account-1a2b3c4d",
     long: true,
   },
   {
@@ -110,7 +110,7 @@ function seed(dataDir) {
       ? JSON.stringify([
           {
             repo: SERVER_ROOT,
-            path: path.join(SERVER_ROOT, "..", "..", "lab.worktrees", "autonomous-sorc-first-progression"),
+            path: path.join(SERVER_ROOT, "..", "..", "lab.worktrees", "autonomous-route-first-progression"),
             branch: t.worktree,
             base: "master",
             baseSha: "0123456789abcdef0123456789abcdef01234567",

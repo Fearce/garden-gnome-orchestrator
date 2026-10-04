@@ -26,7 +26,7 @@ assert.equal(cls("⏳ Auto-resume pending — every backend is capped."), "capWa
 assert.equal(
   cls("⏳ Auto-resume pending (QA runs on Claude) — needs your review."),
   "capWait",
-  "a cap park carrying the generic review tail is still a cap park — the supervisor owns it, not Kevin",
+  "a cap park carrying the generic review tail is still a cap park — the supervisor owns it, not Robin",
 );
 
 // --- the operator hard-deadline park: a deliberate stop, parked via setState not settleReview -------

@@ -3,7 +3,7 @@
  * (`Db.searchTasks`).
  *
  * Background: the search box searched `director_messages` and nothing else. That is exactly the wrong
- * scope for the question people bring to it. Kevin dispatched "Can u make a 3d model of this i can
+ * scope for the question people bring to it. Robin dispatched "Can u make a 3d model of this i can
  * print? 3mf file" with a photo attached; the implementor looked at the picture, named the project
  * `milkshake-monster`, and said the word 833 times over the run. Months later "milkshake" returned
  * nothing — the term was never in his prompt, never in the auto-generated title ("Adjust colors to

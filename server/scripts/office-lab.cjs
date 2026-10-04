@@ -26,13 +26,13 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const RELAY = `http://127.0.0.1:${RELAY_PORT}`;
 const JOIN_CODE = "lab-join-code-not-a-real-secret";
 const NAV_TIMEOUT = 45_000; // this box runs near 100% CPU; a cold goto has measured 28s
-const LAB_REPO = "C:/lab/card-marker"; // a workspace the seeded cross-machine room belongs to
-const LAB_REPO_LEAF = "card-marker";
+const LAB_REPO = "C:/lab/map-overlay"; // a workspace the seeded cross-machine room belongs to
+const LAB_REPO_LEAF = "map-overlay";
 const LONG_SOL_BODY =
   "Do both, but serialize them: give deliberate auto-play/replay sessions priority, triage and fix reproducible " +
-  "Bobfish Live reports between games, and let the idle manager suspend training whenever Hearthstone or real input " +
+  "Arena Live reports between games, and let the idle manager suspend training whenever the game or real input " +
   "is active and resume it after 10 idle minutes. This preserves fresh evidence without sacrificing unused hours.\n\n" +
-  "Files: `src/bobfish/search.py`, `tests/test_search.py` — Ångström / 東京 / ✅\n" +
+  "Files: `src/arena/search.py`, `tests/test_search.py` — Ångström / 東京 / ✅\n" +
   `Payload beyond the old bridge and relay bounds: ${"lossless-".repeat(560)}\nEND-OF-SOL-MESSAGE`;
 
 /** Boot the relay straight from `relay/src` with the server's own tsx — no build step, and the relay
@@ -129,18 +129,18 @@ function seedRemoteConversation(dataDir, workspace) {
   const at = Date.now() - 60_000;
   add.run({
     id: "lab-remote-join", room, workspace, role: "system", kind: "system",
-    body: "🌐 Sif (implementor) on \"Rewrite the card exporter\" from Mikkel's laptop joined Fearce/card-marker from another machine — coordinate here.",
-    senderName: null, remoteInstance: "Mikkel's laptop", createdAt: at,
+    body: "🌐 Sif (implementor) on \"Rewrite the card exporter\" from Sam's laptop joined Acme/map-overlay from another machine — coordinate here.",
+    senderName: null, remoteInstance: "Sam's laptop", createdAt: at,
   });
   add.run({
     id: "lab-remote-chat", room, workspace, role: "implementor", kind: "chat",
     body: "I'm holding exporter.ts and its tests — leave those to me.",
-    senderName: "Sif @ Mikkel's laptop", remoteInstance: "Mikkel's laptop", createdAt: at + 1000,
+    senderName: "Sif @ Sam's laptop", remoteInstance: "Sam's laptop", createdAt: at + 1000,
   });
   add.run({
     id: "lab-long-sol", room, workspace, role: "implementor", kind: "chat",
     body: LONG_SOL_BODY,
-    senderName: "Sol @ Mikkel's laptop", remoteInstance: "Mikkel's laptop", createdAt: at + 2000,
+    senderName: "Sol @ Sam's laptop", remoteInstance: "Sam's laptop", createdAt: at + 2000,
   });
   db.close();
   return room;
@@ -227,44 +227,44 @@ async function main() {
       check("…and reports itself connected", (await page.locator(".office-state").innerText()) === "Connected", await page.locator(".office-state").innerText());
 
       // Another machine appears.
-      peer = await joinAsPeer("Mikkel's laptop", {
+      peer = await joinAsPeer("Sam's laptop", {
         key: "t-peer::implementor",
         name: "Sif",
         role: "implementor",
         title: "Rewrite the card exporter",
-        repoKey: "github.com/fearce/card-marker",
-        repoLabel: "Fearce/card-marker",
+        repoKey: "github.com/acme/map-overlay",
+        repoLabel: "Acme/map-overlay",
       });
       await page.waitForSelector(".office-roster-row", { timeout: 20_000 });
-      // `.office-roster-who` is CSS-uppercased, so the DOM reads MIKKEL'S LAPTOP — compare case-insensitively.
+      // `.office-roster-who` is CSS-uppercased, so the DOM reads SAM'S LAPTOP — compare case-insensitively.
       const rosterText = await page.locator(".office-roster").innerText();
-      check("the remote machine is listed by name", rosterText.toLowerCase().includes("mikkel's laptop"), rosterText);
-      check("…with its agent and repo", rosterText.includes("Sif") && rosterText.includes("Fearce/card-marker"), rosterText);
+      check("the remote machine is listed by name", rosterText.toLowerCase().includes("sam's laptop"), rosterText);
+      check("…with its agent and repo", rosterText.includes("Sif") && rosterText.includes("Acme/map-overlay"), rosterText);
 
       // The top-bar strip is the at-a-glance surface; it must show the remote machine too.
       await page.keyboard.press("Escape");
       await page.waitForSelector(".office-remote", { timeout: 20_000 });
       check("the top-bar strip shows a remote-machine cluster", (await page.locator(".office-remote").count()) === 1);
-      check("…tagged with the machine's name", (await page.locator(".office-remote-tag").innerText()) === "Mikkel's laptop");
+      check("…tagged with the machine's name", (await page.locator(".office-remote-tag").innerText()) === "Sam's laptop");
 
       // ---- the directors' room: the people, across machines ----------------------------------------
       // Declaring a director is what puts a machine in the room. There is no pill for it: once
       // somebody else is at a console, the director gnome carries a count and opens their room.
-      peer.send(JSON.stringify({ t: "presence", agents: [peer.agent], director: { name: "Mikkel" } }));
+      peer.send(JSON.stringify({ t: "presence", agents: [peer.agent], director: { name: "Sam" } }));
       await page.waitForSelector(".office-director-online", { timeout: 20_000 });
       check("the director gnome shows who else is on once another director is", (await page.locator(".office-director-online").innerText()) === "1");
       check("…without a separate Online Office pill eating the strip", (await page.locator(".office-online").count()) === 0);
       const peopleTitle = (await page.locator(".office-director").getAttribute("title")) ?? "";
-      check("…naming the person and their machine", peopleTitle.includes("Mikkel on Mikkel's laptop"), peopleTitle);
+      check("…naming the person and their machine", peopleTitle.includes("Sam on Sam's laptop"), peopleTitle);
 
-      peer.send(JSON.stringify({ t: "chat", room: "directors", body: "I'm deploying the relay in 5 — hold off pushing", senderName: "Mikkel", role: "director" }));
+      peer.send(JSON.stringify({ t: "chat", room: "directors", body: "I'm deploying the relay in 5 — hold off pushing", senderName: "Sam", role: "director" }));
       await page.click(".office-director");
       await page.waitForSelector(".office-panel", { timeout: 20_000 });
       check("…and clicking the director gnome opens the Directors room", (await page.locator(".office-tab.directors.on").count()) === 1);
       await page.waitForSelector(".office-msgs .office-msg", { timeout: 20_000 });
       const directorsText = await page.locator(".office-msgs").innerText();
       check("the other director's line arrives", directorsText.includes("hold off pushing"), directorsText);
-      check("…attributed to them and their machine", (await page.locator(".office-msg-role").first().innerText()).includes("Mikkel @ Mikkel's laptop"));
+      check("…attributed to them and their machine", (await page.locator(".office-msg-role").first().innerText()).includes("Sam @ Sam's laptop"));
 
       // …and the reply goes back out over the relay. A local bubble proves nothing about the far end.
       await page.fill(".office-panel .office-composer textarea", "understood — nothing from me until you say go");
@@ -301,13 +301,13 @@ async function main() {
       await page.click(`.office-tab:has-text("${LAB_REPO_LEAF}")`);
       await page.waitForSelector(".office-msg", { timeout: 20_000 });
       check("…and opening it shows the remote agent's line", (await page.locator(".office-msgs").innerText()).includes("holding exporter.ts"));
-      check("…attributed to the agent AND its machine", (await page.locator(".office-msg-role").first().innerText()).includes("Mikkel's laptop"));
+      check("…attributed to the agent AND its machine", (await page.locator(".office-msg-role").first().innerText()).includes("Sam's laptop"));
       check("…marked as having crossed the internet", (await page.locator(".office-msg.remote .office-msg-remote").count()) === 2);
 
       const longMessage = page.locator('[data-message-id="lab-long-sol"]');
       await longMessage.waitFor({ state: "visible", timeout: 20_000 });
       check("the complete long Sol message renders through its final sentinel", (await longMessage.innerText()).includes("END-OF-SOL-MESSAGE"));
-      check("…with multiline Unicode and Markdown content", (await longMessage.innerText()).includes("Ångström / 東京 / ✅") && (await longMessage.locator("code").first().innerText()) === "src/bobfish/search.py");
+      check("…with multiline Unicode and Markdown content", (await longMessage.innerText()).includes("Ångström / 東京 / ✅") && (await longMessage.locator("code").first().innerText()) === "src/arena/search.py");
       await longMessage.locator(".office-msg-copy").click();
       const copied = await page.evaluate(() => window.__officeCopied);
       check("the copy affordance returns the exact untruncated body", copied === LONG_SOL_BODY, `copied=${String(copied).length}, want=${LONG_SOL_BODY.length}`);

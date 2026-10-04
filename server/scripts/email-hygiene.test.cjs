@@ -15,7 +15,7 @@ assert.equal(broad.test("no-at-sign.org"), false);
 assert.equal(broad.test("missing@tld"), false, "a bare host is not an address");
 
 // --- SSH remote users are not mailboxes --------------------------------------
-assert.equal(withoutSshRemotes("git@github.com:Fearce/sample.git"), ":Fearce/sample.git");
+assert.equal(withoutSshRemotes("git@github.com:Acme/sample.git"), ":Acme/sample.git");
 assert.equal(withoutSshRemotes("ssh://git@github.com:22/o/r.git"), "ssh://:22/o/r.git");
 assert.equal(withoutSshRemotes("owner@acme.test"), "owner@acme.test", "a real address is untouched");
 assert.equal(
@@ -31,8 +31,8 @@ assert.equal(
 
 // --- an http(s) remote's userinfo is not a mailbox either ---------------------
 assert.equal(
-  withoutUrlUserinfo("https://someone@github.com/fearce/card-marker.git"),
-  "https://github.com/fearce/card-marker.git",
+  withoutUrlUserinfo("https://someone@github.com/acme/map-overlay.git"),
+  "https://github.com/acme/map-overlay.git",
 );
 assert.equal(
   withoutUrlUserinfo("https://user:ghp_token@github.com/o/r.git"),
@@ -62,7 +62,7 @@ assert.deepEqual(
       'server/src/git/repoOps.ts:144:  const scp = ... // git@github.com:owner/repo.git',
       'server/src/tests/repoOps.itest.ts:473:    check("GitLab", remoteWebUrl("git@gitlab.com:o/r.git", "main"))',
       'server/scripts/git-console-lab.cjs:238:  execFileSync("git", ["remote", "set-url", "origin", "git@bitbucket.org:o/r.git"])',
-      'server/src/tests/repoOps.itest.ts:467:    check("a port", remoteWebUrl("ssh://git@github.com:22/Fearce/repo.git", "dev"))',
+      'server/src/tests/repoOps.itest.ts:467:    check("a port", remoteWebUrl("ssh://git@github.com:22/Acme/repo.git", "dev"))',
     ),
   ),
   [],
@@ -74,7 +74,7 @@ assert.deepEqual(
 assert.deepEqual(
   realEmailLines(
     rows(
-      'server/src/tests/onlineOffice.itest.ts:263:      "https://someone@github.com/fearce/card-marker.git",',
+      'server/src/tests/onlineOffice.itest.ts:263:      "https://someone@github.com/acme/map-overlay.git",',
       'server/src/office/repoIdentity.ts:40:  // https://user:token@gitlab.com/o/r.git normalizes the same way',
     ),
   ),

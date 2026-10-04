@@ -17,7 +17,7 @@ continuation that made no tool call suppresses the next one.
 The rest comes from the locally installed Codex goal tools and their continuation prompts, read-only, not
 from the article: `blocked`, `usage_limited` and `budget_limited` are states of their own, blocked needs
 the same impasse across three consecutive goal turns, and an explicit resume starts a fresh audit. The
-local Codex D2R rollout (thread `01a0f32a…`) is consistent with that. It held 53 goal-continuation
+local Codex goal rollout (thread `01a0f32a…`) is consistent with that. It held 53 goal-continuation
 prompts and 35 compactions in one thread. While the goal was active its `tokens_used` grew by exactly the
 delta of `total_tokens − cached_input_tokens` (e.g. +156,565 between 08:37 and 08:49Z on 2026-10-01), and
 paused intervals were not charged. Its continuation prompts classify each turn as progress, verified wait
@@ -27,7 +27,7 @@ internals.
 
 ## Measured baseline (before)
 
-The paused D2R goal `1b678301…` ran 15 fresh step tasks, and each paid a new session's bootstrap (brief,
+A paused long-running goal `1b678301…` ran 15 fresh step tasks, and each paid a new session's bootstrap (brief,
 repo re-read, plan) plus a director call. The long steps were busy, not waiting on quota: step 8 had
 28,764,913 ms of agent time over 28,934,684 ms elapsed, and step 14 had 24,828,190 over 25,080,819
 (`probe:elapsed`). Cache reads were about 98–99% of the steps' recorded tokens. That is replayed context,

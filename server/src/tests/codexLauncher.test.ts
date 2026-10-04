@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { resolveCodexLauncher } from "../agents/codexLauncher.js";
 
-const NPM = "C:\\Users\\Mikkel\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js";
-const DESKTOP = "C:\\Users\\Mikkel\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe";
+const NPM = "C:\\Users\\sam\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\bin\\codex.js";
+const DESKTOP = "C:\\Users\\sam\\AppData\\Local\\Programs\\OpenAI\\Codex\\bin\\codex.exe";
 const env = {
-  APPDATA: "C:\\Users\\Mikkel\\AppData\\Roaming",
-  LOCALAPPDATA: "C:\\Users\\Mikkel\\AppData\\Local",
+  APPDATA: "C:\\Users\\sam\\AppData\\Roaming",
+  LOCALAPPDATA: "C:\\Users\\sam\\AppData\\Local",
 };
 
 function check(name: string, run: () => void): void {
