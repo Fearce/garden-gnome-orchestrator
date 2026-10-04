@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA: serialize Sidekick rule edits before checking their revisions** (Codex QA, 2026-10-04).
+  Five isolated concurrent-save trials returned two successes but retained only one rule.
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 
 ## Shipped, awaiting live proof
