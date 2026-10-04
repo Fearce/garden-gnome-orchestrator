@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runChild } from "../childRunner.js";
@@ -47,6 +47,8 @@ const START_TIMEOUT_MS = 20_000;
 const ARMED_WATCH_MS = 60_000;
 /** A worker that answered its health check this recently is used without asking again. */
 const CONNECTION_REUSE_MS = 10_000;
+/** A worker log past this size is moved to `worker.log.1` before the next start, keeping one old copy. */
+const LOG_ROTATE_BYTES = 4 * 1024 * 1024;
 
 /**
  * Starts, finds and stops the module workers. Nothing here runs until a module is asked for: no timer, no
@@ -202,6 +204,7 @@ export class ModuleSupervisor {
     const paths = modulePaths(this.options.dataDir, id);
     await mkdir(paths.dir, { recursive: true });
     await rm(paths.record, { force: true });
+    await rotateLog(paths.log);
     const pid = await spawnDetached({
       command: process.execPath,
       args: [...this.entry.nodeArgs, this.entry.file, id],
@@ -316,6 +319,11 @@ async function killWorker(pid: number): Promise<void> {
   if (!(await isLiveNodeProcess(pid))) return;
   if (process.platform === "win32") await runChild("taskkill", ["/F", "/T", "/PID", String(pid)], { timeoutMs: 10_000 });
   else process.kill(pid, "SIGKILL");
+}
+
+async function rotateLog(file: string): Promise<void> {
+  const size = await stat(file).then((s) => s.size, () => 0);
+  if (size > LOG_ROTATE_BYTES) await rename(file, `${file}.1`).catch(() => undefined);
 }
 
 async function logTail(file: string): Promise<string> {

@@ -1,13 +1,19 @@
 import { execFile, type ChildProcess } from "node:child_process";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { ffmpegCandidates } from "../../../remoteControl/ffmpeg.js";
 
 const execFileAsync = promisify(execFile);
 
 /** Every ffmpeg this module starts uses this multipart boundary on its preview output, which doubles as the
- *  tag a worker uses to find its predecessor's leftovers. */
-export const FFMPEG_TAG = "ggosurveillance";
+ *  tag a worker uses to find its predecessor's leftovers. It names the data folder, so a lab or dev GGO
+ *  clearing its own leftovers never kills the live instance's recording. */
+export const FFMPEG_TAG = ffmpegTag(process.env.GGO_MODULE_DATA_DIR ?? "");
+
+export function ffmpegTag(dataDir: string): string {
+  return `ggosurveillance${createHash("sha256").update(resolve(dataDir).toLowerCase()).digest("hex").slice(0, 10)}`;
+}
 
 /** The owner's chosen ffmpeg, else the one GGO installed for Remote Control, else the one on PATH. */
 export async function resolveFfmpeg(dataDir: string, custom: string): Promise<string | null> {

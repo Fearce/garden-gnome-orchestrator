@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { previewOutputArgs, rtspInputArgs } from "./ffmpegArgs.js";
+import { LineThrottle } from "./logThrottle.js";
 import { MultipartJpegParser } from "./mjpeg.js";
 import { killTree } from "./processes.js";
 import { redactCredentials } from "./urls.js";
@@ -25,6 +26,7 @@ export class PreviewSession {
   private child: ChildProcess | null = null;
   private waiters: Waiter[] = [];
   private attempts = 0;
+  private readonly stderrThrottle = new LineThrottle(20, 60_000);
   private startedAt = 0;
   private lastAccess = Date.now();
   private respawnTimer: NodeJS.Timeout | null = null;
@@ -107,7 +109,10 @@ export class PreviewSession {
     child.stdout!.on("data", (chunk: Buffer) => parser.push(chunk));
     child.stderr!.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8").trim();
-      if (text) this.log(`[preview ${this.cameraId}] ${redactCredentials(text)}`);
+      if (!text) return;
+      const { pass, mutedNote } = this.stderrThrottle.admit("stderr");
+      if (mutedNote) this.log(`[preview ${this.cameraId}] ${mutedNote}`);
+      if (pass) this.log(`[preview ${this.cameraId}] ${redactCredentials(text)}`);
     });
     let exited = false;
     const onExit = () => {

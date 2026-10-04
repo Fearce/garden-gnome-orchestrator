@@ -23,6 +23,8 @@ import { matchesProcessName, parseLogLines, buildSidekickState, type SidekickIo 
 import { mutateRules, revisionForText } from "../modules/worker/sidekick/rules.js";
 import { fromDeckSection, maskCamera, maskUrl, normalizeCamera, restoreSecrets, SECRET_MASK } from "../modules/worker/surveillance/config.js";
 import { FramePush, type Frame, type FrameSource } from "../modules/worker/surveillance/frames.js";
+import { ffmpegTag } from "../modules/worker/surveillance/processes.js";
+import { LineThrottle } from "../modules/worker/surveillance/logThrottle.js";
 
 let checks = 0;
 async function test(name: string, fn: () => Promise<void> | void) {
@@ -71,6 +73,18 @@ await test("surveillance: camera passwords and URL credentials are masked and re
   assert.equal(restored.snapshotUrl, stored.snapshotUrl);
   assert.throws(() => restoreSecrets(normalizeCamera({ ...masked, id: "cam-new" }), undefined), /enter the camera password again/);
   assert.equal(maskUrl("not a url"), "not a url");
+});
+
+await test("surveillance: a password written into a camera's notes is masked and survives a save", () => {
+  const notes = "Login admin / pw-secret.\nFallback: rtsp://viewer:other-pass@192.0.2.21:554/s1 (ask sam@example.com)";
+  const stored = normalizeCamera({ id: "cam-1", name: "Porch", password: "pw-secret", notes });
+  const masked = maskCamera(stored);
+  assert.ok(!masked.notes.includes("pw-secret") && !masked.notes.includes("other-pass"), masked.notes);
+  assert.ok(masked.notes.includes("sam@example.com"), "plain text around the secrets stays readable");
+  assert.equal(restoreSecrets(normalizeCamera(masked), stored).notes, notes);
+  const edited = normalizeCamera({ ...masked, notes: `${masked.notes}\nMoved to the porch.` });
+  assert.equal(restoreSecrets(edited, stored).notes, `${notes}\nMoved to the porch.`);
+  assert.throws(() => restoreSecrets(normalizeCamera({ ...masked, notes: `${masked.notes} ${SECRET_MASK}` }), stored), /notes/);
 });
 
 await test("surveillance: a Deck config whose recording was parked keeps the folder, not the recording", () => {
@@ -172,6 +186,24 @@ await test("surveillance: the frame push asks a snapshot camera only at its own 
   const header = JSON.parse(sent[0]!.subarray(2, 2 + sent[0]!.readUInt16BE(0)).toString("utf8"));
   assert.ok(header.id === "slow" || header.id === "fast");
   assert.equal(push.viewerCount, 0);
+});
+
+await test("surveillance: a worker only clears ffmpeg leftovers tagged with its own data folder", () => {
+  const live = ffmpegTag(join("srv", "data"));
+  assert.equal(ffmpegTag(join("srv", "data")), live);
+  assert.equal(ffmpegTag(join("SRV", "Data")), live, "Windows paths compare case-insensitively");
+  assert.notEqual(ffmpegTag(join("lab", "data")), live, "a lab instance must never match the live instance's recorder");
+  assert.match(live, /^ggosurveillance[0-9a-f]{10}$/, "the tag is also a multipart boundary, so it stays alphanumeric");
+});
+
+await test("surveillance: a camera spewing ffmpeg warnings logs a bounded number of lines", () => {
+  const throttle = new LineThrottle(3, 60_000);
+  const passed = Array.from({ length: 50 }, (_, i) => throttle.admit("garden", 1_000 + i).pass).filter(Boolean).length;
+  assert.equal(passed, 3, "only the first lines of a window are logged");
+  assert.equal(throttle.admit("porch", 1_100).pass, true, "each camera has its own budget");
+  const next = throttle.admit("garden", 61_000);
+  assert.equal(next.pass, true, "a new window logs again");
+  assert.equal(next.mutedNote, "47 more ffmpeg line(s) muted in the last 60s");
 });
 
 await test("workers never inherit credential-looking variables", () => {

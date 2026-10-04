@@ -4,6 +4,7 @@ import { isAbsolute, join } from "node:path";
 import type { Camera } from "./config.js";
 import { previewOutputArgs, rtspInputArgs, segmentOutputArgs, type RecordingQuality } from "./ffmpegArgs.js";
 import { MultipartJpegParser } from "./mjpeg.js";
+import { LineThrottle } from "./logThrottle.js";
 import { killTree } from "./processes.js";
 import { advanceStreak, isRecorderStale, nextMainRetry, retryAt, segmentOffsets, selectStream, type FailureStreak, type StreamFallback } from "./streamPolicy.js";
 import { redactCredentials, safeFolderName } from "./urls.js";
@@ -21,6 +22,7 @@ const FAIL_LOG_EVERY_MS = 5 * 60_000;
 const HEALTH_SWEEP_MS = 30_000;
 const SWEEP_LATE_TOLERANCE_MS = 5_000;
 const MAX_STALL_HOLDS = 4;
+const STDERR_LINES_PER_MINUTE = 20;
 
 interface Recording {
   key: string;
@@ -61,6 +63,7 @@ export class Recorder {
   private readonly recordings = new Map<string, Recording>();
   private readonly fallbacks = new Map<string, StreamFallback>();
   private readonly streaks = new Map<string, FailureStreak>();
+  private readonly stderrThrottle = new LineThrottle(STDERR_LINES_PER_MINUTE, 60_000);
   private active = false;
   private syncTimer: NodeJS.Timeout | null = null;
   private healthTimer: NodeJS.Timeout | null = null;
@@ -378,7 +381,9 @@ export class Recorder {
       this.log(`[recording ${recording.cameraName}] still cannot connect (${streak.count} attempts, backing off); repeats muted for ${FAIL_LOG_EVERY_MS / 60_000} min. Last ffmpeg output: ${text}`);
       return;
     }
-    this.log(`[recording ${recording.cameraName}] ${text}`);
+    const { pass, mutedNote } = this.stderrThrottle.admit(recording.key);
+    if (mutedNote) this.log(`[recording ${recording.cameraName}] ${mutedNote}`);
+    if (pass) this.log(`[recording ${recording.cameraName}] ${text}`);
   }
 }
 

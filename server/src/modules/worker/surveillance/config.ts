@@ -164,6 +164,7 @@ export function maskCamera(camera: Camera): Camera & { passwordSet: boolean } {
     streamUrl: maskUrl(camera.streamUrl),
     subStreamUrl: maskUrl(camera.subStreamUrl),
     onvifUrl: maskUrl(camera.onvifUrl),
+    notes: camera.notes.replace(notesSecretPattern(camera), SECRET_MASK),
   };
 }
 
@@ -177,7 +178,35 @@ export function restoreSecrets(incoming: Camera, stored: Camera | undefined): Ca
   for (const field of ["snapshotUrl", "streamUrl", "subStreamUrl", "onvifUrl"] as const) {
     restored[field] = restoreUrl(incoming[field], stored?.[field] ?? "", incoming.name, field);
   }
+  restored.notes = restoreNotes(incoming.notes, stored, incoming.name);
   return restored;
+}
+
+/** Owners write logins into notes; mask the camera's own secrets and any `scheme://user:pass@` password there. */
+function notesSecretPattern(camera: Camera): RegExp {
+  const urls = [camera.snapshotUrl, camera.streamUrl, camera.subStreamUrl, camera.onvifUrl].flatMap(credentialsIn);
+  const secrets = [...new Set([camera.password, ...urls, ...urls.map(safeDecode)])]
+    .filter((secret) => secret && secret !== SECRET_MASK)
+    .sort((a, b) => b.length - a.length)
+    .map((secret) => secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp([String.raw`(?<=\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s/:@]+:)[^\s@]+(?=@)`, ...secrets].join("|"), "g");
+}
+
+/** Fill each mask back in with what it hid, in order; a mask with nothing behind it is refused. */
+function restoreNotes(incoming: string, stored: Camera | undefined, cameraName: string): string {
+  if (!incoming.includes(SECRET_MASK)) return incoming;
+  const hidden = stored ? [...stored.notes.matchAll(notesSecretPattern(stored))].map((match) => match[0]) : [];
+  const parts = incoming.split(SECRET_MASK);
+  if (parts.length - 1 > hidden.length) throw new HttpError(400, `${cameraName}: the notes show ${SECRET_MASK} where no saved password was; type it in full`);
+  return parts.reduce((out, part, i) => (i === 0 ? part : `${out}${hidden[i - 1]}${part}`), "");
+}
+
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 export function maskUrl(value: string): string {
