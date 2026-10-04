@@ -24,4 +24,5 @@ Node/Fastify API in `server/`, React/Vite console in `web/`, one origin. The imp
 - Token efficiency, high usage, or "optimize for tokens": `.claude/rules/token-efficiency-audit.md`. Measure with `npm run probe:token-burn --prefix server` before changing anything.
 - Merging an incoming PR: `.claude/rules/merge-an-incoming-pr.md`.
 - Pipeline or ThreadManager behavior: `.claude/rules/threadmanager-itest.md` and `.claude/rules/e2e-a-pipeline-lane.md`.
+- The optional desktop app (`desktop/`, Open in desktop / Open in web, its lab and load probe): `.claude/rules/desktop-app.md`. Read it before launching the app from a script: test windows open in background mode, never on the owner's main monitor.
 - Any other area: `ls .claude/rules`; each file name describes its topic.
