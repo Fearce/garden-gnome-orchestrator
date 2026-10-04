@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import { registerPortalLink } from "./portalLink.js";
-import { createDesktopTickets, DESKTOP_SIGN_IN_COOKIE, registerDesktopRoutes } from "./desktop.js";
+import { createDesktopTickets, DESKTOP_SIGN_IN_COOKIE, desktopHandoffPage, registerDesktopRoutes } from "./desktop.js";
 import {
   isDirectLocal,
   isTunneled,
@@ -631,7 +631,9 @@ async function main(): Promise<void> {
       if (!email) return fail("auth");
       if (email.toLowerCase() !== config.allowedEmail) return fail("forbidden");
       reply.header("set-cookie", [clearState, clearDesktop, cookie30d(req, SESSION_COOKIE, makeSession(email))]);
-      return reply.redirect(forDesktop ? "../desktop/handoff" : "/");
+      if (!forDesktop) return reply.redirect("/");
+      reply.header("cache-control", "no-store").header("referrer-policy", "no-referrer");
+      return reply.type("text/html; charset=utf-8").send(desktopHandoffPage(desktopTickets));
     });
 
     // Password login with a per-IP wrong-password cooldown (anti-brute-force). On success it mints

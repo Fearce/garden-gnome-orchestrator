@@ -112,6 +112,7 @@ export function registerRemoteGate(
   app.addHook("onRequest", async (req, reply) => {
     if (!isTunneled(req)) return;
     if (!auth.googleEnabled()) {
+      // The desktop app recognises GGO behind this gate by this wording (desktop/src/probe.ts).
       return reply.code(403).send({ error: "remote access needs Google sign-in configured on the server" });
     }
     const route = req.routeOptions.url;

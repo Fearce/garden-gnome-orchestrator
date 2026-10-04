@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import Fastify from "fastify";
-import { createDesktopTickets, isDesktopClient, registerDesktopRoutes } from "../desktop.js";
+import { createDesktopTickets, desktopHandoffPage, isDesktopClient, registerDesktopRoutes } from "../desktop.js";
 
 const OWNER = "orch_session=owner";
 const DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/144.0.0.0 Electron/44.5.1 Safari/537.36 GGODesktop/0.1.0";
@@ -58,16 +58,14 @@ assert.equal(odd.headers.location, "../../");
 assert.match(String(odd.headers["set-cookie"]), /^orch_session=fresh/);
 assert.equal((await app.inject({ url: "/api/desktop/redeem?ticket=short" })).headers.location, "../../?e=desktop");
 
-// ---- the browser handoff after Google sign-in ----
-const signedOut = await app.inject({ url: "/api/desktop/handoff" });
-assert.equal(signedOut.statusCode, 302);
-assert.equal(signedOut.headers.location, "../../");
-const handoff = await app.inject({ url: "/api/desktop/handoff", headers: { cookie: OWNER } });
-assert.equal(handoff.statusCode, 200);
-assert.match(String(handoff.headers["content-type"]), /^text\/html/);
-const link = /ggo:\/\/auth\?ticket=([A-Za-z0-9_-]{43})/.exec(handoff.body);
-assert.ok(link, "the page links back into the desktop app with a fresh ticket");
-assert.equal((await app.inject({ url: `/api/desktop/redeem?ticket=${link[1]}` })).headers.location, "../../");
+// ---- the browser handoff after Google sign-in: rendered by the OAuth callback only ----
+assert.equal((await app.inject({ url: "/api/desktop/handoff", headers: { cookie: OWNER } })).statusCode, 404, "no route mints a ticket from a plain GET");
+const handoff = desktopHandoffPage(tickets);
+const links = [...handoff.matchAll(/ggo:\/\/auth\?ticket=([A-Za-z0-9_-]{43})/g)].map((m) => m[1]);
+assert.equal(links.length, 2, "the refresh and the button carry the link");
+assert.equal(links[0], links[1], "one ticket per page");
+assert.equal((await app.inject({ url: `/api/desktop/redeem?ticket=${links[0]}` })).headers.location, "../../");
+assert.notEqual(/ticket=([A-Za-z0-9_-]{43})/.exec(desktopHandoffPage(tickets))?.[1], links[0], "every page mints its own ticket");
 
 // ---- presence: "Open in desktop" shows only where the app has run ----
 const available = async (headers: Record<string, string>, remoteAddress?: string) =>
@@ -88,6 +86,9 @@ assert.equal(await available({}, "192.0.2.7"), true);
 // Through a remote link (a tunnel arrives from loopback) neither registration nor the button applies.
 process.env.REMOTE_ACCESS = "1";
 assert.equal(await available({ "x-forwarded-for": "203.0.113.9" }), false);
+const tunnelled = await app.inject({ method: "POST", url: "/api/desktop/presence", headers: { cookie: OWNER, "user-agent": DESKTOP_UA, "x-forwarded-for": "203.0.113.9" } });
+assert.equal(tunnelled.statusCode, 200);
+assert.deepEqual(Object.keys(JSON.parse(kv.get("desktop_clients") ?? "{}")).sort(), ["192.0.2.7", "local"], "an app behind a tunnel registers no machine");
 delete process.env.REMOTE_ACCESS;
 
 // A registration not refreshed for 60 days is treated as uninstalled.

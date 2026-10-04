@@ -101,9 +101,13 @@ function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-/** The page the system browser lands on after a desktop-started Google sign-in. */
-function handoffPage(link: string): string {
-  const href = escapeHtml(link);
+/**
+ * The page the system browser lands on after a desktop-started Google sign-in, carrying a fresh ticket
+ * back into the app. Only the OAuth callback renders it: a standalone route would let any page that
+ * steers the owner's signed-in browser there mint a ticket for an app on another machine.
+ */
+export function desktopHandoffPage(tickets: DesktopTickets): string {
+  const href = escapeHtml(`ggo://auth?ticket=${tickets.mint()}`);
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Opening GG Orchestrator</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -161,12 +165,5 @@ export function registerDesktopRoutes(app: FastifyInstance, deps: DesktopRouteDe
     if (!TICKET.test(ticket) || !deps.tickets.redeem(ticket)) return reply.redirect(consoleLocation(undefined, "desktop"));
     reply.header("set-cookie", deps.sessionCookie(req));
     return reply.redirect(consoleLocation(req.query.thread));
-  });
-
-  app.get("/api/desktop/handoff", async (req, reply) => {
-    reply.header("cache-control", "no-store").header("referrer-policy", "no-referrer");
-    if (!authed(req)) return reply.redirect("../../");
-    const link = `ggo://auth?ticket=${deps.tickets.mint()}`;
-    return reply.type("text/html; charset=utf-8").send(handoffPage(link));
   });
 }
