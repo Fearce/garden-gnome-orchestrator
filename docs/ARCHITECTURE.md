@@ -68,6 +68,19 @@ the owner started work (a recording, kept in `armed.json`). Settings live in git
 `<DATA_DIR>/modules/<id>/config.json`, imported once from the Script Hub's settings. Details:
 [`local-service-modules.md`](local-service-modules.md); gate `test:modules`, browser lab `modules-lab`.
 
+**Desktop app (`desktop/`, optional).** An Electron window that loads the console from a GGO server
+like any browser tab. `server/` and `web/` never import it, and no browser path starts it. The main
+process probes the configured address. When nothing answers on a local one, it can start this
+checkout's `server/scripts/supervise.cjs` detached, so it is not the app's child: closing the window leaves
+the server and its agents running, and a port someone else holds is never taken. In the window,
+`web/src/lib/desktop.ts` sees the preload bridge, sets `data-shell="desktop"` (the top bar becomes the
+title bar through Window Controls Overlay) and pushes the bar's colours to the window buttons.
+`server/src/desktop.ts` mints one-time, two-minute, in-memory tickets. These hand a session between
+the app and a browser (Open in web / Open in desktop, and Google sign-in finished in the system
+browser). It also records which machines have run the app, so only those browsers offer Open in desktop.
+Details: [`../desktop/README.md`](../desktop/README.md); gates `test:desktop` and `npm test --prefix desktop`;
+lab `npm run lab --prefix desktop`.
+
 `npm run probe:startup` measures cold/warm desktop and throttled-phone startup without interacting
 with live tasks. `ORCH_URL` accepts a mounted URL; `PERF_OUT` selects the JSON report.
 `npm run startup-lab --prefix server` verifies compression, both mounts, reconnects and retained

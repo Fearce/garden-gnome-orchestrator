@@ -275,6 +275,25 @@ enable, the notification channels you set up, and the Online Office relay if you
 | `npm run typecheck` | server, web and relay. |
 | `npm run test:gates` | The full local test suite. No agents or quota; three gates run at a time, slowest first by the last run's timings. Set `GGO_GATE_JOBS=1` to diagnose timing-sensitive failures serially. |
 
+### Desktop app (optional)
+
+The browser console is the full product. On Windows x64 you can also run it in its own window:
+
+```bash
+npm run desktop:install   # once
+npm run desktop           # build and launch from source
+npm run desktop:dist      # or: an installer in desktop/release/
+```
+
+The app shows the same console from the same server, so every feature and live update is
+identical. It adds a taskbar window whose title bar is the console's top bar, a screen that
+finds your server or starts a stopped local one, and links that open GGO on a task. Closing the
+window never stops the server or its agents. Switch between the two with **Open in web** (in
+the app) and **Open in desktop** (in the browser, on a machine where the app has run); either
+way you stay signed in, on the same task. Use the browser for phones, tablets, remote access
+and macOS/Linux. Building, connecting to another server, updating and security are covered in
+[desktop/README.md](desktop/README.md).
+
 ## Layout
 
 ```
@@ -282,6 +301,7 @@ server/   Fastify HTTP + WebSocket backend, the Agent SDK runtime, SQLite state
 web/      React + Vite director console
 relay/    Optional standalone relay, so orchestrators on different machines
           can see each other's agents on a shared repo
+desktop/  Optional Electron window around the console (Windows x64)
 docs/     ARCHITECTURE.md (the design contract), DECISIONS.md, feature guides
 ```
 
