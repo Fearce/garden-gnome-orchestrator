@@ -5,12 +5,12 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { Db } from "../db/db.js";
-import { collectTaskWrittenFiles } from "../orchestrator/deliverableCheck.js";
+import { collectTaskWrittenFiles, detectUnsurfacedArtifacts } from "../orchestrator/deliverableCheck.js";
 import { startLatestMessagePreviewBackfill } from "../db/previewBackfill.js";
 import { EventHub } from "../events.js";
 import { BRIEF_PREVIEW_CHARS } from "../types.js";
@@ -336,6 +336,13 @@ try {
   db.addMessage({ threadId: writer.id, role: "implementor", kind: "result", content: "ok" });
   assert.equal(rowsRead(taskFiles), 1, "a later ask reads only the tool call recorded since");
   assert.deepEqual(taskFiles(), [...expected, join(dir, "docs", "report.md")]);
+  // The QA and reviewer kickoffs' unsurfaced-artifact hint read the whole feed the same way (crash.log, 2026-10-04).
+  const unsurfaced = () => detectUnsurfacedArtifacts(db, db.getThread(writer.id)!);
+  assert.deepEqual(unsurfaced(), [join(dir, "notes.md"), join(tmpdir(), "outside-the-workspace.md"), "docs/report.md"]);
+  assert.equal(rowsRead(unsurfaced), 0, "the unsurfaced-artifact hint reads no rows when nothing new was recorded");
+  writeFileSync(join(dir, "notes.md"), "# notes");
+  db.addFinding({ threadId: writer.id, kind: "deliverable", summary: "Notes", path: join(dir, "notes.md") });
+  assert.deepEqual(unsurfaced(), [join(tmpdir(), "outside-the-workspace.md"), "docs/report.md"], "…and still drops one surfaced since");
   for (const sql of seekSql(taskFiles, "messages")) {
     const detail = planOf(sql, [writer.id, 0]);
     assert.ok(detail.includes("idx_messages_thread_time"), `the tool-call read must use the thread index: ${detail}`);

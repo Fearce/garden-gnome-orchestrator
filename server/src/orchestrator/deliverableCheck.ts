@@ -54,10 +54,7 @@ export function detectUnsurfacedArtifacts(db: Db, thread: Thread): string[] {
 
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const m of db.listMessages(thread.id)) {
-    if (m.role !== "implementor" || m.kind !== "tool") continue;
-    const path = writtenPath(m.content);
-    if (!path || !looksLikeArtifact(path)) continue;
+  for (const path of artifactWritesDigest(db).read(thread.id)) {
     const key = canonicalKey(thread.workspace, path);
     if (surfaced.has(key) || seen.has(key)) continue;
     seen.add(key);
@@ -65,6 +62,26 @@ export function detectUnsurfacedArtifacts(db: Db, thread: Thread): string[] {
     if (out.length >= MAX_CANDIDATES) break;
   }
   return out;
+}
+
+// Each QA and reviewer kickoff asks for this, and reading a long task's whole feed for it took seconds cold
+// (crash.log, 2026-10-04). The implementor's distinct artifact-like writes, oldest first, are folded once.
+const artifactWriteDigests = new WeakMap<Db, ToolCallDigest<Set<string>>>();
+
+function artifactWritesDigest(db: Db): ToolCallDigest<Set<string>> {
+  let digest = artifactWriteDigests.get(db);
+  if (!digest) {
+    digest = db.toolCallDigest(
+      () => new Set<string>(),
+      (paths, call) => {
+        if (call.role !== "implementor") return;
+        const path = writtenPath(call.content);
+        if (path && looksLikeArtifact(path)) paths.add(path);
+      },
+    );
+    artifactWriteDigests.set(db, digest);
+  }
+  return digest;
 }
 
 /**

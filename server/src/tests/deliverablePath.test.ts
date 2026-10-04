@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { MAX_DELIVERABLE_BYTES, deliverableRefusal, resolveDeliverable } from "../orchestrator/deliverablePath.js";
 import { detectUnsurfacedArtifacts } from "../orchestrator/deliverableCheck.js";
 import type { Db } from "../db/db.js";
+import type { ToolCallRow } from "../db/memoryMirrors.js";
 import type { Thread } from "../types.js";
 
 const root = mkdtempSync(join(tmpdir(), "deliverable-path-"));
@@ -50,7 +51,13 @@ try {
   function qaCandidates(writtenPath: string, findingPath: string): string[] {
     const db = {
       listFindings: () => [{ kind: "deliverable", path: findingPath }],
-      listMessages: () => [{ role: "implementor", kind: "tool", content: `Write ${JSON.stringify({ file_path: writtenPath })}` }],
+      toolCallDigest: <T,>(start: () => T, add: (state: T, call: ToolCallRow) => void) => ({
+        read: () => {
+          const state = start();
+          add(state, { seq: 1, role: "implementor", content: `Write ${JSON.stringify({ file_path: writtenPath })}` });
+          return state;
+        },
+      }),
     } as unknown as Db;
     return detectUnsurfacedArtifacts(db, thread);
   }
