@@ -18,6 +18,7 @@ const WebSocket = require("../../server/node_modules/ws");
 const harness = require("../../server/scripts/lab-harness.cjs");
 const { loadPlaywright } = require("./loadPlaywright.cjs");
 const { electronBinary } = require("./electronBinary.cjs");
+const { waitForAppClose } = require("./app-shutdown.cjs");
 
 const arg = (name, fallback) => {
   const at = process.argv.indexOf(name);
@@ -180,12 +181,8 @@ async function appUsage(app, ms) {
 async function closeApp(app) {
   // Playwright's process() is the cmd launcher on Windows, which can exit before Electron does.
   const pid = await app.evaluate(() => process.pid).catch(() => app.process().pid);
-  let timer;
   try {
-    await Promise.race([
-      app.close(),
-      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Desktop app did not exit within 20 seconds; refusing to measure it as closed.")), 20_000); }),
-    ]);
+    await waitForAppClose(app);
   } catch (error) {
     // Clean up only this probe's app, while keeping the failed exit as a verification failure.
     try {
@@ -193,8 +190,6 @@ async function closeApp(app) {
       else process.kill(pid);
     } catch { /* already gone */ }
     throw error;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

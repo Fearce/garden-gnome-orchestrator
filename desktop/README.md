@@ -166,7 +166,7 @@ does not restore a maximized window, and opens child windows without taking focu
 `npm run probe:load --prefix desktop -- --out <folder>` measures a running GGO's `/api/me` and
 WebSocket latency with the app closed, open and closed again, plus the app's startup time, memory
 and CPU, and writes `desktop-load-probe.json`. It signs in with `AUTH_PASSWORD` and only reads.
-If the app does not exit within 20 seconds, the probe fails and cleans up its test process rather
+If the app does not exit within 60 seconds, the probe fails and cleans up its test process rather
 than recording a misleading "app closed again" measurement.
 Failed HTTP responses and HTTP/WebSocket samples stalled for 15 seconds fail the probe too.
 

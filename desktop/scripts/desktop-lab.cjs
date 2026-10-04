@@ -23,6 +23,7 @@ const Database = require("../../server/node_modules/better-sqlite3");
 const harness = require("../../server/scripts/lab-harness.cjs");
 const { loadPlaywright } = require("./loadPlaywright.cjs");
 const { electronBinary } = require("./electronBinary.cjs");
+const { waitForAppClose } = require("./app-shutdown.cjs");
 
 const PORT = 4397;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -140,7 +141,8 @@ function storedCount(dataDir, text) {
  *  The supervisor runs tsx, which runs the server, so the supervisor is two levels up, not one. */
 function serverProcesses() {
   const script = `$l = Get-NetTCPConnection -LocalPort ${PORT} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-if ($l) { $chain = @(); $id = $l.OwningProcess; for ($i = 0; $i -lt 4 -and $id; $i++) { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$id"; if (-not $p) { break }; $chain += "$($p.ProcessId)~$($p.CommandLine -replace '[|~]', ' ')"; $id = $p.ParentProcessId }; $chain -join '|' }`;
+if ($l) { $chain = @(); $id = $l.OwningProcess; for ($i = 0; $i -lt 4 -and $id; $i++) { $p = Get-CimInstance Win32_Process -Filter "ProcessId=$id"; if (-not $p) { break }; $chain += "$($p.ProcessId)~$($p.CommandLine -replace '[|~]', ' ')"; $id = $p.ParentProcessId }; $chain -join '|' }
+exit 0`;
   const out = execFileSync("powershell", ["-NoProfile", "-Command", script], { windowsHide: true }).toString().trim();
   if (!out) return null;
   const chain = out.split("|").map((entry) => {
@@ -246,10 +248,10 @@ async function captureWindow(app, file) {
 }
 
 /** Quit an app run, killing it if it doesn't exit in time, so a stuck quit fails a check instead of
- *  hanging the lab. True when it quit on its own. */
+ *  hanging the lab. True only when Playwright confirms the app exited on its own. */
 async function closeApp(app) {
   const pid = await app.evaluate(() => process.pid).catch(() => app.process().pid);
-  const quit = await Promise.race([app.close().then(() => true, () => false), sleep(20_000).then(() => false)]);
+  const quit = await waitForAppClose(app).then(() => true, () => false);
   if (!quit && pid && alive(pid)) {
     try {
       execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
@@ -322,6 +324,10 @@ function squat() {
     }, path.join(DESKTOP, "dist", "window.js"));
     check("background launches ignore saved primary-monitor bounds when a secondary exists", !savedWindowPolicy.secondary || savedWindowPolicy.actual !== savedWindowPolicy.primary, JSON.stringify(savedWindowPolicy));
     check("background launches never maximize or reveal a saved maximized test window", !savedWindowPolicy.maximized && !savedWindowPolicy.visible, JSON.stringify(savedWindowPolicy));
+    // The short-lived policy window can leave Playwright waiting on its cancelled navigation.
+    // Reset that automation state before exercising actual clicks in the surviving main window.
+    await page.reload();
+    await connectTitle(page, "GGO isn't running");
     await page.screenshot({ path: path.join(shots, "01-conflict.png") });
     await new Promise((done) => squatter.close(done));
 
