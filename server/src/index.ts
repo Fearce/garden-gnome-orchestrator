@@ -150,6 +150,7 @@ async function main(): Promise<void> {
     settings: () => memorySettings.get(),
     models: {
       claudeAccount: (excluded) => accounts.auxAccount(excluded, HAIKU_MODEL),
+      claudeHasRoom: () => accounts.hasAuxAccount(HAIKU_MODEL),
       onClaudeRateLimit: (accountId, info) => accounts.updateFromRateLimit(accountId, info),
       lunaLaunch: codexLunaLaunch((): boolean => manager.settings().codexEnabled, () => memorySettings.get().lunaFallback),
     },

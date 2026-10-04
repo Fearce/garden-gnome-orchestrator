@@ -255,5 +255,14 @@ try {
   globalThis.fetch = originalFetch;
 }
 
+console.log("account-usage: looking for ancillary room leaves a held window alone");
+const heldManager = new AccountManager([personal], new EventHub());
+const heldState = (heldManager as any).states.get(personal.id);
+heldState.holdUntil = Date.now() + 60 * 60_000;
+check("a held subscription still counts as room for an ancillary call", heldManager.hasAuxAccount("claude-haiku-4-5-20251001"));
+check("asking does not release the hold", heldState.holdUntil != null);
+heldState.enabled = false;
+check("a disabled subscription is not room", !heldManager.hasAuxAccount());
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

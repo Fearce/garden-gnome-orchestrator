@@ -84,7 +84,7 @@ function answer(system: string, user: string): string {
   return "{}";
 }
 
-function service(dir: string, opts: { haiku?: FakeHaiku; accounts?: string[]; settings?: () => MemorySettings; rateLimits?: string[] } = {}): Service {
+function service(dir: string, opts: { haiku?: FakeHaiku; accounts?: string[]; settings?: () => MemorySettings; rateLimits?: string[]; picks?: string[] } = {}): Service {
   const accounts = opts.accounts ?? ["acct-a"];
   return new FileMemoryService(dir, {
     indexPath: join(root, `${Math.random().toString(36).slice(2)}.sqlite`),
@@ -94,8 +94,10 @@ function service(dir: string, opts: { haiku?: FakeHaiku; accounts?: string[]; se
       ? {
           claudeAccount: (excluded) => {
             const id = accounts.find((a) => !excluded.includes(a));
+            if (id) opts.picks?.push(id);
             return id ? { id, token: id } : undefined;
           },
+          claudeHasRoom: () => accounts.length > 0,
           onClaudeRateLimit: (id) => opts.rateLimits?.push(id),
           lunaLaunch: UNAVAILABLE_LUNA,
           fetchImpl: opts.haiku.fetchImpl,
@@ -253,6 +255,12 @@ try {
     assert.equal(providers.haiku.available, false);
     assert.equal(providers.luna.detail, "Luna is not used by this test");
     await memory.close();
+
+    const picks: string[] = [];
+    const watched = service(dir, { haiku, picks });
+    assert.equal((await watched.status()).providers!.haiku.available, true);
+    assert.deepEqual(picks, [], "reading status never picks an account, so polling it cannot start a held subscription's window");
+    await watched.close();
   }
 
   // ---- extraction writes only quoted, non-duplicate candidates ----

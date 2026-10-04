@@ -50,6 +50,8 @@ export interface ProviderState {
 export interface MemoryModelDeps {
   /** The next Claude subscription with room for a Haiku call, skipping `excluded`. */
   claudeAccount: (excluded: readonly string[]) => { id: string; token: string } | undefined;
+  /** Whether any Claude subscription has room, with no side effect on account state. */
+  claudeHasRoom: () => boolean;
   onClaudeRateLimit: (accountId: string, info: RateLimitInfo) => void;
   /** A ready-to-spawn Luna invocation, or the reason Luna cannot run right now. */
   lunaLaunch: () => Promise<{ launch: Omit<LunaRequest, "prompt" | "timeoutMs">; model: string } | { unavailable: string }>;
@@ -87,9 +89,9 @@ export class MemoryModels {
   }
 
   async providers(): Promise<{ haiku: ProviderState; luna: ProviderState }> {
-    const account = this.deps.claudeAccount([]);
-    this.haikuState.available = !!account;
-    this.haikuState.detail = account ? HAIKU_MODEL : "no Claude subscription has room (disabled, capped or at the safety limit)";
+    const room = this.deps.claudeHasRoom();
+    this.haikuState.available = room;
+    this.haikuState.detail = room ? HAIKU_MODEL : "no Claude subscription has room (disabled, capped or at the safety limit)";
     const luna = await this.deps.lunaLaunch().catch((err: unknown) => ({ unavailable: String(err) }));
     this.lunaState.available = !("unavailable" in luna);
     this.lunaState.detail = "unavailable" in luna ? luna.unavailable : luna.model;

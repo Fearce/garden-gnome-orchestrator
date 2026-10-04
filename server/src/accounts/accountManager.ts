@@ -1153,17 +1153,27 @@ export class AccountManager {
    *  (the accounts this call already tried). Undefined when no subscription has room. */
   auxAccount(excludedIds: readonly string[] = [], model?: string): { id: string; token: string } | undefined {
     const now = Date.now();
-    const excluded = new Set(excludedIds);
-    const states = [...this.states.values()].filter((s) => {
-      if (!s.enabled || !s.account.token || excluded.has(s.account.id)) return false;
-      const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
-      return !limited && accountHasHardHeadroom(s, now) && this.accountHasSafetyHeadroom(s, now) && !(model && this.isModelLimited(s.account.id, model));
-    });
+    const states = this.auxCandidates(excludedIds, model, now);
     const live = (s: AccountState): boolean => s.fiveHourReset != null && s.fiveHourReset > now && !this.inHold(s, now);
     const pick = states.find((s) => s.account.id === this.preferredId && live(s)) ?? states.find(live) ?? states[0];
     if (!pick) return undefined;
     this.releaseHold(pick);
     return { id: pick.account.id, token: pick.account.token };
+  }
+
+  /** Whether auxAccount would find a subscription, without releasing a hold: a status read polls this,
+   *  and must not start a held account's 5h window just by looking. */
+  hasAuxAccount(model?: string): boolean {
+    return this.auxCandidates([], model, Date.now()).length > 0;
+  }
+
+  private auxCandidates(excludedIds: readonly string[], model: string | undefined, now: number): AccountState[] {
+    const excluded = new Set(excludedIds);
+    return [...this.states.values()].filter((s) => {
+      if (!s.enabled || !s.account.token || excluded.has(s.account.id)) return false;
+      const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
+      return !limited && accountHasHardHeadroom(s, now) && this.accountHasSafetyHeadroom(s, now) && !(model && this.isModelLimited(s.account.id, model));
+    });
   }
 
   /** How many Claude subscriptions are configured (one account per setup-token; a single synthetic
