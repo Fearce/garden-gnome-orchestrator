@@ -4,12 +4,15 @@ paths:
   - "server/src/tests/memoryRag.test.ts"
   - "web/src/components/MemorySettings.tsx"
   - "web/src/components/memorySettings.css"
+  - "server/scripts/memory-lab.cjs"
 ---
 
 # Agent memory: traps
 
 Design, hook API, migration and recovery are in [docs/agent-memory.md](../../docs/agent-memory.md); read
-it before changing recall, cards, extraction or the hook routes. Gate: `npm run test:memory-rag --prefix server`.
+it before changing recall, cards, extraction or the hook routes. Gate: `npm run test:memory-rag --prefix server`;
+a Settings → Memory change also runs `npm run memory-lab --prefix server` (point `GGO_LAB_ENTRY` /
+`GGO_LAB_WEB_DIST` at isolated builds to test uncommitted work).
 
 - **The hook routes are a contract with scripts outside this repo.** `rag.py` and `extractor.py` in the
   owner's user-level setup call `/api/memory/hook/*` and write `.ggo-extraction-queue/*.json` themselves.

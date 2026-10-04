@@ -47,6 +47,7 @@
     "deliverables-lab": "node scripts/deliverables-lab.cjs",
     "final-report-lab": "node scripts/final-report-lab.cjs",
     "model-lab": "node scripts/model-select-lab.cjs",
+    "memory-lab": "node scripts/memory-lab.cjs",
     "repo-chips-lab": "node scripts/repo-chips-lab.cjs",
     "livebench-lab": "node scripts/livebench-lab.cjs",
     "task-model-lab": "node scripts/task-model-lab.cjs",

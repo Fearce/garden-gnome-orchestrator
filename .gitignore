@@ -34,6 +34,7 @@ server/.repo-chips-lab-dist/
 server/.calendar-lab-dist/
 server/.receipt-lab-dist/
 server/.modules-lab-dist/
+server/.memory-lab-dist/
 server/.lab-web-dist*/
 web/dist/
 relay/dist/

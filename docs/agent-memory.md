@@ -8,6 +8,8 @@ model, no Docker and no database server, so it runs on an ordinary PC.
 
 Code: `server/src/memory/`. Settings and UI: **Settings → Memory**
 (`web/src/components/MemorySettings.tsx`). Gate: `npm run test:memory-rag --prefix server`.
+Browser lab: `npm run memory-lab --prefix server` drives the page against a throwaway instance with its
+own `DATA_DIR` and a seeded temp `MEMORY_DIR`, with model ranking switched off so it spends no model call.
 
 ## How recall works
 
