@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Finish Codex credit display live verification and documentation** (2026-10-05, Codex implementor; task 7c47eb60).
+  Credit display committed and pushed as 2f5d8db1; verify the completed restart without another deployment.
+
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 - **Show and edit the robot vacuum's cleaning schedule (Home Assistant automations) in the Home tab** (2026-10-05, Dustpan Wren; task 98dc4600).
 
