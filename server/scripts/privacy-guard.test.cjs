@@ -9,7 +9,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { lineFindings, scanTree, loadPrivateTerms, fakeSnowflake, harmlessIp } = require("./privacy-guard.cjs");
+const vm = require("node:vm");
+const { lineFindings, scanTree, loadPrivateTerms, fakeSnowflake, harmlessIp, protectedFile } = require("./privacy-guard.cjs");
 
 const rules = (line, opts) => lineFindings(line, opts).map((f) => f.rule);
 const join = (...parts) => parts.join("");
@@ -68,6 +69,52 @@ const allowlist = [new RegExp("alibabagroup\\.com/en-US/document-\\d+", "gi")];
 assert.deepEqual(rules(join("https://www.alibabagroup.com/en-US/document-", "2021044", "032125272064"), { allowlist }), [], "an allowlisted public URL");
 
 // --- the real tracked tree --------------------------------------------------------------------------
+// Ignoring a file is insufficient if it is already tracked (or force-added). Refuse runtime paths
+// before reading their contents, including binary keys and neutral-looking state.
+for (const file of ["server/.env", "server/.env.production", "relay/.env.backup", "server/data/state.json", "relay/data/members.json", "data/history.json", "server/.privacy-terms", "relay/deploy.env", ".claude/settings.local.json", "server/certs/cert.pfx", "state.sqlite-wal", "state.sqlite-journal"]) {
+  assert.equal(protectedFile(file), true, `${file} must stay untracked`);
+}
+for (const file of ["server/.env.example", "relay/deploy.env.example", "README.md", "server/src/config.ts"]) {
+  assert.equal(protectedFile(file), false, `${file} is publishable`);
+}
+const neutralState = "server/data/qa-privacy-neutral-state.png";
+const root = path.resolve(__dirname, "../..");
+fs.mkdirSync(path.join(root, "server/data"), { recursive: true });
+try {
+  fs.writeFileSync(path.join(root, neutralState), Buffer.from([0, 1, 2]));
+  assert.deepEqual(scanTree({ files: [neutralState], privateTerms: [], allowlist: [] }).map((f) => f.rule), ["runtime data or credential file must not be tracked"]);
+} finally {
+  fs.unlinkSync(path.join(root, neutralState));
+}
+
+// Exercise the secret audit's real reporting path with a planted secret and a personal commit subject.
+// Git output stays inside this sandbox; assertions prove neither value is copied to the log.
+const secret = join("synthetic-", "credential-value");
+const subject = join("synthetic-", "private-subject");
+const sha = "a".repeat(40);
+const auditOutput = [];
+let auditExit;
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, "audit-secrets.cjs"), "utf8"), {
+  __dirname,
+  console: { log: (value) => auditOutput.push(value) },
+  process: { argv: ["node", "audit-secrets.cjs"], exit: (code) => { auditExit = code; } },
+  require: (name) => {
+    if (name === "node:fs") return { existsSync: () => true, readFileSync: () => `AUTH_PASSWORD=${secret}` };
+    if (name === "node:child_process") return { execFileSync: (_bin, args) => {
+      if (args[0] === "ls-files") return "README.md\n";
+      if (args[0] === "grep" && args.includes("-F")) return `README.md:7:${secret}\n`;
+      if (args[0] === "log" && args.includes("-S")) {
+        return args.includes("--format=%H") ? sha : `${sha} ${subject}`;
+      }
+      return "";
+    } };
+    return require(name);
+  },
+});
+const reported = auditOutput.join("\n");
+assert.equal(auditExit, 1, "the planted secret still fails the audit");
+assert.ok(reported.includes("README.md:7") && reported.includes(sha), "locations remain actionable");
+assert.ok(!reported.includes(secret) && !reported.includes(subject), "audit evidence must not repeat private values");
 const findings = scanTree();
 assert.deepEqual(
   findings.map((f) => `${f.file}:${f.line}:${f.column} ${f.rule}`),

@@ -39,9 +39,12 @@ relay/dist/
 
 # runtime state
 server/data/
+/relay/data/
+/data/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite-journal
 *.log
 
 # secrets / env
@@ -49,6 +52,9 @@ server/data/
 .env.local
 */.env
 */.env.local
+# Environment variants and backups can contain the same secrets as .env. Keep templates publishable.
+.env.*
+!.env.example
 *.pfx
 *.p12
 *.pem

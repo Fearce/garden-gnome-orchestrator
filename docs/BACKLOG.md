@@ -16,7 +16,6 @@ same commit as the fix. Git history keeps the record.
 
 - **Owner messages stuck on "Sending…": GGO event-loop stalls and receipt states** (Wickfern, 2026-10-04, branch ggo/event-loop-stalls-913d9247).
   Stalls up to 45.8s on 2026-10-04 16:14Z delayed an inject that was delivered once (receipt ffaa6433 read); diagnostics 31192a9 live; fix + receipt UI in progress.
-- **Privacy QA: protect environment variants and relay state; keep audit evidence redacted** (Moss Lantern, 2026-10-04).
 
 ## Ready (priority order)
 
@@ -28,12 +27,16 @@ same commit as the fix. Git history keeps the record.
   Kit with exact steps, dry-run 2026-10-04 (all-history hits to 0, nothing pushed): the README in the main checkout's gitignored `_privacy-remediation` folder.
 - **Rotate the local HTTPS PFX passphrase** (owner action): it is a weak dictionary word, local-only, never committed.
 
+- **Privacy QA: deliver the history-remediation kit and correct its credential assurance** (implementor follow-up).
+  Its README and supporting rewrite files are outside the task workspace; the configured PFX passphrase also occurs in reachable published history (value withheld), so the kit's "no credentials ever committed" assurance needs correction and rotation remains required.
+
 ## Open
 
 No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-04 **Privacy QA: protect environment variants and relay state; redact audit evidence** (Moss Lantern): privacy gate exercises binary runtime-file rejection and redacted secret/history output; README links and current-tree secret audit pass; full suite 225/225 and browser labs 42/42 passed before these focused fixes.
 - 2026-10-04 **Calendar and IDE writes work through the deck's `/orchestrator/` proxy** (79a6672, a12307e, Almanac Wren): live build a12307e6; through `https://localhost:3940/orchestrator/` a create returned POST 200 and a UI delete returned DELETE 200, and the event stayed gone after a reload (was 403 "Origin does not match this console"); `test:calendar` and `test:ide` pass.
 - 2026-10-04 **README brought up to date; personal details removed from the public tree** (895407f, Quillfern Sieve): live build 895407fb; `test:privacy-guard` clean over every tracked file, `test:readme-claims` 63/63, 224/225 full gates (the one, `test:doc-paths`, fixed and green); the history rewrite is under Blocked.
 - 2026-10-04 **Full calendar with default reminders** (66521d3, 70d9ffc, Almanac Wren): live build 70d9ffc9; `test:calendar` and `calendar-lab` (65/65, synthetic data, no task started) pass; the five reminders converted from schedules read back from the live range API, and the live new-event form opens with the owner's 1-week + 1-day defaults.

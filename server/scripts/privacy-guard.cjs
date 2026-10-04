@@ -165,7 +165,19 @@ function lineFindings(rawLine, { privateTerms = [], allowlist = [] } = {}) {
 function trackedFiles() {
   return execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, encoding: "utf8", maxBuffer: 1 << 26, windowsHide: true })
     .split("\0")
-    .filter((f) => f && !SKIP_PATHS.some((re) => re.test(f)));
+    .filter(Boolean);
+}
+
+/** Runtime data and credentials must stay untracked even when their contents look harmless. */
+function protectedFile(file) {
+  const f = file.replace(/\\/g, "/");
+  const base = path.posix.basename(f);
+  return (
+    /^(?:server\/data|relay\/data|data)\//.test(f) ||
+    ["relay/deploy.env", "server/.privacy-terms", ".claude/settings.local.json"].includes(f) ||
+    (/^\.env(?:\.|$)/.test(base) && base !== ".env.example") ||
+    /\.(?:sqlite(?:-(?:shm|wal|journal))?|pfx|p12|pem|key)$/i.test(base)
+  );
 }
 
 /** Findings across the tracked tree as `{ file, line, column, rule }`. */
@@ -173,6 +185,12 @@ function scanTree({ files = trackedFiles(), privateTerms = loadPrivateTerms(), a
   const findings = [];
   for (const file of files) {
     const abs = path.join(ROOT, file);
+    if (!fs.existsSync(abs)) continue;
+    if (protectedFile(file)) {
+      findings.push({ file, line: 1, column: 1, rule: "runtime data or credential file must not be tracked" });
+      continue;
+    }
+    if (SKIP_PATHS.some((re) => re.test(file))) continue;
     let text;
     try {
       text = fs.readFileSync(abs, "utf8");
@@ -203,4 +221,4 @@ if (require.main === module) {
   process.exit(1);
 }
 
-module.exports = { lineFindings, scanTree, loadPrivateTerms, loadAllowlist, harmlessIp, fakeSnowflake, reservedDomain, NEUTRAL_USERS };
+module.exports = { lineFindings, scanTree, loadPrivateTerms, loadAllowlist, harmlessIp, fakeSnowflake, reservedDomain, NEUTRAL_USERS, protectedFile };

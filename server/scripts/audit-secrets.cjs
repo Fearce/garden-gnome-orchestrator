@@ -13,6 +13,7 @@
 // detectable. It ALSO scans for known token shapes (sk-ant, GOCSPX, AWS/GitHub/
 // Slack/Google keys, private-key blocks), refuses tracked secret-type files, and
 // flags machine-specific paths / real emails.
+// Findings print file:line or commit hashes only, never the matched text or commit subjects.
 //
 // Exit: 0 = clean (safe to publish).
 //       1 = a secret value or token shape is present in the tree or history, or a
@@ -75,12 +76,12 @@ function grepRegex(re, extraExcludes = []) {
 
 /** Commits whose diff ever added/removed a FIXED string (pickaxe). */
 function historyLiteral(value) {
-  return git(["log", "--all", "--oneline", "-S", value, "--", ".", ...EXCLUDES]).trim();
+  return git(["log", "--all", "--format=%H", "-S", value, "--", ".", ...EXCLUDES]).trim();
 }
 
 /** Commits whose diff ever added/removed a regex match. */
 function historyRegex(re) {
-  return git(["log", "--all", "--oneline", "-G", re, "--", ".", ...EXCLUDES]).trim();
+  return git(["log", "--all", "--format=%H", "-G", re, "--", ".", ...EXCLUDES]).trim();
 }
 
 // ---- 1. Real secret values from server/.env must not appear anywhere ---------
@@ -222,7 +223,11 @@ function indent(block) {
   return block
     .split(/\r?\n/)
     .slice(0, 20)
-    .map((l) => `      ${l}`)
+    .map((l) => {
+      const location = l.match(/^(.*?):(\d+):/);
+      const safe = location ? `${location[1]}:${location[2]}` : /^[a-f0-9]{40}$/i.test(l) ? l : "[redacted]";
+      return `      ${safe}`;
+    })
     .join("\n");
 }
 
