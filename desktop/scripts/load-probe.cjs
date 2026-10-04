@@ -16,6 +16,7 @@ const path = require("node:path");
 const WebSocket = require("../../server/node_modules/ws");
 const harness = require("../../server/scripts/lab-harness.cjs");
 const { loadPlaywright } = require("./loadPlaywright.cjs");
+const { electronBinary } = require("./electronBinary.cjs");
 
 const arg = (name, fallback) => {
   const at = process.argv.indexOf(name);
@@ -26,7 +27,7 @@ const OUT = arg("--out", null);
 const SAMPLES = Number(arg("--samples", "120"));
 const IDLE_MS = 15_000;
 const DESKTOP = path.resolve(__dirname, "..");
-const ELECTRON = path.join(DESKTOP, "node_modules", "electron", "dist", process.platform === "win32" ? "electron.exe" : "electron");
+const ELECTRON = electronBinary();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function stats(values) {

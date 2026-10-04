@@ -40,8 +40,10 @@ npm run desktop:install   # once: Electron, electron-builder, TypeScript
 npm run desktop           # build and launch from source
 ```
 
-If `npm run desktop` reports `Electron failed to install correctly`, the binary download was skipped
-(an offline or `--ignore-scripts` install): run `node desktop/node_modules/electron/install.js`.
+The install fetches no Electron binary: Electron downloads it (about 110 MB) the first time
+`npm run desktop`, the lab or the load probe starts it. If that reports `Electron failed to install
+correctly`, the download failed (usually offline): run `node desktop/node_modules/electron/install.js`
+once you are online.
 
 To get an installer and a standalone app:
 

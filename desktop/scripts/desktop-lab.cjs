@@ -22,11 +22,12 @@ const path = require("node:path");
 const Database = require("../../server/node_modules/better-sqlite3");
 const harness = require("../../server/scripts/lab-harness.cjs");
 const { loadPlaywright } = require("./loadPlaywright.cjs");
+const { electronBinary } = require("./electronBinary.cjs");
 
 const PORT = 4397;
 const BASE = `http://127.0.0.1:${PORT}`;
 const DESKTOP = path.resolve(__dirname, "..");
-const ELECTRON = path.join(DESKTOP, "node_modules", "electron", "dist", process.platform === "win32" ? "electron.exe" : "electron");
+const ELECTRON = electronBinary();
 const TASK = "61111111-1111-4111-8111-111111111111";
 const OTHER = "62222222-2222-4222-8222-222222222222";
 const TASK_TITLE = "DESKTOP LAB TASK";
@@ -268,10 +269,6 @@ function squat() {
 }
 
 (async () => {
-  if (!fs.existsSync(ELECTRON)) {
-    console.error(`missing ${ELECTRON} — run \`npm install --prefix desktop\` (and \`node desktop/node_modules/electron/install.js\` if the binary was skipped).`);
-    process.exit(2);
-  }
   if (!fs.existsSync(path.join(DESKTOP, "dist", "main.js"))) {
     console.error("missing desktop/dist — run `npm run build --prefix desktop`.");
     process.exit(2);
