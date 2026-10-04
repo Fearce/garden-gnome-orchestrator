@@ -7,7 +7,7 @@ a director agent asks the questions you'd otherwise forget to answer, then hands
 brief to a pipeline that plans, researches, builds and reviews it. Every task is a
 card on a live board you can watch, interrupt, feed new information to, and resume.
 
-![The GG Orchestrator console: a director conversation on the left, nine tasks running on the board](docs/assets/hero.png)
+![The GG Orchestrator console: a director conversation on the left, nine tasks on the board](docs/assets/hero.png)
 
 It runs on your machine, against your repos, on your Claude subscription. There is no
 hosted service and no metered API billing.
