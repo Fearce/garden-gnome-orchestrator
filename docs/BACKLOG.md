@@ -18,9 +18,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **QA: report stalled Script Hub bodies as unavailable-service timeouts** (2026-10-05, Codex QA).
-  The reproduced HTTP 500 is now a 504 (stalled) or 503 (interrupted), with hubDown; cancellation and recovery regressions pass in the 35-check module gate. Integration, deployment and independent review remain.
-
 - **QA: keep automated desktop windows off the primary monitor and repeat clean-exit verification** (2026-10-04, Codex QA; task 70393577).
   Electron/browser lab 59/59, gates 229/229, types/builds/privacy and Windows packaging pass. Packaged windows close in 626/332 ms; live browser task/settings/calendar pass. Independent review and distribution delivery remain required.
 - **QA: harden desktop settings, checkout selection, download names and load-probe cleanup** (2026-10-04, Moss Gauge).
@@ -48,6 +45,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-05 **QA: report stalled Script Hub bodies as unavailable-service timeouts** (332a87c4, Codex QA): pushed and live build verified; 35 module checks plus Home response/visibility checks, 229/229 gates, builds/types/privacy and 70/70 browser checks pass. Stalls return 504 and interrupted bodies 503 with hubDown; cancellation and recovery remain correct. Lab HTTP/WS/owner-message p95 idle-to-load: 5.3/6.6/53.2 to 3.4/3.2/67.9 ms, zero stalls. Independent review required.
 - 2026-10-05 **Owner report: cameras stuck on "Waiting for a picture..." and Home Assistant not answering** (Ferrule Juniper): live build 38078a69 showed 5/5 pictures on direct HTTP/HTTPS, the Deck proxy and LAN HTTPS; a foreign-Origin handshake through the Deck upgraded and streamed while a cross-site one got 403. The stopped `homeassistant_xiaomi` container was started from the Home tab's own Start (answered in 20s, vacuum live) and its restart policy, drifted to `no`, was restored to the compose file's `unless-stopped`.
 - 2026-10-05 **QA: wait for Home's page-wide probe before checking outage controls** (Codex QA): modules-lab 74/74, live direct/proxy desktop/phone 24/24, three authenticated report downloads, preserved configs and recording; types, isolated builds, privacy and README pass. Full gates 228/229; dispatch-latency passed two focused reruns, with its load-sensitive assertion tracked under Ready.
 - 2026-10-04 **Independent module deployment QA** (a6eba134, 38078a69; Codex QA): 74/74 isolated and 13/13 live proxy/browser checks, preserved local configurations and recording, authenticated report downloads; all 229 gates covered green after the Calendar task's 28a0706f repair. Includes the Deck-proxy camera socket and explicit Home Assistant Start (d8481ca2), serialized Sidekick rule saves (e9ce82a3) and explicit Stop that holds with the tab open (58e13ef5), all live in 38078a69. Evidence: docs/reports/local-service-modules-independent-qa-2026-10-04.md.
@@ -78,4 +76,3 @@ No open entries.
 - 2026-10-04 **Calendar and IDE writes work through the deck's `/orchestrator/` proxy** (79a6672, a12307e, Almanac Wren): live build a12307e6; through `https://localhost:3940/orchestrator/` a create returned POST 200 and a UI delete returned DELETE 200, and the event stayed gone after a reload (was 403 "Origin does not match this console"); `test:calendar` and `test:ide` pass.
 - 2026-10-04 **README brought up to date; personal details removed from the public tree** (895407f, Quillfern Sieve): live build 895407fb; `test:privacy-guard` clean over every tracked file, `test:readme-claims` 63/63, 224/225 full gates (the one, `test:doc-paths`, fixed and green); the history rewrite is under Blocked.
 - 2026-10-04 **Full calendar with default reminders** (66521d3, 70d9ffc, Almanac Wren): live build 70d9ffc9; `test:calendar` and `calendar-lab` (65/65, synthetic data, no task started) pass; the five reminders converted from schedules read back from the live range API, and the live new-event form opens with the owner's 1-week + 1-day defaults.
-- 2026-10-04 **One composer repo chip per workspace** (593eb55, Twinpicker): live build 593eb556 rewrote the stored 9-entry row (`C:/x` beside `C:\x`) to one canonical entry per workspace at boot; `sonnet-probe`, which the old bug had evicted from the capped list, was restored; the live composer shows 7 unique chips and `c:/Claude-Orchestrator/` lights the existing chip; `test:recent-repos` and `repo-chips-lab` (11/11) pass.
