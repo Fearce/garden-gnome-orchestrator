@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA: independently verify desktop shutdown, packaging and deliverable access** (2026-10-05, Codex QA; task 70393577).
+  Review inherited shutdown-budget edits, run real desktop/browser checks and audit retained distribution/evidence delivery.
+
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 
 ## Shipped, awaiting live proof
