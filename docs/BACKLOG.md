@@ -14,7 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Assert the Codex credit scenario's displayed balance in chip-lab** (2026-10-05, Codex implementor; task 7c47eb60).
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 
 ## Shipped, awaiting live proof
@@ -57,7 +56,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
-- 2026-10-05 **Show ChatGPT credits in the Codex chip when the plan has no 5-hour window** (2f5d8db1, b57220c9, Codex implementor): pushed and live build verified without another restart; authenticated browser confirms the credit row and retained weekly meter. Credit reader 34/34, four-width chip lab, synthetic balance rerun, README 69/69, typechecks and privacy pass; README updated and public fixtures use synthetic balances. The restart sweep's process-enumeration timeout is tracked under Ready.
+- 2026-10-05 **Show ChatGPT credits in the Codex chip when the plan has no 5-hour window** (2f5d8db1, b57220c9, Codex implementor): pushed and live build verified without another restart; authenticated browser confirms the credit row and retained weekly meter. Credit reader 34/34, four-width chip lab, synthetic balance rerun, README 69/69, typechecks and privacy pass; README updated and public fixtures use synthetic balances. The restart sweep's process-enumeration timeout is tracked under Ready. Follow-up: chip-lab now asserts the balance, label and replacement of 5h while preserving weekly usage; browser pass and four mutation rejections verified.
 - 2026-10-05 **Show and edit vacuum cleaning schedules in Home** (1ee269ff, Dustpan Wren): pushed to master; live Home API adopts the existing 09:00–22:00/99% pair, desktop editor and phone card pass with automation/Home/recording files unchanged. Module gate, 12 schedule regressions, 10 browser checks, types/builds, README and privacy pass; custom automation fields and occupied ids are preserved.
 
 - 2026-10-05 **QA: report stalled Script Hub bodies as unavailable-service timeouts** (332a87c4, Codex QA): pushed and live build verified; 35 module checks plus Home response/visibility checks, 229/229 gates, builds/types/privacy and 70/70 browser checks pass. Stalls return 504 and interrupted bodies 503 with hubDown; cancellation and recovery remain correct. Lab HTTP/WS/owner-message p95 idle-to-load: 5.3/6.6/53.2 to 3.4/3.2/67.9 ms, zero stalls. Independent review required.

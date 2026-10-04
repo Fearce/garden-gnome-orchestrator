@@ -22,6 +22,7 @@
 // and the geometry you measure is the real one.
 
 const fs = require("node:fs");
+const assert = require("node:assert/strict");
 const os = require("node:os");
 const path = require("node:path");
 const Database = require("better-sqlite3");
@@ -279,6 +280,14 @@ async function main() {
         await page.waitForSelector(".accounts .acct", { timeout: 20_000 });
         await page.waitForTimeout(1200);
         const strip = await readStrip(page);
+        if (args.scenario === "codex-credits") {
+          const meters = strip.chips.find((chip) => chip.label === "Codex")?.meters ?? [];
+          const credit = meters.find((meter) => meter.k === "cr");
+          assert.equal(credit?.v, "12,345", `${width}px: Codex must show the rounded credit balance`);
+          assert.equal(credit?.r, "credits", `${width}px: the balance must be labelled as credits`);
+          assert.ok(!meters.some((meter) => meter.k === "5h"), `${width}px: credits must replace the 5h row`);
+          assert.equal(meters.find((meter) => meter.k === "7d")?.v, "12%", `${width}px: weekly usage must remain visible`);
+        }
         report(width, strip);
         clipped = clipped || strip.clipped;
         spilled = spilled || strip.chips.some((c) => c.meters.some((m) => m.spills.length > 0));
