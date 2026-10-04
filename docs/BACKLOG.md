@@ -20,12 +20,19 @@ _(none: claim from Ready)_
 
 1. **Investigate console smoke served/local bundle mismatch and browser shutdown timeout**: 2026-10-03 probe reports ws=live with no console errors, served index-C8zofTVy.js versus local index-BHXtYnz4.js, and browser shutdown exceeded 5000ms; authenticated HTTP bundle verification passed earlier in the same task.
 
+## Blocked / waiting
+
+- **Rewrite published history to remove personal details the tree no longer carries** (owner action: filter-repo + force-push master, GitHub Support for PR refs).
+  Kit with exact steps, dry-run 2026-10-04 (all-history hits to 0, nothing pushed): the README in the main checkout's gitignored `_privacy-remediation` folder.
+- **Rotate the local HTTPS PFX passphrase** (owner action): it is a weak dictionary word, local-only, never committed.
+
 ## Open
 
 No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-04 **README brought up to date; personal details removed from the public tree** (895407f, Quillfern Sieve): live build 895407fb; `test:privacy-guard` clean over every tracked file, `test:readme-claims` 63/63, 224/225 full gates (the one, `test:doc-paths`, fixed and green); the history rewrite is under Blocked.
 - 2026-10-04 **Full calendar with default reminders** (66521d3, 70d9ffc, Almanac Wren): live build 70d9ffc9; `test:calendar` and `calendar-lab` (65/65, synthetic data, no task started) pass; the five reminders converted from schedules read back from the live range API, and the live new-event form opens with the owner's 1-week + 1-day defaults.
 - 2026-10-04 **One composer repo chip per workspace** (593eb55, Twinpicker): live build 593eb556 rewrote the stored 9-entry row (`C:/x` beside `C:\x`) to one canonical entry per workspace at boot; `sonnet-probe`, which the old bug had evicted from the capped list, was restored; the live composer shows 7 unique chips and `c:/Claude-Orchestrator/` lights the existing chip; `test:recent-repos` and `repo-chips-lab` (11/11) pass.
 - 2026-10-03 **Allow model changes on paused tasks with stale running implementor records** (Bramble Quill): 20 desktop/phone browser checks, 50 model-routing checks, UI gate and all typechecks pass; authenticated live entry bundle matches rebuilt web output.
