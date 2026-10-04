@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { resetCreditKey, useStore } from "../store.js";
 import { effortLabel, isCapParked, modelLabel } from "../lib/format.js";
-import type { AccountDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO, ResetCreditsDTO, ZaiEffort, ZaiUsageDTO } from "../types.js";
+import type { AccountDTO, CodexCreditsDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO, ResetCreditsDTO, ZaiEffort, ZaiUsageDTO } from "../types.js";
 
 const clamp = (pct: number | null): number => (pct == null ? 0 : Math.min(100, Math.max(0, pct)));
 const label = (pct: number | null): string => (pct == null ? "—" : `${Math.round(pct)}%`);
@@ -310,7 +310,8 @@ const CODEX_STALE_MS = 15 * 60 * 1000;
 /**
  * Top-bar chip for the OpenAI Codex backend. Shows the ChatGPT-plan 5h/weekly usage meters when we have
  * a reading (live app-server pings + real-run snapshots — see server readCodexUsage), plus the model and
- * the current state — implementing now / ready / needs auth / off.
+ * the current state — implementing now / ready / needs auth / off. A plan with no 5h window but a
+ * ChatGPT credit balance (Pro Lite) shows that balance in the 5h row's place.
  */
 function CodexChip({
   enabled,
@@ -351,6 +352,7 @@ function CodexChip({
   // useful even when Codex isn't the active backend right now.
   const showMeters = !!usage && (usage.fiveHour != null || usage.sevenDay != null);
   const stale = !!usage && now - usage.updatedAt > CODEX_STALE_MS;
+  const credits = usage?.fiveHour == null ? creditsWorthShowing(usage?.credits) : null;
   // No meter and a recorded reason: a genuinely failed or never-attempted read (CLI missing, no auth,
   // RPC failure). Surface it explicitly instead of quietly falling back to the plain "model · effort"
   // line, which used to look identical whether Codex was healthy-but-unpolled or actually broken.
@@ -388,16 +390,20 @@ function CodexChip({
       </div>
       {showMeters ? (
         <div className="acct-meters">
-          <Meter
-            k="5h"
-            pct={usage!.fiveHour}
-            kind="five"
-            stale={stale}
-            reset={usage!.fiveHourReset}
-            resetEstimated={usage!.fiveHourResetEstimated}
-            now={now}
-            hold={usage!.wakeAt}
-          />
+          {credits ? (
+            <CreditRow credits={credits} stale={stale} />
+          ) : (
+            <Meter
+              k="5h"
+              pct={usage!.fiveHour}
+              kind="five"
+              stale={stale}
+              reset={usage!.fiveHourReset}
+              resetEstimated={usage!.fiveHourResetEstimated}
+              now={now}
+              hold={usage!.wakeAt}
+            />
+          )}
           <Meter k="7d" pct={usage!.sevenDay} kind="week" stale={stale} reset={usage!.sevenDayReset} now={now} />
         </div>
       ) : errored ? (
@@ -412,6 +418,34 @@ function CodexChip({
           {hasAuth ? "polling usage…" : `${model} · ${effortLabel(effort)}`}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A credit block only earns the 5h row when there is something to spend: a plan with neither a 5h window
+ *  nor credits keeps the idle 5h meter, whose staggered wake countdown is still meaningful. */
+function creditsWorthShowing(credits: CodexCreditsDTO | undefined): CodexCreditsDTO | null {
+  if (!credits) return null;
+  return credits.unlimited || credits.hasCredits || (credits.balance ?? 0) > 0 ? credits : null;
+}
+
+/** The Codex chip's ChatGPT-credit row, laid out on the meter grid so it lines up with the weekly meter. */
+function CreditRow({ credits, stale }: { credits: CodexCreditsDTO; stale: boolean }) {
+  // ChatGPT's own usage page rounds the balance up, so the chip matches the number the owner sees there.
+  const shown = credits.balance == null ? "unlimited" : Math.ceil(credits.balance).toLocaleString("en-US");
+  const exact =
+    credits.balance == null
+      ? "unlimited"
+      : credits.balance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const tip = `ChatGPT credits: ${stale ? "~" : ""}${exact} remaining${stale ? " (last known)" : ""} · this plan has no 5-hour window; Codex spends credits once the weekly allowance runs out`;
+  return (
+    <div className="meter meter-credits" title={tip} role="img" aria-label={tip}>
+      <span className="meter-k">cr</span>
+      <span className="meter-v">
+        {stale ? "~" : ""}
+        {shown}
+      </span>
+      <span className="meter-r">credits</span>
     </div>
   );
 }

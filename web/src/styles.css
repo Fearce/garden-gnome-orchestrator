@@ -193,6 +193,9 @@ button { font-family: inherit; cursor: pointer; }
 .meter { display: grid; grid-template-columns: 15px minmax(20px, 1fr) 28px 24px 44px; align-items: center; gap: 4px; }
 /* SuperGrok monthly credits use absolute units ("1k/15k") — widen the value column so it doesn't clip. */
 .meter.meter-wide-v { grid-template-columns: 15px minmax(20px, 1fr) 48px 24px 44px; }
+/* A balance has no track or pace: the figure spans those columns so it right-aligns with the weekly value. */
+.meter.meter-credits .meter-v { grid-column: 2 / 4; }
+.meter.meter-credits .meter-r { grid-column: 5; color: var(--text-faint); font-weight: 400; }
 .meter-k { font-family: var(--font-mono); font-size: 9px; color: var(--text-faint); }
 .meter-track { height: 4px; background: var(--bg); border-radius: 3px; overflow: hidden; }
 .meter-fill { height: 100%; border-radius: 3px; transition: width 0.4s ease; }

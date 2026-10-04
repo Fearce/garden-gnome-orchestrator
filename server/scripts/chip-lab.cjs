@@ -95,6 +95,16 @@ const CODEX_STATES = {
     planType: "plus",
     updatedAt: at - 60_000,
   }),
+  // A Pro Lite plan: no 5h window at all, a ChatGPT credit balance in its place (live shape 2026-10-05).
+  "codex-credits": (at) => ({
+    fiveHour: null,
+    sevenDay: 12,
+    fiveHourReset: null,
+    sevenDayReset: at + 5 * DAY,
+    planType: "prolite",
+    updatedAt: at - 60_000,
+    credits: { balance: 55094.2434125, hasCredits: true, unlimited: false },
+  }),
 };
 
 const SCENARIO_NAMES = [...Object.keys(SCENARIOS), ...Object.keys(GROK_STATES), ...Object.keys(CODEX_STATES)];
@@ -187,9 +197,10 @@ async function readStrip(page) {
           v: m.querySelector(".meter-v")?.textContent?.trim(),
           r: m.querySelector(".meter-r")?.textContent?.trim() || "",
           b: m.querySelector(".meter-b")?.textContent?.trim() || "",
-          track: Math.round(m.querySelector(".meter-track")?.getBoundingClientRect().width ?? 0),
+          // A credit balance row has no bar and no pace, so neither can collapse or spill there.
+          track: m.classList.contains("meter-credits") ? null : Math.round(m.querySelector(".meter-track")?.getBoundingClientRect().width ?? 0),
           // A value, pace or countdown wider than its fixed grid column spills into its neighbour.
-          spills: [".meter-v", ".meter-b", ".meter-r"].filter((sel) => {
+          spills: (m.classList.contains("meter-credits") ? [".meter-v", ".meter-r"] : [".meter-v", ".meter-b", ".meter-r"]).filter((sel) => {
             const el = m.querySelector(sel);
             if (!el) return true;
             const r = el.getBoundingClientRect(), chip = el.closest(".acct").getBoundingClientRect();
@@ -214,8 +225,9 @@ function report(width, strip) {
     const tags = c.tags.length ? ` [${c.tags.join(", ")}]` : "";
     console.log(`    ${c.label}${tags}`);
     for (const m of c.meters) {
-      const flag = (m.spills.length ? `  SPILLS ${m.spills.join(",")}` : "") + (m.track < MIN_TRACK_PX ? "  COLLAPSED" : "");
-      console.log(`      ${m.k.padEnd(3)} ${(m.v || "").padStart(5)} ${m.b.padStart(5)}  ${m.r.padEnd(12)} track ${m.track}px${flag}  ${m.tip ?? ""}`);
+      const flag = (m.spills.length ? `  SPILLS ${m.spills.join(",")}` : "") + (m.track != null && m.track < MIN_TRACK_PX ? "  COLLAPSED" : "");
+      const track = m.track == null ? "no track" : `track ${m.track}px`;
+      console.log(`      ${m.k.padEnd(3)} ${(m.v || "").padStart(5)} ${m.b.padStart(5)}  ${m.r.padEnd(12)} ${track}${flag}  ${m.tip ?? ""}`);
     }
     if (!c.meters.length && c.note) console.log(`      ${c.note}${c.errTitle ? ` (${c.errTitle})` : ""}`);
   }
@@ -270,7 +282,7 @@ async function main() {
         report(width, strip);
         clipped = clipped || strip.clipped;
         spilled = spilled || strip.chips.some((c) => c.meters.some((m) => m.spills.length > 0));
-        collapsed = collapsed || strip.chips.some((c) => c.meters.some((m) => m.track < MIN_TRACK_PX));
+        collapsed = collapsed || strip.chips.some((c) => c.meters.some((m) => m.track != null && m.track < MIN_TRACK_PX));
         if (width === args.widths[0]) await page.screenshot({ path: shot, clip: { x: 0, y: 0, width, height: 130 } });
         await page.close();
       }

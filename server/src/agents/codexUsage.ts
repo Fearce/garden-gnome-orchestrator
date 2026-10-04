@@ -45,6 +45,17 @@ export interface CodexUsageDTO {
    *  ping only — a rollout snapshot carries just the windows — so ABSENT means "not read yet", never
    *  "none banked"; `available: 0` is what says none. */
   resetCredits?: ResetCreditsDTO;
+  /** The ChatGPT credit balance Codex draws on past the plan's allowance. A plan without a 5-hour window
+   *  (Pro Lite) shows this in that window's place. Both the live ping and rollout snapshots carry it;
+   *  ABSENT means the reading did not say, never "no credits". */
+  credits?: CodexCreditsDTO;
+}
+
+export interface CodexCreditsDTO {
+  /** Credits remaining, or null when the plan is unlimited and states no balance. */
+  balance: number | null;
+  hasCredits: boolean;
+  unlimited: boolean;
 }
 
 interface RateLimitWindow {
@@ -56,6 +67,28 @@ interface RateLimits {
   primary?: RateLimitWindow | null;
   secondary?: RateLimitWindow | null;
   plan_type?: string | null;
+  credits?: unknown;
+}
+
+/**
+ * Parse a `credits` block from either wire shape: the app-server's camelCase
+ * (`{ hasCredits, unlimited, balance: "55094.2434125000" }`) or a rollout's snake_case `has_credits`.
+ * The balance arrives as a decimal string. Anything unreadable is null (unknown), never a zero balance.
+ */
+export function parseCodexCredits(raw: unknown): CodexCreditsDTO | null {
+  if (!raw || typeof raw !== "object") return null;
+  const v = raw as { hasCredits?: unknown; has_credits?: unknown; unlimited?: unknown; balance?: unknown };
+  const unlimited = v.unlimited === true;
+  const hasCredits = (v.hasCredits ?? v.has_credits) === true;
+  const balance = typeof v.balance === "string" && v.balance.trim() ? Number(v.balance) : typeof v.balance === "number" ? v.balance : NaN;
+  if (Number.isFinite(balance) && balance >= 0) return { balance, hasCredits, unlimited };
+  return unlimited ? { balance: null, hasCredits, unlimited } : null;
+}
+
+/** `parseCodexCredits` as a spreadable partial, so an unknown balance adds no key at all. */
+export function withCodexCredits(raw: unknown): { credits?: CodexCreditsDTO } {
+  const credits = parseCodexCredits(raw);
+  return credits ? { credits } : {};
 }
 
 /** A rate-limit window normalized from either wire shape (rollout snake_case / app-server camelCase). */
@@ -286,6 +319,8 @@ export function readCodexUsageForSnapshot(): CodexUsageDTO | null {
   const wakeAt = plannedWakeAt != null && plannedWakeAt > now ? plannedWakeAt : null;
   const live = liveCodexUsage();
   const pools = live?.pools?.length ? live.pools : freshest.pools;
+  // An older CLI's rollout can win `freshest` without a credit block; the live read still knows it.
+  const credits = freshest.credits ?? live?.credits;
   return {
     ...cloneUsage(freshest)!,
     wakeAt,
@@ -293,6 +328,7 @@ export function readCodexUsageForSnapshot(): CodexUsageDTO | null {
     // to come from that same reading or the two halves describe different moments.
     ...restoreLimitState(pools === freshest.pools ? freshest.limitState : live?.limitState),
     ...(pools?.length ? { pools } : {}),
+    ...(credits ? { credits } : {}),
   };
 }
 
@@ -348,6 +384,7 @@ function loadPersistedCache(): CodexUsageDTO | null {
       // reader today (the presentation snapshot) never decides anything with it.
       pools: Array.isArray(value.pools) ? value.pools.map(restorePool) : undefined,
       ...restoreResetCredits(value.resetCredits),
+      ...withCodexCredits(value.credits),
     };
   } catch {
     return null;
@@ -402,6 +439,7 @@ function readCodexUsageUncached(now: number): CodexUsageDTO | null {
   // working, and it carries no `rateLimitResetCredits` at all — spreading `best` alone therefore made a
   // granted reset disappear from the chip the moment a turn ran.
   const resetCredits = codexResetCredits();
+  const credits = best.credits ?? liveCodexUsage()?.credits;
   const inferred = turnFiveHourReset(latestTurn, now);
   if ((best.fiveHourReset == null || best.fiveHourReset <= now) && inferred) {
     return {
@@ -411,9 +449,10 @@ function readCodexUsageUncached(now: number): CodexUsageDTO | null {
       wakeAt,
       ...(pools ? { pools } : {}),
       ...(resetCredits ? { resetCredits } : {}),
+      ...(credits ? { credits } : {}),
     };
   }
-  return { ...best, wakeAt, ...(pools ? { pools } : {}), ...(resetCredits ? { resetCredits } : {}) };
+  return { ...best, wakeAt, ...(pools ? { pools } : {}), ...(resetCredits ? { resetCredits } : {}), ...(credits ? { credits } : {}) };
 }
 
 /** Banked resets from the freshest live ping, or null when no fresh ping has landed. Separate from
@@ -640,6 +679,7 @@ function scanRolloutText(text: string, file: string): CodexUsageDTO | null {
       ...meters,
       planType: rl.plan_type ?? null,
       updatedAt: Number.isFinite(ts) ? ts : safeMtime(file),
+      ...withCodexCredits(rl.credits),
     };
   }
   return found;

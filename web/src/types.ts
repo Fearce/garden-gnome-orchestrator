@@ -755,6 +755,14 @@ export interface CodexUsageDTO {
   /** Banked resets this plan has been granted and not yet spent. Absent until a live app-server ping
    *  lands, so absent means "not read", never "none banked". */
   resetCredits?: ResetCreditsDTO;
+  /** ChatGPT credit balance Codex spends past the plan's allowance. Absent means the reading did not say. */
+  credits?: CodexCreditsDTO;
+}
+
+export interface CodexCreditsDTO {
+  balance: number | null; // null only for an unlimited plan
+  hasCredits: boolean;
+  unlimited: boolean;
 }
 
 /** Grok (SuperGrok) usage — mirrors the server's GrokUsageDTO. Weekly used-% comes from the CLI log /

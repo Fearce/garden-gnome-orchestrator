@@ -9,7 +9,7 @@ import type { EventHub } from "../events.js";
 import type { ResetStagger } from "../accounts/resetStagger.js";
 import { withAgentToolPath } from "./env.js";
 import { seedCodexAuth } from "./codexRunner.js";
-import { classifyRateWindows, noteCodexPing, noteCodexUsageError, noteCodexWake, readCodexUsageForSnapshot, type CodexLimitState, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
+import { classifyRateWindows, noteCodexPing, withCodexCredits, noteCodexUsageError, noteCodexWake, readCodexUsageForSnapshot, type CodexLimitState, type CodexUsageDTO, type MeterWindow } from "./codexUsage.js";
 import { GENERAL_LIMIT_ID, normalizeLimitName, type CodexPool } from "./codexPools.js";
 import { parseCodexResetCredits, type RedeemOutcome } from "../accounts/resetCredits.js";
 import { randomUUID } from "node:crypto";
@@ -69,6 +69,8 @@ interface RpcRateLimits {
   rateLimitReachedType?: string | null;
   /** The spend-control counterpart — a plan can be blocked on spend rather than on a window. */
   spendControlReached?: boolean | null;
+  /** The plan's ChatGPT credit balance — `{ hasCredits, unlimited, balance: "<decimal>" }`. */
+  credits?: unknown;
 }
 
 /** The whole `account/rateLimits/read` result. `rateLimits` is the GENERAL pool (what we have always
@@ -113,6 +115,7 @@ export async function pingCodexUsage(apiKey: string | undefined, timeoutMs = PIN
       planType: rl.planType ?? null,
       updatedAt: readAt,
       ...withLimitState(rl),
+      ...withCodexCredits(rl.credits),
       ...(pools.length ? { pools } : {}),
       // Absent (not zero) when the CLI omitted the field, so the chip can tell "none banked" from
       // "this Codex build does not report them" — the same present-and-null vs. absent rule

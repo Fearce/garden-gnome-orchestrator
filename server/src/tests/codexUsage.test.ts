@@ -9,7 +9,7 @@
  * Run: npm run test:codex-usage (from server/)
  */
 
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,6 +26,7 @@ const {
   noteCodexPing,
   noteCodexUsageError,
   noteCodexWake,
+  parseCodexCredits,
   readCodexUsage,
   readCodexUsageForSnapshot,
 } = await import("../agents/codexUsage.js");
@@ -252,6 +253,69 @@ try {
       "and the whole file was NOT pulled off disk",
       bytes > 0 && bytes < size / 2,
       `read ${(bytes / 1048576).toFixed(1)}MB of a ${(size / 1048576).toFixed(1)}MB rollout`,
+    );
+  }
+
+  // --- ChatGPT credits: a plan without a 5h window (Pro Lite) reports a credit balance instead, in both
+  // wire shapes. Verified live 2026-10-05: `credits: { hasCredits, unlimited, balance: "55094.2434125000" }`. ---
+  {
+    const live = parseCodexCredits({ hasCredits: true, unlimited: false, balance: "55094.2434125000" });
+    check(
+      "the app-server credit block parses its decimal-string balance",
+      live?.balance === 55094.2434125 && live.hasCredits && !live.unlimited,
+      JSON.stringify(live),
+    );
+    const rollout = parseCodexCredits({ has_credits: false, unlimited: false, balance: "0" });
+    check("the rollout's snake_case credit block parses too", rollout?.balance === 0 && !rollout.hasCredits, JSON.stringify(rollout));
+    check("a missing credit block is unknown, not zero", parseCodexCredits(undefined) === null && parseCodexCredits(null) === null);
+    check(
+      "an unreadable balance is unknown, not zero",
+      parseCodexCredits({ hasCredits: true, unlimited: false, balance: "lots" }) === null &&
+        parseCodexCredits({ hasCredits: true, unlimited: false }) === null,
+    );
+    const unlimited = parseCodexCredits({ hasCredits: true, unlimited: true, balance: null });
+    check("an unlimited plan parses without a balance", unlimited?.unlimited === true && unlimited.balance === null, JSON.stringify(unlimited));
+
+    const dir = join(home, "sessions", "2026", "09", "17");
+    mkdirSync(dir, { recursive: true });
+    const at = Date.now() + 1_000;
+    const line = JSON.stringify({
+      timestamp: new Date(at).toISOString(),
+      payload: {
+        type: "token_count",
+        rate_limits: {
+          primary: { used_percent: 12, window_minutes: 7 * 24 * 60, resets_at: Math.floor((at + 86_400_000) / 1000) },
+          secondary: null,
+          credits: { has_credits: true, unlimited: false, balance: "55094.2434125000" },
+          plan_type: "prolite",
+        },
+      },
+    });
+    writeFileSync(join(dir, `rollout-${at}.jsonl`), `${line}\n`, "utf8");
+    __codexUsageTestHooks.reset();
+    const fromRollout = readCodexUsage();
+    check(
+      "a rollout snapshot carries the credit balance to the chip",
+      fromRollout?.fiveHour == null && fromRollout?.credits?.balance === 55094.2434125,
+      JSON.stringify(fromRollout),
+    );
+
+    mkdirSync(join(root, "data"), { recursive: true });
+    noteCodexPing({
+      fiveHour: null,
+      sevenDay: 12,
+      fiveHourReset: null,
+      sevenDayReset: at + 86_400_000,
+      planType: "prolite",
+      updatedAt: at + 1_000,
+      credits: { balance: 55000.5, hasCredits: true, unlimited: false },
+    });
+    const persisted = JSON.parse(readFileSync(join(root, "data", "codex-usage-cache.json"), "utf8")) as { credits?: { balance?: number } };
+    check("the live ping's balance is mirrored to the on-disk cache", persisted.credits?.balance === 55000.5, JSON.stringify(persisted.credits));
+    check(
+      "the presentation snapshot shows the live ping's balance",
+      readCodexUsageForSnapshot()?.credits?.balance === 55000.5,
+      JSON.stringify(readCodexUsageForSnapshot()?.credits),
     );
   }
 

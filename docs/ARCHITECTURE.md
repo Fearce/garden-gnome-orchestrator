@@ -1028,6 +1028,13 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   fails visibly; it never substitutes a flagship model. Routing
   fails closed: no visible meter, no dispatchable model, or a live latch ⇒ ordinary routing. Gate:
   `test:codex-pools`; the nightly ladder readout prints each pool under the backend rungs.
+- **ChatGPT credits** (`CodexUsageDTO.credits`, `parseCodexCredits`). Both the live read and every
+  rollout `token_count` carry `credits: { hasCredits, unlimited, balance }`, with the balance as a
+  decimal string. A plan with no 5-hour window (Pro Lite reports only the weekly one) shows that
+  balance on the Codex chip in the 5h row's place, rounded up the way ChatGPT's usage page rounds it.
+  A plan with neither a 5h window nor credits keeps the idle 5h meter and its wake countdown. The balance
+  is display-only: routing and cap checks do not read it. Gate: `test:codex-usage`; `chip-lab --scenario
+  codex-credits` renders it.
 - **Separately metered model pools are real routing candidates.** Eligible bounded roles proactively compare
   each live dedicated Codex pool with the general pool and the other providers using the same role-sized
   runway; a pool does not need the Claude/general pool to cap first. An explicit eligible-role model pin
