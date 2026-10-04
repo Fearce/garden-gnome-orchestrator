@@ -1151,11 +1151,11 @@ export class GoalRunner {
     let reopened = 0;
     for (const step of this.db.listGoalSteps(goal.id)) {
       if (step.settledAt == null || !step.threadId) continue;
-      const thread = this.db.getThread(step.threadId);
-      if (!thread || !UNFINISHED_STATES.has(thread.state)) continue;
+      const state = this.db.threadState(step.threadId);
+      if (!state || !UNFINISHED_STATES.has(state)) continue;
       this.db.updateGoalStep(step.id, { outcome: null, agentClaimedComplete: null, settledAt: null });
       this.uncountSettle(goal.id, step.settledAt);
-      this.hub.log("info", `Goal "${goal.title}" step ${step.seq}'s task is ${thread.state} again, so the step counts as running.`);
+      this.hub.log("info", `Goal "${goal.title}" step ${step.seq}'s task is ${state} again, so the step counts as running.`);
       this.broadcast();
       reopened++;
     }

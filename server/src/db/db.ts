@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
-import { KvMirror, type ListedThread, ThreadListingMirror, ToolCallDigest, type ToolCallRow, watchMessageDeletes } from "./memoryMirrors.js";
+import { KvMirror, type ListedThread, ProjectRoomMirror, ThreadListingMirror, ToolCallDigest, type ToolCallRow, watchMessageDeletes } from "./memoryMirrors.js";
 import { instrumentStatements } from "./slowStatements.js";
 import { config } from "../config.js";
 import { manualDeploymentSummary, parseManualDeployment, parseManualDeploymentClaim } from "../orchestrator/manualDeployment.js";
@@ -919,6 +919,7 @@ export class Db {
   /** Null until migrate() finishes, so a migration always reads the file as it is at that moment. */
   private threadListing: ThreadListingMirror | null = null;
   private kv: KvMirror | null = null;
+  private projectRooms: ProjectRoomMirror | null = null;
   private readonly toolCallDigests = new Set<ToolCallDigest<unknown>>();
   private runCreatedListeners: Array<(run: AgentRun) => void> = [];
 
@@ -941,6 +942,10 @@ export class Db {
       },
     });
     this.kv = new KvMirror(this.raw, (key) => this.readKv(key));
+    this.projectRooms = new ProjectRoomMirror(this.raw, {
+      all: () => this.readProjectRooms(),
+      one: (room) => this.readProjectRooms(room)[0] ?? null,
+    });
     watchMessageDeletes(this.raw, (threadId) => {
       for (const digest of this.toolCallDigests) digest.forget(threadId);
     });
@@ -1074,6 +1079,12 @@ export class Db {
     this.raw.exec(
       "CREATE INDEX IF NOT EXISTS idx_chat_project_rollup ON chat_messages(scope, room, remote_instance, workspace, thread_id, created_at)",
     );
+    // Covers `goalUsage`, which every goal listing runs per goal: without it each of a goal's ~200 runs was
+    // a scattered table read. After the ALTERs that add the token columns; supersedes idx_runs_thread_started.
+    this.raw.exec(
+      `CREATE INDEX IF NOT EXISTS idx_runs_thread_usage ON agent_runs(thread_id, started_at, ended_at, account,
+         input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens)`,
+    );
     // A parent's collaborators and sub-tasks are looked up on every sub-task state change and by the
     // sub-task barrier's poll; without this each lookup walks every thread row.
     this.raw.exec("CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_id) WHERE parent_id IS NOT NULL");
@@ -1170,6 +1181,7 @@ export class Db {
       DROP INDEX IF EXISTS idx_threads_state;
       DROP INDEX IF EXISTS idx_runs_thread;
       DROP INDEX IF EXISTS idx_runs_state;
+      DROP INDEX IF EXISTS idx_runs_thread_started;
     `);
   }
 
@@ -2004,6 +2016,14 @@ export class Db {
   getThread(id: string): Thread | null {
     const r = this.raw.prepare("SELECT * FROM threads WHERE id = ?").get(id) as Row | undefined;
     return r ? rowToThread(r) : null;
+  }
+
+  /** A task's state from the listing mirror, for loops that only branch on it: `getThread` reads the
+   *  brief and stage outputs off overflow pages, ~2s a call cold (crash.log, 2026-10-04). */
+  threadState(id: string): ThreadState | null {
+    const listed = this.threadListing?.one(id);
+    if (listed !== undefined) return listed?.thread.state ?? null;
+    return ((this.raw.prepare("SELECT state FROM threads WHERE id = ?").get(id) as Row | undefined)?.state as ThreadState | undefined) ?? null;
   }
 
   /** Each row is a shallow copy, so callers may reassign its fields; nested objects are frozen and shared. */
@@ -3764,6 +3784,13 @@ export class Db {
    *  show a "Chatroom" button. General-room rows are excluded (every active agent is in general; it's
    *  not a per-task collaboration). Newest-active room first. */
   listProjectRooms(): ChatRoomSummary[] {
+    const mirrored = this.projectRooms?.list();
+    return mirrored ? [...mirrored] : this.readProjectRooms();
+  }
+
+  /** Every project room's rollup, or only `room`'s (the `ProjectRoomMirror` re-reads one room per write). */
+  private readProjectRooms(room?: string): ChatRoomSummary[] {
+    const oneRoom = room === undefined ? "" : " AND room = @room";
     const rows = this.raw
       .prepare(
         `SELECT room,
@@ -3772,23 +3799,23 @@ export class Db {
                 MAX(created_at)     AS last_at,
                 GROUP_CONCAT(DISTINCT thread_id) AS thread_ids
          FROM chat_messages
-         WHERE scope = 'project'
+         WHERE scope = 'project'${oneRoom}
          GROUP BY room
          ORDER BY last_at DESC`,
       )
-      .all() as Row[];
+      .all(room === undefined ? {} : { room }) as Row[];
     // Machine names are free text and can contain a comma, so they are collected by their own grouped
     // query rather than folded into the GROUP_CONCAT above.
     const remoteByRoom = new Map<string, string[]>();
     for (const r of this.raw
       .prepare(
         `SELECT room, remote_instance FROM chat_messages
-         WHERE scope = 'project' AND remote_instance IS NOT NULL
+         WHERE scope = 'project' AND remote_instance IS NOT NULL${oneRoom}
          GROUP BY room, remote_instance`,
       )
-      .all() as Row[]) {
-      const room = r.room as string;
-      remoteByRoom.set(room, [...(remoteByRoom.get(room) ?? []), r.remote_instance as string]);
+      .all(room === undefined ? {} : { room }) as Row[]) {
+      const name = r.room as string;
+      remoteByRoom.set(name, [...(remoteByRoom.get(name) ?? []), r.remote_instance as string]);
     }
     return rows.map((r) => ({
       room: r.room as string,

@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { Message, Thread, ThreadSummary } from "../types.js";
+import type { ChatRoomSummary, Message, Thread, ThreadSummary } from "../types.js";
 
 // In-memory copies of two small, hot tables, so the reads that run on every connect, every periodic
 // sweep and every crash-log line stop going to disk.
@@ -97,9 +97,20 @@ export class ThreadListingMirror {
    *  the entries as read-only: they are shared with every other caller. */
   list(): readonly ListedThread[] | null {
     if (this.raw.inTransaction) return null;
+    this.sync();
+    return (this.ordered ??= [...this.rows.values()].sort(newestFirst));
+  }
+
+  /** One task (null when there is none), or undefined inside a transaction. Read-only, like `list`. */
+  one(id: string): ListedThread | null | undefined {
+    if (this.raw.inTransaction) return undefined;
+    this.sync();
+    return this.rows.get(id) ?? null;
+  }
+
+  private sync(): void {
     if (this.foreign.changed()) this.reload();
     else this.refreshDirty();
-    return (this.ordered ??= [...this.rows.values()].sort(newestFirst));
   }
 
   private reload(): void {
@@ -190,4 +201,55 @@ export class ToolCallDigest<T> {
     }
     return entry;
   }
+}
+
+/** `chat_messages` holds ~10k project-room lines, and the per-room rollup the connect snapshot carries
+ *  walked every one of them on each rebuild (356 index pages, 3.7s cold in crash.log on 2026-10-04). A
+ *  write marks only its room for a re-read. */
+export class ProjectRoomMirror {
+  private readonly rooms = new Map<string, ChatRoomSummary>();
+  private readonly dirty = new Set<string>();
+  private readonly foreign: ForeignCommitWatch;
+  private ordered: ChatRoomSummary[] | null = null;
+
+  constructor(
+    private readonly raw: Database.Database,
+    private readonly read: { all(): ChatRoomSummary[]; one(room: string): ChatRoomSummary | null },
+  ) {
+    this.foreign = new ForeignCommitWatch(raw);
+    watchTableWrites(raw, "chat_messages", "room", (room) => this.dirty.add(room));
+  }
+
+  /** Every project room, newest-active first, or null inside a transaction. The entries are frozen and
+   *  shared with every other caller. */
+  list(): readonly ChatRoomSummary[] | null {
+    if (this.raw.inTransaction) return null;
+    if (this.foreign.changed()) this.reload();
+    else this.refreshDirty();
+    return (this.ordered ??= [...this.rooms.values()].sort((a, b) => b.lastAt - a.lastAt || a.room.localeCompare(b.room)));
+  }
+
+  private reload(): void {
+    this.rooms.clear();
+    this.dirty.clear();
+    for (const room of this.read.all()) this.rooms.set(room.room, freezeRoom(room));
+    this.ordered = null;
+  }
+
+  private refreshDirty(): void {
+    if (!this.dirty.size) return;
+    for (const name of this.dirty) {
+      const room = this.read.one(name);
+      if (room) this.rooms.set(name, freezeRoom(room));
+      else this.rooms.delete(name);
+    }
+    this.dirty.clear();
+    this.ordered = null;
+  }
+}
+
+function freezeRoom(room: ChatRoomSummary): ChatRoomSummary {
+  Object.freeze(room.threadIds);
+  Object.freeze(room.remoteInstances);
+  return Object.freeze(room);
 }

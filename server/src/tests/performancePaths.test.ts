@@ -371,6 +371,80 @@ try {
   }
   assert.deepEqual(taskFiles(), [], "…and a rolled-back write never reaches the cached files");
 
+  // ---- the goal loop, goal usage and the connect snapshot stay off the disk ----
+  //
+  // 2026-10-04, after the fixes above: `getThread <- reopenResumedSteps` (25 calls, 13s: a `SELECT *` per
+  // settled step per tick, for its state), `goalUsage <- rowToGoal` (217 scattered run rows for one goal)
+  // and `listProjectRooms <- buildHello` (356 index pages on every console connect, 3.7s cold).
+  const queries = (call: () => unknown, table: string): string[] => {
+    const seen: string[] = [];
+    const original = db.raw.prepare.bind(db.raw);
+    db.raw.prepare = ((sql: string) => {
+      if (new RegExp(`FROM ${table}\\b`).test(sql)) seen.push(sql);
+      return original(sql);
+    }) as typeof db.raw.prepare;
+    try {
+      call();
+    } finally {
+      db.raw.prepare = original;
+    }
+    return seen;
+  };
+  db.listThreads();
+  assert.equal(db.threadState(writer.id), writer.state);
+  assert.deepEqual(queries(() => db.threadState(writer.id), "threads"), [], "a task's state comes from the listing mirror");
+  db.updateThread(writer.id, { state: "done" });
+  assert.equal(db.threadState(writer.id), "done", "…which sees the write");
+  assert.equal(db.threadState("no-such-task"), null);
+
+  const goal = db.createGoal({ title: "Usage", objective: "o", workspace: dir, effort: null, provider: null, model: null, maxConcurrent: 1, burnConservation: true, burnRatePct: 50 });
+  const usageSql = queries(() => db.goalUsage(goal.id, 0), "agent_runs");
+  assert.equal(usageSql.length, 1);
+  const usagePlan = planOf(usageSql[0]!, [goal.id]);
+  assert.ok(/COVERING INDEX idx_runs_thread_usage/.test(usagePlan), `goal usage must read only the covering index: ${usagePlan}`);
+
+  const roomA = "repo:alpha";
+  const roomB = "repo:beta";
+  db.addChatMessage({ room: roomA, scope: "project", workspace: dir, threadId: writer.id, role: "implementor", body: "a1" });
+  db.addChatMessage({ room: roomB, scope: "project", workspace: dir, threadId: thread.id, role: "implementor", body: "b1", remoteInstance: "sam-laptop" });
+  db.addChatMessage({ room: "general", scope: "general", role: "implementor", body: "not a project room" });
+  const fromSql = (): unknown => {
+    const scratch = new Database(join(dir, "orchestrator.sqlite"), { readonly: true });
+    try {
+      const rows = scratch
+        .prepare("SELECT room, COUNT(*) n, MAX(created_at) last, GROUP_CONCAT(DISTINCT thread_id) ids FROM chat_messages WHERE scope = 'project' GROUP BY room ORDER BY room")
+        .all() as Array<{ room: string; n: number; last: number; ids: string }>;
+      return rows.map((r) => ({ room: r.room, messageCount: r.n, lastAt: r.last, threadIds: r.ids.split(",").sort() }));
+    } finally {
+      scratch.close();
+    }
+  };
+  const fromMirror = (): unknown =>
+    db
+      .listProjectRooms()
+      .map((r) => ({ room: r.room, messageCount: r.messageCount, lastAt: r.lastAt, threadIds: [...r.threadIds].sort() }))
+      .sort((a, b) => a.room.localeCompare(b.room));
+  assert.deepEqual(fromMirror(), fromSql(), "the room rollup matches SQL");
+  assert.deepEqual(db.listProjectRooms().find((r) => r.room === roomB)?.remoteInstances, ["sam-laptop"]);
+  assert.deepEqual(queries(() => db.listProjectRooms(), "chat_messages"), [], "a reconnect with no new chat reads no chat rows");
+  db.addChatMessage({ room: roomA, scope: "project", workspace: dir, threadId: thread.id, role: "implementor", body: "a2" });
+  const changedRoomSql = queries(() => db.listProjectRooms(), "chat_messages");
+  assert.ok(changedRoomSql.length > 0 && changedRoomSql.every((sql) => /room = @room/.test(sql)), `only the room that changed is re-read: ${changedRoomSql.join(" ; ")}`);
+  assert.deepEqual(fromMirror(), fromSql(), "…and the rollup includes the new line");
+  assert.deepEqual(
+    db.listProjectRooms().map((r) => r.room),
+    [roomA, roomB],
+    "newest-active room first",
+  );
+  const otherConnection = new Database(join(dir, "orchestrator.sqlite"));
+  try {
+    otherConnection.prepare("DELETE FROM chat_messages WHERE room = ?").run(roomB);
+  } finally {
+    otherConnection.close();
+  }
+  assert.deepEqual(fromMirror(), fromSql(), "another connection's write is seen too");
+  assert.equal(db.listProjectRooms().some((r) => r.room === roomB), false);
+
   // ---- the connect snapshot is not rebuilt per reconnect ----
   //
   // 2026-09-16: the console's watchdog force-closes a socket after 35s of server silence, so a stall
