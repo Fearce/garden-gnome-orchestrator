@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 // The memory corpus is a directory of Markdown files with a small frontmatter block — the format the
 // Claude Code `/remember` and `/forget` commands, the PreCompact extractor and the memory audits already
@@ -59,10 +59,30 @@ export function safeMemoryFile(raw: string): string | null {
   return isMemoryFile(file) ? file : null;
 }
 
+interface SplitMemory {
+  /** Frontmatter lines without their line endings; empty when the file has none. */
+  lines: string[];
+  body: string;
+  /** The file's own line ending, so an edit to a CRLF file stays CRLF. */
+  eol: "\n" | "\r\n";
+}
+
+/** Frontmatter and body, ignoring a leading byte-order mark (some editors on this platform write one). */
+function splitFrontmatter(text: string): SplitMemory {
+  const clean = text.replace(/^\uFEFF/, "");
+  const eol = clean.includes("\r\n") ? "\r\n" : "\n";
+  const match = FRONTMATTER.exec(clean);
+  return match ? { lines: match[1]!.split(/\r?\n/), body: clean.slice(match[0].length), eol } : { lines: [], body: clean, eol };
+}
+
+function withLineEndings(text: string, eol: SplitMemory["eol"]): string {
+  const lf = text.replace(/\r\n/g, "\n");
+  return eol === "\n" ? lf : lf.replace(/\n/g, "\r\n");
+}
+
 export function parseMemory(file: string, text: string): ParsedMemory {
-  const match = FRONTMATTER.exec(text);
-  const { fields, lists } = parseFrontmatter(match ? match[1]! : "");
-  const body = match ? text.slice(match[0].length) : text;
+  const { lines, body } = splitFrontmatter(text);
+  const { fields, lists } = parseFrontmatter(lines);
   const field = (key: string) => fields.get(key) ?? "";
   return {
     file,
@@ -82,12 +102,12 @@ export function parseMemory(file: string, text: string): ParsedMemory {
 /** Scalar fields and lists from a frontmatter block. The memories here write both `type: x` and the nested
  *  `metadata:` + `  type: x` form, and both `key: [a, b]` and block lists (`key:` then `  - a`); a
  *  top-level scalar wins over a nested one of the same name. */
-function parseFrontmatter(frontmatter: string): { fields: Map<string, string>; lists: Map<string, string[]> } {
+function parseFrontmatter(frontmatter: string[]): { fields: Map<string, string>; lists: Map<string, string[]> } {
   const fields = new Map<string, string>();
   const nested = new Map<string, string>();
   const lists = new Map<string, string[]>();
   let block: string | null = null;
-  for (const line of frontmatter.split(/\r?\n/)) {
+  for (const line of frontmatter) {
     const item = LIST_ITEM.exec(line);
     if (item && block) {
       lists.set(block, [...(lists.get(block) ?? []), unquote(item[1]!)]);
@@ -197,15 +217,14 @@ export interface MemoryPatch {
 /** Apply a patch while keeping every frontmatter line the patch does not own (related, triggers,
  *  source, custom keys) exactly as written, and stamp `last_verified`. */
 export function patchMemoryText(text: string, patch: MemoryPatch, date = today()): string {
-  const match = FRONTMATTER.exec(text);
-  const body = patch.body !== undefined ? patch.body.trim() : (match ? text.slice(match[0].length) : text).trim();
+  const { lines, body: current, eol } = splitFrontmatter(text);
+  const body = patch.body !== undefined ? patch.body.trim() : current.trim();
   const owned: Record<string, string | undefined> = {
     name: patch.name !== undefined ? oneLine(patch.name) : undefined,
     description: patch.description !== undefined ? oneLine(patch.description) : undefined,
     type: patch.type,
     last_verified: date,
   };
-  const lines = match ? match[1]!.split(/\r?\n/) : [];
   const seen = new Set<string>();
   const out = lines.map((line) => {
     const colon = line.indexOf(":");
@@ -215,8 +234,24 @@ export function patchMemoryText(text: string, patch: MemoryPatch, date = today()
     seen.add(key);
     return `${key}: ${owned[key]}`;
   });
-  for (const [key, value] of Object.entries(owned)) if (value !== undefined && !seen.has(key)) out.push(`${key}: ${value}`);
-  return ["---", ...out, "---", "", body, ""].join("\n");
+  for (const [key, value] of Object.entries(owned)) {
+    if (value === undefined || seen.has(key)) continue;
+    const nested = metadataLine(out, key);
+    if (nested >= 0) out[nested] = `${out[nested]!.match(/^\s*/)![0]}${key}: ${value}`;
+    else out.push(`${key}: ${value}`);
+  }
+  return withLineEndings(["---", ...out, "---", "", body, ""].join("\n"), eol);
+}
+
+/** The index of `key` nested under a top-level `metadata:` block, or -1. */
+function metadataLine(lines: string[], key: string): number {
+  let inMetadata = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
+    if (!/^\s/.test(line)) inMetadata = /^metadata:\s*$/.test(line);
+    else if (inMetadata && line.trimStart().startsWith(`${key}:`)) return i;
+  }
+  return -1;
 }
 
 /** Insert a pointer line under `section` in the index text, creating the section at the end if needed. */
@@ -240,12 +275,12 @@ export function removeIndexPointers(index: string, file: string): string {
 
 /** Remove `file` from a memory's `related:` list, inline or block form; null when the list does not name it. */
 export function dropRelated(text: string, file: string): string | null {
-  const match = FRONTMATTER.exec(text);
-  if (!match) return null;
+  const { lines: frontmatter, body, eol } = splitFrontmatter(text);
+  if (!frontmatter.length) return null;
   let changed = false;
   let inBlock = false;
   const lines: string[] = [];
-  for (const line of match[1]!.split(/\r?\n/)) {
+  for (const line of frontmatter) {
     const item = LIST_ITEM.exec(line);
     if (inBlock && item) {
       if (unquote(item[1]!) === file) changed = true;
@@ -261,8 +296,12 @@ export function dropRelated(text: string, file: string): string | null {
     } else lines.push(line);
   }
   if (!changed) return null;
-  return `---\n${lines.join("\n")}\n---\n${text.slice(match[0].length)}`;
+  return withLineEndings(`---\n${lines.join("\n")}\n---\n${body}`, eol);
 }
+
+/** One write chain per memory directory. The index, the logs and `related:` links are read-modify-write,
+ *  so two overlapping writers (extraction, an agent's remember, a Settings edit) would drop a change. */
+const writeChains = new Map<string, Promise<unknown>>();
 
 /** File access for one memory directory. Every write is a temp file + rename, so a reader (a recall hook,
  *  the index worker, another agent) never sees half a memory. */
@@ -287,7 +326,35 @@ export class MemoryCorpus {
     }
   }
 
-  async create(input: NewMemory, section = SAVED_SECTION, intro = SAVED_INTRO): Promise<string> {
+  create(input: NewMemory, section = SAVED_SECTION, intro = SAVED_INTRO): Promise<string> {
+    return this.serial(() => this.createNow(input, section, intro));
+  }
+
+  update(file: string, patch: MemoryPatch): Promise<boolean> {
+    return this.serial(() => this.updateNow(file, patch));
+  }
+
+  /** Move the memory into the trash, then drop its index pointer and the `related:` links to it. */
+  remove(file: string): Promise<string | null> {
+    return this.serial(() => this.removeNow(file));
+  }
+
+  editIndex(edit: (index: string) => string): Promise<void> {
+    return this.serial(() => this.editIndexNow(edit));
+  }
+
+  appendLog(file: string, block: string, header: string): Promise<void> {
+    return this.serial(() => this.appendLogNow(file, block, header));
+  }
+
+  private serial<T>(work: () => Promise<T>): Promise<T> {
+    const key = resolve(this.dir).toLowerCase();
+    const run = (writeChains.get(key) ?? Promise.resolve()).then(work, work);
+    writeChains.set(key, run.catch(() => undefined));
+    return run;
+  }
+
+  private async createNow(input: NewMemory, section: string, intro: string): Promise<string> {
     await mkdir(this.dir, { recursive: true });
     const base = `${input.type}_${slugify(input.name)}`;
     const text = renderMemory(input);
@@ -299,13 +366,13 @@ export class MemoryCorpus {
         if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
         throw err;
       }
-      await this.editIndex((index) => addIndexPointer(index, section, `- [${oneLine(input.name)}](${file}) — ${oneLine(input.description)}`, intro));
+      await this.editIndexNow((index) => addIndexPointer(index, section, `- [${oneLine(input.name)}](${file}) — ${oneLine(input.description)}`, intro));
       return file;
     }
     throw new Error(`Could not find a free file name for ${base}.md`);
   }
 
-  async update(file: string, patch: MemoryPatch): Promise<boolean> {
+  private async updateNow(file: string, patch: MemoryPatch): Promise<boolean> {
     const safe = safeMemoryFile(file);
     const text = safe ? await this.read(safe) : null;
     if (!safe || text == null) return false;
@@ -313,8 +380,7 @@ export class MemoryCorpus {
     return true;
   }
 
-  /** Move the memory into the trash, then drop its index pointer and the `related:` links to it. */
-  async remove(file: string): Promise<string | null> {
+  private async removeNow(file: string): Promise<string | null> {
     const safe = safeMemoryFile(file);
     if (!safe) return null;
     const from = join(this.dir, safe);
@@ -328,7 +394,7 @@ export class MemoryCorpus {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     const to = join(trash, `${stamp}_${safe}`);
     await rename(from, to);
-    await this.editIndex((index) => removeIndexPointers(index, safe));
+    await this.editIndexNow((index) => removeIndexPointers(index, safe));
     for (const other of await this.listFiles()) {
       const text = await this.read(other);
       const next = text == null ? null : dropRelated(text, safe);
@@ -337,7 +403,7 @@ export class MemoryCorpus {
     return to;
   }
 
-  async editIndex(edit: (index: string) => string): Promise<void> {
+  private async editIndexNow(edit: (index: string) => string): Promise<void> {
     const path = join(this.dir, INDEX_FILE);
     let index = "";
     try {
@@ -349,7 +415,7 @@ export class MemoryCorpus {
     if (next !== index) await this.writeAtomic(path, next);
   }
 
-  async appendLog(file: string, block: string, header: string): Promise<void> {
+  private async appendLogNow(file: string, block: string, header: string): Promise<void> {
     const path = join(this.dir, file);
     let current = "";
     try {

@@ -14,7 +14,7 @@ mkdirSync(process.env.DATA_DIR, { recursive: true });
 const { FileMemoryService, DEFAULT_MEMORY_SETTINGS } = await import("../memory/memory.js");
 const { HAIKU_MODEL } = await import("../memory/models.js");
 const { QUEUE_DIR } = await import("../memory/extraction.js");
-const { TRASH_DIR, REVIEW_SECTION, memoryChunks, parseMemory, today } = await import("../memory/corpus.js");
+const { TRASH_DIR, REVIEW_SECTION, MemoryCorpus, dropRelated, memoryChunks, parseMemory, patchMemoryText, today } = await import("../memory/corpus.js");
 const { memoryAgentHooks, stripTaskEnvelope, userText, ExtractionOffsets } = await import("../memory/agentHooks.js");
 const { MemorySettingsStore } = await import("../memory/settings.js");
 const { MemoryEndpoint, isPrimaryMemoryOwner } = await import("../memory/endpoint.js");
@@ -104,6 +104,34 @@ function service(dir: string, opts: { haiku?: FakeHaiku; accounts?: string[]; se
   });
 }
 
+/** The owner's real files: some start with a byte-order mark, some use CRLF, many keep `type` nested under
+ *  `metadata:`. Edits must keep each layout, and concurrent writers must not lose index pointers. */
+async function corpusEditsKeepTheOwnersLayouts(dir: string): Promise<void> {
+  mkdirSync(dir, { recursive: true });
+  const corpus = new MemoryCorpus(dir);
+  const names = ["Alpha note", "Bravo note", "Charlie note", "Delta note", "Echo note"];
+  const created = await Promise.all(names.map((name) => corpus.create({ type: "reference", name, description: `${name} for the race check`, body: "Body text for the race." })));
+  const index = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  assert.deepEqual(created.filter((file) => !index.includes(`(${file})`)), [], "concurrent creates keep every index pointer");
+  await Promise.all(created.slice(0, 3).map((file) => corpus.remove(file)));
+  const pruned = readFileSync(join(dir, "MEMORY.md"), "utf8");
+  assert.deepEqual(created.filter((file, i) => pruned.includes(`(${file})`) !== i >= 3), [], "concurrent removes drop exactly their own pointers");
+
+  const bom = "﻿---\nname: Popup guard\ndescription: Guards the terminal popup\ntype: reference\nrelated: [gone.md, kept.md]\n---\n\nBody.\n";
+  assert.equal(parseMemory("bom.md", bom).name, "Popup guard", "a byte-order mark does not hide the frontmatter");
+  const bomPatched = patchMemoryText(bom, { description: "Guards the terminal popup, edited" }, "2026-10-05");
+  assert.equal(parseMemory("bom.md", bomPatched).name, "Popup guard", "patching a BOM file keeps one frontmatter block");
+  assert.equal(bomPatched.match(/^---$/gm)?.length, 2, "patching a BOM file does not prepend a second block");
+  assert.deepEqual(parseMemory("bom.md", dropRelated(bom, "gone.md") ?? "").related, ["kept.md"], "a BOM file's related link is dropped");
+
+  const crlf = "---\r\nname: Windows note\r\ndescription: Written on Windows\r\nmetadata:\r\n  type: feedback\r\nrelated: [gone.md]\r\n---\r\n\r\nLine one.\r\nLine two.\r\n";
+  const retyped = patchMemoryText(crlf, { type: "project" }, "2026-10-05");
+  assert.equal(parseMemory("crlf.md", retyped).type, "project", "a type edit reaches a nested metadata type");
+  assert.equal(retyped.match(/type:/g)?.length, 1, "a type edit replaces the nested type instead of adding a second one");
+  assert.ok(!/(^|[^\r])\n/.test(retyped), "a patched CRLF file stays CRLF throughout");
+  assert.ok(!/(^|[^\r])\n/.test(dropRelated(crlf, "gone.md") ?? "\n"), "dropping a related link keeps CRLF");
+}
+
 async function until(label: string, check: () => Promise<boolean> | boolean, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -168,6 +196,7 @@ try {
     // Either end of the local day falls on a different UTC date on a box east or west of UTC.
     assert.equal(today(new Date(2026, 9, 5, 0, 30)), "2026-10-05", "created_at/last_verified use the local date just after midnight");
     assert.equal(today(new Date(2026, 9, 5, 23, 30)), "2026-10-05", "created_at/last_verified use the local date just before midnight");
+    await corpusEditsKeepTheOwnersLayouts(join(root, "layouts"));
     unlinkSync(join(dir, "reference_build_farm.md"));
     memory.changed();
 
