@@ -325,6 +325,31 @@ await test("sidekick: rule edits need the current revision and keep fields they 
   }
 });
 
+await test("sidekick: concurrent edits of one revision save once, reject the stale writer, and allow its retry", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ggo-sidekick-race-"));
+  try {
+    const settings = join(dir, "settings.json");
+    const initial = JSON.stringify({ Version: 1, Rules: [], FutureField: "kept" });
+    await writeFile(settings, initial);
+    const revision = revisionForText(initial);
+    const rule = (name: string) => ({ name, triggerProcess: "Example.exe", companions: [{ hubId: "overlay" }] });
+    const results = await Promise.allSettled(["First", "Second"].map((name) => mutateRules(settings, { type: "create" }, { revision, rule: rule(name) })));
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    const refused = results.find((result) => result.status === "rejected");
+    assert.ok(refused?.status === "rejected");
+    assert.equal(refused.reason.status, 409);
+    assert.equal(refused.reason.extra.code, "stale_config");
+    const savedText = await readFile(settings, "utf8");
+    const saved = JSON.parse(savedText);
+    assert.deepEqual(saved.Rules.map((entry: { Name: string }) => entry.Name), ["First"]);
+    assert.equal(saved.FutureField, "kept");
+    await mutateRules(settings, { type: "create" }, { revision: revisionForText(savedText), rule: rule("Second") });
+    assert.deepEqual(JSON.parse(await readFile(settings, "utf8")).Rules.map((entry: { Name: string }) => entry.Name), ["First", "Second"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 await test("sidekick: state reports trigger and companion liveness through the injected probes", async () => {
   const files: Record<string, string> = {
     "/s.json": JSON.stringify({ Rules: [{ Id: RULE_ID, Name: "Game", TriggerProcess: "Game.exe", Companions: [{ Id: COMPANION_ID, Name: "Overlay", ExePath: "x.exe", AlreadyRunningPort: 5005 }] }] }),
@@ -694,6 +719,19 @@ try {
     const saved = await api(`/api/modules/sidekick/api/rules/${RULE_ID}`, { method: "PUT", body: { revision: state.body.settingsRevision, rule: { name: "Game night", triggerProcess: "Example.exe", companions: [{ id: COMPANION_ID, hubId: "overlay" }] } } });
     assert.equal(saved.status, 200, JSON.stringify(saved.body));
     assert.equal(JSON.parse(readFileSync(join(appData, "Sidekick", "settings.json"), "utf8")).Rules[0].Name, "Game night");
+    const names = ["Morning", "Evening"];
+    const concurrent = await Promise.all(names.map((name) => api(`/api/modules/sidekick/api/rules/${RULE_ID}`, {
+      method: "PUT", body: { revision: saved.body.revision, rule: { name, triggerProcess: "Example.exe", companions: [{ id: COMPANION_ID, hubId: "overlay" }] } },
+    })));
+    assert.deepEqual(concurrent.map((result) => result.status).sort(), [200, 409]);
+    const refused = concurrent.findIndex((result) => result.status === 409);
+    assert.equal(concurrent[refused]!.body.code, "stale_config");
+    const latest = await api("/api/modules/sidekick/api/state");
+    assert.equal(latest.body.rules[0].name, names[1 - refused]);
+    const retried = await api(`/api/modules/sidekick/api/rules/${RULE_ID}`, {
+      method: "PUT", body: { revision: latest.body.settingsRevision, rule: { name: names[refused], triggerProcess: "Example.exe", companions: [{ id: COMPANION_ID, hubId: "overlay" }] } },
+    });
+    assert.equal(retried.status, 200);
     const power = await api("/api/modules/sidekick/api/power/start", { method: "POST", body: {} });
     assert.equal(power.status, 200);
     assert.ok(hubCalls.includes("POST /api/start"));

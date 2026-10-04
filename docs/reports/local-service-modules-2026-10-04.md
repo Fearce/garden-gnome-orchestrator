@@ -186,3 +186,21 @@ lazy-chunk checks; privacy guard; README 65/65. Read-only local comparisons conf
 credentials, streams, folders and notes, the vacuum configuration and hidden-script preferences were
 preserved. The report's existing deliverable card returned HTTP 200 with matching file bytes; the
 design doc, agent rule and shared-memory entry are supporting files rather than owner-facing artifacts.
+
+The frontend fix was integrated, pushed and built from `58e13ef5`. A live desktop/phone browser run
+passed **24/24 checks**: Script Hub, Home and Sidekick each stayed stopped without view traffic and
+reopened through Start; settings enabled and disabled all four tabs across reloads; disabling the open
+Surveillance view closed its traffic; five cameras displayed pictures; a real segment played and
+downloaded with HTTP range support. The owner's 24/7 recording remained in the same worker throughout.
+Under live module load, HTTP measured 2.2 / 3.7 / 28.1 ms and WebSocket 1.7 / 2.6 / 27.3 ms, with
+zero stalls of at least one second. The served entry matched the frontend stamped `58e13ef5`.
+
+### Concurrent Sidekick rule saves
+
+Five isolated trials found another data-loss path: two saves from the same settings revision both
+returned success, but only one new rule remained. Sidekick now serializes the whole read/revision-check/
+write operation per settings file. Regression checks cover concurrent creates, a stale conflict and
+retry, preserved unknown settings, and concurrent edits through the authenticated proxy into a real
+worker: one response is 200 and the other is 409, then the refreshed edit succeeds. The focused module
+gate passes 33 checks plus tab visibility; server typecheck and privacy guard pass. These tests use
+isolated settings and never change the owner's live rules.

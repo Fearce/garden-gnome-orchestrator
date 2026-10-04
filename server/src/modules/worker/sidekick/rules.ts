@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { win32 } from "node:path";
+import { resolve, win32 } from "node:path";
 import { writeAtomic } from "../configStore.js";
 import { HttpError } from "../router.js";
 
@@ -56,7 +56,25 @@ export async function readSettingsDocument(settingsPath: string): Promise<Settin
 
 export type RuleOperation = { type: "create" } | { type: "update"; id: string } | { type: "delete"; id: string };
 
+const mutations = new Map<string, Promise<unknown>>();
+
 export async function mutateRules(settingsPath: string, operation: RuleOperation, body: unknown): Promise<{ revision: string | null; ruleId: string }> {
+  const absolute = resolve(settingsPath);
+  const key = process.platform === "win32" ? absolute.toLowerCase() : absolute;
+  // Read/check/write is one operation. Checking revisions before entering the queue lets two
+  // editors both pass on the same snapshot and silently overwrite one another's changes.
+  const run = (mutations.get(key) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => mutateRulesNow(settingsPath, operation, body));
+  mutations.set(key, run);
+  try {
+    return await run;
+  } finally {
+    if (mutations.get(key) === run) mutations.delete(key);
+  }
+}
+
+async function mutateRulesNow(settingsPath: string, operation: RuleOperation, body: unknown): Promise<{ revision: string | null; ruleId: string }> {
   const request = asObject(body, "The request");
   const current = await readSettingsDocument(settingsPath);
   requireRevision(request, current.revision);

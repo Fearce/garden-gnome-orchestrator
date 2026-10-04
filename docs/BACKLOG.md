@@ -14,12 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: serialize Sidekick rule edits before checking their revisions** (Codex QA, 2026-10-04).
-  Five isolated concurrent-save trials returned two successes but retained only one rule.
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 
 ## Shipped, awaiting live proof
 
+- **QA: serialize Sidekick rule edits before checking their revisions** (Codex QA, 2026-10-04).
+  Concurrent-save regressions and authenticated worker edits pass: one save returns 200, the stale one 409, and retry succeeds. 33 module checks, typecheck and privacy pass; server deploy pending.
 - **QA: keep an explicitly stopped module stopped while its tab remains open** (Codex QA, 2026-10-04).
   Isolated browser lab 72/72, including Stop/Start on all four open tabs and phone Surveillance; 228/228 gates, typechecks and privacy pass. Frontend deploy and live check pending.
 

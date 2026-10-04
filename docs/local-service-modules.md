@@ -122,7 +122,8 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
   token has to be issued. The local miIO path is the fallback; it needs Python with `python-miio` and
   receives the token on stdin, never on a command line.
 - **Sidekick** edits the companion-launcher tray app's rules in place, rejecting stale edits by file
-  revision. It shows each rule's trigger and companion liveness and the app's launch log, and starts or
+  revision. Concurrent edits are serialized before checking that revision, so two editors cannot both
+  save from the same snapshot and overwrite each other. It shows each rule's trigger and companion liveness and the app's launch log, and starts or
   stops the tray app through Script Hub.
 
 ## Surveillance recording
