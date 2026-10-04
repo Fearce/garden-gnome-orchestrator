@@ -23,9 +23,9 @@ same commit as the fix. Git history keeps the record.
 
 ## Blocked / waiting
 
-- **Rewrite published history to remove personal details the tree no longer carries** (owner action: filter-repo + force-push master, GitHub Support for PR refs).
+- **Rewrite published history to remove personal details the tree no longer carries** (owner action: filter-repo + force-push master, delete the five stale remote branches other than master, GitHub Support for PR refs).
   Kit with exact steps, dry-run 2026-10-04 (all-history hits to 0, nothing pushed): the README in the main checkout's gitignored `_privacy-remediation` folder.
-- **Rotate the local HTTPS PFX passphrase** (owner action): it is a weak dictionary word, local-only, never committed.
+- **Rotate the local HTTPS PFX passphrase** (owner action): it is a weak dictionary word, and `npm run audit:secrets --prefix server` finds that word in four reachable published commits (value withheld), so treat it as exposed: set a random passphrase, re-encrypt the PFX and update `server/.env`.
 
 - **Privacy QA: deliver the history-remediation kit and correct its credential assurance** (implementor follow-up).
   Its README and supporting rewrite files are outside the task workspace; the configured PFX passphrase also occurs in reachable published history (value withheld), so the kit's "no credentials ever committed" assurance needs correction and rotation remains required.
