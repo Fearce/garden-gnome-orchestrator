@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Fix duplicated composer repo chips (slash/case spellings of one workspace)** (Twinpicker, 2026-10-04).
 
 ## Ready (priority order)
 
