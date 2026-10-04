@@ -23,7 +23,8 @@ export interface MemorySearchHit {
 
 export interface MemoryService extends AgentMemory {
   readonly dir: string;
-  search(query: string, k?: number): Promise<MemorySearchHit[]>;
+  /** Ranked memories; `mode` "prompt" or "session" answers exactly what that recall hook would inject. */
+  search(query: string, k?: number, mode?: RecallMode): Promise<MemorySearchHit[]>;
   /** Full content of one memory file by its frontmatter name or file name. Scoped to the memory dir. */
   read(nameOrFile: string): Promise<string | null>;
   /** SDK hooks giving a Claude-based agent run native recall and extraction; undefined when off. */
@@ -144,8 +145,8 @@ export class FileMemoryService implements MemoryService {
     await this.worker.close();
   }
 
-  async search(query: string, k = 6): Promise<MemorySearchHit[]> {
-    const result = await this.recall(query, "search", k, 12_000);
+  async search(query: string, k = 6, mode: RecallMode = "search"): Promise<MemorySearchHit[]> {
+    const result = await this.recall(query, mode, k, 12_000);
     return result.memories.map((memory) => ({
       name: memory.name,
       description: memory.description,

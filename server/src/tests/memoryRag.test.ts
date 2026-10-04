@@ -342,6 +342,11 @@ try {
     assert.equal(hookStatus.json().index.files, 4, "the hook scripts' `rag.py status` reads the live index");
     const hookSearch = await app.inject({ method: "POST", url: "/api/memory/hook/search", payload: { query: "kettle limescale" }, headers: { authorization: `Bearer ${endpoint.token}` } });
     assert.ok(hookSearch.json().hits[0].lastVerified, "search hits carry last_verified for `rag.py retrieve --json`");
+    const asPrompt = await app.inject({ method: "POST", url: "/api/memory/hook/search", payload: { query: "limescale everywhere", k: 2, mode: "prompt" }, headers: { authorization: `Bearer ${endpoint.token}` } });
+    assert.equal(asPrompt.json().hits[0].file, "feedback_kettle.md", "prompt-mode search answers what the prompt hook injects (the trigger audit uses it)");
+    const forgot = await app.inject({ method: "POST", url: "/api/memory/hook/forget", payload: { file: "feedback_kettle.md" }, headers: { authorization: `Bearer ${endpoint.token}` } });
+    assert.match(forgot.json().trashedAs, /_feedback_kettle\.md$/, "`rag.py forget` moves the memory to the trash");
+    assert.equal((await app.inject({ method: "POST", url: "/api/memory/hook/forget", payload: { file: "../outside.md" }, headers: { authorization: `Bearer ${endpoint.token}` } })).statusCode, 404);
     const extracted = await app.inject({ method: "POST", url: "/api/memory/hook/extract", payload: { source: "claude-code", text: "short" }, headers: { authorization: `Bearer ${endpoint.token}` } });
     assert.equal(extracted.json().outcome, "unavailable", "without model access extraction is reported unavailable, not silently dropped");
     await endpoint.publish("0.0.0.0", 4317);

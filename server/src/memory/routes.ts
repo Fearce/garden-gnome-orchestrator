@@ -46,7 +46,11 @@ const hookRecallBody = z.discriminatedUnion("mode", [
   z.object({ mode: z.literal("prompt"), prompt: z.string().max(200_000), timeoutMs: hookTimeout }),
   z.object({ mode: z.literal("session"), cwd: z.string().min(1).max(1_000), timeoutMs: hookTimeout }),
 ]);
-const hookSearchBody = z.object({ query: z.string().trim().min(1).max(4000), k: z.number().int().min(1).max(15).default(6) });
+const hookSearchBody = z.object({
+  query: z.string().trim().min(1).max(4000),
+  k: z.number().int().min(1).max(15).default(6),
+  mode: z.enum(["search", "prompt", "session"]).default("search"),
+});
 const hookExtractBody = z.object({
   source: z.string().trim().min(1).max(60),
   sessionId: z.string().max(200).nullable().default(null),
@@ -138,7 +142,7 @@ function registerHookRoutes(routes: FastifyInstance, { memory, settings }: Memor
   });
   routes.post("/api/memory/hook/search", async (req) => {
     const b = hookSearchBody.parse(req.body);
-    return { hits: await memory.search(b.query, b.k) };
+    return { hits: await memory.search(b.query, b.k, b.mode) };
   });
   routes.post("/api/memory/hook/extract", async (req) => {
     const b = hookExtractBody.parse(req.body);
@@ -146,6 +150,10 @@ function registerHookRoutes(routes: FastifyInstance, { memory, settings }: Memor
     return { outcome: await memory.enqueueExtraction(b) };
   });
   routes.get("/api/memory/hook/status", () => memory.status());
+  routes.post("/api/memory/hook/forget", async (req, res) => {
+    const moved = await memory.remove(fileParams.parse(req.body).file);
+    return moved ? { ok: true, trashedAs: basename(moved) } : res.code(404).send({ error: "No such memory." });
+  });
   routes.post("/api/memory/hook/changed", () => {
     memory.changed();
     return { ok: true };
