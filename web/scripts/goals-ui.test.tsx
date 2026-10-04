@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { Goal, GoalUsage, GoalWorkItem } from "../src/types.js";
+import type { Goal, GoalUsage, GoalWorkItem, Thread } from "../src/types.js";
 import "./ssrCssStub.mjs";
 
 Object.assign(globalThis, { React });
@@ -288,6 +288,16 @@ assert.match(tree, /aria-expanded="true"[^>]*>[\s\S]*?Sync queue/, "the running 
 assert.doesNotMatch(tree, /Cache schema/, "a settled step starts closed when one runs");
 assert.match(tree, /goal-branch-count[^>]*>0\/3</, "a step counts its done milestones of those it reported");
 assert.match(tree, /Earlier steps/, "milestones from a step outside the window gather under earlier steps");
+
+// A persistent step remains unsettled while its task can be parked or closed. It is not necessarily running.
+for (const state of ["closed", "awaiting_approval", "paused", "implementing"] as const) {
+  Object.assign(useStore.getInitialState(), { threads: { "thread-2": { id: "thread-2", state } as Thread } });
+  const card = render([{ ...goal, status: "paused" }]);
+  const head = card.slice(card.indexOf("goal-branch-head"), card.indexOf("goal-branch-body"));
+  assert.ok(head.includes(`>${state.replace(/_/g, " ")}</span>`), `the step tree reports the actual ${state} task state`);
+  assert.doesNotMatch(head, />running</, "an unsettled row does not imply running");
+}
+Object.assign(useStore.getInitialState(), { threads: {} });
 
 const settledTree = render([
   {

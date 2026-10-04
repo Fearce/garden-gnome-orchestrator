@@ -463,14 +463,16 @@ function StepBranch({ goal, node, open, onToggle }: { goal: Goal; node: StepNode
 }
 
 function StepOutcome({ step }: { step: GoalStep }) {
-  if (step.outcome && step.settledAt != null) {
+  const state = useStore((s) => (step.threadId ? s.threads[step.threadId]?.state : undefined));
+  const outcome = step.settledAt != null ? step.outcome : state;
+  if (outcome) {
     return (
-      <span className="badge" style={{ "--state-color": stateColor(step.outcome) } as CSSProperties}>
-        {stateLabel(step.outcome)}
+      <span className="badge" style={{ "--state-color": stateColor(outcome) } as CSSProperties}>
+        {stateLabel(outcome)}
       </span>
     );
   }
-  return <span className="goal-branch-running">running</span>;
+  return <span className="goal-branch-running">{step.settledAt != null ? "Ended" : step.threadId ? "Awaiting status" : "Planned"}</span>;
 }
 
 /** One milestone: its status at a glance, and on a click its note, what it waits on, how it was verified,
