@@ -252,6 +252,7 @@ const GATES = [
   "test:audit-deps",
   "test:audit-overrides",
   "test:email-hygiene",
+  "test:privacy-guard",
   "test:qa-loop-check",
   "test:ceiling-economics",
   "test:role-ceilings",

@@ -2,3 +2,5 @@
 ~/\.claude/\.credentials\.json
 # Claude Code's own session transcripts: the same path on every machine, not a personal pointer
 ~/\.claude/projects/
+# A public press-release URL whose document id is 19 digits, not an account id
+alibabagroup\.com/en-US/document-\d+
