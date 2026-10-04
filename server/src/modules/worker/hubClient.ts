@@ -2,8 +2,17 @@ import { HttpError } from "./router.js";
 
 /** A call to the Script Hub service (the process supervisor that keeps running outside GGO). */
 export async function hubJson<T>(hubUrl: string, path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
-  const res = await hubFetch(hubUrl, path, init);
-  const text = await res.text();
+  const timeoutMs = init.timeoutMs ?? 15_000;
+  const signal = init.signal ?? AbortSignal.timeout(timeoutMs);
+  const res = await hubFetch(hubUrl, path, { ...init, signal });
+  let text: string;
+  try {
+    // Headers alone are not an answer: consume the body under the same deadline, and report a
+    // stalled or broken read as upstream unavailability rather than an internal module error.
+    text = await res.text();
+  } catch (error) {
+    throw hubReadError(error, timeoutMs, signal);
+  }
   let body: unknown = null;
   try {
     body = text ? JSON.parse(text) : null;
@@ -19,18 +28,26 @@ export async function hubJson<T>(hubUrl: string, path: string, init: RequestInit
 
 export async function hubFetch(hubUrl: string, path: string, init: RequestInit & { timeoutMs?: number } = {}): Promise<Response> {
   const { timeoutMs = 15_000, ...rest } = init;
+  const signal = rest.signal ?? AbortSignal.timeout(timeoutMs);
   try {
     return await fetch(`${hubUrl}${path}`, {
       ...rest,
       headers: rest.body ? { "content-type": "application/json", ...(rest.headers as Record<string, string> | undefined) } : rest.headers,
-      signal: rest.signal ?? AbortSignal.timeout(timeoutMs),
+      signal,
     });
   } catch (error) {
-    const name = (error as Error).name;
-    if (name === "TimeoutError") throw new HttpError(504, `Script Hub did not answer within ${Math.round(timeoutMs / 1000)}s`, { hubDown: true });
-    if (name === "AbortError") throw error;
-    throw new HttpError(503, "Script Hub is not running, so this panel cannot reach it", { hubDown: true, ...(wasRefused(error) ? { hubAbsent: true } : {}) });
+    throw hubReadError(error, timeoutMs, signal);
   }
+}
+
+function hubReadError(error: unknown, timeoutMs: number, signal: AbortSignal): unknown {
+  const name = (error as Error).name;
+  if (name === "TimeoutError" || (signal.aborted && signal.reason?.name === "TimeoutError")) {
+    return new HttpError(504, `Script Hub did not answer within ${Math.round(timeoutMs / 1000)}s`, { hubDown: true });
+  }
+  // A viewer leaving a stream is a cancellation, not evidence that the shared service failed.
+  if (signal.aborted || name === "AbortError") return error;
+  return new HttpError(503, "Script Hub stopped answering, so this panel cannot reach it", { hubDown: true, ...(wasRefused(error) ? { hubAbsent: true } : {}) });
 }
 
 /** Nothing listens at the hub's address (as opposed to a hub that is slow or failing). */

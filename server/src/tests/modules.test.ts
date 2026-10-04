@@ -32,6 +32,8 @@ import { ffmpegTag } from "../modules/worker/surveillance/processes.js";
 import { LineThrottle } from "../modules/worker/surveillance/logThrottle.js";
 import { JsonFile } from "../modules/worker/configStore.js";
 import { loadOrImport, type StoredConfig } from "../modules/worker/legacyImport.js";
+import { hubJson } from "../modules/worker/hubClient.js";
+import { HttpError } from "../modules/worker/router.js";
 
 let checks = 0;
 async function test(name: string, fn: () => Promise<void> | void) {
@@ -335,6 +337,39 @@ await test("Deck import refuses failed reads without saving defaults, starts emp
   } finally {
     await new Promise<void>((resolve) => source.close(() => resolve()));
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test("Script Hub: stalled and interrupted JSON bodies report unavailability and recover", async () => {
+  let mode: "stall" | "disconnect" | "ok" = "stall";
+  const source = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    if (mode === "ok") return res.end(JSON.stringify({ ok: true }));
+    res.write("{");
+    if (mode === "disconnect") setTimeout(() => res.destroy(), 25);
+  });
+  await new Promise<void>((resolve) => source.listen(0, "127.0.0.1", resolve));
+  const url = `http://127.0.0.1:${(source.address() as AddressInfo).port}`;
+  try {
+    await assert.rejects(hubJson(url, "/api/status", { timeoutMs: 150 }), (error: unknown) =>
+      error instanceof HttpError && error.status === 504 && error.extra.hubDown === true);
+    mode = "disconnect";
+    await assert.rejects(hubJson(url, "/api/status"), (error: unknown) =>
+      error instanceof HttpError && error.status === 503 && error.extra.hubDown === true && !error.extra.hubAbsent);
+    mode = "stall";
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 150);
+    try {
+      await assert.rejects(hubJson(url, "/api/status", { signal: abort.signal }), (error: unknown) =>
+        error instanceof Error && error.name === "AbortError" && !(error instanceof HttpError));
+    } finally {
+      clearTimeout(timer);
+    }
+    mode = "ok";
+    assert.deepEqual(await hubJson(url, "/api/status"), { ok: true });
+  } finally {
+    source.closeAllConnections();
+    await new Promise<void>((resolve) => source.close(() => resolve()));
   }
 });
 
