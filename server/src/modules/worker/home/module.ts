@@ -6,6 +6,7 @@ import { hubJson } from "../hubClient.js";
 import { loadOrImport, withValue, type StoredConfig } from "../legacyImport.js";
 import { HttpError, Router } from "../router.js";
 import { bridgeFor, emptyHomeConfig, maskDevice, newDevice, normalizeDevice, normalizeHomeConfig, restoreDeviceSecrets, type HomeConfig, type VacuumDevice } from "./config.js";
+import { controlHomeAssistantContainer, findHomeAssistantContainer, type HomeAssistantContainer } from "./container.js";
 import { HomeAssistantBridge, type VacuumStatus } from "./homeAssistant.js";
 import { miioRequest } from "./miio.js";
 
@@ -53,16 +54,42 @@ export const createHomeModule: ModuleFactory = async (ctx) => {
     return { ok: true, action, bridge, at: Date.now() };
   });
 
-  /** Whether Home Assistant answers at all; it replies 401 to an unauthenticated probe when it is up. */
+  /**
+   * Whether Home Assistant answers at all; it replies 401 to an unauthenticated probe when it is up. Only when it
+   * does not is Docker asked whether a container of the owner's runs it, so the tab can offer to start that.
+   */
   router.get("/home-assistant", async () => {
     const url = stored.value.homeAssistant.url;
     try {
       const res = await fetch(`${url}/api/`, { signal: AbortSignal.timeout(4_000) });
-      return { url, reachable: true, status: res.status, configDirFound: configDirFound() };
+      return { url, reachable: true, status: res.status, configDirFound: configDirFound(), container: null, containerError: null };
     } catch {
-      return { url, reachable: false, status: null, configDirFound: configDirFound() };
+      return { url, reachable: false, status: null, configDirFound: configDirFound(), ...(await containerView()) };
     }
   });
+
+  router.get("/home-assistant/container", () => containerView());
+
+  // Starting or stopping Home Assistant is the owner's explicit call; opening this tab never does either.
+  router.post("/home-assistant/start", async () => {
+    const container = await controlHomeAssistantContainer(stored.value.homeAssistant.configDir, "start");
+    ctx.log(`Home Assistant container ${container.name} started by the owner`);
+    return { container, containerError: null };
+  });
+
+  router.post("/home-assistant/stop", async () => {
+    const container = await controlHomeAssistantContainer(stored.value.homeAssistant.configDir, "stop");
+    ctx.log(`Home Assistant container ${container.name} stopped by the owner`);
+    return { container, containerError: null };
+  });
+
+  async function containerView(): Promise<{ container: HomeAssistantContainer | null; containerError: string | null }> {
+    try {
+      return { container: await findHomeAssistantContainer(stored.value.homeAssistant.configDir), containerError: null };
+    } catch (error) {
+      return { container: null, containerError: (error as Error).message };
+    }
+  }
 
   function configDirFound(): boolean {
     const dir = stored.value.homeAssistant.configDir;

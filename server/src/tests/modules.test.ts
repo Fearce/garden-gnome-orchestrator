@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { createServer, get as httpGet, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +20,7 @@ import { modulePaths } from "../modules/protocol.js";
 import { registerModuleRoutes } from "../modules/routes.js";
 import { workerEnvironment } from "../modules/spawnDetached.js";
 import { ModuleSupervisor } from "../modules/supervisor.js";
+import { CONTROL_DEADLINE_MS, controlHomeAssistantContainer, findHomeAssistantContainer } from "../modules/worker/home/container.js";
 import { bridgeFor, maskDevice, normalizeDevice, restoreDeviceSecrets } from "../modules/worker/home/config.js";
 import { matchesProcessName, parseLogLines, buildSidekickState, type SidekickIo } from "../modules/worker/sidekick/state.js";
 import { mutateRules, revisionForText } from "../modules/worker/sidekick/rules.js";
@@ -248,6 +249,55 @@ await test("home: a token written in device notes stays masked and survives an u
   assert.equal(restored.token, TOKEN);
   assert.equal(restored.statusNote, `${stored.statusNote}\nMoved downstairs.`);
   assert.throws(() => restoreDeviceSecrets({ ...edited, statusNote: SECRET_MASK }, stored), /notes/);
+});
+
+await test("home: Home Assistant's container is found by its mounted config folder and started only on request", async () => {
+  const configDir = join(tmpdir(), "ha-sample", "config");
+  const calls: string[][] = [];
+  let state = "exited";
+  const docker = async (args: string[]) => {
+    calls.push(args);
+    if (args[0] === "ps") return "aaa111\nbbb222\n";
+    if (args[0] === "inspect") {
+      return JSON.stringify([
+        { Id: "aaa111", Name: "/sample-db", State: { Status: "running" }, Mounts: [{ Source: join(tmpdir(), "db"), Destination: "/var/lib/db" }] },
+        { Id: "bbb222", Name: "/sample-ha", State: { Status: state, StartedAt: "0001-01-01T00:00:00Z", FinishedAt: "2026-01-02T03:04:05Z" }, Mounts: [{ Source: `${configDir.toUpperCase()}\\`, Destination: "/config" }] },
+      ]);
+    }
+    if (args[0] === "start") state = "running";
+    return "";
+  };
+  const found = await findHomeAssistantContainer(configDir, docker);
+  assert.deepEqual(found, { id: "bbb222", name: "sample-ha", state: "exited", startedAt: null, finishedAt: "2026-01-02T03:04:05Z" });
+  assert.ok(!calls.some((args) => args[0] === "start" || args[0] === "stop"), "looking never starts or stops anything");
+  assert.equal(await findHomeAssistantContainer("", docker), null);
+  assert.equal(await findHomeAssistantContainer(join(tmpdir(), "elsewhere"), docker), null);
+  const started = await controlHomeAssistantContainer(configDir, "start", docker);
+  assert.equal(started.state, "running");
+  assert.deepEqual(calls.find((args) => args[0] === "start"), ["start", "bbb222"]);
+  await assert.rejects(controlHomeAssistantContainer(join(tmpdir(), "elsewhere"), "start", docker), /No Docker container mounts/);
+
+  // A Docker that uses every millisecond it is given: lookup, start and re-check share ONE deadline, under the
+  // console proxy's 90s answer limit, and a re-check that runs out of time still reports the start that happened.
+  let clock = 0;
+  const slowCalls: { args: string[]; timeoutMs: number }[] = [];
+  state = "exited";
+  const slowDocker = async (args: string[], timeoutMs: number) => {
+    slowCalls.push({ args, timeoutMs });
+    clock += timeoutMs;
+    return docker(args);
+  };
+  const slow = await controlHomeAssistantContainer(configDir, "start", slowDocker, () => clock);
+  assert.ok(clock <= CONTROL_DEADLINE_MS && CONTROL_DEADLINE_MS < 90_000, `start took ${clock}ms of fake time`);
+  assert.ok(slowCalls.some((call) => call.args[0] === "start"), "the start itself still ran");
+  assert.equal(slow.name, "sample-ha");
+  clock = 0;
+  const slowerDocker = async (args: string[], timeoutMs: number) => {
+    clock += args[0] === "start" ? timeoutMs : 40_000;
+    return docker(args);
+  };
+  await assert.rejects(controlHomeAssistantContainer(configDir, "start", slowerDocker, () => clock), /did not finish within 80s/);
+  assert.ok(clock <= CONTROL_DEADLINE_MS, `a lookup that eats the budget stops before the start: ${clock}ms`);
 });
 
 await test("Deck import refuses failed reads without saving defaults, starts empty where no hub listens, and recovers", async () => {
@@ -579,6 +629,36 @@ try {
     await waitFor("stream closed in the worker", () => supervisor.ensure("surveillance").then((c) => supervisor.request(c, "/_worker/health")).then((r) => r.json() as Promise<{ openStreams: number }>), (h) => h.openStreams === 0);
     const reused = await api("/api/modules/surveillance/ticket", { method: "POST", body: {} });
     assert.notEqual(reused.body.ticket, ticket.ticket, "tickets are single-use");
+
+    // Behind the deck's proxy: Host is rewritten, Origin names the deck, and Chromium sends no Sec-Fetch-Site on a
+    // WebSocket handshake. The ticket is the guard there; an Origin-vs-Host check would refuse the owner's own cameras.
+    const proxied = { cookie: authed.cookie, host: "127.0.0.1:4317", origin: "https://deck.example.com:3940" };
+    const viaDeck = new WebSocket(`${base.replace("http", "ws")}/api/modules/surveillance/stream?ticket=${reused.body.ticket}`, { headers: proxied });
+    const deckFrame = await new Promise<Buffer>((resolve, reject) => {
+      viaDeck.once("message", (data) => resolve(data as Buffer));
+      viaDeck.once("unexpected-response", (_req, res) => reject(new Error(`deck handshake answered ${res.statusCode}`)));
+      viaDeck.once("error", reject);
+      setTimeout(() => reject(new Error("no frame through the deck within 10s")), 10_000);
+    });
+    assert.equal(JSON.parse(deckFrame.subarray(2, 2 + deckFrame.readUInt16BE(0)).toString("utf8")).id, "cam-1");
+    viaDeck.close();
+    const { body: crossTicket } = await api("/api/modules/surveillance/ticket", { method: "POST", body: {} });
+    const crossSite = new WebSocket(`${base.replace("http", "ws")}/api/modules/surveillance/stream?ticket=${crossTicket.ticket}`, { headers: { ...proxied, "sec-fetch-site": "cross-site" } });
+    const crossStatus = await new Promise<number>((resolve) => {
+      crossSite.once("unexpected-response", (_req, res) => resolve(res.statusCode ?? 0));
+      crossSite.once("open", () => resolve(101));
+      crossSite.once("error", () => resolve(-1));
+    });
+    assert.equal(crossStatus, 403, "a handshake the browser names cross-site is still refused");
+    // Only the ticketed handshake skips the Origin fallback; an ordinary module request without Sec-Fetch-Site still needs it.
+    const plainStatus = await new Promise<number>((resolve, reject) => {
+      const url = new URL(`${base}/api/modules/surveillance/api/recording`);
+      httpGet({ host: url.hostname, port: url.port, path: url.pathname, headers: proxied }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      }).once("error", reject);
+    });
+    assert.equal(plainStatus, 403);
   });
 
   await test("Surveillance: recordings list by day, seek by range, play as MP4 and refuse anything outside the camera's folder", async () => {
@@ -796,7 +876,8 @@ try {
     extraSupervisors.push(idle);
     const connection = await idle.ensure("home");
     await waitFor("idle exit", () => idle.status("home"), (s) => s.state === "stopped", 20_000);
-    assert.equal(pidAlive(connection.health.pid), false);
+    // The record goes first and the process ends a moment later as it exits by itself.
+    await waitFor("idle worker process gone", async () => pidAlive(connection.health.pid), (alive) => !alive, 10_000);
   });
 
   await test("a worker from an older GGO build is reported stale and replaced on next use", async () => {

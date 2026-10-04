@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Field, Icon, Loading, ModuleDialog, ModuleFrame, Notice } from "./ModuleFrame.js";
 import { usePoll } from "./hooks.js";
 import { ModuleRequestError, errorText, formatAgo, moduleJson } from "./moduleApi.js";
@@ -49,12 +49,29 @@ interface StatusAnswer {
   at: number;
 }
 
-interface HomeAssistantProbe {
+interface HomeAssistantContainer {
+  id: string;
+  name: string;
+  state: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+interface ContainerAnswer {
+  container: HomeAssistantContainer | null;
+  containerError: string | null;
+}
+
+interface HomeAssistantProbe extends ContainerAnswer {
   url: string;
   reachable: boolean;
   status: number | null;
   configDirFound: boolean;
 }
+
+/** While Home Assistant boots after a start it is re-checked this often, then at the calm pace again. */
+const BOOTING_PROBE_MS = 5_000;
+const CALM_PROBE_MS = 30_000;
 
 const ACTIONS: { action: Action; label: string; icon: "play" | "pause" | "home" | "locate"; tone?: string }[] = [
   { action: "start", label: "Start", icon: "play", tone: "primary" },
@@ -114,8 +131,12 @@ function bridgeOf(device: Device): "home-assistant" | "xiaomi-miio" {
 
 function HomeBody({ config, onEdit }: { config: HomeConfig; onEdit: () => void }) {
   const usesHomeAssistant = config.devices.some((device) => bridgeOf(device) === "home-assistant");
-  const probe = usePoll((signal) => moduleJson<HomeAssistantProbe>("home", "/home-assistant", { signal }), 30_000, usesHomeAssistant);
+  const [fast, setFast] = useState(false);
+  const probe = usePoll((signal) => moduleJson<HomeAssistantProbe>("home", "/home-assistant", { signal }), fast ? BOOTING_PROBE_MS : CALM_PROBE_MS, usesHomeAssistant);
   const homeAssistantDown = Boolean(usesHomeAssistant && probe.data && !probe.data.reachable);
+  // Its container runs but Home Assistant does not answer yet: it is booting, so look again sooner.
+  const booting = homeAssistantDown && probe.data?.container?.state === "running";
+  useEffect(() => setFast(booting), [booting]);
   if (!config.devices.length) {
     return (
       <>
@@ -136,9 +157,7 @@ function HomeBody({ config, onEdit }: { config: HomeConfig; onEdit: () => void }
   return (
     <>
       {homeAssistantDown && probe.data ? (
-        <Notice tone="warn" title="Home Assistant is not answering" onRetry={() => void probe.refresh()}>
-          Nothing answers at <code>{probe.data.url}</code>. Start Home Assistant on this PC; devices that use it come back on their next refresh.
-        </Notice>
+        <HomeAssistantDown probe={probe.data} onRetry={() => void probe.refresh()} />
       ) : null}
       {usesHomeAssistant && probe.data?.reachable && !probe.data.configDirFound ? (
         <Notice tone="warn" title="Home Assistant's config folder is not set">
@@ -151,6 +170,100 @@ function HomeBody({ config, onEdit }: { config: HomeConfig; onEdit: () => void }
         ))}
       </div>
     </>
+  );
+}
+
+/**
+ * Home Assistant is down. When a Docker container of the owner's runs it, the notice offers to start that
+ * container; starting is his click, never a side effect of opening the tab.
+ */
+function HomeAssistantDown({ probe, onRetry }: { probe: HomeAssistantProbe; onRetry: () => void }) {
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const container = probe.container;
+  if (container?.state === "running") {
+    return (
+      <Notice tone="info" title="Home Assistant is starting…" onRetry={onRetry}>
+        Its container <code>{container.name}</code> is running and Home Assistant is still loading, which usually takes under a minute. Devices come back by themselves once it answers at <code>{probe.url}</code>.
+      </Notice>
+    );
+  }
+  const start = async () => {
+    setStarting(true);
+    setError(null);
+    try {
+      await moduleJson<ContainerAnswer>("home", "/home-assistant/start", { method: "POST", body: {} });
+      onRetry();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setStarting(false);
+    }
+  };
+  return (
+    <Notice tone="warn" title="Home Assistant is not answering" onRetry={onRetry}>
+      Nothing answers at <code>{probe.url}</code>.{" "}
+      {container ? (
+        <>
+          Its Docker container <code>{container.name}</code> is {container.state}
+          {container.finishedAt ? `, stopped ${formatAgo(container.finishedAt)}` : ""}. GGO does not start it on its own.
+          <span className="home-ha-actions">
+            <button className="btn primary sm" disabled={starting} onClick={() => void start()}>
+              <Icon name="play" size={13} /> {starting ? "Starting Home Assistant…" : "Start Home Assistant"}
+            </button>
+            {error ? <span className="mod-dialog-error">{error}</span> : null}
+          </span>
+        </>
+      ) : probe.containerError ? (
+        <>Start Home Assistant on this PC; devices that use it come back on their next refresh. GGO could not check Docker for it: {probe.containerError}</>
+      ) : (
+        <>Start Home Assistant on this PC; devices that use it come back on their next refresh. No Docker container mounts its config folder, so GGO cannot start it for you.</>
+      )}
+    </Notice>
+  );
+}
+
+/** The container that runs Home Assistant, with its start and stop. Read once when the dialog opens. */
+function HomeAssistantService() {
+  const answer = usePoll((signal) => moduleJson<ContainerAnswer>("home", "/home-assistant/container", { signal }), null);
+  const [busy, setBusy] = useState<"start" | "stop" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const container = answer.data?.container ?? null;
+  const act = async (action: "start" | "stop") => {
+    if (action === "stop" && !window.confirm(`Stop Home Assistant (${container?.name ?? "its container"})? Its automations and every device that uses it stop until you start it again.`)) return;
+    setBusy(action);
+    setError(null);
+    try {
+      await moduleJson<ContainerAnswer>("home", `/home-assistant/${action}`, { method: "POST", body: {} });
+      await answer.refresh();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(null);
+    }
+  };
+  let text: string;
+  if (answer.error) text = `GGO could not check Docker: ${errorText(answer.error)}`;
+  else if (!answer.data) text = "Checking Docker for Home Assistant's container…";
+  else if (answer.data.containerError) text = `GGO could not check Docker: ${answer.data.containerError}`;
+  else if (!container) text = "No Docker container mounts the saved config folder, so GGO only talks to Home Assistant and cannot start or stop it.";
+  else text = `Runs in the Docker container ${container.name}, which is ${container.state}.`;
+  return (
+    <div className="home-ha-service">
+      <span className="home-ha-service-text">{text}</span>
+      {container ? (
+        container.state === "running" ? (
+          <button className="btn ghost sm" disabled={busy !== null} onClick={() => void act("stop")}>
+            {busy === "stop" ? "Stopping…" : "Stop Home Assistant"}
+          </button>
+        ) : (
+          <button className="btn primary sm" disabled={busy !== null} onClick={() => void act("start")}>
+            <Icon name="play" size={13} /> {busy === "start" ? "Starting…" : "Start Home Assistant"}
+          </button>
+        )
+      ) : null}
+      {error ? <span className="mod-dialog-error">{error}</span> : null}
+    </div>
   );
 }
 
@@ -316,6 +429,7 @@ function SettingsDialog({ initial, onClose, onSaved }: { initial: HomeConfig; on
             <input className="mod-input mono" value={draft.pythonPath} onChange={(e) => setDraft({ ...draft, pythonPath: e.target.value })} />
           </Field>
         </div>
+        <HomeAssistantService />
       </fieldset>
 
       {draft.devices.map((device) => (

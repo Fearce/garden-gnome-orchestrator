@@ -16,6 +16,8 @@ same commit as the fix. Git history keeps the record.
 
 
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
+- **QA: camera pictures behind the Deck proxy, and an explicit Start for Home Assistant** (2026-10-04, Claude QA; task cad0786a).
+  The module socket returned 403 behind `/orchestrator/` (Chromium sends no Sec-Fetch-Site on a WebSocket handshake and the proxy rewrites Host). Home Assistant's container had exited and the Home tab offered no way to start it.
 
 ## Shipped, awaiting live proof
 

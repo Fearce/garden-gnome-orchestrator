@@ -28,7 +28,7 @@ export function registerModuleRoutes(app: FastifyInstance, supervisor: ModuleSup
     routes.addHook("onRequest", async (req, reply) => {
       reply.header("cache-control", "no-store");
       if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
-      if (isCrossSiteRequest(req)) return reply.code(403).send({ error: "Cross-site module requests are refused." });
+      if (isStreamHandshake(req) ? isNamedCrossSite(req) : isCrossSiteRequest(req)) return reply.code(403).send({ error: "Cross-site module requests are refused." });
     });
     routes.setErrorHandler((error, _req, reply) => {
       const status = error instanceof ModuleError ? error.status : 500;
@@ -90,6 +90,21 @@ export function registerModuleRoutes(app: FastifyInstance, supervisor: ModuleSup
       return reply;
     });
   });
+}
+
+/**
+ * The picture socket's handshake. Chromium sends no Sec-Fetch-Site on a WebSocket handshake, and the deck's
+ * reverse proxy rewrites Host, so the Origin-vs-Host fallback would refuse the owner's own cameras there.
+ * The single-use ticket is what stops another site: only our own page can read the ticket POST's answer.
+ */
+function isStreamHandshake(req: FastifyRequest): boolean {
+  return req.method === "GET" && /^\/api\/modules\/[^/]+\/stream(?:\?|$)/.test(req.url);
+}
+
+/** Cross-site by the browser's own word only (as remote control's socket does): a missing Sec-Fetch-Site is not a refusal. */
+function isNamedCrossSite(req: FastifyRequest): boolean {
+  const site = req.headers["sec-fetch-site"];
+  return site !== undefined && site !== "same-origin" && site !== "none";
 }
 
 function moduleParam(req: FastifyRequest): ModuleId {

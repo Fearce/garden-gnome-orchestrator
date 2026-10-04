@@ -33,7 +33,10 @@ cannot stall owner chat or task execution.
   still percent-encoded, cut from the raw URL, so an encoded `/` or `\` in an id or file name can never
   turn into a separator on the worker side. Live streams use
   `/api/modules/<module>/stream` with a single-use ticket from `/api/modules/<module>/ticket`, because a
-  WebSocket handshake ignores CORS.
+  WebSocket handshake ignores CORS. On that handshake the ticket is the cross-site guard: Chromium sends
+  no `Sec-Fetch-Site` there, and the Dashboard Deck's `/orchestrator/` proxy rewrites `Host`, so the
+  Origin-vs-Host fallback used for ordinary requests would refuse the owner's own cameras behind it. A
+  handshake the browser does name cross-site is still refused.
 - **Idles out.** A worker exits after 10 minutes without a request, an open stream or user-started work.
 - **Visible.** The tab header shows the worker's state, pid and memory, with **Restart** and **Stop**.
   `GET /api/modules/services` lists all four. A worker still running code from an older GGO build says
@@ -120,7 +123,12 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
 - **Home** controls robot vacuums: status, start, pause, dock, find. It goes through Home Assistant
   first, signing in with the owner's refresh token from Home Assistant's own `.storage/auth`, so no new
   token has to be issued. The local miIO path is the fallback; it needs Python with `python-miio` and
-  receives the token on stdin, never on a command line.
+  receives the token on stdin, never on a command line. When Home Assistant does not answer and an
+  existing Docker container mounts its config folder at `/config`, the tab names that container and
+  offers **Start Home Assistant**; the Devices dialog also shows it with Start or Stop (Stop confirms).
+  The worker runs `docker start|stop` itself; the lookup, the start or stop and the re-check share one
+  80-second deadline, under the console proxy's 90-second answer limit. Opening the tab never starts it, GGO
+  never creates a container, and the container's restart policy is left as the owner set it.
 - **Sidekick** edits the companion-launcher tray app's rules in place, rejecting stale edits by file
   revision. Concurrent edits are serialized before checking that revision, so two editors cannot both
   save from the same snapshot and overwrite each other. It shows each rule's trigger and companion liveness and the app's launch log, and starts or

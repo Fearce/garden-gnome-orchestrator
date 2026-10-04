@@ -36,12 +36,21 @@ const check = createChecks();
 const SECRET_MASK = "********";
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** node.exe workers launched from this lab's build, and ffmpeg children carrying this instance's tag. */
-function labProcesses() {
+/** Every node.exe worker launched from a build of this name, and ffmpeg children carrying its tag. */
+function buildProcesses() {
   const marker = path.basename(path.dirname(path.resolve(__dirname, "..", process.env.GGO_LAB_ENTRY)));
   const script = `Get-CimInstance Win32_Process -Filter "Name='node.exe' OR Name='ffmpeg.exe'" | Where-Object { $_.CommandLine -like '*${marker}*worker*' } | ForEach-Object { "$($_.ProcessId) $($_.Name)" }`;
   const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true });
   return out.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+/**
+ * Leftovers of an earlier run killed mid-way share the build folder's name, so they are noted once at start
+ * and left out: the census is this instance's processes only.
+ */
+let foreignProcesses = new Set();
+function labProcesses() {
+  return buildProcesses().filter((entry) => !foreignProcesses.has(entry));
 }
 
 /** Every password the imported config holds, straight from disk, so the browser check knows what must stay hidden. */
@@ -105,6 +114,8 @@ async function soft(label, fn) {
 
 (async () => {
   requireBuild();
+  foreignProcesses = new Set(buildProcesses());
+  if (foreignProcesses.size) console.warn(`[modules-lab] ignoring ${foreignProcesses.size} worker process(es) left by an earlier run: ${[...foreignProcesses].join(", ")}`);
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "modules-lab-"));
   const shots = shotDir(dataDir);
   killInstance(PORT);
@@ -351,6 +362,17 @@ async function soft(label, fn) {
       if (ha && !ha.reachable) {
         check("a Home Assistant outage is reported once, not once per device", notices.filter((n) => /not answering/.test(n ?? "")).length === 1, JSON.stringify(notices));
         check("...and its devices' controls are disabled meanwhile", await page.locator(".home-actions button:has-text('Start')").first().isDisabled());
+        if (ha.container) {
+          // The lab never clicks it: starting the owner's Home Assistant is his call.
+          const offered = await page.locator(".mod-notice button:has-text('Start Home Assistant')").count();
+          const after = (await api(cookie, "GET", "/api/modules/home/api/home-assistant")).json;
+          check("...it offers to start Home Assistant's own container, and opening the tab started nothing", offered === 1 && after?.container?.state === ha.container.state, `${offered} button(s); container ${ha.container.state} -> ${after?.container?.state}`);
+          await page.locator(".mod-head-actions button:has-text('Devices')").click();
+          await page.waitForSelector(".home-ha-service button:has-text('Start Home Assistant')", { timeout: 30_000 }).catch(() => undefined);
+          check("...and the Devices dialog names the container with its own Start", (await page.locator(".home-ha-service button:has-text('Start Home Assistant')").count()) === 1, (await page.locator(".home-ha-service").textContent().catch(() => "")) ?? "");
+          await page.screenshot({ path: path.join(shots, "home-devices.png") });
+          await page.keyboard.press("Escape");
+        }
       }
       await page.screenshot({ path: path.join(shots, "home.png") });
     });
