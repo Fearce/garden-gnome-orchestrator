@@ -14,7 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: verify desktop startup, checkout selection and clean window exit** (2026-10-04, Moss Gauge).
 - **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
 - **Independent QA: verify and deploy the camera-proxy and Home Assistant controls** (2026-10-04, Codex QA; task cad0786a).
   Review the latest migration commits, real browser lifecycle, configuration preservation, deliverable serving and current full gates before live acceptance.
@@ -23,7 +22,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-
+- **QA: harden desktop settings, checkout selection, download names and load-probe cleanup** (2026-10-04, Moss Gauge).
+  Desktop units 19/19 and new real-window regressions pass; application types/builds, Windows packaging and privacy pass. Clean-exit lab failures and distribution delivery remain under Ready.
 - **QA: serialize Sidekick rule edits before checking their revisions** (Codex QA, 2026-10-04).
   Concurrent-save regressions and authenticated worker edits pass: one save returns 200, the stale one 409, and retry succeeds. 33 module checks, typecheck and privacy pass; server deploy pending.
 - **QA: keep an explicitly stopped module stopped while its tab remains open** (Codex QA, 2026-10-04).
@@ -31,6 +31,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Ready (priority order)
 
+1. **Resolve Electron clean-exit verification before accepting the desktop app** (2026-10-04, Moss Gauge): desktop lab 52/55; three 20-second app-exit timeouts, and packaged-window-close verification timed out at 15 seconds. Live HTTP/WS load probe completed without a desktop-open regression.
+2. **Surface the desktop distribution and all retained validation artifacts** (2026-10-04, Moss Gauge): installer and retained screenshots/metrics have no deliverable cards; existing eight cards serve. Installer exceeds the 25 MB serving cap and needs a supported delivery path.
 1. **Investigate console smoke served/local bundle mismatch and browser shutdown timeout**: 2026-10-03 probe reports ws=live with no console errors, served index-C8zofTVy.js versus local index-BHXtYnz4.js, and browser shutdown exceeded 5000ms; authenticated HTTP bundle verification passed earlier in the same task.
 
 ## Blocked / waiting

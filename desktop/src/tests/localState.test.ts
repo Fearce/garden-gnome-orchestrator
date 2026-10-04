@@ -32,6 +32,11 @@ test("settings fall back field by field and round-trip", () => {
   writeFileSync(join(dir, "desktop-settings.json"), "{ not json");
   assert.equal(loadSettings(dir).serverUrl, DEFAULT_SERVER_URL);
 
+  for (const value of [null, [], "settings", 42, false]) {
+    writeFileSync(join(dir, "desktop-settings.json"), JSON.stringify(value));
+    assert.deepEqual(loadSettings(dir), { serverUrl: DEFAULT_SERVER_URL, checkoutDir: null, bounds: null }, "non-object JSON uses first-run defaults");
+  }
+
   const saved = { serverUrl: "https://example.com/orchestrator/", checkoutDir: scratch, bounds: { x: 10, y: 20, width: 1200, height: 800, maximized: true } };
   saveSettings(dir, saved);
   assert.deepEqual(loadSettings(dir), saved);
@@ -107,4 +112,9 @@ test("a download keeps its name, made safe, and never overwrites", () => {
   assert.equal(downloadPath(dir, "a:b?.txt", exists), join(dir, "a_b_.txt"));
   assert.equal(downloadPath(dir, "...", exists), join(dir, "download"));
   assert.equal(downloadPath(dir, "", exists), join(dir, "download"));
+  assert.equal(downloadPath(dir, "CON.txt", exists), join(dir, "_CON.txt"));
+  assert.equal(downloadPath(dir, "aux.json", exists), join(dir, "_aux.json"));
+  assert.equal(downloadPath(dir, "LPT1", exists), join(dir, "_LPT1"));
+  assert.equal(downloadPath(dir, "COM\u00b9.log", exists), join(dir, "_COM\u00b9.log"));
+  assert.equal(downloadPath(dir, "console.txt", exists), join(dir, "console.txt"));
 });

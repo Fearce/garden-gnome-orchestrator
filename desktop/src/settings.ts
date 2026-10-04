@@ -35,7 +35,8 @@ function readBounds(value: unknown): WindowBounds | null {
 export function loadSettings(userDataDir: string): DesktopSettings {
   let raw: Record<string, unknown> = {};
   try {
-    raw = JSON.parse(readFileSync(join(userDataDir, FILE), "utf8")) as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(readFileSync(join(userDataDir, FILE), "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) raw = parsed as Record<string, unknown>;
   } catch {
     /* first run */
   }

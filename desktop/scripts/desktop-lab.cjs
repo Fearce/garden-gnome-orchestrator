@@ -248,7 +248,7 @@ async function captureWindow(app, file) {
 /** Quit an app run, killing it if it doesn't exit in time, so a stuck quit fails a check instead of
  *  hanging the lab. True when it quit on its own. */
 async function closeApp(app) {
-  const pid = app.process().pid;
+  const pid = await app.evaluate(() => process.pid).catch(() => app.process().pid);
   const quit = await Promise.race([app.close().then(() => true, () => false), sleep(20_000).then(() => false)]);
   if (!quit && pid && alive(pid)) {
     try {
@@ -317,6 +317,33 @@ function squat() {
     const offline = await connectTitle(page, "GGO isn't running", 20_000);
     state = await connectState(page);
     check("with the port free the app offers Start GGO", offline && !!state.buttons?.includes("Start GGO"), JSON.stringify(state));
+
+    // An installed copy learns its checkout through the folder picker. A different configured port
+    // must replace Start GGO immediately, without waiting for a later retry to refresh the view.
+    const otherCheckout = path.join(dataDir, "other-checkout");
+    fs.mkdirSync(path.join(otherCheckout, "server", "scripts"), { recursive: true });
+    fs.mkdirSync(path.join(otherCheckout, "web"), { recursive: true });
+    fs.writeFileSync(path.join(otherCheckout, "server", "scripts", "supervise.cjs"), "");
+    fs.writeFileSync(path.join(otherCheckout, "server", "package.json"), "{}");
+    fs.writeFileSync(path.join(otherCheckout, "web", "package.json"), "{}");
+    fs.writeFileSync(path.join(otherCheckout, "server", ".env"), "PORT=4498\n");
+    await app.evaluate(({ dialog }, picked) => {
+      globalThis.__originalPicker = dialog.showOpenDialog;
+      globalThis.__originalPort = process.env.PORT;
+      delete process.env.PORT;
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [picked] });
+    }, otherCheckout);
+    await page.evaluate(() => window.ggoConnect.chooseCheckout());
+    const chosen = await page.evaluate(() => window.ggoConnect.state());
+    check("choosing a checkout refreshes its configured port immediately", chosen.checkoutPort === 4498 && chosen.checkout === otherCheckout, JSON.stringify(chosen));
+    check("a chosen checkout on another port offers Use port instead of Start GGO", (await connectState(page)).buttons?.includes("Use port 4498") && !(await connectState(page)).buttons?.includes("Start GGO"));
+    await app.evaluate(({ dialog }, picked) => {
+      process.env.PORT = globalThis.__originalPort;
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [picked] });
+    }, path.resolve(DESKTOP, ".."));
+    await page.evaluate(() => window.ggoConnect.chooseCheckout());
+    await app.evaluate(({ dialog }) => { dialog.showOpenDialog = globalThis.__originalPicker; });
+    check("choosing the matching checkout restores Start GGO immediately", (await connectState(page)).buttons?.includes("Start GGO"));
     await page.screenshot({ path: path.join(shots, "02-offline.png") });
     const startClicked = Date.now();
     await page.click('#actions button:text-is("Start GGO")');
@@ -438,6 +465,13 @@ function squat() {
     await chip.hover();
     await chip.locator('a.btn:has-text("Download")').click();
     check("a second download is numbered, not overwritten", await waitFor(async () => fs.existsSync(path.join(downloads, "report (1).md")), 15_000), fs.readdirSync(downloads).join(","));
+    const downloadUrl = await chip.locator('a.btn:has-text("Download")').evaluate((link) => link.href);
+    await app.evaluate(({ BrowserWindow }, url) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents;
+      contents.downloadURL(url);
+      contents.downloadURL(url);
+    }, downloadUrl);
+    check("simultaneous downloads keep separate complete files", await waitFor(async () => ["report (2).md", "report (3).md"].every((name) => fs.existsSync(path.join(downloads, name)) && fs.readFileSync(path.join(downloads, name), "utf8") === DELIVERABLE_TEXT), 15_000), fs.readdirSync(downloads).join(","));
     await page.mouse.move(5, 300);
 
     // ---- 6. external links leave for the system browser; nothing else leaves at all ----

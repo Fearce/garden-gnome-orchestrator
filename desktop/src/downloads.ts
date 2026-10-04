@@ -8,11 +8,16 @@ import { downloadPath } from "./downloadPath";
  * stops on a Save As dialog for every file.
  */
 export function handleDownloads(ses: Session, mainWindow: () => BrowserWindow | null): void {
+  // A second download can arrive before Chromium creates the first file. Reserve its name at once.
+  const pending = new Set<string>();
+  const key = (file: string) => process.platform === "win32" ? file.toLowerCase() : file;
   ses.on("will-download", (_event, item) => {
-    const target = downloadPath(app.getPath("downloads"), item.getFilename(), existsSync);
+    const target = downloadPath(app.getPath("downloads"), item.getFilename(), (file) => pending.has(key(file)) || existsSync(file));
+    pending.add(key(target));
     item.setSavePath(target);
     item.on("updated", () => showProgress(mainWindow(), item));
     item.once("done", (_done, state) => {
+      pending.delete(key(target));
       mainWindow()?.setProgressBar(-1);
       if (state === "completed") announce(target);
       else if (state === "interrupted") announceFailure(item.getFilename());

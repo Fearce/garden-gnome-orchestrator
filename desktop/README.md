@@ -163,6 +163,8 @@ test run doesn't land on top of whatever you're doing.
 `npm run probe:load --prefix desktop -- --out <folder>` measures a running GGO's `/api/me` and
 WebSocket latency with the app closed, open and closed again, plus the app's startup time, memory
 and CPU, and writes `desktop-load-probe.json`. It signs in with `AUTH_PASSWORD` and only reads.
+If the app does not exit within 20 seconds, the probe fails and cleans up its test process rather
+than recording a misleading "app closed again" measurement.
 
 Layout: `src/main.ts` (app lifecycle, IPC), `src/controller.ts` (the window and its connection),
 `src/localServer.ts` (finding and starting a server), `src/navigationPolicy.ts` (what may load

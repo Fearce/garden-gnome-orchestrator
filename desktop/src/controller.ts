@@ -146,7 +146,8 @@ export class DesktopController {
     }
     this.settings = { ...this.settings, checkoutDir: dir };
     saveSettings(this.paths.userData, this.settings);
-    this.show(this.view.phase, { checkout: dir, detail: null });
+    const port = checkoutPort(dir);
+    this.show(this.view.phase, { checkout: dir, checkoutPort: port !== urlPort(this.server) ? port : null, detail: null, logPath: null });
   }
 
   openLog(): void {

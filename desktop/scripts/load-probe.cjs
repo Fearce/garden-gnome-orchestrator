@@ -13,6 +13,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const WebSocket = require("../../server/node_modules/ws");
 const harness = require("../../server/scripts/lab-harness.cjs");
 const { loadPlaywright } = require("./loadPlaywright.cjs");
@@ -155,7 +156,24 @@ async function appUsage(app, ms) {
 }
 
 async function closeApp(app) {
-  await Promise.race([app.close().catch(() => undefined), sleep(20_000)]);
+  // Playwright's process() is the cmd launcher on Windows, which can exit before Electron does.
+  const pid = await app.evaluate(() => process.pid).catch(() => app.process().pid);
+  let timer;
+  try {
+    await Promise.race([
+      app.close(),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("Desktop app did not exit within 20 seconds; refusing to measure it as closed.")), 20_000); }),
+    ]);
+  } catch (error) {
+    // Clean up only this probe's app, while keeping the failed exit as a verification failure.
+    try {
+      if (process.platform === "win32") execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+      else process.kill(pid);
+    } catch { /* already gone */ }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 (async () => {
@@ -184,8 +202,11 @@ async function closeApp(app) {
       console.log(`report: ${path.resolve(file)}`);
     }
   } finally {
-    if (app) await closeApp(app);
-    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+    try {
+      if (app) await closeApp(app);
+    } finally {
+      fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+    }
   }
 })().catch((error) => {
   console.error(error);
