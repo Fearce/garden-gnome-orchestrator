@@ -132,6 +132,13 @@ The board has a tab for each area. Any tab except Tasks can be hidden per browse
 Also in the console:
 
 - **Search** across every task's full conversation.
+- **Agent memory.** GGO indexes your Markdown memory folder (`~/.claude/memory/` by
+  default) and gives every agent the memories that matter for its prompt. Claude Haiku on
+  your subscription picks them, with Codex Luna and then keyword ranking as fallbacks. GGO
+  also extracts new memories from transcripts. No local model or database server is
+  needed. Claude Code, Codex and Grok Build sessions outside GGO can use the same recall
+  through small hook scripts. Settings → Memory shows status and lets you search and edit.
+  See [docs/agent-memory.md](docs/agent-memory.md).
 - **Notifications.** Browser notifications, a generic webhook, and Discord messages when a
   task finishes, needs you or fails. With Discord set up, you can also DM the bot to talk
   to the director.

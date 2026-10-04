@@ -25,4 +25,5 @@ Node/Fastify API in `server/`, React/Vite console in `web/`, one origin. The imp
 - Merging an incoming PR: `.claude/rules/merge-an-incoming-pr.md`.
 - Pipeline or ThreadManager behavior: `.claude/rules/threadmanager-itest.md` and `.claude/rules/e2e-a-pipeline-lane.md`.
 - The optional desktop app (`desktop/`, Open in desktop / Open in web, its lab and load probe): `.claude/rules/desktop-app.md`. Read it before launching the app from a script: test windows open in background mode, never on the owner's main monitor.
+- Agent memory (recall, retrieval cards, extraction, the `/api/memory/hook/*` routes the owner's hook scripts call): `.claude/rules/agent-memory.md`, then `docs/agent-memory.md`.
 - Any other area: `ls .claude/rules`; each file name describes its topic.

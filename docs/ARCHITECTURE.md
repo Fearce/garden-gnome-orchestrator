@@ -780,13 +780,18 @@ a single discriminated union (`zod`-validated). Highlights:
 
 ## 8. Memory (`server/src/memory/memory.ts`)
 
-`search_memory` runs a dependency-free **lexical** search over
-`~/.claude/memory/`: it reads the markdown memory files, parses their frontmatter
-`name`/`description`, and ranks by query-token overlap (cached 60s). No Python /
-pgvector / Ollama call, so it degrades gracefully if those are down. The director
-then calls `read_memory` on a returned path for the full text (the researcher has
-`search_memory` only, for external-context lookups — no codebase or file reading);
-`MEMORY.md` is exposed as the index.
+`FileMemoryService` serves the owner's Markdown memories in `MEMORY_DIR`
+(default `~/.claude/memory/`; the files stay the source of truth). A worker thread
+(`memoryWorker.ts`, started on demand, exits after 180 s idle) keeps a derived SQLite
+FTS5 index in `server/data/memory-index.sqlite` and re-reads changed files before it
+answers. Recall takes a keyword shortlist and lets Claude Haiku judge it (`recall.ts`).
+Luna on the Codex plan, then plain keyword ranking, are the bounded fallbacks
+(`models.ts`). In the background, `cards.ts` writes per-memory retrieval cards and
+`extraction.ts` drains the transcript extraction queue. The director's `search_memory`
+and `read_memory` tools, GGO's own agent runs (SDK hooks for Claude/z.ai, a prompt
+prefix for Codex), Settings → Memory and the user-level hook scripts behind the
+token-guarded loopback `/api/memory/hook/*` routes all use this one service. Full
+design, capacity rules, hook API, migration and recovery: [agent-memory.md](agent-memory.md).
 
 ## 9. Frontend (`web/`)
 
