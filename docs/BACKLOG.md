@@ -27,11 +27,8 @@ same commit as the fix. Git history keeps the record.
   QA redacted the live body and verified https://github.com/Fearce/garden-gnome-orchestrator/pull/10; legitimate contributor attribution remains intact.
 
 - **Rewrite published history to remove personal details the tree no longer carries** (owner action: filter-repo + force-push master, delete five stale remote branches, GitHub Support for PR refs/caches, coordinate the published fork rewrite).
-  Corrected kit in this task worktree's gitignored `_privacy-remediation` folder: fresh public mirror dry-run 2026-10-04 reduced 2,751 matches (including exposed PFX passphrase) to 0; public fork still has 211 matches; nothing force-pushed.
+  Corrected kit (surfaced as a deliverable) in the main checkout's gitignored `_privacy-remediation` folder: fresh public mirror dry-run 2026-10-04 reduced 2,751 matches (including exposed PFX passphrase) to 0; public fork still has 211 matches; nothing force-pushed.
 - **Rotate the local HTTPS PFX passphrase** (owner action): it is a weak dictionary word, and `npm run audit:secrets --prefix server` finds that word in four reachable published commits (value withheld), so treat it as exposed: set a random passphrase, re-encrypt the PFX and update `server/.env`.
-
-- **Privacy QA: surface the corrected history-remediation kit as a deliverable** (implementor follow-up).
-  QA copied and verified README.md, make_kit.py, replacements.txt and seed_deploy_env.py inside the task worktree's ignored `_privacy-remediation` folder, corrected the credential assurance and stale-branch push command, and verified the rewrite; the implementor must post the workspace README as a deliverable.
 
 ## Open
 
