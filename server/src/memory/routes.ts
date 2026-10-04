@@ -40,9 +40,11 @@ const settingsBody = z.object({
   lunaFallback: z.boolean().optional(),
   agentRecall: z.boolean().optional(),
 });
+/** A hook script runs under its own wall-clock deadline, so it passes the share of it recall may use. */
+const hookTimeout = z.number().int().min(1_000).max(15_000).optional();
 const hookRecallBody = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("prompt"), prompt: z.string().max(200_000) }),
-  z.object({ mode: z.literal("session"), cwd: z.string().min(1).max(1_000) }),
+  z.object({ mode: z.literal("prompt"), prompt: z.string().max(200_000), timeoutMs: hookTimeout }),
+  z.object({ mode: z.literal("session"), cwd: z.string().min(1).max(1_000), timeoutMs: hookTimeout }),
 ]);
 const hookSearchBody = z.object({ query: z.string().trim().min(1).max(4000), k: z.number().int().min(1).max(15).default(6) });
 const hookExtractBody = z.object({
@@ -130,7 +132,8 @@ function registerConsoleRoutes(routes: FastifyInstance, { memory, settings }: Me
 function registerHookRoutes(routes: FastifyInstance, { memory, settings }: MemoryRouteDeps): void {
   routes.post("/api/memory/hook/recall", async (req) => {
     const b = hookRecallBody.parse(req.body);
-    const context = b.mode === "prompt" ? await promptRecallBlock(memory, b.prompt, memory.dir) : await sessionRecallBlock(memory, b.cwd, memory.dir);
+    const context =
+      b.mode === "prompt" ? await promptRecallBlock(memory, b.prompt, memory.dir, b.timeoutMs) : await sessionRecallBlock(memory, b.cwd, memory.dir, b.timeoutMs);
     return { context };
   });
   routes.post("/api/memory/hook/search", async (req) => {
@@ -142,6 +145,7 @@ function registerHookRoutes(routes: FastifyInstance, { memory, settings }: Memor
     if (!settings.get().extraction) return { outcome: "disabled" };
     return { outcome: await memory.enqueueExtraction(b) };
   });
+  routes.get("/api/memory/hook/status", () => memory.status());
   routes.post("/api/memory/hook/changed", () => {
     memory.changed();
     return { ok: true };

@@ -16,6 +16,7 @@ export interface MemorySearchHit {
   /** The memory's file name inside the memory directory; `read` accepts it. */
   file: string;
   path: string;
+  lastVerified: string;
   score: number;
   judgedBy: "model" | "lexical";
 }
@@ -150,6 +151,7 @@ export class FileMemoryService implements MemoryService {
       description: memory.description,
       file: memory.file,
       path: join(this.dir, memory.file),
+      lastVerified: memory.lastVerified,
       score: memory.score,
       judgedBy: memory.judgedBy,
     }));

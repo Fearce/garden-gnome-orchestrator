@@ -51,20 +51,20 @@ export function formatRecall(memories: RankedMemory[], heading: string, dir: str
 }
 
 /** Recall block for a prompt, or "" when nothing qualifies or recall fails. Never throws. */
-export async function promptRecallBlock(memory: AgentMemory, prompt: string, dir: string): Promise<string> {
+export async function promptRecallBlock(memory: AgentMemory, prompt: string, dir: string, timeoutMs = RECALL_TIMEOUT_MS): Promise<string> {
   const query = stripTaskEnvelope(prompt.trim());
   if (query.length < MIN_PROMPT_CHARS) return "";
   try {
-    const result = await memory.recall(query, "prompt", PROMPT_LIMIT, RECALL_TIMEOUT_MS);
+    const result = await memory.recall(query, "prompt", PROMPT_LIMIT, timeoutMs);
     return formatRecall(result.memories, "## Possibly-relevant memories for this prompt", dir);
   } catch {
     return "";
   }
 }
 
-export async function sessionRecallBlock(memory: AgentMemory, cwd: string, dir: string): Promise<string> {
+export async function sessionRecallBlock(memory: AgentMemory, cwd: string, dir: string, timeoutMs = RECALL_TIMEOUT_MS): Promise<string> {
   try {
-    const result = await memory.recall(`Working directory: ${basename(cwd)}. Path: ${cwd}`, "session", SESSION_LIMIT, RECALL_TIMEOUT_MS);
+    const result = await memory.recall(`Working directory: ${basename(cwd)}. Path: ${cwd}`, "session", SESSION_LIMIT, timeoutMs);
     return formatRecall(result.memories, `## Relevant memories for \`${cwd}\``, dir);
   } catch {
     return "";

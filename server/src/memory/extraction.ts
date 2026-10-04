@@ -168,6 +168,10 @@ export class ExtractionQueue {
       await this.setAside(path, file, "unreadable queue file");
       return "done";
     }
+    if (item?.version !== 1 || typeof item.text !== "string") {
+      await this.setAside(path, file, "not a queue item (no version-1 text)");
+      return "done";
+    }
     const result = await this.extract(item);
     if (result === "busy") return "busy";
     if (result === "no-capacity") {

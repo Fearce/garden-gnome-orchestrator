@@ -209,9 +209,12 @@ try {
     const dir = join(root, "extract");
     seed(dir);
     const memory = service(dir, { haiku: fakeHaiku() });
+    mkdirSync(join(dir, QUEUE_DIR), { recursive: true });
+    writeFileSync(join(dir, QUEUE_DIR, "0000-foreign.json"), JSON.stringify({ version: 1, source: "pre-compact", transcriptText: "another tool's shape" }));
     memory.start();
     await memory.enqueueExtraction({ source: "test", sessionId: "s2", text: `${"we talked about the build pipeline at length. ".repeat(12)}Please always write British English in replies from now on.` });
     await until("the extraction queue to drain", async () => readdirSync(join(dir, QUEUE_DIR)).filter((f) => f.endsWith(".json")).length === 0);
+    assert.ok(readdirSync(join(dir, QUEUE_DIR, "failed")).some((f) => f.includes("0000-foreign")), "a file without queue-item text is set aside, never sent to a model");
     const written = readdirSync(dir).filter((f) => f.startsWith("feedback_answer_in_british"));
     assert.equal(written.length, 1, "the quoted candidate is written");
     const text = readFileSync(join(dir, written[0]!), "utf8");
@@ -316,6 +319,10 @@ try {
     assert.equal((await app.inject({ method: "POST", url: "/api/memory/hook/recall", payload: hookPayload, headers: { authorization: "Bearer wrong" } })).statusCode, 401);
     const hook = await app.inject({ method: "POST", url: "/api/memory/hook/recall", payload: hookPayload, headers: { authorization: `Bearer ${endpoint.token}` } });
     assert.match(hook.json().context, /Descale the office kettle monthly/);
+    const hookStatus = await app.inject({ method: "GET", url: "/api/memory/hook/status", headers: { authorization: `Bearer ${endpoint.token}` } });
+    assert.equal(hookStatus.json().index.files, 4, "the hook scripts' `rag.py status` reads the live index");
+    const hookSearch = await app.inject({ method: "POST", url: "/api/memory/hook/search", payload: { query: "kettle limescale" }, headers: { authorization: `Bearer ${endpoint.token}` } });
+    assert.ok(hookSearch.json().hits[0].lastVerified, "search hits carry last_verified for `rag.py retrieve --json`");
     const extracted = await app.inject({ method: "POST", url: "/api/memory/hook/extract", payload: { source: "claude-code", text: "short" }, headers: { authorization: `Bearer ${endpoint.token}` } });
     assert.equal(extracted.json().outcome, "unavailable", "without model access extraction is reported unavailable, not silently dropped");
     await endpoint.publish("0.0.0.0", 4317);
