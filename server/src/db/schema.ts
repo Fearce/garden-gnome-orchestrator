@@ -681,7 +681,6 @@ CREATE INDEX IF NOT EXISTS idx_notes_thread    ON operator_notes(thread_id);
 CREATE INDEX IF NOT EXISTS idx_threads_created ON threads(created_at);
 CREATE INDEX IF NOT EXISTS idx_threads_state_created ON threads(state, created_at);
 -- listAllRuns(limit) (the hello snapshot) and listActiveRuns() both filter/sort on these with no index.
-CREATE INDEX IF NOT EXISTS idx_runs_started    ON agent_runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_runs_live       ON agent_runs(state, ended_at, started_at);
 -- listFindings(undefined, limit) (the cross-thread hello slice) sorts the whole table with no index.
 CREATE INDEX IF NOT EXISTS idx_findings_created ON findings(created_at);

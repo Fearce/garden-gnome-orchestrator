@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: finish Supervisor delivery recovery and verify fresh repeated-text receipts** (Bramble Gauge, 2026-10-04): Supervisor omits pending delivery controls; receipts-lab checked the old row before the repeated injection arrived.
+- **QA: finish receipt recovery and remaining activity-query stalls** (Bramble Gauge, 2026-10-04): Supervisor recovery and fresh repeated-text checks passed; latest 3.3s stall named agentLastActivity. Rehearsed covering index: 236 to 80 reads, 824 identical activity rows, 384ms build.
 
 ## Ready (priority order)
 

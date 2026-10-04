@@ -398,6 +398,30 @@ try {
     return seen;
   };
   db.listThreads();
+  // Naming runs during startup used thousands of scattered table reads for completed runs. Check the
+  // covering plan as well as live, completed, unfinished and out-of-window activity semantics.
+  const activityThread = db.createThread({ title: "Activity", workspace: dir, rawPrompt: "a", brief: "a" });
+  const activityNow = 100 * 86_400_000;
+  const activitySince = activityNow - 30 * 86_400_000;
+  const activityInsert = db.raw.prepare("INSERT INTO agent_runs(id, thread_id, role, model, state, started_at, ended_at) VALUES(?, ?, ?, 'model', ?, ?, ?)");
+  activityInsert.run("activity-done", activityThread.id, "implementor", "done", activitySince - 1, activityNow - 10);
+  activityInsert.run("activity-older", activityThread.id, "implementor", "error", activitySince, activityNow - 20);
+  activityInsert.run("activity-live", activityThread.id, "qa", "running", activitySince - 8 * 86_400_000, null);
+  activityInsert.run("activity-unfinished", activityThread.id, "reviewer", "interrupted", activityNow - 30, null);
+  activityInsert.run("activity-expired", activityThread.id, "planner", "done", activitySince - 100, activitySince - 1);
+  activityInsert.run("activity-boundary", activityThread.id, "researcher", "done", activitySince - 100, activitySince);
+  const activity = db.agentLastActivity(activitySince, activityNow);
+  assert.deepEqual([...activity].filter(([key]) => key.startsWith(activityThread.id)).sort(), [
+    [`${activityThread.id}::implementor`, activityNow - 10],
+    [`${activityThread.id}::qa`, activityNow],
+    [`${activityThread.id}::researcher`, activitySince],
+    [`${activityThread.id}::reviewer`, activityNow - 30],
+  ]);
+  const activitySql = queries(() => db.agentLastActivity(activitySince, activityNow), "agent_runs");
+  assert.equal(activitySql.length, 1);
+  const activityPlan = planOf(activitySql[0]!, [activitySince - 7 * 86_400_000, activityNow, activitySince]);
+  assert.ok(/COVERING INDEX idx_runs_started_activity/.test(activityPlan), `recent completed activity must stay on the covering index: ${activityPlan}`);
+  assert.equal(db.raw.prepare("SELECT 1 FROM sqlite_master WHERE name='idx_runs_started'").get(), undefined, "the redundant predecessor is retired");
   assert.equal(db.threadState(writer.id), writer.state);
   assert.deepEqual(queries(() => db.threadState(writer.id), "threads"), [], "a task's state comes from the listing mirror");
   db.updateThread(writer.id, { state: "done" });

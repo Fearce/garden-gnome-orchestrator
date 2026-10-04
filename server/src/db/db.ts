@@ -1085,6 +1085,11 @@ export class Db {
       `CREATE INDEX IF NOT EXISTS idx_runs_thread_usage ON agent_runs(thread_id, started_at, ended_at, account,
          input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens)`,
     );
+    // Naming an agent reads recent activity for every task/role. Cover the completed-run branch so it
+    // never fetches each run's full table row; this also serves listAllRuns' started_at ordering.
+    this.raw.exec(
+      "CREATE INDEX IF NOT EXISTS idx_runs_started_activity ON agent_runs(started_at, state, ended_at, thread_id, role)",
+    );
     // A parent's collaborators and sub-tasks are looked up on every sub-task state change and by the
     // sub-task barrier's poll; without this each lookup walks every thread row.
     this.raw.exec("CREATE INDEX IF NOT EXISTS idx_threads_parent ON threads(parent_id) WHERE parent_id IS NOT NULL");
@@ -1182,6 +1187,7 @@ export class Db {
       DROP INDEX IF EXISTS idx_runs_thread;
       DROP INDEX IF EXISTS idx_runs_state;
       DROP INDEX IF EXISTS idx_runs_thread_started;
+      DROP INDEX IF EXISTS idx_runs_started;
     `);
   }
 
