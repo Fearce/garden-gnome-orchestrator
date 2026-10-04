@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Independently verify README/privacy fixes and repair the remediation kit** (Codex QA, 2026-10-04, branch ggo/readme-privacy-audit-6ff32a00).
-
 - **Owner messages stuck on "Sending…": GGO event-loop stalls and receipt states** (Wickfern, 2026-10-04, branch ggo/event-loop-stalls-913d9247).
   Stalls up to 45.8s on 2026-10-04 16:14Z delayed an inject that was delivered once (receipt ffaa6433 read); diagnostics 31192a9 live; fix + receipt UI in progress.
 
@@ -30,12 +28,15 @@ same commit as the fix. Git history keeps the record.
 
 ## Blocked / waiting
 
-- **Rewrite published history to remove personal details the tree no longer carries** (owner action: filter-repo + force-push master, delete the five stale remote branches other than master, GitHub Support for PR refs).
-  Kit with exact steps, dry-run 2026-10-04 (all-history hits to 0, nothing pushed): the README in the main checkout's gitignored `_privacy-remediation` folder.
+- **Purge cached private-project reference from PR #10** (owner action: include old PR body in the GitHub Support request).
+  QA redacted the live body and verified https://github.com/Fearce/garden-gnome-orchestrator/pull/10; legitimate contributor attribution remains intact.
+
+- **Rewrite published history to remove personal details the tree no longer carries** (owner action: filter-repo + force-push master, delete five stale remote branches, GitHub Support for PR refs/caches, coordinate the published fork rewrite).
+  Corrected kit in this task worktree's gitignored `_privacy-remediation` folder: fresh public mirror dry-run 2026-10-04 reduced 2,751 matches (including exposed PFX passphrase) to 0; public fork still has 211 matches; nothing force-pushed.
 - **Rotate the local HTTPS PFX passphrase** (owner action): it is a weak dictionary word, and `npm run audit:secrets --prefix server` finds that word in four reachable published commits (value withheld), so treat it as exposed: set a random passphrase, re-encrypt the PFX and update `server/.env`.
 
-- **Privacy QA: deliver the history-remediation kit and correct its credential assurance** (implementor follow-up).
-  Its README and supporting rewrite files are outside the task workspace; the configured PFX passphrase also occurs in reachable published history (value withheld), so the kit's "no credentials ever committed" assurance needs correction and rotation remains required.
+- **Privacy QA: surface the corrected history-remediation kit as a deliverable** (implementor follow-up).
+  QA copied and verified README.md, make_kit.py, replacements.txt and seed_deploy_env.py inside the task worktree's ignored `_privacy-remediation` folder, corrected the credential assurance and stale-branch push command, and verified the rewrite; the implementor must post the workspace README as a deliverable.
 
 ## Open
 
@@ -43,6 +44,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-04 **Correct persistent-goal README claims and privacy-remediation handoff** (Codex QA): 226/226 free gates, build/typechecks, privacy guard, README 64/64, doc paths 18/18 and browser calendar 65/65 pass; corrected kit dry-run removed all 2,751 matches; PR #10 live body redacted and read back; history/rotation/deliverable blockers remain above.
 - 2026-10-04 **Calendar QA: DST spans, following weekdays, paused moves, modal focus and Today navigation** (3b6b0f2, Moss Lantern): calendar-lab 72/72; calendar/scheduler/cron gates, typechecks, builds and privacy guard pass; deployed build 3b6b0f2c verified; live deck-proxy browser checks Today, modal focus, authenticated range, 1-week + 1-day defaults and served bundle equality.
 
 - 2026-10-04 **Privacy QA: protect environment variants and relay state; redact audit evidence** (Moss Lantern): privacy gate exercises binary runtime-file rejection and redacted secret/history output; README links and current-tree secret audit pass; full suite 225/225 and browser labs 42/42 passed before these focused fixes.

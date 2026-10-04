@@ -99,11 +99,12 @@ The board has a tab for each area. Any tab except Tasks can be hidden per browse
 - **Scheduled Tasks.** Recurring briefs on a cron schedule, each optionally pinned to an
   exact backend, model and effort. Every fire is a full task that can edit, commit and push, so a nightly
   audit or a weekly flake sweep runs itself.
-- **Goals.** A standing objective the director drives until it is met. It runs one step
-  task at a time (up to 8 in parallel if you allow it). The director judges each step's
-  report and plans the next, and stops only when the agent's completion claim survives its
-  audit. Each goal card shows its steps, the milestones the agent reported, and anything
-  blocked or waiting on you. An optional burn-rate guard paces the goal's quota use.
+- **Goals.** A standing objective driven until it is met. Sequential goals continue one
+  persistent agent session by default; the director audits completion claims and intervenes
+  after an unclean turn, an owner change or a dead session. You can instead allow up to 8
+  parallel step tasks, with the director judging their reports and planning the next steps.
+  Each goal card shows its steps, the milestones the agent reported, and anything blocked
+  or waiting on you. Optional token budgets and a burn-rate guard pace the goal's quota use.
 - **Supervisor.** The opt-in **Director Supervisor**, off by default. When on, it uses
   lifecycle checks and an adaptive backstop sweep, and spends a short no-tools agent
   judgement only on genuinely stalled or forgotten work. The tab shows every check, reason,
