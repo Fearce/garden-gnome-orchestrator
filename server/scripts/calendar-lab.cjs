@@ -3,7 +3,8 @@
 // `test:calendar` proves the zone maths, recurrence, scoped edits, reminder claims and the HTTP API; this
 // drives what it cannot: every view in a real browser, creating from a date cell, editing one occurrence
 // of a series, drag rescheduling on the month grid and the time grid, the type/state/search filters,
-// skipping one run of a schedule, persistence across a reload, and an event reminder that comes due
+// skipping one run of a schedule, the default-reminders dialog prefilling a new event's reminders
+// (all-day and timed), persistence across a reload, and an event reminder that comes due
 // reaching the owner through the live 30-second tick. The instance has no Discord bot token, so the DM is
 // refused and the reminder has to land on the note list. No event or reminder may start a task.
 //
