@@ -17,11 +17,6 @@ same commit as the fix. Git history keeps the record.
 - **Owner messages stuck on "Sending…": GGO event-loop stalls and receipt states** (Wickfern, 2026-10-04, branch ggo/event-loop-stalls-913d9247).
   Stalls up to 45.8s on 2026-10-04 16:14Z delayed an inject that was delivered once (receipt ffaa6433 read); diagnostics 31192a9 live; fix + receipt UI in progress.
 
-## Shipped, awaiting live proof
-
-- **Calendar events with an unspecified end** (Thistle Gauge, branch ggo/calendar-start-only-dcb4ded9).
-  Focused calendar gates and 78/78 browser lab checks pass; awaiting integration and deployment.
-
 ## Ready (priority order)
 
 1. **Investigate console smoke served/local bundle mismatch and browser shutdown timeout**: 2026-10-03 probe reports ws=live with no console errors, served index-C8zofTVy.js versus local index-BHXtYnz4.js, and browser shutdown exceeded 5000ms; authenticated HTTP bundle verification passed earlier in the same task.
@@ -44,7 +39,10 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-04 **Calendar events with an unspecified end** (b0c66ba, Thistle Gauge): live build b0c66ba4; authenticated day view and details show the stored start with an unspecified end; focused calendar gates, typechecks, privacy guard and 78/78 browser checks pass; all 226 gates covered across the interrupted full run and a 15/15 remainder run.
+
 - 2026-10-04 **Correct persistent-goal README claims and privacy-remediation handoff** (Codex QA): 226/226 free gates, build/typechecks, privacy guard, README 64/64, doc paths 18/18 and browser calendar 65/65 pass; corrected kit dry-run removed all 2,751 matches; PR #10 live body redacted and read back; history/rotation/deliverable blockers remain above.
+
 - 2026-10-04 **Calendar QA: DST spans, following weekdays, paused moves, modal focus and Today navigation** (3b6b0f2, Moss Lantern): calendar-lab 72/72; calendar/scheduler/cron gates, typechecks, builds and privacy guard pass; deployed build 3b6b0f2c verified; live deck-proxy browser checks Today, modal focus, authenticated range, 1-week + 1-day defaults and served bundle equality.
 
 - 2026-10-04 **Privacy QA: protect environment variants and relay state; redact audit evidence** (Moss Lantern): privacy gate exercises binary runtime-file rejection and redacted secret/history output; README links and current-tree secret audit pass; full suite 225/225 and browser labs 42/42 passed before these focused fixes.
