@@ -16,6 +16,7 @@ same commit as the fix. Git history keeps the record.
 
 - **Owner messages stuck on "Sending…": GGO event-loop stalls and receipt states** (Wickfern, 2026-10-04, branch ggo/event-loop-stalls-913d9247).
   Stalls up to 45.8s on 2026-10-04 16:14Z delayed an inject that was delivered once (receipt ffaa6433 read); diagnostics 31192a9 live; fix + receipt UI in progress.
+- **Privacy QA: protect environment variants and relay state; keep audit evidence redacted** (Moss Lantern, 2026-10-04).
 
 ## Ready (priority order)
 
