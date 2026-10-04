@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Add README upkeep and public-repo privacy rules to CLAUDE.md** (Ledgerfern, 2026-10-04).
+_(none: claim from Ready)_
 
 ## Ready (priority order)
 
@@ -34,6 +34,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-04 **CLAUDE.md and AGENTS.md require same-change README upkeep and keep personal details out of the tracked tree** (c829e625, Ledgerfern): `privacy:check` clean with the operator's 25 private terms loaded, `test:privacy-guard` passes, `test:readme-claims` 64/64, `audit:secrets --no-history` reports no secrets, and `probe:doc-paths` resolves every path the new rules cite.
 
 - 2026-10-04 **QA: preserve failed Deck imports, mask device-note tokens and bound camera relay buffers** (6970c5e0, Mistcap Reed): pushed and live in build a628a671; 25 module checks plus visibility, 43 browser-lab checks including recording through an actual restart, 12 live desktop/mobile checks plus Settings/reload checks; all 228 gates covered across the full run and two build-dependent reruns; configs retained and the evidence deliverable serves correctly.
 
