@@ -33,6 +33,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-04 **Calendar and IDE writes work through the deck's `/orchestrator/` proxy** (79a6672, a12307e, Almanac Wren): live build a12307e6; through `https://localhost:3940/orchestrator/` a create returned POST 200 and a UI delete returned DELETE 200, and the event stayed gone after a reload (was 403 "Origin does not match this console"); `test:calendar` and `test:ide` pass.
 - 2026-10-04 **README brought up to date; personal details removed from the public tree** (895407f, Quillfern Sieve): live build 895407fb; `test:privacy-guard` clean over every tracked file, `test:readme-claims` 63/63, 224/225 full gates (the one, `test:doc-paths`, fixed and green); the history rewrite is under Blocked.
 - 2026-10-04 **Full calendar with default reminders** (66521d3, 70d9ffc, Almanac Wren): live build 70d9ffc9; `test:calendar` and `calendar-lab` (65/65, synthetic data, no task started) pass; the five reminders converted from schedules read back from the live range API, and the live new-event form opens with the owner's 1-week + 1-day defaults.
 - 2026-10-04 **One composer repo chip per workspace** (593eb55, Twinpicker): live build 593eb556 rewrote the stored 9-entry row (`C:/x` beside `C:\x`) to one canonical entry per workspace at boot; `sonnet-probe`, which the old bug had evicted from the capped list, was restored; the live composer shows 7 unique chips and `c:/Claude-Orchestrator/` lights the existing chip; `test:recent-repos` and `repo-chips-lab` (11/11) pass.
