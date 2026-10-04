@@ -40,4 +40,7 @@ assert.deepEqual(remindersForAllDay(timedDraft.reminders!, true, "08:30"), allDa
 assert.deepEqual(remindersForAllDay(allDayDraft.reminders!, false, "08:30"), timedDraft.reminders, "and switching back restores the leads");
 assert.deepEqual(remindersForAllDay([{ kind: "before", minutes: 15 }, { kind: "before", minutes: 60 }], true, "09:00"), [{ kind: "day", daysBefore: 0, time: "09:00" }], "leads under a day collapse to one reminder on the day");
 
+const startOnly = { allDay: false, start: "2027-03-17T18:30", end: "2027-03-17T18:30" };
+const movedPoint = movedSpan(startOnly, CPH, { at: wallToEpoch({ y: 2027, m: 3, d: 18, hh: 20, mi: 0 }, CPH) });
+assert.deepEqual(movedPoint, { allDay: false, start: "2027-03-18T20:00", end: "2027-03-18T20:00" }, "dragging a start-only event does not invent a duration");
 console.log("All calendar edit checks passed.");

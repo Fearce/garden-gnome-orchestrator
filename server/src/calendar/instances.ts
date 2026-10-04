@@ -107,8 +107,11 @@ function build(event: CalendarEvent, date: CivilDate, exception: CalendarExcepti
 export function instancesOverlapping(event: CalendarEvent, fromMs: number, toMs: number, fromDay: number, toDay: number, byDate?: { from: number; to: number }): EventInstance[] {
   const start = startDateOf(event.start);
   if (!start) return [];
-  const overlaps = (i: EventInstance) =>
-    byDate && i.allDay ? dayNumber(parseDate(i.start)!) <= byDate.to && dayNumber(parseDate(i.end)!) >= byDate.from : i.startAt < toMs && i.endAt > fromMs;
+  const overlaps = (i: EventInstance) => {
+    if (byDate && i.allDay) return dayNumber(parseDate(i.start)!) <= byDate.to && dayNumber(parseDate(i.end)!) >= byDate.from;
+    if (i.endAt === i.startAt) return i.startAt >= fromMs && i.startAt < toMs;
+    return i.startAt < toMs && i.endAt > fromMs;
+  };
   if (!event.recurrence) {
     const only = build(event, start, undefined);
     return only && overlaps(only) ? [only] : [];

@@ -82,7 +82,7 @@ export function movedSpan(span: Span, eventZone: string, target: { date: CivilDa
     return { allDay: false, start: formatDateTime(fromWallMinutes(wallMinutes(s) + shift * 1440)), end: formatDateTime(fromWallMinutes(wallMinutes(e) + shift * 1440)) };
   }
   const begin = epochToWall(target.at, eventZone);
-  const length = span.allDay ? 60 : Math.max(15, wallMinutes(parseDateTime(span.end)!) - wallMinutes(parseDateTime(span.start)!));
+  const length = span.allDay ? 60 : Math.max(0, wallMinutes(parseDateTime(span.end)!) - wallMinutes(parseDateTime(span.start)!));
   return { allDay: false, start: formatDateTime(begin), end: formatDateTime(fromWallMinutes(wallMinutes(begin) + length)) };
 }
 

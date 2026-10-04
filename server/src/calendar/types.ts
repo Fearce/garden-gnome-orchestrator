@@ -41,7 +41,7 @@ export interface CalendarException {
 /**
  * A personal calendar entry. Never starts an agent: its only side effect is the optional reminder DM.
  * `start`/`end` are wall-clock text in `timeZone` — "YYYY-MM-DD" when all-day (end inclusive), else
- * "YYYY-MM-DDTHH:MM" (end exclusive, after start). Stored in the local DB only; never in git.
+ * "YYYY-MM-DDTHH:MM" (end exclusive; equal to start when the end is unspecified). Stored in the local DB only; never in git.
  */
 export interface CalendarEvent {
   id: string;

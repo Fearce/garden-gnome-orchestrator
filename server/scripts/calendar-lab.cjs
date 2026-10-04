@@ -334,6 +334,38 @@ async function recurrenceRegressions(page, dataDir) {
   await jump(page, "2027-03-19");
 }
 
+async function startOnlyEvent(page, dataDir) {
+  const title = "Synthetic start-only concert";
+  await setView(page, "Month");
+  await jump(page, "2027-03-10");
+  await clickCellSpace(page, "2027-03-22");
+  await page.fill('.cal-modal input[placeholder="e.g. Dentist"]', title);
+  await page.uncheck('.cal-modal label:has-text("All day") input');
+  await page.fill('input[aria-label="Start time"]', "18:30");
+  await page.uncheck('.cal-modal label:has-text("End time known") input');
+  check("an unspecified end hides the end fields", await page.locator('input[aria-label="End time"]').count() === 0);
+  await page.click('.cal-modal button:text-is("Create event")');
+  await modal(page).waitFor({ state: "detached" });
+  const saved = await poll(() => eventRow(dataDir, title));
+  check("the form saves a start-only event without a duration", saved?.start_at === "2027-03-22T18:30" && saved?.end_at === saved?.start_at);
+  await item(cell(page, "2027-03-22"), title).click();
+  check("the details say the end is unspecified", (await modal(page).textContent()).includes("Not specified"));
+  await page.click('.cal-modal button:text-is("Edit")');
+  check("editing keeps the end unspecified", !(await page.isChecked('.cal-modal label:has-text("End time known") input')));
+  await page.fill('input[aria-label="Start time"]', "19:00");
+  await page.click('.cal-modal button:text-is("Save changes")');
+  await modal(page).waitFor({ state: "detached" });
+  const moved = eventRow(dataDir, title);
+  check("editing the start does not invent an end", moved?.start_at === "2027-03-22T19:00" && moved?.end_at === moved?.start_at);
+  await page.reload();
+  await page.waitForSelector(".accounts .acct", { state: "attached" });
+  await page.click(".board-tab.bt-calendar");
+  await jump(page, "2027-03-22");
+  await item(cell(page, "2027-03-22"), title).click();
+  check("the unspecified end survives a browser reload", (await modal(page).textContent()).includes("Not specified"));
+  await closeModal(page);
+}
+
 async function deletes(page, dataDir) {
   await jump(page, "2027-03-19");
   await item(cell(page, "2027-03-19"), LUNCH).click();
@@ -525,6 +557,7 @@ async function narrowLayout(browser, cookies, shots) {
     await skipAndRestoreRun(page, dataDir);
     await agendaAndKeyboard(page, shots);
     await recurrenceRegressions(page, dataDir);
+    await startOnlyEvent(page, dataDir);
     await deletes(page, dataDir);
     await reminderDelivery(page, dataDir);
     await createReminderSchedule(page, dataDir);

@@ -40,6 +40,7 @@ export function EventForm({ initial, editing, allDayTime, onSaved, onCancel }: P
   const [title, setTitle] = useState(exception?.title ?? initial.title);
   const [notes, setNotes] = useState(exception?.notes ?? initial.notes ?? "");
   const [allDay, setAllDay] = useState(before?.allDay ?? initial.allDay);
+  const [hasEnd, setHasEnd] = useState((before?.end ?? initial.end) !== (before?.start ?? initial.start));
   const [startDate, setStartDate] = useState((before?.start ?? initial.start).slice(0, 10));
   const [startTime, setStartTime] = useState(timeOf(before?.start ?? initial.start, "09:00"));
   const [endDate, setEndDate] = useState((before?.end ?? initial.end).slice(0, 10));
@@ -52,8 +53,8 @@ export function EventForm({ initial, editing, allDayTime, onSaved, onCancel }: P
   const zones = useMemo(knownTimeZones, []);
 
   const start = allDay ? startDate : `${startDate}T${startTime}`;
-  const end = allDay ? endDate : `${endDate}T${endTime}`;
-  const problem = validate(title, allDay, start, end, timeZone);
+  const end = allDay ? endDate : hasEnd ? `${endDate}T${endTime}` : start;
+  const problem = validate(title, allDay, start, end, timeZone) ?? (!allDay && hasEnd && start === end ? "The event must end after it starts." : null);
   const startCivil = parseDate(startDate);
   const recurring = !!editing?.event.recurrence;
   // One occurrence can change its own title, notes and times; anything else belongs to the series.
@@ -83,6 +84,7 @@ export function EventForm({ initial, editing, allDayTime, onSaved, onCancel }: P
 
   const toggleAllDay = (next: boolean) => {
     setAllDay(next);
+    if (!next) setHasEnd(true);
     if (!next && startDate === endDate) {
       setStartTime("09:00");
       setEndTime("10:00");
@@ -138,14 +140,35 @@ export function EventForm({ initial, editing, allDayTime, onSaved, onCancel }: P
             {allDay ? null : <input type="time" aria-label="Start time" value={startTime} onChange={(e) => e.target.value && moveStart(startDate, e.target.value)} required />}
           </span>
         </label>
-        <label className="sched-field">
-          <span className="sched-label">{allDay ? "Until" : "Ends"}</span>
-          <span className="cal-inline">
-            <input type="date" aria-label="End date" value={endDate} min={startDate} onChange={(e) => e.target.value && setEndDate(e.target.value)} required />
-            {allDay ? null : <input type="time" aria-label="End time" value={endTime} onChange={(e) => e.target.value && setEndTime(e.target.value)} required />}
-          </span>
-        </label>
+        {allDay || hasEnd ? (
+          <label className="sched-field">
+            <span className="sched-label">{allDay ? "Until" : "Ends"}</span>
+            <span className="cal-inline">
+              <input type="date" aria-label="End date" value={endDate} min={startDate} onChange={(e) => e.target.value && setEndDate(e.target.value)} required />
+              {allDay ? null : <input type="time" aria-label="End time" value={endTime} onChange={(e) => e.target.value && setEndTime(e.target.value)} required />}
+            </span>
+          </label>
+        ) : null}
       </div>
+
+      {allDay ? null : (
+        <label className="cal-check">
+          <input
+            type="checkbox"
+            checked={hasEnd}
+            onChange={(e) => {
+              setHasEnd(e.target.checked);
+              const begin = parseDateTime(start);
+              if (e.target.checked && begin && `${endDate}T${endTime}` <= start) {
+                const finish = fromWallMinutes(wallMinutes(begin) + 60);
+                setEndDate(formatDate(finish));
+                setEndTime(formatClock(finish.hh * 60 + finish.mi));
+              }
+            }}
+          />
+          End time known
+        </label>
+      )}
 
       {allDay ? null : (
         <label className="sched-field">
@@ -199,7 +222,7 @@ export function EventForm({ initial, editing, allDayTime, onSaved, onCancel }: P
           </div>
         ) : (
           <button type="submit" className="btn primary" disabled={!!problem || busy}>
-            {busy ? "Saving…" : editing ? "Save changes" : "Create event"}
+            {busy ? "SavingÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦" : editing ? "Save changes" : "Create event"}
           </button>
         )}
       </div>
@@ -223,6 +246,6 @@ function validate(title: string, allDay: boolean, start: string, end: string, ti
   const s = parseDateTime(start);
   const e = parseDateTime(end);
   if (!s || !e) return "Pick the start and end.";
-  if (wallMinutes(e) <= wallMinutes(s)) return "The event must end after it starts.";
+  if (wallMinutes(e) < wallMinutes(s)) return "The event ends before it starts.";
   return null;
 }

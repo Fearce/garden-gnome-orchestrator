@@ -178,11 +178,25 @@ function eventsCrudAndPersistence(): string {
   const trip = eventsIn(range("2026-10-10", "2026-10-10", NY)).find((o) => o.id === allDay.event!.id);
   check("an all-day span shows on its dates from any zone", trip?.startDate === "2026-10-09" && trip.endDate === "2026-10-11");
 
+  console.log("calendar: unspecified end");
+  const point = calendar.createEvent({ title: "Synthetic start-only event", allDay: false, start: "2027-03-15T00:00", end: "2027-03-15T00:00", timeZone: CPH, reminders: [], recurrence: { freq: "weekly", interval: 1 } });
+  check("a start-only event is accepted", point.ok, point.error);
+  const pointId = point.event!.id;
+  const pointOn = (date: string, zone = CPH) => eventsIn(range(date, date, zone)).find((o) => o.id === pointId);
+  const first = pointOn("2027-03-15");
+  check("a midnight start-only event belongs to its starting day", !!first && first.endAt === first.startAt && !pointOn("2027-03-14"));
+  check("a start-only event moves to the correct day in another zone", !!pointOn("2027-03-14", NY) && !pointOn("2027-03-15", NY));
+  const next = pointOn("2027-03-29");
+  check("start-only recurrence retains its wall time across DST", !!next && next.startAt === next.endAt && wallOf(next) === "2027-03-29T00:00");
+  const movedPoint = calendar.updateEvent(pointId, "occurrence", "2027-03-29", { start: "2027-03-30T18:30", end: "2027-03-30T18:30" });
+  check("a start-only occurrence can be moved without acquiring an end", movedPoint.ok && !pointOn("2027-03-29") && pointOn("2027-03-30")?.startAt === pointOn("2027-03-30")?.endAt);
+
   console.log("calendar: survives a restart");
   db.raw.close();
   db = new Db(dbPath);
   scheduler = new Scheduler(db, hub, dispatch, reminders);
   calendar = new CalendarService(db, hub, scheduler, reminders, { now: () => clock, retryMs: [] });
+  check("the unspecified end survives reopening the database", calendar.getEvent(pointId)?.end === calendar.getEvent(pointId)?.start);
   const reread = calendar.getEvent(id);
   check("the event reads back after reopening the database", reread?.title === "Synthetic standup" && reread.recurrence?.freq === "weekly" && reread.reminders[0]?.kind === "before");
   calendar.deleteEvent(allDay.event!.id, "series");

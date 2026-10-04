@@ -41,7 +41,9 @@ export function reminderText(instance: EventInstance): string {
     const last = dateFmt("UTC").format(Date.parse(`${instance.end}T00:00:00Z`));
     when = instance.start === instance.end ? `All day ${first}.` : `All day, ${first} to ${last}.`;
   } else {
-    when = `${timeFmt(tz).format(instance.startAt)}–${timeFmt(tz).format(instance.endAt)} on ${dateFmt(tz).format(instance.startAt)} (${tz}).`;
+    const time = timeFmt(tz).format(instance.startAt);
+    const end = instance.endAt === instance.startAt ? " (end not specified)" : `–${timeFmt(tz).format(instance.endAt)}`;
+    when = `${time}${end} on ${dateFmt(tz).format(instance.startAt)} (${tz}).`;
   }
   const text = instance.notes ? `${when}\n\n${instance.notes}` : when;
   return text.length > TEXT_MAX ? `${text.slice(0, TEXT_MAX - 1)}…` : text;

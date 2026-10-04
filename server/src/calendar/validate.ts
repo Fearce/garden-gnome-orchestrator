@@ -44,7 +44,8 @@ export function validateSpan(allDay: boolean, start: string, end: string, timeZo
   const e = parseDateTime(end);
   if (!s || !e) return "Start and end must be YYYY-MM-DDTHH:MM.";
   // Wall minutes, not instants: a start in a spring-forward gap is moved forward when it is read (spanOf).
-  if (wallMinutes(e) <= wallMinutes(s)) return "The event must end after it starts.";
+  // Equal times represent a start-only event with an unspecified end.
+  if (wallMinutes(e) < wallMinutes(s)) return "The event ends before it starts.";
   if (wallMinutes(e) - wallMinutes(s) > MAX_TIMED_SPAN_MINUTES) return "A timed event can last at most 31 days.";
   return null;
 }

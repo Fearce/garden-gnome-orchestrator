@@ -116,10 +116,11 @@ function EventDetails({ occurrence: o, event, timeZone, onEditEvent, onClose }: 
           {ownZone ? (
             <span className="cal-hint">
               {" "}
-              ({span.start.slice(11)} – {span.end.slice(11)} in {event.timeZone})
+              ({span.start.slice(11)}{span.end !== span.start ? ` – ${span.end.slice(11)}` : ""} in {event.timeZone})
             </span>
           ) : null}
         </Row>
+        {!span.allDay && span.start === span.end ? <Row label="Ends">Not specified</Row> : null}
         {event.recurrence ? (
           <Row label="Repeats">
             {describeRecurrence(event.recurrence, seriesStart)}
