@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { isCrossSiteRequest } from "../crossSite.js";
 import { IdeError, IdeService } from "./service.js";
 
 const querySchema = z.object({ workspace: z.string().regex(/^[a-f0-9]{24}$/), path: z.string().max(2000).default("") });
@@ -9,11 +10,7 @@ export function registerIdeRoutes(app: FastifyInstance, service: IdeService, isA
       reply.header("cache-control", "no-store");
       if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
       // Cookie authentication must not make cross-site writes possible, even on a LAN.
-      if (req.headers["sec-fetch-site"] === "cross-site") return reply.code(403).send({ error: "Cross-site IDE requests are refused." });
-      if (req.headers.origin) {
-        try { if (new URL(req.headers.origin).host !== req.headers.host) return reply.code(403).send({ error: "Origin does not match this console." }); }
-        catch { return reply.code(403).send({ error: "Invalid origin." }); }
-      }
+      if (isCrossSiteRequest(req)) return reply.code(403).send({ error: "Cross-site IDE requests are refused." });
     });
     routes.setErrorHandler((error, _req, reply) => {
       const code = (error as NodeJS.ErrnoException).code;

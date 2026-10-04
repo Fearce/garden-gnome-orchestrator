@@ -36,6 +36,9 @@ try {
     assert.equal((await app.inject({ url: "/api/ide/workspaces", headers: { cookie: "session=test" } })).statusCode, 200);
     assert.equal((await app.inject({ url: "/api/ide/workspaces", headers: { cookie: "session=test", origin: "https://evil.example" } })).statusCode, 403);
     assert.equal((await app.inject({ url: "/api/ide/workspaces", headers: { cookie: "session=test", "sec-fetch-site": "cross-site" } })).statusCode, 403);
+    // The deck's proxy rewrites Host but forwards the browser's Origin and Sec-Fetch-Site unchanged.
+    const proxied = { cookie: "session=test", host: "127.0.0.1:4317", origin: "https://deck.example.com:3940", "sec-fetch-site": "same-origin" };
+    assert.equal((await app.inject({ url: "/api/ide/workspaces", headers: proxied })).statusCode, 200);
     await assert.rejects(service.read("a".repeat(24), "sample.ts"), e => e instanceof IdeError && e.status === 403);
   });
   await test("reject traversal, NTFS aliases and Git metadata on every platform", async () => {
