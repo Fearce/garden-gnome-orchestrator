@@ -25,6 +25,9 @@
  *   F. CLOSE        — closing a task retires its clean claimed worktree and keeps the main checkout's packages.
  *   F2. DONE        — a task reaching 'done' retires a worktree whose branch reached its base, and keeps one
  *                     whose branch did not, saying so in the feed.
+ *   F3. DELIVERABLES — a deliverable the main checkout holds byte for byte, or one committed on the branch,
+ *                     moves its card there and no longer pins the worktree; one only the worktree holds
+ *                     (an ignored output) still does.
  *   G. KICKOFF      — the worktree section a sub-task carries (borrowed).
  *   H. OFFICE       — the office's worktree advice is given to an unclaimed guided task only.
  *
@@ -323,6 +326,46 @@ try {
   await internals.retireFinishedWorktrees();
   check("the boot sweep retires a done task's worktree integrated after it finished", !existsSync(strandedClaim.worktree.path));
   check("...without a new feed note", db.listMessages(stranded.id).length === notesBefore);
+
+  console.log("F3. a done task's integrated worktree holding its deliverables");
+  const delivering = (await prepare(dispatch(repo, "Delivering task")))!;
+  const deliveringClaim = await mgr.claimTaskWorktree(delivering.id, { repo, name: "delivering work" });
+  if (!deliveringClaim.ok) throw new Error(deliveringClaim.error);
+  const dwt = deliveringClaim.worktree;
+  finishCommit(dwt.path, "delivered-report.md");
+  git(repo, "merge", "--quiet", "--ff-only", dwt.branch);
+  const post = (path: string) => db.addFinding({ threadId: delivering.id, fromRole: "implementor", summary: "report", severity: "info", kind: "deliverable", path });
+  const report = post(join(dwt.path, "delivered-report.md"));
+  internals.setState(delivering.id, "done");
+  const repointed = (): boolean => db.getFinding(report.id)?.path === join(repo, "delivered-report.md");
+  check("its card moves to the main checkout's byte-identical copy", await settle(repointed), db.getFinding(report.id)?.path ?? "gone");
+  check("...and the worktree it no longer pins is removed", !existsSync(dwt.path), dwt.path);
+  check("...which the console serves", resolveTaskDeliverable(fresh(delivering.id), db.getFinding(report.id)!.path!).ok);
+  const diverged = (await prepare(dispatch(repo, "Diverged deliverable")))!;
+  const divergedClaim = await mgr.claimTaskWorktree(diverged.id, { repo, name: "diverged work" });
+  if (!divergedClaim.ok) throw new Error(divergedClaim.error);
+  finishCommit(divergedClaim.worktree.path, "diverged-report.md");
+  git(repo, "merge", "--quiet", "--ff-only", divergedClaim.worktree.branch);
+  writeFileSync(join(repo, "diverged-report.md"), "rewritten later\n");
+  git(repo, "commit", "--quiet", "-am", "later rewrite");
+  const rewritten = db.addFinding({ threadId: diverged.id, fromRole: "implementor", summary: "report", severity: "info", kind: "deliverable", path: join(divergedClaim.worktree.path, "diverged-report.md") });
+  internals.setState(diverged.id, "done");
+  const followed = (): boolean => db.getFinding(rewritten.id)?.path === join(repo, "diverged-report.md");
+  check("a committed deliverable the base later rewrote moves to the main checkout's version (git keeps the original)", await settle(followed), db.getFinding(rewritten.id)?.path ?? "gone");
+  check("...and that worktree is removed too", !existsSync(divergedClaim.worktree.path));
+  const ignoredOnly = (await prepare(dispatch(repo, "Ignored output")))!;
+  const ignoredClaim = await mgr.claimTaskWorktree(ignoredOnly.id, { repo, name: "ignored output" });
+  if (!ignoredClaim.ok) throw new Error(ignoredClaim.error);
+  writeFileSync(join(ignoredClaim.worktree.path, ".gitignore"), "node_modules/\nout/\n");
+  git(ignoredClaim.worktree.path, "commit", "--quiet", "-am", "ignore out");
+  git(repo, "merge", "--quiet", "--ff-only", ignoredClaim.worktree.branch);
+  mkdirSync(join(ignoredClaim.worktree.path, "out"));
+  writeFileSync(join(ignoredClaim.worktree.path, "out", "render.png"), "png\n");
+  const own = db.addFinding({ threadId: ignoredOnly.id, fromRole: "implementor", summary: "render", severity: "info", kind: "deliverable", path: join(ignoredClaim.worktree.path, "out", "render.png") });
+  internals.setState(ignoredOnly.id, "done");
+  const keptNote = (): boolean => db.listMessages(ignoredOnly.id).some((m) => /a deliverable lives in it/.test(m.content));
+  check("an ignored deliverable only the worktree holds keeps it", (await settle(keptNote)) && existsSync(ignoredClaim.worktree.path));
+  check("...and its card is untouched", db.getFinding(own.id)?.path === join(ignoredClaim.worktree.path, "out", "render.png"));
 
   console.log("G. kickoff section of a sub-task");
   const borrowed = section(dispatch(repo, "Second helper", { parentId: second.id }));

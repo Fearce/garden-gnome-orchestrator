@@ -181,7 +181,7 @@ import { config, fallbackModelFor } from "../config.js";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { childRepos, containingRepoRoot, createTaskWorktree, discoverTaskWorktrees, enclosingRepoSync, isLinkedWorktree, mainCheckoutOf, mapIntoWorktree, restoreTaskWorktree, retireTaskWorktree, taskWorkCheckout } from "./taskWorktree.js";
+import { childRepos, containingRepoRoot, createTaskWorktree, discoverTaskWorktrees, enclosingRepoSync, isLinkedWorktree, isWithin, mainCheckoutCopy, mainCheckoutOf, mapIntoWorktree, restoreTaskWorktree, retireTaskWorktree, taskWorkCheckout } from "./taskWorktree.js";
 import { worktreeBriefing } from "./worktreeBriefing.js";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
 import { coworkContentWithAttachments } from "../coworkAttachments.js";
@@ -7469,14 +7469,37 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const onlyIntegrated = when !== "close";
     const worktrees = (thread.worktrees ?? []).filter((w) => !onlyIntegrated || existsSync(w.path));
     if (!worktrees.length) return;
-    const keep = this.db.listFindings(thread.id).filter((f) => f.kind === "deliverable" && f.path).map((f) => resolve(thread.workspace, f.path!));
+    const deliverables = this.db.listFindings(thread.id).filter((f) => f.kind === "deliverable" && f.path).map((f) => ({ id: f.id, path: resolve(thread.workspace, f.path!) }));
     for (const worktree of worktrees) {
+      const { keep, moves } = await this.deliverablesLeaving(thread, worktree, deliverables);
       const result = await retireTaskWorktree(worktree, { keep, onlyIntegrated }).catch((error: unknown) => ({ removed: false, branchDeleted: false, reason: String(error) }));
+      if (result.removed) this.repointDeliverables(moves);
       const what = result.removed
         ? `removed worktree ${worktree.path}${result.branchDeleted ? ` and merged branch ${worktree.branch}` : `; branch ${worktree.branch} kept`}`
         : `kept worktree ${worktree.path} (${result.reason})`;
       this.hub.log("info", `Task ${thread.id.slice(0, 8)}: ${what}.`);
       if (when === "done" && !result.removed) this.taskFeedNote(thread.id, `⎇ Finished, but ${what}.`);
+    }
+  }
+
+  /** Deliverables inside `worktree`: those with a main-checkout copy the console may serve move to it;
+   *  the rest keep the worktree, which alone holds them. */
+  private async deliverablesLeaving(thread: Thread, worktree: TaskWorktree, deliverables: { id: string; path: string }[]): Promise<{ keep: string[]; moves: { id: string; path: string }[] }> {
+    const keep: string[] = [];
+    const moves: { id: string; path: string }[] = [];
+    for (const deliverable of deliverables) {
+      if (!isWithin(deliverable.path, worktree.path)) continue;
+      const copy = await mainCheckoutCopy(worktree, deliverable.path);
+      if (copy && resolveTaskDeliverable({ workspace: thread.workspace }, copy).ok) moves.push({ id: deliverable.id, path: copy });
+      else keep.push(deliverable.path);
+    }
+    return { keep, moves };
+  }
+
+  private repointDeliverables(moves: { id: string; path: string }[]): void {
+    for (const move of moves) {
+      const updated = this.db.updateFinding(move.id, { path: move.path });
+      if (updated) this.hub.publish({ type: "finding", finding: updated });
     }
   }
 

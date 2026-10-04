@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { config } from "../config.js";
 import { isConfiguredCommitOnlyOrigin } from "../git/commitOnly.js";
@@ -309,6 +309,41 @@ export async function retireTaskWorktree(worktree: TaskWorktree, options: Retire
   }
   const branchDeleted = (state.merged || state.untouched) && (await gitOk(worktree.repo, ["branch", "-D", worktree.branch]));
   return { removed: true, branchDeleted };
+}
+
+/** Where a deliverable card can point once the task's worktree goes: the main checkout's copy of the
+ *  file when it holds the same bytes, or, for a file committed on the task branch (git keeps those exact
+ *  bytes), the main checkout's tracked version of it. Null when only the worktree has the file. */
+export async function mainCheckoutCopy(worktree: TaskWorktree, path: string): Promise<string | null> {
+  const rel = relative(worktree.path, path);
+  if (!rel || !isWithin(path, worktree.path)) return null;
+  const copy = join(worktree.repo, rel);
+  if (sameBytes(path, copy)) return copy;
+  const tracked = (cwd: string) => gitOk(cwd, ["ls-files", "--error-unmatch", "--", rel.split("\\").join("/")]);
+  return existsSync(copy) && (await tracked(worktree.path)) && (await tracked(worktree.repo)) ? copy : null;
+}
+
+function sameBytes(a: string, b: string): boolean {
+  let fa: number | null = null;
+  let fb: number | null = null;
+  try {
+    const [sa, sb] = [statSync(a), statSync(b)];
+    if (!sa.isFile() || !sb.isFile() || sa.size !== sb.size) return false;
+    fa = openSync(a, "r");
+    fb = openSync(b, "r");
+    const [ba, bb] = [Buffer.alloc(1 << 20), Buffer.alloc(1 << 20)];
+    for (;;) {
+      const na = readSync(fa, ba, 0, ba.length, null);
+      const nb = readSync(fb, bb, 0, bb.length, null);
+      if (na !== nb || !ba.subarray(0, na).equals(bb.subarray(0, nb))) return false;
+      if (na === 0) return true;
+    }
+  } catch {
+    return false;
+  } finally {
+    if (fa !== null) closeSync(fa);
+    if (fb !== null) closeSync(fb);
+  }
 }
 
 /** Remove only the links themselves, never what they point at: the recorded ones, plus any an agent
