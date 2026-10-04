@@ -6,7 +6,7 @@
 // (off by default, 24/7, schedule), retention and the recordings browser run against real ffmpeg processes.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -670,6 +670,16 @@ try {
     assert.equal(after.body.active, false);
     const saved = JSON.parse(readFileSync(modulePaths(dataDir, "surveillance").config, "utf8"));
     assert.equal(saved.value.recording.mode, "off");
+
+    // A recording started on the build before modes existed: armed, and config.json has no recording block.
+    delete saved.value.recording;
+    writeFileSync(modulePaths(dataDir, "surveillance").config, JSON.stringify(saved));
+    writeFileSync(armedFile, JSON.stringify({ reason: "recording 1 camera", at: Date.now() }));
+    await supervisor.restart("surveillance");
+    const carried = await api("/api/modules/surveillance/api/recording");
+    assert.equal(carried.body.mode, "continuous", "an older build's running recording carries on as 24/7");
+    assert.equal(carried.body.active, true);
+    assert.equal((await mode("off")).body.active, false);
   });
 
   await test("Sidekick: reads the tray app's own files and edits them only against the current revision", async () => {
