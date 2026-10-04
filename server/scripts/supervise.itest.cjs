@@ -78,6 +78,34 @@ async function runSupervisor({ dataDir, childScript, counter, minLaunches, runMs
   return out;
 }
 
+/** Run the supervisor over `childScript` with fast duplicate-retry timings; its exit code, or "still
+ *  running" (then killed) after `budgetMs`. */
+function superviseUntilExit(dataDir, childScript, budgetMs) {
+  const proc = spawn(process.execPath, [superviseScript], {
+    cwd: path.resolve(__dirname, ".."),
+    windowsHide: true,
+    env: {
+      ...process.env,
+      DATA_DIR: dataDir,
+      ORCH_SUPERVISE_TEST_CHILD: childScript,
+      ORCH_SUPERVISE_SETTLE_MS: "50",
+      ORCH_SUPERVISE_DUPLICATE_RETRY_MS: "100",
+      ORCH_SUPERVISE_DUPLICATE_WINDOW_MS: "600",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  return new Promise((resolve) => {
+    const to = setTimeout(() => {
+      proc.kill("SIGKILL");
+      resolve("still running");
+    }, budgetMs);
+    proc.on("exit", (code) => {
+      clearTimeout(to);
+      resolve(code);
+    });
+  });
+}
+
 async function main() {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "orch-supervise-"));
 
@@ -131,35 +159,37 @@ async function main() {
     check(!/exited unexpectedly/.test(crashText), "a requested restart (75) is NOT logged as a crash");
   }
 
-  // ---- Scenario 3: a duplicate boot (78) stops the supervisor instead of respawning ------------------
-  console.log("\n3. Exit code 78 (another server owns the data dir) → supervisor stops, no respawn loop");
+  // ---- Scenario 3: a duplicate boot (78) is retried for a bounded window, then the supervisor stops --
+  console.log("\n3. Exit code 78 (another server owns the data dir) → bounded retries, then the supervisor stops");
   {
     const dataDir = path.join(tmp, "duplicate");
     fs.mkdirSync(dataDir, { recursive: true });
     const counter = path.join(dataDir, "launches.txt");
     const childScript = path.join(tmp, "duplicate.cjs");
     fs.writeFileSync(childScript, `require('fs').appendFileSync(${JSON.stringify(counter)},'x');process.exit(78);`);
-    const proc = spawn(process.execPath, [superviseScript], {
-      cwd: path.resolve(__dirname, ".."),
-      windowsHide: true,
-      env: { ...process.env, DATA_DIR: dataDir, ORCH_SUPERVISE_TEST_CHILD: childScript, ORCH_SUPERVISE_SETTLE_MS: "50" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const exitCode = await new Promise((resolve) => {
-      const to = setTimeout(() => {
-        proc.kill("SIGKILL");
-        resolve("still running after 6s");
-      }, 6000);
-      proc.on("exit", (code) => {
-        clearTimeout(to);
-        resolve(code);
-      });
-    });
+    const exitCode = await superviseUntilExit(dataDir, childScript, 8000);
     const launches = fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").length : 0;
-    check(exitCode === 0, `the supervisor exits cleanly on its own (exit: ${exitCode})`);
-    check(launches === 1, `the duplicate child was launched once, not looped (launched ${launches}×)`);
+    check(exitCode === 0, `the supervisor exits cleanly on its own once the window passes (exit: ${exitCode})`);
+    check(launches >= 3 && launches <= 12, `the duplicate boot was retried a bounded number of times, not looped (launched ${launches}×)`);
     const crashLog = path.join(dataDir, "crash.log");
     check(!fs.existsSync(crashLog) || !/exited unexpectedly/.test(fs.readFileSync(crashLog, "utf8")), "a duplicate boot is not logged as a crash");
+  }
+
+  // ---- Scenario 4: the owner was only shutting down → a retry takes over and keeps running ---------------
+  console.log("\n4. Exit code 78 twice, then the data dir is free → the supervisor's server takes over");
+  {
+    const dataDir = path.join(tmp, "handover");
+    fs.mkdirSync(dataDir, { recursive: true });
+    const counter = path.join(dataDir, "launches.txt");
+    const childScript = path.join(tmp, "handover.cjs");
+    fs.writeFileSync(
+      childScript,
+      `const fs=require('fs');fs.appendFileSync(${JSON.stringify(counter)},'x');if(fs.readFileSync(${JSON.stringify(counter)},'utf8').length<3)process.exit(78);setInterval(()=>{},1000);`,
+    );
+    const exitCode = await superviseUntilExit(dataDir, childScript, 3000);
+    const launches = fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").length : 0;
+    check(exitCode === "still running", `the supervisor keeps the server that finally got the data dir (exit: ${exitCode})`);
+    check(launches === 3, `two losing boots, then one that stayed up (launched ${launches}×)`);
   }
 
   try {

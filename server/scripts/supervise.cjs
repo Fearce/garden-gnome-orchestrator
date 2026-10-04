@@ -50,6 +50,9 @@ const HEALTHY_MS = num("ORCH_SUPERVISE_HEALTHY_MS", 15_000); // an exit sooner t
 const BACKOFF_BASE_MS = num("ORCH_SUPERVISE_BACKOFF_BASE_MS", 1_000);
 const BACKOFF_MAX_MS = num("ORCH_SUPERVISE_BACKOFF_MAX_MS", 30_000);
 const RESTART_SETTLE_MS = num("ORCH_SUPERVISE_SETTLE_MS", 300); // let the port + DB release before the successor boots
+// A duplicate boot (78) is retried for a while: the owner may be one still shutting down (it waits up to 8s).
+const DUPLICATE_RETRY_MS = num("ORCH_SUPERVISE_DUPLICATE_RETRY_MS", 2_000);
+const DUPLICATE_WINDOW_MS = num("ORCH_SUPERVISE_DUPLICATE_WINDOW_MS", 60_000);
 const SERVER_LOG_MAX_BYTES = 10 * 1024 * 1024;
 const STDERR_TAIL_MAX = 8_000; // chars of the child's most recent stderr kept for the crash record
 
@@ -108,6 +111,8 @@ function childArgs() {
 let shuttingDown = false;
 let fastFails = 0;
 let child = null;
+/** When the current run of duplicate-owner boots (78) began, or null. */
+let duplicateSince = null;
 const spawnArgs = childArgs();
 
 function log(line) {
@@ -178,17 +183,13 @@ function start() {
       process.exit(typeof code === "number" ? code : 0);
       return;
     }
+    if (code === DUPLICATE_OWNER_EXIT_CODE) return retryDuplicate();
+    duplicateSince = null;
     if (code === SUPERVISED_RESTART_CODE) {
       // An in-process restart request (Restart button / self-update). Not a crash.
       fastFails = 0;
       log(`server requested restart (exit ${code}) after ${Math.round(uptimeMs / 1000)}s — respawning`);
       setTimeout(start, RESTART_SETTLE_MS);
-      return;
-    }
-    if (code === DUPLICATE_OWNER_EXIT_CODE) {
-      // Respawning would re-run the same losing boot every few hundred ms for as long as the owner lives.
-      log(`another GG Orchestrator already owns ${dataDir} — leaving it running and stopping this supervisor`);
-      process.exit(0);
       return;
     }
     // Any other exit is unexpected — the crash we're here to survive and record.
@@ -200,6 +201,19 @@ function start() {
     );
     scheduleRestart(uptimeMs, crashed);
   });
+}
+
+/** Another server owns the data directory. Keep trying while it may be one that is shutting down; once
+ *  it has outlived that window it is a real second instance, and this supervisor leaves it alone. */
+function retryDuplicate() {
+  duplicateSince ??= Date.now();
+  if (Date.now() - duplicateSince >= DUPLICATE_WINDOW_MS) {
+    log(`another GG Orchestrator still owns ${dataDir} — leaving it running and stopping this supervisor`);
+    process.exit(0);
+    return;
+  }
+  log(`another GG Orchestrator owns ${dataDir} — trying again in ${Math.round(DUPLICATE_RETRY_MS / 1000)}s in case it is shutting down`);
+  setTimeout(start, DUPLICATE_RETRY_MS);
 }
 
 function scheduleRestart(uptimeMs, crashed) {
