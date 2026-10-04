@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { HttpError } from "../router.js";
+import { defaultRecordingSettings, normalizeRecordingSettings, type RecordingSettings } from "./recordingPlan.js";
 
 export type PreviewStrategy = "snapshot" | "rtsp-mjpeg-proxy" | "none";
 
@@ -31,6 +32,8 @@ export interface Camera {
   /** Fixed preview height in px, or 0 for 16:9. */
   previewHeight: number;
   uiCollapsed: boolean;
+  /** Whether this camera records while recording is on (24/7 or on schedule). */
+  recordEnabled: boolean;
   recordingDir: string;
   recordingFps: number;
   /** 0 picks the size from the model (Duo lenses record at half size). */
@@ -47,13 +50,14 @@ export interface SurveillanceConfig {
   recordingRoot: string;
   /** An ffmpeg the owner chose; blank uses GGO's own or the one on PATH. */
   ffmpegPath: string;
+  recording: RecordingSettings;
   cameras: Camera[];
 }
 
 export const SECRET_MASK = "********";
 
 export function emptyConfig(): SurveillanceConfig {
-  return { recordingRoot: "", ffmpegPath: "", cameras: [] };
+  return { recordingRoot: "", ffmpegPath: "", recording: defaultRecordingSettings(), cameras: [] };
 }
 
 export function newCameraId(): string {
@@ -81,6 +85,7 @@ export function blankCamera(overrides: Partial<Camera> = {}): Camera {
     gridSpan: 6,
     previewHeight: 0,
     uiCollapsed: false,
+    recordEnabled: true,
     recordingDir: "",
     recordingFps: 2,
     recordingWidth: 1280,
@@ -120,6 +125,7 @@ export function normalizeCamera(raw: unknown): Camera {
     gridSpan: span,
     previewHeight: clampInt(input.previewHeight, 0, 4000, 0),
     uiCollapsed: input.uiCollapsed === true,
+    recordEnabled: input.recordEnabled !== false,
     recordingDir: text(input.recordingDir, 1024),
     recordingFps: clampInt(input.recordingFps, 1, 12, 2),
     recordingWidth: clampInt(input.recordingWidth, 160, 1920, 0),
@@ -131,6 +137,7 @@ export function normalizeCamera(raw: unknown): Camera {
   };
 }
 
+/** A config without a recording block predates it (the Deck's, or an early GGO one): it keeps every recording. */
 export function normalizeConfig(raw: unknown): SurveillanceConfig {
   const input = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const cameras = Array.isArray(input.cameras) ? input.cameras.map(normalizeCamera) : [];
@@ -139,7 +146,12 @@ export function normalizeConfig(raw: unknown): SurveillanceConfig {
     if (seen.has(camera.id)) camera.id = newCameraId();
     seen.add(camera.id);
   }
-  return { recordingRoot: text(input.recordingRoot, 1024), ffmpegPath: text(input.ffmpegPath, 1024), cameras };
+  return {
+    recordingRoot: text(input.recordingRoot, 1024),
+    ffmpegPath: text(input.ffmpegPath, 1024),
+    recording: normalizeRecordingSettings(input.recording, defaultRecordingSettings()),
+    cameras,
+  };
 }
 
 /**

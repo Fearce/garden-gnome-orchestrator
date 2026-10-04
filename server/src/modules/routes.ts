@@ -10,8 +10,9 @@ import { ModuleError, type ModuleSupervisor, type WorkerConnection } from "./sup
 /** How long the console waits for a worker to begin answering. Camera discovery is the slowest route. */
 const RESPONSE_TIMEOUT_MS = 90_000;
 const TICKET_TTL_MS = 60_000;
-const PASSED_REQUEST_HEADERS = ["accept", "accept-encoding", "content-type", "last-event-id"];
-const PASSED_RESPONSE_HEADERS = ["content-type", "content-length", "content-encoding", "vary", "x-frame-at"];
+// `range` and the content-range/disposition answers let a <video> seek a recording and a download keep its name.
+const PASSED_REQUEST_HEADERS = ["accept", "accept-encoding", "content-type", "last-event-id", "range"];
+const PASSED_RESPONSE_HEADERS = ["content-type", "content-length", "content-encoding", "vary", "x-frame-at", "accept-ranges", "content-range", "content-disposition"];
 const MAX_STREAM_BUFFERED_BYTES = 4 * 1024 * 1024;
 
 /**
@@ -74,7 +75,7 @@ export function registerModuleRoutes(app: FastifyInstance, supervisor: ModuleSup
 
     routes.all("/api/modules/:id/api/*", async (req, reply) => {
       const id = moduleParam(req);
-      const path = `/${(req.params as { "*": string })["*"]}${queryOf(req.url)}`;
+      const path = forwardedPath(req.url);
       let connection = await supervisor.ensure(id);
       try {
         await proxy(connection, req, reply, path);
@@ -97,9 +98,13 @@ function moduleParam(req: FastifyRequest): ModuleId {
   return id;
 }
 
-function queryOf(url: string): string {
-  const index = url.indexOf("?");
-  return index < 0 ? "" : url.slice(index);
+/**
+ * The worker-side path, cut from the raw request URL so it stays percent-encoded. Fastify's `*` param is
+ * decoded, and a decoded `%2F` or `%5C` would become a separator the worker's URL parser resolves `..` over.
+ */
+function forwardedPath(url: string): string {
+  const match = /^[^?]*?\/api\/modules\/[^/?]+\/api(\/[^?]*)?(\?.*)?$/.exec(url);
+  return `${match?.[1] || "/"}${match?.[2] ?? ""}`;
 }
 
 function isRefused(error: unknown): boolean {

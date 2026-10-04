@@ -6,7 +6,7 @@ import { previewOutputArgs, rtspInputArgs, segmentOutputArgs, type RecordingQual
 import { MultipartJpegParser } from "./mjpeg.js";
 import { LineThrottle } from "./logThrottle.js";
 import { killTree } from "./processes.js";
-import { advanceStreak, isRecorderStale, nextMainRetry, retryAt, segmentOffsets, selectStream, type FailureStreak, type StreamFallback } from "./streamPolicy.js";
+import { advanceStreak, isRecorderStale, nextMainRetry, retryAt, SEGMENT_SECONDS, segmentOffsets, selectStream, type FailureStreak, type StreamFallback } from "./streamPolicy.js";
 import { redactCredentials, safeFolderName } from "./urls.js";
 
 const PREVIEW_FRESH_MS = 8_000;
@@ -33,6 +33,7 @@ interface Recording {
   candidates: string[];
   targetDir: string;
   clocktimeOffset: number;
+  segmentSeconds: number;
   startedAt: number;
   latestFrame: Buffer | null;
   latestFrameAt: number;
@@ -46,7 +47,7 @@ interface Recording {
 
 export interface CameraRecordingStatus {
   cameraId: string;
-  state: "recording" | "connecting" | "waiting" | "not-configured";
+  state: "recording" | "connecting" | "waiting" | "not-configured" | "disabled";
   usingSubStream: boolean;
   targetDir: string | null;
   lastFrameAt: number | null;
@@ -55,9 +56,9 @@ export interface CameraRecordingStatus {
 }
 
 /**
- * Records every camera with a stream: one ffmpeg per camera writes 15-minute segment files AND the live
- * preview, so a camera holds a single RTSP connection however many people watch. Recording runs only after the
- * owner starts it, and keeps running when the tab closes or GGO restarts, until they stop it.
+ * Records every camera with a stream that is set to record: one ffmpeg per camera writes segment files AND the
+ * live preview, so a camera holds a single RTSP connection however many people watch. When it runs is the
+ * recording plan's call (`RecordingController`); the recorder only starts, re-targets and stops.
  */
 export class Recorder {
   private readonly recordings = new Map<string, Recording>();
@@ -70,6 +71,7 @@ export class Recorder {
   private lastSweepAt = 0;
   private recordingRoot = "";
   private cameras: Camera[] = [];
+  private segmentSeconds = SEGMENT_SECONDS;
 
   constructor(
     private readonly resolveFfmpeg: () => Promise<string | null>,
@@ -85,21 +87,23 @@ export class Recorder {
   }
 
   /** Begin (or re-target) recording for `cameras`. Throws when nothing could be recorded. */
-  async start(recordingRoot: string, cameras: Camera[]): Promise<void> {
-    if (!recordingRoot.trim() && !cameras.some((c) => c.recordingDir.trim())) throw new Error("Choose a recording folder first");
+  async start(recordingRoot: string, cameras: Camera[], segmentSeconds = SEGMENT_SECONDS): Promise<void> {
+    const problem = recordingProblem(recordingRoot, cameras);
+    if (problem) throw new Error(problem);
     if (!(await this.resolveFfmpeg())) throw new Error("ffmpeg was not found; install it in Remote Control or set its path in the camera settings");
     this.active = true;
-    this.update(recordingRoot, cameras);
+    this.update(recordingRoot, cameras, segmentSeconds);
     if (!this.healthTimer) {
       this.lastSweepAt = Date.now();
       this.healthTimer = setInterval(() => void this.healthSweep(), HEALTH_SWEEP_MS);
     }
   }
 
-  /** New settings while recording: restart only the cameras whose source, folder or offset changed. */
-  update(recordingRoot: string, cameras: Camera[]): void {
+  /** New settings while recording: restart only the cameras whose source, folder, segment length or offset changed. */
+  update(recordingRoot: string, cameras: Camera[], segmentSeconds = this.segmentSeconds): void {
     this.recordingRoot = recordingRoot.trim();
     this.cameras = cameras;
+    this.segmentSeconds = segmentSeconds;
     if (this.active) this.scheduleSync(0);
   }
 
@@ -125,7 +129,7 @@ export class Recorder {
 
   /** True when this camera's frames come from the recorder (live or warming up) rather than a separate preview. */
   owns(camera: Camera): boolean {
-    return this.active && Boolean(this.sourceFor(camera).url) && Boolean(this.targetDir(camera));
+    return this.active && camera.recordEnabled && Boolean(this.sourceFor(camera).url) && Boolean(this.targetDir(camera));
   }
 
   statuses(): CameraRecordingStatus[] {
@@ -137,9 +141,11 @@ export class Recorder {
       const dir = this.targetDir(camera);
       let state: CameraRecordingStatus["state"] = "not-configured";
       if (source.url && dir) state = recording ? (recording.latestFrameAt ? "recording" : "connecting") : "waiting";
+      if (!this.active && state !== "not-configured") state = "waiting";
+      if (!camera.recordEnabled) state = "disabled";
       return {
         cameraId: camera.id,
-        state: this.active ? state : source.url && dir ? "waiting" : "not-configured",
+        state,
         usingSubStream: source.usingFallback,
         targetDir: dir || null,
         lastFrameAt: recording?.latestFrameAt || null,
@@ -163,10 +169,7 @@ export class Recorder {
   }
 
   private targetDir(camera: Camera): string {
-    const explicit = camera.recordingDir.trim();
-    if (explicit) return isAbsolute(explicit) || !this.recordingRoot ? explicit : join(this.recordingRoot, explicit);
-    if (!this.recordingRoot) return "";
-    return join(this.recordingRoot, safeFolderName(camera.name || camera.model || camera.host || camera.id) || "camera");
+    return recordingFolder(this.recordingRoot, camera);
   }
 
   private scheduleSync(delayMs: number): void {
@@ -181,18 +184,19 @@ export class Recorder {
     if (!this.active) return;
     const desired = new Map<string, { camera: Camera; sourceUrl: string; candidates: string[]; targetDir: string; offset: number }>();
     for (const camera of this.cameras) {
+      if (!camera.recordEnabled) continue;
       const source = this.sourceFor(camera);
       const targetDir = this.targetDir(camera);
       if (source.url && targetDir) desired.set(cameraKey(camera), { camera, sourceUrl: source.url, candidates: source.candidates, targetDir, offset: 0 });
     }
-    const offsets = segmentOffsets([...desired.keys()]);
+    const offsets = segmentOffsets([...desired.keys()], this.segmentSeconds);
     for (const [key, want] of desired) want.offset = offsets.get(key) ?? 0;
 
     for (const [key, recording] of this.recordings) {
       const want = desired.get(key);
       if (!want) {
         void this.end(recording);
-      } else if (want.sourceUrl !== recording.sourceUrl || want.targetDir !== recording.targetDir || want.offset !== recording.clocktimeOffset) {
+      } else if (want.sourceUrl !== recording.sourceUrl || want.targetDir !== recording.targetDir || want.offset !== recording.clocktimeOffset || recording.segmentSeconds !== this.segmentSeconds) {
         this.restart(recording, 800);
       } else if (!(await this.healthy(recording))) {
         if (stallInFlight && recording.stallHolds < MAX_STALL_HOLDS) {
@@ -298,7 +302,8 @@ export class Recorder {
       this.streaks.set(key, advanceStreak(this.streaks.get(key), sourceUrl, Date.now(), EXIT_RESTART_DELAY_MS, FAIL_BACKOFF_CAP_MS));
       return;
     }
-    const args = [...rtspInputArgs(sourceUrl, "warning"), ...segmentOutputArgs(recordingQuality(camera), join(targetDir, "%Y-%m-%d_%H-%M-%S.ts"), offset), ...previewOutputArgs()];
+    const segmentSeconds = this.segmentSeconds;
+    const args = [...rtspInputArgs(sourceUrl, "warning"), ...segmentOutputArgs(recordingQuality(camera), join(targetDir, "%Y-%m-%d_%H-%M-%S.ts"), offset, segmentSeconds), ...previewOutputArgs()];
     let child: ChildProcess;
     try {
       child = spawn(ffmpeg, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
@@ -315,6 +320,7 @@ export class Recorder {
       candidates,
       targetDir,
       clocktimeOffset: offset,
+      segmentSeconds,
       startedAt: Date.now(),
       latestFrame: null,
       latestFrameAt: 0,
@@ -389,6 +395,23 @@ export class Recorder {
 
 export function cameraKey(camera: Camera): string {
   return camera.id || camera.host;
+}
+
+/** Where a camera's segments go: its own folder if set (relative ones sit under the root), else one named after it. */
+export function recordingFolder(recordingRoot: string, camera: Camera): string {
+  const root = recordingRoot.trim();
+  const explicit = camera.recordingDir.trim();
+  if (explicit) return isAbsolute(explicit) || !root ? explicit : join(root, explicit);
+  if (!root) return "";
+  return join(root, safeFolderName(camera.name || camera.model || camera.host || camera.id) || "camera");
+}
+
+/** Why turning recording on would record nothing, or null when at least one camera can record. */
+export function recordingProblem(recordingRoot: string, cameras: Camera[]): string | null {
+  const recordable = cameras.filter((camera) => camera.recordEnabled && (camera.streamUrl.trim() || camera.subStreamUrl.trim()));
+  if (!recordable.length) return cameras.some((camera) => camera.recordEnabled) ? "No camera set to record has an RTSP stream" : "No camera is set to record";
+  if (!recordable.some((camera) => recordingFolder(recordingRoot, camera))) return "Choose a recording folder first";
+  return null;
 }
 
 /** Duo cameras stream two lenses side by side; their default recording size is halved to keep storage small. */

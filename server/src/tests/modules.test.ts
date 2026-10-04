@@ -2,10 +2,12 @@
 // (secret masking, Sidekick's settings edits, frame pacing) and the worker lifecycle with real worker
 // processes against a stand-in Script Hub — nothing starts before it is asked for, one worker per module,
 // configs migrate from the Deck, secrets never reach the browser, idle workers exit, stale builds are
-// replaced, and user-started work survives a GGO restart until it is stopped.
+// replaced, and user-started work survives a GGO restart until it is stopped. Surveillance's recording plan
+// (off by default, 24/7, schedule), retention and the recordings browser run against real ffmpeg processes.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -21,7 +23,9 @@ import { ModuleSupervisor } from "../modules/supervisor.js";
 import { bridgeFor, maskDevice, normalizeDevice, restoreDeviceSecrets } from "../modules/worker/home/config.js";
 import { matchesProcessName, parseLogLines, buildSidekickState, type SidekickIo } from "../modules/worker/sidekick/state.js";
 import { mutateRules, revisionForText } from "../modules/worker/sidekick/rules.js";
-import { fromDeckSection, maskCamera, maskUrl, normalizeCamera, restoreSecrets, SECRET_MASK } from "../modules/worker/surveillance/config.js";
+import { emptyConfig, fromDeckSection, maskCamera, maskUrl, normalizeCamera, normalizeConfig, restoreSecrets, SECRET_MASK } from "../modules/worker/surveillance/config.js";
+import { RecordingLibrary } from "../modules/worker/surveillance/library.js";
+import { scheduleState } from "../modules/worker/surveillance/recordingPlan.js";
 import { FramePush, type Frame, type FrameSource } from "../modules/worker/surveillance/frames.js";
 import { ffmpegTag } from "../modules/worker/surveillance/processes.js";
 import { LineThrottle } from "../modules/worker/surveillance/logThrottle.js";
@@ -49,6 +53,28 @@ async function waitFor<T>(label: string, read: () => Promise<T>, done: (value: T
     last = await read();
   }
   return last;
+}
+
+/** A segment file name as the recorder writes it, for a moment in local time. */
+function segmentName(at: number): string {
+  const d = new Date(at);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}.ts`;
+}
+
+async function writeSegment(dir: string, at: number, bytes: number, modifiedAt = at + 15 * 60_000): Promise<string> {
+  const name = segmentName(at);
+  await writeFile(join(dir, name), Buffer.alloc(bytes, 7));
+  await utimes(join(dir, name), new Date(modifiedAt), new Date(modifiedAt));
+  return name;
+}
+
+function ffmpegOnPath(): string | null {
+  try {
+    return execFileSync("where.exe", ["ffmpeg"], { encoding: "utf8", windowsHide: true }).split(/\r?\n/).map((l) => l.trim()).find((l) => l.toLowerCase().endsWith(".exe")) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function pidAlive(pid: number | null): boolean {
@@ -96,6 +122,111 @@ await test("surveillance: a Deck config whose recording was parked keeps the fol
   assert.equal(fromDeckSection({ cameras: [] }), null);
 });
 
+await test("surveillance: recording is off by default and nothing is ever deleted until the owner sets a retention", () => {
+  const legacy = normalizeConfig({ recordingRoot: "recordings", cameras: [{ id: "a", name: "Yard" }] });
+  assert.equal(legacy.recording.mode, "off");
+  assert.equal(legacy.recording.retentionDays, 0, "a config from before retention existed deletes nothing");
+  assert.equal(legacy.recording.maxGbPerCamera, 0);
+  assert.equal(legacy.cameras[0]!.recordEnabled, true);
+  const fresh = normalizeConfig(emptyConfig());
+  assert.equal(fresh.recording.mode, "off");
+  assert.equal(fresh.recording.retentionDays, 0, "a folder typed into a new setup may already hold years of footage");
+  assert.equal(fresh.recording.maxGbPerCamera, 0);
+  const edited = normalizeConfig({ ...fresh, recording: { mode: "sometimes", segmentMinutes: 7, retentionDays: -4, schedule: { days: [1, 9, 1], start: "25:00", end: "6:30" } } });
+  assert.equal(edited.recording.mode, "off", "an unknown mode is off, never on");
+  assert.equal(edited.recording.segmentMinutes, 15, "only the offered segment lengths are accepted");
+  assert.equal(edited.recording.retentionDays, 0);
+  assert.deepEqual(edited.recording.schedule, { days: [1], start: "22:00", end: "06:30" });
+});
+
+await test("surveillance: a schedule opens and closes at its window's edges, overnight and by weekday", () => {
+  const nights = { days: [1, 2, 3, 4, 5], start: "22:00", end: "07:00" };
+  const mondayLate = new Date(2026, 9, 5, 23, 0);
+  const tuesdayEarly = new Date(2026, 9, 6, 6, 59);
+  const tuesdayNoon = new Date(2026, 9, 6, 12, 0);
+  const saturdayEarly = new Date(2026, 9, 10, 3, 0);
+  const sundayLate = new Date(2026, 9, 11, 23, 0);
+  assert.deepEqual(scheduleState(nights, mondayLate), { active: true, nextChangeAt: new Date(2026, 9, 6, 7, 0).getTime() });
+  assert.equal(scheduleState(nights, tuesdayEarly).active, true, "Monday's window runs past midnight");
+  assert.deepEqual(scheduleState(nights, tuesdayNoon), { active: false, nextChangeAt: new Date(2026, 9, 6, 22, 0).getTime() });
+  assert.equal(scheduleState(nights, saturdayEarly).active, true, "Friday night's window ends Saturday morning");
+  assert.deepEqual(scheduleState(nights, sundayLate), { active: false, nextChangeAt: new Date(2026, 9, 12, 22, 0).getTime() });
+  assert.deepEqual(scheduleState({ days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "00:00" }, tuesdayNoon), { active: true, nextChangeAt: null });
+  assert.deepEqual(scheduleState({ days: [], start: "08:00", end: "09:00" }, tuesdayNoon), { active: false, nextChangeAt: null });
+});
+
+await test("surveillance: the library lists recorded days and retention deletes only old segments, never the newest or other files", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ggo-recordings-"));
+  try {
+    const now = Date.now();
+    const ancient = await writeSegment(dir, now - 40 * 86_400_000, 1000);
+    const older = await writeSegment(dir, now - 3 * 86_400_000, 1000);
+    const recent = await writeSegment(dir, now - 2 * 86_400_000, 1000);
+    const growing = await writeSegment(dir, now - 60_000, 1000, now);
+    await writeFile(join(dir, "cleanup_recordings.py"), "# the owner's own script\n");
+    await writeFile(join(dir, "notes.txt"), "keep me\n");
+    const library = new RecordingLibrary(() => [{ cameraId: "cam-1", name: "Yard", dir }]);
+
+    const [summary] = await library.summary();
+    assert.equal(summary!.segments, 4);
+    assert.equal(summary!.bytes, 4000);
+    assert.deepEqual(summary!.days.map((d) => d.day), [...new Set([growing, recent, older, ancient].map((n) => n.slice(0, 10)))]);
+    const today = await library.day("cam-1", growing.slice(0, 10));
+    assert.equal(today.find((segment) => segment.name === growing)?.live, true, "the segment being written is marked live");
+    await assert.rejects(library.segmentFile("cam-1", "notes.txt"), /not a recording segment/);
+    await assert.rejects(library.segmentFile("cam-1", `..\\${ancient}`), /not a recording segment/);
+    await assert.rejects(library.segmentFile("cam-2", ancient), /no recording folder/);
+    assert.equal((await library.segmentFile("cam-1", ancient)).bytes, 1000);
+
+    const off = await library.sweep({ retentionDays: 0, maxGbPerCamera: 0 }, now);
+    assert.equal(off.deletedFiles, 0, "retention off deletes nothing");
+    const byAge = await library.sweep({ retentionDays: 30, maxGbPerCamera: 0 }, now);
+    assert.equal(byAge.deletedFiles, 1);
+    assert.deepEqual((await readdir(dir)).sort(), ["cleanup_recordings.py", growing, "notes.txt", older, recent].sort());
+    const bySize = await library.sweep({ retentionDays: 0, maxGbPerCamera: 1500 / 1024 ** 3 }, now);
+    assert.equal(bySize.deletedFiles, 2, "the oldest go until the folder fits, but the segment being written stays");
+    assert.deepEqual((await readdir(dir)).sort(), ["cleanup_recordings.py", growing, "notes.txt"].sort());
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+await test("surveillance: a segment read while still growing is re-read once closed, and an undeletable file never holds retention back", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "ggo-recordings-"));
+  try {
+    const now = Date.now();
+    const library = new RecordingLibrary(() => [{ cameraId: "cam-1", name: "Yard", dir }]);
+    const early = await writeSegment(dir, now - 5 * 86_400_000, 1000, now - 30_000);
+    assert.equal((await library.summary())[0]!.bytes, 1000);
+    await writeFile(join(dir, early), Buffer.alloc(5000, 7));
+    await utimes(join(dir, early), new Date(now - 4 * 86_400_000), new Date(now - 4 * 86_400_000));
+    await writeSegment(dir, now - 3_600_000, 10);
+    await writeSegment(dir, now - 10 * 60_000, 10, now - 5 * 60_000);
+    await writeSegment(dir, now - 60_000, 10, now);
+    const sized = await library.sweep({ retentionDays: 2, maxGbPerCamera: 0 }, Date.now());
+    assert.equal(sized.deletedFiles, 1);
+    assert.equal(sized.deletedBytes, 5000, "the size it closed at, not the size first seen while it grew");
+
+    // Once indexed, the segment is swapped for a non-empty folder of the same name: an unlink that fails everywhere.
+    const stuck = await writeSegment(dir, now - 10 * 86_400_000, 100);
+    const next = await writeSegment(dir, now - 9 * 86_400_000, 100);
+    const sweeper = new RecordingLibrary(() => [{ cameraId: "cam-1", name: "Yard", dir }]);
+    await sweeper.summary();
+    await rm(join(dir, stuck));
+    await mkdir(join(dir, stuck));
+    await writeFile(join(dir, stuck, "held.bin"), "x");
+    const first = await sweeper.sweep({ retentionDays: 2, maxGbPerCamera: 0 }, Date.now());
+    assert.equal(first.failed, 1);
+    assert.equal(first.deletedFiles, 1, "the file behind the stuck one is still deleted");
+    assert.equal(existsSync(join(dir, next)), false);
+    assert.equal(first.pending, false, "a file that cannot be deleted does not trigger the 30 s backlog sweep");
+    const again = await sweeper.sweep({ retentionDays: 2, maxGbPerCamera: 0 }, Date.now());
+    assert.equal(again.failed, 0, "a failed file is left alone for a while instead of retried every sweep");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 await test("home: the miIO token is masked, restored, and picks the bridge", () => {
   const stored = normalizeDevice({ id: "vac-1", name: "Hall", token: TOKEN, host: "192.0.2.10" });
   const masked = maskDevice(stored);
@@ -119,7 +250,7 @@ await test("home: a token written in device notes stays masked and survives an u
   assert.throws(() => restoreDeviceSecrets({ ...edited, statusNote: SECRET_MASK }, stored), /notes/);
 });
 
-await test("Deck import refuses failed reads without saving defaults, recovers, and accepts missing sections", async () => {
+await test("Deck import refuses failed reads without saving defaults, starts empty where no hub listens, and recovers", async () => {
   const dir = await mkdtemp(join(tmpdir(), "ggo-import-"));
   let status = 500;
   const source = createServer((_req, res) => {
@@ -144,8 +275,10 @@ await test("Deck import refuses failed reads without saving defaults, recovers, 
     assert.equal((await loadOrImport(options)).origin, "new", "a missing section is a valid empty setup");
     await rm(configPath);
     await new Promise<void>((resolve) => source.close(() => resolve()));
-    await assert.rejects(loadOrImport(options), /not running/);
-    assert.equal(existsSync(configPath), false);
+    const hubless = await loadOrImport(options);
+    assert.equal(hubless.origin, "deck-unreachable", "a machine without Script Hub starts on an empty setup");
+    assert.equal(hubless.value.saved, "");
+    assert.equal(existsSync(configPath), false, "...which is not saved, so a hub that appears later still imports");
     await new Promise<void>((resolve) => source.listen(Number(new URL(hubUrl).port), "127.0.0.1", resolve));
     status = 200;
     assert.equal((await loadOrImport(options)).value.saved, "owner-config", "retry imports after an outage");
@@ -423,6 +556,122 @@ try {
     assert.notEqual(reused.body.ticket, ticket.ticket, "tickets are single-use");
   });
 
+  await test("Surveillance: recordings list by day, seek by range, play as MP4 and refuse anything outside the camera's folder", async () => {
+    const folder = join(root, "recordings", "Porch");
+    await mkdir(folder, { recursive: true });
+    const plain = await writeSegment(folder, Date.now() - 2 * 3_600_000, 4096);
+    const listed = await api("/api/modules/surveillance/api/recordings");
+    assert.equal(listed.status, 200, JSON.stringify(listed.body));
+    const porch = listed.body.cameras.find((c: { cameraId: string }) => c.cameraId === "cam-1");
+    assert.equal(porch.folderFound, true);
+    assert.ok(porch.segments >= 1 && porch.days.length >= 1);
+    assert.equal(listed.body.retention.retentionDays, 0, "an imported setup keeps everything until told otherwise");
+    const day = await api(`/api/modules/surveillance/api/recordings/cam-1/days/${plain.slice(0, 10)}`);
+    assert.ok(day.body.segments.some((segment: { name: string }) => segment.name === plain));
+
+    const ranged = await fetch(`${base}/api/modules/surveillance/api/recordings/cam-1/segments/${plain}/file`, { headers: { ...authed, range: "bytes=10-19" } });
+    assert.equal(ranged.status, 206);
+    assert.equal(ranged.headers.get("content-range"), "bytes 10-19/4096");
+    assert.match(ranged.headers.get("content-disposition") ?? "", /attachment; filename="Porch /);
+    assert.equal((await ranged.arrayBuffer()).byteLength, 10);
+    const backwards = await fetch(`${base}/api/modules/surveillance/api/recordings/cam-1/segments/${plain}/file`, { headers: { ...authed, range: "bytes=19-10" } });
+    assert.equal(backwards.status, 200, "a range that cannot be parsed is ignored, as RFC 9110 asks");
+    assert.equal((await backwards.arrayBuffer()).byteLength, 4096);
+    const beyond = await fetch(`${base}/api/modules/surveillance/api/recordings/cam-1/segments/${plain}/file`, { headers: { ...authed, range: "bytes=5000-" } });
+    assert.equal(beyond.status, 416);
+    assert.equal(beyond.headers.get("content-range"), "bytes */4096");
+    // Each must reach the segment route still encoded and be refused there, not re-routed by a decoded separator.
+    for (const bad of [encodeURIComponent(`..\\..\\data\\${plain}`), "notes.txt", encodeURIComponent("../secret.ts"), encodeURIComponent(`../Porch/${plain}`)]) {
+      const refused = await api(`/api/modules/surveillance/api/recordings/cam-1/segments/${bad}/file`);
+      assert.equal(refused.status, 400, `${bad} answered ${refused.status}`);
+      assert.match(refused.body.error, /not a recording segment/, bad);
+    }
+    assert.equal((await api("/api/modules/surveillance/api/recordings/cleanup", { method: "POST", body: {} })).status, 400, "cleanup refuses while retention is off");
+
+    const ffmpeg = ffmpegOnPath();
+    if (!ffmpeg) {
+      console.log("  (no ffmpeg on PATH: MP4 playback not exercised)");
+      return;
+    }
+    const clipAt = Date.now() - 3_600_000;
+    const clip = segmentName(clipAt);
+    execFileSync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=2", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "mpegts", join(folder, clip)], { windowsHide: true });
+    await utimes(join(folder, clip), new Date(clipAt), new Date(clipAt));
+    const video = await fetch(`${base}/api/modules/surveillance/api/recordings/cam-1/segments/${clip}/video`, { headers: authed });
+    assert.equal(video.status, 200, await video.clone().text());
+    assert.equal(video.headers.get("content-type"), "video/mp4");
+    assert.equal(video.headers.get("accept-ranges"), "bytes");
+    const mp4 = Buffer.from(await video.arrayBuffer());
+    assert.equal(mp4.subarray(4, 8).toString("latin1"), "ftyp", "the segment arrives re-wrapped as MP4");
+    const seek = await fetch(`${base}/api/modules/surveillance/api/recordings/cam-1/segments/${clip}/video`, { headers: { ...authed, range: "bytes=0-7" } });
+    assert.equal(seek.status, 206, "the cached MP4 can be seeked");
+
+    const playUrl = (version: string) => `${base}/api/modules/surveillance/api/recordings/cam-1/segments/${clip}/video?v=${version}`;
+    const pinnedBytes = (await (await fetch(playUrl("1"), { headers: authed })).arrayBuffer()).byteLength;
+    await appendFile(join(folder, clip), await readFile(join(folder, clip)));
+    assert.equal((await (await fetch(playUrl("1"), { headers: authed })).arrayBuffer()).byteLength, pinnedBytes, "one playback keeps reading the copy it started with while the file grows");
+    assert.ok((await (await fetch(playUrl("2"), { headers: authed })).arrayBuffer()).byteLength > pinnedBytes, "a new listing plays what has been written since");
+  });
+
+  await test("Surveillance: 24/7 is off until chosen, outlives a worker restart, ignores stale config edits, and stops on Off", async () => {
+    const closed = createServer();
+    await new Promise<void>((resolve) => closed.listen(0, "127.0.0.1", resolve));
+    const deadPort = (closed.address() as AddressInfo).port;
+    await new Promise<void>((resolve) => closed.close(() => resolve()));
+    const armedFile = join(modulePaths(dataDir, "surveillance").dir, "armed.json");
+    const mode = (value: string) => api("/api/modules/surveillance/api/recording/mode", { method: "PUT", body: { mode: value } });
+
+    assert.equal((await api("/api/modules/surveillance/api/recording")).body.mode, "off");
+    const noStream = await mode("continuous");
+    assert.equal(noStream.status, 400);
+    assert.match(noStream.body.error, /RTSP stream/);
+    assert.equal(existsSync(armedFile), false, "a refused plan arms nothing");
+
+    const config = (await api("/api/modules/surveillance/api/config")).body;
+    config.cameras[0].streamUrl = `rtsp://127.0.0.1:${deadPort}/live`;
+    config.recording.schedule.days = [];
+    assert.equal((await api("/api/modules/surveillance/api/config", { method: "PUT", body: config })).status, 200);
+    const noDays = await mode("schedule");
+    assert.equal(noDays.status, 400);
+    assert.match(noDays.body.error, /no days/, "a schedule that can never record is refused");
+    if (!ffmpegOnPath()) {
+      assert.match((await mode("continuous")).body.error, /ffmpeg/);
+      console.log("  (no ffmpeg on PATH: 24/7 recording not exercised)");
+      return;
+    }
+    const on = await mode("continuous");
+    assert.equal(on.status, 200, JSON.stringify(on.body));
+    assert.equal(on.body.mode, "continuous");
+    assert.equal(on.body.active, true);
+    assert.equal((await api("/api/modules/surveillance/service")).body.busy, "recording 1 camera 24/7");
+    assert.ok(existsSync(armedFile), "24/7 is declared as user-started work");
+
+    const stale = (await api("/api/modules/surveillance/api/config")).body;
+    assert.equal((await api("/api/modules/surveillance/api/config", { method: "PUT", body: { ...stale, recording: { ...stale.recording, mode: "off" } } })).status, 200);
+    assert.equal((await api("/api/modules/surveillance/api/recording")).body.mode, "continuous", "a config edit never switches recording off");
+
+    const before = (await api("/api/modules/surveillance/service")).body.pid;
+    assert.equal((await api("/api/modules/surveillance/service/stop", { method: "POST", body: {} })).status, 409, "a plain Stop refuses while 24/7 runs");
+    await supervisor.restart("surveillance");
+    const resumed = await api("/api/modules/surveillance/api/recording");
+    assert.notEqual((await api("/api/modules/surveillance/service")).body.pid, before);
+    assert.equal(resumed.body.mode, "continuous");
+    assert.equal(resumed.body.active, true, "24/7 comes back in the new worker");
+
+    const off = await mode("off");
+    assert.equal(off.body.active, false);
+    assert.equal(existsSync(armedFile), false);
+    assert.equal((await api("/api/modules/surveillance/service")).body.busy, null);
+
+    assert.equal((await mode("continuous")).status, 200);
+    await supervisor.stop("surveillance", { force: true });
+    const after = await api("/api/modules/surveillance/api/recording");
+    assert.equal(after.body.mode, "off", "stopping the service anyway turns 24/7 off for good");
+    assert.equal(after.body.active, false);
+    const saved = JSON.parse(readFileSync(modulePaths(dataDir, "surveillance").config, "utf8"));
+    assert.equal(saved.value.recording.mode, "off");
+  });
+
   await test("Sidekick: reads the tray app's own files and edits them only against the current revision", async () => {
     const state = await api("/api/modules/sidekick/api/state");
     assert.equal(state.status, 200, JSON.stringify(state.body));
@@ -449,6 +698,30 @@ try {
     assert.equal((await api("/api/modules/services")).status, 200);
     assert.equal((await api("/api/modules/scripthub/service")).body.state, "running");
     await new Promise<void>((resolve) => hub.listen(hubPort, "127.0.0.1", resolve));
+  });
+
+  await test("on a machine without Script Hub, Surveillance and Home start empty and save nothing until edited", async () => {
+    const closed = createServer();
+    await new Promise<void>((resolve) => closed.listen(0, "127.0.0.1", resolve));
+    const nowhere = `http://127.0.0.1:${(closed.address() as AddressInfo).port}`;
+    await new Promise<void>((resolve) => closed.close(() => resolve()));
+    const hublessDir = join(root, "hubless");
+    const hubless = new ModuleSupervisor({ dataDir: hublessDir, build: "build-one", hubUrl: nowhere, idleExitMs: 120_000 });
+    extraSupervisors.push(hubless);
+    for (const id of ["surveillance", "home"] as const) {
+      const connection = await hubless.ensure(id);
+      const config = (await (await hubless.request(connection, "/config")).json()) as { origin: string; cameras?: unknown[]; devices?: unknown[] };
+      assert.equal(config.origin, "deck-unreachable", `${id} starts`);
+      assert.equal(existsSync(modulePaths(hublessDir, id).config), false, `${id} saves nothing it was not asked to`);
+    }
+    const surveillance = await hubless.ensure("surveillance");
+    const blank = (await (await hubless.request(surveillance, "/config")).json()) as Record<string, unknown>;
+    const saved = await hubless.request(surveillance, "/config", { method: "PUT", body: JSON.stringify({ ...blank, recordingRoot: join(root, "hubless-recordings") }), headers: { "content-type": "application/json" } });
+    assert.equal(saved.status, 200);
+    const written = JSON.parse(readFileSync(modulePaths(hublessDir, "surveillance").config, "utf8"));
+    assert.equal(written.origin, "new", "the owner's first save makes it a real setup");
+    assert.equal(written.value.recording.retentionDays, 0, "a setup that could not import keeps everything, like any other");
+    assert.equal(written.value.recording.mode, "off");
   });
 
   await test("a routine health re-check of a running worker reads as running, not starting", async () => {

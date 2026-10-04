@@ -3,7 +3,7 @@ import { Readable } from "node:stream";
 import { JsonFile } from "../configStore.js";
 import type { ModuleFactory } from "../context.js";
 import { hubFetch, hubJson } from "../hubClient.js";
-import { loadOrImport, type StoredConfig } from "../legacyImport.js";
+import { loadOrImport, withValue, type StoredConfig } from "../legacyImport.js";
 import { HttpError, Router, STREAMED } from "../router.js";
 
 interface ScriptHubConfig {
@@ -41,7 +41,7 @@ export const createScriptHubModule: ModuleFactory = async (ctx) => {
   // the live part; the text is served once from /details and refetched only when its revision moves.
   router.get("/status", async () => {
     // A config that could not be imported while the hub was down gets another try once it answers.
-    if (config.origin === "new" && config.importedAt === null && !(await file.read())) config = await loadConfig();
+    if (config.origin === "deck-unreachable" && !(await file.read())) config = await loadConfig();
     const status = await hubJson<{ generatedAt: string; scripts: HubScript[] }>(ctx.hubUrl, "/api/status", { timeoutMs: 20_000 });
     const scripts = Array.isArray(status.scripts) ? status.scripts : [];
     details = detailsOf(scripts, details);
@@ -67,7 +67,7 @@ export const createScriptHubModule: ModuleFactory = async (ctx) => {
   router.put("/hidden", async ({ body }) => {
     const ids = (body as { hiddenScripts?: unknown }).hiddenScripts;
     if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string" && SCRIPT_ID.test(id))) throw new HttpError(400, "hiddenScripts must be a list of script ids");
-    config = { ...config, value: { hiddenScripts: [...new Set(ids as string[])] } };
+    config = withValue(config, { hiddenScripts: [...new Set(ids as string[])] });
     await file.write(config);
     return { hiddenScripts: config.value.hiddenScripts };
   });

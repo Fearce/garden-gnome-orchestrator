@@ -90,3 +90,43 @@ the tab after the worker became healthy displayed the cameras. No persistent wor
 Under live module load, 40 samples measured HTTP 2.2 / 49.4 / 264.3 ms and WebSocket ping
 1.7 / 49.5 / 263.8 ms. GGO reported zero event-loop stalls in the preceding five minutes; that monitor
 counts stalls of at least one second. Owner messages were sampled only in the isolated lab.
+
+## 24/7 recording, recording options and recordings browser
+
+The owner asked for an always-on option that is clearly off by default, plus recording options. QA round 2
+also found that Surveillance and Home could not start without a reachable Script Hub. Both are now built
+(design: [`../local-service-modules.md#surveillance-recording`](../local-service-modules.md#surveillance-recording)):
+
+- **Off / 24/7 / Schedule**: one persisted recording mode, Off on every imported and new setup. Turning
+  it on writes `armed.json` before the mode is saved, so the supervisor restarts the worker after an idle
+  exit, a GGO deploy or a reboot. A recording worker refuses a plain stop.
+- **Options**: per-camera record switch, file length, a weekly schedule, keep-days and a per-camera size
+  cap. Both limits default to keep everything. Deletion is bounded (400 files per sweep), matches only the
+  recorder's own segment names, and never touches the newest or a recently written file.
+- **Recordings browser**: by camera and day, playing through an on-demand MP4 copy (`-c copy`), with MP4
+  and original downloads. All of it goes through the authenticated module proxy. Segment names are checked
+  against the recorder's pattern and resolved only inside the configured folders. The proxy now forwards
+  the raw, percent-encoded path, so an encoded `..` reaches that check and gets a 400.
+- **No Script Hub**: a refused connection starts the worker with an empty setup and saves nothing.
+  The first save, or a later status read once the hub answers, does the import. A timeout or a hub error
+  still blocks the start, so a pending import is never overwritten with defaults.
+
+The module gate now passes 32 checks. The isolated lab passed 58 browser checks, desktop and phone:
+- recording is off at import and survives a save;
+- 24/7 survives a GGO restart;
+- a segment lists, plays (first frame in 644 ms on the earlier run) and downloads as a 206 attachment;
+- a traversal is refused;
+- Off asks for confirmation and stops every camera;
+- Home shows the "not answering" notice without a hub;
+- nothing overflows at phone width;
+- Stop leaves no process behind.
+
+| Phase | HTTP | WebSocket ping | Owner message echo | Event-loop stalls |
+| --- | --- | --- | --- | --- |
+| Modules idle | 2.4 / 5.4 / 26.2 | 1.8 / 3.9 / 20.2 | 2.6 / 17.9 / 17.9 | 0 |
+| Recording five cameras 24/7 and polling three modules | 2.0 / 5.2 / 5.2 | 1.0 / 2.0 / 2.8 | 4.3 / 405.5 / 405.5 | 0 |
+
+One of the five loaded owner-message samples took 405 ms. The other four stayed under 5 ms, and the stall
+monitor saw no event-loop block. That fits a single slow disk write on a loaded machine, not a busy GGO
+process; the earlier run measured 80 ms max for the same phase. Worker memory: 72 MB (Script Hub), 79 MB
+(Surveillance, recording 5 cameras), 56 MB (Home), 56 MB (Sidekick).

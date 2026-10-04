@@ -4,9 +4,10 @@
 //
 // What the unit gate (`test:modules`) cannot see: that a hidden tab really starts nothing, that the
 // Settings switches persist across a reload on desktop AND phone, that each tab renders its migrated data,
-// that leaving a tab closes its streams and polling, that a recording the owner starts survives leaving
-// the tab and stops only on Stop, that a killed worker is replaced on the next request, and how GGO's own
-// HTTP, socket and owner-message latency hold up while the modules work.
+// that leaving a tab closes its streams and polling, that recording is off until the owner picks 24/7,
+// then survives leaving the tab and a GGO restart and ends only on Off, that a recorded segment plays in
+// the recordings browser, that a killed worker is replaced on the next request, and how GGO's own HTTP,
+// socket and owner-message latency hold up while the modules work.
 //
 // Safe by construction: it never starts or stops a Script Hub script, never sends a vacuum command and
 // never toggles Sidekick's power. The one write to real hardware is reading camera streams, and the one
@@ -207,8 +208,11 @@ async function soft(label, fn) {
     const secrets = storedCameraSecrets(path.join(dataDir, "modules", "surveillance", "config.json"));
     const leaks = secrets.filter((secret) => cfg.text.includes(secret));
     check("imported camera passwords never reach the browser", secrets.length > 0 && leaks.length === 0, `${leaks.length} of ${secrets.length} stored secret(s) visible`);
-    check("an imported setup starts with recording stopped", (await api(cookie, "GET", "/api/modules/surveillance/api/recording")).json?.active === false);
-    await api(cookie, "PUT", "/api/modules/surveillance/api/config", { ...cfg.json, recordingRoot: recordDir });
+    const initial = (await api(cookie, "GET", "/api/modules/surveillance/api/recording")).json;
+    check("an imported setup starts with recording off", initial?.mode === "off" && initial?.active === false, JSON.stringify({ mode: initial?.mode, active: initial?.active }));
+    // One-minute files, so the browser has a finished segment to play by the time it looks.
+    await api(cookie, "PUT", "/api/modules/surveillance/api/config", { ...cfg.json, recordingRoot: recordDir, recording: { ...cfg.json.recording, segmentMinutes: 1 } });
+    check("saving settings leaves recording off", (await api(cookie, "GET", "/api/modules/surveillance/api/recording")).json?.mode === "off");
 
     const sockets = [];
     page.on("websocket", (ws) => {
@@ -228,12 +232,31 @@ async function soft(label, fn) {
       await delay(6_000);
       report.framesIn6s = sockets.at(-1)?.frames ?? 0;
       check("frames arrive over the module socket", (sockets.at(-1)?.frames ?? 0) > 0, `${report.framesIn6s} frames in 6s`);
+      const plan = (await page.locator(".sv-plan").textContent()) ?? "";
+      check("the tab says recording is off and nothing records", (await page.locator(".sv-plan-off").count()) === 1 && /Recording is off/.test(plan) && /Nothing is recorded/.test(plan), plan.slice(0, 160));
+      check("...with Off selected", (await page.locator('.sv-mode [role="radio"][aria-checked="true"]').textContent()) === "Off");
       await page.screenshot({ path: path.join(shots, "surveillance.png") });
     });
 
-    await soft("recording starts on Start and keeps going off the tab", async () => {
-      await page.click(".sv-bar button:has-text('Start recording')");
-      await page.waitForSelector(".sv-rec.on", { timeout: 60_000 });
+    await soft("the recording settings dialog", async () => {
+      const before = (await api(cookie, "GET", "/api/modules/surveillance/api/config")).text;
+      await page.click(".sv-plan button:has-text('Recording settings')");
+      await page.waitForSelector('[role="dialog"][aria-label="Recording settings"]');
+      const dialog = page.locator('[role="dialog"][aria-label="Recording settings"]');
+      check("it offers a record switch per camera", (await dialog.locator(".sv-record-list input[type=checkbox]").count()) === cameras.length);
+      check("...a weekly schedule", (await dialog.locator(".sv-day").count()) === 7);
+      check("...file length, keep-days and a size cap", (await dialog.locator("select.mod-select").count()) >= 1 && (await dialog.locator('input[placeholder="Keep everything"]').count()) === 1 && (await dialog.locator('input[placeholder="No cap"]').count()) === 1);
+      await page.screenshot({ path: path.join(shots, "surveillance-settings.png") });
+      await page.keyboard.press("Escape");
+      await page.waitForSelector('[role="dialog"][aria-label="Recording settings"]', { state: "detached" });
+      check("closing it without saving writes nothing", (await api(cookie, "GET", "/api/modules/surveillance/api/config")).text === before);
+    });
+
+    await soft("24/7 recording starts on the owner's choice and keeps going off the tab", async () => {
+      await page.click(".sv-mode button:has-text('24/7')");
+      await page.waitForSelector(".sv-plan-continuous", { timeout: 60_000 });
+      await page.waitForSelector(".sv-plan.live", { timeout: 60_000 });
+      check("24/7 is selected and stored", (await api(cookie, "GET", "/api/modules/surveillance/api/config")).json?.recording?.mode === "continuous");
       await page.screenshot({ path: path.join(shots, "surveillance-recording.png") });
       // Representative load: frames streaming to this page, every camera recording, and the other three
       // modules answering requests in parallel.
@@ -272,14 +295,42 @@ async function soft(label, fn) {
       check("the recording survives an actual GGO restart in the same worker", resumed.json?.active === true && recordingPid != null && resumedPid === recordingPid);
       const files = fs.readdirSync(recordDir, { recursive: true }).filter((f) => /\.(mp4|mkv|ts)$/i.test(String(f)));
       check("...writing files into the chosen folder", files.length > 0, `${files.length} file(s)`);
-
       await openTab(page, "surveillance");
-      await page.waitForSelector(".sv-rec.on", { timeout: 30_000 });
+      await page.waitForSelector(".sv-plan.live", { timeout: 30_000 });
+    });
+
+    await soft("the recordings browser plays a segment", async () => {
+      await page.click('.sv-view [role="tab"]:has-text("Recordings")');
+      await page.waitForSelector(".sv-segment", { timeout: 60_000 });
+      await delay(1_000);
+      check("switching to Recordings closes the live picture socket", sockets.every((s) => s.closed), JSON.stringify(sockets.map((s) => s.closed)));
+      const listed = await page.locator(".sv-segment").count();
+      check("the day's segments are listed", listed > 0, `${listed} segment(s)`);
+      const started = Date.now();
+      await page.locator(".sv-segment-play").first().click();
+      const played = await page
+        .waitForFunction(() => (document.querySelector(".sv-player video")?.readyState ?? 0) >= 2, null, { timeout: 90_000 })
+        .then(() => true, () => false);
+      report.firstPlaybackMs = Date.now() - started;
+      check("a recorded segment plays in the browser", played && (await page.locator(".sv-player-cover").count()) === 0, `${report.firstPlaybackMs}ms to first frame`);
+      const download = await page.locator(".sv-player-actions a:has-text('MP4')").getAttribute("href");
+      const head = await fetch(new URL(download, BASE), { headers: { cookie, range: "bytes=0-99" } });
+      check("the MP4 download is served as an attachment with ranges", head.status === 206 && /attachment/.test(head.headers.get("content-disposition") ?? ""), `${head.status} ${head.headers.get("content-disposition")}`);
+      await head.body?.cancel();
+      const camera = (await api(cookie, "GET", "/api/modules/surveillance/api/recordings")).json?.cameras?.find((c) => c.segments > 0);
+      const escape = await api(cookie, "GET", `/api/modules/surveillance/api/recordings/${encodeURIComponent(camera?.cameraId ?? "x")}/segments/${encodeURIComponent("..\\..\\config.json")}/file`);
+      check("a path outside the recording folders is refused", escape.status === 400, `${escape.status}`);
+      await page.screenshot({ path: path.join(shots, "surveillance-recordings.png") });
+      await page.click('.sv-view [role="tab"]:has-text("Live")');
+      await page.waitForSelector(".sv-grid", { timeout: 30_000 });
+    });
+
+    await soft("Off ends the recording and forgets it", async () => {
       page.once("dialog", (dialog) => void dialog.accept());
-      await page.click(".sv-bar button:has-text('Stop recording')");
-      await page.waitForSelector(".sv-rec:not(.on)", { timeout: 60_000 });
+      await page.click(".sv-mode button:has-text('Off')");
+      await page.waitForSelector(".sv-plan-off", { timeout: 60_000 });
       const after = (await api(cookie, "GET", "/api/modules/surveillance/api/recording")).json;
-      check("Stop ends the recording", after?.active === false);
+      check("Off ends the recording", after?.active === false && after?.mode === "off");
       check("...and forgets it", !fs.existsSync(path.join(dataDir, "modules", "surveillance", "armed.json")));
     });
 
@@ -290,10 +341,12 @@ async function soft(label, fn) {
       const cards = await page.locator(".home-card").count();
       check("Home renders the migrated devices", cards > 0, `${cards} device(s)`);
       await page.waitForFunction(() => !document.querySelector(".mod-loading"), null, { timeout: 30_000 }).catch(() => undefined);
-      const notices = await page.$$eval(".mod-notice strong", (els) => els.map((e) => e.textContent));
-      report.homeNotices = notices;
       const ha = (await api(cookie, "GET", "/api/modules/home/api/home-assistant")).json;
       report.homeAssistant = ha;
+      // The page runs its own probe after the devices render; wait for its answer before counting notices.
+      if (ha && !ha.reachable) await page.waitForSelector(".mod-notice:has-text('not answering')", { timeout: 30_000 }).catch(() => undefined);
+      const notices = await page.$$eval(".mod-notice strong", (els) => els.map((e) => e.textContent));
+      report.homeNotices = notices;
       check("Home Assistant's state is reported, not hung", ha !== null, JSON.stringify(ha)?.slice(0, 200));
       if (ha && !ha.reachable) {
         check("a Home Assistant outage is reported once, not once per device", notices.filter((n) => /not answering/.test(n ?? "")).length === 1, JSON.stringify(notices));
@@ -354,8 +407,15 @@ async function soft(label, fn) {
       check("a module fits the phone's width", overflow <= 1, `${overflow}px overflow`);
       await p.screenshot({ path: path.join(shots, "phone-sidekick.png"), fullPage: false });
       await p.selectOption('select[aria-label="All areas"]', "surveillance");
-      await p.waitForSelector(".sv-grid, .sv-bar", { timeout: 60_000 });
+      await p.waitForSelector(".sv-plan", { timeout: 60_000 });
+      const planFits = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      check("Surveillance's recording plan fits the phone", planFits <= 1, `${planFits}px overflow`);
       await p.screenshot({ path: path.join(shots, "phone-surveillance.png"), fullPage: false });
+      await p.click('.sv-view [role="tab"]:has-text("Recordings")');
+      await p.waitForSelector(".sv-segment, .sv-library .mod-empty", { timeout: 60_000 });
+      const libraryFits = await p.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      check("the recordings browser fits the phone", libraryFits <= 1, `${libraryFits}px overflow`);
+      await p.screenshot({ path: path.join(shots, "phone-recordings.png"), fullPage: false });
       await phone.close();
     });
 

@@ -89,7 +89,9 @@ export function errorText(error: unknown): string {
 export function formatBytes(bytes: number | null): string {
   if (bytes == null) return "—";
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${Math.round(bytes / (1024 * 1024))} MB`;
+  if (bytes < 1024 ** 3) return `${Math.round(bytes / (1024 * 1024))} MB`;
+  const gb = bytes / 1024 ** 3;
+  return `${gb < 10 ? gb.toFixed(1) : Math.round(gb)} GB`;
 }
 
 export function formatAgo(at: number | string | null, now = Date.now()): string {

@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { JsonFile } from "../configStore.js";
 import type { ModuleFactory, WorkerContext } from "../context.js";
 import { hubJson } from "../hubClient.js";
-import { loadOrImport, type StoredConfig } from "../legacyImport.js";
+import { loadOrImport, withValue, type StoredConfig } from "../legacyImport.js";
 import { HttpError, Router } from "../router.js";
 import { bridgeFor, emptyHomeConfig, maskDevice, newDevice, normalizeDevice, normalizeHomeConfig, restoreDeviceSecrets, type HomeConfig, type VacuumDevice } from "./config.js";
 import { HomeAssistantBridge, type VacuumStatus } from "./homeAssistant.js";
@@ -24,7 +24,7 @@ export const createHomeModule: ModuleFactory = async (ctx) => {
     const incoming = normalizeHomeConfig(body);
     const before = new Map(stored.value.devices.map((device) => [device.id, device]));
     incoming.devices = incoming.devices.map((device) => restoreDeviceSecrets(device, before.get(device.id)));
-    stored = { ...stored, value: incoming };
+    stored = withValue(stored, incoming);
     await file.write(stored);
     homeAssistant = new HomeAssistantBridge(incoming.homeAssistant.url, incoming.homeAssistant.configDir);
     return view();

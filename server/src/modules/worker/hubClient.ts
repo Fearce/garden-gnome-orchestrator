@@ -29,8 +29,15 @@ export async function hubFetch(hubUrl: string, path: string, init: RequestInit &
     const name = (error as Error).name;
     if (name === "TimeoutError") throw new HttpError(504, `Script Hub did not answer within ${Math.round(timeoutMs / 1000)}s`, { hubDown: true });
     if (name === "AbortError") throw error;
-    throw new HttpError(503, "Script Hub is not running, so this panel cannot reach it", { hubDown: true });
+    throw new HttpError(503, "Script Hub is not running, so this panel cannot reach it", { hubDown: true, ...(wasRefused(error) ? { hubAbsent: true } : {}) });
   }
+}
+
+/** Nothing listens at the hub's address (as opposed to a hub that is slow or failing). */
+function wasRefused(error: unknown): boolean {
+  const cause = (error as { cause?: { code?: unknown; errors?: { code?: unknown }[] } }).cause;
+  if (cause?.code === "ECONNREFUSED") return true;
+  return Array.isArray(cause?.errors) && cause.errors.length > 0 && cause.errors.every((inner) => inner.code === "ECONNREFUSED");
 }
 
 /** One section of the hub's own settings file, where the Dashboard Deck kept these modules' config. Null

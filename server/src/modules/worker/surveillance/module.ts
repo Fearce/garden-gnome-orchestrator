@@ -1,25 +1,39 @@
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 import { JsonFile } from "../configStore.js";
 import type { ModuleFactory, WorkerContext } from "../context.js";
-import { loadOrImport, type StoredConfig } from "../legacyImport.js";
+import { loadOrImport, withValue, type StoredConfig } from "../legacyImport.js";
 import { HttpError, Router, STREAMED } from "../router.js";
 import { emptyConfig, fromDeckSection, maskCamera, maskUrl, normalizeCamera, normalizeConfig, restoreSecrets, type Camera, type SurveillanceConfig } from "./config.js";
+import { RecordingController } from "./controller.js";
 import { discoverCamera, type DiscoveryResult } from "./discovery.js";
 import { FramePush, FrameSource } from "./frames.js";
+import { RecordingLibrary } from "./library.js";
+import { PlaybackCache } from "./playback.js";
 import { listPresets } from "./presets.js";
 import { PreviewSessions } from "./preview.js";
 import { killTaggedFfmpeg, resolveFfmpeg } from "./processes.js";
-import { Recorder } from "./recorder.js";
+import { Recorder, recordingFolder } from "./recorder.js";
+import type { RecordingMode } from "./recordingPlan.js";
+import { registerRecordingRoutes } from "./recordingsRoutes.js";
 import { isReolink, ReolinkClient } from "./reolink.js";
+import { RetentionKeeper } from "./retention.js";
 import { SnapshotFetcher } from "./snapshots.js";
 
 const DRAFT_TTL_MS = 30 * 60_000;
 
 export const createSurveillanceModule: ModuleFactory = async (ctx) => {
   const file = new JsonFile<StoredConfig<SurveillanceConfig>>(ctx.configPath);
-  let stored = await loadConfig(ctx, file);
+  const loaded = await loadConfig(ctx, file);
+  let stored = loaded.stored;
   let ffmpeg = await resolveFfmpeg(ctx.dataDir, stored.value.ffmpegPath);
   const recorder = new Recorder(async () => ffmpeg, ctx.log);
+  const controller = new RecordingController(recorder, ctx, () => stored.value);
+  const library = new RecordingLibrary(() =>
+    stored.value.cameras.map((camera) => ({ cameraId: camera.id, name: camera.name, dir: recordingFolder(stored.value.recordingRoot, camera) })).filter((folder) => folder.dir),
+  );
+  const retention = new RetentionKeeper(library, () => stored.value.recording, ctx.log);
+  const playback = new PlaybackCache(join(ctx.moduleDir, "playback"), async () => ffmpeg, ctx.log);
   const previews = new PreviewSessions(ctx.log);
   const snapshots = new SnapshotFetcher();
   const reolink = new ReolinkClient();
@@ -28,8 +42,9 @@ export const createSurveillanceModule: ModuleFactory = async (ctx) => {
   const drafts = new Map<string, { camera: Camera; at: number }>();
 
   await killTaggedFfmpeg(ctx.log);
-  const armed = await ctx.armedReason();
-  if (armed) await startRecording().catch((error: Error) => ctx.log(`could not resume recording: ${error.message}`));
+  await reconcilePlan();
+  await controller.apply();
+  retention.start();
 
   const router = new Router();
 
@@ -39,6 +54,11 @@ export const createSurveillanceModule: ModuleFactory = async (ctx) => {
     const incoming = normalizeConfig(body);
     const before = new Map(stored.value.cameras.map((camera) => [camera.id, camera]));
     incoming.cameras = incoming.cameras.map((camera) => restoreSecrets(camera, before.get(camera.id)));
+    const nextFfmpeg = await resolveFfmpeg(ctx.dataDir, incoming.ffmpegPath);
+    // Only the mode route turns recording on or off, so an edit from a stale page can never flip it. Read
+    // the mode after the await above, so a mode change saved meanwhile is the one kept.
+    incoming.recording.mode = stored.value.recording.mode;
+    await controller.validate(incoming, nextFfmpeg);
     await save(incoming);
     return view();
   });
@@ -98,38 +118,42 @@ export const createSurveillanceModule: ModuleFactory = async (ctx) => {
 
   router.get("/recording", () => recordingView());
 
-  router.post("/recording/start", async () => {
-    await startRecording();
+  router.put("/recording/mode", async ({ body }) => {
+    const mode = parseMode((body as { mode?: unknown }).mode);
+    const next = { ...stored.value, recording: { ...stored.value.recording, mode } };
+    await controller.validate(next, ffmpeg);
+    await controller.armFor(next);
+    await save(next);
+    ctx.log(`recording mode set to ${mode} by the owner`);
     return recordingView();
   });
 
-  router.post("/recording/stop", async () => {
-    await recorder.stop();
-    await ctx.setArmed(null);
-    ctx.log("recording stopped by the owner");
-    return recordingView();
-  });
+  registerRecordingRoutes(router, { library, playback, retention, settings: () => stored.value.recording });
 
-  async function startRecording(): Promise<void> {
-    try {
-      await recorder.start(stored.value.recordingRoot, stored.value.cameras);
-    } catch (error) {
-      throw new HttpError(400, (error as Error).message);
+  /**
+   * The mode in config.json and the armed marker agree unless something changed one without the other:
+   * a recording started before modes existed (armed, no mode) is kept going as 24/7, and a plan whose marker
+   * is gone was ended by "stop the service anyway", which ends user-started work for good.
+   */
+  async function reconcilePlan(): Promise<void> {
+    const armed = await ctx.armedReason();
+    const mode = stored.value.recording.mode;
+    if (armed && mode === "off" && !loaded.hadRecordingSettings) {
+      await save({ ...stored.value, recording: { ...stored.value.recording, mode: "continuous" } }, false);
+      ctx.log("a recording started before recording modes existed is kept going as 24/7 recording");
+    } else if (!armed && mode !== "off") {
+      await save({ ...stored.value, recording: { ...stored.value.recording, mode: "off" } }, false);
+      ctx.log("recording was ended with the service, so it stays off until the owner turns it on again");
     }
-    await ctx.setArmed(armedLabel());
   }
 
-  async function save(next: SurveillanceConfig): Promise<void> {
-    stored = { ...stored, value: next };
+  async function save(next: SurveillanceConfig, apply = true): Promise<void> {
+    const retentionChanged = next.recording.retentionDays !== stored.value.recording.retentionDays || next.recording.maxGbPerCamera !== stored.value.recording.maxGbPerCamera;
+    stored = withValue(stored, next);
     await file.write(stored);
     ffmpeg = await resolveFfmpeg(ctx.dataDir, next.ffmpegPath);
-    recorder.update(next.recordingRoot, next.cameras);
-    if (recorder.isActive) await ctx.setArmed(armedLabel());
-  }
-
-  function armedLabel(): string {
-    const count = recorder.statuses().filter((s) => s.state !== "not-configured").length;
-    return `recording ${count} camera${count === 1 ? "" : "s"}`;
+    if (apply) await controller.apply();
+    if (retentionChanged) retention.settingsChanged();
   }
 
   function view() {
@@ -139,12 +163,20 @@ export const createSurveillanceModule: ModuleFactory = async (ctx) => {
       recordingRoot: stored.value.recordingRoot,
       ffmpegPath: stored.value.ffmpegPath,
       ffmpegFound: Boolean(ffmpeg),
+      recording: stored.value.recording,
       cameras: stored.value.cameras.map(maskCamera),
     };
   }
 
   function recordingView() {
-    return { active: recorder.isActive, recordingRoot: stored.value.recordingRoot, cameras: recorder.statuses() };
+    const { recording } = stored.value;
+    return {
+      ...controller.view(),
+      schedule: recording.schedule,
+      segmentMinutes: recording.segmentMinutes,
+      recordingRoot: stored.value.recordingRoot,
+      cameras: recorder.statuses(),
+    };
   }
 
   function findCamera(id: string): Camera {
@@ -170,9 +202,11 @@ export const createSurveillanceModule: ModuleFactory = async (ctx) => {
 
   return {
     router,
-    busy: () => (recorder.isActive ? armedLabel() : null),
+    busy: () => controller.busyLabel(),
     onStream: (socket) => push.add(socket),
     shutdown: async () => {
+      retention.dispose();
+      await controller.dispose();
       push.closeAll();
       previews.closeAll();
       await recorder.stop();
@@ -180,7 +214,7 @@ export const createSurveillanceModule: ModuleFactory = async (ctx) => {
   };
 };
 
-async function loadConfig(ctx: WorkerContext, file: JsonFile<StoredConfig<SurveillanceConfig>>): Promise<StoredConfig<SurveillanceConfig>> {
+async function loadConfig(ctx: WorkerContext, file: JsonFile<StoredConfig<SurveillanceConfig>>): Promise<{ stored: StoredConfig<SurveillanceConfig>; hadRecordingSettings: boolean }> {
   const stored = await loadOrImport({
     file,
     hubUrl: ctx.hubUrl,
@@ -189,7 +223,13 @@ async function loadConfig(ctx: WorkerContext, file: JsonFile<StoredConfig<Survei
     empty: emptyConfig,
     log: ctx.log,
   });
-  return { ...stored, value: normalizeConfig(stored.value) };
+  const raw = stored.value as unknown as Record<string, unknown>;
+  return { stored: { ...stored, value: normalizeConfig(stored.value) }, hadRecordingSettings: Boolean(raw && typeof raw.recording === "object" && raw.recording) };
+}
+
+function parseMode(value: unknown): RecordingMode {
+  if (value === "off" || value === "continuous" || value === "schedule") return value;
+  throw new HttpError(400, "mode must be off, continuous or schedule");
 }
 
 /** Discovery's answer for the browser: the draft and every probed URL with its credentials masked. */

@@ -29,7 +29,9 @@ cannot stall owner chat or task execution.
   request without its per-start token (`worker.json`). Its environment is GGO's minus every
   credential-looking variable.
 - **Reached through GGO.** The browser calls `/api/modules/<module>/api/*`, which GGO proxies with a
-  timeout after checking the session cookie and refusing cross-site requests. Live streams use
+  timeout after checking the session cookie and refusing cross-site requests. The path goes to the worker
+  still percent-encoded, cut from the raw URL, so an encoded `/` or `\` in an id or file name can never
+  turn into a separator on the worker side. Live streams use
   `/api/modules/<module>/stream` with a single-use ticket from `/api/modules/<module>/ticket`, because a
   WebSocket handshake ignores CORS.
 - **Idles out.** A worker exits after 10 minutes without a request, an open stream or user-started work.
@@ -47,14 +49,20 @@ its polling and closes its frame socket and log streams.
 
 ### Work you start
 
-Only an explicit action starts continuous work, and only Stop ends it. Today that means one action:
-**Start recording** in Surveillance.
+Only an explicit choice starts continuous work, and only an explicit choice ends it. Today that is one
+choice: Surveillance's recording mode, **Off · 24/7 · Schedule** (see [Surveillance recording](#surveillance-recording)).
+It is **Off** by default, also for imported cameras: nothing records and no camera is contacted except
+for the live pictures of an open tab.
 
-- Recording keeps running when you leave the tab, close the browser or restart GGO.
-- It is remembered in `armed.json`. While the file exists, GGO checks the worker every minute and
-  resumes the recording if the worker died, including after a reboot of GGO.
-- **Stop recording** (with a confirmation) ends it and deletes `armed.json`. Stopping the service from
-  the tab header also ends a recording, after its own confirmation.
+- 24/7 or Schedule keeps running when you leave the tab, close the browser, restart or deploy GGO, or
+  reboot. The mode is stored in Surveillance's `config.json`, and while it is on the worker keeps
+  `armed.json`. While that file exists GGO checks the worker every minute and starts it again if it died.
+- **Off** (with a confirmation) stops every camera and deletes `armed.json`.
+- The header's plain **Stop** refuses a worker that holds a plan (`409`). **Stop anyway** (after its own
+  confirmation) ends the plan for good: GGO deletes `armed.json` as it stops the worker, and the worker's
+  next start finds the mode on but the marker gone, so it sets the mode back to Off. **Restart** keeps the
+  plan. Turning a plan on writes the marker before the mode is saved, so a crash in between cannot be
+  mistaken for Stop anyway.
 
 ## Data and migration
 
@@ -63,10 +71,11 @@ Each module keeps its state under `<DATA_DIR>/modules/<module>/`, which is gitig
 
 | File | Contents |
 | --- | --- |
-| `config.json` | The module's settings: cameras, devices, hidden scripts. |
+| `config.json` | The module's settings: cameras, devices, hidden scripts, Surveillance's recording mode and options. |
 | `worker.json`, `worker.lock` | The running worker's pid, port and token, and its single-instance lock. |
 | `worker.log` (+ `worker.log.1`) | The worker's log. It moves to `.1` past 4 MB, and ffmpeg output is capped per camera. |
-| `armed.json` | Present only while a recording you started should keep running. |
+| `armed.json` | Present only while recording is set to 24/7 or Schedule. |
+| `playback/` | Surveillance only: MP4 copies of played segments, at most 1 GB, oldest dropped first. Safe to delete. |
 
 **First use imports the Deck's settings.** When `config.json` is missing, the worker reads the matching
 section from the Script Hub at `SCRIPT_HUB_URL` (`GET /api/settings/<section>`, default
@@ -75,13 +84,18 @@ section from the Script Hub at `SCRIPT_HUB_URL` (`GET /api/settings/<section>`, 
 | Module | Deck section | Carried over |
 | --- | --- | --- |
 | Script Hub | `hiddenScripts` | Which scripts you hid. |
-| Surveillance | `surveillance` | Every camera and its streams, snapshot URL, credentials, layout and recording quality; the recording folder. Recording itself starts **stopped**, even if the Deck was recording. |
+| Surveillance | `surveillance` | Every camera and its streams, snapshot URL, credentials, layout and recording quality; the recording folder. Recording starts **Off**, even if the Deck was recording, and keeps every file (no retention) until you set one. |
 | Home | `home-control` | Home Assistant URL and config folder, each vacuum with its entities, miIO host and token. |
 | Sidekick | none | Sidekick's rules stay in the tray app's own `settings.json` and are edited in place, so nothing is copied. |
 
-If the hub cannot be reached, startup fails visibly and nothing is written, so the import runs again on the next start. A hub
-without that section (`404`) counts as nothing to import. A hub that answers with a server error fails
-the start visibly instead of saving an empty config. To redo an import,
+A hub without that section (`404`) counts as nothing to import. A hub that answers with a server error or
+times out fails the start visibly and writes nothing, so a pending import is never replaced by an empty
+setup. A machine with **no Script Hub at all** (the connection is refused) starts Surveillance and Home
+empty, with `origin: "deck-unreachable"` and a notice that nothing was imported, but still writes
+nothing: if the hub is running at the next worker start, the import happens then. Script Hub's tab
+treats it the same way for its hidden-scripts list, and retries the import on each status read until the
+list is saved. Your first save writes
+`config.json` with `origin: "new"`, and from then on the hub is never asked again. To redo an import,
 stop the module's service, delete its `config.json` and open the tab again.
 
 **Secrets stay on the server.** Camera passwords, credentials inside stream URLs, miIO tokens and the
@@ -94,11 +108,11 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
 - **Script Hub** talks to the Script Hub service at `SCRIPT_HUB_URL`. It covers the script list with
   search, category, status and visibility filters; Start, Stop and Keep Alive; notes; and a live log tail.
   The worker trims and gzips the hub's large status payload. The hidden-scripts list is stored in GGO.
-- **Surveillance** shows live camera tiles, records, and edits and discovers cameras. A camera with a
-  snapshot URL is polled at its own refresh interval. A stream-only camera gets one on-demand ffmpeg
-  preview, or the recorder's own frames while recording. Reolink privacy mode can be toggled. Every
-  recording ffmpeg writes 15-minute segments into the recording folder. The module needs ffmpeg: a path
-  set under Recording, else the copy GGO installed for Remote control, else one on `PATH`.
+- **Surveillance** shows live camera tiles, records, plays recordings back, and edits and discovers
+  cameras. A camera with a snapshot URL is polled at its own refresh interval. A stream-only camera gets
+  one on-demand ffmpeg preview, or the recorder's own frames while recording. Reolink privacy mode can be
+  toggled. The module needs ffmpeg for recording, stream-only previews and playback: a path set under
+  Recording settings, else the copy GGO installed for Remote control, else one on `PATH`.
 - **Home** controls robot vacuums: status, start, pause, dock, find. It goes through Home Assistant
   first, signing in with the owner's refresh token from Home Assistant's own `.storage/auth`, so no new
   token has to be issued. The local miIO path is the fallback; it needs Python with `python-miio` and
@@ -107,14 +121,48 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
   revision. It shows each rule's trigger and companion liveness and the app's launch log, and starts or
   stops the tray app through Script Hub.
 
+## Surveillance recording
+
+The bar above the cameras always states the plan: **Recording is off** (the default), **Recording 24/7**,
+or the schedule with its next start or stop. Its three-way switch is the only control that changes the
+mode (`PUT /recording/mode`). Saving any other setting (`PUT /config`) keeps the stored mode, so an edit
+from a stale page cannot turn recording on or off.
+
+- **24/7** records every camera set to record, around the clock.
+- **Schedule** records inside a daily window on chosen days, in the machine's local time. A window that
+  ends before it starts runs past midnight and belongs to its start day (Fri 22:00–07:00 records into
+  Saturday morning). The same start and end mean the whole day. The worker re-checks the window every
+  30 seconds. Between windows the plan stays armed, so the worker stays up and picks the next window up.
+- **Recording settings** holds the schedule, a **Record this camera** switch per camera (also in each
+  camera's editor), the recording folder, file length (1, 5, 10, 15, 30 or 60 minutes, default 15),
+  **keep for N days**, a **size cap per camera** in GB, and the ffmpeg path. A camera with no RTSP stream
+  cannot record, and turning a plan on with no recordable camera or no folder is refused with the reason.
+- **Retention** runs in the worker while it is up: a minute after start, every 10 minutes, every 30
+  seconds while a backlog remains, and 5 seconds after the settings change. It deletes oldest first, at
+  most 400 files per sweep. It deletes only the recorder's own files, named `YYYY-MM-DD_HH-MM-SS.ts`, and
+  never the newest file of a camera or a file written in the last 3 minutes. With no days and no cap set,
+  it never touches the disk. Every setup (new, imported or pre-existing) keeps everything until you set
+  days or a cap, because a recording folder may already hold footage. **Clean up now** in the recordings view runs a sweep at once.
+- The **Recordings** view lists each camera's folder by day, then a day's files with their time span and
+  size. A file plays in the page as an MP4 that ffmpeg remuxes on first play (`-c copy`, no re-encode,
+  cached under `playback/`), with seeking. Each file downloads as MP4 or as the original `.ts`. The browser
+  passes only a camera id and a file name; the worker refuses any name the recorder could not have
+  written and any path outside that camera's folder. Responses go through GGO's authenticated proxy, which
+  passes `Range`, `Content-Range`, `Accept-Ranges` and `Content-Disposition`. Switching to Recordings
+  closes the live picture socket.
+- A recording made before modes existed (an `armed.json` but no recording settings in `config.json`)
+  continues as 24/7 on the first start of the new worker.
+
 ## Verifying
 
 - `npm run test:modules --prefix server` is the gate. It covers lifecycle, single instance, idle exit,
-  stale builds, Deck import, secret masking, auth, unreachable upstreams and tab visibility, using
-  real worker processes and a stand-in hub.
+  stale builds, Deck import (including a machine with no hub), secret masking, auth, unreachable
+  upstreams, tab visibility, the recording modes and schedule, retention, and the recordings routes
+  (ranges, MP4 playback, refused paths), using real worker processes and a stand-in hub.
 - `npm run modules-lab --prefix server` drives all four tabs in a browser against a throwaway instance;
   the header of `server/scripts/modules-lab.cjs` lists the build steps. It never starts or stops a
-  script, never sends a vacuum command and never toggles Sidekick. It records briefly into its own temp
-  folder, then stops.
+  script, never sends a vacuum command and never toggles Sidekick. It turns 24/7 on with one-minute files
+  into its own temp folder, survives a GGO restart, plays a file in the recordings view, then turns
+  recording Off.
 - `npm run probe:module-latency --prefix server` samples HTTP, WebSocket and event-loop responsiveness of
   the live console. It is read-only.

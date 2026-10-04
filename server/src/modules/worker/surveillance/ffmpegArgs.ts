@@ -40,8 +40,8 @@ export interface RecordingQuality {
   bitrateKbps: number;
 }
 
-/** Long-term storage stays tiny: low fps, size and bitrate, cut into 15-minute files at a per-camera offset. */
-export function segmentOutputArgs(quality: RecordingQuality, outputPattern: string, clocktimeOffset: number): string[] {
+/** Long-term storage stays tiny: low fps, size and bitrate, cut into fixed-length files at a per-camera offset. */
+export function segmentOutputArgs(quality: RecordingQuality, outputPattern: string, clocktimeOffset: number, segmentSeconds: number): string[] {
   const scale = `scale='min(${quality.width},iw):min(${quality.height},ih):force_original_aspect_ratio=decrease'`;
   const gop = String(Math.max(1, quality.fps * 10));
   return [
@@ -62,7 +62,7 @@ export function segmentOutputArgs(quality: RecordingQuality, outputPattern: stri
     "-segment_format", "mpegts",
     "-segment_atclocktime", "1",
     "-segment_clocktime_offset", String(clocktimeOffset),
-    "-segment_time", "900",
+    "-segment_time", String(segmentSeconds),
     "-segment_time_delta", "1",
     "-reset_timestamps", "1",
     "-strftime", "1",

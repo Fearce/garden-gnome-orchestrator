@@ -1,65 +1,10 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Field, Icon, Loading, ModuleDialog, ModuleFrame, Notice } from "./ModuleFrame.js";
+import { RecordingBar, RecordingDialog } from "./RecordingPlan.js";
+import { RecordingsBrowser } from "./SurveillanceRecordings.js";
 import { usePageVisible, usePoll } from "./hooks.js";
 import { errorText, formatAgo, moduleJson, streamUrl } from "./moduleApi.js";
-
-type PreviewStrategy = "snapshot" | "rtsp-mjpeg-proxy" | "none";
-
-interface Camera {
-  id: string;
-  name: string;
-  vendor: string;
-  model: string;
-  modelPreset: string;
-  location: string;
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  passwordSet?: boolean;
-  onvifUrl: string;
-  snapshotUrl: string;
-  streamUrl: string;
-  subStreamUrl: string;
-  previewStrategy: PreviewStrategy;
-  refreshMs: number;
-  gridSpan: number;
-  previewHeight: number;
-  uiCollapsed: boolean;
-  recordingDir: string;
-  recordingFps: number;
-  recordingWidth: number;
-  recordingHeight: number;
-  recordingBitrateKbps: number | null;
-  muteStaleAlert: boolean;
-  notes: string;
-  privacyMode: { enabled: boolean; updatedAt: string | null; lastResult: unknown } | null;
-}
-
-interface SurveillanceConfig {
-  origin: string;
-  importedAt: string | null;
-  recordingRoot: string;
-  ffmpegPath: string;
-  ffmpegFound: boolean;
-  cameras: Camera[];
-}
-
-interface CameraRecording {
-  cameraId: string;
-  state: "recording" | "connecting" | "waiting" | "not-configured";
-  usingSubStream: boolean;
-  targetDir: string | null;
-  lastFrameAt: number | null;
-  retryAt: number | null;
-  failures: number;
-}
-
-interface RecordingView {
-  active: boolean;
-  recordingRoot: string;
-  cameras: CameraRecording[];
-}
+import type { Camera, CameraRecording, PreviewStrategy, RecordingMode, RecordingView, SurveillanceConfig } from "./surveillanceTypes.js";
 
 interface Preset {
   id: string;
@@ -81,56 +26,70 @@ interface Discovery {
 }
 
 const STALE_FRAME_MS = 30_000;
-const RECORDING_LABEL: Record<CameraRecording["state"], string> = { recording: "recording", connecting: "connecting", waiting: "not recording", "not-configured": "no recording source" };
+const RECORDING_LABEL: Record<CameraRecording["state"], string> = { recording: "recording", connecting: "connecting", waiting: "not recording", "not-configured": "no recording source", disabled: "not recorded" };
+const MODE_LOG: Record<RecordingMode, string> = { off: "Recording turned off", continuous: "Recording 24/7", schedule: "Recording on the schedule" };
 
 export function Surveillance() {
   return (
-    <ModuleFrame id="surveillance" title="Surveillance" lede="Live camera pictures and continuous recording. Pictures stream only while this tab is open; recording runs from Start until you Stop it, whether or not the tab is open.">
+    <ModuleFrame
+      id="surveillance"
+      title="Surveillance"
+      lede="Live pictures, recording and playback for your cameras. Recording is off until you choose 24/7 or a schedule; then it keeps going with this tab closed and after restarts, until you turn it off."
+    >
       {(service) => <SurveillanceBody onRecordingChange={() => void service.refresh()} />}
     </ModuleFrame>
   );
 }
 
+type SaveableConfig = Pick<SurveillanceConfig, "recordingRoot" | "ffmpegPath" | "recording" | "cameras">;
+type Dialog = { kind: "camera"; camera: Camera; isNew: boolean } | { kind: "discover" } | { kind: "settings" } | null;
+
 function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void }) {
   const config = usePoll((signal) => moduleJson<SurveillanceConfig>("surveillance", "/config", { signal }), null);
   const recording = usePoll((signal) => moduleJson<RecordingView>("surveillance", "/recording", { signal }), 5_000);
   const [current, setCurrent] = useState<SurveillanceConfig | null>(null);
-  const [dialog, setDialog] = useState<{ kind: "camera"; camera: Camera; isNew: boolean } | { kind: "discover" } | { kind: "settings" } | { kind: "view"; camera: Camera } | null>(null);
-  const [recordingBusy, setRecordingBusy] = useState(false);
+  const [dialog, setDialog] = useState<Dialog>(null);
+  const [view, setView] = useState<"live" | "recordings">("live");
+  const [modeBusy, setModeBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { store, state: streamState, reconnect } = useFrameStream();
 
   useEffect(() => {
     if (config.data) setCurrent(config.data);
   }, [config.data]);
 
-  const saveConfig = useCallback(async (next: Pick<SurveillanceConfig, "recordingRoot" | "ffmpegPath" | "cameras">) => {
-    const saved = await moduleJson<SurveillanceConfig>("surveillance", "/config", { method: "PUT", body: { recordingRoot: next.recordingRoot, ffmpegPath: next.ffmpegPath, cameras: next.cameras } });
+  const saveConfig = useCallback(async (next: SaveableConfig) => {
+    const saved = await moduleJson<SurveillanceConfig>("surveillance", "/config", {
+      method: "PUT",
+      body: { recordingRoot: next.recordingRoot, ffmpegPath: next.ffmpegPath, recording: next.recording, cameras: next.cameras },
+    });
     setCurrent(saved);
     return saved;
   }, []);
 
-  const toggleRecording = useCallback(async () => {
-    const active = recording.data?.active;
-    if (active && !window.confirm("Stop recording every camera?")) return;
-    setRecordingBusy(true);
-    setError(null);
-    try {
-      await moduleJson("surveillance", `/recording/${active ? "stop" : "start"}`, { method: "POST", body: {} });
-      await recording.refresh();
-      onRecordingChange();
-    } catch (err) {
-      setError(errorText(err));
-    } finally {
-      setRecordingBusy(false);
-    }
-  }, [recording, onRecordingChange]);
+  const setMode = useCallback(
+    async (mode: RecordingMode) => {
+      if (mode === "off" && !window.confirm("Turn recording off? Every camera stops recording now, and nothing records until you choose 24/7 or Schedule again.")) return;
+      setModeBusy(true);
+      setError(null);
+      try {
+        await moduleJson("surveillance", "/recording/mode", { method: "PUT", body: { mode } });
+        setCurrent((c) => (c ? { ...c, recording: { ...c.recording, mode } } : c));
+        await recording.refresh();
+        onRecordingChange();
+      } catch (err) {
+        setError(`${MODE_LOG[mode]} failed: ${errorText(err)}`);
+      } finally {
+        setModeBusy(false);
+      }
+    },
+    [recording, onRecordingChange],
+  );
 
-  const collapse = useCallback(
-    async (camera: Camera) => {
+  const updateCamera = useCallback(
+    async (camera: Camera, change: Partial<Camera>) => {
       if (!current) return;
       try {
-        await saveConfig({ ...current, cameras: current.cameras.map((c) => (c.id === camera.id ? { ...c, uiCollapsed: !c.uiCollapsed } : c)) });
+        await saveConfig({ ...current, cameras: current.cameras.map((c) => (c.id === camera.id ? { ...c, ...change } : c)) });
       } catch (err) {
         setError(errorText(err));
       }
@@ -159,32 +118,20 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
     return <Loading label="Loading your cameras…" />;
   }
 
-  const statusById = new Map((recording.data?.cameras ?? []).map((s) => [s.cameraId, s]));
-  const active = recording.data?.active ?? false;
-  const recordingCount = (recording.data?.cameras ?? []).filter((c) => c.state === "recording").length;
+  const switcher = (
+    <div className="segment sv-view" role="tablist" aria-label="Surveillance view">
+      <button role="tab" aria-selected={view === "live"} className={view === "live" ? "on" : ""} onClick={() => setView("live")}>
+        Live
+      </button>
+      <button role="tab" aria-selected={view === "recordings"} className={view === "recordings" ? "on" : ""} onClick={() => setView("recordings")}>
+        Recordings
+      </button>
+    </div>
+  );
 
   return (
     <div className="sv">
-      <div className="sv-bar">
-        <div className={`sv-rec${active ? " on" : ""}`}>
-          <span className="sv-rec-dot" aria-hidden="true" />
-          <div>
-            <strong>{active ? `Recording ${recordingCount} of ${current.cameras.length}` : "Not recording"}</strong>
-            <span className="mono faint">{current.recordingRoot || "no recording folder set"}</span>
-          </div>
-        </div>
-        <button className={`btn sm${active ? " danger" : " primary"}`} disabled={recordingBusy || (!active && !current.recordingRoot)} onClick={() => void toggleRecording()} title={!active && !current.recordingRoot ? "Set a recording folder first" : undefined}>
-          <Icon name={active ? "square" : "record"} size={13} /> {recordingBusy ? (active ? "Stopping…" : "Starting…") : active ? "Stop recording" : "Start recording"}
-        </button>
-        <span className="sv-bar-spacer" />
-        <StreamState state={streamState} onRetry={reconnect} />
-        <button className="btn ghost sm" onClick={() => setDialog({ kind: "settings" })}>
-          <Icon name="settings" size={13} /> Recording
-        </button>
-        <button className="btn ghost sm" onClick={() => setDialog({ kind: "discover" })}>
-          <Icon name="plus" size={13} /> Add camera
-        </button>
-      </div>
+      <RecordingBar config={current} view={recording.data} busy={modeBusy} onMode={(mode) => void setMode(mode)} onSettings={() => setDialog({ kind: "settings" })} />
 
       {error ? <Notice tone="bad" title="That did not work">{error}</Notice> : null}
       {recording.error ? (
@@ -192,34 +139,32 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
           {errorText(recording.error)}
         </Notice>
       ) : null}
+      {current.origin === "deck-unreachable" ? (
+        <Notice tone="info" title="Nothing was imported">
+          No Script Hub answered, so there were no Dashboard Deck cameras to bring over. Add cameras here; if the hub is running the next time this service starts and you have not saved anything yet, its cameras are imported then.
+        </Notice>
+      ) : null}
       {!current.ffmpegFound ? (
         <Notice tone="warn" title="ffmpeg was not found">
-          Recording and stream-only cameras need ffmpeg. Install it on PATH or set its location under Recording.
+          Recording, stream-only cameras and playback need ffmpeg. Install it on PATH or set its location under Recording settings.
         </Notice>
       ) : null}
 
-      {current.cameras.length === 0 ? (
-        <div className="mod-empty">
-          <p>No cameras yet. Discovery probes a camera's address for its streams and snapshot URL.</p>
-          <button className="btn primary sm" onClick={() => setDialog({ kind: "discover" })}>
-            <Icon name="search" size={13} /> Find a camera
-          </button>
-        </div>
+      {view === "live" ? (
+        <LiveView
+          toolbar={switcher}
+          cameras={current.cameras}
+          statuses={recording.data?.cameras ?? []}
+          onDiscover={() => setDialog({ kind: "discover" })}
+          onCollapse={(camera) => void updateCamera(camera, { uiCollapsed: !camera.uiCollapsed })}
+          onEdit={(camera) => setDialog({ kind: "camera", camera: structuredClone(camera), isNew: false })}
+          onPrivacy={(camera, enabled) => void setPrivacy(camera, enabled)}
+        />
       ) : (
-        <div className="sv-grid">
-          {current.cameras.map((camera) => (
-            <CameraTile
-              key={camera.id}
-              camera={camera}
-              store={store}
-              recording={statusById.get(camera.id) ?? null}
-              onCollapse={() => void collapse(camera)}
-              onEdit={() => setDialog({ kind: "camera", camera: structuredClone(camera), isNew: false })}
-              onView={() => setDialog({ kind: "view", camera })}
-              onPrivacy={(enabled) => void setPrivacy(camera, enabled)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="sv-bar">{switcher}</div>
+          <RecordingsBrowser />
+        </>
       )}
 
       {dialog?.kind === "camera" ? (
@@ -252,20 +197,76 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
       {dialog?.kind === "settings" ? (
         <RecordingDialog
           config={current}
-          active={active}
+          statuses={recording.data?.cameras ?? []}
           onClose={() => setDialog(null)}
-          onSave={async (patch) => {
-            await saveConfig({ ...current, ...patch });
+          onSave={async (settings) => {
+            await saveConfig({
+              recordingRoot: settings.recordingRoot,
+              ffmpegPath: settings.ffmpegPath,
+              recording: { ...settings.recording, mode: current.recording.mode },
+              cameras: current.cameras.map((c) => ({ ...c, recordEnabled: settings.recordCameras[c.id] ?? c.recordEnabled })),
+            });
+            await recording.refresh();
             setDialog(null);
           }}
         />
       ) : null}
-      {dialog?.kind === "view" ? (
-        <ModuleDialog title={dialog.camera.name} wide onClose={() => setDialog(null)} footer={<FrameAge store={store} id={dialog.camera.id} />}>
-          <LiveFrame store={store} camera={dialog.camera} large />
+    </div>
+  );
+}
+
+/** The camera grid. It alone holds the picture socket, so switching to Recordings stops the live pictures. */
+function LiveView(props: {
+  toolbar: ReactNode;
+  cameras: Camera[];
+  statuses: CameraRecording[];
+  onDiscover: () => void;
+  onCollapse: (camera: Camera) => void;
+  onEdit: (camera: Camera) => void;
+  onPrivacy: (camera: Camera, enabled: boolean) => void;
+}) {
+  const { store, state: streamState, reconnect } = useFrameStream();
+  const [enlarged, setEnlarged] = useState<Camera | null>(null);
+  const statusById = new Map(props.statuses.map((s) => [s.cameraId, s]));
+  return (
+    <>
+      <div className="sv-bar">
+        {props.toolbar}
+        <span className="sv-bar-spacer" />
+        <StreamState state={streamState} onRetry={reconnect} />
+        <button className="btn ghost sm" onClick={props.onDiscover}>
+          <Icon name="plus" size={13} /> Add camera
+        </button>
+      </div>
+      {props.cameras.length === 0 ? (
+        <div className="mod-empty">
+          <p>No cameras yet. Discovery probes a camera's address for its streams and snapshot URL.</p>
+          <button className="btn primary sm" onClick={props.onDiscover}>
+            <Icon name="search" size={13} /> Find a camera
+          </button>
+        </div>
+      ) : (
+        <div className="sv-grid">
+          {props.cameras.map((camera) => (
+            <CameraTile
+              key={camera.id}
+              camera={camera}
+              store={store}
+              recording={statusById.get(camera.id) ?? null}
+              onCollapse={() => props.onCollapse(camera)}
+              onEdit={() => props.onEdit(camera)}
+              onView={() => setEnlarged(camera)}
+              onPrivacy={(enabled) => props.onPrivacy(camera, enabled)}
+            />
+          ))}
+        </div>
+      )}
+      {enlarged ? (
+        <ModuleDialog title={enlarged.name} wide onClose={() => setEnlarged(null)} footer={<FrameAge store={store} id={enlarged.id} />}>
+          <LiveFrame store={store} camera={enlarged} large />
         </ModuleDialog>
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -497,6 +498,7 @@ function blankCamera(): Camera {
     gridSpan: 6,
     previewHeight: 0,
     uiCollapsed: false,
+    recordEnabled: true,
     recordingDir: "",
     recordingFps: 2,
     recordingWidth: 1280,
@@ -650,6 +652,9 @@ function CameraDialog(props: { camera: Camera; isNew: boolean; onClose: () => vo
       </fieldset>
       <fieldset className="mod-fieldset">
         <legend>Recording</legend>
+        <label className="mod-check sv-record-toggle">
+          <input type="checkbox" checked={camera.recordEnabled} onChange={(e) => set("recordEnabled", e.target.checked)} /> Record this camera when recording is on (24/7 or on the schedule)
+        </label>
         <div className="mod-fields">
           <Field label="Folder" wide hint="Blank records into a folder named after the camera under the recording folder.">
             <input className="mod-input mono" value={camera.recordingDir} onChange={(e) => set("recordingDir", e.target.value)} />
@@ -788,48 +793,5 @@ function DiscoveryResult({ result }: { result: Discovery }) {
         </ul>
       ) : null}
     </div>
-  );
-}
-
-function RecordingDialog({ config, active, onClose, onSave }: { config: SurveillanceConfig; active: boolean; onClose: () => void; onSave: (patch: { recordingRoot: string; ffmpegPath: string }) => Promise<void> }) {
-  const [recordingRoot, setRoot] = useState(config.recordingRoot);
-  const [ffmpegPath, setFfmpeg] = useState(config.ffmpegPath);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  return (
-    <ModuleDialog
-      title="Recording"
-      onClose={onClose}
-      footer={
-        <>
-          {error ? <span className="mod-dialog-error">{error}</span> : null}
-          <button className="btn ghost sm" onClick={onClose}>
-            Cancel
-          </button>
-          <button
-            className="btn primary sm"
-            disabled={saving}
-            onClick={() => {
-              setSaving(true);
-              setError(null);
-              onSave({ recordingRoot, ffmpegPath }).catch((err: unknown) => {
-                setError(errorText(err));
-                setSaving(false);
-              });
-            }}
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-        </>
-      }
-    >
-      {config.origin === "dashboard-deck" && config.importedAt ? <p className="mod-dialog-lede">Cameras and the recording folder were imported from the Dashboard Deck {formatAgo(config.importedAt)}.</p> : null}
-      <Field label="Recording folder" hint={active ? "Recording is running; a new folder applies to the next 15-minute segment." : "Each camera records 15-minute segments into its own folder here."}>
-        <input className="mod-input mono" value={recordingRoot} onChange={(e) => setRoot(e.target.value)} />
-      </Field>
-      <Field label="ffmpeg" hint={config.ffmpegFound ? "Found. Blank uses the one on PATH." : "Not found. Blank looks on PATH."}>
-        <input className="mod-input mono" value={ffmpegPath} onChange={(e) => setFfmpeg(e.target.value)} />
-      </Field>
-    </ModuleDialog>
   );
 }

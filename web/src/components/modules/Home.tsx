@@ -113,12 +113,19 @@ function HomeBody({ config, onEdit }: { config: HomeConfig; onEdit: () => void }
   const homeAssistantDown = Boolean(usesHomeAssistant && probe.data && !probe.data.reachable);
   if (!config.devices.length) {
     return (
-      <div className="mod-empty">
-        <p>No devices yet. Add a robot vacuum with its Home Assistant entity, or its local address and miIO token.</p>
-        <button className="btn primary sm" onClick={onEdit}>
-          <Icon name="plus" size={13} /> Add a device
-        </button>
-      </div>
+      <>
+        {config.origin === "deck-unreachable" ? (
+          <Notice tone="info" title="Nothing was imported">
+            No Script Hub answered, so there were no Dashboard Deck devices to bring over. Add devices here; if the hub is running the next time this service starts and you have not saved anything yet, its devices are imported then.
+          </Notice>
+        ) : null}
+        <div className="mod-empty">
+          <p>No devices yet. Add a robot vacuum with its Home Assistant entity, or its local address and miIO token.</p>
+          <button className="btn primary sm" onClick={onEdit}>
+            <Icon name="plus" size={13} /> Add a device
+          </button>
+        </div>
+      </>
     );
   }
   return (

@@ -229,12 +229,92 @@ textarea.mod-input { resize: vertical; min-height: 54px; line-height: 1.45; }
 /* ---- Surveillance ---- */
 .sv { display: flex; flex-direction: column; gap: 12px; }
 .sv-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
-.sv-rec { display: flex; align-items: center; gap: 9px; min-width: 0; }
-.sv-rec > div { display: flex; flex-direction: column; min-width: 0; }
-.sv-rec strong { font-size: 13px; font-weight: 600; }
-.sv-rec .mono { font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 46ch; }
+
+/* The recording plan: one card that always says whether anything records. Off is neutral, not an alarm;
+   a running plan gets the recording red, and a schedule waiting for its window an outline of it. */
+.sv-plan {
+  --tone: var(--text-faint);
+  display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; padding: 10px 12px;
+  background: var(--bg-1); border: 1px solid var(--line); border-left: 3px solid var(--tone); border-radius: var(--r-md);
+}
+.sv-plan-continuous, .sv-plan-schedule { --tone: color-mix(in oklch, var(--mod-rec) 55%, var(--line-strong)); }
+.sv-plan.live { --tone: var(--mod-rec); }
+.sv-plan-text { flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sv-plan-text strong { font-size: 13.5px; font-weight: 600; }
+.sv-plan-text span { font-size: 12px; color: var(--text-dim); line-height: 1.45; overflow-wrap: anywhere; }
+.sv-plan-text .sv-plan-error { color: var(--danger); }
 .sv-rec-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--text-faint); }
-.sv-rec.on .sv-rec-dot { background: var(--mod-rec); box-shadow: 0 0 0 4px color-mix(in oklch, var(--mod-rec) 20%, transparent); animation: mod-pulse 2s ease-in-out infinite; }
+.sv-plan-schedule:not(.live) .sv-rec-dot, .sv-plan-continuous:not(.live) .sv-rec-dot { box-shadow: inset 0 0 0 1.5px var(--mod-rec); }
+.sv-plan.live .sv-rec-dot { background: var(--mod-rec); box-shadow: 0 0 0 4px color-mix(in oklch, var(--mod-rec) 20%, transparent); animation: mod-pulse 2s ease-in-out infinite; }
+.sv-mode button { min-width: 64px; min-height: 30px; font-size: 12px; font-weight: 500; }
+.sv-mode button:disabled { cursor: progress; }
+.sv-mode button.on[aria-checked="true"]:not(:first-child) { background: color-mix(in oklch, var(--mod-rec) 18%, var(--bg-2)); color: var(--text); }
+.sv-view button { min-height: 28px; }
+
+/* settings dialog */
+.sv-days { display: flex; flex-wrap: wrap; gap: 4px; }
+.sv-day {
+  min-width: 46px; min-height: 30px; padding: 4px 8px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--text-faint); font-size: 12px; cursor: pointer;
+}
+.sv-day.on { color: var(--accent); font-weight: 600; border-color: color-mix(in oklch, var(--accent) 55%, var(--line)); background: color-mix(in oklch, var(--accent) 14%, var(--bg)); }
+.sv-record-list { list-style: none; margin: 0; padding: 0; width: 100%; display: flex; flex-direction: column; gap: 6px; }
+.sv-record-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.sv-record-list .mono { font-size: 10.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sv-record-toggle { white-space: normal; }
+
+/* recordings browser */
+.sv-library { display: flex; flex-direction: column; gap: 12px; }
+.sv-retention {
+  display: flex; align-items: center; gap: 6px 14px; flex-wrap: wrap; padding: 8px 12px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); font-size: 12.5px; color: var(--text-dim);
+}
+.sv-retention strong { color: var(--text); font-weight: 600; }
+.sv-retention .mono { font-size: 10.5px; }
+.sv-retention .btn { margin-left: auto; }
+.sv-lib { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 12px; align-items: start; }
+.sv-lib-side { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.sv-lib-heading { font-family: var(--font-mono); font-size: 10.5px; font-weight: 400; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-faint); margin: 6px 0 2px; }
+.sv-lib-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.sv-lib-days { max-height: 420px; overflow-y: auto; }
+.sv-lib-item {
+  width: 100%; display: flex; flex-direction: column; gap: 1px; padding: 6px 10px; text-align: left; cursor: pointer;
+  background: none; border: 1px solid transparent; border-radius: var(--r-sm); color: inherit;
+}
+.sv-lib-item strong { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sv-lib-item .mono { font-size: 10.5px; }
+.sv-lib-item:hover { background: var(--bg-2); }
+.sv-lib-item.on { background: var(--bg-2); border-color: var(--line-strong); }
+.sv-lib-main { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.sv-lib-day { background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; }
+.sv-lib-day header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.sv-lib-day h4 { font-size: 13.5px; font-weight: 600; }
+.sv-lib-day header .mono { font-size: 10.5px; }
+.sv-segments { list-style: none; margin: 0; padding: 0; max-height: 460px; overflow-y: auto; display: flex; flex-direction: column; }
+.sv-segment { display: flex; align-items: center; gap: 6px; padding: 2px 0; border-bottom: 1px solid color-mix(in oklch, var(--line) 50%, transparent); }
+.sv-segment:last-child { border-bottom: 0; }
+.sv-segment-play {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 6px;
+  background: none; border: 0; border-radius: var(--r-sm); color: var(--text-dim); cursor: pointer; text-align: left;
+}
+.sv-segment-play .mono { font-size: 12px; color: var(--text); }
+.sv-segment-play:hover { background: var(--bg-2); }
+.sv-segment.on .sv-segment-play { color: var(--accent); background: color-mix(in oklch, var(--accent) 9%, transparent); }
+.sv-segment-size { font-size: 10.5px; min-width: 6ch; text-align: right; }
+.sv-segment a.mod-icon-btn { text-decoration: none; }
+.sv-player { margin: 0; background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; }
+.sv-player-frame { position: relative; background: oklch(0.12 0.01 264); aspect-ratio: 16 / 9; max-height: min(62vh, 62dvh); width: 100%; }
+.sv-player video { display: block; width: 100%; height: 100%; object-fit: contain; }
+.sv-player-cover {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center;
+  background: color-mix(in oklch, oklch(0.12 0.01 264) 80%, transparent); pointer-events: none;
+}
+.sv-player-cover p { margin: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--text-dim); max-width: 48ch; }
+.sv-player-cover strong { color: var(--text); font-weight: 600; }
+.sv-player figcaption { display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; padding: 8px 10px 8px 12px; font-size: 12.5px; }
+.sv-player figcaption .mono { font-size: 10.5px; }
+.sv-player-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.sv-player-actions a.btn { text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
 .sv-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 12px; align-items: start; }
 .sv-tile {
   grid-column: span var(--span, 6); display: flex; flex-direction: column; min-width: 0; overflow: hidden;
@@ -264,6 +344,15 @@ textarea.mod-input { resize: vertical; min-height: 54px; line-height: 1.45; }
 @container (max-width: 760px) {
   .sv-grid { grid-template-columns: minmax(0, 1fr); }
   .sv-tile { grid-column: auto; }
+  .sv-lib { grid-template-columns: minmax(0, 1fr); }
+  .sv-lib-list { flex-direction: row; overflow-x: auto; gap: 4px; padding-bottom: 2px; }
+  .sv-lib-days { max-height: none; }
+  .sv-lib-item { width: auto; flex: none; border-color: var(--line); }
+  .sv-plan { align-items: flex-start; }
+  .sv-plan-text { flex-basis: calc(100% - 24px); }
+  .sv-plan .sv-rec-dot { margin-top: 4px; }
+  .sv-mode { flex: 1 1 100%; }
+  .sv-mode button { flex: 1; }
   .home-grid, .sk-rules, .sh-grid { grid-template-columns: minmax(0, 1fr); }
   .sh-count { margin-left: 0; width: 100%; }
 }
