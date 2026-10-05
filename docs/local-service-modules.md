@@ -202,7 +202,7 @@ from a stale page cannot turn recording on or off.
   Assistant: the card, its on/off switch, and an edit saved through the dialog. It uses the same isolated
   builds as `modules-lab` and never contacts the real Home Assistant.
 - `npm run surveillance-viewer-lab --prefix server` drives the fullscreen camera viewer (open from a
-  picture, button/wheel/pinch/keyboard zoom, drag pan, reset, phone fallback) against mocked module
+  picture, button/wheel/pinch/keyboard zoom, drag pan and limits, rotation, frame resizing, reset, phone fallback) against mocked module
   routes and a mocked frame socket, after `npm run build --prefix web`. It never contacts a camera.
 - `npm run modules-lab --prefix server` drives all four tabs in a browser against a throwaway instance;
   the header of `server/scripts/modules-lab.cjs` lists the build steps. It never starts or stops a

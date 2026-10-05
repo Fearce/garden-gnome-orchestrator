@@ -18,7 +18,17 @@ export function CameraViewer({ name, children, age, onClose }: { name: string; c
   function bounded(next: View): View {
     const box = viewport.current;
     const zoom = Math.max(1, Math.min(8, next.zoom));
-    return { zoom, x: clamp(next.x, (box?.clientWidth ?? 0) * (zoom - 1) / 2), y: clamp(next.y, (box?.clientHeight ?? 0) * (zoom - 1) / 2) };
+    const width = box?.clientWidth ?? 0;
+    const height = box?.clientHeight ?? 0;
+    const image = box?.querySelector("img");
+    // object-fit: contain can leave large margins, especially on a phone. Bound
+    // the visible camera picture rather than allowing its margins to pan into view.
+    const fit = image?.naturalWidth && image.naturalHeight ? Math.min(width / image.naturalWidth, height / image.naturalHeight) : null;
+    const pictureWidth = fit === null ? width : image!.naturalWidth * fit;
+    const pictureHeight = fit === null ? height : image!.naturalHeight * fit;
+    const x = clamp(next.x, Math.max(0, (pictureWidth * zoom - width) / 2));
+    const y = clamp(next.y, Math.max(0, (pictureHeight * zoom - height) / 2));
+    return zoom === next.zoom && x === next.x && y === next.y ? next : { zoom, x, y };
   }
 
   function zoomBy(factor: number, x = 0, y = 0) {
@@ -84,6 +94,7 @@ export function CameraViewer({ name, children, age, onClose }: { name: string; c
         <button className="btn ghost sm" onClick={() => close.current()} aria-label="Close camera view">Close</button>
       </header>
       <div ref={viewport} className={`sv-viewer-viewport${view.zoom > 1 ? " zoomed" : ""}`} aria-label="Camera image. Scroll or pinch to zoom; drag to pan."
+        onLoadCapture={() => setView((old) => bounded(old))}
         onDoubleClick={() => setView(FIT)}
         onPointerDown={(event) => {
           if (event.button !== 0) return;

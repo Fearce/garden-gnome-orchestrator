@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
- - **QA: bound Surveillance pan to the fitted camera picture** (2026-10-05, Codex QA): phone at 800% plus repeated ArrowDown hides the entire picture; fix limits and verify resize/frame changes.
-
 _(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
@@ -60,6 +58,8 @@ _(none: claim from Ready)_
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-05 **QA: bound Surveillance pan to the fitted camera picture** (Codex QA): 28/28 browser checks keep the real picture in bounds at both pan extremes, after rotation, new frame dimensions and zoom-out; web types/build, module regressions, README and privacy pass. Independent QA required.
 
 - 2026-10-05 **Open Surveillance camera pictures fullscreen with digital pan and zoom** (Mosswick): 20/20 isolated browser checks cover native fullscreen, phone fallback, wheel/pinch/keyboard zoom, drag pan, reset, focus and continuing frames on one socket; types, module gate, README 70/70 and privacy pass. Web built for deployment; authenticated live entry serves the exact updated Surveillance bundle.
 

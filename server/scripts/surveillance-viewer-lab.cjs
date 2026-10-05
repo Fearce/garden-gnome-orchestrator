@@ -27,7 +27,7 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     const errors = [];
     const writes = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const jpeg = await page.evaluate(() => {
+    let jpeg = await page.evaluate(() => {
       const canvas = document.createElement("canvas");
       canvas.width = 640; canvas.height = 360;
       const ctx = canvas.getContext("2d");
@@ -83,6 +83,17 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     const matrix = () => page.locator(".sv-viewer-picture").evaluate((el) => {
       const m = new DOMMatrix(getComputedStyle(el).transform); return { scale: m.a, x: m.e, y: m.f };
     });
+    const pictureBounded = () => {
+      const viewport = document.querySelector(".sv-viewer-viewport");
+      const image = viewport.querySelector("img");
+      const m = new DOMMatrix(getComputedStyle(document.querySelector(".sv-viewer-picture")).transform);
+      const fit = Math.min(viewport.clientWidth / image.naturalWidth, viewport.clientHeight / image.naturalHeight);
+      const valid = (size, available, offset) => size <= available
+        ? Math.abs(offset) < 1
+        : Math.abs(offset) <= (size - available) / 2 + 1;
+      return valid(image.naturalWidth * fit * m.a, viewport.clientWidth, m.e)
+        && valid(image.naturalHeight * fit * m.a, viewport.clientHeight, m.f);
+    };
     await page.getByRole("button", { name: "Zoom in", exact: true }).click();
     check("zoom button magnifies the picture", await zoom() === "125%" && (await matrix()).scale === 1.25);
     const viewport = page.locator(".sv-viewer-viewport");
@@ -132,6 +143,29 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [point(midX + 50, midY, 1)] });
     await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
     check("touch drag pans", (await matrix()).x > oldX + 20);
+    check("a picture shorter than the viewport stays centered vertically", (await matrix()).y === 0);
+    for (let i = 0; i < 12; i++) await page.keyboard.press("+");
+    for (let i = 0; i < 60; i++) await page.keyboard.press("ArrowDown");
+    check("phone pan keeps the actual picture covering the viewport at the upper edge", await page.evaluate(pictureBounded));
+    for (let i = 0; i < 120; i++) await page.keyboard.press("ArrowUp");
+    check("phone pan keeps the actual picture covering the viewport at the lower edge", await page.evaluate(pictureBounded));
+    for (let i = 0; i < 60; i++) await page.keyboard.press("ArrowRight");
+    check("phone pan keeps the picture within its horizontal limit", await page.evaluate(pictureBounded));
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    check("rotation re-bounds an already panned picture", await page.evaluate(pictureBounded));
+    jpeg = await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 320; canvas.height = 640;
+      canvas.getContext("2d").fillRect(0, 0, 320, 640);
+      return canvas.toDataURL("image/jpeg").split(",")[1];
+    });
+    await page.waitForFunction(() => document.querySelector(".sv-viewer-picture img").naturalWidth === 320);
+    check("new frame dimensions re-bound the picture without resetting zoom", await page.evaluate(pictureBounded) && await zoom() === "800%");
+    await page.keyboard.press("-");
+    check("zooming out centers a picture narrower than the viewport", await page.evaluate(pictureBounded) && (await matrix()).x === 0);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.keyboard.press("0");
     check("phone controls stay within viewport", await page.locator(".sv-viewer button").evaluateAll((buttons) => buttons.every((button) => { const r = button.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; })));
     await page.keyboard.press("Escape");
     await page.waitForSelector(".sv-viewer", { state: "detached" });
