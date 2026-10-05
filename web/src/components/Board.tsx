@@ -4,7 +4,9 @@ import {
   DndContext,
   DragOverlay,
   KeyboardSensor,
+  MouseSensor,
   PointerSensor,
+  TouchSensor,
   closestCenter,
   useSensor,
   useSensors,
@@ -377,7 +379,12 @@ function BoardTabs() {
   const reorderBoardTab = useStore((s) => s.reorderBoardTab);
   const tabs = visibleBoardTabs(hiddenTabs, remoteEnabled, boardView, shownModules, tabOrder);
   // No keyboard sensor: Enter must still open a tab. Settings → Tab order reorders by keyboard.
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: coarsePointerActivation() }));
+  // A pointer sensor loses a held touch drag when native scrolling sends pointercancel. The touch
+  // sensor can prevent scrolling after the hold activates, while an ordinary swipe still scrolls.
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
+  );
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     if (over && active.id !== over.id) reorderBoardTab(active.id as BoardView, over.id as BoardView);
   };

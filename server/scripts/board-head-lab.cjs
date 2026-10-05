@@ -271,6 +271,57 @@ async function tabOrderPass(browser, errors, shots) {
   await context.close();
 }
 
+/** Native touch input must keep a held drag alive without capturing an ordinary swipe. */
+async function touchTabOrderPass(browser, errors) {
+  console.log("\nTouch tab order\n");
+  const context = await browser.newContext({ viewport: { width: 1920, height: 1000 }, isMobile: true, hasTouch: true });
+  await context.addInitScript(() => {
+    if (!sessionStorage.getItem("bh-touch-seeded")) localStorage.setItem("director_settings", JSON.stringify({ shownModuleTabs: ["surveillance"] }));
+    sessionStorage.setItem("bh-touch-seeded", "1");
+  });
+  const page = await open(context, errors);
+  check("the held-drag test uses a coarse pointer", await page.evaluate(() => matchMedia("(pointer: coarse)").matches));
+  await page.locator(".bt-notes").tap();
+  await page.waitForSelector(".board-tabs > h2:has-text('Notes')", { timeout: 5_000 });
+  check("a short tap still opens a tab", (await page.textContent(".board-tabs > h2")) === "Notes");
+
+  const cdp = await context.newCDPSession(page);
+  const touchDrag = async (holdMs) => {
+    const a = await page.locator(".bt-surveillance").boundingBox();
+    const b = await page.locator(".bt-ide").boundingBox();
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: a.x + a.width / 2, y: a.y + a.height / 2 }] });
+    if (holdMs) await page.waitForTimeout(holdMs);
+    for (let i = 1; i <= 12; i++) {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: a.x + a.width / 2 + (b.x + 4 - a.x - a.width / 2) * i / 12, y: b.y + b.height / 2 }] });
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await page.waitForTimeout(300);
+  };
+  const beforeSwipe = await stripTabs(page);
+  await touchDrag(0);
+  check("an ordinary swipe does not reorder tabs", JSON.stringify(await stripTabs(page)) === JSON.stringify(beforeSwipe));
+  await touchDrag(350);
+  const held = await stripTabs(page);
+  check("holding then moving Surveillance makes it tab #2", held[0] === "tasks" && held[1] === "surveillance" && held[2] === "ide", held.join(" | "));
+  check("releasing a touch drag keeps the current tab open", (await page.textContent(".board-tabs > h2")) === "Notes");
+  await page.reload({ timeout: 60_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 60_000 });
+  check("the held touch drag survives a reload", (await stripTabs(page))[1] === "surveillance");
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const phoneAreas = () => page.$$eval('select[aria-label="All areas"] option', (els) => els.map((el) => el.value).filter(Boolean));
+  check("the phone menu uses the reordered tabs", (await phoneAreas())[1] === "surveillance");
+  await page.locator('[aria-label="Open settings"]').tap();
+  await page.selectOption('select[aria-label="Settings category"]', "interface");
+  await page.locator('button[aria-label="Move Surveillance earlier"]').tap();
+  await page.keyboard.press("Escape");
+  check("the phone's touch move updates its menu", (await phoneAreas())[0] === "surveillance");
+  await page.reload({ timeout: 60_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 60_000 });
+  check("the phone's touch move survives a reload", (await phoneAreas())[0] === "surveillance");
+  await context.close();
+}
+
 async function main() {
   requireBuild();
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
@@ -290,6 +341,7 @@ async function main() {
     await hideDonePass(browser, errors, shots);
     await tabTogglePass(browser, errors, shots);
     await tabOrderPass(browser, errors, shots);
+    await touchTabOrderPass(browser, errors);
     check("no browser console errors", errors.length === 0, errors.slice(0, 4).join(" | "));
     console.log(`\nscreenshots: ${shots}`);
   } finally {

@@ -14,10 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: preserve held tab drags on touchscreens** (2026-10-05, Brindle Cog).
-  Chromium touch input activates the drag, then sends pointercancel on movement; the order never changes.
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
+
+- **QA: preserve held tab drags on touchscreens** (2026-10-05, Brindle Cog).
+  Separate mouse/touch sensors fix native pointercancel; board-head-lab 54/54, gates 230/230, types/builds/privacy pass. Independent review required.
 
 - **QA: require the actual browser-to-desktop navigation and its issued ticket** (2026-10-05, Codex QA; task 70393577).
   e464439f fixes a fail-open assertion; lab 59/59 before rebase, 57/59 after (two shutdown timeouts). Full gates 228/229; module timing reruns passed then failed again. Thirteen cards serve; distribution/evidence delivery and native close remain open. Independent review required.
