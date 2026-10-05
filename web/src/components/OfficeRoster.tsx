@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useId, useMemo, useState } from "react";
 import { useStore } from "../store.js";
 import { agentName, DIRECTORS_ROOM, GENERAL_ROOM, homeWorkspace, normalizeWorkspace, repoRoom, ROLES, type Role } from "../types.js";
 import { Gnome } from "./Gnome.js";
@@ -16,6 +16,17 @@ interface Member {
 
 /** Presence comes from current runs, never the participants retained in chat history. */
 export function OfficeRoster({ room, onOpenTask }: { room: string; onOpenTask: (id: string) => void }) {
+  const detailsId = useId();
+  const [collapsed, setCollapsed] = useState(() => {
+    try { return localStorage.getItem("ggo:office-roster-collapsed") === "1"; }
+    catch { return false; }
+  });
+  const toggleRoster = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    try { localStorage.setItem("ggo:office-roster-collapsed", next ? "1" : "0"); }
+    catch { /* The control still works when browser storage is unavailable. */ }
+  };
   const runs = useStore((s) => s.runs);
   const threads = useStore((s) => s.threads);
   const names = useStore((s) => s.nameOverrides);
@@ -58,11 +69,13 @@ export function OfficeRoster({ room, onOpenTask }: { room: string; onOpenTask: (
 
   const directors = room === DIRECTORS_ROOM;
   return <section className="office-roster" aria-label="Office presence">
-    <div className="office-roster-summary" role="status">
+    <div className="office-roster-summary">
       <span className={"office-presence-dot" + (members.length ? " active" : "")} />
-      <strong>{members.length} {directors ? members.length === 1 ? "director" : "directors" : members.length === 1 ? "gnome" : "gnomes"} {directors ? "in the office" : "working here"}</strong>
+      <strong role="status">{members.length} {directors ? members.length === 1 ? "director" : "directors" : members.length === 1 ? "gnome" : "gnomes"} {directors ? "in the office" : "working here"}</strong>
+      <button className="office-roster-toggle" aria-expanded={!collapsed} aria-controls={detailsId} onClick={toggleRoster}>{collapsed ? "Show roster" : "Hide roster"}</button>
       {room !== GENERAL_ROOM && online.joined && online.state !== "online" ? <span className="office-roster-offline">Remote presence unavailable</span> : null}
     </div>
+    <div id={detailsId} hidden={collapsed}>
     {members.length ? <ul className="office-roster-list">{members.map((member) => {
       const content = <>
         <Gnome role={member.role} size={26} />
@@ -73,5 +86,6 @@ export function OfficeRoster({ room, onOpenTask }: { room: string; onOpenTask: (
         ? <button className="office-roster-member" onClick={() => onOpenTask(member.threadId!)} title={`Open task: ${member.task}`}>{content}</button>
         : <div className="office-roster-member">{content}</div>}</li>;
     })}</ul> : <p className="office-roster-empty">No gnomes are working here right now. The conversation stays available.</p>}
+    </div>
   </section>;
 }

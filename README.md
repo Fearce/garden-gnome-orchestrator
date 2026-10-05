@@ -149,7 +149,9 @@ Also in the console:
   activity badges. Click a local gnome in the roster to open its task. Project rosters
   include teammates on other machines; the general Office roster is local, and the
   Directors room shows the directors currently present. Chat history stays available
-  when nobody is working there.
+  when nobody is working there. Use **Hide roster** to leave just the count and give
+  the conversation more room; **Show roster** brings the names back. Your browser
+  remembers the choice across rooms, reopening the chat and reloading.
 
 ## Runtime model
 

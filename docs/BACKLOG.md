@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Make the office roster hideable to restore chat space** (2026-10-05, Widdershank Pebbletail; owner steering).
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
 
@@ -59,7 +59,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
-- 2026-10-05 **Show office chat gnome counts, names and activity indicators** (Bramblewick): live served console count matches its roster; mixed nine-gnome desktop/320px browser checks prove scrolling, task navigation and live updates. Office/relay lab 53/53, gating 57/57 plus roster regressions, types/build, README 70/70 and privacy pass.
+- 2026-10-05 **Show office chat gnome counts, names and activity indicators** (16abc9bf; Widdershank Pebbletail): live Hide/Show roster keeps the count visible and remembers the browser choice. Desktop/320px browser checks prove reclaimed chatter space, reopen/reload persistence, task navigation and live updates; gating 57/57 plus roster regressions, types/build, README 70/70 and privacy pass. Original office/relay lab 53/53.
 
 - 2026-10-05 **A Codex QA verdict quoting `DELIVERABLE:` no longer parks the task as "QA could not complete"** (dfe93a08, Lanternroot): live build 68588b8c carries the `"`-in-path refusal (`server/dist/agents/officeBridge.js`); `test:office-bridge` replays the verdict that broke task 6b9aab39 and parses it. Full gates 230/230.
 - 2026-10-05 **Recheck Windows process-enumeration timeout under gate load** (Lanternroot): a tasklist overrun with no earlier list no longer 503s Sidekick's whole state; liveness reads unknown (`processListError`, power disabled) while rules and the editor keep working. Unit check of the unreadable list, `test:modules` 35/35, browser check 8/8 on the live tab.
