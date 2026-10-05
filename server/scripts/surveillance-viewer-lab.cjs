@@ -1,6 +1,6 @@
 // Browser regression for digital camera inspection. Uses the shared throwaway-server harness;
 // every module request and camera socket is mocked, so it never contacts cameras or recording.
-// Run after building web: node server/scripts/surveillance-viewer-lab.cjs
+// Run after building web: npm run surveillance-viewer-lab --prefix server
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -102,6 +102,8 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     check("zoom is bounded at 800%", await zoom() === "800%");
     await page.keyboard.press("0");
     check("keyboard reset fits", await zoom() === "100%");
+    await page.keyboard.press("Control+Equal");
+    check("browser zoom shortcuts are left to the browser", await zoom() === "100%");
     await page.keyboard.press("Shift+Tab");
     check("tab focus remains in the viewer", await page.evaluate(() => !!document.activeElement.closest(".sv-viewer")));
     const frameAt = await page.locator(".sv-viewer-picture img").getAttribute("src");

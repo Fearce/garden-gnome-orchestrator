@@ -57,6 +57,7 @@
     "remote-access-lab": "node scripts/remote-access-lab.cjs",
     "remote-stream-lab": "tsx scripts/remote-stream-lab.ts",
     "remote-viewer-lab": "node scripts/remote-viewer-lab.cjs",
+    "surveillance-viewer-lab": "node scripts/surveillance-viewer-lab.cjs",
     "deploy": "node scripts/deploy.cjs",
     "notes-lab": "node scripts/notes-lab.cjs",
     "news-lab": "node scripts/news-lab.cjs",

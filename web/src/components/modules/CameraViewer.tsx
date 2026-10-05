@@ -70,7 +70,8 @@ export function CameraViewer({ name, children, age, onClose }: { name: string; c
           event.preventDefault();
           buttons[index < 0 ? (event.shiftKey ? buttons.length - 1 : 0) : (index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length]?.focus();
         }
-        if (["+", "=", "-", "0", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+        // Ctrl/Cmd/Alt combinations stay with the browser (page zoom, history), not the camera view.
+        if (!event.ctrlKey && !event.metaKey && !event.altKey && ["+", "=", "-", "0", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
           event.preventDefault();
           if (event.key === "+" || event.key === "=") zoomBy(1.25);
           else if (event.key === "-") zoomBy(0.8);
