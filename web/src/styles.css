@@ -1299,6 +1299,19 @@ button.office-roster-member:focus-visible { outline: 2px solid var(--accent); ou
 .settings-row-hint { font-size: 11px; color: var(--text-faint); line-height: 1.4; margin-top: 2px; }
 .settings-note { margin: 4px 24px 2px; font-size: 11px; color: var(--text-faint); line-height: 1.45; }
 .settings-note.tight { margin: 2px 24px 8px; }
+.tab-order-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.settings-row.tab-order-row { gap: 12px; padding-top: 3px; padding-bottom: 3px; font-size: 13px; color: var(--text); }
+.tab-order-pos { width: 2ch; text-align: right; font-size: 11px; color: var(--text-faint); }
+.tab-order-label { flex: 1; min-width: 0; }
+.tab-order-off { font-size: 11px; color: var(--text-faint); }
+.tab-order-moves { display: inline-flex; gap: 2px; }
+.tab-order-move {
+  appearance: none; display: inline-grid; place-items: center; width: 28px; height: 26px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--r-sm); background: transparent; color: var(--text-dim); cursor: pointer;
+}
+.tab-order-move:hover:not(:disabled) { border-color: var(--line); color: var(--text); }
+.tab-order-move:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.tab-order-move:disabled { opacity: 0.3; cursor: default; }
 /* Agent CLI updates: one line per CLI — a state tag, its versions, and what the last check did. */
 .cli-updates { margin: 0 24px 10px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); }
 .cli-update { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 12px; padding: 10px 12px; align-items: start; }
@@ -3424,6 +3437,7 @@ body.dl-resizing { user-select: none; }
   transition: color 0.14s;
 }
 .board-tab:hover { color: var(--text-dim); }
+.board-tabs > .board-tab-dragging { position: relative; z-index: 1; cursor: grabbing; color: var(--text-dim); }
 .board-tab-count {
   font-size: 10px; letter-spacing: 0; font-weight: 600; color: var(--accent);
   background: color-mix(in oklch, var(--accent) 16%, transparent); border-radius: 100px; padding: 1px 7px;

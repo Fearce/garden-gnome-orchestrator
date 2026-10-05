@@ -357,7 +357,9 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   `hiddenBoardTabs` lives in the `director_settings` localStorage record and can never hold `tasks`.
   `web/src/lib/boardTabs.ts` is the one area list behind the desktop strip, the narrow-board area
   select, the phone's "All areas" menu and those switches. A hidden area still opens from a link
-  (Settings' remote viewer), and hiding the open area moves the board to Tasks. The header row wraps
+  (Settings' remote viewer), and hiding the open area moves the board to Tasks. `boardTabOrder` in the
+  same record is the owner's tab order (drag in the header, or Settings → Interface → **Tab order**);
+  `orderedBoardTabs` appends any tab it never names, so a tab added later still shows. The header row wraps
   so its controls drop to a second row instead of running under an open detail pane. Lab:
   `npm run board-head-lab --prefix server`.
 - **Agent-routed and task-aware.** `runPipeline` has no fixed mandatory sequence — the selected

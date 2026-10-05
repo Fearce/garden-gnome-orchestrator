@@ -8,8 +8,9 @@ export interface BoardTab {
   optional?: true;
 }
 
-/** Every board area, in tab order. The desktop tab strip, the narrow-board area select, the phone's
- *  "All areas" menu and the Settings visibility toggles all read this one list. */
+/** Every board area, in the built-in tab order; orderedBoardTabs applies the owner's own order. The
+ *  desktop tab strip, the narrow-board area select, the phone's "All areas" menu and the Settings
+ *  visibility toggles all read this one list. */
 export const BOARD_TABS: readonly BoardTab[] = [
   { view: "tasks", label: "Tasks", title: "Back to the task board" },
   { view: "ide", label: "IDE", title: "Edit workspace files and manage Git" },
@@ -45,10 +46,34 @@ export const sanitizeHiddenTabs = (raw: unknown): BoardView[] =>
 /** The tabs this browser shows. Remote control exists only once it is set up; a hidden tab is left
  *  out unless it is the one open right now, so a link that opens it still has a heading to show. An
  *  optional tab shows only once switched on. */
-export function visibleBoardTabs(hidden: readonly BoardView[], remoteEnabled: boolean, current: BoardView, shownModules: readonly ModuleView[]): BoardTab[] {
-  return BOARD_TABS.filter((tab) => {
+export function visibleBoardTabs(hidden: readonly BoardView[], remoteEnabled: boolean, current: BoardView, shownModules: readonly ModuleView[], order: readonly BoardView[] = []): BoardTab[] {
+  return orderedBoardTabs(order).filter((tab) => {
     if (tab.view === "remote" && !remoteEnabled) return false;
     if (tab.view === current) return true;
     return isModuleView(tab.view) ? shownModules.includes(tab.view) : !hidden.includes(tab.view);
   });
+}
+
+const TAB_BY_VIEW = new Map<string, BoardTab>(BOARD_TABS.map((tab) => [tab.view, tab]));
+
+/** A persisted tab order, minus unknown and repeated entries. It may name only some tabs. */
+export const sanitizeTabOrder = (raw: unknown): BoardView[] =>
+  Array.isArray(raw) ? raw.filter((view, i): view is BoardView => typeof view === "string" && TAB_BY_VIEW.has(view) && raw.indexOf(view) === i) : [];
+
+/** Every tab in the owner's order: the saved ones first, then any it never mentions (a tab added in a
+ *  later release) in their built-in order, so no saved order can lose a tab. */
+export function orderedBoardTabs(order: readonly BoardView[]): BoardTab[] {
+  const saved = sanitizeTabOrder(order).map((view) => TAB_BY_VIEW.get(view)!);
+  return [...saved, ...BOARD_TABS.filter((tab) => !saved.includes(tab))];
+}
+
+/** The full tab order after `view` is dropped onto `target`'s place. Moving within the whole list,
+ *  not just the visible strip, keeps a hidden tab where it was. */
+export function moveBoardTab(order: readonly BoardView[], view: BoardView, target: BoardView): BoardView[] {
+  const views = orderedBoardTabs(order).map((tab) => tab.view);
+  const from = views.indexOf(view);
+  const to = views.indexOf(target);
+  if (from < 0 || to < 0 || from === to) return views;
+  views.splice(to, 0, ...views.splice(from, 1));
+  return views;
 }

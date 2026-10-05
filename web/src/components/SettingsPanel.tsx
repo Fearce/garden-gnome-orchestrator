@@ -11,7 +11,7 @@ import { LiveBenchRankings } from "./LiveBenchRankings.js";
 import { MemorySettings } from "./MemorySettings.js";
 import { RemoteControlSetup } from "./remote/RemoteControlSetup.js";
 import { useRemoteControlEnabled } from "./remote/remoteApi.js";
-import { BOARD_TABS, isHideableTab, isModuleView } from "../lib/boardTabs.js";
+import { BOARD_TABS, isHideableTab, isModuleView, orderedBoardTabs, type BoardTab } from "../lib/boardTabs.js";
 import { ThemePicker } from "./ThemePicker.js";
 import { FontPicker } from "./FontPicker.js";
 import { DISPLAY_FONTS, MONO_FONTS, UI_FONTS } from "../lib/font.js";
@@ -42,7 +42,7 @@ const SETTINGS_CATEGORIES = [
   { id: "remote-control", section: "Workspace", label: "Remote control", description: "Set up controlling this PC from the console, e.g. from a tablet.", keywords: "remote desktop control screen stream mouse keyboard tablet anydesk vnc rdp display monitor ffmpeg nvenc" },
   { id: "office", section: "Workspace", label: "Online office", description: "Connect this machine to collaborators working in other consoles.", keywords: "relay collaboration coworkers team machine url password presence chatroom" },
   { id: "appearance", section: "Workspace", label: "Appearance", description: "Choose how the console looks on this browser.", keywords: "theme themes look dark colours colors palette classic nocturne skin style font fonts font size director chat transcript typeface typefaces typography interface monospace mono serif sans display heading headings headline title titles card header ligatures inter geist plex fira grotesk bricolage instrument animation screensaver idle afk gnomes scene away timeout" },
-  { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed.", keywords: "composer board completed drag reorder output model picker recent repositories ui hard deadline banner" },
+  { id: "interface", section: "Workspace", label: "Interface", description: "Choose what appears in the composer, board, and task feed.", keywords: "composer board tabs tab order completed drag reorder output model picker recent repositories ui hard deadline banner" },
 ] as const satisfies readonly SettingsCategory[];
 
 const SETTINGS_SECTIONS: readonly SettingsCategory["section"][] = ["Orchestrator", "Providers", "Workspace"];
@@ -701,6 +701,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
               </Group>
               <Group label="Local service tabs">
                 <ModuleTabToggles />
+              </Group>
+              <Group label="Tab order">
+                <BoardTabOrder />
               </Group>
             </SettingsCategoryPanel>
           </div>
@@ -2528,6 +2531,52 @@ function ModuleTabToggles() {
       ))}
       <div className="settings-note tight">Off by default. Recording and other work you start in a tab keeps running after you leave it; stop it there.</div>
     </>
+  );
+}
+
+/** Every board tab in the owner's order, hidden and switched-off ones included so a tab can be placed
+ *  before it is shown. The keyboard and touch route to the drag in the board header. */
+function BoardTabOrder() {
+  const order = useStore((s) => s.boardTabOrder);
+  const hidden = useStore((s) => s.hiddenBoardTabs);
+  const shownModules = useStore((s) => s.shownModuleTabs);
+  const reorderBoardTab = useStore((s) => s.reorderBoardTab);
+  const resetBoardTabOrder = useStore((s) => s.resetBoardTabOrder);
+  const remoteEnabled = useRemoteControlEnabled();
+  const tabs = orderedBoardTabs(order).filter((tab) => tab.view !== "remote" || remoteEnabled);
+  const isShown = (tab: BoardTab) => (isModuleView(tab.view) ? shownModules.includes(tab.view) : !hidden.includes(tab.view));
+  return (
+    <>
+      <Row
+        label="Board tab order"
+        hint="Drag a tab along the board header, or move it here. The phone's area menu follows the same order. Stored in this browser."
+        control={<button className="btn sm" onClick={resetBoardTabOrder} disabled={order.length === 0}>Reset order</button>}
+      />
+      <ol className="tab-order-list">
+        {tabs.map((tab, i) => (
+          <li key={tab.view} className="settings-row tab-order-row">
+            <span className="tab-order-pos mono">{i + 1}</span>
+            <span className="tab-order-label">{tab.label}</span>
+            {isShown(tab) ? null : <span className="tab-order-off">{isModuleView(tab.view) ? "off" : "hidden"}</span>}
+            <span className="tab-order-moves">
+              <TabMoveButton direction="up" tab={tab} target={tabs[i - 1]} onMove={reorderBoardTab} />
+              <TabMoveButton direction="down" tab={tab} target={tabs[i + 1]} onMove={reorderBoardTab} />
+            </span>
+          </li>
+        ))}
+      </ol>
+    </>
+  );
+}
+
+function TabMoveButton({ direction, tab, target, onMove }: { direction: "up" | "down"; tab: BoardTab; target: BoardTab | undefined; onMove: (view: BoardTab["view"], target: BoardTab["view"]) => void }) {
+  const label = `Move ${tab.label} ${direction === "up" ? "earlier" : "later"}`;
+  return (
+    <button className="tab-order-move" aria-label={label} title={label} disabled={!target} onClick={() => { if (target) onMove(tab.view, target.view); }}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d={direction === "up" ? "m18 15-6-6-6 6" : "m6 9 6 6 6-6"} />
+      </svg>
+    </button>
   );
 }
 

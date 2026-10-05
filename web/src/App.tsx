@@ -377,7 +377,8 @@ function MobileNav({ pane, setPane }: { pane: MobilePane; setPane: (p: MobilePan
   const remoteEnabled = useRemoteControlEnabled();
   const hiddenTabs = useStore((s) => s.hiddenBoardTabs);
   const shownModules = useStore((s) => s.shownModuleTabs);
-  const areas = visibleBoardTabs(hiddenTabs, remoteEnabled, boardView, shownModules);
+  const tabOrder = useStore((s) => s.boardTabOrder);
+  const areas = visibleBoardTabs(hiddenTabs, remoteEnabled, boardView, shownModules, tabOrder);
   const openBoardView = (view: BoardView) => {
     setBoardView(view);
     setPane("board");

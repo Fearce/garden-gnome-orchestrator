@@ -2,7 +2,8 @@
 // Real-browser acceptance lab for the board header: the sort menu, "New Co-work" and the Hide done
 // checkbox stay clear of an open detail pane at every desktop band; Hide done hides finished tasks and
 // survives a reload; Settings → Interface → Board tabs hides individual areas (never Tasks) from the
-// desktop strip, the narrow-board area select and the phone's area menu. Throwaway instance only.
+// desktop strip, the narrow-board area select and the phone's area menu; dragging a header tab or moving
+// it in Settings → Tab order reorders every one of those. Throwaway instance only.
 //   npx tsc -p tsconfig.json --outDir .board-head-lab-dist
 //   (cd ../web && npx vite build --outDir ../server/.lab-web-dist-board-head --emptyOutDir)
 //   GGO_LAB_ENTRY=.board-head-lab-dist/index.js GGO_LAB_WEB_DIST=.lab-web-dist-board-head npm run board-head-lab -- --shots data/board-head-lab-shots
@@ -207,6 +208,69 @@ async function tabTogglePass(browser, errors, shots) {
   await phone.close();
 }
 
+/** Drags one header tab onto another with real mouse steps, past the strip's 6px activation distance. */
+async function dragTab(page, from, onto) {
+  const a = await page.locator(`.board-tabs > .bt-${from}`).boundingBox();
+  const b = await page.locator(`.board-tabs > .bt-${onto}`).boundingBox();
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  for (let i = 1; i <= 12; i++) await page.mouse.move(a.x + a.width / 2 + ((b.x + 4 - a.x - a.width / 2) * i) / 12, b.y + b.height / 2);
+  await page.waitForTimeout(150);
+  await page.mouse.up();
+}
+
+async function tabOrderPass(browser, errors, shots) {
+  console.log("\nBoard tab order\n");
+  const context = await browser.newContext({ viewport: { width: 1920, height: 1000 } });
+  await context.addInitScript(() => {
+    if (!sessionStorage.getItem("bh-seeded")) localStorage.setItem("director_settings", JSON.stringify({ shownModuleTabs: ["surveillance"] }));
+    sessionStorage.setItem("bh-seeded", "1");
+  });
+  const page = await open(context, errors);
+  await dragTab(page, "surveillance", "ide");
+  await page.waitForTimeout(300);
+  const dragged = await stripTabs(page);
+  check("dragging Surveillance onto IDE makes it tab #2", dragged[0] === "tasks" && dragged[1] === "surveillance" && dragged[2] === "ide", dragged.join(" | "));
+  const openAfterDrag = await page.$eval(".board-tabs > h2", (el) => el.textContent.trim().toLowerCase());
+  check("releasing a drag does not open the dragged tab", openAfterDrag === "tasks", openAfterDrag);
+  await page.click(".board-tab.bt-notes");
+  const clicked = await page.waitForSelector(".board-tabs > h2:has-text('Notes')", { timeout: 5_000 }).then(() => true, () => false);
+  check("a plain click on a tab still opens it", clicked);
+  if (shots) await page.screenshot({ path: path.join(shots, "tabs-reordered.png"), clip: { x: 0, y: 0, width: 1920, height: 160 } });
+
+  await page.reload({ timeout: 60_000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 60_000 });
+  const reloaded = await stripTabs(page);
+  check("the order survives a reload", reloaded[1] === "surveillance", reloaded.join(" | "));
+
+  await page.click('[aria-label="Open settings"]');
+  await page.click('[data-settings-category="interface"]');
+  const rows = () => page.$$eval(".tab-order-row .tab-order-label", (els) => els.map((el) => el.textContent.trim().toLowerCase()));
+  const listed = await rows();
+  check("Settings lists every tab in that order, switched-off ones included", listed[1] === "surveillance" && listed.includes("sidekick") && listed.includes("script hub"), listed.join(" | "));
+  await page.click('button[aria-label="Move Calendar earlier"]');
+  const movedUp = await rows();
+  check("Move earlier swaps a tab with its neighbour", movedUp.indexOf("calendar") === listed.indexOf("calendar") - 1, movedUp.join(" | "));
+  if (shots) await page.locator(".settings-group", { hasText: "Tab order" }).screenshot({ path: path.join(shots, "settings-tab-order.png") });
+  await page.keyboard.press("Escape");
+  await page.waitForSelector('[role="dialog"][aria-label="Settings"]', { state: "detached", timeout: 5_000 }).catch(() => {});
+  const strip = await stripTabs(page);
+  check("the header follows a Settings move", strip.indexOf("calendar") >= 0 && strip.indexOf("calendar") < strip.indexOf("notes"), strip.join(" | "));
+
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await page.click(`[data-thread-id="${OPEN_TASK}"]`);
+  await page.waitForSelector(".board-area-select select", { state: "visible", timeout: 10_000 });
+  const options = await page.$$eval(".board-area-select option", (els) => els.map((el) => el.value));
+  check("the narrow-board area select uses the same order", options[1] === "surveillance" && options.indexOf("calendar") < options.indexOf("notes"), options.join(","));
+
+  await page.click('[aria-label="Open settings"]');
+  await page.click('[data-settings-category="interface"]');
+  await page.click("button:has-text('Reset order')");
+  const reset = await rows();
+  check("Reset order restores the built-in order", reset[1] === "ide" && reset.indexOf("surveillance") > reset.indexOf("patch notes"), reset.join(" | "));
+  await context.close();
+}
+
 async function main() {
   requireBuild();
   fs.rmSync(DATA_DIR, { recursive: true, force: true });
@@ -225,6 +289,7 @@ async function main() {
     await geometryPass(browser, errors, shots);
     await hideDonePass(browser, errors, shots);
     await tabTogglePass(browser, errors, shots);
+    await tabOrderPass(browser, errors, shots);
     check("no browser console errors", errors.length === 0, errors.slice(0, 4).join(" | "));
     console.log(`\nscreenshots: ${shots}`);
   } finally {

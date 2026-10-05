@@ -82,7 +82,8 @@ Findings are how agents talk to each other and to you. An agent posts one the mo
 learns something that changes the plan, so a discovery made by the researcher is in front
 of the implementor before it writes the wrong thing.
 
-The board has a tab for each area. Any tab except Tasks can be hidden per browser.
+The board has a tab for each area. Any tab except Tasks can be hidden per browser, and the tabs can
+be put in any order: drag one along the board header, or use Settings → Interface → Tab order.
 
 - **Tasks.** The live board. A **Co-work** session also lives here: a conversation you lead
   turn by turn, where one agent does what you ask, verifies it and hands control back.

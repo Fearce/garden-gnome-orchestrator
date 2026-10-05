@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { apiUrl, wsUrl } from "./lib/base.js";
-import { isHideableTab, isModuleView, sanitizeHiddenTabs, sanitizeShownModules } from "./lib/boardTabs.js";
+import { isHideableTab, isModuleView, moveBoardTab, sanitizeHiddenTabs, sanitizeShownModules, sanitizeTabOrder } from "./lib/boardTabs.js";
 import type {
   AccountDTO,
   BoardView,
@@ -261,6 +261,8 @@ interface State {
   hiddenBoardTabs: BoardView[];
   // Optional local-service tabs the owner switched on. Showing one starts nothing by itself.
   shownModuleTabs: ModuleView[];
+  // The owner's board tab order; empty means the built-in order. See orderedBoardTabs.
+  boardTabOrder: BoardView[];
   verbosity: Verbosity;
   // The board's sort order while drag-and-drop is off (the dropdown in the board header drives this).
   taskSort: TaskSort;
@@ -497,6 +499,9 @@ interface State {
   setBoardTabHidden: (view: BoardView, hidden: boolean) => void;
   /** Switch one optional tab on or off. Switching off the tab that is open moves the board back to Tasks. */
   setModuleTabShown: (view: ModuleView, shown: boolean) => void;
+  /** Move one board tab to `target`'s place in the tab order. */
+  reorderBoardTab: (view: BoardView, target: BoardView) => void;
+  resetBoardTabOrder: () => void;
   setVerbosity: (v: Verbosity) => void;
   setTaskSort: (v: TaskSort) => void;
   setTaskDragAndDrop: (v: boolean) => void;
@@ -762,6 +767,7 @@ interface ViewSettings {
   showEmptyHardDeadline: boolean;
   hiddenBoardTabs: BoardView[];
   shownModuleTabs: ModuleView[];
+  boardTabOrder: BoardView[];
   verbosity: Verbosity;
   // Off by default: the board keeps its automatic most-recent-first ordering until the owner opts in.
   taskDragAndDrop: boolean;
@@ -782,7 +788,7 @@ interface ViewSettings {
   screensaver: boolean;
   screensaverIdleMinutes: number;
 }
-const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, showEmptyHardDeadline: true, hiddenBoardTabs: [], shownModuleTabs: [], verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, directorChatFontSize: DIRECTOR_CHAT_FONT_DEFAULT, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, displayFont: DEFAULT_DISPLAY_FONT, screensaver: true, screensaverIdleMinutes: 5 };
+const VIEW_DEFAULTS: ViewSettings = { showCompleted: true, showEmptyHardDeadline: true, hiddenBoardTabs: [], shownModuleTabs: [], boardTabOrder: [], verbosity: "full", taskDragAndDrop: false, taskSort: "created_desc", theme: DEFAULT_THEME, directorChatFontSize: DIRECTOR_CHAT_FONT_DEFAULT, uiFont: DEFAULT_FONT, monoFont: DEFAULT_MONO_FONT, displayFont: DEFAULT_DISPLAY_FONT, screensaver: true, screensaverIdleMinutes: 5 };
 const loadViewSettings = (): ViewSettings => {
   try {
     const raw = localStorage.getItem(VIEW_SETTINGS_KEY);
@@ -793,6 +799,7 @@ const loadViewSettings = (): ViewSettings => {
       showEmptyHardDeadline: typeof v.showEmptyHardDeadline === "boolean" ? v.showEmptyHardDeadline : VIEW_DEFAULTS.showEmptyHardDeadline,
       hiddenBoardTabs: sanitizeHiddenTabs(v.hiddenBoardTabs),
       shownModuleTabs: sanitizeShownModules(v.shownModuleTabs),
+      boardTabOrder: sanitizeTabOrder(v.boardTabOrder),
       verbosity: v.verbosity === "compact" || v.verbosity === "full" ? v.verbosity : VIEW_DEFAULTS.verbosity,
       taskDragAndDrop: typeof v.taskDragAndDrop === "boolean" ? v.taskDragAndDrop : VIEW_DEFAULTS.taskDragAndDrop,
       taskSort: isTaskSort(v.taskSort) ? v.taskSort : VIEW_DEFAULTS.taskSort,
@@ -818,6 +825,7 @@ const persistView = (s: ViewSettings, patch: Partial<ViewSettings>): void =>
     showEmptyHardDeadline: s.showEmptyHardDeadline,
     hiddenBoardTabs: s.hiddenBoardTabs,
     shownModuleTabs: s.shownModuleTabs,
+    boardTabOrder: s.boardTabOrder,
     verbosity: s.verbosity,
     taskSort: s.taskSort,
     taskDragAndDrop: s.taskDragAndDrop,
@@ -1477,6 +1485,7 @@ export const useStore = create<State>((set) => ({
   showEmptyHardDeadline: loadViewSettings().showEmptyHardDeadline,
   hiddenBoardTabs: loadViewSettings().hiddenBoardTabs,
   shownModuleTabs: loadViewSettings().shownModuleTabs,
+  boardTabOrder: loadViewSettings().boardTabOrder,
   verbosity: loadViewSettings().verbosity,
   taskSort: loadViewSettings().taskSort,
   taskDragAndDrop: loadViewSettings().taskDragAndDrop,
@@ -1834,6 +1843,17 @@ export const useStore = create<State>((set) => ({
       const shownModuleTabs = sanitizeShownModules(shown ? [...s.shownModuleTabs, view] : s.shownModuleTabs.filter((v) => v !== view));
       persistView(s, { shownModuleTabs });
       return { shownModuleTabs, ...(!shown && s.boardView === view ? switchView(s, "tasks") : {}) };
+    }),
+  reorderBoardTab: (view, target) =>
+    set((s) => {
+      const boardTabOrder = moveBoardTab(s.boardTabOrder, view, target);
+      persistView(s, { boardTabOrder });
+      return { boardTabOrder };
+    }),
+  resetBoardTabOrder: () =>
+    set((s) => {
+      persistView(s, { boardTabOrder: [] });
+      return { boardTabOrder: [] };
     }),
   setShowEmptyHardDeadline: (v) =>
     set((s) => {

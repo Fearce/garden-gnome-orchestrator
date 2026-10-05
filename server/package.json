@@ -356,7 +356,7 @@
     "privacy:check": "node scripts/privacy-guard.cjs",
     "test:ide": "tsx src/tests/ide.itest.ts && tsx ../web/scripts/ide-snippets.test.ts",
     "test:remote-control": "tsx src/tests/remoteControl.test.ts",
-    "test:modules": "tsx src/tests/modules.test.ts && tsx src/tests/homeAssistantResponses.test.ts && tsx src/tests/homeSchedule.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/module-tabs.test.ts",
+    "test:modules": "tsx src/tests/modules.test.ts && tsx src/tests/homeAssistantResponses.test.ts && tsx src/tests/homeSchedule.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/module-tabs.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/board-tab-order.test.ts",
     "test:code-context": "tsx src/tests/codeContext.itest.ts && tsx ../web/scripts/code-nav.test.ts && node scripts/probe-code-context-latency.test.cjs",
     "ide-lab": "node scripts/ide-lab.cjs",
     "code-nav-lab": "node scripts/code-nav-lab.cjs",

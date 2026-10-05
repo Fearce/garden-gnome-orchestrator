@@ -28,7 +28,7 @@ import { OperatorNotes } from "./OperatorNotes.js";
 import { SupervisorPanel } from "./SupervisorPanel.js";
 import { PatchNotes } from "./PatchNotes.js";
 import { usePatchNotesWatch, useUnseenPatchNotes } from "../lib/patchNotes.js";
-import { isModuleView, visibleBoardTabs } from "../lib/boardTabs.js";
+import { isModuleView, visibleBoardTabs, type BoardTab } from "../lib/boardTabs.js";
 import { useRemoteControlEnabled } from "./remote/remoteApi.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { CoworkPopup, NewCoworkButton } from "./CoWork.js";
@@ -373,7 +373,14 @@ function BoardTabs() {
   const shownModules = useStore((s) => s.shownModuleTabs);
   // A switched-off optional tab cannot stay open: a reload or a stale link falls back to tasks.
   useEffect(() => { if (isModuleView(boardView) && !shownModules.includes(boardView)) setBoardView("tasks"); }, [shownModules, boardView, setBoardView]);
-  const tabs = visibleBoardTabs(hiddenTabs, remoteEnabled, boardView, shownModules);
+  const tabOrder = useStore((s) => s.boardTabOrder);
+  const reorderBoardTab = useStore((s) => s.reorderBoardTab);
+  const tabs = visibleBoardTabs(hiddenTabs, remoteEnabled, boardView, shownModules, tabOrder);
+  // No keyboard sensor: Enter must still open a tab. Settings → Tab order reorders by keyboard.
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: coarsePointerActivation() }));
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    if (over && active.id !== over.id) reorderBoardTab(active.id as BoardView, over.id as BoardView);
+  };
   const counts: Record<BoardView, number | null> = {
     tasks: null,
     scripthub: null,
@@ -391,18 +398,31 @@ function BoardTabs() {
   };
   usePatchNotesWatch();
   return (
-    <><label className="board-area-select">Area<select aria-label="Board area" value={boardView} onChange={e => setBoardView(e.target.value as BoardView)}>{tabs.map(tab => <option value={tab.view} key={tab.view}>{tab.label}{counts[tab.view] ? ` (${counts[tab.view]})` : ""}</option>)}</select></label><div className="board-tabs" aria-label="Board areas">
-      {tabs.map((tab) =>
-        boardView === tab.view ? (
-          <h2 key={tab.view}>{tab.label}</h2>
-        ) : (
-          <button key={tab.view} className={"board-tab bt-" + tab.view} onClick={() => setBoardView(tab.view)} title={tab.title}>
-            {tab.label}
-            {counts[tab.view] ? <span className="board-tab-count">{counts[tab.view]}</span> : null}
-          </button>
-        ),
-      )}
-    </div></>
+    <><label className="board-area-select">Area<select aria-label="Board area" value={boardView} onChange={e => setBoardView(e.target.value as BoardView)}>{tabs.map(tab => <option value={tab.view} key={tab.view}>{tab.label}{counts[tab.view] ? ` (${counts[tab.view]})` : ""}</option>)}</select></label>
+    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
+      <SortableContext items={tabs.map((tab) => tab.view)} strategy={rectSortingStrategy}>
+        <div className="board-tabs" aria-label="Board areas">
+          {tabs.map((tab) => (
+            <SortableBoardTab key={tab.view} tab={tab} active={boardView === tab.view} count={counts[tab.view]} onOpen={() => setBoardView(tab.view)} />
+          ))}
+        </div>
+      </SortableContext>
+    </DndContext></>
+  );
+}
+
+/** One header tab you can drag along the strip. Only the pointer listeners are spread: dnd-kit's
+ *  attributes would turn the active tab's heading into a button. */
+function SortableBoardTab({ tab, active, count, onOpen }: { tab: BoardTab; active: boolean; count: number | null; onOpen: () => void }) {
+  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: tab.view });
+  const style: CSSProperties = { transform: CSS.Translate.toString(transform), transition };
+  const dragging = isDragging ? " board-tab-dragging" : "";
+  if (active) return <h2 ref={setNodeRef} style={style} className={dragging.trim() || undefined} {...listeners}>{tab.label}</h2>;
+  return (
+    <button ref={setNodeRef} style={style} className={"board-tab bt-" + tab.view + dragging} onClick={onOpen} title={`${tab.title}. Drag to reorder.`} {...listeners}>
+      {tab.label}
+      {count ? <span className="board-tab-count">{count}</span> : null}
+    </button>
   );
 }
 
