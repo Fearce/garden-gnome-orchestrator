@@ -19,7 +19,7 @@ _(none: claim from Ready)_
 ## Shipped, awaiting live proof
 
 - **QA: repair memory fallback, cache freshness, retries, shutdown and native agent integration** (2026-10-05, Bramble Gauge; 2e01c75f, acd38bfe, ebb90b79; task 6b9aab39).
-  Types/builds/privacy, 14/14 focused gates, 25/25 browser checks and external hook regressions pass; all 1,313 snapshot files survive, real Luna fallback succeeds. Indexing: 1.7 s, transient RSS 49.6 to 145.5 MiB, idle 52.4 MiB with worker stopped; live HTTP p95 7.4 ms baseline / 4.3 ms during recall. Deployment verification and independent QA follow; missing evidence cards are in Ready.
+  Types/builds/privacy, 14/14 focused gates, 25/25 browser checks and external hook regressions pass; all 1,313 snapshot files survive, real Luna fallback succeeds. Indexing: 1.7 s, transient RSS 49.6 to 145.5 MiB, idle 52.4 MiB with worker stopped; live HTTP p95 7.4 ms baseline / 4.3 ms during recall. Pushed as 1063c18e; deployment is staged, live remains 57414a66 because the hub refuses process enumeration. Independent QA and evidence cards remain required.
 
 - **QA: require the actual browser-to-desktop navigation and its issued ticket** (2026-10-05, Codex QA; task 70393577).
   e464439f fixes a fail-open assertion; lab 59/59 before rebase, 57/59 after (two shutdown timeouts). Full gates 228/229; module timing reruns passed then failed again. Thirteen cards serve; distribution/evidence delivery and native close remain open. Independent review required.
@@ -36,6 +36,9 @@ _(none: claim from Ready)_
 
 1. **Surface memory migration validation artifacts before accepting the task** (2026-10-05, Bramble Gauge; task 6b9aab39).
   The retained `server/data/memory-lab-shots/memory-settings.png` has no card; baseline and retrieval results in the local memory folder's `.ggo-eval/` are outside the task workspace and also have no cards. The implementor must copy finished evidence into the workspace, verify it opens, and surface each artifact.
+
+1. **Finish the memory QA deployment after Script Hub process enumeration recovers** (2026-10-05, Bramble Gauge; task 6b9aab39; coordinate with the existing integration and reliability tasks).
+  Three restart attempts left live build 57414a66 unchanged; atomic hub restart returned `process-enumeration-degraded`, with `procsnap did not answer 'snap' within 4000ms` and an empty kill list. Memory runtime fixes are pushed/staged as 1063c18e; retry the coordinated deployment and require a fresh listener and live verification.
 
 1. **Resolve high-severity production dependency advisories** (2026-10-05, Codex implementor): restart sweep audit:deps reports critical=0, high=5, moderate=12, low=3; dependency names and compatible fixed versions are in server/data/quality-sweep-last.log.
 1. **Recheck Windows process-enumeration timeout under gate load** (2026-10-05, Codex implementor): restart sweep test:modules returned 503 instead of 200 because tasklist exceeded its 15-second budget; server/data/gates-last.log records the assertion.
