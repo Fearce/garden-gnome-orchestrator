@@ -46,6 +46,11 @@ text, which the runner intercepts and strips:
 - **Don't let colon-side `\s*` eat the next line** into the body.
 - **Glued model turns** (`claim.Implementing…`) must end the body before the
   capital so narration stays out of the chatroom.
+- **A `DELIVERABLE:` path containing `"` is prose, not a card.** QA's own issue text tells the
+  implementor to "surface it using post_deliverable or DELIVERABLE: label | absolute path", and a
+  Codex QA quoted that inside its JSON verdict. Stripping it broke the JSON, so the task parked
+  as "QA could not complete" (task 6b9aab39, 2026-10-05). Windows forbids `"` in filenames, so
+  `splitDeliverable` refuses such a path and the line stays in the visible text.
 - **Junk bodies** (empty, literal `\n`, punctuation-only) never post. The bridges share
   `isJunkOfficeBody` — a junk note is worse than a junk chat line, since the note list's
   whole value is that every row is worth clicking.

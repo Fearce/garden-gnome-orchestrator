@@ -543,7 +543,9 @@ function splitDeliverable(raw: string): CliDeliverable | null {
   if (divider < 0) return null;
   const label = raw.slice(0, divider).trim();
   const path = raw.slice(divider + 3).trim();
-  if (isJunkOfficeBody(label) || !path) return null;
+  // Windows forbids `"` in filenames; one here means the marker is quoted inside a JSON string (a QA
+  // verdict citing the grammar), and stripping it would corrupt that verdict.
+  if (isJunkOfficeBody(label) || !path || path.includes('"')) return null;
   return { label, path };
 }
 

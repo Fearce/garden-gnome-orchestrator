@@ -17,6 +17,7 @@ import {
   extractManualDeployments,
   extractSubTasks,
 } from "../agents/officeBridge.js";
+import { parseStructuredText } from "../agents/structuredText.js";
 
 // Canonical standalone line (Codex agent_message shape).
 {
@@ -428,6 +429,19 @@ import {
   const { visible, deliverables } = extractDeliverables(raw);
   assert.deepEqual(deliverables, []);
   assert.equal(visible, raw);
+}
+
+// A QA verdict may quote the wire grammar inside a JSON string. That is prose, not a card: stripping it
+// left the verdict unparseable and parked the task as "QA could not complete".
+{
+  const verdict =
+    '```json\n{\n  "pass": false,\n  "issues": [\n    {\n      "description": "Surface it using post_deliverable or DELIVERABLE: label | absolute path.",\n' +
+    '      "location": "C:/work/shot.png"\n    },\n    {\n      "description": "Post DELIVERABLE: Report | C:\\\\work\\\\report.md",\n      "location": "C:/work"\n    }\n  ]\n}\n```';
+  const result = extractCliBridgeMessages(verdict, { detectGluedTurns: false });
+  assert.deepEqual(result.deliverables, []);
+  assert.equal(result.visible, verdict);
+  const parsed = parseStructuredText(result.visible, { type: "object" });
+  assert.equal((parsed.value as { pass?: boolean } | undefined)?.pass, false);
 }
 
 // A streamed Grok marker stays buffered until its path is complete; no partial card can be recorded.
