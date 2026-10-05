@@ -14,9 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: show memory index rebuild failures and verify retry recovery** (2026-10-05, Codex QA; task 6b9aab39).
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
+
+- **QA: show memory index rebuild failures and verify retry recovery** (2026-10-05, Codex QA; task 6b9aab39).
+  Rebuild errors now appear in Settings and permit retry; browser lab 30/30, web types/build and privacy pass. Snapshot check preserves all 1,313 files; real Haiku and forced Luna fallback succeed. Independent review and the existing evidence-delivery follow-up remain required.
 
 - **QA: repair memory fallback, cache freshness, retries, shutdown and native agent integration** (2026-10-05, Bramble Gauge; 2e01c75f, acd38bfe, ebb90b79; task 6b9aab39).
   Types/builds/privacy, 14/14 focused gates, 25/25 browser checks and external hook regressions pass; all 1,313 snapshot files survive, real Luna fallback succeeds. Indexing: 1.7 s, transient RSS 49.6 to 145.5 MiB, idle 52.4 MiB with worker stopped; live HTTP p95 7.4 ms baseline / 4.3 ms during recall. Pushed as 1063c18e; deployment is staged, live remains 57414a66 because the hub refuses process enumeration. Independent QA and evidence cards remain required.

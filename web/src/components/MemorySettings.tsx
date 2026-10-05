@@ -75,13 +75,17 @@ function useMemoryStatus(active: boolean) {
 
 function StatusOverview({ status, onReindexed }: { status: MemoryStatus; onReindexed: () => void }) {
   const [reindexing, setReindexing] = useState(false);
+  const [reindexError, setReindexError] = useState<string | null>(null);
   const { index } = status;
   const toBuild = index.missingCards + index.staleCards;
   const reindex = async () => {
     setReindexing(true);
+    setReindexError(null);
     try {
       await memoryApi.reindex();
       onReindexed();
+    } catch (err) {
+      setReindexError(err instanceof Error ? err.message : String(err));
     } finally {
       setReindexing(false);
     }
@@ -109,6 +113,7 @@ function StatusOverview({ status, onReindexed }: { status: MemoryStatus; onReind
           {reindexing ? "Rebuilding…" : "Rebuild index"}
         </button>
       </div>
+      {reindexError ? <p className="settings-note tight mem-warn" role="alert">{reindexError}</p> : null}
       {status.cards?.lastError || status.extraction?.lastError ? (
         <p className="settings-note tight mem-warn">{[status.cards?.lastError, status.extraction?.lastError].filter(Boolean).join(" · ")}</p>
       ) : null}

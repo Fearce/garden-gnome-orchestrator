@@ -145,6 +145,36 @@ async function checkRecall(page, check) {
   check("prompt recall injects nothing for an off-topic prompt", offTopic.files.length === 0, JSON.stringify(offTopic));
 }
 
+async function checkReindexFailure(page, check) {
+  const errors = [];
+  const onError = (error) => errors.push(error.message);
+  page.on("pageerror", onError);
+  const url = "**/api/memory/reindex";
+  await page.route(url, (route) => route.fulfill({
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "The memory index is temporarily unavailable." }),
+  }));
+  try {
+    const button = page.getByRole("button", { name: "Rebuild index", exact: true });
+    await button.click();
+    const alert = page.locator('.mem-status [role="alert"]');
+    const visible = await alert.waitFor({ state: "visible", timeout: 5_000 }).then(() => true, () => false);
+    check("a failed rebuild displays the server error", visible && (await alert.textContent()).includes("temporarily unavailable"));
+    check("a failed rebuild permits another attempt", await button.isEnabled());
+    check("a failed rebuild causes no unhandled browser error", errors.length === 0, JSON.stringify(errors));
+    await page.unroute(url);
+    const response = page.waitForResponse((r) => r.url().endsWith("/api/memory/reindex") && r.request().method() === "POST");
+    await button.click();
+    check("a rebuild retry reaches the real index", (await response).ok());
+    await alert.waitFor({ state: "hidden", timeout: 5_000 });
+    check("a rebuild retry clears the previous error", await alert.count() === 0);
+  } finally {
+    await page.unroute(url);
+    page.off("pageerror", onError);
+  }
+}
+
 async function checkCustomTypeEdit(page, check, memoryDir) {
   await page.locator(".mem-list-item").filter({ hasText: "Release checklist" }).click();
   await page.waitForSelector('[data-testid="memory-editor"] textarea', { timeout: 15_000 });
@@ -199,6 +229,7 @@ async function main() {
       const page = await openMemorySettings(browser);
       await checkStatusAndToggles(page, check, dataDir);
       await checkRecall(page, check);
+      await checkReindexFailure(page, check);
       await checkCustomTypeEdit(page, check, memoryDir);
       await checkCreateAndDelete(page, check, memoryDir);
       const shot = path.join(shotDir(dataDir), "memory-settings.png");
