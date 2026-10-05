@@ -18,12 +18,6 @@ _(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
 
-- **QA: show memory index rebuild failures and verify retry recovery** (2026-10-05, Codex QA; task 6b9aab39).
-  Rebuild errors now appear in Settings and permit retry; browser lab 30/30, web types/build and privacy pass. Snapshot check preserves all 1,313 files; real Haiku and forced Luna fallback succeed. Independent review and the existing evidence-delivery follow-up remain required.
-
-- **QA: repair memory fallback, cache freshness, retries, shutdown and native agent integration** (2026-10-05, Bramble Gauge; 2e01c75f, acd38bfe, ebb90b79; task 6b9aab39).
-  Types/builds/privacy, 14/14 focused gates, 25/25 browser checks and external hook regressions pass; all 1,313 snapshot files survive, real Luna fallback succeeds. Indexing: 1.7 s, transient RSS 49.6 to 145.5 MiB, idle 52.4 MiB with worker stopped; live HTTP p95 7.4 ms baseline / 4.3 ms during recall. Pushed as 1063c18e; deployment is staged, live remains 57414a66 because the hub refuses process enumeration. Independent QA and evidence cards remain required.
-
 - **QA: require the actual browser-to-desktop navigation and its issued ticket** (2026-10-05, Codex QA; task 70393577).
   e464439f fixes a fail-open assertion; lab 59/59 before rebase, 57/59 after (two shutdown timeouts). Full gates 228/229; module timing reruns passed then failed again. Thirteen cards serve; distribution/evidence delivery and native close remain open. Independent review required.
 
@@ -36,12 +30,6 @@ _(none: claim from Ready)_
   Desktop units 19/19 and new real-window regressions pass; application types/builds, Windows packaging and privacy pass. Clean-exit lab failures and distribution delivery remain under Ready.
 
 ## Ready (priority order)
-
-1. **Surface memory migration validation artifacts before accepting the task** (2026-10-05, Bramble Gauge; task 6b9aab39).
-  The retained `server/data/memory-lab-shots/memory-settings.png` has no card; baseline and retrieval results in the local memory folder's `.ggo-eval/` are outside the task workspace and also have no cards. The implementor must copy finished evidence into the workspace, verify it opens, and surface each artifact.
-
-1. **Finish the memory QA deployment after Script Hub process enumeration recovers** (2026-10-05, Bramble Gauge; task 6b9aab39; coordinate with the existing integration and reliability tasks).
-  Three restart attempts left live build 57414a66 unchanged; atomic hub restart returned `process-enumeration-degraded`, with `procsnap did not answer 'snap' within 4000ms` and an empty kill list. Memory runtime fixes are pushed/staged as 1063c18e; retry the coordinated deployment and require a fresh listener and live verification.
 
 1. **Resolve high-severity production dependency advisories** (2026-10-05, Codex implementor): restart sweep audit:deps reports critical=0, high=5, moderate=12, low=3; dependency names and compatible fixed versions are in server/data/quality-sweep-last.log.
 1. **Recheck Windows process-enumeration timeout under gate load** (2026-10-05, Codex implementor): restart sweep test:modules returned 503 instead of 200 because tasklist exceeded its 15-second budget; server/data/gates-last.log records the assertion.
@@ -72,7 +60,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
-- 2026-10-05 **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (..57414a66, Lanternroot; claude-setup b867df3, cd7f875): live build 57414a66; `rag.py status` shows 1317 indexed with every card current, Haiku and Luna available, queue drained. Live-index eval R@1/R@2/MRR 0.894/0.925/0.909 (pgvector 0.519/0.644/0.630), off-topic 1/25, trigger audit 530/530; prompt recall median 2.6 s. All 1310 pre-task memories present; 29 memories extracted from GGO, harness or fleet-orchestrator text were trashed after source fixes. Ollama STAYS_DOWN.
+- 2026-10-05 **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (..2cbe8718, Lanternroot; QA fixes 2e01c75f, acd38bfe, ebb90b79, 2cbe8718; claude-setup b867df3, cd7f875): live build 2cbe8718 (`--verify` matches HEAD); live Settings shows 1319 memories, 8743 passages, every card current, extraction idle, and a Haiku recall in 1.0 s. All 1310 pre-task memories present (0 missing); 29 bad auto-extractions trashed after source fixes. Eval R@1/R@2/MRR 0.894/0.925/0.909 (pgvector 0.519/0.644/0.630), off-topic 1/25, trigger audit 530/530. Evidence report, live screenshots and the 10 raw eval files are deliverable cards on the task. Ollama STAYS_DOWN.
 - 2026-10-05 **Show ChatGPT credits in the Codex chip when the plan has no 5-hour window** (2f5d8db1, b57220c9, Codex implementor): pushed and live build verified without another restart; authenticated browser confirms the credit row and retained weekly meter. Credit reader 34/34, four-width chip lab, synthetic balance rerun, README 69/69, typechecks and privacy pass; README updated and public fixtures use synthetic balances. The restart sweep's process-enumeration timeout is tracked under Ready. Follow-up: chip-lab now asserts the balance, label and replacement of 5h while preserving weekly usage; browser pass and four mutation rejections verified.
 - 2026-10-05 **Show and edit vacuum cleaning schedules in Home** (1ee269ff, Dustpan Wren): pushed to master; live Home API adopts the existing 09:00–22:00/99% pair, desktop editor and phone card pass with automation/Home/recording files unchanged. Module gate, 12 schedule regressions, 10 browser checks, types/builds, README and privacy pass; custom automation fields and occupied ids are preserved.
 
