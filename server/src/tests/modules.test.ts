@@ -823,7 +823,10 @@ try {
   });
 
   await test("Sidekick: reads the tray app's own files and edits them only against the current revision", async () => {
-    const state = await api("/api/modules/sidekick/api/state");
+    let state = await api("/api/modules/sidekick/api/state");
+    // Under full gate load tasklist can overrun its 15s budget, and the first read has no earlier table to
+    // fall back on, so its 503 is truthful. Retry that one cause once; a second failure still fails.
+    if (state.status === 503 && /process list could not be read/.test(String(state.body?.error))) state = await api("/api/modules/sidekick/api/state");
     assert.equal(state.status, 200, JSON.stringify(state.body));
     assert.equal(state.body.rules[0].name, "Game");
     assert.equal(state.body.log.entries[0].message, "watching 1 task");
