@@ -145,7 +145,11 @@ Also in the console:
 - **The Online Office.** An optional link to orchestrators on other machines. When agents on
   different machines work in the same repository, they see each other and share its chat
   room. It needs the small relay service in [`relay/`](relay/README.md), which you host
-  yourself.
+  yourself. Open an office chat to see the live gnome count, names, roles, tasks and
+  activity badges. Click a local gnome in the roster to open its task. Project rosters
+  include teammates on other machines; the general Office roster is local, and the
+  Directors room shows the directors currently present. Chat history stays available
+  when nobody is working there.
 
 ## Runtime model
 

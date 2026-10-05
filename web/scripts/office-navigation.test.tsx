@@ -198,3 +198,48 @@ assert.deepEqual(huddleWith(3, 2), { gnomes: 5, more: null }, "local and remote 
 assert.deepEqual(huddleWith(4, 4), { gnomes: 5, more: "3" }, "a mixed crowd past six folds its tail into +N");
 
 console.log("Office navigation UI gate passed - lone gnomes open their own visible project chat directly, the director gnome opens the directors' room while others are online, and a busy huddle accounts for every agent.");
+
+// Live presence must not be inferred from historical chat participants. A task can have
+// overlapping runs during handoff, but it still occupies just one seat (the newest run).
+const { OfficeRoster } = await import("../src/components/OfficeRoster.js");
+const rosterWorkspace = "C:/workspaces/roster-project";
+const rosterRoom = "repo:c:/workspaces/roster-project";
+const thread = (id: string, workspace = rosterWorkspace) => ({ id, title: `Task ${id}`, state: "building" as const, workspace, brief: "Roster", rawPrompt: "Roster", createdAt: at, updatedAt: at });
+Object.assign(state, {
+  threads: { alex: thread("alex"), sam: thread("sam"), other: thread("other", "C:/workspaces/other"), finished: thread("finished") },
+  runs: {
+    old: { id: "old", threadId: "alex", role: "planner", state: "running", startedAt: at - 1 },
+    latest: { id: "latest", threadId: "alex", role: "implementor", state: "running", startedAt: at },
+    starting: { id: "starting", threadId: "sam", role: "qa", state: "starting", startedAt: at },
+    other: { id: "other", threadId: "other", role: "researcher", state: "running", startedAt: at },
+    finished: { id: "finished", threadId: "finished", role: "implementor", state: "done", startedAt: at },
+  },
+  nameOverrides: { "alex::implementor": "Alex", "sam::qa": "Sam" },
+  onlineOffice: {
+    ...state.onlineOffice, state: "online", joined: true,
+    sharedRepos: [{ repoKey: "example.com/team/project", repoLabel: "team/project", workspaces: [rosterWorkspace] }],
+    remoteAgents: [{ key: "peer", instanceId: "peer-box", instanceName: "Peer box", name: "Fern", role: "qa", title: "Peer task", repoKey: "example.com/team/project" }],
+  },
+});
+const renderRoster = (room: string) => renderToStaticMarkup(React.createElement(OfficeRoster, { room, onOpenTask: () => {} }));
+const projectRoster = renderRoster(rosterRoom);
+assert.match(projectRoster, /3 gnomes working here/, "counts latest local runs and a shared remote agent");
+assert.match(projectRoster, />Alex</, "uses self-picked local names");
+assert.match(projectRoster, />Sam</, "shows the second local gnome");
+assert.match(projectRoster, />Fern</, "names remote teammates");
+assert.match(projectRoster, /Starting/, "marks a starting run distinctly");
+assert.match(projectRoster, /Remote · Peer box/, "identifies remote presence");
+assert.equal(projectRoster.split('class="office-roster-member"').length - 1, 3, "no duplicate seat for overlapping runs");
+assert.doesNotMatch(projectRoster, /Task finished|Task other|>planner</, "excludes finished runs and unrelated repositories");
+assert.match(projectRoster, /title="Open task: Task alex"/, "local roster entries offer task navigation");
+const generalRoster = renderRoster("general");
+assert.match(generalRoster, /3 gnomes working here/, "general office counts all local running tasks");
+assert.doesNotMatch(generalRoster, />Fern</, "remote agents cannot read the local general room");
+assert.match(renderRoster("directors"), /3 directors in the office/, "directors are distinct from their task agents");
+Object.assign(state, { onlineOffice: { ...state.onlineOffice, state: "reconnecting" } });
+assert.match(renderRoster(rosterRoom), /2 gnomes working here/, "stale remote presence is excluded during reconnect");
+assert.match(renderRoster(rosterRoom), /Remote presence unavailable/, "explains an unavailable remote roster");
+Object.assign(state, { runs: {}, onlineOffice: { ...state.onlineOffice, remoteAgents: [], state: "online" } });
+assert.match(renderRoster(rosterRoom), /0 gnomes working here/, "history never implies live workers");
+assert.match(renderRoster(rosterRoom), /conversation stays available/, "empty rooms explain that history is retained");
+console.log("Office roster gate passed: latest-run deduplication, room isolation, local/remote names, starting status, directors, reconnect and empty rooms.");

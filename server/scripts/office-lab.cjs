@@ -261,6 +261,8 @@ async function main() {
       await page.click(".office-director");
       await page.waitForSelector(".office-panel", { timeout: 20_000 });
       check("…and clicking the director gnome opens the Directors room", (await page.locator(".office-tab.directors.on").count()) === 1);
+      check("the chat roster counts the two live directors", (await page.locator(".office-roster-summary").innerText()).includes("2 directors in the office"));
+      check("the chat roster names the remote director and their machine", (await page.locator(".office-roster-list").innerText()).includes("Sam") && (await page.locator(".office-roster-list").innerText()).includes("Remote"));
       await page.waitForSelector(".office-msgs .office-msg", { timeout: 20_000 });
       const directorsText = await page.locator(".office-msgs").innerText();
       check("the other director's line arrives", directorsText.includes("hold off pushing"), directorsText);
@@ -303,6 +305,8 @@ async function main() {
       check("…and opening it shows the remote agent's line", (await page.locator(".office-msgs").innerText()).includes("holding exporter.ts"));
       check("…attributed to the agent AND its machine", (await page.locator(".office-msg-role").first().innerText()).includes("Sam's laptop"));
       check("…marked as having crossed the internet", (await page.locator(".office-msg.remote .office-msg-remote").count()) === 2);
+      check("a historical project conversation shows no invented live gnomes", (await page.locator(".office-roster-summary").innerText()).includes("0 gnomes working here"));
+      check("the empty roster keeps the conversation available", await page.locator(".office-roster-empty").isVisible());
 
       const longMessage = page.locator('[data-message-id="lab-long-sol"]');
       await longMessage.waitFor({ state: "visible", timeout: 20_000 });
@@ -331,6 +335,7 @@ async function main() {
         };
       });
       check("320px: the Office dialog stays inside the viewport", mobile.panel.left >= 0 && mobile.panel.right <= 320 && mobile.panel.top >= 0 && mobile.panel.bottom <= 700, JSON.stringify(mobile.panel));
+      check("320px: presence and the chat composer both remain visible", await page.locator(".office-roster-summary").isVisible() && await page.locator(".office-composer textarea").isVisible());
       check("320px: the complete body wraps instead of clipping sideways", !!mobile.body && mobile.body.scrollWidth <= mobile.body.clientWidth + 1 && mobile.body.overflow === "visible", JSON.stringify(mobile.body));
       check("320px: Copy remains a touch-sized accessible control", !!mobile.copy && mobile.copy.width >= 44 && mobile.copy.height >= 36, JSON.stringify(mobile.copy));
 

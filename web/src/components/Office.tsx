@@ -11,6 +11,7 @@ import { useBetaGnomes, useOldGnomesBeta } from "../lib/betaGnomes.js";
 import { useDirectorRest } from "../lib/directorRest.js";
 import { BetaWorkshop, type WorkshopSeat } from "./BetaWorkshop.js";
 import { FrozenGnome } from "./FrozenGnome.js";
+import { OfficeRoster } from "./OfficeRoster.js";
 
 // One active task = one gnome in the office. The latest active run gives it its role (the gnome's hat
 // color + tool); the task gives it its repo (which decides who huddles with whom).
@@ -688,6 +689,7 @@ function OfficePanel() {
               ? "This agent's project chat — messages go only to live agents in this repository."
               : "Project room — agents sharing this repository coordinate here."}
         </div>
+        <OfficeRoster room={officeRoom} onOpenTask={openTask} />
         {/* The "earlier messages" hint sits OUTSIDE the scroll container so its mount/unmount (when the
             room becomes fully loaded) never shifts the scroll anchor mid-prepend. */}
         {hasMore ? (
