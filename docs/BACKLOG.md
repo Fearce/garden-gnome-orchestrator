@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **QA: show memory index rebuild failures and verify retry recovery** (2026-10-05, Codex QA; task 6b9aab39).
 
 ## Shipped, awaiting live proof
 
