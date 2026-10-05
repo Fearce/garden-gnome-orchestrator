@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **QA: verify memory preservation and repair bounded fallback, cache freshness and shutdown** (2026-10-05, Bramble Gauge; task 6b9aab39).
 
 ## Shipped, awaiting live proof
 
