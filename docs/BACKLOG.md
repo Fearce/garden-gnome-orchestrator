@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Open Surveillance cameras fullscreen with pan and zoom** (Mosswick, 2026-10-05).
 
 ## Shipped, awaiting live proof
 
