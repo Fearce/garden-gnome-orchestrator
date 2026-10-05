@@ -19,6 +19,7 @@ const { memoryAgentHooks, ownerWords, stripTaskEnvelope, userText, ExtractionOff
 const { acknowledgedInjection } = await import("../orchestrator/injection.js");
 const { withCommunicationTurnPolicy } = await import("../agents/communicationPolicy.js");
 const { MemorySettingsStore } = await import("../memory/settings.js");
+const { MemoryWorkerClient } = await import("../memory/workerClient.js");
 const { MemoryEndpoint, isPrimaryMemoryOwner } = await import("../memory/endpoint.js");
 const { registerMemoryRoutes } = await import("../memory/routes.js");
 const Fastify = (await import("fastify")).default;
@@ -164,6 +165,22 @@ async function extractionReadsOnlyTheOwnersWords(dir: string): Promise<void> {
   assert.equal(await new ExtractionOffsets(join(dir, "lru.json")).get("kept"), 2, "trimming keeps the most recently used transcripts");
 }
 
+/** Usage is recorded fire-and-forget after each model call, so close() routinely meets a request in flight.
+ *  It must still stop the worker thread: a thread left behind outlives its owner and can hang process exit. */
+async function closeStopsTheWorkerWithWorkInFlight(dir: string): Promise<void> {
+  seed(dir);
+  const client = new MemoryWorkerClient(join(dir, "close.sqlite"), dir);
+  await client.status();
+  const inFlight = client.recordUsage({ provider: "claude", model: "m", purpose: "recall", inputTokens: 1, outputTokens: 1, ok: true });
+  await client.close();
+  assert.equal(client.running, false, "close() stops the worker even with a request in flight");
+  await inFlight.then(
+    () => undefined,
+    () => undefined,
+  );
+  await assert.rejects(client.status(), /closed/, "a closed index takes no new work instead of starting another thread");
+}
+
 async function until(label: string, check: () => Promise<boolean> | boolean, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -229,6 +246,7 @@ try {
     assert.equal(today(new Date(2026, 9, 5, 0, 30)), "2026-10-05", "created_at/last_verified use the local date just after midnight");
     assert.equal(today(new Date(2026, 9, 5, 23, 30)), "2026-10-05", "created_at/last_verified use the local date just before midnight");
     await corpusEditsKeepTheOwnersLayouts(join(root, "layouts"));
+    await closeStopsTheWorkerWithWorkInFlight(join(root, "close"));
     unlinkSync(join(dir, "reference_build_farm.md"));
     memory.changed();
 

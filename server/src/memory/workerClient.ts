@@ -15,6 +15,8 @@ import(workerData.tsxApi).then((api) => { api.register(); return import(workerDa
 `;
 /** Without a working directory watcher, re-scan at most this often before answering. */
 const UNWATCHED_RESYNC_MS = 60_000;
+/** close() waits this long for in-flight requests before cutting them off. */
+const CLOSE_DRAIN_MS = 5_000;
 
 export interface MemoryWorkerOptions {
   /** Terminate the worker after this long with nothing in flight. */
@@ -37,6 +39,8 @@ export class MemoryWorkerClient {
   private lastSyncAt = 0;
   private syncing: Promise<SyncResult> | null = null;
   private lastSync: SyncResult | null = null;
+  private closed = false;
+  private drainWaiters: Array<() => void> = [];
   private readonly idleMs: number;
   private readonly requestTimeoutMs: number;
 
@@ -108,9 +112,13 @@ export class MemoryWorkerClient {
     return this.call<LunaResult | null>({ op: "luna", request }, request.timeoutMs + 5_000);
   }
 
+  /** Let in-flight requests finish (bounded), then stop the thread for good. */
   async close(): Promise<void> {
+    this.closed = true;
     this.watcher?.close();
     this.watcher = null;
+    await this.drain(CLOSE_DRAIN_MS);
+    this.rejectPending(new Error("memory index closed"));
     await this.stopWorker();
   }
 
@@ -152,6 +160,7 @@ export class MemoryWorkerClient {
   }
 
   private call<T>(op: WorkerOp, timeoutMs = this.requestTimeoutMs): Promise<T> {
+    if (this.closed) return Promise.reject(new Error("memory index closed"));
     const worker = this.ensureWorker();
     const id = this.nextId++;
     if (this.idleTimer) clearTimeout(this.idleTimer);
@@ -160,7 +169,7 @@ export class MemoryWorkerClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`memory worker did not answer ${op.op} within ${timeoutMs}ms`));
-        this.armIdle();
+        this.finished();
       }, timeoutMs);
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer });
       worker.postMessage({ ...op, id });
@@ -188,18 +197,40 @@ export class MemoryWorkerClient {
     clearTimeout(entry.timer);
     if (reply.ok) entry.resolve(reply.value);
     else entry.reject(new Error(reply.error));
-    this.armIdle();
+    this.finished();
   }
 
   private onExit(worker: Worker, err: Error): void {
     if (this.worker !== worker) return;
     this.worker = null;
     this.dirty = true;
+    this.rejectPending(err);
+  }
+
+  private rejectPending(err: Error): void {
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
       entry.reject(err);
       this.pending.delete(id);
     }
+    this.finished();
+  }
+
+  /** A request settled: wake close() once nothing is in flight, and start the idle countdown. */
+  private finished(): void {
+    if (!this.pending.size) for (const wake of this.drainWaiters.splice(0)) wake();
+    this.armIdle();
+  }
+
+  private drain(timeoutMs: number): Promise<void> {
+    if (!this.pending.size) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      this.drainWaiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   }
 
   private armIdle(): void {
