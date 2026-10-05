@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+ - **QA: bound Surveillance pan to the fitted camera picture** (2026-10-05, Codex QA): phone at 800% plus repeated ArrowDown hides the entire picture; fix limits and verify resize/frame changes.
+
 _(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
