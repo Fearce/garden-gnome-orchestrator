@@ -14,7 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **QA: preserve held tab drags on touchscreens** (2026-10-05, Brindle Cog).
+  Chromium touch input activates the drag, then sends pointercancel on movement; the order never changes.
 
 ## Shipped, awaiting live proof
 
