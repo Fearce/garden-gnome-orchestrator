@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Make the office roster hideable to restore chat space** (2026-10-05, Widdershank Pebbletail; owner steering).
 
 ## Shipped, awaiting live proof
 
