@@ -14,9 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: verify memory preservation and repair bounded fallback, cache freshness and shutdown** (2026-10-05, Bramble Gauge; task 6b9aab39).
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
+
+- **QA: repair memory fallback, cache freshness, retries, shutdown and native agent integration** (2026-10-05, Bramble Gauge; 2e01c75f, acd38bfe, ebb90b79; task 6b9aab39).
+  Types/builds/privacy, 14/14 focused gates, 25/25 browser checks and external hook regressions pass; all 1,313 snapshot files survive, real Luna fallback succeeds. Indexing: 1.7 s, transient RSS 49.6 to 145.5 MiB, idle 52.4 MiB with worker stopped; live HTTP p95 7.4 ms baseline / 4.3 ms during recall. Deployment verification and independent QA follow; missing evidence cards are in Ready.
 
 - **QA: require the actual browser-to-desktop navigation and its issued ticket** (2026-10-05, Codex QA; task 70393577).
   e464439f fixes a fail-open assertion; lab 59/59 before rebase, 57/59 after (two shutdown timeouts). Full gates 228/229; module timing reruns passed then failed again. Thirteen cards serve; distribution/evidence delivery and native close remain open. Independent review required.
