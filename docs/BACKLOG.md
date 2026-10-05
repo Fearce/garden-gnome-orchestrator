@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Re-orderable board tabs: drag in the header, move in Settings** (2026-10-05, Tabwhittle; task c752b10a).
 
 ## Shipped, awaiting live proof
 
