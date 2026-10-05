@@ -10079,7 +10079,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       cfg.baseUrl = config.zai.baseUrl;
       if (bonusRound) cfg.maxTurns = SELF_IMPROVE_MAX_TURNS;
       cfg.authToken = this.zaiApiKey();
-      cfg.memoryHooks = this.memory.agentHooks("task");
+      cfg.memoryHooks = this.memory.agentHooks(thread.subTask ? "subtask" : "task");
       if (!opts?.resume && !vanilla) startKickoff = this.withOfficeNote(thread, "implementor", kickoff, true);
       agent = new ZaiAgentRun(cfg);
     } else {
@@ -10104,7 +10104,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       });
       cfg.model = model;
       cfg.oauthToken = acct.token;
-      cfg.memoryHooks = this.memory.agentHooks("task");
+      cfg.memoryHooks = this.memory.agentHooks(thread.subTask ? "subtask" : "task");
       if (bonusRound) cfg.maxTurns = SELF_IMPROVE_MAX_TURNS;
       // On a fresh start, fold in a heads-up naming any teammates already live in this repo so the
       // implementor coordinates from turn one (a resumed session already saw the office context). When

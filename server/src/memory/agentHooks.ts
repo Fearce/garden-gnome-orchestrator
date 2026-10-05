@@ -19,8 +19,9 @@ export interface AgentMemory {
 }
 
 /** Whose words a run's user turns are: a task run's are mostly GGO's own (kickoff, QA bounces, office
- *  messages), a Co-work run's are the owner's chat. */
-export type AgentRunKind = "task" | "cowork";
+ *  messages), a Co-work run's are the owner's chat, and a sub-task's steering is its parent agent's
+ *  `message_subtask`, framed exactly like the owner's inject. */
+export type AgentRunKind = "task" | "subtask" | "cowork";
 
 const SESSION_LIMIT = 4;
 const PROMPT_LIMIT = 2;
@@ -141,8 +142,22 @@ export function userText(lines: string[]): string {
 /** The owner's own words in a run's user text: steering blocks in a task run, everything but GGO's
  *  policy wrapper in a Co-work run. Extraction quotes these verbatim, so GGO's process rules must not be in them. */
 export function ownerWords(text: string, run: AgentRunKind): string {
+  if (run === "subtask") return "";
   if (run === "cowork") return text.replace(POLICY_BLOCK, "").replace(CONTENT_TAG, "").trim();
   return [...text.matchAll(STEERING_BLOCK)].map((m) => m[1]!.trim()).filter(Boolean).join("\n\n");
+}
+
+/** Marks text from inside a GGO run: its policy wrapper, or a task kickoff's own headings. */
+const GGO_RUN_TEXT = /<\/?ggo_owner_or_task_content>|<ggo_communication_policy\b|^# Task: .+\r?\n\r?\n## Brief\r?$/m;
+/** The heading of a sub-task's contract (orchestrator/subTasks.ts `subTaskContractBlock`; the memory gate
+ *  checks it against the real block). */
+const SUBTASK_TEXT = /^## ⑂ You are a SUB-AGENT\r?$/m;
+
+/** Text a user-level hook queued from inside a GGO run (builds before native memory ran those hooks
+ *  there): only its steering blocks are the owner's. Text from anywhere else passes through unchanged. */
+export function queuedOwnerText(text: string): string {
+  if (!GGO_RUN_TEXT.test(text)) return text;
+  return ownerWords(text, SUBTASK_TEXT.test(text) ? "subtask" : "task");
 }
 
 /** How far into each transcript extraction has already read, kept across restarts. */

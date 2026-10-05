@@ -15,7 +15,8 @@ const { FileMemoryService, DEFAULT_MEMORY_SETTINGS } = await import("../memory/m
 const { HAIKU_MODEL } = await import("../memory/models.js");
 const { QUEUE_DIR } = await import("../memory/extraction.js");
 const { TRASH_DIR, REVIEW_SECTION, MemoryCorpus, dropRelated, memoryChunks, parseMemory, patchMemoryText, today } = await import("../memory/corpus.js");
-const { memoryAgentHooks, ownerWords, stripTaskEnvelope, userText, ExtractionOffsets } = await import("../memory/agentHooks.js");
+const { memoryAgentHooks, ownerWords, queuedOwnerText, stripTaskEnvelope, userText, ExtractionOffsets } = await import("../memory/agentHooks.js");
+const { subTaskContractBlock } = await import("../orchestrator/subTasks.js");
 const { acknowledgedInjection } = await import("../orchestrator/injection.js");
 const { withCommunicationTurnPolicy } = await import("../agents/communicationPolicy.js");
 const { MemorySettingsStore } = await import("../memory/settings.js");
@@ -144,6 +145,12 @@ async function extractionReadsOnlyTheOwnersWords(dir: string): Promise<void> {
   const steering = acknowledgedInjection("From now on, write every reply in British English.");
   assert.equal(ownerWords(`${kickoff}\n\n${steering}\n\nQA: two tests fail`, "task"), "From now on, write every reply in British English.", "a task run keeps only the steering block's message");
   assert.equal(ownerWords(kickoff, "task"), "", "a task run without steering has no owner words");
+  assert.equal(ownerWords(`${kickoff}\n\n${steering}`, "subtask"), "", "a sub-task's steering is its parent agent's, not the owner's");
+  const contract = subTaskContractBlock({ spec: { spawnedByRole: "implementor" } as never, parentTitle: "Parent", canSpawn: false });
+  const queuedSubtask = withCommunicationTurnPolicy(`# Task: Child\n\n## Brief\nDo it.\n\n${contract}`, false) as string;
+  assert.equal(queuedOwnerText(`${queuedSubtask}\n\n${steering}`), "", "a queued sub-task transcript, recognised by its real contract heading, has no owner words");
+  assert.equal(queuedOwnerText(`# Task: T\n\n## Brief\nb\n\n${steering}`), "From now on, write every reply in British English.", "a bare task kickoff is recognised too");
+  assert.equal(queuedOwnerText("Plain Claude Code chat about kettles."), "Plain Claude Code chat about kettles.", "text from outside GGO passes through");
   const cowork = withCommunicationTurnPolicy("I always want the changelog updated with each release.", false) as string;
   assert.equal(ownerWords(cowork, "cowork"), "I always want the changelog updated with each release.", "a Co-work turn loses only GGO's wrapper");
 
@@ -333,6 +340,31 @@ try {
     const log = readFileSync(join(dir, "extraction-log.md"), "utf8");
     assert.match(log, /added `feedback_answer_in_british/);
     assert.match(log, /evidence-quote-not-in-transcript/);
+    await memory.close();
+  }
+
+  // ---- a queued GGO agent transcript contributes only the owner's steering ----
+  {
+    const dir = join(root, "extract-ggo");
+    seed(dir);
+    const haiku = fakeHaiku();
+    const memory = service(dir, { haiku });
+    const kickoff = `# Task: Polish the release notes\n\n## Brief\nPlease always write British English in replies to the release channel.\n${"Process prose shared by every task. ".repeat(15)}`;
+    mkdirSync(join(dir, QUEUE_DIR), { recursive: true });
+    const queued = (name: string, text: string) =>
+      writeFileSync(join(dir, QUEUE_DIR, name), JSON.stringify({ version: 1, source: "claude-code", sessionId: name, text, createdAt: new Date().toISOString() }));
+    queued("0001-kickoff-only.json", withCommunicationTurnPolicy(kickoff, false) as string);
+    queued("0002-steered.json", `${withCommunicationTurnPolicy(kickoff, false) as string}\n\n${acknowledgedInjection("Please always write British English in replies from now on.")}`);
+    memory.start();
+    memory.settingsChanged();
+    await until("the GGO transcripts to drain", async () => readdirSync(join(dir, QUEUE_DIR)).filter((f) => f.endsWith(".json")).length === 0);
+    const extractorCalls = haiku.calls.filter((c) => c.system.includes("strict memory extractor"));
+    assert.equal(extractorCalls.length, 1, "a GGO transcript without steering never reaches a model");
+    assert.ok(!extractorCalls[0]!.user.includes("Process prose shared by every task"), "the extractor sees the steering, not GGO's kickoff");
+    const written = readdirSync(dir).filter((f) => f.startsWith("feedback_answer_in_british"));
+    assert.equal(written.length, 1, "the owner's steered rule is still extracted");
+    assert.match(readFileSync(join(dir, written[0]!), "utf8"), /source_session: 0002-steered\.json/);
+    assert.match(readFileSync(join(dir, "extraction-log.md"), "utf8"), /0001-kickoff-only\.json[\s\S]*no owner words/, "the discarded transcript is logged");
     await memory.close();
   }
 

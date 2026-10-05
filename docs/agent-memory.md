@@ -98,8 +98,11 @@ Inside GGO's own runs the hooks stand down (`GGO_MEMORY_NATIVE=1`) because GGO i
 recall itself: SDK hooks for Claude and z.ai runs, a prompt prefix for Codex runs. Their
 PreCompact/SessionEnd hooks queue only the owner's own words for extraction: a task run's user
 turns are GGO's kickoff, QA and office text, so only its `[OWNER STEERING]` blocks go in; a
-Co-work run's turns are the owner's chat, queued without GGO's policy wrapper. The Settings →
-Memory extraction toggle governs these runs too.
+sub-task queues nothing, because its steering is the parent agent's `message_subtask` in the
+same frame; a Co-work run's turns are the owner's chat, queued without GGO's policy wrapper.
+The Settings → Memory extraction toggle governs these runs too. The queue applies the same rule
+to any item whose text carries GGO's wrapper or a task kickoff, so transcripts the user-level
+hooks queued from inside GGO runs before native memory existed contribute only their steering.
 
 ## Extraction
 

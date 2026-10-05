@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { queuedOwnerText } from "./agentHooks.js";
 import { REVIEW_SECTION, type MemoryCorpus, type MemoryType } from "./corpus.js";
 import type { SearchCandidate } from "./indexStore.js";
 import { parseJsonObject, type MemoryModels, type ModelFailure } from "./models.js";
@@ -172,7 +173,13 @@ export class ExtractionQueue {
       await this.setAside(path, file, "not a queue item (no version-1 text)");
       return "done";
     }
-    const result = await this.extract(item);
+    const text = queuedOwnerText(item.text);
+    if (!text) {
+      await this.deps.corpus.appendLog(LOG_FILE, `\n## ${new Date().toISOString()}\n\nqueue item \`${file}\` is a GGO agent transcript with no owner words (no steering): nothing to extract\n`, LOG_HEADER);
+      await unlink(path).catch(() => {});
+      return "done";
+    }
+    const result = await this.extract({ ...item, text });
     if (result === "busy") return "busy";
     if (result === "no-capacity") {
       this.status_.lastError = "no Haiku or Luna capacity; the item stays queued";

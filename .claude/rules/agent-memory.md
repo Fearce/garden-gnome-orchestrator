@@ -19,6 +19,12 @@ a Settings → Memory change also runs `npm run memory-lab --prefix server` (poi
   Add fields instead of renaming them; a renamed field silently drops every outside session to the keyword
   fallback. Keep the queue item at `{version:1, text, source, sessionId?, createdAt}`; other shapes are set
   aside into `failed/`, not retried.
+- **Extraction quotes the owner verbatim, so feed it only the owner's words.** A GGO run's user turns are
+  kickoffs, QA bounces and office text; the verbatim-quote check passes on them all the same. `ownerWords`
+  keeps steering blocks for a task, nothing for a sub-task (parent agents steer through the owner's frame)
+  and `queuedOwnerText` applies that to queued items. 25 of the first 29 memories the queue wrote on
+  2026-10-05 were GGO process text before this existed; keep the markers in step with `steeringFrame` and
+  `subTaskContractBlock` (the gate checks both).
 - **Only the primary instance owns the memory directory.** `isPrimaryMemoryOwner()` is false whenever
   `DATA_DIR` is set or a test runs on default data. A lab or test must never publish
   `.ggo-memory-endpoint.json` or drain the queue, or the owner's live hooks start talking to a throwaway
