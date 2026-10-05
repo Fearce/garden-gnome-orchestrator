@@ -119,8 +119,10 @@ The board has a tab for each area. Any tab except Tasks can be hidden per browse
 - **Script Hub, Surveillance, Home and Sidekick** (each off until you turn it on under
   Settings → Interface). Optional tabs for local services, each served by its own worker
   process that starts the first time you open the tab and exits when idle. Surveillance shows
-  live cameras and browses and plays recordings. Nothing records until you choose 24/7 or a
-  weekly schedule. Recording then runs on through restarts until you turn it off, with
+  live cameras and browses and plays recordings. Click a camera picture (or its enlarge button)
+  for a fullscreen view; scroll, pinch or use the zoom buttons to magnify, drag to pan, and
+  Reset view to fit the picture again. This zoom magnifies the preview image. Nothing records
+  until you choose 24/7 or a weekly schedule. Recording then runs on through restarts until you turn it off, with
   per-camera recording, file length, and optional keep-days or size caps. Home controls robot
   vacuums and edits their cleaning schedule, which runs as Home Assistant automations. See
   [docs/local-service-modules.md](docs/local-service-modules.md).

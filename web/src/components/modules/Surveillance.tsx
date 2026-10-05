@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type R
 import { Field, Icon, Loading, ModuleDialog, ModuleFrame, Notice } from "./ModuleFrame.js";
 import { RecordingBar, RecordingDialog } from "./RecordingPlan.js";
 import { RecordingsBrowser } from "./SurveillanceRecordings.js";
+import { CameraViewer } from "./CameraViewer.js";
 import { usePageVisible, usePoll } from "./hooks.js";
 import { errorText, formatAgo, moduleJson, streamUrl } from "./moduleApi.js";
 import type { Camera, CameraRecording, PreviewStrategy, RecordingMode, RecordingView, SurveillanceConfig } from "./surveillanceTypes.js";
@@ -262,9 +263,9 @@ function LiveView(props: {
         </div>
       )}
       {enlarged ? (
-        <ModuleDialog title={enlarged.name} wide onClose={() => setEnlarged(null)} footer={<FrameAge store={store} id={enlarged.id} />}>
+        <CameraViewer key={enlarged.id} name={enlarged.name} onClose={() => setEnlarged(null)} age={<FrameAge store={store} id={enlarged.id} />}>
           <LiveFrame store={store} camera={enlarged} large />
-        </ModuleDialog>
+        </CameraViewer>
       ) : null}
     </>
   );
@@ -464,7 +465,9 @@ function CameraTile(props: { camera: Camera; store: FrameStore; recording: Camer
       </header>
       {camera.uiCollapsed ? null : (
         <>
-          <LiveFrame store={props.store} camera={camera} />
+          <button className="sv-open-camera" onClick={props.onView} aria-label={`Open ${camera.name} fullscreen`} title="Open fullscreen">
+            <LiveFrame store={props.store} camera={camera} />
+          </button>
           <footer className="sv-tile-foot">
             <FrameAge store={props.store} id={camera.id} />
             {recording?.retryAt ? <span className="mono sv-stale">retrying {formatAgo(recording.retryAt).replace(" ago", "")}</span> : null}

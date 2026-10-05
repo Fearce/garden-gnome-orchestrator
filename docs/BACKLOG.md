@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Open Surveillance cameras fullscreen with pan and zoom** (Mosswick, 2026-10-05).
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
 
@@ -59,6 +59,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-05 **Open Surveillance camera pictures fullscreen with digital pan and zoom** (Mosswick): 20/20 isolated browser checks cover native fullscreen, phone fallback, wheel/pinch/keyboard zoom, drag pan, reset, focus and continuing frames on one socket; types, module gate, README 70/70 and privacy pass. Web built for deployment; authenticated live entry serves the exact updated Surveillance bundle.
+
 - 2026-10-05 **Show office chat gnome counts, names and activity indicators** (16abc9bf; Widdershank Pebbletail): live Hide/Show roster keeps the count visible and remembers the browser choice. Desktop/320px browser checks prove reclaimed chatter space, reopen/reload persistence, task navigation and live updates; gating 57/57 plus roster regressions, types/build, README 70/70 and privacy pass. Original office/relay lab 53/53.
 
 - 2026-10-05 **A Codex QA verdict quoting `DELIVERABLE:` no longer parks the task as "QA could not complete"** (dfe93a08, Lanternroot): live build 68588b8c carries the `"`-in-path refusal (`server/dist/agents/officeBridge.js`); `test:office-bridge` replays the verdict that broke task 6b9aab39 and parses it. Full gates 230/230.
@@ -88,4 +90,3 @@ No open entries.
 
 - 2026-10-04 **Calendar QA: saved defaults and month ordering integrated** (6225a033, 53f3b854, Codex QA): pushed to master; deployed build 53f3b854 verified; 83/83 isolated browser checks and 9/9 live proxy checks prove create/edit/move/delete and reload persistence; typechecks, builds, focused calendar/scheduler/cron and privacy checks pass; all 226 gates covered by 44 passes before the deployment interruption plus a 182/182 remainder run.
 
-- 2026-10-04 **Calendar events with an unspecified end** (b0c66ba, Thistle Gauge): live build b0c66ba4; authenticated day view and details show the stored start with an unspecified end; focused calendar gates, typechecks, privacy guard and 78/78 browser checks pass; all 226 gates covered across the interrupted full run and a 15/15 remainder run.
