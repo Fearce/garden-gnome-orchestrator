@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (2026-10-04, Lanternroot; task 6b9aab39).
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
 
@@ -43,6 +43,8 @@ same commit as the fix. Git history keeps the record.
 
 7. **Recover the staged GGO deployment after its refused restart** (2026-10-05, Codex QA): deploy built/staged e464439f but live remains 2f5d8db1 with four differing runtime inputs; health reports an unreachable Script Hub and a pending retry. Hub status returned a stale process snapshot whose refresh was still running. Verify a fresh listener/build after recovery.
 
+8. **Find why `addMessage` INSERTs hold the event loop 1–3.8 s** (2026-10-05, Lanternroot): crash.log 01:28–01:33Z on build 57414a66 blocks every minute on `INSERT INTO messages` (worst 3.8s; 4–12 slow statements/min). A 30 s `/api/health` baseline with no memory traffic still peaked at 0.4–0.8 s; memory's own index lives in a worker on a separate file.
+
 ## Blocked / waiting
 
 - **Purge cached private-project reference from PR #10** (owner action: include old PR body in the GitHub Support request).
@@ -58,6 +60,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-05 **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (..57414a66, Lanternroot; claude-setup b867df3): live build 57414a66; `rag.py status` shows 1317 indexed, Haiku and Luna available, queue drained. Live-index eval R@1/R@2/MRR 0.894/0.925/0.909 (pgvector 0.519/0.644/0.630), off-topic 1/25; prompt recall median 2.6 s. All 1310 pre-task memories present; 28 memories extracted from GGO/harness text were trashed after source fixes. Ollama STAYS_DOWN.
 - 2026-10-05 **Show ChatGPT credits in the Codex chip when the plan has no 5-hour window** (2f5d8db1, b57220c9, Codex implementor): pushed and live build verified without another restart; authenticated browser confirms the credit row and retained weekly meter. Credit reader 34/34, four-width chip lab, synthetic balance rerun, README 69/69, typechecks and privacy pass; README updated and public fixtures use synthetic balances. The restart sweep's process-enumeration timeout is tracked under Ready. Follow-up: chip-lab now asserts the balance, label and replacement of 5h while preserving weekly usage; browser pass and four mutation rejections verified.
 - 2026-10-05 **Show and edit vacuum cleaning schedules in Home** (1ee269ff, Dustpan Wren): pushed to master; live Home API adopts the existing 09:00–22:00/99% pair, desktop editor and phone card pass with automation/Home/recording files unchanged. Module gate, 12 schedule regressions, 10 browser checks, types/builds, README and privacy pass; custom automation fields and occupied ids are preserved.
 
@@ -89,5 +92,3 @@ No open entries.
 - 2026-10-04 **Calendar QA: DST spans, following weekdays, paused moves, modal focus and Today navigation** (3b6b0f2, Moss Lantern): calendar-lab 72/72; calendar/scheduler/cron gates, typechecks, builds and privacy guard pass; deployed build 3b6b0f2c verified; live deck-proxy browser checks Today, modal focus, authenticated range, 1-week + 1-day defaults and served bundle equality.
 
 - 2026-10-04 **Privacy QA: protect environment variants and relay state; redact audit evidence** (Moss Lantern): privacy gate exercises binary runtime-file rejection and redacted secret/history output; README links and current-tree secret audit pass; full suite 225/225 and browser labs 42/42 passed before these focused fixes.
-- 2026-10-04 **Calendar and IDE writes work through the deck's `/orchestrator/` proxy** (79a6672, a12307e, Almanac Wren): live build a12307e6; through `https://localhost:3940/orchestrator/` a create returned POST 200 and a UI delete returned DELETE 200, and the event stayed gone after a reload (was 403 "Origin does not match this console"); `test:calendar` and `test:ide` pass.
-- 2026-10-04 **README brought up to date; personal details removed from the public tree** (895407f, Quillfern Sieve): live build 895407fb; `test:privacy-guard` clean over every tracked file, `test:readme-claims` 63/63, 224/225 full gates (the one, `test:doc-paths`, fixed and green); the history rewrite is under Blocked.
