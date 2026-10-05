@@ -24,7 +24,9 @@ a Settings → Memory change also runs `npm run memory-lab --prefix server` (poi
   keeps steering blocks for a task, nothing for a sub-task (parent agents steer through the owner's frame)
   and `queuedOwnerText` applies that to queued items. 25 of the first 29 memories the queue wrote on
   2026-10-05 were GGO process text before this existed; keep the markers in step with `steeringFrame` and
-  `subTaskContractBlock` (the gate checks both).
+  `subTaskContractBlock` (the gate checks both). `userText` (and `extract_user_text` in `extractor.py`)
+  also skips `isCompactSummary`/`isMeta` entries: a post-compaction chunk is the model's own summary,
+  carries no GGO wrapper, and yielded three more bogus memories before that skip.
 - **Only the primary instance owns the memory directory.** `isPrimaryMemoryOwner()` is false whenever
   `DATA_DIR` is set or a test runs on default data. A lab or test must never publish
   `.ggo-memory-endpoint.json` or drain the queue, or the owner's live hooks start talking to a throwaway

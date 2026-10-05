@@ -417,9 +417,12 @@ try {
       JSON.stringify({ type: "user", message: { role: "user", content: "first owner line" } }),
       JSON.stringify({ type: "assistant", message: { role: "assistant", content: "agent reply" } }),
       JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: "second owner line" }, { type: "tool_result", content: "x" }] } }),
+      JSON.stringify({ type: "user", isCompactSummary: true, isVisibleInTranscriptOnly: true, message: { role: "user", content: "This session is being continued from a previous conversation. No Co-Authored-By trailer." } }),
+      JSON.stringify({ type: "user", isMeta: true, message: { role: "user", content: [{ type: "text", text: "Stop hook feedback: work is not saved" }] } }),
       "not json",
     ]),
     "first owner line\n\nsecond owner line",
+    "a compaction summary and hook feedback are written by the harness, not the owner",
   );
   await extractionReadsOnlyTheOwnersWords(join(root, "owner-words"));
   assert.equal(isPrimaryMemoryOwner({}, ["node", "dist/index.js"]), true);

@@ -117,17 +117,20 @@ async function queueTranscript(memory: AgentMemory, input: HookInput, offsets: E
   return {};
 }
 
-/** The user-role text of transcript JSONL lines: what the agent was told, not what it did. */
+/** The user-role text of transcript JSONL lines: what the agent was told, not what it did. Claude Code's
+ *  compaction summaries and `isMeta` turns (hook feedback, skill bodies) are user-role too, but the harness
+ *  wrote them. */
 export function userText(lines: string[]): string {
   const chunks: string[] = [];
   for (const line of lines) {
     if (!line.trim()) continue;
-    let entry: { type?: string; role?: string; message?: { role?: string; content?: unknown } };
+    let entry: { type?: string; role?: string; isMeta?: boolean; isCompactSummary?: boolean; message?: { role?: string; content?: unknown } };
     try {
       entry = JSON.parse(line) as typeof entry;
     } catch {
       continue;
     }
+    if (entry.isMeta || entry.isCompactSummary) continue;
     const message = entry.message ?? (entry as { role?: string; content?: unknown });
     if ((entry.type ?? entry.role ?? message.role) !== "user") continue;
     const content = message.content;

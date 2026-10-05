@@ -100,6 +100,8 @@ PreCompact/SessionEnd hooks queue only the owner's own words for extraction: a t
 turns are GGO's kickoff, QA and office text, so only its `[OWNER STEERING]` blocks go in; a
 sub-task queues nothing, because its steering is the parent agent's `message_subtask` in the
 same frame; a Co-work run's turns are the owner's chat, queued without GGO's policy wrapper.
+Claude Code's compaction summaries and `isMeta` turns (hook feedback, skill bodies) are user-role
+entries the harness writes, so neither GGO nor `extractor.py` reads them as anyone's words.
 The Settings → Memory extraction toggle governs these runs too. The queue applies the same rule
 to any item whose text carries GGO's wrapper or a task kickoff, so transcripts the user-level
 hooks queued from inside GGO runs before native memory existed contribute only their steering.
