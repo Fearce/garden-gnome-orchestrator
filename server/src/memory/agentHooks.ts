@@ -150,6 +150,33 @@ export function ownerWords(text: string, run: AgentRunKind): string {
   return [...text.matchAll(STEERING_BLOCK)].map((m) => m[1]!.trim()).filter(Boolean).join("\n\n");
 }
 
+/** Codex has no transcript hooks. Keep only accepted owner inputs and durably queue bounded batches. */
+export class OwnerInputBuffer {
+  private text = "";
+  private flushing: Promise<void> | null = null;
+
+  constructor(private readonly memory: AgentMemory, private readonly run: AgentRunKind) {}
+
+  append(input: string): void {
+    const words = ownerWords(input, this.run);
+    if (words) this.text = `${this.text}\n\n${words}`.trim().slice(-24_000);
+  }
+
+  flush(sessionId: string | null): Promise<void> {
+    if (this.flushing) return this.flushing.then(() => this.flush(sessionId));
+    if (this.text.length < 400) return Promise.resolve();
+    const batch = this.text;
+    // Inputs arriving during the write belong to the next batch, even when they have identical text.
+    this.text = "";
+    this.flushing = this.memory.enqueueExtraction({ source: "ggo-codex", sessionId, text: batch }).then((outcome) => {
+      if (outcome === "unavailable") this.text = `${batch}\n\n${this.text}`.trim().slice(-24_000);
+    }).catch(() => {
+      this.text = `${batch}\n\n${this.text}`.trim().slice(-24_000);
+    }).finally(() => { this.flushing = null; });
+    return this.flushing;
+  }
+}
+
 /** Marks text from inside a GGO run: its policy wrapper, or a task kickoff's own headings. */
 const GGO_RUN_TEXT = /<\/?ggo_owner_or_task_content>|<ggo_communication_policy\b|^# Task: .+\r?\n\r?\n## Brief\r?$/m;
 /** The heading of a sub-task's contract (orchestrator/subTasks.ts `subTaskContractBlock`; the memory gate

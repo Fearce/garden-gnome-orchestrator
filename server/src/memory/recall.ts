@@ -69,8 +69,8 @@ export class MemoryRecall {
     const key = `${mode}|${limit}|${text}`;
     const hit = this.cache.get(key);
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) return { ...hit.value, cached: true, ms: Date.now() - started };
-    const pool = await this.candidates(text, Math.max(limit, CANDIDATES[mode]));
     const revision = this.revision;
+    const pool = await this.candidates(text, Math.max(limit, CANDIDATES[mode]));
     const value = await this.judge(text, mode, limit, pool, timeoutMs - (Date.now() - started));
     if (value.model && revision === this.revision) this.remember(key, value);
     return { ...value, cached: false, ms: Date.now() - started };

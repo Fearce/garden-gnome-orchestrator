@@ -3,7 +3,7 @@
  *  kept on disk), retrieval cards, automatic extraction, the agent hooks and the HTTP surface. Haiku is a
  *  fake fetch and Luna is reported unavailable, so no provider is called. */
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,7 +17,9 @@ const { CardBuilder } = await import("../memory/cards.js");
 const { MemoryRecall } = await import("../memory/recall.js");
 const { QUEUE_DIR } = await import("../memory/extraction.js");
 const { TRASH_DIR, REVIEW_SECTION, MemoryCorpus, dropRelated, memoryChunks, parseMemory, patchMemoryText, today } = await import("../memory/corpus.js");
-const { memoryAgentHooks, ownerWords, queuedOwnerText, stripTaskEnvelope, userText, ExtractionOffsets } = await import("../memory/agentHooks.js");
+const { memoryAgentHooks, ownerWords, queuedOwnerText, stripTaskEnvelope, userText, ExtractionOffsets, OwnerInputBuffer } = await import("../memory/agentHooks.js");
+const { CodexAgentRun } = await import("../agents/codexRunner.js");
+const { MemoryIndexStore } = await import("../memory/indexStore.js");
 const { subTaskContractBlock } = await import("../orchestrator/subTasks.js");
 const { acknowledgedInjection } = await import("../orchestrator/injection.js");
 const { withCommunicationTurnPolicy } = await import("../agents/communicationPolicy.js");
@@ -284,8 +286,62 @@ async function boundedFallbackAndBackgroundRetries(dir: string): Promise<void> {
   unusable.stop();
 }
 
+async function codexInputsExtractOnlyOwnerWords(dir: string): Promise<void> {
+  const queued: string[] = [];
+  const memory = {
+    recall: async () => ({ memories: [], model: null, fallbackReason: null, cached: false, ms: 0 }),
+    enqueueExtraction: async (item: { text: string }) => { queued.push(item.text); return "queued" as const; },
+  };
+  const task = new OwnerInputBuffer(memory, "task");
+  task.append("# Task: pipeline instructions only. ".repeat(30));
+  await task.flush(null);
+  assert.equal(queued.length, 0, "task kickoffs are not owner input");
+  const words = "Always use British English when writing every reply to me. ".repeat(10);
+  task.append(acknowledgedInjection(words));
+  await task.flush("task-session");
+  assert.deepEqual(queued.splice(0), [words.trim()], "task extraction keeps the actual steering only");
+  const subtask = new OwnerInputBuffer(memory, "subtask");
+  subtask.append(acknowledgedInjection(words));
+  await subtask.flush(null);
+  assert.equal(queued.length, 0, "a parent agent's subtask steering is never extracted");
+
+  const previous = process.env.CODEX_BIN_JS;
+  process.env.CODEX_BIN_JS = join(dir, "missing-codex.js");
+  try {
+    const runner = new CodexAgentRun({ model: "gpt-6-luna", effort: "low", apiKey: "", cwd: dir,
+      memory: { service: memory, dir, run: "cowork", initialOwnerText: words } });
+    runner.start(withCommunicationTurnPolicy("CO-WORK ROLE AND HISTORY ".repeat(50), false));
+    await until("the Codex lifecycle to queue its owner input", () => queued.length > 0);
+    assert.deepEqual(queued, [words.trim()], "Codex queues the original owner message, excluding its role prompt and history");
+    await runner.stop();
+    assert.equal(queued.length, 1, "stop does not queue the same completed batch twice");
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_BIN_JS;
+    else process.env.CODEX_BIN_JS = previous;
+  }
+}
+
 try {
   await boundedFallbackAndBackgroundRetries(join(root, "qa-retries"));
+  await codexInputsExtractOnlyOwnerWords(join(root, "codex-inputs"));
+  {
+    const dir = join(root, "unavailable-corpus");
+    seed(dir);
+    const store = new MemoryIndexStore(join(root, "corpus-preservation.sqlite"), dir);
+    store.sync();
+    const job = store.cardJobs(1)[0]!;
+    store.storeCards([{ file: job.file, hash: job.hash, text: "alternate search words", model: HAIKU_MODEL }]);
+    const initial = store.status();
+    renameSync(dir, `${dir}-unavailable`);
+    try {
+      assert.throws(() => store.sync(), /ENOENT/, "a failed directory read is reported, never treated as deletion");
+      assert.equal(store.status().files, initial.files, "an unavailable corpus keeps its indexed files");
+      assert.equal(store.status().cards, initial.cards, "an unavailable corpus keeps its retrieval cards");
+    } finally {
+      renameSync(`${dir}-unavailable`, dir);
+      store.close();
+    }
+  }
   // ---- lexical: no model access at all ----
   {
     const dir = join(root, "lexical");
@@ -299,6 +355,7 @@ try {
     assert.equal(offTopic.fallbackReason, null, "nothing matched, so there was nothing to judge");
     const trigger = await memory.recall("there is limescale everywhere", "prompt", 2, 5_000);
     assert.equal(trigger.memories[0]?.file, "feedback_kettle.md", "a declared trigger phrase is recalled even with low coverage");
+    assert.equal(trigger.memories[0]?.triggerHit, true, "a single-word trigger is a declared match too");
     assert.equal(trigger.fallbackReason, "model ranking is turned off");
 
     assert.match((await memory.read("Descale the office kettle monthly")) ?? "", /citric acid/, "read accepts the frontmatter name");
@@ -535,6 +592,8 @@ try {
   assert.equal(isPrimaryMemoryOwner({}, ["node", "dist/index.js"]), true);
   assert.equal(isPrimaryMemoryOwner({}), false, "a test run never owns the memory directory");
   assert.equal(isPrimaryMemoryOwner({ DATA_DIR: "/tmp/lab" }, ["node", "dist/index.js"]), false, "a lab with its own data dir never owns the memory directory");
+  assert.equal(isPrimaryMemoryOwner({ DATA_DIR: "/tmp/custom", MEMORY_PRIMARY: "1" }, ["node", "dist/index.js"]), true, "a primary deployment can explicitly own memory with custom storage");
+  assert.equal(isPrimaryMemoryOwner({ DATA_DIR: "/tmp/lab", MEMORY_PRIMARY: "1", GGO_MEMORY_ISOLATED: "1" }, ["node", "dist/index.js"]), false, "an isolated lab cannot inherit primary memory ownership");
 
   // ---- HTTP: console routes need the session, hook routes need the token on direct loopback ----
   {

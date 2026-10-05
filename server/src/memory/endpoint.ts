@@ -12,7 +12,8 @@ export const ENDPOINT_FILE = ".ggo-memory-endpoint.json";
  *  or test run points DATA_DIR elsewhere but still reads the real MEMORY_DIR from server/.env; it must
  *  neither redirect the hook scripts to itself nor process the shared extraction queue. */
 export function isPrimaryMemoryOwner(env: NodeJS.ProcessEnv = process.env, argv: string[] = process.argv): boolean {
-  return !env.DATA_DIR?.trim() && !testInvocationUsesDefaultData(env, argv);
+  if (env.GGO_MEMORY_ISOLATED === "1" || testInvocationUsesDefaultData(env, argv)) return false;
+  return env.MEMORY_PRIMARY === "1" || !env.DATA_DIR?.trim();
 }
 
 export class MemoryEndpoint {

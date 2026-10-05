@@ -137,7 +137,9 @@ export class MemoryIndexStore {
     let entries: string[] = [];
     try {
       entries = readdirSync(this.memoryDir).filter(isMemoryFile);
-    } catch {
+    } catch (error) {
+      // An unavailable corpus is not an empty corpus. Keep cards and derived rows until it is readable.
+      if (known.size || (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       entries = [];
     }
     const present = new Set<string>();
@@ -149,7 +151,8 @@ export class MemoryIndexStore {
       let stats;
       try {
         stats = statSync(join(this.memoryDir, file));
-      } catch {
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         continue;
       }
       if (!stats.isFile()) continue;
@@ -210,7 +213,7 @@ export class MemoryIndexStore {
       entry.score += top * TRIGGER_BONUS;
       best.set(file, entry);
     }
-    const ranked = [...best.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, limit);
+    const ranked = [...best.entries()].sort((a, b) => Number(triggerFiles.has(b[0])) - Number(triggerFiles.has(a[0])) || b[1].score - a[1].score).slice(0, limit);
     const fileRow = this.db.prepare("SELECT * FROM files WHERE file = ?");
     const firstBody = this.db.prepare("SELECT text FROM chunks WHERE file = ? AND kind = 'body' ORDER BY seq LIMIT 1");
     const out: SearchCandidate[] = [];
@@ -331,7 +334,7 @@ export class MemoryIndexStore {
   private triggerMatches(queryTermList: string[]): Set<string> {
     if (!this.triggers) {
       const rows = this.db.prepare("SELECT file, phrase FROM triggers").all() as Array<{ file: string; phrase: string }>;
-      this.triggers = rows.map((row) => ({ file: row.file, terms: queryTerms(row.phrase) })).filter((t) => t.terms.length >= 2);
+      this.triggers = rows.map((row) => ({ file: row.file, terms: queryTerms(row.phrase) })).filter((t) => t.terms.length >= 1);
     }
     const query = new Set(queryTermList);
     const hits = new Set<string>();

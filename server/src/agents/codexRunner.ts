@@ -8,7 +8,7 @@ import { config } from "../config.js";
 import { trackBlockingSync } from "../eventLoopMonitor.js";
 import { logCrash } from "../crashLog.js";
 import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } from "../types.js";
-import { NATIVE_MEMORY_ENV, promptRecallBlock, sessionRecallBlock, type AgentMemory } from "../memory/agentHooks.js";
+import { NATIVE_MEMORY_ENV, OwnerInputBuffer, promptRecallBlock, sessionRecallBlock, type AgentMemory, type AgentRunKind } from "../memory/agentHooks.js";
 import { withAgentToolPath } from "./env.js";
 import { InputLedger } from "./inputLedger.js";
 import { extractCliBridgeMessages } from "./officeBridge.js";
@@ -68,7 +68,7 @@ export interface CodexRunConfig {
   directorMode?: boolean;
   /** The owner's memory. Codex has no in-process hooks, so recalled memories are prefixed to each turn's
    *  prompt, and the run carries GGO_MEMORY_NATIVE so a user-level Codex memory hook stands down. */
-  memory?: { service: AgentMemory; dir: string };
+  memory?: { service: AgentMemory; dir: string; run?: AgentRunKind; initialOwnerText?: string };
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Image blocks are handled
@@ -396,14 +396,17 @@ export class CodexAgentRun implements AgentRunLike {
   // watchdog + self-heal spam every turn and go straight to fresh).
   resumeHealed = false;
   private readonly usageMeter = new CodexRunMeter(config.codex.home);
+  private readonly memoryInputs: OwnerInputBuffer | null;
 
   constructor(private readonly cfg: CodexRunConfig) {
     this.cfg = { ...cfg, model: currentCodexModel(cfg.model) };
+    this.memoryInputs = cfg.memory ? new OwnerInputBuffer(cfg.memory.service, cfg.memory.run ?? "task") : null;
     if (!isGpt6Model(this.cfg.model)) throw new Error(`GPT-6-only policy rejected Codex model: ${cfg.model}`);
     this.emitter.setMaxListeners(50);
   }
 
   start(firstMessage: UserContent): this {
+    this.memoryInputs?.append(this.cfg.memory?.initialOwnerText ?? toText(firstMessage));
     this.firstImages = toImages(firstMessage);
     void this.runTurn(toText(firstMessage), this.cfg.resume, this.firstImages, [this.inputs.issue()]);
     return this;
@@ -438,6 +441,7 @@ export class CodexAgentRun implements AgentRunLike {
       return;
     }
     const inputId = this.inputs.issue();
+    this.memoryInputs?.append(text);
     if (this.turnStarting || this.turnActive) {
       this.pendingSends.push({ text, images, inputId });
       if (opts?.priority === "now") this.requestInterrupt();
@@ -462,6 +466,7 @@ export class CodexAgentRun implements AgentRunLike {
   async stop(): Promise<void> {
     this.stopped = true;
     this.killChild();
+    await this.memoryInputs?.flush(this.sessionId ?? null);
     if (!this.finished) {
       this.finished = true;
       this.emitter.emit("end");
@@ -949,6 +954,7 @@ export class CodexAgentRun implements AgentRunLike {
   /** Emit the per-turn result event (mirrors AgentRun's `result` SDK message) and cache it. */
   private finishTurn(partial: { subtype: string; isError: boolean; result?: string; numTurns?: number; tokenUsage?: TokenUsage }): void {
     this.clearWatchdog();
+    void this.memoryInputs?.flush(this.sessionId ?? null);
     const evt: ResultEvent = { type: "result", subtype: partial.subtype, isError: partial.isError, result: partial.result, numTurns: partial.numTurns, tokenUsage: partial.tokenUsage };
     // A structured role run parses its final message into structuredOutput here so the pipeline reads it
     // uniformly (the same field the Claude SDK and Grok's --json-schema populate). A miss leaves the field

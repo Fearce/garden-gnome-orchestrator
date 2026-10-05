@@ -212,6 +212,8 @@ function labChildEnv({ dataDir, port, env = {} }) {
     CLAUDE_CODE_OAUTH_TOKEN: "lab-not-a-real-token",
     WEB_DIST: labWebDist(),
     ...env,
+    // A primary deployment may opt into custom DATA_DIR; labs never inherit memory ownership.
+    GGO_MEMORY_ISOLATED: "1",
   };
 }
 

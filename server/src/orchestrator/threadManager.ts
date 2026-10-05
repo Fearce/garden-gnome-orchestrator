@@ -4531,7 +4531,7 @@ export class ThreadManager implements OrchestratorApi {
           apiKey: this.openaiApiKey() ?? "",
           resume,
           freshFallback: this.communicationContent(fresh),
-          memory: this.memory.codexMemory(),
+          memory: this.memory.codexMemory("cowork", prompt),
         });
         startContent = this.communicationContent(contentWithImages(resume ? prompt : [COWORKER_PROMPT, prompt].join("\n\n"), images));
       } else if (provider === "grok") {
@@ -9983,7 +9983,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         apiKey: this.openaiApiKey() ?? "",
         resume: opts?.resume,
         freshFallback: opts?.freshFallback ? (vanilla ? opts.freshFallback : this.communicationContent(opts.freshFallback)) : undefined,
-        memory: this.memory.codexMemory(),
+        memory: this.memory.codexMemory(thread.subTask ? "subtask" : "task"),
         onOfficeChat: (scope, body) => {
           this.chatPost({ threadId: thread.id, runId, role: "implementor", scope, body });
         },

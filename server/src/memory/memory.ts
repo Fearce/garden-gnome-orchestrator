@@ -30,7 +30,7 @@ export interface MemoryService extends AgentMemory {
   /** SDK hooks giving a Claude-based agent run native recall and extraction; undefined when off. */
   agentHooks(run: AgentRunKind): Options["hooks"] | undefined;
   /** Recall for a Codex run, which takes it as a prompt prefix; undefined when agent recall is off. */
-  codexMemory(): { service: AgentMemory; dir: string } | undefined;
+  codexMemory(run?: AgentRunKind, initialOwnerText?: string): { service: AgentMemory; dir: string; run: AgentRunKind; initialOwnerText?: string } | undefined;
   /** Write a new memory file; returns its file name. */
   create(input: NewMemory): Promise<string>;
   update(file: string, patch: MemoryPatch): Promise<boolean>;
@@ -168,8 +168,8 @@ export class FileMemoryService implements MemoryService {
     return memoryAgentHooks(this, this.dir, run, this.offsets);
   }
 
-  codexMemory(): { service: AgentMemory; dir: string } | undefined {
-    return this.settings().agentRecall ? { service: this, dir: this.dir } : undefined;
+  codexMemory(run: AgentRunKind = "task", initialOwnerText?: string): { service: AgentMemory; dir: string; run: AgentRunKind; initialOwnerText?: string } | undefined {
+    return this.settings().agentRecall ? { service: this, dir: this.dir, run, initialOwnerText } : undefined;
   }
 
   async recall(query: string, mode: RecallMode, limit: number, timeoutMs: number): Promise<RecallResult> {

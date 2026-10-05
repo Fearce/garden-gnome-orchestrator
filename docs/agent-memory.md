@@ -11,6 +11,10 @@ Code: `server/src/memory/`. Settings and UI: **Settings → Memory**
 Browser lab: `npm run memory-lab --prefix server` drives the page against a throwaway instance with its
 own `DATA_DIR` and a seeded temp `MEMORY_DIR`, with model ranking switched off so it spends no model call.
 
+When the primary deployment uses a custom `DATA_DIR`, set `MEMORY_PRIMARY=1` in
+its `.env` to enable background processing and the hook handshake. Secondary instances
+leave it unset; browser labs explicitly set `GGO_MEMORY_ISOLATED=1` and cannot claim ownership.
+
 ## How recall works
 
 1. **The files are the truth.** Every memory is a Markdown file with `name:`,
@@ -100,6 +104,9 @@ PreCompact/SessionEnd hooks queue only the owner's own words for extraction: a t
 turns are GGO's kickoff, QA and office text, so only its `[OWNER STEERING]` blocks go in; a
 sub-task queues nothing, because its steering is the parent agent's `message_subtask` in the
 same frame; a Co-work run's turns are the owner's chat, queued without GGO's policy wrapper.
+Codex queues bounded batches of accepted owner inputs at the end of a turn and on shutdown.
+Its initial Co-work input comes from the original message before GGO adds its role prompt
+and conversation history; sub-task inputs never become owner memories.
 Claude Code's compaction summaries and `isMeta` turns (hook feedback, skill bodies) are user-role
 entries the harness writes, so neither GGO nor `extractor.py` reads them as anyone's words.
 The Settings → Memory extraction toggle governs these runs too. The queue applies the same rule
@@ -161,7 +168,7 @@ paraphrased requests, with the same queries for both:
 | | R@1 | R@2 | MRR | Off-topic prompts that injected something |
 | --- | --- | --- | --- | --- |
 | pgvector + nomic-embed (before) | 0.519 | 0.644 | 0.630 | 2 / 25 |
-| GGO keyword + Haiku judge (prompt mode) | 0.875 | 0.919 | 0.897 | 1 / 25 |
+| GGO keyword + Haiku judge (prompt mode) | 0.894 | 0.925 | 0.909 | 1 / 25 |
 
 ## Recovery
 
