@@ -31,6 +31,9 @@ same commit as the fix. Git history keeps the record.
 
 ## Ready (priority order)
 
+1. **Surface memory migration validation artifacts before accepting the task** (2026-10-05, Bramble Gauge; task 6b9aab39).
+  The retained `server/data/memory-lab-shots/memory-settings.png` has no card; baseline and retrieval results in the local memory folder's `.ggo-eval/` are outside the task workspace and also have no cards. The implementor must copy finished evidence into the workspace, verify it opens, and surface each artifact.
+
 1. **Resolve high-severity production dependency advisories** (2026-10-05, Codex implementor): restart sweep audit:deps reports critical=0, high=5, moderate=12, low=3; dependency names and compatible fixed versions are in server/data/quality-sweep-last.log.
 1. **Recheck Windows process-enumeration timeout under gate load** (2026-10-05, Codex implementor): restart sweep test:modules returned 503 instead of 200 because tasklist exceeded its 15-second budget; server/data/gates-last.log records the assertion.
 1. **Resolve Electron clean-exit verification before accepting the desktop app** (2026-10-04, Moss Gauge): desktop lab 52/55; three 20-second app-exit timeouts, and packaged-window-close verification timed out at 15 seconds. Live HTTP/WS load probe completed without a desktop-open regression.

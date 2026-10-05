@@ -4,6 +4,7 @@ import { basename, join } from "node:path";
 import type { HookCallback, HookCallbackMatcher, HookEvent, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.js";
 import type { RecallMode, RecallResult, RankedMemory } from "./recall.js";
+import { repoMapContext } from "./repoMaps.js";
 
 // Native memory for GGO's agents. Claude-based runs get in-process SDK hooks: recall at session start and
 // on every prompt, and the owner's words handed to the extraction queue before a compaction and when the
@@ -62,21 +63,21 @@ export function formatRecall(memories: RankedMemory[], heading: string, dir: str
 }
 
 /** Recall block for a prompt, or "" when nothing qualifies or recall fails. Never throws. */
-export async function promptRecallBlock(memory: AgentMemory, prompt: string, dir: string, timeoutMs = RECALL_TIMEOUT_MS): Promise<string> {
+export async function promptRecallBlock(memory: AgentMemory, prompt: string, dir: string, timeoutMs = RECALL_TIMEOUT_MS, cwd?: string): Promise<string> {
   const query = stripTaskEnvelope(prompt.trim());
   if (query.length < MIN_PROMPT_CHARS) return "";
   try {
-    const result = await memory.recall(query, "prompt", PROMPT_LIMIT, timeoutMs);
-    return formatRecall(result.memories, "## Possibly-relevant memories for this prompt", dir);
+    const [result, maps] = await Promise.all([memory.recall(query, "prompt", PROMPT_LIMIT, timeoutMs).catch(() => null), cwd ? repoMapContext(cwd, query) : ""]);
+    return [result ? formatRecall(result.memories, "## Possibly-relevant memories for this prompt", dir) : "", maps].filter(Boolean).join("\n\n");
   } catch {
     return "";
   }
 }
 
-export async function sessionRecallBlock(memory: AgentMemory, cwd: string, dir: string, timeoutMs = RECALL_TIMEOUT_MS): Promise<string> {
+export async function sessionRecallBlock(memory: AgentMemory, cwd: string, dir: string, timeoutMs = RECALL_TIMEOUT_MS, includeMaps = false): Promise<string> {
   try {
-    const result = await memory.recall(`Working directory: ${basename(cwd)}. Path: ${cwd}`, "session", SESSION_LIMIT, timeoutMs);
-    return formatRecall(result.memories, `## Relevant memories for \`${cwd}\``, dir);
+    const [result, maps] = await Promise.all([memory.recall(`Working directory: ${basename(cwd)}. Path: ${cwd}`, "session", SESSION_LIMIT, timeoutMs).catch(() => null), includeMaps ? repoMapContext(cwd) : ""]);
+    return [result ? formatRecall(result.memories, `## Relevant memories for \`${cwd}\``, dir) : "", maps].filter(Boolean).join("\n\n");
   } catch {
     return "";
   }
@@ -88,12 +89,12 @@ export function memoryAgentHooks(memory: AgentMemory, dir: string, run: AgentRun
   return {
     SessionStart: one(async (input) => {
       if (input.hook_event_name !== "SessionStart") return {};
-      const context = await sessionRecallBlock(memory, input.cwd, dir);
+      const context = await sessionRecallBlock(memory, input.cwd, dir, undefined, true);
       return context ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } } : {};
     }),
     UserPromptSubmit: one(async (input) => {
       if (input.hook_event_name !== "UserPromptSubmit") return {};
-      const context = await promptRecallBlock(memory, input.prompt, dir);
+      const context = await promptRecallBlock(memory, input.prompt, dir, undefined, input.cwd);
       return context ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context } } : {};
     }),
     PreCompact: one((input) => queueTranscript(memory, input, offsets, run)),

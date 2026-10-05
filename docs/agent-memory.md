@@ -107,6 +107,8 @@ same frame; a Co-work run's turns are the owner's chat, queued without GGO's pol
 Codex queues bounded batches of accepted owner inputs at the end of a turn and on shutdown.
 Its initial Co-work input comes from the original message before GGO adds its role prompt
 and conversation history; sub-task inputs never become owner memories.
+Native recall also reads `agent_docs/maps/*.md` from the current repository, preserving
+the external hooks' session listing and prompt matches without a Git subprocess.
 Claude Code's compaction summaries and `isMeta` turns (hook feedback, skill bodies) are user-role
 entries the harness writes, so neither GGO nor `extractor.py` reads them as anyone's words.
 The Settings → Memory extraction toggle governs these runs too. The queue applies the same rule

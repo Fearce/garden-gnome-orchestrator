@@ -558,8 +558,8 @@ export class CodexAgentRun implements AgentRunLike {
     const memory = this.cfg.memory;
     if (!memory) return prompt;
     const [session, turn] = await Promise.all([
-      fresh ? sessionRecallBlock(memory.service, this.cfg.cwd, memory.dir) : "",
-      promptRecallBlock(memory.service, prompt, memory.dir),
+      fresh ? sessionRecallBlock(memory.service, this.cfg.cwd, memory.dir, undefined, true) : "",
+      promptRecallBlock(memory.service, prompt, memory.dir, undefined, this.cfg.cwd),
     ]);
     return [session, turn, prompt].filter(Boolean).join("\n\n");
   }

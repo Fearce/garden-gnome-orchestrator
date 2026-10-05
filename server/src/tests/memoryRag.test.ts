@@ -20,6 +20,7 @@ const { TRASH_DIR, REVIEW_SECTION, MemoryCorpus, dropRelated, memoryChunks, pars
 const { memoryAgentHooks, ownerWords, queuedOwnerText, stripTaskEnvelope, userText, ExtractionOffsets, OwnerInputBuffer } = await import("../memory/agentHooks.js");
 const { CodexAgentRun } = await import("../agents/codexRunner.js");
 const { MemoryIndexStore } = await import("../memory/indexStore.js");
+const { repoMapContext } = await import("../memory/repoMaps.js");
 const { subTaskContractBlock } = await import("../orchestrator/subTasks.js");
 const { acknowledgedInjection } = await import("../orchestrator/injection.js");
 const { withCommunicationTurnPolicy } = await import("../agents/communicationPolicy.js");
@@ -324,6 +325,23 @@ async function codexInputsExtractOnlyOwnerWords(dir: string): Promise<void> {
 try {
   await boundedFallbackAndBackgroundRetries(join(root, "qa-retries"));
   await codexInputsExtractOnlyOwnerWords(join(root, "codex-inputs"));
+  {
+    const repo = join(root, "maps-repo");
+    const other = join(root, "other-repo");
+    mkdirSync(join(repo, ".git"), { recursive: true });
+    mkdirSync(join(other, ".git"), { recursive: true });
+    mkdirSync(join(repo, "src"), { recursive: true });
+    mkdirSync(join(repo, "agent_docs", "maps"), { recursive: true });
+    writeFileSync(join(repo, "agent_docs", "maps", "calendar.md"), "---\nsubsystem: Calendar scheduler\nlast_verified: 2026-01-02\n---\nCalendar scheduler scheduling calendar jobs.");
+    assert.match(await repoMapContext(join(repo, "src")), /Calendar scheduler/);
+    assert.match(await repoMapContext(repo, "calendar scheduler"), /agent_docs\/maps\/calendar.md/);
+    assert.equal(await repoMapContext(repo, "lunch salad soup"), "", "an unrelated prompt does not match a repo map");
+    assert.equal(await repoMapContext(other, "calendar scheduler"), "", "map recall cannot cross repository boundaries");
+    const unavailable = { recall: async () => { throw new Error("memory unavailable"); }, enqueueExtraction: async () => "unavailable" as const };
+    const hooks = memoryAgentHooks(unavailable, root, "task");
+    const out = await hooks.SessionStart![0]!.hooks[0]!({ hook_event_name: "SessionStart", session_id: "s", transcript_path: "", cwd: join(repo, "src") } as never, undefined, { signal: AbortSignal.timeout(5000) });
+    assert.match(JSON.stringify(out), /Calendar scheduler/, "native SDK recall preserves repo maps even if memory is unavailable");
+  }
   {
     const dir = join(root, "unavailable-corpus");
     seed(dir);
