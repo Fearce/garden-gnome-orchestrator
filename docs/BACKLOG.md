@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Show office chat gnome counts, names and activity indicators** (2026-10-05, Bramblewick).
 
 ## Shipped, awaiting live proof
 
