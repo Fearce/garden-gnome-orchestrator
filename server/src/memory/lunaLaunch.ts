@@ -18,6 +18,8 @@ export function codexLunaLaunch(codexEnabled: () => boolean, lunaAllowed: () => 
     const launcher = config.codex.launcher();
     if (!launcher.path || !existsSync(launcher.path)) return { unavailable: "the Codex CLI is not installed" };
     if (!chatgptLoginAvailable()) return { unavailable: "Codex is not signed in with a ChatGPT plan (`codex login`)" };
+    // Memory may be the first Codex consumer on a fresh installation.
+    await mkdir(config.codex.home, { recursive: true });
     if ((await seedCodexAuth(undefined)) !== "chatgpt") return { unavailable: "Codex is not signed in with a ChatGPT plan (`codex login`)" };
     const model = currentCodexModel("gpt-6-luna");
     const cwd = join(config.dataDir, "memory-luna-sandbox");

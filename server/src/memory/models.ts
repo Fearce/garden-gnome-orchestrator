@@ -166,14 +166,16 @@ export class MemoryModels {
   private async viaLuna(call: ModelCall, deadline: number, seen: { unusable: boolean }): Promise<ModelAnswer | null> {
     const remaining = deadline - Date.now();
     if (remaining < LUNA_MIN_BUDGET_MS || this.lunaInFlight >= LUNA_LIMIT) return null;
-    const ready = await this.deps.lunaLaunch().catch((err: unknown) => ({ unavailable: String(err) }));
-    if ("unavailable" in ready) {
-      this.lunaState.available = false;
-      this.lunaState.detail = ready.unavailable;
-      return null;
-    }
+    // Reserve before launch preparation yields, otherwise every concurrent caller can take this slot.
     this.lunaInFlight++;
     try {
+      const ready = await this.deps.lunaLaunch().catch((err: unknown) => ({ unavailable: String(err) }));
+      if ("unavailable" in ready) {
+        this.lunaState.available = false;
+        this.lunaState.detail = ready.unavailable;
+        return null;
+      }
+      if (deadline - Date.now() < LUNA_MIN_BUDGET_MS) return null;
       const prompt = `${call.system}\n\nAnswer with the requested output only. Do not run commands or read files.\n\n${call.user}`;
       const result = await this.deps.runLuna({ ...ready.launch, prompt, timeoutMs: deadline - Date.now() }).catch(() => null);
       this.deps.recordUsage({ provider: "codex", model: ready.model, purpose: call.purpose, inputTokens: result?.inputTokens ?? 0, outputTokens: result?.outputTokens ?? 0, ok: !!result });

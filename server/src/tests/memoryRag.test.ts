@@ -12,7 +12,9 @@ process.env.DATA_DIR = join(root, "data");
 mkdirSync(process.env.DATA_DIR, { recursive: true });
 
 const { FileMemoryService, DEFAULT_MEMORY_SETTINGS } = await import("../memory/memory.js");
-const { HAIKU_MODEL } = await import("../memory/models.js");
+const { HAIKU_MODEL, MemoryModels } = await import("../memory/models.js");
+const { CardBuilder } = await import("../memory/cards.js");
+const { MemoryRecall } = await import("../memory/recall.js");
 const { QUEUE_DIR } = await import("../memory/extraction.js");
 const { TRASH_DIR, REVIEW_SECTION, MemoryCorpus, dropRelated, memoryChunks, parseMemory, patchMemoryText, today } = await import("../memory/corpus.js");
 const { memoryAgentHooks, ownerWords, queuedOwnerText, stripTaskEnvelope, userText, ExtractionOffsets } = await import("../memory/agentHooks.js");
@@ -186,6 +188,18 @@ async function closeStopsTheWorkerWithWorkInFlight(dir: string): Promise<void> {
     () => undefined,
   );
   await assert.rejects(client.status(), /closed/, "a closed index takes no new work instead of starting another thread");
+
+  const luna = new MemoryWorkerClient(join(dir, "luna-close.sqlite"), dir);
+  const pidFile = join(dir, "child-pids.json");
+  const script = `const c=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true}); require('node:fs').writeFileSync(${JSON.stringify(pidFile)},JSON.stringify([process.pid,c.pid]));setInterval(()=>{},1000);`;
+  const answer = luna.luna({ command: process.execPath, args: ["-e", script], cwd: dir, env: process.env, prompt: "", timeoutMs: 60_000 }).catch(() => null);
+  await until("the simulated Luna launcher and grandchild to start", () => existsSync(pidFile));
+  const pids = JSON.parse(readFileSync(pidFile, "utf8")) as number[];
+  await luna.close();
+  await answer;
+  await until("shutdown to reap the Luna invocation tree", () => pids.every((pid) => {
+    try { process.kill(pid, 0); return false; } catch { return true; }
+  }));
 }
 
 async function until(label: string, check: () => Promise<boolean> | boolean, timeoutMs = 20_000): Promise<void> {
@@ -197,7 +211,81 @@ async function until(label: string, check: () => Promise<boolean> | boolean, tim
   assert.fail(`timed out waiting for ${label}`);
 }
 
+async function boundedFallbackAndBackgroundRetries(dir: string): Promise<void> {
+  let launches = 0;
+  let calls = 0;
+  const models = new MemoryModels({
+    claudeAccount: () => undefined,
+    claudeHasRoom: () => false,
+    onClaudeRateLimit: () => {},
+    lunaLaunch: async () => {
+      launches++;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { model: "gpt-6-luna", launch: { command: "unused", args: [], cwd: dir, env: {} } };
+    },
+    runLuna: async () => {
+      calls++;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return { text: '{"ids":[]}', inputTokens: 12, outputTokens: 2 };
+    },
+    recordUsage: () => {},
+  });
+  const request = { system: "test", user: "test", maxTokens: 10, purpose: "recall", lane: "interactive" as const, timeoutMs: 10_000 };
+  await Promise.all(Array.from({ length: 5 }, () => models.complete(request)));
+  assert.equal(launches, 1, "the Luna slot is reserved before asynchronous launch preparation");
+  assert.equal(calls, 1, "concurrent interactive requests spawn at most one Luna process");
+
+  seed(dir);
+  const bad = fakeHaiku();
+  bad.fetchImpl = (async () => Response.json({ content: [{ type: "text", text: "invalid JSON" }], usage: { input_tokens: 10, output_tokens: 1 } })) as typeof fetch;
+  const memory = service(dir, { haiku: bad, settings: () => ({ ...DEFAULT_MEMORY_SETTINGS, cards: false }) });
+  memory.start();
+  await memory.enqueueExtraction({ source: "test", sessionId: null, text: "A durable user statement. ".repeat(30) });
+  await until("an unusable answer to leave a scheduled retry", async () => {
+    const state = (await memory.status()).extraction!;
+    return state.state === "idle" && state.nextAttemptAt != null && state.nextAttemptAt > Date.now() + 60_000;
+  });
+  const queued = readdirSync(join(dir, QUEUE_DIR)).filter((f) => f.endsWith(".json"));
+  assert.equal(queued.length, 1, "unusable answers preserve the queue item");
+  assert.equal(JSON.parse(readFileSync(join(dir, QUEUE_DIR, queued[0]!), "utf8")).unusable, 1);
+  await memory.close();
+
+  let finish!: () => void;
+  let started = false;
+  let stored = 0;
+  const cards = new CardBuilder({
+    jobs: async () => [{ file: "note.md", hash: "hash", name: "Note", description: "Note description", triggers: [], body: "Body" }],
+    store: async () => ++stored,
+    enabled: () => true,
+    models: { complete: async () => {
+      started = true;
+      await new Promise<void>((resolve) => { finish = resolve; });
+      return { text: '{"cards":[{"id":1,"queries":["alternate words"]}]}', model: HAIKU_MODEL };
+    } } as unknown as InstanceType<typeof MemoryModels>,
+  });
+  cards.start();
+  cards.poke(true);
+  await until("card generation to start", () => started);
+  cards.stop();
+  finish();
+  await until("card generation to settle after stop", () => cards.status().state === "idle");
+  assert.equal(stored, 0, "a stopped builder does not write cards after its model responds");
+  assert.equal(cards.status().nextAttemptAt, null, "a stopped builder schedules no more work");
+
+  const unusable = new CardBuilder({
+    jobs: async (_limit, exclude) => exclude.length ? [] : [{ file: "note.md", hash: "hash", name: "Note", description: "Note description", triggers: [], body: "Body" }],
+    store: async () => 0,
+    enabled: () => true,
+    models: { complete: async () => ({ failure: "unusable" }) } as unknown as InstanceType<typeof MemoryModels>,
+  });
+  unusable.start();
+  unusable.poke(true);
+  await until("missing cards to get a retry after the pass", () => unusable.status().state === "idle" && (unusable.status().nextAttemptAt ?? 0) > Date.now() + 60_000);
+  unusable.stop();
+}
+
 try {
+  await boundedFallbackAndBackgroundRetries(join(root, "qa-retries"));
   // ---- lexical: no model access at all ----
   {
     const dir = join(root, "lexical");
@@ -287,6 +375,8 @@ try {
     const hook = hooks.UserPromptSubmit![0]!.hooks[0]!;
     const out = (await hook({ hook_event_name: "UserPromptSubmit", prompt: "## Brief\nthe office kettle needs descaling, chalky taste\n## Plan\nunrelated", session_id: "s", transcript_path: "", cwd: dir } as never, undefined, { signal: AbortSignal.timeout(5_000) })) as { hookSpecificOutput?: { additionalContext?: string } };
     assert.match(out.hookSpecificOutput?.additionalContext ?? "", /Descale the office kettle monthly/);
+    unlinkSync(join(dir, "feedback_kettle.md"));
+    await until("external deletion to invalidate a cached recall", async () => !(await memory.recall("the water boiler in the office kitchen tastes chalky", "prompt", 2, 10_000)).memories.some((m) => m.file === "feedback_kettle.md"));
     await memory.close();
   }
 
@@ -412,6 +502,23 @@ try {
   // ---- hook helpers ----
   assert.equal(stripTaskEnvelope("## Context\nprocess prose\n## Brief\nFix the kettle timer\n## Plan\nsteps"), "Fix the kettle timer");
   assert.equal(stripTaskEnvelope("plain prompt"), "plain prompt");
+  {
+    let finish!: () => void;
+    const recaller = new MemoryRecall(async () => [{ file: "note.md", name: "Note", description: "Description", excerpt: "", triggerHit: false }] as never, { complete: async () => {
+      await new Promise<void>((resolve) => { finish = resolve; });
+      return { text: '{"ids":[1]}', model: HAIKU_MODEL };
+    } } as unknown as InstanceType<typeof MemoryModels>, () => true);
+    const first = recaller.recall("query", "search", 1, 10_000);
+    await until("recall judgement to start", () => !!finish);
+    recaller.clearCache();
+    finish();
+    await first;
+    finish = undefined as unknown as () => void;
+    const second = recaller.recall("query", "search", 1, 10_000);
+    await until("the new judgement to start", () => !!finish);
+    finish();
+    assert.equal((await second).cached, false, "an old model answer cannot repopulate an invalidated cache");
+  }
   assert.equal(
     userText([
       JSON.stringify({ type: "user", message: { role: "user", content: "first owner line" } }),
@@ -437,6 +544,9 @@ try {
     const kv = new Map<string, string>();
     const settings = new MemorySettingsStore({ get: (k) => kv.get(k), set: (k, v) => void kv.set(k, v) });
     const endpoint = new MemoryEndpoint(dir);
+    const freshEndpoint = new MemoryEndpoint(join(root, "new-install", "memory"));
+    await freshEndpoint.publish("127.0.0.1", 4317);
+    assert.ok(existsSync(join(root, "new-install", "memory", ".ggo-memory-endpoint.json")), "first boot creates the memory folder before publishing the handshake");
     const app = Fastify();
     registerMemoryRoutes(app, { memory, settings, endpoint, isAuthed: (cookie) => cookie === "session=ok" });
     await app.ready();

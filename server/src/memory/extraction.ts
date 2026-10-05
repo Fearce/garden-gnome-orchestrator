@@ -45,6 +45,7 @@ export interface ExtractionStatus {
   lastRunAt: number | null;
   lastAdded: number;
   lastError: string | null;
+  nextAttemptAt: number | null;
 }
 
 interface Candidate {
@@ -70,7 +71,7 @@ export class ExtractionQueue {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private started = false;
-  private status_: Omit<ExtractionStatus, "pending" | "state"> & { waiting: boolean } = { lastRunAt: null, lastAdded: 0, lastError: null, waiting: false };
+  private status_: Omit<ExtractionStatus, "pending" | "state"> & { waiting: boolean } = { lastRunAt: null, lastAdded: 0, lastError: null, nextAttemptAt: null, waiting: false };
 
   constructor(private readonly deps: ExtractionDeps) {}
 
@@ -114,12 +115,16 @@ export class ExtractionQueue {
     this.started = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.status_.nextAttemptAt = null;
   }
 
   private schedule(delayMs: number): void {
+    if (!this.started) return;
     if (this.timer) clearTimeout(this.timer);
+    this.status_.nextAttemptAt = Date.now() + delayMs;
     this.timer = setTimeout(() => {
       this.timer = null;
+      this.status_.nextAttemptAt = null;
       void this.drain();
     }, delayMs);
     this.timer.unref();
@@ -134,13 +139,17 @@ export class ExtractionQueue {
   }
 
   private async drain(): Promise<void> {
-    if (this.running || !this.deps.enabled()) return;
+    if (!this.started || this.running || !this.deps.enabled()) return;
     this.running = true;
     this.status_.waiting = false;
     try {
       for (const file of await this.pendingFiles()) {
-        if (!this.deps.enabled()) return;
+        if (!this.started || !this.deps.enabled()) return;
         const outcome = await this.processFile(file);
+        if (outcome === "unusable") {
+          this.schedule(RETRY_MS);
+          return;
+        }
         if (outcome === "busy") {
           this.schedule(BUSY_RETRY_MS);
           return;
@@ -151,6 +160,8 @@ export class ExtractionQueue {
           return;
         }
       }
+      // An enqueue during this pass cannot kick a running drain; pick up those arrivals next.
+      if ((await this.pendingFiles()).length) this.schedule(1_000);
     } catch (err) {
       this.status_.lastError = err instanceof Error ? err.message : String(err);
       this.schedule(RETRY_MS);
@@ -180,16 +191,21 @@ export class ExtractionQueue {
       return "done";
     }
     const result = await this.extract({ ...item, text });
+    if (!this.started || !this.deps.enabled()) return "busy";
     if (result === "busy") return "busy";
     if (result === "no-capacity") {
       this.status_.lastError = "no Haiku or Luna capacity; the item stays queued";
       return "no-capacity";
     }
     if (result === "unusable") {
+      this.status_.lastError = "model answer was unusable; the item stays queued for retry";
       const unusable = (item.unusable ?? 0) + 1;
-      if (unusable >= MAX_UNUSABLE) await this.setAside(path, file, `${unusable} unusable model answers`);
-      else await writeFile(path, JSON.stringify({ ...item, unusable }), "utf8");
-      return "done";
+      if (unusable >= MAX_UNUSABLE) {
+        await this.setAside(path, file, `${unusable} unusable model answers`);
+        return "done";
+      }
+      await writeFile(path, JSON.stringify({ ...item, unusable }), "utf8");
+      return "unusable";
     }
     await this.deps.corpus.appendLog(LOG_FILE, logBlock(item, result), LOG_HEADER);
     await unlink(path).catch(() => {});
@@ -219,6 +235,7 @@ export class ExtractionQueue {
       accept: (text) => Array.isArray(parseJsonObject(text)?.extractions),
     });
     if ("failure" in answer) return answer.failure;
+    if (!this.started || !this.deps.enabled()) return "busy";
     const raw = (parseJsonObject(answer.text)?.extractions as unknown[]).slice(0, MAX_EXTRACTIONS);
     const result: ExtractionResult = { model: answer.model, returned: raw.length, added: [], duplicates: [], rejected: [] };
     const valid: Candidate[] = [];
@@ -230,6 +247,7 @@ export class ExtractionQueue {
     if (!valid.length) return result;
     const duplicates = await this.duplicates(valid);
     if (typeof duplicates === "string") return duplicates;
+    if (!this.started || !this.deps.enabled()) return "busy";
     for (const [i, candidate] of valid.entries()) {
       const twin = duplicates.get(i);
       if (twin) {

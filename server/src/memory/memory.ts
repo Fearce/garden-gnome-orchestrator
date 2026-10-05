@@ -116,7 +116,11 @@ export class FileMemoryService implements MemoryService {
     this.cards = models
       ? new CardBuilder({
           jobs: (limit, exclude) => this.worker.cardJobs(limit, exclude),
-          store: (cards) => this.worker.storeCards(cards),
+          store: async (cards) => {
+            const stored = await this.worker.storeCards(cards);
+            if (stored) this.recaller.clearCache();
+            return stored;
+          },
           models,
           enabled: () => this.settings().cards,
         })
@@ -168,8 +172,11 @@ export class FileMemoryService implements MemoryService {
     return this.settings().agentRecall ? { service: this, dir: this.dir } : undefined;
   }
 
-  recall(query: string, mode: RecallMode, limit: number, timeoutMs: number): Promise<RecallResult> {
-    return this.recaller.recall(query, mode, limit, timeoutMs);
+  async recall(query: string, mode: RecallMode, limit: number, timeoutMs: number): Promise<RecallResult> {
+    const started = Date.now();
+    // External tools edit the source files too. Refresh before consulting the model-result cache.
+    await this.worker.sync();
+    return this.recaller.recall(query, mode, limit, timeoutMs - (Date.now() - started));
   }
 
   async read(nameOrFile: string): Promise<string | null> {

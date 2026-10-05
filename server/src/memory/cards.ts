@@ -67,9 +67,11 @@ export class CardBuilder {
     this.started = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    this.status_.nextAttemptAt = null;
   }
 
   private schedule(delayMs: number): void {
+    if (!this.started) return;
     if (this.timer) clearTimeout(this.timer);
     this.status_.nextAttemptAt = Date.now() + delayMs;
     this.timer = setTimeout(() => {
@@ -81,20 +83,22 @@ export class CardBuilder {
   }
 
   private async run(): Promise<void> {
-    if (this.running || !this.deps.enabled()) return;
+    if (!this.started || this.running || !this.deps.enabled()) return;
     this.running = true;
     this.status_.state = "running";
     this.status_.builtThisRun = 0;
     const attempted: string[] = [];
     try {
       for (;;) {
-        if (!this.deps.enabled()) {
+        if (!this.started || !this.deps.enabled()) {
           this.status_.state = "idle";
           return;
         }
         const jobs = await this.deps.jobs(BATCH, attempted);
         if (!jobs.length) {
           this.status_.state = "idle";
+          // Partial or unusable batches remain work, even after this pass has tried every file.
+          if (attempted.length && (await this.deps.jobs(1, [])).length) this.schedule(RETRY_MS);
           return;
         }
         const built = await this.buildBatch(jobs);
@@ -139,6 +143,7 @@ export class CardBuilder {
       this.status_.lastError = "no Haiku or Luna capacity for card building";
       return null;
     }
+    if (!this.started || !this.deps.enabled()) return 0;
     const cards = parseCards(answer.text, jobs.length);
     const inputs: CardInput[] = [];
     for (const [id, text] of cards) inputs.push({ file: jobs[id - 1]!.file, hash: jobs[id - 1]!.hash, text, model: answer.model });

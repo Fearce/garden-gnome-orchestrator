@@ -1,5 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { testInvocationUsesDefaultData } from "../runtimeIsolation.js";
 
@@ -21,6 +21,7 @@ export class MemoryEndpoint {
   constructor(private readonly dir: string) {}
 
   async publish(host: string, port: number): Promise<void> {
+    await mkdir(this.dir, { recursive: true });
     const body = { url: `http://${loopbackHost(host)}:${port}`, token: this.token, pid: process.pid, startedAt: new Date().toISOString() };
     const path = join(this.dir, ENDPOINT_FILE);
     const temp = `${path}.${process.pid}.tmp`;

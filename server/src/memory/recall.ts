@@ -55,6 +55,7 @@ const INSTRUCTIONS: Record<RecallMode, string> = {
 
 export class MemoryRecall {
   private readonly cache = new Map<string, { at: number; value: Omit<RecallResult, "cached" | "ms"> }>();
+  private revision = 0;
 
   constructor(
     private readonly candidates: (query: string, limit: number) => Promise<SearchCandidate[]>,
@@ -69,12 +70,14 @@ export class MemoryRecall {
     const hit = this.cache.get(key);
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) return { ...hit.value, cached: true, ms: Date.now() - started };
     const pool = await this.candidates(text, Math.max(limit, CANDIDATES[mode]));
+    const revision = this.revision;
     const value = await this.judge(text, mode, limit, pool, timeoutMs - (Date.now() - started));
-    if (value.model) this.remember(key, value);
+    if (value.model && revision === this.revision) this.remember(key, value);
     return { ...value, cached: false, ms: Date.now() - started };
   }
 
   clearCache(): void {
+    this.revision++;
     this.cache.clear();
   }
 

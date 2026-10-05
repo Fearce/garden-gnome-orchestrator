@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { parentPort, workerData } from "node:worker_threads";
 import { MemoryIndexStore } from "./indexStore.js";
 import type { LunaRequest, LunaResult, WorkerReply, WorkerRequest } from "./workerProtocol.js";
@@ -11,13 +11,19 @@ import type { LunaRequest, LunaResult, WorkerReply, WorkerRequest } from "./work
 const { dbPath, memoryDir } = workerData as { dbPath: string; memoryDir: string };
 const store = new MemoryIndexStore(dbPath, memoryDir);
 const port = parentPort!;
+const children = new Set<ChildProcess>();
+let closing = false;
 
 port.on("message", (request: WorkerRequest) => {
   if (request.op === "close") {
-    store.close();
-    port.close();
+    closing = true;
+    void Promise.allSettled([...children].map(terminateChild)).then(() => {
+      store.close();
+      port.close();
+    });
     return;
   }
+  if (closing) return;
   void handle(request).then(
     (value) => port.postMessage({ id: request.id, ok: true, value } satisfies WorkerReply),
     (err: unknown) => port.postMessage({ id: request.id, ok: false, error: err instanceof Error ? err.message : String(err) } satisfies WorkerReply),
@@ -56,11 +62,12 @@ function runLuna(request: LunaRequest): Promise<LunaResult | null> {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(request.command, request.args, { cwd: request.cwd, env: request.env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+      child = spawn(request.command, request.args, { cwd: request.cwd, env: request.env, stdio: ["pipe", "pipe", "ignore"], windowsHide: true, detached: process.platform !== "win32" });
     } catch {
       resolve(null);
       return;
     }
+    children.add(child);
     let buffer = "";
     let answer = "";
     let usage = { inputTokens: 0, outputTokens: 0 };
@@ -71,10 +78,13 @@ function runLuna(request: LunaRequest): Promise<LunaResult | null> {
       clearTimeout(timer);
       resolve(result);
     };
-    const timer = setTimeout(() => {
-      child.kill();
-      finish(null);
-    }, request.timeoutMs);
+    let killing = false;
+    const cancel = () => {
+      if (settled || killing) return;
+      killing = true;
+      void terminateChild(child).finally(() => finish(null));
+    };
+    const timer = setTimeout(cancel, request.timeoutMs);
     child.stdin.on("error", () => {});
     child.stdin.end(request.prompt);
     child.stdout.setEncoding("utf8");
@@ -91,13 +101,28 @@ function runLuna(request: LunaRequest): Promise<LunaResult | null> {
         }
       }
       if (buffer.length > 262_144 || answer.length > 32_000) {
-        child.kill();
-        finish(null);
+        cancel();
       }
     });
     child.on("error", () => finish(null));
-    child.on("close", (code) => finish(code === 0 && answer ? { text: answer, ...usage } : null));
+    child.on("close", (code) => {
+      children.delete(child);
+      finish(code === 0 && answer && !killing ? { text: answer, ...usage } : null);
+    });
   });
+}
+
+/** A launcher can own a native Codex grandchild. Stop the entire invocation on timeout or shutdown. */
+async function terminateChild(child: ChildProcess): Promise<void> {
+  if (!child.pid) return;
+  if (process.platform === "win32") {
+    await new Promise<void>((resolve) => {
+      execFile("taskkill", ["/F", "/T", "/PID", String(child.pid)], { windowsHide: true, timeout: 4_000 }, () => resolve());
+    });
+  } else {
+    try { process.kill(-child.pid, "SIGKILL"); } catch { /* already exited */ }
+  }
+  try { child.kill("SIGKILL"); } catch { /* already exited */ }
 }
 
 interface CodexEvent {
