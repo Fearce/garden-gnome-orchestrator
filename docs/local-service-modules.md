@@ -154,7 +154,9 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
 - **Sidekick** edits the companion-launcher tray app's rules in place, rejecting stale edits by file
   revision. Concurrent edits are serialized before checking that revision, so two editors cannot both
   save from the same snapshot and overwrite each other. It shows each rule's trigger and companion liveness and the app's launch log, and starts or
-  stops the tray app through Script Hub.
+  stops the tray app through Script Hub. Liveness comes from `tasklist`; a failed read reuses the last good
+  list, and with none it reports liveness as unknown (`processListError`, power disabled) while rules and the
+  editor keep working.
 
 ## Surveillance recording
 

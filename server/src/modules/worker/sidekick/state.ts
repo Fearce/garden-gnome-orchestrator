@@ -46,6 +46,7 @@ export interface SidekickIo {
   readTail(path: string): Promise<string | null>;
   exists(path: string): Promise<boolean>;
   mtime(path: string): Promise<Date | null>;
+  /** Rejects when no process list can be taken; liveness then reads as unknown, never as "not running". */
   runningImageNames(): Promise<string[]>;
   portIsListening(port: number): Promise<boolean | null>;
 }
@@ -65,8 +66,8 @@ function stripExe(value: string): string {
   return /\.exe$/i.test(value) ? value.slice(0, -4) : value;
 }
 
-function anyProcessMatches(pattern: string | null, imageNames: string[]): boolean | null {
-  if (!pattern) return null;
+function anyProcessMatches(pattern: string | null, imageNames: string[] | null): boolean | null {
+  if (!pattern || !imageNames) return null;
   return imageNames.some((name) => matchesProcessName(pattern, name));
 }
 
@@ -141,7 +142,8 @@ export async function buildSidekickState(paths: SidekickPaths, io: SidekickIo) {
       settingsError = (error as Error).message;
     }
   }
-  const imageNames = await io.runningImageNames();
+  const processes = await readProcessList(io);
+  const imageNames = processes.names;
   const exeName = paths.exe ? paths.exe.split(/[\\/]/).pop() ?? null : null;
   const rules = await Promise.all(
     settings.rules.map(async (rule) => ({
@@ -155,20 +157,29 @@ export async function buildSidekickState(paths: SidekickPaths, io: SidekickIo) {
     generatedAt: new Date().toISOString(),
     installed: paths.exe ? await io.exists(paths.exe) : false,
     exePath: paths.exe,
-    running: exeName ? anyProcessMatches(exeName, imageNames) === true : false,
+    running: exeName ? anyProcessMatches(exeName, imageNames) : false,
     startOnLogin: await io.exists(paths.startupShortcut),
     settingsPath: paths.settings,
     configured: settingsText !== null,
     settingsRevision: revisionForText(settingsText),
     settingsError,
+    processListError: processes.error,
     defaultDebounceSeconds: settings.defaultDebounceSeconds,
     rules,
     log: { path: paths.log, updatedAt: (await io.mtime(paths.log))?.toISOString() ?? null, entries: parseLogLines(logText, paths.logLines) },
   };
 }
 
+async function readProcessList(io: SidekickIo): Promise<{ names: string[] | null; error: string | null }> {
+  try {
+    return { names: await io.runningImageNames(), error: null };
+  } catch (error) {
+    return { names: null, error: (error as Error).message };
+  }
+}
+
 /** The engine's own two probes, in its order: a named process, then a listening port. Null: neither declared. */
-async function companionIsUp(companion: Companion, imageNames: string[], io: SidekickIo): Promise<boolean | null> {
+async function companionIsUp(companion: Companion, imageNames: string[] | null, io: SidekickIo): Promise<boolean | null> {
   const byName = anyProcessMatches(companion.alreadyRunningProcess, imageNames);
   if (byName === true) return true;
   if (companion.alreadyRunningPort) {

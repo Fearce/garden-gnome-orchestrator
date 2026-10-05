@@ -30,12 +30,14 @@ interface SidekickState {
   generatedAt: string;
   installed: boolean;
   exePath: string | null;
-  running: boolean;
+  /** Null when the process list could not be read, so whether it runs is unknown. */
+  running: boolean | null;
   startOnLogin: boolean;
   settingsPath: string;
   configured: boolean;
   settingsRevision: string | null;
   settingsError: string | null;
+  processListError: string | null;
   defaultDebounceSeconds: number;
   rules: Rule[];
   log: { path: string; updatedAt: string | null; entries: { time: string | null; level: string; message: string }[] };
@@ -107,11 +109,11 @@ function SidekickBody() {
       <div className="sk-bar">
         <span className={`mod-chip${data.running ? " on" : ""}`}>
           <span className="mod-dot" aria-hidden="true" />
-          {data.running ? "Running" : data.installed ? "Not running" : "Not installed"}
+          {data.running ? "Running" : !data.installed ? "Not installed" : data.running === null ? "Status unknown" : "Not running"}
         </span>
         <span className={`mod-chip${data.startOnLogin ? " on" : ""}`}>{data.startOnLogin ? "Starts at sign-in" : "Does not start at sign-in"}</span>
         <span className="sk-bar-spacer" />
-        <button className={`btn sm${data.running ? " danger" : " success"}`} disabled={power !== null || !data.installed || Boolean(data.hubError)} onClick={() => void togglePower()} title={data.hubError ? "Starting and stopping Sidekick goes through Script Hub, which is not answering" : undefined}>
+        <button className={`btn sm${data.running ? " danger" : " success"}`} disabled={power !== null || !data.installed || Boolean(data.hubError) || data.running === null} onClick={() => void togglePower()} title={data.hubError ? "Starting and stopping Sidekick goes through Script Hub, which is not answering" : data.running === null ? "Whether Sidekick is running could not be checked" : undefined}>
           <Icon name="power" size={13} /> {power ? (power === "start" ? "Starting…" : "Stopping…") : data.running ? "Stop Sidekick" : "Start Sidekick"}
         </button>
         <button className="btn primary sm" disabled={Boolean(data.settingsError)} onClick={() => setEditing({ rule: blankRule(data.defaultDebounceSeconds), isNew: true })}>
@@ -128,6 +130,11 @@ function SidekickBody() {
       {data.hubError ? (
         <Notice tone="warn" title="Script Hub is not answering">
           Sidekick is started and stopped through Script Hub, and companions can name Script Hub entries; both wait until it is back. ({data.hubError})
+        </Notice>
+      ) : null}
+      {data.processListError ? (
+        <Notice tone="warn" title="Running programs could not be listed">
+          Whether Sidekick, its triggers and its companions are running shows as unknown until the next refresh can list them. Tasks can still be edited. ({data.processListError})
         </Notice>
       ) : null}
       {!data.installed && !data.hubError ? <Notice tone="warn" title="Sidekick is not installed">Script Hub has no Sidekick entry with a program that exists on this PC.</Notice> : null}

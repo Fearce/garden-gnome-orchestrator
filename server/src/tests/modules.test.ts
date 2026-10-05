@@ -454,6 +454,19 @@ await test("sidekick: state reports trigger and companion liveness through the i
   assert.equal(state.rules[0]!.triggerRunning, true);
   assert.equal(state.rules[0]!.companions[0]!.running, true);
   assert.equal(state.settingsRevision, revisionForText(files["/s.json"]!));
+  assert.equal(state.processListError, null);
+
+  // A process list that cannot be read makes liveness unknown; it must not take the rules and the editor down.
+  const blind = await buildSidekickState(
+    { exe: "/Sidekick.exe", settings: "/s.json", log: "/l.log", startupShortcut: "/none.lnk", logLines: 10 },
+    { ...io, runningImageNames: async () => { throw new Error("tasklist took longer than 15s"); } },
+  );
+  assert.equal(blind.processListError, "tasklist took longer than 15s");
+  assert.equal(blind.running, null);
+  assert.equal(blind.rules[0]!.name, "Game");
+  assert.equal(blind.rules[0]!.triggerRunning, null);
+  assert.equal(blind.rules[0]!.companions[0]!.running, true, "the port probe still answers without a process list");
+  assert.equal(blind.log.entries.length, 1);
 });
 
 await test("surveillance: the frame push asks a snapshot camera only at its own refresh interval", async () => {
@@ -823,10 +836,7 @@ try {
   });
 
   await test("Sidekick: reads the tray app's own files and edits them only against the current revision", async () => {
-    let state = await api("/api/modules/sidekick/api/state");
-    // Under full gate load tasklist can overrun its 15s budget, and the first read has no earlier table to
-    // fall back on, so its 503 is truthful. Retry that one cause once; a second failure still fails.
-    if (state.status === 503 && /process list could not be read/.test(String(state.body?.error))) state = await api("/api/modules/sidekick/api/state");
+    const state = await api("/api/modules/sidekick/api/state");
     assert.equal(state.status, 200, JSON.stringify(state.body));
     assert.equal(state.body.rules[0].name, "Game");
     assert.equal(state.body.log.entries[0].message, "watching 1 task");

@@ -172,7 +172,7 @@ class ProcessTable {
       return names;
     } catch (error) {
       if (this.last) return this.last.names;
-      throw new HttpError(503, `The process list could not be read: ${(error as Error).message}`);
+      throw error;
     }
   }
 }
