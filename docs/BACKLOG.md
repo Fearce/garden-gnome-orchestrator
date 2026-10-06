@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Keep ordinary task resumes scoped after server restarts** (2026-10-06, Thistlewatt).
 
 ## Shipped, awaiting live proof
 
