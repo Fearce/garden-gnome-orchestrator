@@ -375,6 +375,7 @@ async function main(): Promise<void> {
   // Shared across both listeners so the per-IP wrong-password cooldown can't be
   // sidestepped by alternating between the HTTP and HTTPS ports.
   const loginCooldown = new Map<string, number>();
+  const LOGIN_COOLDOWN_MAX_KEYS = 4096;
   // One store for both listeners, so a desktop sign-in ticket minted on one redeems on the other.
   const desktopTickets = createDesktopTickets();
 
@@ -670,6 +671,11 @@ async function main(): Promise<void> {
       // atomic locking here or a parallel burst from one IP could bypass the cooldown.
       const until = loginCooldown.get(ip) ?? 0;
       if (now < until) return reply.code(429).send({ ok: false, error: "too many attempts", retryMs: until - now });
+      // Bound the only state an unauthenticated caller can grow. When saturated,
+      // refuse a new address rather than evicting a live cooldown to admit guesses.
+      if (!loginCooldown.has(ip) && loginCooldown.size >= LOGIN_COOLDOWN_MAX_KEYS) {
+        return reply.code(429).send({ ok: false, error: "too many attempts", retryMs: config.loginCooldownMs });
+      }
       if (checkPassword(req.body?.password ?? req.body?.token)) {
         loginCooldown.delete(ip);
         reply.header("set-cookie", cookie30d(req, SESSION_COOKIE, makeSession(config.allowedEmail)));

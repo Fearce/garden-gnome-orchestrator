@@ -117,7 +117,7 @@ export const config = {
   host: exposeBlocked ? "127.0.0.1" : requestedHost,
   authPassword,
   // Wrong-password lockout per client IP (anti-brute-force). A short PIN is safe behind this.
-  loginCooldownMs: Number(process.env.LOGIN_COOLDOWN_MS ?? 30_000),
+  loginCooldownMs: Math.max(1_000, numEnv(process.env.LOGIN_COOLDOWN_MS, 30_000)),
   googleClientId,
   googleClientSecret,
   allowedEmail: (process.env.ALLOWED_EMAIL || "you@example.com").toLowerCase(),
