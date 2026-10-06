@@ -91,6 +91,11 @@ function boardSnapshotPlan(db) {
 function hotQueryPlans(db, threadId) {
   return [
     planVerdict(
+      "tool digest (tool-only index)",
+      explain(db, "SELECT rowid AS seq, role, content FROM messages INDEXED BY idx_messages_tool_thread_time WHERE thread_id = ? AND rowid > ? AND kind = 'tool' ORDER BY created_at ASC, rowid ASC", [threadId, 0]),
+      { table: "messages" },
+    ),
+    planVerdict(
       "history page (newest, no cursor)",
       explain(db, "SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 400", [threadId]),
       { table: "messages" },

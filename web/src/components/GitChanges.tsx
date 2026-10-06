@@ -37,17 +37,9 @@ export function ChangesChip({ threadId }: { threadId: string }) {
     loadGitSummary(threadId);
   }, [threadId, loadGitSummary]);
 
-  // Prefetch the full drawer payload as soon as the summary confirms this is a repo, so opening the drawer
-  // is instant instead of showing "Loading git status…" on click. Keyed on the summary's change signature
-  // so the preloaded status re-syncs whenever the chip's own counts move (mount, and after a drawer close
-  // refreshes the summary) rather than going stale. The server's status cache (same 4s TTL as the summary)
-  // makes this cheap: the prefetch and the drawer's own fetch collapse to one git run.
-  const summarySig = summary?.isRepo
-    ? `${summary.fileCount}:${summary.added}:${summary.removed}:${summary.commitCount}:${summary.unpushed}`
-    : null;
-  useEffect(() => {
-    if (summarySig !== null) loadGitStatus(threadId);
-  }, [threadId, summarySig, loadGitStatus]);
+  // Warm only the drawer the owner approaches. Eagerly prefetching every visible card's full
+  // history saturated the child-command pool before any drawer had been opened.
+  const prefetch = () => loadGitStatus(threadId);
 
   if (!thread || !summary || !summary.isRepo) return null;
 
@@ -58,6 +50,8 @@ export function ChangesChip({ threadId }: { threadId: string }) {
     <>
       <button
         className="changes-chip"
+        onPointerEnter={prefetch}
+        onFocus={prefetch}
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();

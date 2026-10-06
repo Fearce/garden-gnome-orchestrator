@@ -345,7 +345,7 @@ try {
   assert.deepEqual(unsurfaced(), [join(tmpdir(), "outside-the-workspace.md"), "docs/report.md"], "…and still drops one surfaced since");
   for (const sql of seekSql(taskFiles, "messages")) {
     const detail = planOf(sql, [writer.id, 0]);
-    assert.ok(detail.includes("idx_messages_thread_time"), `the tool-call read must use the thread index: ${detail}`);
+    assert.ok(detail.includes("idx_messages_tool_thread_time"), `the tool-call read must use the tool-only thread index: ${detail}`);
     assert.ok(!/SCAN messages\b/.test(detail), `the tool-call read scans messages: ${detail}`);
   }
   assert.deepEqual(

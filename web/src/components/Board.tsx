@@ -18,6 +18,7 @@ import {
 import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { useStore, type TaskSort } from "../store.js";
+import { taskChildren, taskFindings, taskRuns } from "../lib/taskSelectors.js";
 import type { AgentRun, BoardView, CoworkSession, Role, Thread, ThreadState } from "../types.js";
 import { homeWorkspace, repoRoom } from "../types.js";
 import { activityPreview, closesInDays, formatDuration, freezeTooltip, isCapParked, isClosable, isSuccessfulClose, isTerminal, roleColor, runActive, soonestReset, stateColor, stateLabel, threadRunning } from "../lib/format.js";
@@ -180,7 +181,7 @@ export function Board() {
   const cowork = useBoardCoworkSessions();
   const setTaskOrder = useStore((s) => s.setTaskOrder);
   const setTaskSort = useStore((s) => s.setTaskSort);
-  const all = Object.values(threads);
+  const all = useMemo(() => Object.values(threads), [threads]);
   // Token freeze: any task cap-parked (every account rate-limited) frosts the tasks pane. Derived from the
   // threads we already subscribe to — no extra store read — and mirrors the server's cap-park scan.
   const frozen = all.some((t) => isCapParked(t));
@@ -191,9 +192,12 @@ export function Board() {
   // A shotgun COLLABORATOR is part of another task, not a task of its own: showing N of them beside
   // their lead is exactly the card clutter the compact-UX brief rules out, and the lead's own card
   // already reports their progress. They stay fully selectable — the lead's detail panel links to them.
-  const activeThreads = all.filter((t) => !t.parentId && t.state !== "closed" && !hiddenByCompletion(t));
   // Open Co-work sessions ride in the same list as the tasks; closed ones join closed tasks below.
-  const active = [...activeThreads.map(taskItem), ...cowork.open.map(coworkItem)];
+  const active = useMemo(() => [
+    ...all.filter((t) => !t.parentId && t.state !== "closed" &&
+      (showCompleted || !COMPLETED_STATES.has(t.state) || isPinned(t))).map(taskItem),
+    ...cowork.open.map(coworkItem),
+  ], [all, showCompleted, cowork.open]);
   // The id of the card currently being dragged (null when idle); declared here so `list` can freeze its
   // order mid-drag.
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -533,6 +537,7 @@ const CLOSED_OPEN_KEY = "orch-closed-open";
 /** The Closed holding area: a quiet, collapsed-by-default row at the bottom of the board. It's a
  *  safety net, not something you browse — so it stays out of the way until you expand it. */
 function ClosedSection({ threads, sessions }: { threads: Thread[]; sessions: CoworkSession[] }) {
+  const [page, setPage] = useState(0);
   const [open, setOpen] = useState(() => {
     try {
       return localStorage.getItem(CLOSED_OPEN_KEY) === "1";
@@ -541,6 +546,11 @@ function ClosedSection({ threads, sessions }: { threads: Thread[]; sessions: Cow
     }
   });
   const count = threads.length + sessions.length;
+  const pageSize = 30;
+  const pageCount = Math.max(1, Math.ceil(count / pageSize));
+  const cur = Math.min(page, pageCount - 1);
+  const start = cur * pageSize;
+  const end = start + pageSize;
   if (count === 0) return null;
   const toggle = () =>
     setOpen((v) => {
@@ -561,14 +571,23 @@ function ClosedSection({ threads, sessions }: { threads: Thread[]; sessions: Cow
         Closed · {count}
       </button>
       {open ? (
+        <>
         <div className="closed-list">
-          {sessions.map((session) => (
+          {sessions.slice(start, end).map((session) => (
             <ClosedCoworkCard key={session.id} session={session} />
           ))}
-          {threads.map((t) => (
+          {threads.slice(Math.max(0, start - sessions.length), Math.max(0, end - sessions.length)).map((t) => (
             <ClosedCard key={t.id} thread={t} />
           ))}
         </div>
+        {pageCount > 1 ? (
+          <nav className="pager closed-pager" aria-label="Closed tasks pages">
+            <button className="btn ghost sm" disabled={cur === 0} onClick={() => setPage(cur - 1)}>‹ Prev</button>
+            <span className="pager-info mono">{start + 1}–{Math.min(end, count)} of {count} · page {cur + 1}/{pageCount}</span>
+            <button className="btn ghost sm" disabled={cur === pageCount - 1} onClick={() => setPage(cur + 1)}>Next ›</button>
+          </nav>
+        ) : null}
+        </>
       ) : null}
     </section>
   );
@@ -628,7 +647,7 @@ function ClosedCard({ thread }: { thread: Thread }) {
   );
 }
 
-function latestRun(runs: AgentRun[], role: Role): AgentRun | undefined {
+function latestRun(runs: readonly AgentRun[], role: Role): AgentRun | undefined {
   return runs.filter((r) => r.role === role).sort((a, b) => b.startedAt - a.startedAt)[0];
 }
 
@@ -637,7 +656,7 @@ function latestRun(runs: AgentRun[], role: Role): AgentRun | undefined {
  *  always next — so a just-dispatched card isn't blank. The read lane is its own single-agent lane
  *  (one reader, no planner→qa pipeline), so it always shows just the reader pip — before the reader
  *  run exists too, so a read-lane card never falls back to a misleading greyed "Plan" pip. */
-function pipRoles(runs: AgentRun[], lane: Thread["lane"]): Role[] {
+function pipRoles(runs: readonly AgentRun[], lane: Thread["lane"]): Role[] {
   // The auto-reviewer isn't a pipeline stage — it's the owner handing their own final review to an
   // agent — so it trails whichever lane ran, and only once it has actually reviewed the task.
   const reviewed: Role[] = runs.some((r) => r.role === "reviewer") ? ["reviewer"] : [];
@@ -663,8 +682,8 @@ const Card = memo(function Card({
   dragProps,
 }: { thread: Thread } & DragCardProps) {
   // useShallow keeps the array reference stable when this thread's run set is unchanged.
-  const threadRuns = useStore(useShallow((s) => Object.values(s.runs).filter((r) => r.threadId === thread.id)));
-  const findCount = useStore((s) => s.findings.reduce((n, f) => (f.threadId === thread.id ? n + 1 : n), 0));
+  const threadRuns = useStore(useShallow((s) => taskRuns(s.runs, thread.id)));
+  const findCount = useStore((s) => taskFindings(s.findings, thread.id).length);
   const draftText = useStore((s) => s.threadDrafts[thread.id]?.text);
   const lastText = useStore((s) => {
     const feed = s.threadFeeds[thread.id];
@@ -705,12 +724,12 @@ const Card = memo(function Card({
   // fresh array is never reference-equal to the last one, so Zustand sees a change on every store read
   // and the card re-renders forever (React #185). Returning a number compares by value.
   const collabCount = useStore((s) => thread.agentCount && thread.agentCount > 1
-    ? Object.values(s.threads).filter((t) => t.parentId === thread.id && !t.subTask).length
+    ? taskChildren(s.threads, thread.id).filter((t) => !t.subTask).length
     : 0);
   // Same primitive-selector rule as collabCount above.
   const subTaskCount = useStore((s) => {
     let n = 0;
-    for (const t of Object.values(s.threads)) if (t.parentId === thread.id && t.subTask) n++;
+    for (const t of taskChildren(s.threads, thread.id)) if (t.subTask) n++;
     return n;
   });
   // The goal this task is a step of — two primitives, by the same selector rule as above.

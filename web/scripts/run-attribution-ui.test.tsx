@@ -12,6 +12,7 @@
  * pieces: a run index that survives a bounded reconnect snapshot, and rows that resolve their own run.
  */
 import assert from "node:assert/strict";
+import "./task-selectors.test.js";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { AgentRun, FeedItem, Thread } from "../src/types.js";

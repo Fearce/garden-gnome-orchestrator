@@ -98,6 +98,10 @@ try {
   console.log("\nA. resolveRepoRoot — repo root, nested-parent, and non-repo");
   {
     const { work } = setupClone(root, "resolve");
+    bustGitCaches();
+    const starts = childRunnerState().started;
+    const together = await Promise.all(Array.from({ length: 12 }, () => resolveRepoRoot(work)));
+    check("12 simultaneous cards share one repo resolution", childRunnerState().started - starts === 1 && together.every((r) => r === together[0]), `${childRunnerState().started - starts} commands`);
     const direct = await resolveRepoRoot(work);
     check("workspace = repo root resolves to itself", direct === git(work, "rev-parse", "--show-toplevel"), String(direct));
 
@@ -342,7 +346,11 @@ try {
     writeFileSync(join(work, "foreign-dirty2.txt"), "more concurrent WIP\n");
 
     const taskFiles = [join(work, "task-a.txt"), join(work, "README.md"), join(work, "task-new.md")];
+    bustGitCaches();
+    const chipStarts = childRunnerState().started;
     const sum = await getTaskGitSummary(work, { threadId: "ts-baseline", baselineHead: baseline, taskFiles });
+    // Branch/push reads + a scoped diff, never the full repo's file counts, branches and commit log.
+    check("compact chip needs at most 12 Git commands on a cold repo", childRunnerState().started - chipStarts <= 12, `${childRunnerState().started - chipStarts} commands`);
     check("task summary is a repo", sum.isRepo);
     check("task fileCount = 3 (committed + modified + untracked task files only)", sum.fileCount === 3, String(sum.fileCount));
     check("task added = 6 (+2 task-a, +1 README, +3 untracked)", sum.added === 6, String(sum.added));

@@ -162,6 +162,21 @@ try {
   db.kvDelete("missing");
   assert.equal(db.kvGet("missing"), null, "a kv delete is seen");
 
+  const digestTask = db.createThread({ title: "Tool digest", workspace: dir, rawPrompt: "tools" });
+  const digest = db.toolCallDigest(() => [] as string[], (state, call) => state.push(call.content));
+  db.raw.transaction(() => {
+    for (let i = 0; i < 200; i++) db.addMessage({ threadId: digestTask.id, role: "implementor", kind: "text", content: "x".repeat(1000) });
+    db.addMessage({ threadId: digestTask.id, role: "implementor", kind: "tool", content: "first tool" });
+  })();
+  assert.deepEqual(digest.read(digestTask.id), ["first tool"], "the partial index reads only recorded tools");
+  db.addMessage({ threadId: digestTask.id, role: "implementor", kind: "tool", content: "second tool" });
+  assert.deepEqual(digest.read(digestTask.id), ["first tool", "second tool"], "incremental reads preserve call order without duplicates");
+  assert.deepEqual(digest.read(digestTask.id), ["first tool", "second tool"], "an unchanged history adds nothing");
+  db.raw.prepare("DELETE FROM messages WHERE thread_id = ?").run(digestTask.id);
+  assert.deepEqual(digest.read(digestTask.id), [], "retry deletion invalidates the folded tool state");
+  assert.ok((db.raw.prepare("EXPLAIN QUERY PLAN SELECT rowid, role, content FROM messages INDEXED BY idx_messages_tool_thread_time WHERE thread_id = ? AND rowid > ? AND kind = 'tool' ORDER BY created_at, rowid").all(digestTask.id, 0) as { detail: string }[])
+    .every((row) => !row.detail.includes("TEMP B-TREE")), "the tool-only index retains chronological order without a sort");
+
   console.log("memory mirrors: all checks passed");
 } finally {
   other?.close();

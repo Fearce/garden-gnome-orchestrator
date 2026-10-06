@@ -965,7 +965,7 @@ export class Db {
   private toolCallsAfter(threadId: string, afterSeq: number): ToolCallRow[] {
     return this.raw
       .prepare(
-        "SELECT rowid AS seq, role, content FROM messages INDEXED BY idx_messages_thread_time WHERE thread_id = ? AND rowid > ? AND kind = 'tool' ORDER BY created_at ASC, rowid ASC",
+        "SELECT rowid AS seq, role, content FROM messages INDEXED BY idx_messages_tool_thread_time WHERE thread_id = ? AND rowid > ? AND kind = 'tool' ORDER BY created_at ASC, rowid ASC",
       )
       .all(threadId, afterSeq) as ToolCallRow[];
   }

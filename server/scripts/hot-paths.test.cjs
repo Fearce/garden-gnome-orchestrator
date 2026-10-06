@@ -33,7 +33,7 @@ const db = new Database(dbPath);
 
 db.exec(`
   CREATE TABLE threads (id TEXT PRIMARY KEY, brief TEXT NOT NULL DEFAULT '', raw_prompt TEXT NOT NULL DEFAULT '', created_at INTEGER);
-  CREATE TABLE messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);
+  CREATE TABLE messages (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, role TEXT DEFAULT 'implementor', kind TEXT DEFAULT 'text', content TEXT NOT NULL, created_at INTEGER NOT NULL);
   CREATE TABLE findings (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, summary TEXT NOT NULL, created_at INTEGER NOT NULL);
 `);
 
@@ -43,6 +43,9 @@ for (let i = 0; i < 500; i++) insertMsg.run(`m-${i}`, "t1", "x".repeat(200), 100
 for (let i = 0; i < 20; i++) insertFinding.run(`f-${i}`, "t1", "s", 1000 + i);
 
 // ---- the regression: without the composite indexes, at least one hot path scans or sorts by hand -----
+// The mandatory tool-only index is absent in the negative fixture: SQLite must refuse the forced read.
+assert.throws(() => hotQueryPlans(db, "t1"), /no such index/);
+db.exec("CREATE INDEX idx_messages_tool_thread_time ON messages(thread_id, created_at) WHERE kind = 'tool'");
 let plans = hotQueryPlans(db, "t1");
 let bad = plans.filter((p) => !p.ok);
 assert.ok(bad.length > 0, "an unindexed database must fail at least one hot-path check — otherwise the checker can't see the defect it exists for");
@@ -135,7 +138,6 @@ db.exec(`
   ALTER TABLE threads ADD COLUMN assignment TEXT;
   ALTER TABLE threads ADD COLUMN stage_outputs TEXT;
   ALTER TABLE threads ADD COLUMN updated_at INTEGER;
-  ALTER TABLE messages ADD COLUMN kind TEXT;
   CREATE INDEX idx_threads_created ON threads(created_at);
 `);
 const defectiveSnapshot = BOARD_SNAPSHOT_SQL.replace(

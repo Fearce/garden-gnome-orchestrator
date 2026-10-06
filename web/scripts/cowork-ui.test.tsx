@@ -221,7 +221,7 @@ assert.match(storeSource, /attachments: attachments\.length \? attachments : und
 assert.doesNotMatch(appSource, /openBoardView\("cowork"\)|value="cowork"/, "mobile navigation has no separate Co-work area");
 assert.doesNotMatch(boardSource, /view: "cowork"/, "the board has no separate Co-work tab");
 assert.match(boardSource, /<CoworkPopup \/>/, "the popup is mounted unconditionally, so a draft survives close and reopen");
-assert.match(boardSource, /const active = \[\.\.\.activeThreads\.map\(taskItem\), \.\.\.cowork\.open\.map\(coworkItem\)\]/, "Co-work cards share the task list: one sort, one drag order, one pager");
+assert.match(boardSource, /const active = useMemo\(\(\) => \[[\s\S]*?\.map\(taskItem\),\s*\.\.\.cowork\.open\.map\(coworkItem\)/, "Co-work cards share the memoized task list: one sort, one drag order, one pager");
 assert.match(boardSource, /<ClosedSection threads=\{closed\} sessions=\{closedSessions\} \/>/, "closed sessions wait in the same Closed list as closed tasks");
 assert.match(coworkSource, /window\.addEventListener\("keydown"/, "Esc closes the popup");
 assert.match(coworkSource, /event\.defaultPrevented/, "an Esc a field already consumed does not also close the popup");

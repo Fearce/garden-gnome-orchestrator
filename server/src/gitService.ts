@@ -99,6 +99,7 @@ class GitReadCache<T> {
 // short enough that a freshly-cloned repo is still picked up promptly.
 const repoRootCache = new Map<string, { at: number; root: string | null }>();
 const REPO_ROOT_TTL_MS = 15_000;
+const repoRootInflight = new Map<string, { gen: number; promise: Promise<string | null> }>();
 
 /** Resolve the git repo a task's work lives in. A task's `workspace` is USUALLY the repo itself, but
  *  it's often the PARENT of a nested repo (e.g. workspace `…/claude-orchastrator` vs. the repo at
@@ -110,11 +111,22 @@ export async function resolveRepoRoot(workspace: string, opts: GitCallOptions = 
   if (!workspace) return null;
   const cached = repoRootCache.get(workspace);
   if (cached && Date.now() - cached.at < REPO_ROOT_TTL_MS) return cached.root;
-  const root = await resolveRepoRootUncached(workspace, opts);
-  // Unknown is not cached: the next caller asks git again instead of inheriting one stalled read.
-  if (root === undefined) return null;
-  repoRootCache.set(workspace, { at: Date.now(), root });
-  return root;
+  // Keep urgent dispatches independent of display reads waiting in the normal queue.
+  const key = `${opts.urgent === true ? "urgent" : "display"}:${workspace}`;
+  const pending = repoRootInflight.get(key);
+  if (pending?.gen === generation) return pending.promise;
+  const gen = generation;
+  const promise = resolveRepoRootUncached(workspace, opts).then((root) => {
+    // Unknown is not cached; invalidated reads cannot repopulate the cache after a write.
+    if (root !== undefined && gen === generation) repoRootCache.set(workspace, { at: Date.now(), root });
+    return root ?? null;
+  });
+  repoRootInflight.set(key, { gen, promise });
+  const settle = (): void => {
+    if (repoRootInflight.get(key)?.promise === promise) repoRootInflight.delete(key);
+  };
+  promise.then(settle, settle);
+  return promise;
 }
 
 /** `undefined` when a git read timed out: the answer is unknown, which is not the same as "not a repo". */
@@ -472,6 +484,11 @@ export interface RepoHeadState {
 }
 
 const headStateCache = new GitReadCache<RepoHeadState>();
+const porcelainCache = new GitReadCache<GitResult>();
+
+function readPorcelain(repoRoot: string): Promise<GitResult> {
+  return porcelainCache.read(repoRoot, () => runGit(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
+}
 
 export async function getRepoHeadState(workspace: string): Promise<RepoHeadState> {
   const empty: RepoHeadState = {
@@ -488,7 +505,7 @@ async function readRepoHeadState(repoRoot: string): Promise<RepoHeadState> {
   // final process-launch delay after every other piece of Git metadata has already arrived.
   const [head, dirty] = await Promise.all([
     readRepoHead(repoRoot),
-    runGit(repoRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
+    readPorcelain(repoRoot),
   ]);
   const value: RepoHeadState = {
     isRepo: true,
@@ -651,8 +668,8 @@ async function readTaskGitSummary(workspace: string, scope: TaskGitScope): Promi
   const repoRoot = await resolveRepoRoot(workspace);
   if (!repoRoot) return EMPTY_SUMMARY;
 
-  // Repo-wide branch / push metadata (correct at repo granularity — a push target is not per-task).
-  const status = await cachedRepoStatus(workspace);
+  // Chips need branch/push metadata, not every file's numstat and the repo's commit log.
+  const status = await getRepoHeadState(workspace);
   const rels = toRepoRelative(repoRoot, scope.taskFiles);
 
   let added = 0;
@@ -661,11 +678,10 @@ async function readTaskGitSummary(workspace: string, scope: TaskGitScope): Promi
   let commitCount = 0;
 
   if (rels.length > 0) {
-    const hasHead = (await runGit(repoRoot, ["rev-parse", "--verify", "-q", "HEAD"])).code === 0;
     // Prefer the dispatch baseline; fall back to HEAD (or the staged tree in a repo with no commit yet)
     // when it's missing/unresolvable, so a legacy thread still gets a task-scoped — if commit-blind — chip.
     const baseline = (await isResolvableCommit(repoRoot, scope.baselineHead)) ? scope.baselineHead! : null;
-    const diffBase = baseline ?? (hasHead ? "HEAD" : "--cached");
+    const diffBase = baseline ?? ((await runGit(repoRoot, ["rev-parse", "--verify", "-q", "HEAD"])).code === 0 ? "HEAD" : "--cached");
     const counts = parseNumstat(
       (await runGit(repoRoot, ["diff", "--numstat", "-M", "-z", diffBase, "--", ...rels])).stdout,
     );
@@ -677,10 +693,10 @@ async function readTaskGitSummary(workspace: string, scope: TaskGitScope): Promi
     // `git diff <ref>` compares against the working tree but never lists untracked files — fold in the
     // task's own untracked files (all-additions) from the status we already have.
     const relSet = new Set(rels);
-    for (const f of status.files) {
-      if (f.status !== "untracked" || !relSet.has(f.path) || counts.has(f.path)) continue;
+    for (const f of parsePorcelain((await readPorcelain(repoRoot)).stdout)) {
+      if (classify(f.xy) !== "untracked" || !relSet.has(f.path) || counts.has(f.path)) continue;
       fileCount++;
-      if (f.added > 0) added += f.added;
+      added += untrackedCount(repoRoot, f.path).added;
     }
     if (baseline) {
       const c = okOut(await runGit(repoRoot, ["rev-list", "--count", `${baseline}..HEAD`, "--", ...rels]));
@@ -962,6 +978,9 @@ export async function runReadonlyGit(workspace: string, subcommand: string, args
  *  than up to SUMMARY_TTL_MS later. The task caches are keyed by threadId, not repo root, and one repo is
  *  shared by many tasks — so they're cleared whole rather than per-repo. */
 export function bustGitCaches(): void {
+  repoRootCache.clear();
+  repoRootInflight.clear();
+  porcelainCache.clear();
   summaryCache.clear();
   repoStatusCache.clear();
   taskSummaryCache.clear();

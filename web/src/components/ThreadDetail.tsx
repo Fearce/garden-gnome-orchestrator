@@ -23,6 +23,7 @@ import { ImplementationMemoModal, ImplementationMemos } from "./ImplementationMe
 import { LayerCloseBar } from "./LayerClose.js";
 import { FinalReportCard } from "./FinalReport.js";
 import { finalReportFor } from "../implementationMemos.js";
+import { taskRecords, taskRuns } from "../lib/taskSelectors.js";
 import { CodeContextBar, useCodeContext } from "./CodeContextBar.js";
 import { WorkspacePath } from "./WorkspacePath.js";
 import { TaskBranch } from "./TaskBranch.js";
@@ -624,10 +625,7 @@ function ActiveDeadline({ thread }: { thread: Thread }) {
 export function ThreadDetail() {
   const id = useStore((s) => s.selectedThreadId);
   const threads = useStore((s) => s.threads);
-  const runs = useStore((s) => s.runs);
-  const feeds = useStore((s) => s.threadFeeds);
-  const threadDeliverables = useStore((s) => s.threadDeliverables);
-  const implementationMemos = useStore((s) => s.implementationMemos);
+  const taskMemos = useStore((s) => id ? s.implementationMemos[id] : undefined) ?? [];
   const deliverableSummary = useStore((s) => (id ? s.deliverableSummaries[id] : undefined));
   const receiptRows = useStore((s) => (id ? s.injectionReceipts[id] : undefined));
   const receiptsByMessage = useMemo(() => {
@@ -636,8 +634,6 @@ export function ThreadDetail() {
     return byMessage;
   }, [receiptRows]);
   const summariesEnabled = useStore((s) => s.settings.summarizeDoneDeliverables);
-  const drafts = useStore((s) => s.threadDrafts);
-  const thinkingDrafts = useStore((s) => s.thinkingDrafts);
   const outbound = useStore((s) => s.outboundMessages);
   const inject = useStore((s) => s.inject);
   const interrupt = useStore((s) => s.interrupt);
@@ -659,8 +655,6 @@ export function ThreadDetail() {
   const directorName = useStore((s) => s.settings.directorName);
   const manualSupervision = useStore((s) => s.settings.manualSupervisionEnabled);
   const showAgentModel = useStore((s) => s.settings.showAgentModel);
-  const historyHasMoreById = useStore((s) => s.threadHistoryHasMore);
-  const historyLoadingById = useStore((s) => s.threadHistoryLoading);
   const historyLoaded = useStore((s) => (id ? s.threadHistoryLoaded[id] ?? false : false));
   // The project chatroom for THIS task's repo, if one exists (≥2 participants ever collaborated here —
   // possibly in a PAST task, since the room persists). Repo-keyed so a fresh task on a repo with
@@ -700,8 +694,12 @@ export function ThreadDetail() {
   // shown here, in the lead's feed, under their own names.
   const collabIds = useCollaboratorIds(threads, id);
   useCollaboratorHistories(collabIds);
-  const leadFeed = (id ? feeds[id] : undefined) ?? EMPTY_FEED;
+  const leadFeed = useStore((s) => id ? s.threadFeeds[id] : undefined) ?? EMPTY_FEED;
   const groupIds = useMemo(() => (id ? [id, ...collabIds] : []), [id, collabIds]);
+  const drafts = useStore(useShallow((s) => taskRecords(s.threadDrafts, groupIds)));
+  const thinkingDrafts = useStore(useShallow((s) => taskRecords(s.thinkingDrafts, groupIds)));
+  const threadDeliverables = useStore(useShallow((s) => taskRecords(s.threadDeliverables, groupIds)));
+  const runs = useStore(useShallow((s) => Object.fromEntries(groupIds.flatMap((t) => taskRuns(s.runs, t).map((r) => [r.id, r])))));
   // Only this group's feeds: the whole map changes on every event for any task.
   const collabFeeds = useStore(useShallow((s) => collabIds.map((c) => s.threadFeeds[c] ?? EMPTY_FEED)));
   const collabHasMore = useStore(useShallow((s) => groupIds.map((t) => s.threadHistoryHasMore[t] ?? false)));
@@ -711,13 +709,12 @@ export function ThreadDetail() {
     return mergeCollaboratorFeeds(leadFeed, collabIds.map((threadId, i) => ({ threadId, items: collabFeeds[i]! })), floor);
   }, [leadFeed, collabIds, collabFeeds, collabHasMore]);
   const persistedFeed = mergedFeed.items;
-  const historyHasMore = groupIds.some((t) => historyHasMoreById[t] ?? false);
-  const historyLoading = groupIds.some((t) => historyLoadingById[t] ?? false);
+  const historyHasMore = useStore((s) => groupIds.some((t) => s.threadHistoryHasMore[t] ?? false));
+  const historyLoading = useStore((s) => groupIds.some((t) => s.threadHistoryLoading[t] ?? false));
   const collabNameFor = useMemo(
     () => new Map(collabIds.map((c) => [c, (role: Role) => (role === "director" ? directorName : agentName(nameOverrides, c, role))])),
     [collabIds, nameOverrides, directorName],
   );
-  const taskMemos = id ? implementationMemos[id] ?? [] : [];
   const feed = useMemo(() => {
     if (!id) return persistedFeed;
     const echoes = new Set<FeedItem>();

@@ -342,6 +342,15 @@ and macOS/Linux. Building, connecting to another server, updating and security a
 
 ## Layout
 
+The task board pages large histories, including 30 entries per page in the Closed holding
+area. Live updates to other agents do not redraw the open
+task's transcript. Changes chips load compact task counts; their full Git drawers load when
+you approach or open them, so an idle board does not fetch every card's commit history.
+
+`npm run probe:startup` measures cold/warm desktop and throttled-phone startup.
+`node server/scripts/module-latency.cjs` checks live HTTP, WebSocket and event-loop
+latency without sending owner messages or interrupting camera recording.
+
 ```
 server/   Fastify HTTP + WebSocket backend, the Agent SDK runtime, SQLite state
 web/      React + Vite director console

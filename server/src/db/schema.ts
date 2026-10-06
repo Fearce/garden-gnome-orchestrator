@@ -664,6 +664,8 @@ CREATE INDEX IF NOT EXISTS idx_grades_model    ON model_grades(graded_model);
 -- Db.migrate retires redundant legacy indexes; SCHEMA never rebuilds a large index at restart.
 CREATE INDEX IF NOT EXISTS idx_findings_thread_time ON findings(thread_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_thread_time ON messages(thread_id, created_at);
+-- Tool digests must not fetch text/thinking/result overflow pages just to test kind.
+CREATE INDEX IF NOT EXISTS idx_messages_tool_thread_time ON messages(thread_id, created_at) WHERE kind = 'tool';
 -- lastTextMessageForRun runs at every implementor run end (and once per run during the memo backfill).
 -- Without this it is a full scan of the whole message history for a single row.
 CREATE INDEX IF NOT EXISTS idx_messages_run ON messages(run_id);

@@ -35,7 +35,7 @@ const password = process.env.ORCH_PASSWORD || authPassword();
       page.on('pageerror',e=>errors.push(e.message));
       for (const cache of ['cold','warm']) {
         await page.goto(base+'/', {waitUntil:'load',timeout:60000});
-        await page.waitForSelector('.accounts .acct', {timeout:60000});
+      await page.waitForSelector('.accounts .acct', {state:'attached',timeout:60000});
         const ready = await page.evaluate(()=>performance.now());
         await page.waitForTimeout(1500);
         const data = await page.evaluate(() => {
