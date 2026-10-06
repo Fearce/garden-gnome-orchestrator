@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Move director action buttons beside For / With and hide them when expanded** (2026-10-06, Bramble Pixel).
 
 ## Shipped, awaiting live proof
 
