@@ -105,7 +105,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
-- 2026-10-07 **Collapse Patch notes days into browsable summaries** (16e241c7, Bramblewick): pushed and web built; real-history live browser confirms folded defaults, individual toggles and Hide all days; served bundle matches local bytes. Browser 42/42, patch-notes gate, types/builds, README 72/72 and privacy pass.
+- 2026-10-07 **Collapse Patch notes days into browsable summaries** (16e241c7, Bramblewick): pushed and web built; real-history live browser confirms folded defaults, individual toggles and Hide all days; served bundle matches local bytes. Desktop keyboard and phone touch folding verified. Browser 42/42, patch-notes gate, types/builds, README 72/72 and privacy pass.
 
 - 2026-10-07 **Full GGO security sweep and production dependency remediation** (48a71407, a93f23ac, Codex): committed, pushed and deployed; live local/proxied/cross-site checks returned 200/401/403, focused browser and auth tests passed, production audit has 0 critical/high. Residual risks are tracked above and in [the report](security-sweep-2026-10-07.md).
 
