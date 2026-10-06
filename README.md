@@ -65,6 +65,8 @@ On desktop, the Director's Plan, Research, QA and Directives controls sit beside
 share a chat room to divide files. When another agent shares the repo, a task claims its
 own branch in a linked git worktree, then rebases and fast-forwards it back into the base
 branch when it is done. A task alone in its repo just works in place.
+The background worktree cleanup runs its Windows process and disk-size probes
+without opening PowerShell windows.
 
 **When a task parks for your review, you can delegate that too.** "Auto-review and mark
 done" hands your review to a reviewer agent that inspects the change, runs the project's

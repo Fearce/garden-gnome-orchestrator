@@ -59,7 +59,7 @@ export function liveCommandLines(): Promise<string[]> {
     execFile(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine } | Where-Object { $_ }"],
-      { maxBuffer: 64 * 1024 * 1024, timeout: 60_000 },
+      { maxBuffer: 64 * 1024 * 1024, timeout: 60_000, windowsHide: true },
       (error, stdout) => done(error ? [] : String(stdout).split(/\r?\n/).filter(Boolean)),
     );
   });
@@ -115,7 +115,7 @@ async function unsavedCommits(repo: string, base: string | null, branch: string)
 
 async function dirSize(path: string): Promise<number> {
   const r = await new Promise<number>((done) => {
-    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-ChildItem -LiteralPath '${path.replace(/'/g, "''")}' -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum`], { timeout: 120_000 }, (e, out) => done(e ? 0 : Number(String(out).trim()) || 0));
+    execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-ChildItem -LiteralPath '${path.replace(/'/g, "''")}' -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum`], { timeout: 120_000, windowsHide: true }, (e, out) => done(e ? 0 : Number(String(out).trim()) || 0));
   });
   return r;
 }
