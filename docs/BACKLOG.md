@@ -18,8 +18,6 @@ _(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
 
-- **Add per-camera motion sensitivity to reduce false Surveillance notifications** (2026-10-06, Fernspindle).
-  Low/Medium/High saved per camera; motion browser 38/38, modules 37 checks plus follow-ups, types/builds/README/privacy pass. Deployment and live control check pending.
 
 
 - **QA: make unread Surveillance alerts conspicuous and verify module readiness** (2026-10-06, Codex QA).
@@ -79,6 +77,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-06 **Add per-camera motion sensitivity to reduce false Surveillance notifications** (2d48cc69, Fernspindle): pushed to master and live build verified; live selector and current worker config confirmed with camera settings and recording mode preserved. Motion browser 38/38, modules 37 plus follow-ups, detector regressions, types/builds/README/privacy pass.
+
 - 2026-10-06 **Move director actions beside For / With and hide them while expanded** (dc695797, Bramble Pixel): live browser sees all four controls above the message field and served bundle bytes match; desktop lab 22/22, phone 44/44, types/builds/README/privacy pass.
 
 - 2026-10-06 **Make unread Surveillance alerts throb so they cannot be missed** (Ember Gantry): fill and glow pulse dark to bright red (OKLab, no purple drift), count badge swells; motion browser 32/32 compares trough and peak frames on desktop, 768px and 320px; board-head 54/54, themes, README 70/70, privacy pass.
@@ -105,6 +105,3 @@ No open entries.
 - 2026-10-05 **QA: wait for Home's page-wide probe before checking outage controls** (Codex QA): modules-lab 74/74, live direct/proxy desktop/phone 24/24, three authenticated report downloads, preserved configs and recording; types, isolated builds, privacy and README pass. Full gates 228/229; dispatch-latency passed two focused reruns, with its load-sensitive assertion tracked under Ready.
 - 2026-10-04 **Independent module deployment QA** (a6eba134, 38078a69; Codex QA): 74/74 isolated and 13/13 live proxy/browser checks, preserved local configurations and recording, authenticated report downloads; all 229 gates covered green after the Calendar task's 28a0706f repair. Includes the Deck-proxy camera socket and explicit Home Assistant Start (d8481ca2), serialized Sidekick rule saves (e9ce82a3) and explicit Stop that holds with the tab open (58e13ef5), all live in 38078a69. Evidence: docs/reports/local-service-modules-independent-qa-2026-10-04.md.
 - 2026-10-04 **Auto-burn subscriptions within 24 hours of weekly reset** (1a3e8dba, Moss Spark): pushed to master and live build verified; authenticated live hello reports autoBurn=false and the served entry matches dist with the new control. Browser lab 21/21; routing/Codex/boundary regression, burn/model/goal/Director gates, typechecks/build, README and privacy checks pass.
-
-- 2026-10-04 **Optional Electron desktop app with Open in desktop / Open in web handoff** (8521a443..c2283ee4, Quillhatch): server live as 5712fdf2; the packaged Windows app reached the live server's sign-in in 928 ms with the bridge and no Node in the renderer; desktop lab 51/51; live load probe under 7 implementing agents moved no HTTP/WS percentile (/api/me p95 6.0 to 6.5 ms, WS ping p95 1.4 to 2.6 ms); live web portal check passed.
-- 2026-10-04 **QA: Surveillance 24/7 and scheduled recording (off by default), recording options, recordings browser, hub-less start** (07ebac86..24dfe20f, Ferrule Juniper): live build 24dfe20f carried the owner's running 5-camera recording over as 24/7. 14/14 live desktop and phone checks covered the mode shown, the options dialog, a real segment played in 113ms, a 206 MP4 download, a traversal refused with 400, and the recording left untouched. Isolated lab 58/58; 228/228 gates; module gate 32 checks, including the legacy-recording carry-over.
