@@ -14,7 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **QA: make unread Surveillance alerts conspicuous and verify module readiness** (2026-10-06, Codex QA).
+  Review requires pulsating desktop and narrow-screen alerts, arrival/dismissal browser checks, and a complete module-suite pass.
 
 ## Shipped, awaiting live proof
 
