@@ -15,6 +15,7 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 
+- **Stop repeated QA instruction lifecycle spam** (2026-10-07, Mosswick): consolidate restart notices and suppress routine delivery chatter while preserving durable instruction delivery.
 
 - **QA: finish clean-checkout guidance for editing reviewers and independently verify popup prevention** (2026-10-07, Codex QA).
 
