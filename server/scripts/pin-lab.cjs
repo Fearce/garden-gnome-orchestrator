@@ -70,6 +70,17 @@ async function waitForPin(pinned, timeoutMs = 10_000) {
 const boardOrder = (page) => page.$$eval(".lanes [data-thread-id]", (els) => els.map((el) => el.getAttribute("data-thread-id")));
 const pinOf = (id) => `[data-thread-id="${id}"] .card-pin`;
 
+async function checkCompletedFilter(page) {
+  await page.locator('.hide-done input').check();
+  await page.waitForSelector(`[data-thread-id="${OLD_TASK}"]`, { state: "detached" });
+  check("Hide done hides a pinned done task", !(await boardOrder(page)).includes(OLD_TASK));
+  check("hidden count includes the pinned task", (await page.locator('.board').innerText()).includes("1 completed hidden"));
+  check("hiding keeps the durable pin", readOldTask().pinnedAt != null);
+  await page.locator('.hide-done input').uncheck();
+  await waitForLead(page, OLD_TASK);
+  check("showing done restores the pinned task first", (await boardOrder(page))[0] === OLD_TASK);
+}
+
 /** The pin's opacity once its 0.12s fade has settled on `want`, or whatever it reads after 2s. */
 async function pinOpacity(page, id, want) {
   await page.waitForFunction(([sel, value]) => getComputedStyle(document.querySelector(sel)).opacity === value, [pinOf(id), want], { timeout: 2_000 }).catch(() => {});
@@ -116,6 +127,7 @@ async function desktopPass(browser, errors) {
   await page.reload({ timeout: 45_000 });
   await page.waitForSelector(`[data-thread-id="${OLD_TASK}"]`, { timeout: 30_000 });
   check("the pin survives a reload", (await boardOrder(page))[0] === OLD_TASK, (await boardOrder(page)).join(", "));
+  await checkCompletedFilter(page);
 
   await page.click('.sort-trigger');
   await page.click('.sort-list [role="option"]:has-text("Alphabetical")');
@@ -142,6 +154,7 @@ async function touchPass(browser, errors) {
   await waitForLead(page, OLD_TASK);
   check("and it leads the board", (await boardOrder(page))[0] === OLD_TASK);
   check("the tap did not open the task", !(await page.$(".detail")));
+  await checkCompletedFilter(page);
   await page.screenshot({ path: path.join(DATA_DIR, "pin-tablet.png") });
   await context.close();
 }

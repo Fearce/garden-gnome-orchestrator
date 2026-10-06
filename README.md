@@ -98,6 +98,7 @@ be put in any order: drag one along the board header, or use Settings → Interf
 - **Tasks.** The live board. A **Co-work** session also lives here: a conversation you lead
   turn by turn, where one agent does what you ask, verifies it and hands control back.
   Co-work never becomes a task, so no planner or QA steps in.
+  **Hide done** hides done and cancelled tasks, including pinned tasks; turn it off to show them again.
 - **IDE.** Browse, search and edit any workspace's files, with a git surface for branches,
   diffs, commits, history, fetch, pull and push. See [docs/ide-workspace.md](docs/ide-workspace.md).
 - **Notes.** One list of what waits on you personally. Agents post a branch or a PR here

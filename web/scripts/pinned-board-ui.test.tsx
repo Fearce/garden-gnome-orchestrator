@@ -2,7 +2,7 @@
  * Gate: pinned tasks (run with the server half: `npm run test:pinned-tasks --prefix server`).
  *
  *   · a pinned task leads the board under every sort, with drag-and-drop on or off;
- *   · a pinned task stays on the board when completed tasks are hidden, and is not counted as hidden;
+ *   · completed tasks hide even when pinned, with an accurate hidden count and reversible filtering;
  *   · the card's pin toggle shows the state and sends one `thread.pin` command.
  */
 import assert from "node:assert/strict";
@@ -93,16 +93,28 @@ for (const dnd of [false, true]) {
 useStore.setState({ taskDragAndDrop: false, taskSort: "created_desc" });
 assert.deepEqual(order(), ["zz-pinned", "fresh-running", "mid-review", "old-done"]);
 
-// Hiding completed tasks hides the unpinned done task only, and the "hidden" count agrees.
-useStore.setState({ showCompleted: false });
-const hiddenMarkup = renderToStaticMarkup(<Board />);
-assert.deepEqual(order(), ["zz-pinned", "fresh-running", "mid-review"]);
-assert.match(hiddenMarkup, /3 total · 1 completed hidden/);
+// Done/cancelled pins hide under every sort and DnD mode, but active/review/failed pins stay.
+for (const state of ["done", "cancelled", "implementing", "review", "failed"] as const) {
+  const completed = state === "done" || state === "cancelled";
+  const variant = { ...threads, "zz-pinned": { ...threads["zz-pinned"]!, state } };
+  for (const dnd of [false, true]) {
+    for (const sort of SORTS) {
+      useStore.setState({ threads: variant, showCompleted: false, taskDragAndDrop: dnd, taskSort: sort });
+      assert.equal(order().includes("zz-pinned"), !completed, `${state} pin visibility: ${sort}, dnd ${dnd}`);
+      assert.match(renderToStaticMarkup(<Board />), completed ? /2 total · 2 completed hidden/ : /3 total · 1 completed hidden/);
+      useStore.setState({ showCompleted: true });
+      assert.equal(order()[0], "zz-pinned", "showing completed tasks restores the pin at the front");
+      assert.equal(useStore.getState().threads["zz-pinned"]!.pinnedAt, threads["zz-pinned"]!.pinnedAt, "filtering preserves the pin");
+    }
+  }
+}
+useStore.setState({ threads, showCompleted: true });
+const visibleMarkup = renderToStaticMarkup(<Board />);
 
 // The toggle reflects the state, and a press is one command.
-assert.match(hiddenMarkup, /data-thread-id="zz-pinned" class="card pinned/, "the pinned card is marked");
-assert.match(hiddenMarkup, /class="card-pin on"[^>]*aria-label="Unpin task"[^>]*aria-pressed="true"/);
-assert.match(hiddenMarkup, /class="card-pin"[^>]*aria-label="Pin task"[^>]*aria-pressed="false"/);
+assert.match(visibleMarkup, /data-thread-id="zz-pinned" class="card pinned/, "the pinned card is marked");
+assert.match(visibleMarkup, /class="card-pin on"[^>]*aria-label="Unpin task"[^>]*aria-pressed="true"/);
+assert.match(visibleMarkup, /class="card-pin"[^>]*aria-label="Pin task"[^>]*aria-pressed="false"/);
 // Press the real button (PinButton is hook-free, so calling it is an ordinary function call): each press
 // sends the opposite of what the card shows, and neither the press nor the click reaches the card.
 const press = (id: string) => {
@@ -122,4 +134,4 @@ assert.deepEqual(socket.sent, [
   { type: "thread.pin", threadId: "zz-pinned", pinned: false },
 ]);
 
-console.log("pinned-board-ui: pinned tasks lead every sort, survive the completed filter, and toggle with one command");
+console.log("pinned-board-ui: pins lead every sort, respect the completed filter, restore intact, and toggle with one command");

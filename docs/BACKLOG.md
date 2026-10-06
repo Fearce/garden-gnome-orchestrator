@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Make Hide Done include pinned completed tasks** (2026-10-07, Moss Lantern).
+- **Make Hide Done include pinned completed tasks** (2026-10-07, Juniper Thimble).
 
 - **QA: finish clean-checkout guidance for editing reviewers and independently verify popup prevention** (2026-10-07, Codex QA).
 

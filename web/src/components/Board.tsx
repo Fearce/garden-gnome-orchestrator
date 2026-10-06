@@ -186,8 +186,8 @@ export function Board() {
   // threads we already subscribe to — no extra store read — and mirrors the server's cap-park scan.
   const frozen = all.some((t) => isCapParked(t));
   // Closed tasks are pulled out of the main board into the Closed holding area below; completed tasks
-  // are hidden too when the owner turned that off in settings — except pinned ones, which always stay.
-  const hiddenByCompletion = (t: Thread) => !showCompleted && COMPLETED_STATES.has(t.state) && !isPinned(t);
+  // are hidden too when the owner turned that off in settings, including pinned ones.
+  const hiddenByCompletion = (t: Thread) => !showCompleted && COMPLETED_STATES.has(t.state);
   const hiddenCompleted = all.filter(hiddenByCompletion).length;
   // A shotgun COLLABORATOR is part of another task, not a task of its own: showing N of them beside
   // their lead is exactly the card clutter the compact-UX brief rules out, and the lead's own card
@@ -195,7 +195,7 @@ export function Board() {
   // Open Co-work sessions ride in the same list as the tasks; closed ones join closed tasks below.
   const active = useMemo(() => [
     ...all.filter((t) => !t.parentId && t.state !== "closed" &&
-      (showCompleted || !COMPLETED_STATES.has(t.state) || isPinned(t))).map(taskItem),
+      !hiddenByCompletion(t)).map(taskItem),
     ...cowork.open.map(coworkItem),
   ], [all, showCompleted, cowork.open]);
   // The id of the card currently being dragged (null when idle); declared here so `list` can freeze its
@@ -448,12 +448,12 @@ function SortableBoardTab({ tab, active, count, alertLabel, onOpen }: { tab: Boa
 }
 
 /** The board header's quick switch for the "Show completed tasks" view setting, so hiding finished
- *  work doesn't take a trip into Settings. Pinned done tasks stay on the board either way. */
+ *  work doesn't take a trip into Settings. */
 function HideDoneToggle() {
   const showCompleted = useStore((s) => s.showCompleted);
   const setShowCompleted = useStore((s) => s.setShowCompleted);
   return (
-    <label className="hide-done" title="Hide done and cancelled tasks (pinned ones stay). Same as Settings → Interface → Show completed tasks.">
+    <label className="hide-done" title="Hide done and cancelled tasks, including pinned tasks. Same as Settings → Interface → Show completed tasks.">
       <input type="checkbox" checked={!showCompleted} onChange={(e) => setShowCompleted(!e.target.checked)} />
       Hide done
     </label>

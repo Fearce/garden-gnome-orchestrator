@@ -344,7 +344,7 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   `thread.upsert`. The pin is server-side so it holds on every console, and it never bumps
   `updated_at` — pinning is not activity, and the card's age and the "Last updated" sort read it.
   `Board.tsx`'s `pinnedFirst` wraps every sort and the drag-and-drop regroup, so pinned cards come
-  first in the chosen order and unpinned ones follow; a pinned task also stays on the board when
+  first in the chosen order and unpinned ones follow; pinned done/cancelled tasks are hidden when
   "Show completed tasks" is off. Closing keeps the pin, so Restore brings it back to the front.
   Collaborators and sub-tasks can't be pinned — they render inside their lead. Gate: `test:pinned-tasks`.
 - **Settled cards recede.** A `done` / `failed` / `cancelled` card (`isTerminal`) carries `.settled`:
@@ -353,7 +353,7 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   check: `npm run settled-card-lab --prefix server`.
 - **Board header and areas are per-browser view settings.** The header's **Hide done** checkbox is
   the same `showCompleted` flag as Settings → Interface → "Show completed tasks" (done/cancelled leave
-  the board, pinned ones stay). Settings → Interface → **Board tabs** hides individual areas;
+  the board, including pinned ones). Settings → Interface → **Board tabs** hides individual areas;
   `hiddenBoardTabs` lives in the `director_settings` localStorage record and can never hold `tasks`.
   `web/src/lib/boardTabs.ts` is the one area list behind the desktop strip, the narrow-board area
   select, the phone's "All areas" menu and those switches. A hidden area still opens from a link
