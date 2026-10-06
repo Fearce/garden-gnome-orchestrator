@@ -124,7 +124,8 @@ be put in any order: drag one along the board header, or use Settings → Interf
   agent, safely resume a task, alert you, or hand a review to the auto-reviewer. It never
   cancels, retries, deletes or marks a task done itself.
 - **Patch notes.** What changed in your install, and what the next update brings, read
-  straight from its git history.
+  straight from its git history. Days start folded with summaries and change counts;
+  click a day to show or hide its notes, or use **Show all days / Hide all days**.
 - **Remote control** (Windows only, appears once set up in Settings). Streams this
   machine's desktop into the console and sends mouse, touch and keyboard back. It needs
   an ffmpeg with Desktop Duplication capture, and setup can install a pinned copy.

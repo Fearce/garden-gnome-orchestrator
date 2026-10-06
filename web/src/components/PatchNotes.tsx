@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useStore } from "../store.js";
 import { DIGEST_MIN_CHANGES, digestKey, localDay, msUntilNextDay, newerThan, usePatchNotes, type PatchNote, type PatchNoteKind } from "../lib/patchNotes.js";
 import "./patchNotes.css";
@@ -158,6 +158,7 @@ type Row = { note: PatchNote; isNew: boolean; notLive: boolean };
  *  the filter; the filter only decides which bullets show under it. A digest needs the whole day: one
  *  that has ended, and that is not cut off at the end of the loaded page. */
 function DayGroups({ rows, filter, showInternal, lastDayComplete, today }: { rows: Row[]; filter: Filter; showInternal: boolean; lastDayComplete: boolean; today: string }) {
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const days = groupByDay(rows)
     .map((group, i, all) => ({
       ...group,
@@ -168,18 +169,53 @@ function DayGroups({ rows, filter, showInternal, lastDayComplete, today }: { row
   if (days.length === 0) return <div className="pn-none faint">Nothing in this filter among the loaded changes.</div>;
   return (
     <>
+      <div className="pn-day-controls">
+        <button className="btn ghost sm" onClick={() => setExpanded((current) => new Set([...current, ...days.map((day) => day.key)]))}>Show all days</button>
+        <button className="btn ghost sm" onClick={() => setExpanded(new Set())}>Hide all days</button>
+      </div>
       {days.map((group) => (
-        <section className="pn-day" key={group.key}>
-          <h3 className="pn-day-head">{dayLabel(group.key, today)}</h3>
-          {filter === "all" && group.complete ? <DayDigest day={group.key} rows={group.rows} /> : null}
-          <ul className="pn-list">
-            {group.visible.map((row) => (
-              <NoteRow key={row.note.sha} {...row} />
-            ))}
-          </ul>
-        </section>
+        <DayGroup key={group.key} group={group} today={today} showDigest={filter === "all" && group.complete} open={expanded.has(group.key)} onToggle={() => setExpanded((current) => {
+          const next = new Set(current);
+          if (next.has(group.key)) next.delete(group.key);
+          else next.add(group.key);
+          return next;
+        })} />
       ))}
     </>
+  );
+}
+
+/** Keep overviews mounted when folded so loading and cached digests remain visible. */
+function DayGroup({ group, today, showDigest, open, onToggle }: {
+  group: { key: string; rows: Row[]; visible: Row[] };
+  today: string; showDigest: boolean; open: boolean; onToggle: () => void;
+}) {
+  const listId = useId();
+  const counts = (["feature", "fix", "perf", "other", "internal"] as const).flatMap((kind) => {
+    const count = group.visible.filter(({ note }) => note.kind === kind).length;
+    return count ? [`${count} ${KIND_LABEL[kind].toLowerCase()}`] : [];
+  });
+  const newCount = group.visible.filter((row) => row.isNew).length;
+  const pendingCount = group.visible.filter((row) => row.notLive).length;
+  return (
+    <section className="pn-day">
+      <h3 className="pn-day-head">
+        <button className="pn-day-toggle" onClick={onToggle} aria-expanded={open} aria-controls={listId}>
+          <span className="pn-day-label">{dayLabel(group.key, today)}</span>
+          <span className="pn-day-count">{group.visible.length} {group.visible.length === 1 ? "change" : "changes"}</span>
+          <Chevron open={open} />
+        </button>
+      </h3>
+      <p className="pn-day-overview">
+        {counts.join(" \u00b7 ")}
+        {newCount ? <span className="pn-flag new">{newCount} new to you</span> : null}
+        {pendingCount ? <span className="pn-flag pending">{pendingCount} not live yet</span> : null}
+      </p>
+      {showDigest ? <DayDigest day={group.key} rows={group.rows} /> : null}
+      <ul className="pn-list" id={listId} hidden={!open}>
+        {open ? group.visible.map((row) => <NoteRow key={row.note.sha} {...row} />) : null}
+      </ul>
+    </section>
   );
 }
 

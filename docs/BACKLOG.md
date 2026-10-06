@@ -16,7 +16,6 @@ same commit as the fix. Git history keeps the record.
 
 - **Allow paid subscription credits only after included usage is exhausted** (2026-10-07, Pebble Sprocket).
 
-- **Collapse Patch notes days into browsable summaries** (2026-10-07, Bramblewick).
 
 - **QA: finish clean-checkout guidance for editing reviewers and independently verify popup prevention** (2026-10-07, Codex QA).
 
@@ -26,6 +25,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Collapse Patch notes days into browsable summaries** (2026-10-07, Bramblewick).
+  Browser 42/42, patch-notes gate, types/builds, README 72/72 and privacy pass; live web verification pending.
 
 - **Add effort selection to the Task model dialog** (2026-10-06, Bramble Dial).
   Model-supported tiers and durable next-start effort; integration 59/59, desktop/phone browser 27/27, types/builds/README/privacy pass. Server deployment pending: restart-resume instruction prohibits another restart.

@@ -38,6 +38,19 @@
   font-family: var(--font-serif); font-style: italic; font-weight: 400; font-size: 19px; color: var(--text-dim);
 }
 
+.pn-day-controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.pn-day-toggle {
+  appearance: none; border: none; background: none; color: inherit; font: inherit;
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 44px;
+  padding: 4px 0; text-align: left; cursor: pointer;
+}
+.pn-day-toggle:hover { color: var(--text); }
+.pn-day-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 3px; }
+.pn-day-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.pn-day-count { flex-shrink: 0; font: 400 12px var(--font-sans); color: var(--text-faint); }
+.pn-day-overview { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 4px 0 8px; font: 400 12px/1.5 var(--font-sans); color: var(--text-dim); }
+.pn-list[hidden] { display: none; }
+
 .pn-digest {
   margin: 4px 0 8px; padding: 2px 0 2px 12px; border-left: 2px solid color-mix(in oklch, var(--accent) 55%, var(--line));
   font: 400 13.5px/1.55 var(--font-sans); color: var(--text); max-width: 72ch; overflow-wrap: anywhere;

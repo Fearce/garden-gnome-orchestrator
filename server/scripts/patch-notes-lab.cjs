@@ -62,6 +62,8 @@ async function rows(page) {
 }
 
 async function waitForRows(page) {
+  await page.waitForSelector(".pn-day-toggle");
+  await page.getByRole("button", { name: "Show all days", exact: true }).click();
   await page.waitForFunction(() => document.querySelectorAll(".pn-day .pn-row").length > 0, null, { timeout: 30000 });
 }
 
@@ -92,6 +94,8 @@ async function desktopPass(browser, dataDir, expectedNew, seenSha, local) {
 
   await page.click(tab);
   await page.waitForSelector(".pn-view", { timeout: 15000 });
+  await page.waitForSelector(".pn-day-toggle");
+  await page.screenshot({ path: path.join(shotDir(dataDir), "patch-notes-folded-desktop.png") });
   await waitForRows(page);
   let list = await rows(page);
   const firstFacing = local.find((c) => !c.internal);
@@ -110,6 +114,7 @@ async function desktopPass(browser, dataDir, expectedNew, seenSha, local) {
   await page.screenshot({ path: path.join(shotDir(dataDir), "patch-notes-desktop.png") });
 
   await page.click(".pn-internal input");
+  await waitForRows(page);
   list = await rows(page);
   const internalLoaded = local.filter((c) => c.internal).length;
   check("the internal toggle reveals the docs/test/chore commits", list.filter((r) => r.kind === "k-internal").length === internalLoaded, `${list.filter((r) => r.kind === "k-internal").length} vs ${internalLoaded}`);
@@ -129,7 +134,8 @@ async function desktopPass(browser, dataDir, expectedNew, seenSha, local) {
 
   const before = (await page.$$(".pn-day .pn-row")).length;
   await page.click('.pn-more button:has-text("Show older changes")');
-  await page.waitForFunction((n) => document.querySelectorAll(".pn-day .pn-row").length > n, before, { timeout: 30000 }).catch(() => {});
+  await page.waitForFunction(() => !document.querySelector(".pn-more button")?.disabled, null, { timeout: 30000 });
+  await waitForRows(page);
   const after = (await page.$$(".pn-day .pn-row")).length;
   check("Show older changes loads the next page", after > before, `${before} -> ${after}`);
 
@@ -149,6 +155,13 @@ async function phonePass(browser, dataDir) {
   await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 60000 });
   await page.selectOption('.mobile-nav select[aria-label="All areas"]', "patchnotes");
   await page.waitForSelector(".pn-view", { state: "visible", timeout: 15000 });
+  await page.waitForSelector(".pn-day-toggle");
+  await page.screenshot({ path: path.join(shotDir(dataDir), "patch-notes-folded-phone.png") });
+  const phoneToggle = page.locator(".pn-day-toggle").first();
+  await phoneToggle.tap();
+  check("touch opens an individual day", await phoneToggle.getAttribute("aria-expanded") === "true" && await page.locator(".pn-day .pn-row").count() > 0);
+  await phoneToggle.tap();
+  check("touch folds the same day", await page.locator(".pn-day .pn-row").count() === 0);
   await waitForRows(page);
   const layout = await page.evaluate(() => {
     const row = document.querySelector(".pn-day .pn-row");
@@ -207,7 +220,7 @@ async function groupNamed(page, label) {
   return page.$$eval(
     ".pn-day",
     (els, wanted) => {
-      const el = els.find((d) => d.querySelector(".pn-day-head")?.textContent?.trim() === wanted);
+      const el = els.find((d) => d.querySelector(".pn-day-label")?.textContent?.trim() === wanted);
       return { rows: el ? el.querySelectorAll(".pn-row").length : 0, digest: el?.querySelector(".pn-digest")?.textContent?.trim() ?? null };
     },
     label,
@@ -307,7 +320,19 @@ async function boundaryPass(browser) {
   await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 60000 });
   await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 60000 });
   await page.click('.board-tab:has-text("Patch notes")');
-  await page.waitForFunction(() => document.querySelectorAll(".pn-day .pn-row").length === 6);
+  await page.waitForSelector(".pn-day-toggle");
+  check("days start folded with counts and no individual patch notes", await page.locator(".pn-day .pn-row").count() === 0 && await page.locator('.pn-day-toggle[aria-expanded="false"]').count() > 0 && (await page.locator(".pn-day-count").first().textContent()) === "6 changes");
+  const toggle = page.locator(".pn-day-toggle").first();
+  await toggle.focus();
+  await page.keyboard.press("Enter");
+  check("keyboard opens a day with all its notes", await toggle.getAttribute("aria-expanded") === "true" && await page.locator(".pn-day .pn-row").count() === 6);
+  await page.getByRole("tab", { name: "Fixed", exact: true }).click();
+  check("filtering preserves the expanded day", await page.locator(".pn-day .pn-row").count() === 6);
+  await page.getByRole("tab", { name: "Everything", exact: true }).click();
+  await toggle.focus();
+  await page.keyboard.press("Space");
+  check("keyboard hides the notes while retaining the overview", await page.locator(".pn-day .pn-row").count() === 0 && await page.locator(".pn-day-overview").first().isVisible());
+  await waitForRows(page);
   check("a completed page of today's changes remains unsummarized", asked.length === 0 && await page.locator(".pn-digest").count() === 0);
   await page.clock.fastForward(48 * 60 * 60 * 1000);
   await page.waitForSelector(".pn-digest:not(.loading)", { timeout: 15000 });
@@ -317,7 +342,12 @@ async function boundaryPass(browser) {
   check("Sunday's restored overview is visible in the browser viewport", box && box.height > 0 && box.y >= 0 && box.y + box.height <= 900);
   check("a Sunday split over multiple pages shows its complete summary automatically", asked.length === 1 && asked[0].day === "2026-10-04" && sortedKey(asked[0].shas) === sortedKey(notes.slice(0, 6).map((n) => n.sha)) && await page.locator(".pn-day .pn-row").count() === 6, JSON.stringify({ reads, asked }));
   check("automatic completion stops at Sunday's boundary and keeps older changes available", reads.includes(2) && reads.includes(4) && reads.includes(6) && await page.locator(".pn-more button").isVisible());
+  await page.getByRole("button", { name: "Hide all days", exact: true }).click();
+  check("Hide all days retains the completed written summary", await page.locator(".pn-day .pn-row").count() === 0 && await overview.isVisible());
   await page.click(".pn-more button");
+  await page.waitForFunction(() => document.querySelectorAll(".pn-day").length === 2);
+  check("newly loaded days stay collapsed", await page.locator(".pn-day .pn-row").count() === 0);
+  await waitForRows(page);
   await page.waitForFunction(() => document.querySelectorAll(".pn-day .pn-row").length === 7);
   check("manual older paging resumes at the completed day without duplicates or omissions", await page.locator(".pn-day .pn-row").count() === 7 && await page.locator(".pn-more button").count() === 0);
   await ctx.close();
@@ -354,7 +384,7 @@ async function rolloverPass(browser, dataDir) {
   });
   await page.clock.fastForward(untilMidnight + 2000);
   await page
-    .waitForFunction(() => [...document.querySelectorAll(".pn-day")].some((g) => g.querySelector(".pn-day-head")?.textContent?.trim() === "Yesterday" && g.querySelector(".pn-digest:not(.loading)")), null, { timeout: 15000 })
+    .waitForFunction(() => [...document.querySelectorAll(".pn-day")].some((g) => g.querySelector(".pn-day-label")?.textContent?.trim() === "Yesterday" && g.querySelector(".pn-digest:not(.loading)")), null, { timeout: 15000 })
     .catch(() => {});
   const asks = asked.filter((a) => a.day === today.day);
   check("after midnight the same page asks once for the day that just ended, with all its changes", asks.length === 1 && sortedKey(asks[0].shas) === sortedKey(today.facing), JSON.stringify(asked.map((a) => [a.day, a.shas.length])));
