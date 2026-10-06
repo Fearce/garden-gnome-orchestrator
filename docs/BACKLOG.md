@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Per-camera Surveillance motion notifications, ping and unread tab count** (2026-10-06, Moss Lantern).
 
 ## Shipped, awaiting live proof
 
@@ -91,4 +91,3 @@ No open entries.
 - 2026-10-04 **QA: Supervisor delivery recovery, repeated-text browser checks and activity-query stalls** (2da95383, bad7f5c9, Bramble Gauge): deployed build c710345d; 16/16 delivery and 17/17 read-receipt browser checks; activity index rehearsed at 236 to 80 reads with 824 identical rows. Live browser replay cleared Sending in 55ms without another owner copy; 80 HTTP/WS samples p95 3.5/2.6ms, worst five-minute lag 1.1s. Typechecks/build and focused gates pass except the inherited privacy issue in Ready.
 
 - 2026-10-04 **Script Hub, Surveillance, Home and Sidekick moved from the Dashboard Deck into optional GGO tabs** (066b6908..d4d23aa1, Ferrule Juniper): live build ec829269 passed 16/16 browser checks (hidden by default, reload persistence, on-demand start, migrated 5 cameras/1 vacuum/287 scripts/3 Sidekick rules, no secrets in responses, socket and polling cleanup); isolated lab 42/42 incl. explicit recording start/stop and worker recovery; live HTTP p95 4.5ms before, 3.8ms with modules under load, zero event-loop stalls (docs/reports/local-service-modules-2026-10-04.md); Deck cards retired (ac14700).
-
