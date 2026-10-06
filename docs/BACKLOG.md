@@ -14,7 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Allow paid subscription credits only after included usage is exhausted** (2026-10-07, Pebble Sprocket).
 
 
 - **QA: finish clean-checkout guidance for editing reviewers and independently verify popup prevention** (2026-10-07, Codex QA).
@@ -23,8 +22,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Collapse Patch notes days into browsable summaries** (16e241c7, 2026-10-07, Bramblewick).
-  Pushed and web built; browser 42/42, patch-notes gate, types/builds, README 72/72 and privacy pass. Live served bundle and folding controls pass with controlled history; real authenticated history timed out, awaiting live proof.
+- **Allow prepaid subscription credits only after included usage is exhausted** (6d3c3d24, 2026-10-07, Pebble Sprocket).
+  Credit contracts, provider fallback, token-freeze 95/95, account/Codex usage, desktop/phone 9/9, types/builds, README 72/72 and privacy pass; local opt-ins saved ON. Server activation awaits the next permitted restart; this task's restart-resume instruction forbids another restart.
 
 - **Add effort selection to the Task model dialog** (2026-10-06, Bramble Dial).
   Model-supported tiers and durable next-start effort; integration 59/59, desktop/phone browser 27/27, types/builds/README/privacy pass. Server deployment pending: restart-resume instruction prohibits another restart.
@@ -85,10 +84,13 @@ same commit as the fix. Git history keeps the record.
 
 14. **Clear residual Graphify and desktop build dependency advisories** (2026-10-07, Codex): production Graphify transitive dependencies retain 7 moderate / 4 low advisories; the desktop development tree retains 8 moderate through Electron Builder. Recheck compatible upstream fixes without breaking the bundled CLI.
 
-15. **Restore local Patch notes history loading** (2026-10-07, Bramblewick).
-  After the security deployment, authenticated /api/patch-notes?skip=0&limit=150 timed out at 30s and the live panel stayed on Reading the change history; isolated real-history lab passed 42/42 and controlled live UI folding passed. Coordinate with the active loading-recovery task.
+15. **Investigate intermittent slow live Patch notes loading** (2026-10-07, Bramblewick).
+  During concurrent security/credit verification, the live panel waited over 60s and an authenticated API probe timed out; a repeat API read returned 200/150 entries and real-history live folding passed. Isolated history lab passed 42/42.
 
 ## Blocked / waiting
+
+- **Verify Claude prepaid funds before enabling credit-backed dispatch** (2026-10-07, Pebble Sprocket).
+  Read-only provider checks found one expired profile credential and one zero prepaid balance with usage credits disabled. Requires matching current credentials and prepaid subscription funds with auto-reload off; API Console balances are separate.
 
 - **Purge cached private-project reference from PR #10** (owner action: include old PR body in the GitHub Support request).
   QA redacted the live body and verified https://github.com/Fearce/garden-gnome-orchestrator/pull/10; legitimate contributor attribution remains intact.
@@ -102,6 +104,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-07 **Collapse Patch notes days into browsable summaries** (16e241c7, Bramblewick): pushed and web built; real-history live browser confirms folded defaults, individual toggles and Hide all days; served bundle matches local bytes. Browser 42/42, patch-notes gate, types/builds, README 72/72 and privacy pass.
 
 - 2026-10-07 **Full GGO security sweep and production dependency remediation** (48a71407, a93f23ac, Codex): committed, pushed and deployed; live local/proxied/cross-site checks returned 200/401/403, focused browser and auth tests passed, production audit has 0 critical/high. Residual risks are tracked above and in [the report](security-sweep-2026-10-07.md).
 
@@ -135,4 +139,3 @@ No open entries.
 
 - 2026-10-05 **A Codex QA verdict quoting `DELIVERABLE:` no longer parks the task as "QA could not complete"** (dfe93a08, Lanternroot): live build 68588b8c carries the `"`-in-path refusal (`server/dist/agents/officeBridge.js`); `test:office-bridge` replays the verdict that broke task 6b9aab39 and parses it. Full gates 230/230.
 - 2026-10-05 **Recheck Windows process-enumeration timeout under gate load** (Lanternroot): a tasklist overrun with no earlier list no longer 503s Sidekick's whole state; liveness reads unknown (`processListError`, power disabled) while rules and the editor keep working. Unit check of the unreadable list, `test:modules` 35/35, browser check 8/8 on the live tab.
-- 2026-10-05 **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (..2cbe8718, Lanternroot; QA fixes 2e01c75f, acd38bfe, ebb90b79, 2cbe8718; claude-setup b867df3, cd7f875): live build 2cbe8718 (`--verify` matches HEAD); live Settings shows 1319 memories, 8743 passages, every card current, extraction idle, and a Haiku recall in 1.0 s. All 1310 pre-task memories present (0 missing); 29 bad auto-extractions trashed after source fixes. Eval R@1/R@2/MRR 0.894/0.925/0.909 (pgvector 0.519/0.644/0.630), off-topic 1/25, trigger audit 530/530. Evidence report, live screenshots and the 10 raw eval files are deliverable cards on the task. Ollama STAYS_DOWN.
