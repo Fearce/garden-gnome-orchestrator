@@ -301,6 +301,7 @@ environment variables worth knowing about:
 | `CLAUDE_CODE_OAUTH_TOKEN` | Subscription token from `claude setup-token`. Optional locally. |
 | `ACCOUNT_<n>_TOKEN`, `_LABEL`, `_ID` | Additional Claude subscriptions to balance across (n = 1..8). |
 | `AUTH_PASSWORD` or `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` | Gates the listener. Required before the server will bind to anything but localhost. |
+| `SESSION_SECRET` | Strong random cookie-signing key. If unset, GGO generates a new key on every start and existing sessions expire. |
 | `OWNER_NAME` | Your name, woven into the agent prompts. |
 | `NO_PUSH_REPO_PATTERN` | Agents commit but never push any repo whose origin URL matches this pattern. |
 | `DEFAULT_WORKSPACE`, `WORKSPACE_SEARCH_ROOTS` | Where the console looks for your repos. |

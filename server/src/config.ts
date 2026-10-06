@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomBytes } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -125,7 +126,10 @@ export const config = {
   // registered URI can't diverge and a spoofed Host can't influence it. Localhost dev
   // leaves it unset and derives the origin from the request.
   publicOrigin: (process.env.PUBLIC_ORIGIN || "").replace(/\/$/, "") || undefined,
-  sessionSecret: process.env.SESSION_SECRET || googleClientSecret || authPassword || "orchestrator-dev-secret",
+  // Never derive the cookie-signing key from AUTH_PASSWORD: a short password would let
+  // someone who sees a cookie guess its HMAC key offline, bypassing the login cooldown.
+  // An unset key is random for this process, so sessions expire on restart until configured.
+  sessionSecret: process.env.SESSION_SECRET || randomBytes(32).toString("base64url"),
   hostWarning: exposeBlocked
     ? `HOST=${requestedHost} requested but no auth is set — refusing to expose bypassPermissions agents on the LAN unauthenticated; bound to 127.0.0.1. Set AUTH_PASSWORD (or GOOGLE_CLIENT_ID/SECRET) to enable LAN access.`
     : undefined,

@@ -1,4 +1,5 @@
 import type { IncomingHttpHeaders } from "node:http";
+import { isIP } from "node:net";
 import type { FastifyInstance } from "fastify";
 import { isLoopbackAddress } from "./orchestrator/restartCoordinator.js";
 
@@ -79,7 +80,7 @@ export function remoteCookieAttributes(req: RequestLike): string {
 export function isLoopbackHost(host: string | undefined): boolean {
   if (!host) return false;
   const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.replace(/:\d+$/, "");
-  return name === "localhost" || name === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(name);
+  return name === "localhost" || name === "[::1]" || (isIP(name) === 4 && name.startsWith("127."));
 }
 
 /**

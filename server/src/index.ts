@@ -387,7 +387,7 @@ async function main(): Promise<void> {
   async function buildApp(serverOpts: ListenerOptions): Promise<FastifyInstance> {
     const app = Fastify({ ...serverOpts, rewriteUrl: rewriteConsoleUrl });
     registerConsoleMount(app);
-    registerBrowserOriginGuard(app);
+    registerBrowserOriginGuard(app, authRequired);
     // First, so it covers every route below: a request relayed by a local tunnel is internet traffic.
     registerRemoteGate(app, { googleEnabled, isAuthed });
     // With the remote link on, localhost never asks for sign-in; only the public link does.

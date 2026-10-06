@@ -111,6 +111,7 @@ assert.equal(isLoopbackHost("[::1]:4317"), true);
 assert.equal(isLoopbackHost("localhost"), true);
 assert.equal(isLoopbackHost("evil.example:4317"), false, "a DNS-rebinding page names its own host");
 assert.equal(isLoopbackHost("localhost.evil.example"), false);
+assert.equal(isLoopbackHost("127.999.999.999"), false, "a numeric-looking hostname is not necessarily a loopback IP");
 assert.equal(isLoopbackHost(undefined), false);
 
 async function trustedApp(enabled: boolean) {
@@ -183,6 +184,21 @@ async function trustedApp(enabled: boolean) {
   assert.equal((await app.inject({ url: "/ws", headers: { host: "127.0.0.1:4317", "x-forwarded-for": "203.0.113.9", "x-forwarded-host": "owner.example", origin: "https://owner.example" } })).statusCode, 200, "the public same-origin proxy remains usable");
   assert.equal((await app.inject({ url: "/ws", headers: { host: "127.0.0.1:4317", "x-forwarded-for": "203.0.113.9", "x-forwarded-host": "owner.example", origin: "https://evil.example" } })).statusCode, 403);
   assert.equal((await app.inject({ url: "/api/auth/callback", headers: { ...host, "sec-fetch-site": "cross-site" } })).statusCode, 200, "Google's callback must remain reachable");
+  await app.close();
+}
+
+{
+  const app = Fastify();
+  registerBrowserOriginGuard(app, () => false);
+  app.get("/", async () => "console");
+  app.get("/api/health", async () => ({ ok: true }));
+  app.get("/ws", async () => "snapshot");
+  await app.ready();
+  for (const url of ["/", "/api/health", "/ws"]) {
+    const rebound = await app.inject({ url, headers: { host: "evil.example", origin: "http://evil.example", "sec-fetch-site": "same-origin" } });
+    assert.equal(rebound.statusCode, 403, `${url}: unauthenticated loopback must resist DNS rebinding`);
+    assert.equal((await app.inject({ url, headers: { host: "127.0.0.1:4317" } })).statusCode, 200);
+  }
   await app.close();
 }
 

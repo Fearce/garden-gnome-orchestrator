@@ -54,7 +54,7 @@ domain that resolves to 127.0.0.1 gets nothing.
    SESSION_SECRET=<a long random string>
    ```
    `PUBLIC_ORIGIN` pins where Google returns a remote sign-in. `SESSION_SECRET` signs the session
-   cookie; without it the Google client secret is reused.
+   cookie; without it GGO generates a fresh key on each start, so existing sessions expire.
 4. **Restart GGO** so it reads the new values: `npm run deploy --prefix server`.
 5. **Open the link:** `npm run remote-access --prefix server -- on`. The first time, Tailscale
    prints a link to allow Funnel for this machine; open it, approve, and the command continues.

@@ -11,6 +11,7 @@ const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
+const WebSocket = require("ws");
 const { loadChromium, requireBuild, boot, killInstance, createChecks, shotDir } = require("./lab-harness.cjs");
 
 const PORT = 4409;
@@ -51,6 +52,21 @@ async function sessionCookie(base, password) {
   const setCookie = res.headers.get("set-cookie") || "";
   const match = setCookie.match(/orch_session=([^;]+)/);
   return { status: res.status, value: match ? match[1] : null, secure: /;\s*Secure/i.test(setCookie) };
+}
+
+function socketHandshake(url, headers) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(url, { headers });
+    const timer = setTimeout(() => { socket.terminate(); reject(new Error("WebSocket handshake timed out")); }, 5_000);
+    const finish = (status) => { clearTimeout(timer); socket.terminate(); resolve(status); };
+    socket.once("open", () => finish(101));
+    socket.once("unexpected-response", (_request, response) => {
+      const status = response.statusCode;
+      response.resume();
+      finish(status);
+    });
+    socket.once("error", (error) => { clearTimeout(timer); reject(error); });
+  });
 }
 
 (async () => {
@@ -96,6 +112,12 @@ async function sessionCookie(base, password) {
     const local = await sessionCookie(direct, password);
     check("password login still works locally", local.status === 200 && !!local.value, `status ${local.status}`);
     check("the local session cookie is not Secure (shared by :4317 and :4319)", !local.secure);
+    const directSocket = direct.replace(/^http/, "ws") + "/ws";
+    const tunnelSocket = tunnel.replace(/^http/, "ws") + "/ws";
+    const sessionHeader = { cookie: `orch_session=${local.value}` };
+    check("a foreign browser Origin cannot upgrade the owner's WebSocket", await socketHandshake(directSocket, { ...sessionHeader, origin: "https://evil.example" }) === 403);
+    check("the console's own WebSocket Origin still upgrades", await socketHandshake(directSocket, { ...sessionHeader, origin: direct }) === 101);
+    check("the public tunnel's forwarded origin still upgrades", await socketHandshake(tunnelSocket, { ...sessionHeader, origin: PUBLIC_ORIGIN }) === 101);
     check("the local deploy script still reaches /api/deploy/status", (await fetch(`${direct}/api/deploy/status`)).status === 200);
     const localMe = await (await fetch(`${direct}/api/me`, { headers: { host: `localhost:${PORT}` } })).json();
     check("localhost never asks for sign-in while the remote link is on", localMe.authed === true, JSON.stringify(localMe));

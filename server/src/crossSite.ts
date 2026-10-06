@@ -44,8 +44,13 @@ export function isCrossSiteSocket(req: FastifyRequest): boolean {
 }
 
 /** Refuse browser requests before local auto sign-in can mint a session for them. */
-export function registerBrowserOriginGuard(app: FastifyInstance): void {
+export function registerBrowserOriginGuard(app: FastifyInstance, authRequired: () => boolean = () => true): void {
   app.addHook("onRequest", async (req, reply) => {
+    // The unauthenticated development listener is loopback-only. A DNS-rebinding
+    // page can still name it through an attacker-controlled Host after resolution.
+    if (!authRequired() && !isLoopbackHost(req.headers.host)) {
+      return reply.code(403).send({ error: "unauthenticated host refused" });
+    }
     const route = req.routeOptions.url;
     if (route === "/ws") {
       if (isCrossSiteSocket(req)) return reply.code(403).send({ error: "cross-site WebSocket refused" });

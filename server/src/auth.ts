@@ -23,7 +23,10 @@ export function cookieValue(cookieHeader: string | undefined, name: string): str
   for (const part of cookieHeader.split(";")) {
     const i = part.indexOf("=");
     if (i < 0) continue;
-    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+    if (part.slice(0, i).trim() === name) {
+      try { return decodeURIComponent(part.slice(i + 1).trim()); }
+      catch { return undefined; } // malformed client cookie is unauthenticated, never a 500
+    }
   }
   return undefined;
 }
