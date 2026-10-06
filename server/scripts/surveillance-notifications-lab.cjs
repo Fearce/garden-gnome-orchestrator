@@ -26,12 +26,16 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     const camera = { id: 'a', name: 'Porch', vendor: '', modelPreset: '', location: '', previewStrategy: 'snapshot', snapshotUrl: '', gridSpan: 6, previewHeight: 0, refreshMs: 5000, notificationsEnabled: false, uiCollapsed: false, privacyMode: null };
     const recording = { mode: 'off', schedule: { days: [1], start: '09:00', end: '17:00' }, segmentMinutes: 15, retentionDays: 0, maxGbPerCamera: 0 };
     let config = { origin: 'new', ffmpegFound: true, recordingRoot: '', recording, cameras: [camera, { ...camera, id: 'b', name: 'Kitchen' }] };
-    let running = true, writes = 0, ticketCalls = 0;
+    let running = true, writes = 0, ticketCalls = 0, delaySaves = false, failNextSave = false;
     await page.route('**/api/modules/**', async route => {
       const request = route.request(), pathname = new URL(request.url()).pathname;
       let json;
       if (pathname.endsWith('/api/config')) {
-        if (request.method() === 'PUT') { config = { ...config, ...request.postDataJSON() }; writes++; }
+        if (request.method() === 'PUT') {
+          if (delaySaves) await new Promise(resolve => setTimeout(resolve, 400));
+          if (failNextSave) { failNextSave = false; await route.fulfill({ status: 503, json: { error: 'Synthetic save failure' } }); return; }
+          config = { ...config, ...request.postDataJSON() }; writes++;
+        }
         json = config;
       } else if (pathname.endsWith('/api/recording')) json = { ...recording, cameras: [], active: false };
       else if (pathname.endsWith('/ticket')) { ticketCalls++; json = { ticket: 'synthetic' }; }
@@ -103,6 +107,30 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     await page.click('.bt-tasks'); await page.waitForTimeout(400);
     check('turning last camera off releases socket outside live view', active === 0);
     await page.click('.bt-surveillance'); await toggle('Porch').click();
+    await page.waitForFunction(() => document.querySelector('[aria-label="Motion notifications for Porch"]').getAttribute('aria-pressed') === 'true');
+    delaySaves = true;
+    const clickBoth = () => page.evaluate(() => {
+      document.querySelector('[aria-label="Motion notifications for Porch"]').click();
+      document.querySelector('[aria-label="Motion notifications for Kitchen"]').click();
+    });
+    await clickBoth();
+    await page.waitForFunction(() => document.querySelector('[aria-label="Motion notifications for Kitchen"]').getAttribute('aria-pressed') === 'true');
+    check('rapid camera toggles preserve both independent changes', !config.cameras[0].notificationsEnabled && config.cameras[1].notificationsEnabled);
+    const beforeDouble = writes;
+    await page.evaluate(() => {
+      const button = document.querySelector('[aria-label="Motion notifications for Kitchen"]');
+      button.click(); button.click();
+    });
+    await page.waitForFunction(() => document.querySelector('[aria-label="Motion notifications for Kitchen"]').getAttribute('aria-pressed') === 'false');
+    await page.waitForFunction(() => document.querySelector('[aria-label="Motion notifications for Kitchen"]').getAttribute('aria-pressed') === 'true');
+    check('two rapid clicks on one camera restore its original setting', writes === beforeDouble + 2 && config.cameras[1].notificationsEnabled);
+    failNextSave = true;
+    await clickBoth();
+    await page.waitForFunction(() => document.querySelector('[aria-label="Motion notifications for Kitchen"]').getAttribute('aria-pressed') === 'false');
+    check('a failed save preserves its setting and subsequent camera updates still save', !config.cameras[0].notificationsEnabled && !config.cameras[1].notificationsEnabled);
+    check('failed notification save is shown to the owner', await page.getByRole('alert').filter({ hasText: 'Synthetic save failure' }).count() === 1);
+    delaySaves = false;
+    await toggle('Porch').click();
     await page.waitForFunction(() => document.querySelector('[aria-label="Motion notifications for Porch"]').getAttribute('aria-pressed') === 'true');
     await page.getByRole('button', { name: 'Stop', exact: true }).click();
     await page.waitForTimeout(6000);

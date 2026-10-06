@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Field, Icon, Loading, ModuleDialog, ModuleFrame, Notice } from "./ModuleFrame.js";
 import { RecordingBar, RecordingDialog } from "./RecordingPlan.js";
 import { RecordingsBrowser } from "./SurveillanceRecordings.js";
@@ -52,6 +52,9 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
   const config = usePoll((signal) => moduleJson<SurveillanceConfig>("surveillance", "/config", { signal }), null);
   const recording = usePoll((signal) => moduleJson<RecordingView>("surveillance", "/recording", { signal }), 5_000);
   const [current, setCurrent] = useState<SurveillanceConfig | null>(null);
+  const latest = useRef(current);
+  latest.current = current;
+  const cameraUpdates = useRef<Promise<void>>(Promise.resolve());
   const [dialog, setDialog] = useState<Dialog>(null);
   const [view, setView] = useState<"live" | "recordings">("live");
   const [modeBusy, setModeBusy] = useState(false);
@@ -67,6 +70,7 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
       body: { recordingRoot: next.recordingRoot, ffmpegPath: next.ffmpegPath, recording: next.recording, cameras: next.cameras },
     });
     motionConfigChanged(saved);
+    latest.current = saved;
     setCurrent(saved);
     return saved;
   }, []);
@@ -91,15 +95,20 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
   );
 
   const updateCamera = useCallback(
-    async (camera: Camera, change: Partial<Camera>) => {
-      if (!current) return;
-      try {
-        await saveConfig({ ...current, cameras: current.cameras.map((c) => (c.id === camera.id ? { ...c, ...change } : c)) });
-      } catch (err) {
+    (camera: Camera, change: Partial<Camera> | ((camera: Camera) => Partial<Camera>)) => {
+      // Whole-config saves must use the result of the preceding click, even before React renders it.
+      const update = cameraUpdates.current.then(async () => {
+        const config = latest.current;
+        if (!config || !config.cameras.some(c => c.id === camera.id)) return;
+        await saveConfig({ ...config, cameras: config.cameras.map(c => c.id === camera.id
+          ? { ...c, ...(typeof change === "function" ? change(c) : change) } : c) });
+      });
+      cameraUpdates.current = update.catch(err => {
         setError(errorText(err));
-      }
+      });
+      return cameraUpdates.current;
     },
-    [current, saveConfig],
+    [saveConfig],
   );
 
   const setPrivacy = useCallback(async (camera: Camera, enabled: boolean) => {
@@ -161,9 +170,9 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
           cameras={current.cameras}
           statuses={recording.data?.cameras ?? []}
           onDiscover={() => setDialog({ kind: "discover" })}
-          onCollapse={(camera) => void updateCamera(camera, { uiCollapsed: !camera.uiCollapsed })}
+          onCollapse={(camera) => void updateCamera(camera, c => ({ uiCollapsed: !c.uiCollapsed }))}
           onEdit={(camera) => setDialog({ kind: "camera", camera: structuredClone(camera), isNew: false })}
-          onNotifications={(camera) => { unlockMotionSound(); void updateCamera(camera, { notificationsEnabled: !camera.notificationsEnabled }); }}
+          onNotifications={(camera) => { unlockMotionSound(); void updateCamera(camera, c => ({ notificationsEnabled: !c.notificationsEnabled })); }}
           onPrivacy={(camera, enabled) => void setPrivacy(camera, enabled)}
         />
       ) : (

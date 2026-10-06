@@ -14,10 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: preserve rapid per-camera notification changes** (2026-10-06, Mosswick).
-  Delayed browser saves reproduce one camera toggle undoing another; serialize updates and verify recovery.
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
+
+- **QA: preserve rapid per-camera notification changes** (2026-10-06, Mosswick).
+  Serialized camera updates; motion browser 18/18, viewer 28/28, types/builds/README/privacy pass. Module suite retains tracked Home idle-start failure; independent review required.
 
 - **QA: preserve held tab drags on touchscreens** (2026-10-05, Brindle Cog).
   Separate mouse/touch sensors fix native pointercancel; board-head-lab 54/54, gates 230/230, types/builds/privacy pass. Independent review required.
