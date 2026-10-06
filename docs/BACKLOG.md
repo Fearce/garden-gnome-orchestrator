@@ -15,8 +15,6 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
-- **Prevent worktree sweep PowerShell popups and prioritize clean committed checkouts** (2026-10-06, Thistlecrank).
-  Launcher and generated-policy fixes verified: cleanup, CLI kickoff, office, goals, types, README/privacy checks and three real windowless process scans passed; awaiting deployment.
 
 ## Shipped, awaiting live proof
 
@@ -84,6 +82,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-06 **Prevented worktree PowerShell popups and enforced clean committed checkouts** (b3919727, Thistlecrank): live build verified; three deployed process scans returned data with no popup events; cleanup, CLI kickoff, office, goals, types and README/privacy checks passed. Peer changes were preserved in separate commits; Claude/Codex global rules and generated prompts now prioritize clean checkouts.
 - 2026-10-06 **Optimize console responsiveness under concurrent agent load and a large history** (4545d296, Mosswhistle): pushed to master and live build verified; desktop/phone 1,400-task lab holds the open transcript at zero renders over 480 background events, closed history pages 30 entries, compact Git reads share resolution and defer drawers, and the tool-message partial index preserves rows while reducing snapshot reads from 192 to 51 ms. Live bundle matches, 15 cards render and five cameras keep recording in the same worker. Broad sweep failures and throttled startup follow-ups remain under Ready / Blocked.
 
 - 2026-10-06 **Identify triggering cameras in Surveillance alerts and recent motion history** (Bramble Lens): motion browser 47/47, viewer 28/28, types/build/README/privacy pass; live bundle matches and camera name, settings shortcut and phone history verified. Module legacy recording restart failures tracked under Ready.
