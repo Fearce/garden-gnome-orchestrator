@@ -66,7 +66,9 @@ share a chat room to divide files. When another agent shares the repo, a task cl
 own branch in a linked git worktree, then rebases and fast-forwards it back into the base
 branch when it is done. A task alone in its repo just works in place.
 The background worktree cleanup runs its Windows process and disk-size probes
-without opening PowerShell windows.
+without opening PowerShell windows. Repository discovery checks each distinct
+folder once; stale cleanup waits 30 seconds after finished-task retirement so
+maintenance does not compete with initial startup.
 
 **When a task parks for your review, you can delegate that too.** "Auto-review and mark
 done" hands your review to a reviewer agent that inspects the change, runs the project's

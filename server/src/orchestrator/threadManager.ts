@@ -1366,7 +1366,10 @@ export class ThreadManager implements OrchestratorApi {
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
-    void this.retireFinishedWorktrees().then(() => this.sweepStaleWorktrees());
+    void this.retireFinishedWorktrees().then(() => {
+      // Stale cleanup is maintenance, not a prerequisite for startup or resume.
+      setTimeout(() => void this.sweepStaleWorktrees(), 30_000).unref();
+    });
     setInterval(() => void this.sweepStaleWorktrees(), PURGE_SWEEP_MS).unref();
     this.startCapSupervisor();
     // Re-arm (or fire) a token-reset auto-resume that a restart interrupted — after the cap supervisor,

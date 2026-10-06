@@ -208,9 +208,14 @@ export async function sweepRepoWorktrees(repoInput: string, options: SweepOption
 /** The distinct main checkouts GGO tasks have worked in. */
 export async function reposOf(threads: readonly Thread[]): Promise<string[]> {
   const found = new Set<string>();
+  const seenFolders = new Set<string>();
   for (const t of threads) {
     for (const folder of [t.homeWorkspace ?? t.workspace, ...(t.worktrees ?? []).map((w) => w.repo)]) {
-      if (!folder || !existsSync(resolve(folder))) continue;
+      if (!folder) continue;
+      const folderKey = norm(resolve(folder));
+      if (seenFolders.has(folderKey)) continue;
+      seenFolders.add(folderKey);
+      if (!existsSync(resolve(folder))) continue;
       const root = await gitText(folder, ["rev-parse", "--show-toplevel"]);
       if (root) found.add(await mainCheckoutOf(root).catch(() => root));
     }
