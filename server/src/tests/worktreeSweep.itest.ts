@@ -9,9 +9,18 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { AccountManager } from "../accounts/accountManager.js";
 import type { Thread } from "../types.js";
 
-const { sweepRepoWorktrees } = await import("../orchestrator/worktreeSweep.js");
+process.env.CAP_RETRY_MS = "0";
+process.env.ACCOUNT_PING_MS = "3600000";
+process.env.FAST_ACCOUNT_PING_MS = "3600000";
+
+const { sweepRepoWorktrees, reposOf } = await import("../orchestrator/worktreeSweep.js");
+const { Db } = await import("../db/db.js");
+const { EventHub } = await import("../events.js");
+const { FileMemoryService } = await import("../memory/memory.js");
+const { ThreadManager } = await import("../orchestrator/threadManager.js");
 
 let failed = 0;
 function check(label: string, cond: boolean, detail?: string): void {
@@ -88,6 +97,44 @@ console.log("recently active unowned worktree is left alone");
 const fresh = worktree("fresh", "feature/fresh", false);
 const quick = await sweepRepoWorktrees(repo, { threads, now: Date.now(), processCommandLines: [] });
 check("kept: active within 12h", existsSync(fresh) && /12h/.test(find(quick, fresh)?.reason ?? ""));
+
+console.log("many tasks in one checkout resolve to one repo quickly");
+const many = Array.from({ length: 300 }, (_, i) => ({ id: `t${i}`, state: "done", workspace: repo, worktrees: [] }) as unknown as Thread);
+const started = Date.now();
+const repos = await reposOf(many);
+const tookMs = Date.now() - started;
+check("one repo found", repos.length === 1, JSON.stringify(repos));
+check("one git lookup per distinct folder, not per task", tookMs < 5_000, `${tookMs} ms for 300 tasks`);
+
+console.log("a starting manager leaves the sweep until boot has settled");
+class StubAccounts {
+  onUsageRefresh(): void {}
+  effectiveUtilization(): number | null {
+    return null;
+  }
+  soonestResetAt(): number | null {
+    return null;
+  }
+  hasHeadroom(): boolean {
+    return true;
+  }
+  setPingInterval(): void {}
+  applyEnabled(): void {}
+  applyWeeklySafetyPct(): void {}
+  setSpreadUsage(): void {}
+  setProfileToken(): void {}
+  auxToken(): undefined {
+    return undefined;
+  }
+}
+const db = new Db(join(tmp, "orchestrator.sqlite"));
+const failedThread = db.createThread({ title: "failed task", workspace: repo, rawPrompt: "p" });
+db.updateThread(failedThread.id, { state: "failed" });
+const sweepable = worktree("bootswept", `ggo/bootswept-${failedThread.id.slice(0, 8)}`, false);
+new ThreadManager(db, new EventHub(), new FileMemoryService(join(tmp, "memory")), new StubAccounts() as unknown as AccountManager);
+for (let i = 0; i < 50 && existsSync(sweepable); i++) await new Promise((r) => setTimeout(r, 100));
+check("a merged worktree of a failed task survives the first seconds after boot", existsSync(sweepable));
+db.raw.close();
 
 rmSync(tmp, { recursive: true, force: true });
 console.log(failed ? `\n${failed} FAILED` : "\nall passed");
