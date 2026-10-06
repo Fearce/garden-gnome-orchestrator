@@ -84,6 +84,11 @@ try {
  noteCodexPing({fiveHour:100,sevenDay:100,fiveHourReset:reset,sevenDayReset:reset,planType:"pro",updatedAt:Date.now(),limitState:"reached",credits:{balance:55000,hasCredits:true,unlimited:false}});
  assert.equal(t.codexImplementorReady(),true);
  assert.equal(t.codexProviderCandidate().capacityLabel,"Codex prepaid credits");
+ t.noteCodexCap({status:"rejected",resetsAt:reset},undefined,false);
+ assert.equal(t.codexCreditsReady(),true); // subscription-only rejection cannot strand prepaid funds
+ t.noteCodexCap({status:"rejected",resetsAt:reset},undefined,true);
+ assert.equal(t.codexCreditsReady(),false); // prepaid attempt refusal wins over positive balance
+ db.kvSet("codex_credit_rejected_until", "0");
  assert(t.roleCapacitySnapshot("implementor",{label:"work",expectedDurationMs:60000,expectedBurnPct:1,reservePct:0,substantial:false}).ready.some((c:any)=>c.provider==="codex"));
  a.states.get("acct2").fiveHour=0;a.states.get("acct2").sevenDay=0;
  assert.equal(t.codexCreditsReady(),false); // included Claude ahead of Codex credits

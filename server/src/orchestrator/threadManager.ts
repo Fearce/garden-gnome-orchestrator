@@ -4431,7 +4431,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   noteDirectorProviderCap(target: DirectorTarget): void {
-    if (target.provider === "codex") this.noteCodexCap(undefined, target.model);
+    if (target.provider === "codex") this.noteCodexCap(undefined, target.model, this.codexCreditsReady());
     else if (target.provider === "grok") this.noteGrokCap();
     else if (target.provider === "zai") this.noteZaiCap();
   }
@@ -4599,7 +4599,7 @@ export class ThreadManager implements OrchestratorApi {
   }
 
   coworkNoteCap(target: CoworkTarget, agent: AgentRunLike): void {
-    if (target.provider === "codex") this.noteCodexCap(agent.rateLimitInfo, target.model);
+    if (target.provider === "codex") this.noteCodexCap(agent.rateLimitInfo, target.model, this.codexCreditsReady());
     else if (target.provider === "grok") this.noteGrokCap(agent.rateLimitInfo);
     else if (target.provider === "zai") this.noteZaiCap(agent.rateLimitInfo);
     else if (target.accountId) {
@@ -5839,7 +5839,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       .sort((a, b) => b.startedAt - a.startedAt)[0]?.model;
   }
 
-  private noteCodexCap(info?: RateLimitInfo, model?: string): void {
+  private noteCodexCap(info?: RateLimitInfo, model?: string, prepaidAttempt = false): void {
+    if (prepaidAttempt) this.db.kvSet("codex_credit_rejected_until", String(Date.now() + 5 * 60_000));
     // A rejection on a model with its OWN allowance is that pool's cap, not the plan's: latch it
     // separately and leave the general pool (and everything routed to it) untouched.
     if (model && this.notePoolCap(model, info)) return;
@@ -7045,11 +7046,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private codexCreditsReady(): boolean {
     if (!this.creditSpendingSettings()[CODEX_SUB_ID] || !codexSubscriptionAuthAvailable(!!this.openaiApiKey()) || this.includedCapacityAvailable()) return false;
     // A real rejection still wins: a positive balance cannot bypass a provider spend-control refusal.
-    if (this.codexCapUntil != null && this.codexCapUntil > Date.now()) return false;
+    if (Number(this.db.kvGet("codex_credit_rejected_until") ?? 0) > Date.now()) return false;
     const usage = readCodexUsage();
     const c = usage?.credits;
     const exhausted = usage?.limitState === "reached" || (usage?.fiveHour ?? 0) >= 100 || (usage?.sevenDay ?? 0) >= 100;
-    return exhausted && !!usage && Date.now() - usage.updatedAt < 10 * 60_000
+    return exhausted && !!usage && usage.updatedAt <= Date.now() && Date.now() - usage.updatedAt < 10 * 60_000
       && c?.hasCredits === true && c.unlimited === false && c.balance != null && c.balance > 0;
   }
 
@@ -9394,7 +9395,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (provider !== "claude") {
         // z.ai (AgentRun) signals a cap via rateLimited; the CLI backends via `.capped`.
         if (!capped) return res;
-        if (provider === "codex") this.noteCodexCap(agent.rateLimitInfo, model);
+        if (provider === "codex") this.noteCodexCap(agent.rateLimitInfo, model, this.codexCreditsReady());
         else if (provider === "grok") this.noteGrokCap(agent.rateLimitInfo);
         else if (provider === "zai") this.noteZaiCap(agent.rateLimitInfo);
         unavailableProviders.add(provider);
@@ -10771,7 +10772,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const zaiCapped = current instanceof ZaiAgentRun && current.rateLimited;
     if (res?.isError && !this.cancelled(thread.id) && (cliCapped || zaiCapped)) {
       const from = this.implementorProvider.get(thread.id) ?? "claude";
-      if (from === "codex") this.noteCodexCap(current.rateLimitInfo, this.latestImplementorRunModel(thread.id));
+      if (from === "codex") this.noteCodexCap(current.rateLimitInfo, this.latestImplementorRunModel(thread.id), this.codexCreditsReady());
       else if (from === "grok") this.noteGrokCap(current.rateLimitInfo);
       else if (from === "zai") this.noteZaiCap(current.rateLimitInfo);
       unavailableProviders.add(from);
