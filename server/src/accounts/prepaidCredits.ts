@@ -16,9 +16,12 @@ export function parsePrepaidCredits(raw: unknown, enabled: boolean, readAt = Dat
   return { balance: v.amount / 100, currency: v.currency, autoReload: v.auto_reload_settings.enabled, enabled, readAt };
 }
 
+/** Two default usage-read intervals (10 min each), so one late read cannot flap the fallback off. */
+export const PREPAID_FRESH_MS = 20 * 60_000;
+
 export function prepaidCreditsReady(value: PrepaidCredits | null | undefined, now = Date.now()): boolean {
   return !!value && value.enabled && !value.autoReload && value.balance > 0
-    && value.readAt <= now && now - value.readAt < 10 * 60_000;
+    && value.readAt <= now && now - value.readAt < PREPAID_FRESH_MS;
 }
 
 export async function fetchPrepaidCredits(token: string, organizationId: string): Promise<PrepaidCredits | null> {

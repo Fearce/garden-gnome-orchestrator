@@ -21,7 +21,7 @@ const funds = parsePrepaidCredits({ amount: 25000, currency: "USD", auto_reload_
 assert.equal(funds.balance, 250);
 assert.equal(prepaidCreditsReady(funds), true);
 for (const bad of [null, {}, { amount: 1, currency: "USD" }, { amount: Infinity, currency: "USD", auto_reload_settings: {enabled:false} }]) assert.equal(parsePrepaidCredits(bad, true), null);
-for (const bad of [{...funds,balance:0}, {...funds,autoReload:true}, {...funds,enabled:false}, {...funds,readAt:now-600001}, {...funds,readAt:now+10000}]) assert.equal(prepaidCreditsReady(bad, now), false);
+for (const bad of [{...funds,balance:0}, {...funds,autoReload:true}, {...funds,enabled:false}, {...funds,readAt:now-1200001}, {...funds,readAt:now+10000}]) assert.equal(prepaidCreditsReady(bad, now), false);
 assert(clientCommandSchema.safeParse({type:"settings.set",settings:{allowCreditSpending:{codex:true,acct1:false}}}).success);
 assert(!clientCommandSchema.safeParse({type:"settings.set",settings:{allowCreditSpending:{codex:"yes"}}}).success);
 const accounts = [{id:"acct1",label:"Claude A",token:"test-a"},{id:"acct2",label:"Claude B",token:"test-b"}];
@@ -60,6 +60,10 @@ assert.equal(rejected.rateLimited,true);
 const originalFetch=globalThis.fetch;const calls:string[]=[];
 try {
  globalThis.fetch = (async (url,opts) => {
+  if (String(url).endsWith("/v1/messages")) {
+   assert.equal(opts?.method,"POST");calls.push(String(url));
+   return new Response("{}",{status:429});
+  }
   assert.equal(opts?.method??"GET","GET");calls.push(String(url));
   return new Response(JSON.stringify(String(url).endsWith("/profile")?{organization:{uuid:"org-test"}}:
     String(url).endsWith("/credits")?{amount:25000,currency:"USD",auto_reload_settings:{enabled:false}}:{extra_usage:{is_enabled:true}}));
@@ -69,6 +73,22 @@ try {
  calls.length=0;
  assert.equal(await fetchPrepaidCredits("test-token","wrong-org"),null);
  assert.equal(calls.length,1);
+ // Exhausted meters: a routine ping is skipped only when usage credits are verified ON (it would be
+ // billed); a banked-reset redemption still forces the read so refilled meters are seen.
+ calls.length=0;
+ const pingable = new AccountManager([{id:"p1",label:"P",token:"test-p"}], hub, 600000);
+ const ps = (pingable as any).states.get("p1");
+ Object.assign(ps,{fiveHour:100,sevenDay:50,fiveHourReset:reset,sevenDayReset:reset});
+ await (pingable as any).pingOne(ps.account);
+ assert.equal(calls.filter((u)=>u.endsWith("/v1/messages")).length,1); // credits not known on: free 429 read
+ (pingable as any).prepaidCredits.set("p1",funds);calls.length=0;
+ Object.assign(ps,{fiveHour:100,fiveHourReset:reset});
+ await (pingable as any).pingOne(ps.account);
+ assert.equal(calls.length,0);
+ Object.assign(ps,{fiveHour:100,fiveHourReset:reset});
+ await (pingable as any).pingOne(ps.account,false,false,true);
+ assert.equal(calls.filter((u)=>u.endsWith("/v1/messages")).length,1);
+ pingable.stop();
 } finally {globalThis.fetch=originalFetch;}
 // Codex credited dispatch must pass the same capacity inventory that wakes parked tasks.
 mkdirSync(process.env.CODEX_SOURCE_HOME!,{recursive:true});

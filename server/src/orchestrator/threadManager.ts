@@ -2,6 +2,7 @@ import { currentCodexModel, currentCodexModels, isGpt6Model } from "../agents/co
 import { familyUpgradeNote, invalidateModelFamilyRoster, latestFamilyModel, newestInFamily, sameModelFamily, setModelFamilyRoster, withoutSupersededModels } from "../agents/modelFamily.js";
 import type { AccountDispatchPreview, AccountManager } from "../accounts/accountManager.js";
 import { bySafetyHeadroom, untilReset, weeklySafetyPool } from "../accounts/accountManager.js";
+import { PREPAID_FRESH_MS } from "../accounts/prepaidCredits.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
@@ -7049,7 +7050,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const usage = readCodexUsage();
     const c = usage?.credits;
     const exhausted = usage?.limitState === "reached" || (usage?.fiveHour ?? 0) >= 100 || (usage?.sevenDay ?? 0) >= 100;
-    return exhausted && !!usage && usage.updatedAt <= Date.now() && Date.now() - usage.updatedAt < 10 * 60_000
+    return exhausted && !!usage && usage.updatedAt <= Date.now() && Date.now() - usage.updatedAt < PREPAID_FRESH_MS
       && c?.hasCredits === true && c.unlimited === false && c.balance != null && c.balance > 0;
   }
 

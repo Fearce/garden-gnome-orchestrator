@@ -577,9 +577,9 @@ export class AccountManager {
    * banked reset is most useful.
    */
   private async readResetCredits(st: AccountState): Promise<void> {
-    this.prepaidCredits.delete(st.account.id);
     const token = st.account.profileToken?.trim();
     if (!token) {
+      this.prepaidCredits.delete(st.account.id);
       this.applyResetCredits(st, null, null);
       return;
     }
@@ -588,7 +588,10 @@ export class AccountManager {
       st.organizationId ? fetchPrepaidCredits(token, st.organizationId) : Promise.resolve(null),
     ]);
     if (st.account.profileToken?.trim() !== token) return;
+    // Keep the previous reading through the fetch so a routine re-read never opens a gap; a failed
+    // or unverifiable read drops it (fail closed).
     if (paid) this.prepaidCredits.set(st.account.id, paid);
+    else this.prepaidCredits.delete(st.account.id);
     if (!result.ok) {
       this.applyResetCredits(st, null, profileErrorMessage(result.reason));
       return;
@@ -630,7 +633,7 @@ export class AccountManager {
     }
     const outcome = await claimClaudeReset(token, orgId, read.credits.redeemId);
     await this.readResetCredits(st);
-    if (outcome.ok && !this.inHold(st, Date.now())) await this.pingOne(st.account);
+    if (outcome.ok && !this.inHold(st, Date.now())) await this.pingOne(st.account, false, false, true);
     this.publish();
     this.onUsage?.();
     return { ok: outcome.ok, message: `${st.account.label}: ${outcome.message}` };
@@ -695,12 +698,16 @@ export class AccountManager {
    *  from the raw headers. `expectIdle` marks a ping we believed would START the window (a hold
    *  release): finding the window already running then proves an outside consumer woke the account
    *  during the hold. */
-  private async pingOne(a: Account, expectIdle = false, scheduledProbe = false): Promise<PingUsage | null> {
+  private async pingOne(a: Account, expectIdle = false, scheduledProbe = false, force = false): Promise<PingUsage | null> {
     const sentAt = Date.now();
     const previous = this.states.get(a.id);
     const exhausted = previous && ((previous.fiveHour ?? 0) >= 100 && (previous.fiveHourReset ?? 0) > sentAt
       || (previous.sevenDay ?? 0) >= 100 && (previous.sevenDayReset ?? 0) > sentAt);
-    if (exhausted) return null; // polling must not spend credits just to read exhausted meters
+    // With usage credits verified ON, a ping against exhausted meters would be billed to the prepaid
+    // balance, so routine polling waits for the stated reset. Without that evidence the ping is the
+    // free 429 read it always was, and a banked-reset redemption (`force`) must re-read the refilled
+    // meters or the account would look exhausted until the old reset.
+    if (exhausted && !force && this.prepaidCredits.get(a.id)?.enabled === true) return null;
     const r = await pingUsage(a.token);
     const st = this.states.get(a.id);
     if (!st) return null;
