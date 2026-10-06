@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Identify triggering cameras in Surveillance motion alerts and recent activity** (2026-10-06, Bramble Lens).
 
 ## Shipped, awaiting live proof
 
