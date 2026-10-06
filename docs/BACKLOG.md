@@ -14,6 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Full GGO security sweep and production dependency remediation** (2026-10-07, Codex): audit public source, exposed services, auth boundaries, dependencies and secret/privacy checks; fix and verify confirmed findings.
 
 
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
@@ -50,7 +51,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Ready (priority order)
 
-1. **Resolve high-severity production dependency advisories** (2026-10-05, Codex implementor): restart sweep audit:deps reports critical=0, high=5, moderate=12, low=3; dependency names and compatible fixed versions are in server/data/quality-sweep-last.log.
 1. **Resolve Electron clean-exit verification before accepting the desktop app** (2026-10-04, Moss Gauge): desktop lab 52/55; three 20-second app-exit timeouts, and packaged-window-close verification timed out at 15 seconds. Live HTTP/WS load probe completed without a desktop-open regression.
 2. **Surface the desktop distribution and all retained validation artifacts** (2026-10-04, Moss Gauge): installer and retained screenshots/metrics have no deliverable cards; existing eight cards serve. Installer exceeds the 25 MB serving cap and needs a supported delivery path.
 1. **Investigate console smoke served/local bundle mismatch and browser shutdown timeout**: 2026-10-03 probe reports ws=live with no console errors, served index-C8zofTVy.js versus local index-BHXtYnz4.js, and browser shutdown exceeded 5000ms; authenticated HTTP bundle verification passed earlier in the same task.
