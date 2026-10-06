@@ -123,7 +123,10 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
   Recording settings, else the copy GGO installed for Remote control, else one on `PATH`.
   Each camera has **Notifications on/off**, saved in its configuration and off by default.
   Enabled cameras detect changes in a 32-by-24 luminance grid in the browser, ping independently of
-  the task notification bell and add to the unread Surveillance tab count. Opening the tab clears it;
+  the task notification bell and add to the unread Surveillance tab count. Unread alerts highlight
+  the tab with a pulsing red border and count; narrow layouts show a prominent **Surveillance motion**
+  button beneath the area selector. Reduced-motion preferences keep the strong highlight without
+  animation. Opening Surveillance clears the alert and count;
   reloads retain the count in that browser tab. Each camera has a 30-second alert cooldown. Uniform
   brightness shifts are ignored, but lighting and picture changes can still trigger alerts. Monitoring
   shares the live picture socket, works across board tabs while the console is open, and ends on Stop

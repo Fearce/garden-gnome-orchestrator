@@ -405,8 +405,14 @@ function BoardTabs() {
     patchnotes: useUnseenPatchNotes(),
   };
   usePatchNotesWatch();
+  const motionUnread = counts.surveillance ?? 0;
   return (
     <><label className="board-area-select">Area<select aria-label="Board area" value={boardView} onChange={e => setBoardView(e.target.value as BoardView)}>{tabs.map(tab => <option value={tab.view} key={tab.view}>{tab.label}{counts[tab.view] ? ` (${counts[tab.view]})` : ""}</option>)}</select></label>
+    {shownModules.includes("surveillance") && motionUnread > 0 && boardView !== "surveillance" ? (
+      <button className="board-motion-alert surveillance-alert" onClick={() => setBoardView("surveillance")}>
+        Surveillance motion <span className="board-tab-count">{motionUnread}</span>
+      </button>
+    ) : null}
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
       <SortableContext items={tabs.map((tab) => tab.view)} strategy={rectSortingStrategy}>
         <div className="board-tabs" aria-label="Board areas">
@@ -427,7 +433,7 @@ function SortableBoardTab({ tab, active, count, onOpen }: { tab: BoardTab; activ
   const dragging = isDragging ? " board-tab-dragging" : "";
   if (active) return <h2 ref={setNodeRef} style={style} className={dragging.trim() || undefined} {...listeners}>{tab.label}</h2>;
   return (
-    <button ref={setNodeRef} style={style} className={"board-tab bt-" + tab.view + dragging} onClick={onOpen} title={`${tab.title}. Drag to reorder.`} {...listeners}>
+    <button ref={setNodeRef} style={style} className={"board-tab bt-" + tab.view + dragging + (tab.view === "surveillance" && count ? " surveillance-alert" : "")} onClick={onOpen} title={`${tab.title}. Drag to reorder.`} {...listeners}>
       {tab.label}
       {count ? <span className="board-tab-count">{count}</span> : null}
     </button>

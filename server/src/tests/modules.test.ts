@@ -492,8 +492,11 @@ await test("surveillance: the frame push asks a snapshot camera only at its own 
   const sent: Buffer[] = [];
   const socket = { OPEN: 1, readyState: 1, bufferedAmount: 0, on() {}, ping() {}, terminate() {}, send: (b: Buffer) => sent.push(b) };
   push.add(socket as never);
-  await delay(1_700);
-  push.closeAll();
+  try {
+    await waitFor("three frame refresh ticks", async () => refreshes.fast!, (n) => n >= 3, 10_000);
+  } finally {
+    push.closeAll();
+  }
   assert.equal(refreshes.slow, 1, "a 60 s camera is asked once, not every tick");
   assert.ok(refreshes.fast! >= 3, `a free source is read every tick (got ${refreshes.fast})`);
   const header = JSON.parse(sent[0]!.subarray(2, 2 + sent[0]!.readUInt16BE(0)).toString("utf8"));

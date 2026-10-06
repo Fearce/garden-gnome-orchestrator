@@ -14,10 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: make unread Surveillance alerts conspicuous and verify module readiness** (2026-10-06, Codex QA).
-  Review requires pulsating desktop and narrow-screen alerts, arrival/dismissal browser checks, and a complete module-suite pass.
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
+
+- **QA: make unread Surveillance alerts conspicuous and verify module readiness** (2026-10-06, Codex QA).
+  Pulsating desktop and narrow alerts; notification browser 30/30, viewer 28/28, complete modules, types/builds/README/privacy pass. Independent review required.
 
 - **QA: keep module startup polling within the idle window** (f4e3260b, 2026-10-06, Codex QA).
   Native startup liveness and idle countdown from readiness resolve the tracked module idle-start failure; module gate 36 worker checks plus follow-ups, motion browser 18/18, viewer 28/28, live 4/4, types/builds/privacy/README pass. Independent review required.

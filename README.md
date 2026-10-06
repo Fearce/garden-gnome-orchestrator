@@ -121,7 +121,9 @@ be put in any order: drag one along the board header, or use Settings → Interf
   Settings → Interface). Optional tabs for local services, each served by its own worker
   process that starts the first time you open the tab and exits when idle. Surveillance shows
   live cameras and browses and plays recordings. Per-camera **Notifications on/off** controls
-  enable a ping on picture-detected movement and an unread Surveillance tab count; opening the tab
+  enable a ping on picture-detected movement and an unread Surveillance tab count. Unread alerts
+  pulse with a red highlight on the tab, or a prominent motion button beneath the area selector
+  on narrow screens (a steady highlight with reduced motion). Opening the tab
   clears the count. Notifications default off and work while this console is open, including other
   board tabs. Cameras share one picture socket; each camera alerts at most once every 30 seconds.
   Lighting or other picture changes can trigger detection; browser sleep pauses monitoring and
