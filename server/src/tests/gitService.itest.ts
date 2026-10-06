@@ -368,6 +368,14 @@ try {
     check("null-baseline fallback commitCount = 0 (commit-blind)", fb.commitCount === 0, String(fb.commitCount));
     check("null-baseline fallback added = 4 (+1 README, +3 untracked)", fb.added === 4, String(fb.added));
 
+    // A binary untracked task file is a changed file but adds no lines (untrackedCount reports -1 for it).
+    writeFileSync(join(work, "task-blob.bin"), Buffer.from([0, 1, 2, 0, 255]));
+    bustGitCaches(); // the shared porcelain read is TTL-cached from before the file existed
+    const bin = await getTaskGitSummary(work, { threadId: "ts-binary", baselineHead: baseline, taskFiles: [...taskFiles, join(work, "task-blob.bin")] });
+    check("binary untracked task file counts as a file", bin.fileCount === 4, String(bin.fileCount));
+    check("binary untracked task file does not subtract lines (added stays 6)", bin.added === 6, String(bin.added));
+    rmSync(join(work, "task-blob.bin"));
+
     // An unresolvable/garbage baseline sha degrades to the same HEAD-relative fallback, never errors.
     const garbage = await getTaskGitSummary(work, { threadId: "ts-garbage", baselineHead: "0".repeat(40), taskFiles });
     check("garbage baseline degrades to HEAD fallback (no crash, fileCount = 2)", garbage.fileCount === 2, String(garbage.fileCount));

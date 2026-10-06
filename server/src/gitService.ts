@@ -696,7 +696,9 @@ async function readTaskGitSummary(workspace: string, scope: TaskGitScope): Promi
     for (const f of parsePorcelain((await readPorcelain(repoRoot)).stdout)) {
       if (classify(f.xy) !== "untracked" || !relSet.has(f.path) || counts.has(f.path)) continue;
       fileCount++;
-      added += untrackedCount(repoRoot, f.path).added;
+      // A binary file reports added = -1; it counts as a changed file but adds no lines.
+      const n = untrackedCount(repoRoot, f.path).added;
+      if (n > 0) added += n;
     }
     if (baseline) {
       const c = okOut(await runGit(repoRoot, ["rev-list", "--count", `${baseline}..HEAD`, "--", ...rels]));

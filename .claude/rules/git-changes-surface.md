@@ -16,10 +16,11 @@ Two tiers, both **scoped to a single task** (not repo-wide) via its dispatch
 so a foreign commit / dirty file is excluded. Trace before you touch it:
 
 - **Chip** (`ChangesChip`, on every Board card) — the compact header: file count,
-  ±lines, a status dot. Auto-loads `loadGitSummary` on mount AND prefetches the full
-  `loadGitStatus` (keyed on the summary's count signature) so the drawer opens
-  instantly — no "Loading git status…" click-to-load. Renders nothing until the
-  summary confirms `isRepo`.
+  ±lines, a status dot. Auto-loads only `loadGitSummary` on mount; the full
+  `loadGitStatus` is prefetched when the pointer enters or focus lands on the chip, so
+  the drawer still opens warm. Mount-time prefetch of every card's drawer was removed
+  2026-10-06: it saturated the child-command pool before any drawer was opened.
+  Renders nothing until the summary confirms `isRepo`.
 - **Drawer** (`GitPanel`) — full status: branch/push header, Changes|History, per-file
   diffs (each diff lazily fetched via `loadGitDiff`, cached in `gitDiffs`).
 
@@ -33,9 +34,10 @@ Server (`gitService.ts`): `getTaskGitStatus` is the full payload; `getTaskGitSum
 derives the chip's counts from a scoped numstat. Both are cached per-threadId for
 `SUMMARY_TTL_MS` (4s) in `taskStatusCache` / `taskSummaryCache` so a board of cards +
 each prefetch collapse to one git run — bust them together via the exported
-`bustGitCaches()` (what every write in `git/repoOps.ts` calls). Whole-repo
-branch/push/behind metadata for those two comes from `cachedRepoStatus` (the repo-wide
-`getGitStatus`, cached per repo root in `repoStatusCache`); the separate repo-wide
+`bustGitCaches()` (what every write in `git/repoOps.ts` calls). The drawer's whole-repo
+branch/push/behind metadata comes from `cachedRepoStatus` (the repo-wide
+`getGitStatus`, cached per repo root in `repoStatusCache`); the chip reads only
+`getRepoHeadState` plus the shared `porcelainCache` status for untracked task files; the separate repo-wide
 `getGitSummary` has its own `summaryCache` keyed by repoRoot. Every one of these is a
 `GitReadCache`: a 4s TTL **plus a shared in-flight read**. The TTL alone was not
 enough. A board mounts every chip at once, so all the requests missed together and
