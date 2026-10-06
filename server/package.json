@@ -287,6 +287,7 @@
     "test:lazy-chunks-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/lazy-chunks-ui.test.ts",
     "test:git-progress": "tsx src/tests/gitProgress.itest.ts",
     "test:repo-ops": "tsx src/tests/repoOps.itest.ts",
+    "test:worktree-sweep": "tsx src/tests/worktreeSweep.itest.ts",
     "test:task-worktree": "tsx src/tests/taskWorktree.itest.ts",
     "test:worktree-name": "tsx src/tests/worktreeName.test.ts",
     "test:task-worktree-pipeline": "tsx src/tests/taskWorktreePipeline.itest.ts",
@@ -364,7 +365,7 @@
     "smoke:deliverables": "node scripts/deliverables-smoke.cjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.289",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.291",
     "@fastify/static": "^10.1.2",
     "@fastify/websocket": "^11.2.0",
     "@sentropic/graphify": "^0.17.1",
