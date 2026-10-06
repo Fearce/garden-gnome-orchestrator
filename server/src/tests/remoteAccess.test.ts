@@ -4,6 +4,7 @@ import { registerBrowserOriginGuard } from "../crossSite.js";
 import {
   isDirectLocal,
   isLoopbackHost,
+  isLoopbackProxy,
   isTunneled,
   loginOptions,
   registerLocalAutoSignIn,
@@ -19,6 +20,7 @@ const proxied = { ip: "127.0.0.1", headers: { "x-forwarded-for": "203.0.113.9", 
 delete process.env.REMOTE_ACCESS;
 assert.equal(remoteAccessEnabled(), false);
 assert.equal(isTunneled(proxied), false, "no tunnel rules without REMOTE_ACCESS=1");
+assert.equal(isLoopbackProxy(proxied), true, "proxy classification is independent of Google-only tunnel policy");
 assert.equal(isDirectLocal(proxied), false, "a proxy is never a direct local caller, even with REMOTE_ACCESS off");
 assert.deepEqual(loginOptions(proxied, { google: false, password: false }), { required: false, google: false, password: false });
 assert.equal(remoteCookieAttributes(proxied), "");
@@ -211,4 +213,55 @@ async function trustedApp(enabled: boolean) {
   await app.close();
 }
 
-console.log("PASS: tunnelled requests are Google-only, gated, and never treated as local");
+// A prefix-mounted console behind an ordinary loopback proxy still needs its browser WebSocket.
+// Cloudflare retains client metadata, but the second proxy may replace Host without setting
+// X-Forwarded-Host. Only an explicitly configured origin may bridge that mismatch.
+{
+  const priorOrigins = process.env.PROXY_ORIGINS;
+  const priorRemote = process.env.REMOTE_ACCESS;
+  delete process.env.REMOTE_ACCESS;
+  delete process.env.PROXY_ORIGINS;
+  const app = Fastify();
+  registerBrowserOriginGuard(app);
+  const authed = (cookie: string | undefined) => cookie === "orch_session=owner";
+  registerLocalAutoSignIn(app, { enabled: () => true, isAuthed: authed, sessionCookie: () => "orch_session=owner" });
+  registerRemoteGate(app, { googleEnabled: () => false, isAuthed: authed });
+  app.get("/api/me", async (req) => ({ authed: authed(req.headers.cookie) }));
+  for (const url of ["/ws", "/api/deploy/status"]) {
+    app.get(url, async (req, reply) => authed(req.headers.cookie) ? { ok: true } : reply.code(401).send({ error: "unauthorized" }));
+  }
+  app.post("/api/update/apply", async (req, reply) => authed(req.headers.cookie) ? { ok: true } : reply.code(401).send({ error: "unauthorized" }));
+  const proxy = { host: "127.0.0.1:4317", "cf-connecting-ip": "192.0.2.12", "x-forwarded-proto": "https", origin: "https://console.example.com" };
+  const session = { ...proxy, cookie: "orch_session=owner" };
+  try {
+    assert.equal((await app.inject({ url: "/ws", headers: session })).statusCode, 403, "unconfigured external origins fail closed");
+    process.env.PROXY_ORIGINS = " https://console.example.com/, https://other.example.com ";
+    assert.equal((await app.inject({ url: "/ws", headers: session })).statusCode, 200, "configured prefix proxy works with REMOTE_ACCESS off");
+    assert.equal((await app.inject({ method: "POST", url: "/api/update/apply", headers: session })).statusCode, 200, "Origin fallback accepts the configured proxy without Fetch Metadata");
+    assert.equal((await app.inject({ url: "/ws", headers: proxy })).statusCode, 401, "origin permission never grants a session");
+    assert.equal((await app.inject({ url: "/api/deploy/status", headers: proxy })).statusCode, 401, "the proxy cannot use local deploy access");
+    const me = await app.inject({ url: "/api/me", headers: proxy });
+    assert.deepEqual(me.json(), { authed: false }, "forwarded requests are never auto-signed in");
+    assert.equal(me.headers["set-cookie"], undefined);
+    assert.equal((await app.inject({ url: "/ws", headers: session, remoteAddress: "192.0.2.13" })).statusCode, 403, "remote clients cannot assert loopback proxy metadata");
+    assert.equal((await app.inject({ url: "/ws", headers: { host: proxy.host, origin: proxy.origin, cookie: session.cookie } })).statusCode, 403, "no forwarding metadata means no proxy-origin permission");
+    for (const origin of ["https://evil.example", "http://console.example.com", "https://console.example.com:444", "https://console.example.com.evil.example", "null"]) {
+      assert.equal((await app.inject({ url: "/ws", headers: { ...session, origin, "sec-fetch-site": "same-origin" } })).statusCode, 403, `reject ${origin}`);
+      assert.equal((await app.inject({ method: "POST", url: "/api/update/apply", headers: { ...session, origin } })).statusCode, 403, `reject API origin ${origin}`);
+    }
+    assert.equal((await app.inject({ url: "/ws", headers: { ...session, "sec-fetch-site": "cross-site" } })).statusCode, 403, "proxy allowlist cannot override Fetch Metadata");
+    assert.equal((await app.inject({ method: "POST", url: "/api/update/apply", headers: { ...session, "sec-fetch-site": "cross-site" } })).statusCode, 403);
+    delete process.env.PROXY_ORIGINS;
+    assert.equal((await app.inject({ url: "/ws", headers: { ...session, "x-forwarded-host": "console.example.com" } })).statusCode, 200, "preserved forwarded Host works without tunnel opt-in");
+    for (const entry of ["*", "https://console.example.com/orchestrator/", "https://console.example.com?x=1", "https://console.example.com#x", "https://user@console.example.com", "not a URL"]) {
+      process.env.PROXY_ORIGINS = entry;
+      assert.equal((await app.inject({ url: "/ws", headers: session })).statusCode, 403, `invalid proxy origin ${entry} fails closed`);
+    }
+  } finally {
+    await app.close();
+    if (priorOrigins === undefined) delete process.env.PROXY_ORIGINS; else process.env.PROXY_ORIGINS = priorOrigins;
+    if (priorRemote === undefined) delete process.env.REMOTE_ACCESS; else process.env.REMOTE_ACCESS = priorRemote;
+  }
+}
+
+console.log("PASS: proxy origins preserve authentication and tunnelled requests remain Google-only");

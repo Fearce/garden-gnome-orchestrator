@@ -50,7 +50,12 @@ export function remoteAccessEnabled(env: NodeJS.ProcessEnv = process.env): boole
 /** Relayed by a local tunnel or proxy: loopback source plus a header naming some other client.
  *  Always false unless remote access is enabled, which keeps every rule below off for other installs. */
 export function isTunneled(req: RequestLike): boolean {
-  return remoteAccessEnabled() && isLoopbackAddress(req.ip) && hasForwardingHeaders(req);
+  return remoteAccessEnabled() && isLoopbackProxy(req);
+}
+
+/** A local reverse proxy, regardless of the opt-in Google-only tunnel policy. */
+export function isLoopbackProxy(req: RequestLike): boolean {
+  return isLoopbackAddress(req.ip) && hasForwardingHeaders(req);
 }
 
 function hasForwardingHeaders(req: RequestLike): boolean {

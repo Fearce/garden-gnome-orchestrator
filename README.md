@@ -318,6 +318,7 @@ environment variables worth knowing about:
 | `ACCOUNT_<n>_TOKEN`, `_LABEL`, `_ID` | Additional Claude subscriptions to balance across (n = 1..8). |
 | `AUTH_PASSWORD` or `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` | Gates the listener. Required before the server will bind to anything but localhost. |
 | `SESSION_SECRET` | Strong random cookie-signing key. If unset, GGO generates a new key on every start and existing sessions expire. |
+| `PROXY_ORIGINS` | Comma-separated browser origins for a loopback reverse proxy that rewrites Host and omits X-Forwarded-Host, e.g. `https://console.example.com`. Permits the origin check only; sign-in is still required. |
 | `OWNER_NAME` | Your name, woven into the agent prompts. |
 | `NO_PUSH_REPO_PATTERN` | Agents commit but never push any repo whose origin URL matches this pattern. |
 | `DEFAULT_WORKSPACE`, `WORKSPACE_SEARCH_ROOTS` | Where the console looks for your repos. |
@@ -333,6 +334,11 @@ the Google-locked Tailscale Funnel link in [docs/remote-access.md](docs/remote-a
 (`npm run remote-access -- on`), which keeps the listener on `127.0.0.1`.
 An ordinary reverse proxy must still use GGO sign-in; forwarded requests cannot call local-only
 deploy routes without a session.
+If the proxy rewrites Host, preserve `X-Forwarded-Host` on WebSocket upgrades or set
+`PROXY_ORIGINS` to the exact external origin(s), without a path prefix. The proxy must retain
+forwarding metadata (such as `X-Forwarded-For` or `CF-Connecting-IP`) on HTTP and WebSocket
+requests. This works independently of `REMOTE_ACCESS`, which opts into Google-only tunnel
+sign-in. Unlisted origins remain refused; restart the server after changing its environment.
 
 **What stays local:** the database, attachments and logs live under `server/data/` by default
 (or your configured `DATA_DIR`). Environment settings live in the gitignored `server/.env`;

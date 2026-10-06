@@ -55,6 +55,7 @@
     "screensaver-lab": "node scripts/screensaver-lab.cjs",
     "remote-access": "node scripts/remote-access.cjs",
     "remote-access-lab": "node scripts/remote-access-lab.cjs",
+    "proxy-origin-lab": "node scripts/proxy-origin-lab.cjs",
     "remote-stream-lab": "tsx scripts/remote-stream-lab.ts",
     "remote-viewer-lab": "node scripts/remote-viewer-lab.cjs",
     "surveillance-notifications-lab": "node scripts/surveillance-notifications-lab.cjs",

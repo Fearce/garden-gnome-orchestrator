@@ -14,7 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Restore authenticated public reverse-proxy access after security hardening** (2026-10-07, Bramblebolt).
 
 
 - **QA: finish clean-checkout guidance for editing reviewers and independently verify popup prevention** (2026-10-07, Codex QA).
@@ -22,6 +21,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Restore authenticated public reverse-proxy access after security hardening** (2026-10-07, Bramblebolt).
+  Exact proxy-origin allowlist; focused auth regressions, Google tunnel browser 19/19, desktop/tablet prefix-proxy browser, types/builds, README 73/73 and privacy pass. Deployment and live proxy verification follow integration.
 
 - **Stop repeated QA instruction lifecycle spam** (9b240512, 2026-10-07, Reedspindle).
   Pushed; live web hides existing noise and authenticated bundle bytes match the build. Injection 186/186, browser 28/28, feed regressions/types/builds/README/privacy pass. Silent QA delivery and batched restart notices await the next permitted server restart; this session's restart-resume instruction forbids another restart.

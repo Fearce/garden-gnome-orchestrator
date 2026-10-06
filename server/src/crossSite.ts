@@ -1,5 +1,18 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { isLoopbackHost, isTunneled } from "./remoteAccess.js";
+import { isLoopbackHost, isLoopbackProxy } from "./remoteAccess.js";
+
+/** Explicit external origins for a proxy that rewrites Host without preserving X-Forwarded-Host.
+ * This only permits the browser origin; it never grants a session or local-only route access. */
+function matchesProxyOrigin(req: FastifyRequest, origin: string): boolean {
+  if (!isLoopbackProxy(req)) return false;
+  return (process.env.PROXY_ORIGINS || "").split(",").some((entry) => {
+    try {
+      const url = new URL(entry.trim());
+      return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password
+        && url.pathname === "/" && !url.search && !url.hash && url.origin === origin;
+    } catch { return false; }
+  });
+}
 
 /**
  * Whether a cookie-authenticated request came from another site, so its write must be refused.
@@ -12,7 +25,9 @@ export function isCrossSiteRequest(req: FastifyRequest): boolean {
   if (site) return site !== "same-origin" && site !== "none";
   if (!req.headers.origin) return false;
   try {
-    return new URL(req.headers.origin).host !== req.headers.host;
+    const source = new URL(req.headers.origin);
+    if (!["http:", "https:"].includes(source.protocol) || source.origin !== req.headers.origin) return true;
+    return source.host !== req.headers.host && !matchesProxyOrigin(req, source.origin);
   } catch {
     return true;
   }
@@ -35,7 +50,8 @@ export function isCrossSiteSocket(req: FastifyRequest): boolean {
     };
     if (matchesHost(req.headers.host)) return false;
     // A same-origin proxy may rewrite Host before forwarding the upgrade.
-    if (isTunneled(req) && matchesHost(req.headers["x-forwarded-host"])) return false;
+    if (isLoopbackProxy(req) && matchesHost(req.headers["x-forwarded-host"])) return false;
+    if (matchesProxyOrigin(req, source.origin)) return false;
     // The local Deck and Vite dev server use different loopback ports from GGO.
     return !(isLoopbackHost(source.host) && isLoopbackHost(req.headers.host));
   } catch {
