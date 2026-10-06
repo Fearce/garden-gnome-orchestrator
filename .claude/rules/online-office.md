@@ -78,7 +78,7 @@ identity** — two checkouts of one repo share a remote, never a path. Read this
   re-fires `onRemoteJoin`, so a teammate found a tick late still wakes the live implementor.
 - **A remote peer is NOT a working-tree peer.** Their edits never reach `git status`; the collision is at
   the remote, and `officeNote`/`remoteChatPush`/`remoteJoinPush` say so — don't "simplify" that into the
-  local "commit only your own hunks" wording.
+  local "commit your own hunks and preserve pending peer work" wording.
 - **Dedup remote chat on the relay's message id, and keep that guard DURABLE** (`remoteChatSeen`, mirrored
   into kv). A room's backlog is replayed on every entry — and the first connect after a bounce is an entry,
   when an in-memory-only set is empty. It shipped as a plain `Set` and re-persisted up to `ROOM_HISTORY`

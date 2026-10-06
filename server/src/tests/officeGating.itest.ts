@@ -148,6 +148,12 @@ async function main(): Promise<void> {
       check("read-only role → omits the editing 'step on each other' framing", !noteForPlanner.includes("step on each other"), noteForPlanner);
       const noteForImpl = h.internals.officeNote(a, "implementor", true) as string;
       check("editing role → keeps the 'step on each other' framing", noteForImpl.includes("step on each other"), noteForImpl);
+      // The owner's clean-checkout rule (2026-10-06): peer work is preserved in commits, never left dirty.
+      const noteForCliImpl = h.internals.officeNote(a, "implementor", false) as string;
+      for (const [label, note] of [["MCP", noteForImpl], ["CLI", noteForCliImpl]] as const) {
+        check(`${label} editing note → preserves pending peer work in commits`, note.includes("preserve any pending peer work in separately attributed commits"), note);
+        check(`${label} editing note → never says to commit ONLY your own hunks`, !/only commit your own hunks|commit only your own hunks/i.test(note), note);
+      }
 
       const c = h.thread("C", REPO_B);
       h.seedLive(c.id, "implementor", { implementor: true });
@@ -199,6 +205,7 @@ async function main(): Promise<void> {
       check("push says a teammate joined", h.sent(a.id)[0]?.includes("teammate just joined") ?? false);
       check("push names the newcomer's task", h.sent(a.id)[0]?.includes("Ship the API") ?? false);
       check("push uses the MCP-tool phrasing (Claude incumbent)", h.sent(a.id)[0]?.includes("chat_post") ?? false);
+      check("push preserves pending peer work instead of 'only your own hunks'", (h.sent(a.id)[0]?.includes("preserve any pending peer work") ?? false) && !/only commit your own hunks/i.test(h.sent(a.id)[0] ?? ""), h.sent(a.id)[0]);
       check("the newcomer B is NOT pushed to itself", h.sent(b.id).length === 0, `count=${h.sent(b.id).length}`);
 
       // Durable dedup: a restart-style re-ensureGroup must not re-announce or re-push.
@@ -223,6 +230,7 @@ async function main(): Promise<void> {
       check("CLI incumbent got a push", h.sent(a.id).length === 1, `count=${h.sent(a.id).length}`);
       check("CLI push uses the OFFICE[team] bridge phrasing", h.sent(a.id)[0]?.includes("OFFICE[team]") ?? false);
       check("CLI push does NOT tell it to call chat_post (no MCP)", !(h.sent(a.id)[0]?.includes("chat_post") ?? true));
+      check("CLI push preserves pending peer work instead of 'only your own hunks'", (h.sent(a.id)[0]?.includes("preserve any pending peer work") ?? false) && !/only commit your own hunks/i.test(h.sent(a.id)[0] ?? ""), h.sent(a.id)[0]);
     } finally {
       h.dispose();
     }
