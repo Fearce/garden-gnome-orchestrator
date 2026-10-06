@@ -220,6 +220,7 @@
     "test:deliverable-summary": "tsx src/tests/deliverableSummary.itest.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/final-report-ui.test.tsx",
     "test:deliverables": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/deliverables-ui.test.tsx && tsx --tsconfig ../web/tsconfig.json ../web/scripts/deliverables-retry-reset.test.ts",
     "test:run-attribution": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/run-attribution-ui.test.tsx",
+    "test:task-selectors": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/task-selectors.test.ts",
     "test:run-startup": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/run-startup-ui.test.tsx",
     "test:tools-filter-narration": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/tools-filter-narration-ui.test.tsx",
     "test:collaborator-feed": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/collaborator-feed-ui.test.tsx",
