@@ -392,10 +392,8 @@ export function Director() {
                 {searchExpanded ? null : searchToggle}
                 <PipelineMenu />
               </>
-            ) : (
-              <AgentToggles />
-            )}
-            <DirectorDirectives />
+            ) : null}
+            {isPhone && <DirectorDirectives />}
           </div>
         </div>
       </div>
@@ -563,7 +561,13 @@ export function Director() {
             </span>
           ) : null}
         </div>
-        <ComposerTaskMode open={openComposerSections.includes("work")} onToggle={() => toggleComposerSection("work")} />
+        <div className="composer-work-row">
+          <ComposerTaskMode open={openComposerSections.includes("work")} onToggle={() => toggleComposerSection("work")} />
+          {!isPhone && <div className="composer-director-actions" hidden={openComposerSections.includes("work")}>
+            <AgentToggles />
+            <DirectorDirectives />
+          </div>}
+        </div>
         {vanillaMode && <DefaultModePickers />}
         {!vanillaMode && showPickers && <div className="composer-model-sections">
           <div className="composer-model-section">

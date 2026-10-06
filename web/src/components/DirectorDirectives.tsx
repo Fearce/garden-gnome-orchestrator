@@ -8,7 +8,7 @@ const PLACEHOLDER = [
   "Treat every codebase as enterprise, NASA-grade work.",
 ].join("\n");
 
-/** The owner's standing directives for the Director: a pill in the rail header that opens an editor.
+/** The owner's standing directives for the Director: a composer pill (phone header icon) that opens an editor.
  *  The text is appended to the Director's system prompt server-side and applies from its next turn. */
 export function DirectorDirectives() {
   const directives = useStore((s) => s.settings.directorDirectives);

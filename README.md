@@ -59,6 +59,8 @@ several agents and integrates their results. An implementor can also hand a slic
 job to a **sub-task** on any enabled backend and model; the sub-task is its own card you
 can open and talk to.
 
+On desktop, the Director's Plan, Research, QA and Directives controls sit beside **For / With** above the message field. Expanding **For / With** hides those controls until it is collapsed again. Phones keep the compact header controls.
+
 **Several agents in one repo stay out of each other's way.** Agents on the same checkout
 share a chat room to divide files. When another agent shares the repo, a task claims its
 own branch in a linked git worktree, then rebases and fast-forwards it back into the base

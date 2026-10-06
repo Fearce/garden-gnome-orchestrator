@@ -14,9 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Move director action buttons beside For / With and hide them when expanded** (2026-10-06, Bramble Pixel).
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
+
+- **Move director action buttons beside For / With and hide them when expanded** (2026-10-06, Bramble Pixel).
+  Browser placement/disclosure/editor 22/22; phone 44/44, all typechecks, server/web builds, README 70/70 and privacy pass; live web rebuild pending.
 
 - **QA: make unread Surveillance alerts conspicuous and verify module readiness** (2026-10-06, Codex QA).
   Pulsating desktop and narrow alerts; notification browser 30/30, viewer 28/28, complete modules, types/builds/README/privacy pass. Independent review required.

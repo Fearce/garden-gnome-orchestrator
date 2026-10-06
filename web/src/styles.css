@@ -716,6 +716,11 @@ button.office-roster-member:focus-visible { outline: 2px solid var(--accent); ou
    natural sizes as this area shrinks, while attachments can grow the compose area without hiding Send. */
 .composer-options { flex: 0 1 auto; min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
 .composer-options > * { flex: none; }
+.composer-work-row { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 6px; }
+.composer-work-row:has(.composer-taskmode:not(.collapsed)) > .composer-taskmode { flex: 1 1 100%; }
+.composer-director-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.composer-director-actions[hidden] { display: none; }
+.composer-options.sheet .composer-work-row { display: contents; }
 .composer { flex: none; padding: 0 12px 12px; display: flex; flex-direction: column; gap: 8px; }
 .composer textarea {
   width: 100%; resize: none; min-height: 64px; max-height: 200px;
@@ -1067,7 +1072,7 @@ button.office-roster-member:focus-visible { outline: 2px solid var(--accent); ou
 .rail-toggle:hover, .focus-toggle:hover { color: var(--text); border-color: var(--line-strong); }
 .rail-toggle.off, .focus-toggle.off { color: var(--text-faint); }
 
-/* ---- agent toggles (per-task pipeline gates, in the Director rail header) ---- */
+/* ---- agent toggles (per-task pipeline gates, beside the composer work disclosure) ---- */
 .agent-toggles { display: inline-flex; align-items: center; gap: 5px; flex-wrap: wrap; }
 .agent-toggle {
   display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 9px; cursor: pointer;
