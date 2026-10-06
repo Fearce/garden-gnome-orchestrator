@@ -7,6 +7,16 @@ import { memo, type ReactNode } from "react";
 
 const INLINE = /(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*\s][^*]*\*|_[^_\s][^_]*_|\[[^\]]+\]\([^)\s]+\))/g;
 
+function safeLinkTarget(target: string): string | null {
+  if (target.startsWith("//") || target.startsWith("\\") || /[\u0000-\u001f\u007f]/.test(target)) return null;
+  try {
+    const protocol = new URL(target, "https://example.invalid/").protocol;
+    return protocol === "http:" || protocol === "https:" || protocol === "mailto:" ? target : null;
+  } catch {
+    return null;
+  }
+}
+
 function renderInline(text: string, keyBase: string): ReactNode[] {
   const out: ReactNode[] = [];
   let i = 0;
@@ -22,8 +32,13 @@ function renderInline(text: string, keyBase: string): ReactNode[] {
     } else {
       const link = /^\[([^\]]+)\]\(([^)\s]+)\)$/.exec(part);
       if (link) {
+        const href = safeLinkTarget(link[2]!);
+        if (!href) {
+          out.push(link[1]!);
+          continue;
+        }
         out.push(
-          <a key={key} href={link[2]} target="_blank" rel="noreferrer noopener">
+          <a key={key} href={href} target="_blank" rel="noreferrer noopener">
             {link[1]}
           </a>,
         );

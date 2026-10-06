@@ -279,6 +279,7 @@
     "test:image-limit": "tsx src/tests/imageLimit.test.ts",
     "test:pdf-parse": "tsx src/tests/pdfParse.test.ts",
     "test:readme-claims": "tsx src/tests/readmeClaims.test.ts",
+    "test:markdown-links": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/markdown-links.test.tsx",
     "test:stale-gnomes": "tsx src/tests/staleGnomeCleanup.itest.ts",
     "test:git": "tsx src/tests/gitService.itest.ts",
     "test:portal-link": "tsx src/tests/portalLink.test.ts",
