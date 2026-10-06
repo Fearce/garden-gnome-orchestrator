@@ -7468,7 +7468,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       return { ok: true, worktree: present, text: this.claimedWorktreeText(owner, present, repoPath) };
     }
     if (caller.parentId && this.db.getThreadStageOutputs(owner.id).workspaceMode === "guided") {
-      return { ok: false, error: `Your parent task works in the main checkout ${owner.workspace}, so you work there too: a worktree claimed now would split your work from your parent's. Coordinate in the office and commit only your own hunks.` };
+      return { ok: false, error: `Your parent task works in the main checkout ${owner.workspace}, so you work there too: a worktree claimed now would split your work from your parent's. Coordinate in the office and commit all reviewed pending changes, preserving peer work in separately attributed commits.` };
     }
     const name = input.branch?.trim() ? null : input.name?.trim() || (await this.worktreeName(owner));
     const created = await createTaskWorktree({ repoPath: main, threadId: owner.id, title: owner.title, name, branch: input.branch ?? null });
@@ -16788,7 +16788,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const how = cli
       ? "create your own worktree with the `git worktree add` command in your brief's \"Branch & worktree\" section"
       : "call `task_worktree` with this repository and a short `name` for your work";
-    return `To keep out of each other's way, if you have not edited anything yet, ${how} before your first edit, and do every edit, build and commit there. If you already have uncommitted edits in this checkout, or your brief or ${config.ownerName} named the branch to work on, stay and commit only your own hunks.`;
+    return `To keep out of each other's way, if you have not edited anything yet, ${how} before your first edit, and do every edit, build and commit there. If you already have uncommitted edits in this checkout, or your brief or ${config.ownerName} named the branch to work on, stay and commit all reviewed pending changes, preserving peer work in separately attributed commits.`;
   }
 
   /** The task (or, for a sub-task, its parent) has a worktree of its own: made at start by the retired
@@ -16836,7 +16836,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  `undefined` (no note, no wasted office tool round-trips); the moment a peer is present it's named and
    *  the agent is told to coordinate. `withTools` is false for CLI backends (Codex/Grok — no office MCP),
    *  which use the `OFFICE[team]:` text bridge instead. Editing roles (implementor) get the stronger
-   *  "claim files / commit only your own hunks" framing; read-only roles just coordinate + share. */
+   *  "claim files / preserve and commit pending peer work" framing; read-only roles just coordinate + share. */
   private officeNote(thread: Thread, role: Role, withTools: boolean): string | undefined {
     const peers = this.repoPeers(thread);
     if (!peers.length) return undefined;

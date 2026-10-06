@@ -707,7 +707,7 @@ function scopeParagraph(goal: Goal, siblings: GoalStep[]): string {
     return `This is a long-running task: finish this step completely, then keep going into the rest of the objective in this same task, committing at each coherent point. Stop only when the ENTIRE objective is achieved or you are blocked on something only the owner can resolve. ${carry} Then report what you did.`;
   }
   const beside = siblings.length ? ` Running beside you right now: ${siblings.map((s) => `step ${s.seq} "${s.title}"`).join(", ")}.` : "";
-  return `This is a long-running task: finish this step completely, committing at each coherent point. Up to ${goal.maxConcurrent} step tasks of this goal run at once in this same repository.${beside} Stay within this step's scope rather than taking on work another step owns, commit only your own changes, and coordinate through the office when your work touches theirs. Stop when this step is done or you are blocked on something only the owner can resolve. Then report what you did.`;
+  return `This is a long-running task: finish this step completely, committing at each coherent point. Up to ${goal.maxConcurrent} step tasks of this goal run at once in this same repository.${beside} Stay within this step's scope rather than taking on work another step owns, commit this step's changes and preserve pending peer work in separately attributed commits before handoff, coordinating through the office when your work touches theirs. Stop when this step is done or you are blocked on something only the owner can resolve. Then report what you did.`;
 }
 
 /** The brief a step task receives: the director's step brief, framed by the goal and its ending rule. */

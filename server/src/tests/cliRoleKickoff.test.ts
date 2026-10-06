@@ -34,6 +34,10 @@ assert.match(
 );
 
 for (const prompt of [IMPLEMENTOR_APPEND, CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE]) {
+  assert.match(prompt, /Clean checkouts take priority over task ownership/, "every implementor backend receives the owner's clean-checkout priority");
+  assert.match(prompt, /preserve peer changes in separately attributed Conventional Commits/, "peer changes are preserved rather than left dirty");
+  assert.match(prompt, /standing owner authorization/, "checkpointing peer work must not require another permission request");
+  assert.doesNotMatch(prompt, /none of your work uncommitted/, "the completion check covers all pending work");
   assert.match(prompt, /copy (?:the finished file|it) into the task workspace/i, "every implementor backend copies outside artifacts before posting");
   assert.match(prompt, /copy's absolute path/, "every implementor backend posts the workspace copy");
 }
