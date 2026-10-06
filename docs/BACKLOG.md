@@ -18,8 +18,6 @@ _(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
 
-- **Move director action buttons beside For / With and hide them when expanded** (2026-10-06, Bramble Pixel).
-  Browser placement/disclosure/editor 22/22; phone 44/44, all typechecks, server/web builds, README 70/70 and privacy pass; live web rebuild pending.
 
 - **QA: make unread Surveillance alerts conspicuous and verify module readiness** (2026-10-06, Codex QA).
   Pulsating desktop and narrow alerts; notification browser 30/30, viewer 28/28, complete modules, types/builds/README/privacy pass. Independent review required.
@@ -77,6 +75,8 @@ _(none: claim from Ready)_
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-06 **Move director actions beside For / With and hide them while expanded** (dc695797, Bramble Pixel): live browser sees all four controls above the message field and served bundle bytes match; desktop lab 22/22, phone 44/44, types/builds/README/privacy pass.
 
 - 2026-10-06 **Make unread Surveillance alerts throb so they cannot be missed** (Ember Gantry): fill and glow pulse dark to bright red (OKLab, no purple drift), count badge swells; motion browser 32/32 compares trough and peak frames on desktop, 768px and 320px; board-head 54/54, themes, README 70/70, privacy pass.
 - 2026-10-06 **Keep ordinary task resumes scoped after server restarts** (Thistlewatt): restart guidance now requires live-build and task-specific verification; full sweeps remain required for health/quality tasks. Doc-path probe and privacy checks pass; documentation only.
