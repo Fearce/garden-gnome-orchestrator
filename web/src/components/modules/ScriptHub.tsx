@@ -257,6 +257,7 @@ function ScriptHubBody() {
               onKeepAlive={() => void toggleKeepAlive(script)}
               onHide={() => void toggleHidden(script.id)}
               onTag={(tag) => setFilters({ ...filters, tag })}
+              onEdited={() => status.refresh()}
               onOrganize={async (organization) => {
                 await moduleJson("scripthub", `/scripts/${encodeURIComponent(script.id)}/organization`, { method: "PUT", body: organization });
                 await status.refresh();
@@ -341,10 +342,12 @@ function ScriptCard(props: {
   onLogs: () => void;
   onTag: (tag: string) => void;
   onOrganize: (organization: Organization) => Promise<void>;
+  onEdited: () => Promise<void>;
 }) {
   const { script, detail, pending } = props;
   const [notesOpen, setNotesOpen] = useState(false);
   const [organizing, setOrganizing] = useState(false);
+  const [editing, setEditing] = useState(false);
   const state = script.consolidated ? "consolidated" : script.status.state;
   return (
     <article className={`sh-card${props.hidden ? " is-hidden" : ""}`} data-script-id={script.id}>
@@ -416,13 +419,95 @@ function ScriptCard(props: {
         </button>
       </div>
       <button className="sh-link" onClick={() => setOrganizing((open) => !open)} aria-expanded={organizing}>Organize</button>
+      <button className="sh-link" onClick={() => setEditing((open) => !open)} aria-expanded={editing}>Edit entry</button>
       {organizing ? <OrganizationEditor script={script} onSave={props.onOrganize} onClose={() => setOrganizing(false)} /> : null}
+      {editing ? <EntryEditor script={script} onSaved={props.onEdited} onClose={() => setEditing(false)} /> : null}
       {props.logsOpen ? <LogPanel id={script.id} onClose={props.onLogs} /> : null}
     </article>
   );
 }
 
 type Organization = Pick<Script, "management" | "tags">;
+
+interface RegistryEntry {
+  id: string;
+  displayName?: string;
+  description?: string;
+  notes?: string[] | string;
+  aliases?: string[];
+  start?: { type?: string; executable?: string; args?: string[]; workingDir?: string; taskName?: string; startHidden?: boolean; windowStyle?: string };
+}
+
+function EntryEditor({ script, onSaved, onClose }: { script: Script; onSaved: () => Promise<void>; onClose: () => void }) {
+  const [loaded, setLoaded] = useState<{ entry: RegistryEntry; revision: string } | null>(null);
+  const [draft, setDraft] = useState("");
+  const [args, setArgs] = useState("[]");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const abort = new AbortController();
+    moduleJson<{ entry: RegistryEntry; revision: string }>("scripthub", `/scripts/${encodeURIComponent(script.id)}/entry`, { signal: abort.signal }).then((result) => {
+      setLoaded(result);
+      setDraft(JSON.stringify(result.entry, null, 2));
+      setArgs(JSON.stringify(result.entry.start?.args ?? []));
+    }, (cause) => { if (!abort.signal.aborted) setError(errorText(cause)); });
+    return () => abort.abort();
+  }, [script.id]);
+  let entry: RegistryEntry | null = null;
+  try {
+    const parsed = JSON.parse(draft);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      && [parsed.displayName, parsed.description].every((value) => value === undefined || typeof value === "string")
+      && (parsed.notes === undefined || typeof parsed.notes === "string" || (Array.isArray(parsed.notes) && parsed.notes.every((value: unknown) => typeof value === "string")))
+      && (parsed.aliases === undefined || (Array.isArray(parsed.aliases) && parsed.aliases.every((value: unknown) => typeof value === "string")))
+      && (parsed.start === undefined || (parsed.start && typeof parsed.start === "object" && !Array.isArray(parsed.start)
+        && [parsed.start.type, parsed.start.executable, parsed.start.workingDir, parsed.start.taskName].every((value) => value === undefined || typeof value === "string")))) entry = parsed;
+  } catch { /* Invalid advanced drafts remain editable until repaired. */ }
+  const update = (value: Partial<RegistryEntry>) => setDraft(JSON.stringify({ ...entry, ...value }, null, 2));
+  const start = (value: Partial<NonNullable<RegistryEntry["start"]>>) => update({ start: { ...entry?.start, ...value } });
+  return <form className="sh-organize" aria-label={`Edit ${script.displayName}`} onSubmit={async (event) => {
+    event.preventDefault();
+    setError(null);
+    if (!entry) { setError("Entry must be a valid JSON object."); return; }
+    setSaving(true);
+    try {
+      const launchArgs: unknown = JSON.parse(args);
+      if (!Array.isArray(launchArgs) || !launchArgs.every((arg) => typeof arg === "string")) throw new Error("Arguments must be a JSON array of strings.");
+      const updated = { ...entry, ...(entry.start && (entry.start.args !== undefined || args !== "[]") ? { start: { ...entry.start, args: launchArgs } } : {}) };
+      await moduleJson("scripthub", `/scripts/${encodeURIComponent(script.id)}/entry`, { method: "PUT", body: { revision: loaded?.revision, entry: updated } });
+      await onSaved();
+      onClose();
+    } catch (cause) { setError(errorText(cause)); }
+    finally { setSaving(false); }
+  }}>
+    {!loaded && !error ? <Loading label="Loading entry..." /> : null}
+    <fieldset disabled={saving || !loaded}>
+      <fieldset disabled={!entry}>
+        <label>Name<input value={entry?.displayName ?? ""} onChange={(event) => update({ displayName: event.target.value })} /></label>
+        <label>Description<textarea aria-label="Description" value={entry?.description ?? ""} onChange={(event) => update({ description: event.target.value })} /></label>
+        <label>Notes (one per line)<textarea aria-label="Notes (one per line)" value={Array.isArray(entry?.notes) ? entry.notes.join("\n") : entry?.notes ?? ""} onChange={(event) => update({ notes: event.target.value.split("\n").filter(Boolean) })} /></label>
+        <label>Aliases (comma separated)<input value={entry?.aliases?.join(", ") ?? ""} onChange={(event) => update({ aliases: event.target.value.split(",").map((alias) => alias.trim()).filter(Boolean) })} /></label>
+        <label>Launch type<input value={entry?.start?.type ?? ""} onChange={(event) => start({ type: event.target.value })} placeholder="process, python or task" /></label>
+        <label>Executable<input value={entry?.start?.executable ?? ""} onChange={(event) => start({ executable: event.target.value })} /></label>
+        <label>Working directory<input value={entry?.start?.workingDir ?? ""} onChange={(event) => start({ workingDir: event.target.value })} /></label>
+        <label>Scheduled task name<input value={entry?.start?.taskName ?? ""} onChange={(event) => start({ taskName: event.target.value })} /></label>
+        <label>Arguments (JSON array)<textarea aria-label="Arguments (JSON array)" value={args} onChange={(event) => {
+          setArgs(event.target.value);
+          try { const value = JSON.parse(event.target.value); if (Array.isArray(value) && value.every((arg) => typeof arg === "string")) start({ args: value }); } catch { /* Preserve draft for validation on save. */ }
+        }} placeholder={'["app.js", "--port", "8080"]'} /></label>
+        <label className="mod-check"><input type="checkbox" checked={entry?.start?.startHidden ?? (entry?.start?.windowStyle !== "normal")} onChange={(event) => start({ startHidden: event.target.checked })} />Start hidden</label>
+      </fieldset>
+      <details><summary>Advanced entry JSON</summary><label>Registry entry<textarea aria-label="Registry entry" rows={16} value={draft} onChange={(event) => {
+        setDraft(event.target.value);
+        try { const value = JSON.parse(event.target.value); setArgs(JSON.stringify(value.start?.args ?? [])); } catch { /* Keep invalid draft. */ }
+      }} /></label></details>
+      <p>Launch changes apply on the next start; other settings apply when Script Hub next reads the registry. Use Organize for tags and management, and Keep Alive for supervision.</p>
+      {error ? <p role="alert">{error}</p> : null}
+      <div className="sh-actions"><button className="btn sm" type="submit" disabled={!loaded}>{saving ? "Saving..." : "Save entry"}</button><button className="btn sm ghost" type="button" onClick={onClose}>Cancel</button></div>
+    </fieldset>
+    {!loaded && error ? <p role="alert">{error} <button type="button" className="sh-link" onClick={onClose}>Close editor</button></p> : null}
+  </form>;
+}
 
 function OrganizationEditor({ script, onSave, onClose }: { script: Script; onSave: (value: Organization) => Promise<void>; onClose: () => void }) {
   const [management, setManagement] = useState(script.management ?? (isAgentManaged(script) ? "agent" : "personal"));

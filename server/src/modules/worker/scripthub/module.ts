@@ -6,6 +6,7 @@ import { hubFetch, hubJson } from "../hubClient.js";
 import { loadOrImport, withValue, type StoredConfig } from "../legacyImport.js";
 import { HttpError, Router, STREAMED } from "../router.js";
 import { organizationOf, readOrganization, type Organization } from "./organization.js";
+import { editEntry, readEntry, registryPath } from "./registry.js";
 
 interface ScriptHubConfig {
   /** Script ids the owner hid from the list; revealed again with "Show hidden". */
@@ -63,6 +64,14 @@ export const createScriptHubModule: ModuleFactory = async (ctx) => {
   });
 
   router.get("/details", () => details);
+
+  router.get("/scripts/:id/entry", async ({ params }) => readEntry(await registryPath(ctx.hubUrl), scriptId(params.id)));
+  router.put("/scripts/:id/entry", async ({ params, body }) => {
+    const id = scriptId(params.id);
+    const result = await editEntry(await registryPath(ctx.hubUrl), id, body);
+    ctx.log(`scripthub entry ${id} updated; running processes unchanged`);
+    return result;
+  });
 
   // Before the generic action route, which would otherwise take "keepalive" for an action name.
   router.post("/scripts/:id/keepalive", async ({ params, body }) => {

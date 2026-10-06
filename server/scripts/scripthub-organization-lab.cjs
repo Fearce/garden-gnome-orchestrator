@@ -18,10 +18,14 @@ const scripts = [
 (async () => {
   requireBuild();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "scripthub-organization-lab-"));
+  const registryPath = path.join(dataDir, "registry", "scripts.json");
+  fs.mkdirSync(path.dirname(registryPath));
+  fs.writeFileSync(registryPath, JSON.stringify({ scripts: [...scripts, { id: "script-hub", agentManaged: true, start: { workingDir: dataDir } }] }));
+  const registry = () => JSON.parse(fs.readFileSync(registryPath, "utf8"));
   const hub = http.createServer((req, res) => {
     res.setHeader("content-type", "application/json");
-    if (req.url === "/api/scripts") return res.end(JSON.stringify({ scripts }));
-    if (req.url === "/api/status") return res.end(JSON.stringify({ generatedAt: new Date().toISOString(), scripts }));
+    if (req.url === "/api/scripts") return res.end(JSON.stringify(registry()));
+    if (req.url === "/api/status") return res.end(JSON.stringify({ generatedAt: new Date().toISOString(), scripts: registry().scripts.filter((script) => script.id !== "script-hub") }));
     res.writeHead(404);
     res.end(JSON.stringify({ error: "not found" }));
   });
@@ -79,6 +83,36 @@ const scripts = [
       check(`${label}: recovery sort prioritizes the recovering worker`, JSON.stringify(await page.locator(".sh-card h4").allTextContents()) === JSON.stringify(["Beta worker", "Gamma game", "Alpha app"]));
       await page.getByRole("button", { name: "Reset filters", exact: true }).click();
       const card = page.locator('[data-script-id="gamma"]');
+      await card.getByRole("button", { name: "Edit entry", exact: true }).click();
+      const entryEditor = card.getByRole("form", { name: "Edit Gamma game" });
+      await entryEditor.getByLabel("Name", { exact: true }).waitFor();
+      await entryEditor.getByLabel("Description", { exact: true }).fill(`${label} edited description`);
+      await entryEditor.getByLabel("Launch type", { exact: true }).fill("process");
+      await entryEditor.getByLabel("Executable", { exact: true }).fill("node");
+      await entryEditor.getByLabel("Arguments (JSON array)").fill('["game.js", "--test"]');
+      check(`${label}: entry editor fits viewport`, await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+      check(`${label}: entry editor reflects default hidden launch`, await entryEditor.getByLabel("Start hidden", { exact: true }).isChecked());
+      // Advance the revision outside the UI to prove a stale save keeps the draft intact.
+      const changed = registry();
+      changed.scripts.find((script) => script.id === "gamma").notes = [`${label} concurrent update`];
+      fs.writeFileSync(registryPath, JSON.stringify(changed));
+      await entryEditor.getByRole("button", { name: "Save entry", exact: true }).click();
+      await entryEditor.getByRole("alert").waitFor();
+      check(`${label}: stale registry save keeps draft`, (await entryEditor.getByRole("alert").textContent()).includes("changed since") && await entryEditor.getByLabel("Description", { exact: true }).inputValue() === `${label} edited description`);
+      await entryEditor.getByRole("button", { name: "Cancel", exact: true }).click();
+      await card.getByRole("button", { name: "Edit entry", exact: true }).click();
+      await entryEditor.getByLabel("Notes (one per line)").waitFor();
+      await entryEditor.getByLabel("Name", { exact: true }).fill("Gamma game");
+      check(`${label}: reopening loads peer changes`, await entryEditor.getByLabel("Notes (one per line)").inputValue() === `${label} concurrent update`);
+      await entryEditor.getByLabel("Description", { exact: true }).fill(`${label} edited description`);
+      await entryEditor.getByLabel("Launch type", { exact: true }).fill("process");
+      await entryEditor.getByLabel("Executable", { exact: true }).fill("node");
+      await entryEditor.getByLabel("Arguments (JSON array)").fill('["game.js", "--test"]');
+      await entryEditor.getByRole("button", { name: "Save entry", exact: true }).click();
+      await entryEditor.waitFor({ state: "detached" });
+      check(`${label}: entry edits update cards`, await card.locator(".sh-desc").textContent() === `${label} edited description` && await card.locator(".sh-cmd").textContent() === "node game.js --test");
+      const savedEntry = registry().scripts.find((script) => script.id === "gamma");
+      check(`${label}: launch edits saved to actual registry`, savedEntry.start.executable === "node" && savedEntry.start.args[1] === "--test" && savedEntry.notes[0] === `${label} concurrent update`);
       await card.getByRole("button", { name: "Organize", exact: true }).click();
       const editor = card.getByRole("form");
       await editor.getByLabel("Tags (comma separated)").fill("play, Favourite, favourite");

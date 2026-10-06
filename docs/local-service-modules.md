@@ -123,6 +123,14 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
   changes the upstream runtime category, Keep Alive or start/stop behavior. `PUT /organization`
   accepts a reviewed `{scripts: {id: {management, tags}}}` audit atomically; unknown ids or
   invalid labels reject the whole audit. Per-card saves use `PUT /scripts/:id/organization`.
+  **Edit entry** reads and updates the local hub's actual `registry/scripts.json` (discovered through
+  the `script-hub` entry's absolute `start.workingDir`). Names, descriptions, notes, aliases and launch
+  settings have form fields; advanced JSON preserves and edits other fields. `GET/PUT /scripts/:id/entry`
+  use an entry revision and the agent upsert helper's `scripts.json.lock`, refuse concurrent changes to
+  the same entry, and preserve other agents' entries. Writes replace the file atomically. Running processes
+  are unchanged; launch edits apply on the next start. Script ids are immutable; management/tags and
+  supervision use their existing controls. Remote hubs or an unavailable registry location refuse editing.
+  Registry regression: from `server/`, run `node --import tsx --test src/tests/scripthubRegistry.test.ts`.
   Focused checks: from `server/`, run `node --import tsx src/tests/modules.test.ts --scripthub`;
   the browser regression is `node scripts/scripthub-organization-lab.cjs` after building both halves.
 - **Surveillance** shows live camera tiles, records, plays recordings back, and edits and discovers
