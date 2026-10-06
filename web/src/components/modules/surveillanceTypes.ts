@@ -24,6 +24,7 @@ export interface Camera {
   gridSpan: number;
   previewHeight: number;
   uiCollapsed: boolean;
+  notificationsEnabled: boolean;
   recordEnabled: boolean;
   recordingDir: string;
   recordingFps: number;

@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Field, Icon, Loading, ModuleDialog, ModuleFrame, Notice } from "./ModuleFrame.js";
 import { RecordingBar, RecordingDialog } from "./RecordingPlan.js";
 import { RecordingsBrowser } from "./SurveillanceRecordings.js";
 import { CameraViewer } from "./CameraViewer.js";
-import { usePageVisible, usePoll } from "./hooks.js";
-import { errorText, formatAgo, moduleJson, streamUrl } from "./moduleApi.js";
+import { usePoll } from "./hooks.js";
+import { errorText, formatAgo, moduleJson } from "./moduleApi.js";
 import type { Camera, CameraRecording, PreviewStrategy, RecordingMode, RecordingView, SurveillanceConfig } from "./surveillanceTypes.js";
+
+import { useFrameStream, type FrameStore, type LiveFrameEntry, type StreamStatus } from "./surveillanceFrames.js";
+import { unlockMotionSound, motionConfigChanged } from "./surveillanceNotifications.js";
 
 interface Preset {
   id: string;
@@ -55,7 +58,7 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (config.data) setCurrent(config.data);
+    if (config.data) { setCurrent(config.data); motionConfigChanged(config.data); }
   }, [config.data]);
 
   const saveConfig = useCallback(async (next: SaveableConfig) => {
@@ -63,6 +66,7 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
       method: "PUT",
       body: { recordingRoot: next.recordingRoot, ffmpegPath: next.ffmpegPath, recording: next.recording, cameras: next.cameras },
     });
+    motionConfigChanged(saved);
     setCurrent(saved);
     return saved;
   }, []);
@@ -159,6 +163,7 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
           onDiscover={() => setDialog({ kind: "discover" })}
           onCollapse={(camera) => void updateCamera(camera, { uiCollapsed: !camera.uiCollapsed })}
           onEdit={(camera) => setDialog({ kind: "camera", camera: structuredClone(camera), isNew: false })}
+          onNotifications={(camera) => { unlockMotionSound(); void updateCamera(camera, { notificationsEnabled: !camera.notificationsEnabled }); }}
           onPrivacy={(camera, enabled) => void setPrivacy(camera, enabled)}
         />
       ) : (
@@ -216,7 +221,7 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
   );
 }
 
-/** The camera grid. It alone holds the picture socket, so switching to Recordings stops the live pictures. */
+/** The camera grid shares its picture socket with motion notifications. */
 function LiveView(props: {
   toolbar: ReactNode;
   cameras: Camera[];
@@ -224,6 +229,7 @@ function LiveView(props: {
   onDiscover: () => void;
   onCollapse: (camera: Camera) => void;
   onEdit: (camera: Camera) => void;
+  onNotifications: (camera: Camera) => void;
   onPrivacy: (camera: Camera, enabled: boolean) => void;
 }) {
   const { store, state: streamState, reconnect } = useFrameStream();
@@ -257,6 +263,7 @@ function LiveView(props: {
               onCollapse={() => props.onCollapse(camera)}
               onEdit={() => props.onEdit(camera)}
               onView={() => setEnlarged(camera)}
+              onNotifications={() => props.onNotifications(camera)}
               onPrivacy={(enabled) => props.onPrivacy(camera, enabled)}
             />
           ))}
@@ -272,127 +279,6 @@ function LiveView(props: {
 }
 
 // ---- live frames ----------------------------------------------------------------------------------
-
-interface LiveFrameEntry {
-  url: string;
-  at: number;
-}
-
-type StreamStatus = "connecting" | "live" | "down" | "paused";
-
-/**
- * Camera frames for the open tab, over one WebSocket. Each tile subscribes to its own camera, so a frame
- * re-renders one picture, not the grid. The socket closes when the tab unmounts or the page is hidden,
- * which stops the worker's push loop.
- */
-class FrameStore {
-  private readonly frames = new Map<string, LiveFrameEntry>();
-  private readonly listeners = new Map<string, Set<() => void>>();
-  private readonly stateListeners = new Set<() => void>();
-  state: StreamStatus = "connecting";
-
-  subscribe(id: string, listener: () => void): () => void {
-    let set = this.listeners.get(id);
-    if (!set) this.listeners.set(id, (set = new Set()));
-    set.add(listener);
-    return () => set!.delete(listener);
-  }
-
-  get(id: string): LiveFrameEntry | null {
-    return this.frames.get(id) ?? null;
-  }
-
-  put(id: string, entry: LiveFrameEntry): void {
-    const old = this.frames.get(id);
-    this.frames.set(id, entry);
-    // The old picture may still be on screen until the new one decodes; let it go a moment later.
-    if (old) window.setTimeout(() => URL.revokeObjectURL(old.url), 2_000);
-    for (const listener of this.listeners.get(id) ?? []) listener();
-  }
-
-  subscribeState(listener: () => void): () => void {
-    this.stateListeners.add(listener);
-    return () => this.stateListeners.delete(listener);
-  }
-
-  setState(state: StreamStatus): void {
-    if (this.state === state) return;
-    this.state = state;
-    for (const listener of this.stateListeners) listener();
-  }
-
-  clear(): void {
-    for (const entry of this.frames.values()) URL.revokeObjectURL(entry.url);
-    this.frames.clear();
-  }
-}
-
-function useFrameStream(): { store: FrameStore; state: StreamStatus; reconnect: () => void } {
-  const visible = usePageVisible();
-  const store = useMemo(() => new FrameStore(), []);
-  const [generation, setGeneration] = useState(0);
-  const state = useSyncExternalStore(
-    (listener) => store.subscribeState(listener),
-    () => store.state,
-  );
-
-  useEffect(() => {
-    if (!visible) {
-      store.setState("paused");
-      return;
-    }
-    let socket: WebSocket | null = null;
-    let closed = false;
-    let attempt = 0;
-    let retry: number | null = null;
-
-    const schedule = () => {
-      if (closed) return;
-      store.setState("down");
-      retry = window.setTimeout(connect, Math.min(30_000, 1_000 * 2 ** attempt++));
-    };
-
-    const connect = () => {
-      store.setState("connecting");
-      streamUrl("surveillance").then(
-        (url) => {
-          if (closed) return;
-          socket = new WebSocket(url);
-          socket.binaryType = "arraybuffer";
-          socket.onopen = () => {
-            attempt = 0;
-            store.setState("live");
-          };
-          socket.onmessage = (event) => {
-            if (typeof event.data === "string") return;
-            const bytes = new Uint8Array(event.data as ArrayBuffer);
-            const headerLength = (bytes[0]! << 8) | bytes[1]!;
-            const header = JSON.parse(new TextDecoder().decode(bytes.subarray(2, 2 + headerLength))) as { id: string; at: number };
-            const blob = new Blob([bytes.subarray(2 + headerLength)], { type: "image/jpeg" });
-            store.put(header.id, { url: URL.createObjectURL(blob), at: header.at });
-          };
-          socket.onclose = schedule;
-        },
-        schedule,
-      );
-    };
-
-    connect();
-    return () => {
-      closed = true;
-      if (retry) window.clearTimeout(retry);
-      if (socket) {
-        socket.onclose = null;
-        socket.close();
-      }
-    };
-  }, [visible, store, generation]);
-
-  useEffect(() => () => store.clear(), [store]);
-
-  const reconnect = useCallback(() => setGeneration((g) => g + 1), []);
-  return { store, state, reconnect };
-}
 
 function useFrame(store: FrameStore, id: string): LiveFrameEntry | null {
   return useSyncExternalStore(
@@ -434,7 +320,7 @@ function FrameAge({ store, id }: { store: FrameStore; id: string }) {
   return <span className={`mono ${stale ? "sv-stale" : "faint"}`}>{stale ? `picture is ${formatAgo(frame.at)}` : `picture ${formatAgo(frame.at)}`}</span>;
 }
 
-function CameraTile(props: { camera: Camera; store: FrameStore; recording: CameraRecording | null; onCollapse: () => void; onEdit: () => void; onView: () => void; onPrivacy: (enabled: boolean) => void }) {
+function CameraTile(props: { camera: Camera; store: FrameStore; recording: CameraRecording | null; onCollapse: () => void; onEdit: () => void; onView: () => void; onNotifications: () => void; onPrivacy: (enabled: boolean) => void }) {
   const { camera, recording } = props;
   const reolink = /reolink/i.test(camera.vendor) || /reolink/i.test(camera.modelPreset);
   const privacy = camera.privacyMode?.enabled === true;
@@ -451,6 +337,9 @@ function CameraTile(props: { camera: Camera; store: FrameStore; recording: Camer
             {recording.usingSubStream ? " · sub" : ""}
           </span>
         ) : null}
+        <button className={`mod-chip${camera.notificationsEnabled ? " on" : ""}`} onClick={props.onNotifications} aria-label={`Motion notifications for ${camera.name}`} aria-pressed={camera.notificationsEnabled === true} title="Ping and count motion while this console is open">
+          Notifications {camera.notificationsEnabled ? "on" : "off"}
+        </button>
         {reolink ? (
           <button className={`mod-icon-btn${privacy ? " on" : ""}`} onClick={() => props.onPrivacy(!privacy)} title={privacy ? "Privacy mode is on: alerts are muted. Click to turn alerts back on." : "Turn on privacy mode: mute push and email alerts"} aria-pressed={privacy}>
             <Icon name="shield" size={15} />
@@ -501,6 +390,7 @@ function blankCamera(): Camera {
     gridSpan: 6,
     previewHeight: 0,
     uiCollapsed: false,
+    notificationsEnabled: false,
     recordEnabled: true,
     recordingDir: "",
     recordingFps: 2,
@@ -576,6 +466,9 @@ function CameraDialog(props: { camera: Camera; isNew: boolean; onClose: () => vo
         <div className="mod-fields">
           <Field label="Name">
             <input className="mod-input" value={camera.name} onChange={(e) => set("name", e.target.value)} />
+          </Field>
+          <Field label="Motion notifications" hint="Ping and count movement while this console is open, including other tabs. One alert per camera every 30 seconds; picture changes and lighting can trigger alerts.">
+            <label><input type="checkbox" checked={camera.notificationsEnabled === true} onChange={(e) => { unlockMotionSound(); set("notificationsEnabled", e.target.checked); }} /> Notifications on</label>
           </Field>
           <Field label="Location">
             <input className="mod-input" value={camera.location} onChange={(e) => set("location", e.target.value)} />

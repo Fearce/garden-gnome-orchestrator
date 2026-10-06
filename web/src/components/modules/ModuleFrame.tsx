@@ -20,7 +20,9 @@ export function ModuleFrame({ id, title, lede, actions, children }: { id: Module
       // Close view polls and streams BEFORE stopping the worker: another poll would otherwise
       // immediately start it again. A failed stop restores the view; Start explicitly resumes it.
       if (action === "stop") setViewStopped(true);
+      if (id === "surveillance") window.dispatchEvent(new CustomEvent("ggo:motion-power", { detail: action }));
       const result = await service.act(action, force);
+      if (id === "surveillance" && action === "stop" && !result) window.dispatchEvent(new CustomEvent("ggo:motion-power", { detail: "start" }));
       if (action === "stop" ? !result : result !== null) setViewStopped(false);
       return result;
     },

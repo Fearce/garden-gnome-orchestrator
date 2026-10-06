@@ -106,6 +106,14 @@ await test("surveillance: camera passwords and URL credentials are masked and re
   assert.equal(maskUrl("not a url"), "not a url");
 });
 
+await test("surveillance: motion notifications default off and survive masked config saves independently per camera", () => {
+  const config = normalizeConfig({ cameras: [{ id: "a", notificationsEnabled: true }, { id: "b" }, { id: "c", notificationsEnabled: "true" }] });
+  assert.deepEqual(config.cameras.map(c => c.notificationsEnabled), [true, false, false]);
+  const saved = normalizeConfig({ ...config, cameras: config.cameras.map(maskCamera) });
+  assert.deepEqual(saved.cameras.map(c => c.notificationsEnabled), [true, false, false]);
+  assert.equal(normalizeCamera({ ...saved.cameras[0], notificationsEnabled: false }).notificationsEnabled, false);
+});
+
 await test("surveillance: a password written into a camera's notes is masked and survives a save", () => {
   const notes = "Login admin / pw-secret.\nFallback: rtsp://viewer:other-pass@192.0.2.21:554/s1 (ask sam@example.com)";
   const stored = normalizeCamera({ id: "cam-1", name: "Porch", password: "pw-secret", notes });

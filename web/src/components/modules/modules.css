@@ -346,8 +346,8 @@ textarea.mod-input { resize: vertical; min-height: 54px; line-height: 1.45; }
   grid-column: span var(--span, 6); display: flex; flex-direction: column; min-width: 0; overflow: hidden;
   background: var(--bg-1); border: 1px solid var(--line); border-radius: var(--r-md);
 }
-.sv-tile-head { display: flex; align-items: center; gap: 4px; padding: 6px 6px 6px 10px; }
-.sv-tile-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0; background: none; border: 0; color: inherit; text-align: left; cursor: pointer; }
+.sv-tile-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 6px 6px 6px 10px; }
+.sv-tile-title { flex: 1 1 100px; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0; background: none; border: 0; color: inherit; text-align: left; cursor: pointer; }
 .sv-tile-title h4 { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sv-tile-title .faint { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sv-tile .mod-badge { margin-right: 2px; }

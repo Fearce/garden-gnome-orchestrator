@@ -1,3 +1,4 @@
+import { useMotionNotifications } from "./modules/surveillanceNotifications.js";
 import { lazy, Suspense, memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -391,7 +392,7 @@ function BoardTabs() {
   const counts: Record<BoardView, number | null> = {
     tasks: null,
     scripthub: null,
-    surveillance: null,
+    surveillance: useMotionNotifications(shownModules.includes("surveillance"), boardView === "surveillance"),
     home: null,
     sidekick: null,
     ide: null,

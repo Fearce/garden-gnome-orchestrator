@@ -14,9 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Per-camera Surveillance motion notifications, ping and unread tab count** (2026-10-06, Moss Lantern).
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
+
+- **Per-camera Surveillance motion notifications, ping and unread tab count** (2026-10-06, Moss Lantern).
+  Isolated motion browser lab 14/14, viewer 28/28, motion/config checks, types/build/privacy/README pass; module suite hits tracked Home idle-start timing failure. Deployment/live controls pending.
 
 - **Restore ended-day patch-note summaries across page boundaries** (2026-10-06, Thistlewatt).
   Patch-note browser lab 31/31, types, isolated builds, patch-note gate, README 70/70 and privacy pass; awaiting served-bundle verification.

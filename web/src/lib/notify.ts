@@ -37,7 +37,7 @@ export function notify(title: string, body: string): void {
   }
 }
 
-function beep(gain = 0.16): void {
+export function beep(gain = 0.16): void {
   try {
     audioCtx ??= new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
     const ctx = audioCtx;

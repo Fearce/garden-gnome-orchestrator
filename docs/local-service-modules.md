@@ -48,7 +48,8 @@ cannot stall owner chat or task execution.
 ### View lifecycle
 
 Polling runs only while its tab is visible and the browser page is in the foreground. Leaving a tab stops
-its polling and closes its frame socket and log streams.
+its polling and closes its frame socket and log streams, except when Surveillance motion notifications
+are enabled: their shared picture socket stays open while the console is open, including other board tabs.
 
 The header's **Stop** also closes the open view's polling and streams, so they cannot start the worker
 again on their next tick. **Start** reopens that view. Opening the tab again starts its worker on demand;
@@ -59,7 +60,7 @@ it does not restart recording that was explicitly stopped.
 Only an explicit choice starts continuous work, and only an explicit choice ends it. Today that is one
 choice: Surveillance's recording mode, **Off · 24/7 · Schedule** (see [Surveillance recording](#surveillance-recording)).
 It is **Off** by default, also for imported cameras: nothing records and no camera is contacted except
-for the live pictures of an open tab.
+for the live pictures of an open tab or explicitly enabled motion notifications in an open console.
 
 - 24/7 or Schedule keeps running when you leave the tab, close the browser, restart or deploy GGO, or
   reboot. The mode is stored in Surveillance's `config.json`, and while it is on the worker keeps
@@ -120,6 +121,14 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
   one on-demand ffmpeg preview, or the recorder's own frames while recording. Reolink privacy mode can be
   toggled. The module needs ffmpeg for recording, stream-only previews and playback: a path set under
   Recording settings, else the copy GGO installed for Remote control, else one on `PATH`.
+  Each camera has **Notifications on/off**, saved in its configuration and off by default.
+  Enabled cameras detect changes in a 32-by-24 luminance grid in the browser, ping independently of
+  the task notification bell and add to the unread Surveillance tab count. Opening the tab clears it;
+  reloads retain the count in that browser tab. Each camera has a 30-second alert cooldown. Uniform
+  brightness shifts are ignored, but lighting and picture changes can still trigger alerts. Monitoring
+  shares the live picture socket, works across board tabs while the console is open, and ends on Stop
+  or when the last enabled camera is switched off outside Live. Browser sleep pauses detection; sound
+  needs a click or keypress after reload to satisfy the browser's autoplay policy.
 - **Home** controls robot vacuums: status, start, pause, dock, find. It goes through Home Assistant
   first, signing in with the owner's refresh token from Home Assistant's own `.storage/auth`, so no new
   token has to be issued. The local miIO path is the fallback; it needs Python with `python-miio` and
@@ -186,7 +195,7 @@ from a stale page cannot turn recording on or off.
   passes only a camera id and a file name; the worker refuses any name the recorder could not have
   written and any path outside that camera's folder. Responses go through GGO's authenticated proxy, which
   passes `Range`, `Content-Range`, `Accept-Ranges` and `Content-Disposition`. Switching to Recordings
-  closes the live picture socket.
+  closes the live picture socket unless motion notifications are enabled.
 - A recording made before modes existed (an `armed.json` but no recording settings in `config.json`)
   continues as 24/7 on the first start of the new worker.
 
@@ -204,6 +213,9 @@ from a stale page cannot turn recording on or off.
 - `npm run surveillance-viewer-lab --prefix server` drives the fullscreen camera viewer (open from a
   picture, button/wheel/pinch/keyboard zoom, drag pan and limits, rotation, frame resizing, reset, phone fallback) against mocked module
   routes and a mocked frame socket, after `npm run build --prefix web`. It never contacts a camera.
+- `npm run surveillance-notifications-lab --prefix server` checks per-camera toggles, independent
+  motion pings, unread counts, cooldown, reloads, a shared socket, narrow layouts and explicit Stop
+  against mocked camera pictures and module routes. Build web first; no real camera is contacted.
 - `npm run modules-lab --prefix server` drives all four tabs in a browser against a throwaway instance;
   the header of `server/scripts/modules-lab.cjs` lists the build steps. It never starts or stops a
   script, never sends a vacuum command and never toggles Sidekick. It turns 24/7 on with one-minute files
