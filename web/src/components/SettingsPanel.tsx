@@ -1601,7 +1601,7 @@ function CreditSpendingField({ subId }: { subId: string }) {
   const codex = useStore((s) => s.codexUsage?.credits);
   const status = subId === CODEX_SUB_ID
     ? codex && !codex.unlimited ? `${codex.balance ?? 0} prepaid Codex credits reported.` : "Prepaid Codex balance has not been verified."
-    : paid ? `${paid.balance.toFixed(2)} ${paid.currency} prepaid; usage credits ${paid.enabled ? "enabled" : "disabled"}; auto-reload ${paid.autoReload ? "ON ? fallback blocked" : "off"}.`
+    : paid ? `${paid.balance.toFixed(2)} ${paid.currency} prepaid; usage credits ${paid.enabled ? "enabled" : "disabled"}; auto-reload ${paid.autoReload ? "ON, so fallback is blocked" : "off"}.`
     : "Prepaid balance and auto-reload status have not been verified; fallback is blocked.";
   return <div className="sub-field">
     <div className="usage-saving-head">
