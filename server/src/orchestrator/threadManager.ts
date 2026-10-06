@@ -181,6 +181,7 @@ import { config, fallbackModelFor } from "../config.js";
 import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
+import { reposOf, sweepRepoWorktrees } from "./worktreeSweep.js";
 import { childRepos, containingRepoRoot, createTaskWorktree, discoverTaskWorktrees, enclosingRepoSync, isLinkedWorktree, isWithin, mainCheckoutCopy, mainCheckoutOf, mapIntoWorktree, restoreTaskWorktree, retireTaskWorktree, taskWorkCheckout } from "./taskWorktree.js";
 import { worktreeBriefing } from "./worktreeBriefing.js";
 import { contentWithImages, toImageBlock, type ImageBlock } from "../attachments.js";
@@ -1365,7 +1366,8 @@ export class ThreadManager implements OrchestratorApi {
     // Sweep expired closed tasks on boot, then daily. unref so the timer never holds the process open.
     this.purgeExpiredClosed();
     setInterval(() => this.purgeExpiredClosed(), PURGE_SWEEP_MS).unref();
-    void this.retireFinishedWorktrees();
+    void this.retireFinishedWorktrees().then(() => this.sweepStaleWorktrees());
+    setInterval(() => void this.sweepStaleWorktrees(), PURGE_SWEEP_MS).unref();
     this.startCapSupervisor();
     // Re-arm (or fire) a token-reset auto-resume that a restart interrupted — after the cap supervisor,
     // mirroring its boot sweep. Reads the persisted wakeup epoch; the account pings needed by fireTokenResume
@@ -7556,6 +7558,21 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   private async retireFinishedWorktrees(): Promise<void> {
     const finished = this.db.listThreadsByStates(["done"]).filter((t) => !t.parentId && (t.worktrees ?? []).some((w) => existsSync(w.path)));
     for (const thread of finished) await this.retireIntegratedWorktreesOf(thread, "boot").catch(() => undefined);
+  }
+
+  /** Boot and daily: worktrees no task will ever retire (failed/cancelled/abandoned tasks, hand-made folders,
+   *  ones kept at 'done' while dirty). See worktreeSweep.ts for what is kept and why. */
+  private async sweepStaleWorktrees(): Promise<void> {
+    try {
+      const threads = this.db.listThreads();
+      for (const repo of await reposOf(threads)) {
+        for (const e of await sweepRepoWorktrees(repo, { threads })) {
+          if (e.action === "removed" || e.reason.includes("trimmed")) this.hub.log("info", `Worktree sweep: ${e.action} ${e.path} (${e.reason}).`);
+        }
+      }
+    } catch (error) {
+      this.hub.log("warn", `Worktree sweep failed: ${String(error)}`);
+    }
   }
 
   private async retireWorktrees(thread: Thread, when: "close" | "done" | "boot"): Promise<void> {
