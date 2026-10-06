@@ -14,7 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **QA: preserve rapid per-camera notification changes** (2026-10-06, Mosswick).
+  Delayed browser saves reproduce one camera toggle undoing another; serialize updates and verify recovery.
 
 ## Shipped, awaiting live proof
 
