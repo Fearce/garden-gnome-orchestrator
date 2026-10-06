@@ -91,15 +91,24 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
       running: el.getAnimations().some(a => a.playState === 'running'),
       border: parseFloat(getComputedStyle(el).borderTopWidth),
       badgeSize: parseFloat(getComputedStyle(el.querySelector('.board-tab-count')).fontSize),
+      badgeRunning: el.querySelector('.board-tab-count').getAnimations().some(a => a.playState === 'running'),
     }));
     const desktopPulse = await pulse(page.locator('.bt-surveillance'));
     check('unread desktop tab has a prominent running pulse', desktopPulse.animation === 'surveillance-alert-pulse' && desktopPulse.running && desktopPulse.border >= 2 && desktopPulse.badgeSize >= 13);
-    const firstShadow = await page.locator('.bt-surveillance').evaluate(el => getComputedStyle(el).boxShadow);
-    await page.waitForTimeout(300);
-    check('desktop pulse visibly changes the highlight over time', await page.locator('.bt-surveillance').evaluate(el => getComputedStyle(el).boxShadow) !== firstShadow);
+    const pulseFrame = (locator, ms) => locator.evaluate((el, ms) => {
+      const badge = el.querySelector('.board-tab-count');
+      const animations = [...el.getAnimations(), ...badge.getAnimations()];
+      animations.forEach(a => { a.pause(); a.currentTime = ms; });
+      const frame = { background: getComputedStyle(el).backgroundColor, shadow: getComputedStyle(el).boxShadow, badge: getComputedStyle(badge).transform };
+      animations.forEach(a => a.play());
+      return frame;
+    }, ms);
+    const trough = await pulseFrame(page.locator('.bt-surveillance'), 0);
+    const peak = await pulseFrame(page.locator('.bt-surveillance'), 600);
+    check('desktop pulse throbs the fill, halo and count badge', trough.background !== peak.background && trough.shadow !== peak.shadow && trough.badge !== peak.badge);
     await page.emulateMedia({ reducedMotion: 'reduce' });
     const reduced = await pulse(page.locator('.bt-surveillance'));
-    check('reduced motion keeps the prominent border and count without animation', reduced.animation === 'none' && !reduced.running && reduced.border >= 2 && reduced.badgeSize >= 13);
+    check('reduced motion keeps the prominent border and count without animation', reduced.animation === 'none' && !reduced.running && !reduced.badgeRunning && reduced.border >= 2 && reduced.badgeSize >= 13);
     await page.emulateMedia({ reducedMotion: 'no-preference' });
     check('motion plays the ping independently of task bell preference', await page.evaluate(() => window.__pings) === pings + 2);
     movement.a = false; await page.waitForTimeout(400); movement.a = true; await page.waitForTimeout(500);
@@ -115,6 +124,8 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
       check(`motion button pulses and fits the screen at ${width}px`, animation.running && animation.animation === 'surveillance-alert-pulse' && await alert.evaluate(el => {
         const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.height >= 44;
       }));
+      const [low, high] = [await pulseFrame(alert, 0), await pulseFrame(alert, 600)];
+      check(`motion button fill and count throb at ${width}px`, low.background !== high.background && low.badge !== high.badge);
     }
     await page.locator('.board-motion-alert').click();
     await page.waitForSelector('[aria-label="Motion notifications for Porch"]');

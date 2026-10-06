@@ -3443,22 +3443,34 @@ body.dl-resizing { user-select: none; }
   background: color-mix(in oklch, var(--accent) 16%, transparent); border-radius: 100px; padding: 1px 7px;
 }
 .surveillance-alert {
-  color: var(--text); background: color-mix(in oklch, var(--danger) 25%, var(--bg-1));
+  color: var(--text); background: color-mix(in oklab, var(--danger) 25%, var(--bg-1));
   border: 2px solid var(--danger); border-radius: var(--r-sm); padding: 7px 10px;
-  font-weight: 700; animation: surveillance-alert-pulse 1.4s ease-in-out infinite;
+  font-weight: 700; animation: surveillance-alert-pulse 1.2s ease-in-out infinite;
 }
 .surveillance-alert:hover { color: var(--text); }
 .surveillance-alert .board-tab-count {
   color: var(--bg-1); background: var(--danger); font-size: 13px; font-weight: 800;
-  min-width: 24px; text-align: center;
+  min-width: 24px; text-align: center; box-shadow: 0 0 0 2px var(--bg-1);
+  animation: surveillance-count-pulse 1.2s ease-in-out infinite;
 }
 .board-motion-alert { display: none; }
 @keyframes surveillance-alert-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--danger) 65%, transparent); }
-  50% { box-shadow: 0 0 0 6px color-mix(in oklch, var(--danger) 15%, transparent), 0 0 20px color-mix(in oklch, var(--danger) 55%, transparent); }
+  0%, 100% {
+    background-color: color-mix(in oklab, var(--danger) 16%, var(--bg-1));
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--danger) 70%, transparent);
+  }
+  50% {
+    background-color: color-mix(in oklab, var(--danger) 55%, var(--bg-1));
+    box-shadow: 0 0 0 5px color-mix(in oklch, var(--danger) 35%, transparent), 0 0 28px 4px color-mix(in oklch, var(--danger) 70%, transparent);
+  }
+}
+@keyframes surveillance-count-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.2); }
 }
 @media (prefers-reduced-motion: reduce) {
   .surveillance-alert { animation: none; box-shadow: 0 0 0 3px color-mix(in oklch, var(--danger) 40%, transparent); }
+  .surveillance-alert .board-tab-count { animation: none; }
 }
 
 .sched-view { display: flex; flex-direction: column; min-height: 0; }
