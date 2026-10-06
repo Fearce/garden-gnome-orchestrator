@@ -14,9 +14,14 @@ not merely a prompt or permission change.
 
 ## Required invariants
 
-1. An editing QA run must stage only its own hunks and make a focused Conventional Commit before it
-   returns. It pushes unless the task's captured `autoPush` policy is off or the repository's configured
-   commit-only rule applies. A task must never settle `done` with QA-created working-tree edits.
+1. An editing QA run must stage only its own QA hunks and make a focused Conventional Commit before it
+   returns. Before handoff, it also reviews and commits pending peer source, configuration and
+   documentation changes in separately attributed Conventional Commits, with proportionate checks.
+   Clean checkouts take priority over task ownership; this is standing owner authorization. Use each
+   checkout's own index and explicit reviewed paths; never discard or stash peer work, and keep ignored
+   runtime/build data and credentials out of commits. It pushes these commits unless the task's captured
+   `autoPush` policy is off or the repository's configured commit-only rule applies. A task must never
+   settle `done` with pending working-tree edits. Do not create empty commits when nothing changed.
 2. A QA run that reports `changed: true` is never its own final acceptance decision. Route the next
    QA pass to a different ready provider where possible. If only the same provider is available, force
    a **fresh session**; do not warm-resume the editor's session.

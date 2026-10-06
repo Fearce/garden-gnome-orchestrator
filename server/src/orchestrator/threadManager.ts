@@ -17396,9 +17396,10 @@ export function qaFixFreshKickoff(
 /** Editing QA runs are responsible for preserving their own fixes. This task-specific handoff is what
  * tells the shared QA system prompt whether the operator has disabled automatic pushes for this task. */
 function qaFixCommitPolicy(autoPush: boolean): string {
+  const cleanCheckout = "Before handoff, also review and commit pending peer source, configuration and documentation changes in separately attributed Conventional Commits, with proportionate verification. Clean checkouts take priority over task ownership; this is standing owner authorization. Use each checkout's own index and explicit reviewed paths; never discard or stash peer work or commit ignored runtime/build data or credentials. Do not create an empty commit when nothing changed.";
   return autoPush
-    ? "## QA fix commit policy\nIf you changed task files in this QA run, stage only your own hunks and make a focused Conventional Commit. Push it to the tracked remote before returning your verdict unless the configured commit-only remote rule applies. Do not commit when you made no changes."
-    : "## QA fix commit policy\nAuto-push is OFF for this task. If you changed task files in this QA run, stage only your own hunks and make a focused Conventional Commit, but do NOT push it. Do not commit when you made no changes.";
+    ? `## QA fix commit policy\nIf you changed task files in this QA run, stage only your own hunks and make a focused Conventional Commit. ${cleanCheckout} Push these commits to the tracked remote before returning your verdict unless the configured commit-only remote rule applies.`
+    : `## QA fix commit policy\nAuto-push is OFF for this task. If you changed task files in this QA run, stage only your own hunks and make a focused Conventional Commit. ${cleanCheckout} Do NOT push any of these commits.`;
 }
 
 /** The invariant-heavy deliverables policy lives once in the cache-stable QA system prompt. Per-task

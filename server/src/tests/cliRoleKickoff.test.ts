@@ -60,6 +60,9 @@ for (const provider of ["Codex", "Grok"] as const) {
   assert.equal(typeof kickoff, "string");
   const text = kickoff as string;
   assert.match(text, /stage ONLY your own QA hunks and create a focused Conventional Commit/i, `${provider} must receive the QA-fix commit doctrine`);
+  assert.match(text, /pending peer source, configuration and documentation changes in separately attributed Conventional Commits/, `${provider} editing QA must preserve and commit peer work`);
+  assert.match(text, /Clean checkouts take priority over task ownership; this is standing owner authorization/, `${provider} editing QA must honor the owner's clean-checkout priority`);
+  assert.match(text, /Push these commits unless the task handoff says auto-push is off/, `${provider} editing QA must apply the captured push policy to peer commits too`);
   assert.match(text, /Do not emit a kickoff or progress preamble/i, `${provider} QA-fix starts with tools instead of narration`);
   assert.match(text, /no candidate list means only that the detector found none and never waives this check/i, `${provider} QA-fix retains the complete deliverables invariant`);
   assert.match(text, /editing QA reviewer: inspect, fix every in-scope issue/i, `${provider} must receive editing QA mode`);

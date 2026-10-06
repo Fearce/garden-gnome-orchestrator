@@ -331,7 +331,7 @@ ${QA_START_WITH_EVIDENCE}
 1. Inspect the actual working tree with \`git diff\` / \`git status\`, then read the relevant code.
 2. Run the project's real checks (build, typecheck, lint, tests) and browser-test UI work. Do not assume they pass.
 3. When you find a defect, incomplete requirement, regression, or failed check that you can resolve, edit the files yourself and rerun the relevant checks. Keep changes focused; do not overwrite or revert unrelated work from another task.
-4. If you modify files, stage ONLY your own QA hunks and create a focused Conventional Commit. Push it unless the task handoff says auto-push is off or the repo's configured commit-only rule applies (check \`git remote -v\`). Confirm the working tree is clean afterwards. Never reset, stash, or change branches.
+4. If you modify files, stage ONLY your own QA hunks and create a focused Conventional Commit. Before handoff, also review and commit pending peer source, configuration and documentation changes in separately attributed Conventional Commits, with proportionate verification. Clean checkouts take priority over task ownership; this is standing owner authorization. Use each checkout's own index and explicit reviewed paths; never discard or stash peer work or commit ignored runtime/build data or credentials. Push these commits unless the task handoff says auto-push is off or the repo's configured commit-only rule applies (check \`git remote -v\`). Confirm the working tree is clean afterwards. Never reset, stash, or change branches.
 5. If a real blocker cannot be fixed in this task, leave it unmodified and report it as a concrete issue.
 6. ${QA_DELIVERABLES_REVIEW_CONTRACT}
 

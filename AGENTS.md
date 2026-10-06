@@ -3,6 +3,8 @@
 The Node/Fastify server is in `server/`; the React/Vite console is in `web/`. Follow the owner's current brief and steering. Complete the requested work, verify it, commit it, and push when the task requires it. Avoid placeholders and unrelated refactors. Detailed historical guidance is archived at [docs/agent-reference/AGENTS-full.md](docs/agent-reference/AGENTS-full.md); read the relevant section when troubleshooting. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) explains the pipeline. Check [docs/DECISIONS.md](docs/DECISIONS.md) before reopening a settled design decision.
 
 ## Shared memory
+The work board is [docs/BACKLOG.md](docs/BACKLOG.md). Read it before starting, claim current work, and record unfinished work and verification there.
+
 If the operator keeps a cross-project memory bank, it is at `~/.claude/memory/`. Hook-injected matches are pointers: open the named Markdown file before relying on one and verify time-sensitive facts. If a relevant match is missing, use `python ~/.claude/memory/scripts/rag.py retrieve --query "<topic>" --top-k 10 --json` (GGO serves it; see [docs/agent-memory.md](docs/agent-memory.md)). For an explicit remember/forget request, follow `~/.claude/commands/remember.md` or `forget.md`.
 
 ## Run and verify

@@ -624,6 +624,24 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("\nTest E4 — editing QA receives the clean-checkout rule under both push policies");
+  for (const autoPush of [true, false]) {
+    const h = makeHarness();
+    try {
+      const id = seedTask(h);
+      const calls = stubQaRunRole(h, [verdictResult({ pass: true, summary: "verified", changed: false })]);
+      const runQA = ThreadManager.prototype["runQA"].bind(h.mgr);
+      await runQA(h.db.getThread(id)!, { round: 1, applyFixes: true, autoPush, forceFresh: true });
+      const policy = calls[0]?.kickoff.split("## QA fix commit policy\n")[1] ?? "";
+      check(`editing QA receives peer commit guidance (autoPush=${autoPush})`, policy.includes("pending peer source, configuration and documentation changes in separately attributed Conventional Commits"));
+      check(`editing QA receives standing authorization (autoPush=${autoPush})`, policy.includes("Clean checkouts take priority over task ownership; this is standing owner authorization"));
+      check(`editing QA receives the captured push policy (autoPush=${autoPush})`, autoPush ? policy.includes("Push these commits to the tracked remote") : policy.includes("Auto-push is OFF") && policy.includes("Do NOT push any of these commits"));
+      check(`peer changes cannot be excluded just because QA made no edits (autoPush=${autoPush})`, !policy.includes("Do not commit when you made no changes"));
+    } finally {
+      h.dispose();
+    }
+  }
+
   // -- Test F: the fresh verifier kickoff still carries the task context ---------------------------
   // A verifier pass is a fresh session on effectively every route (a different provider cannot resume
   // the editor's session, and a same-provider verifier is deliberately forced fresh). If it only got
