@@ -19,9 +19,6 @@ same commit as the fix. Git history keeps the record.
 
 - **QA: finish clean-checkout guidance for editing reviewers and independently verify popup prevention** (2026-10-07, Codex QA).
 
-- **Full GGO security sweep and production dependency remediation** (2026-10-07, Codex): audit public source, exposed services, auth boundaries, dependencies and secret/privacy checks; fix and verify confirmed findings.
-
-
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
@@ -60,6 +57,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Ready (priority order)
 
+1. **Remove remote proxy metadata as a local-auth trust boundary** (2026-10-07, Codex): a loopback proxy that strips every forwarding header cannot be distinguished from a direct local caller on the current single listener; use a separate listener or authenticated proxy protocol before supporting such proxies. Security sweep report records the assumption.
+
 1. **Resolve Electron clean-exit verification before accepting the desktop app** (2026-10-04, Moss Gauge): desktop lab 52/55; three 20-second app-exit timeouts, and packaged-window-close verification timed out at 15 seconds. Live HTTP/WS load probe completed without a desktop-open regression.
 2. **Surface the desktop distribution and all retained validation artifacts** (2026-10-04, Moss Gauge): installer and retained screenshots/metrics have no deliverable cards; existing eight cards serve. Installer exceeds the 25 MB serving cap and needs a supported delivery path.
 1. **Investigate console smoke served/local bundle mismatch and browser shutdown timeout**: 2026-10-03 probe reports ws=live with no console errors, served index-C8zofTVy.js versus local index-BHXtYnz4.js, and browser shutdown exceeded 5000ms; authenticated HTTP bundle verification passed earlier in the same task.
@@ -84,6 +83,8 @@ same commit as the fix. Git history keeps the record.
 13. **Stabilize supervisor duplicate-boot retry verification under load** (2026-10-06, Mosswhistle).
   Completed full sweep passes 222/232 gates; supervisor reports 11/12 because only two duplicate boots fit the retry window. Nine other failures are Windows EBUSY fixture cleanup, including token-freeze, auto-model and silent-resume. Evidence: server/data/gates-last.json and gates-live logs.
 
+14. **Clear residual Graphify and desktop build dependency advisories** (2026-10-07, Codex): production Graphify transitive dependencies retain 7 moderate / 4 low advisories; the desktop development tree retains 8 moderate through Electron Builder. Recheck compatible upstream fixes without breaking the bundled CLI.
+
 ## Blocked / waiting
 
 - **Purge cached private-project reference from PR #10** (owner action: include old PR body in the GitHub Support request).
@@ -98,6 +99,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-07 **Full GGO security sweep and production dependency remediation** (48a71407, a93f23ac, Codex): committed, pushed and deployed; live local/proxied/cross-site checks returned 200/401/403, focused browser and auth tests passed, production audit has 0 critical/high. Residual risks are tracked above and in [the report](security-sweep-2026-10-07.md).
 
 - 2026-10-07 **Make Hide Done include pinned completed tasks** (3d86d439, Juniper Thimble): pin regressions, desktop/touch browser 27/27, types/builds, README 72/72 and privacy pass; authenticated live bundle matches local bytes and includes the new behavior. Live smoke retains the tracked browser-shutdown timeout.
 
@@ -130,4 +133,3 @@ No open entries.
 - 2026-10-05 **A Codex QA verdict quoting `DELIVERABLE:` no longer parks the task as "QA could not complete"** (dfe93a08, Lanternroot): live build 68588b8c carries the `"`-in-path refusal (`server/dist/agents/officeBridge.js`); `test:office-bridge` replays the verdict that broke task 6b9aab39 and parses it. Full gates 230/230.
 - 2026-10-05 **Recheck Windows process-enumeration timeout under gate load** (Lanternroot): a tasklist overrun with no earlier list no longer 503s Sidekick's whole state; liveness reads unknown (`processListError`, power disabled) while rules and the editor keep working. Unit check of the unreadable list, `test:modules` 35/35, browser check 8/8 on the live tab.
 - 2026-10-05 **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (..2cbe8718, Lanternroot; QA fixes 2e01c75f, acd38bfe, ebb90b79, 2cbe8718; claude-setup b867df3, cd7f875): live build 2cbe8718 (`--verify` matches HEAD); live Settings shows 1319 memories, 8743 passages, every card current, extraction idle, and a Haiku recall in 1.0 s. All 1310 pre-task memories present (0 missing); 29 bad auto-extractions trashed after source fixes. Eval R@1/R@2/MRR 0.894/0.925/0.909 (pgvector 0.519/0.644/0.630), off-topic 1/25, trigger audit 530/530. Evidence report, live screenshots and the 10 raw eval files are deliverable cards on the task. Ollama STAYS_DOWN.
-- 2026-10-05 **Show ChatGPT credits in the Codex chip when the plan has no 5-hour window** (2f5d8db1, b57220c9, Codex implementor): pushed and live build verified without another restart; authenticated browser confirms the credit row and retained weekly meter. Credit reader 34/34, four-width chip lab, synthetic balance rerun, README 69/69, typechecks and privacy pass; README updated and public fixtures use synthetic balances. The restart sweep's process-enumeration timeout is tracked under Ready. Follow-up: chip-lab now asserts the balance, label and replacement of 5h while preserving weekly usage; browser pass and four mutation rejections verified.
