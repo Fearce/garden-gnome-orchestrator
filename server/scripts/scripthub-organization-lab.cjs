@@ -96,8 +96,8 @@ const scripts = [
       await editor.getByRole("button", { name: "Save organization" }).click();
       await editor.waitFor({ state: "detached" });
       await page.getByRole("button", { name: "Reset filters", exact: true }).click();
-      await page.getByLabel("Search scripts").fill("favourite");
-      check(`${label}: search includes saved tags`, await page.locator(".sh-card").count() === 1);
+      await page.getByLabel("Search scripts").fill("play favourite");
+      check(`${label}: search combines multiple tags regardless of tag order`, await page.locator(".sh-card").count() === 1);
       await page.getByRole("button", { name: "Reset filters", exact: true }).click();
       await card.getByRole("button", { name: "Organize", exact: true }).click();
       check(`${label}: editor fits the viewport`, await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));

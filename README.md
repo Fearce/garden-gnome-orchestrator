@@ -132,7 +132,7 @@ be put in any order: drag one along the board header, or use Settings → Interf
   process that starts the first time you open the tab and exits when idle. Surveillance shows
   live cameras and browses and plays recordings. Script Hub hides agent-managed entries by default;
   each card's **Organize** control saves **My app / Agent-managed**, tags.
-  Search includes tags; clickable tags, a tag filter and name/recovery sorting organize the list.
+  Search includes tags and combines multiple search terms; clickable tags, a tag filter and name/recovery sorting organize the list.
   These labels are saved on the server and do not change script supervision. Per-camera **Notifications on/off** controls
   enable a ping on picture-detected movement and an unread Surveillance tab count. Unread alerts
   make the tab throb from dark to bright red with a pulsing count, or a prominent motion button

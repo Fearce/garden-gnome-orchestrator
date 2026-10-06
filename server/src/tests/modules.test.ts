@@ -642,6 +642,7 @@ try {
     assert.deepEqual(body.hiddenScripts, ["beta"]);
     const alpha = body.scripts.find((s: { id: string }) => s.id === "alpha");
     assert.equal(alpha.owner, "alex");
+    assert.equal(alpha.category, undefined, "registry categories are not exposed as UI organization");
     assert.equal(alpha.command, "node alpha.js");
     assert.equal(alpha.status.processes[0].processId, 4242);
     assert.equal(alpha.description, undefined, "descriptions are served once from /details, not every poll");

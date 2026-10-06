@@ -298,7 +298,8 @@ function matchesFilters(script: Script, filters: Filters, hidden: Set<string>, d
   const q = filters.search.trim().toLowerCase();
   if (!q) return true;
   const d = details?.scripts[script.id];
-  return [script.displayName, script.id, ...script.tags, script.command, d?.description, ...(d?.notes ?? []), ...(d?.aliases ?? [])].filter(Boolean).join(" ").toLowerCase().includes(q);
+  const text = [script.displayName, script.id, ...script.tags, script.command, d?.description, ...(d?.notes ?? []), ...(d?.aliases ?? [])].filter(Boolean).join(" ").toLowerCase();
+  return q.split(/\s+/).every((term) => text.includes(term));
 }
 
 /** Keep-Alive entries that are down first, then running ones without Keep Alive, then the rest. */
