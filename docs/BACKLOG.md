@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Optimize console responsiveness under a large task history and concurrent agent/camera load** (2026-10-06, Mosswhistle).
 
 ## Shipped, awaiting live proof
 
