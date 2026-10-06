@@ -22,9 +22,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Restore authenticated public reverse-proxy access after security hardening** (2026-10-07, Bramblebolt).
-  Exact proxy-origin allowlist; focused auth regressions, Google tunnel browser 19/19, desktop/tablet prefix-proxy browser, types/builds, README 73/73 and privacy pass. Deployment and live proxy verification follow integration.
-
 - **Stop repeated QA instruction lifecycle spam** (9b240512, 2026-10-07, Reedspindle).
   Pushed; live web hides existing noise and authenticated bundle bytes match the build. Injection 186/186, browser 28/28, feed regressions/types/builds/README/privacy pass. Silent QA delivery and batched restart notices await the next permitted server restart; this session's restart-resume instruction forbids another restart.
 
@@ -111,6 +108,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-07 **Restore authenticated public reverse-proxy access after security hardening** (1d74f651, Bramblebolt): pushed and deployed; live mounted sign-in, authenticated health and public-origin WebSocket hello pass, signed-out deploy 401 and foreign origin 403; public edge still requires its access gate. Auth regressions, Google tunnel browser 19/19, desktop/tablet prefix browser, types/builds, README 73/73 and privacy pass.
+
 - 2026-10-07 **Edit Script Hub registry entries from the UI** (Codex): 39/39 desktop/phone browser checks, registry conflict/validation regressions, focused API 3/3, types/builds, README 72/72 and privacy pass; live editor, unchanged-entry save and matching served bundle verified. All 289 entries remain tagged (29 personal, 260 agent-managed); worker refreshed without restarting GGO.
 
 - 2026-10-07 **Collapse Patch notes days into browsable summaries** (16e241c7, Bramblewick): pushed and web built; real-history live browser confirms folded defaults, individual toggles and Hide all days; served bundle matches local bytes. Desktop keyboard and phone touch folding verified. Browser 42/42, patch-notes gate, types/builds, README 72/72 and privacy pass.
@@ -144,5 +143,3 @@ No open entries.
 - 2026-10-05 **Open Surveillance camera pictures fullscreen with digital pan and zoom** (Mosswick): 20/20 isolated browser checks cover native fullscreen, phone fallback, wheel/pinch/keyboard zoom, drag pan, reset, focus and continuing frames on one socket; types, module gate, README 70/70 and privacy pass. Web built for deployment; authenticated live entry serves the exact updated Surveillance bundle.
 
 - 2026-10-05 **Show office chat gnome counts, names and activity indicators** (16abc9bf; Widdershank Pebbletail): live Hide/Show roster keeps the count visible and remembers the browser choice. Desktop/320px browser checks prove reclaimed chatter space, reopen/reload persistence, task navigation and live updates; gating 57/57 plus roster regressions, types/build, README 70/70 and privacy pass. Original office/relay lab 53/53.
-
-- 2026-10-05 **A Codex QA verdict quoting `DELIVERABLE:` no longer parks the task as "QA could not complete"** (dfe93a08, Lanternroot): live build 68588b8c carries the `"`-in-path refusal (`server/dist/agents/officeBridge.js`); `test:office-bridge` replays the verdict that broke task 6b9aab39 and parses it. Full gates 230/230.
