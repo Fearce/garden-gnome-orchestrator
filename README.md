@@ -217,6 +217,10 @@ Requires **Node 22 or newer** (not enforced anywhere, but that is what it is dev
 run against) and a working `claude` CLI login. `git` must be on your PATH for the git
 surfaces, worktrees and patch notes.
 
+Patch notes automatically finish loading the last calendar day across page boundaries.
+Busy days show their summary once the day has ended, without an extra click on
+"Show older changes".
+
 ```bash
 git clone https://github.com/Fearce/garden-gnome-orchestrator.git
 cd garden-gnome-orchestrator

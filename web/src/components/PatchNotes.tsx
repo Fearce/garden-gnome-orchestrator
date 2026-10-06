@@ -12,7 +12,7 @@ import "./patchNotes.css";
  * gets none until midnight, since every new commit would otherwise rewrite it.
  */
 export function PatchNotes() {
-  const { entries, upcoming, pending, hasMore, loading, error, seenSha, load, loadOlder, markSeen } = usePatchNotes();
+  const { entries, upcoming, pending, hasMore, lastDayComplete, loading, error, seenSha, load, loadOlder, markSeen } = usePatchNotes();
   const [filter, setFilter] = useState<Filter>("all");
   const [showInternal, setShowInternal] = useState(false);
   // Snapshot what was unseen when the area opened, so this visit still marks it after it is recorded as seen.
@@ -49,7 +49,7 @@ export function PatchNotes() {
           <div className="big">{loading ? "Reading the change history…" : "No changes recorded"}</div>
         </div>
       ) : (
-        <DayGroups rows={annotated} filter={filter} showInternal={showInternal} lastDayComplete={!hasMore} today={today} />
+        <DayGroups rows={annotated} filter={filter} showInternal={showInternal} lastDayComplete={lastDayComplete} today={today} />
       )}
 
       {hasMore ? (

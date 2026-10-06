@@ -185,11 +185,18 @@ function daysOf(count) {
   return days.map((d) => ({ ...d, busy: d.facing.length >= 5 }));
 }
 
-/** Busy days that have ended. The last loaded day may continue on the next page, so it never counts. */
+/** The client extends the first page through its last local day. */
+function initialCount() {
+  const times = git("log", "--no-merges", "--format=%ct").split("\n").map((s) => Number(s) * 1000);
+  let count = Math.min(150, times.length);
+  while (count < times.length && localDay(times[count]) === localDay(times[count - 1])) count++;
+  return count;
+}
+
+/** Busy days that have ended, including the automatically completed page boundary. */
 function busyPastDays(count) {
   const today = localDay(Date.now());
   return daysOf(count)
-    .slice(0, -1)
     .filter((d) => d.busy && d.day < today);
 }
 
@@ -211,8 +218,8 @@ async function groupNamed(page, label) {
  *  what Haiku writes (test:patch-notes proves the server side against a fixture repo). The first ask is
  *  held to see the loading line; the second fails, and its day must fall back to plain bullets. */
 async function digestPass(browser, dataDir) {
-  const busy = busyPastDays(150);
-  const todayDay = daysOf(150).find((d) => d.day === localDay(Date.now()));
+  const busy = busyPastDays(initialCount());
+  const todayDay = daysOf(initialCount()).find((d) => d.day === localDay(Date.now()));
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
   const asked = [];
@@ -221,8 +228,9 @@ async function digestPass(browser, dataDir) {
   await page.route("**/api/patch-notes/digest", async (route) => {
     const ask = route.request().postDataJSON();
     asked.push(ask);
-    if (asked.length === 1) await held;
-    if (asked.length === 2) return route.fulfill({ status: 502, json: { error: "the summary model gave no usable answer" } });
+    const ordinal = asked.length;
+    if (ordinal === 1) await held;
+    if (ordinal === 2) return route.fulfill({ status: 502, json: { error: "the summary model gave no usable answer" } });
     await route.fulfill({ json: { summary: `Lab digest of ${ask.shas.length} changes.` } });
   });
   await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
@@ -258,7 +266,7 @@ async function digestPass(browser, dataDir) {
   const todayGroup = await groupNamed(page, "Today");
   check(
     `today${todayDay ? ` (${todayDay.facing.length} operator-facing changes)` : ""} shows its bullets with no digest and is never asked about`,
-    !todayDay || (todayGroup.rows > 0 && !todayGroup.digest && !asked.some((a) => a.day === todayDay.day)),
+    (!todayDay || todayDay.facing.length === 0 || todayGroup.rows > 0) && !todayGroup.digest && !asked.some((a) => a.day === todayDay?.day),
     JSON.stringify(todayGroup),
   );
   const first = await page.$(".pn-day:has(.pn-digest)");
@@ -276,10 +284,49 @@ async function digestPass(browser, dataDir) {
   await ctx.close();
 }
 
+/** Reproduce a busy Sunday split across several API pages without clicking Show older changes. */
+async function boundaryPass(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 }, timezoneId: "Europe/Copenhagen" });
+  const page = await ctx.newPage();
+  await page.clock.install({ time: new Date("2026-10-04T12:00:00Z") });
+  const template = { short: "abcdef0", kind: "fix", type: "fix", scope: null, breaking: false, body: "" };
+  const notes = Array.from({ length: 7 }, (_, i) => ({ ...template, sha: String(i + 1).padStart(40, "0"), summary: `Boundary change ${i + 1}`, at: Date.parse(i < 6 ? "2026-10-04T12:00:00Z" : "2026-10-03T12:00:00Z") }));
+  const reads = [];
+  const asked = [];
+  await page.route("**/api/patch-notes?*", (route) => {
+    const skip = Number(new URL(route.request().url()).searchParams.get("skip"));
+    reads.push(skip);
+    const entries = notes.slice(skip, skip + 2);
+    return route.fulfill({ json: { head: notes[0].sha, running: notes[0].sha, pending: [], upcoming: [], entries, hasMore: skip + entries.length < notes.length, error: null } });
+  });
+  await page.route("**/api/patch-notes/digest", (route) => {
+    asked.push(route.request().postDataJSON());
+    return route.fulfill({ json: { summary: "Sunday's complete summary." } });
+  });
+  await page.request.post(`http://127.0.0.1:${PORT}/api/login`, { data: { password: authPassword() } });
+  await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 60000 });
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 60000 });
+  await page.click('.board-tab:has-text("Patch notes")');
+  await page.waitForFunction(() => document.querySelectorAll(".pn-day .pn-row").length === 6);
+  check("a completed page of today's changes remains unsummarized", asked.length === 0 && await page.locator(".pn-digest").count() === 0);
+  await page.clock.fastForward(48 * 60 * 60 * 1000);
+  await page.waitForSelector(".pn-digest:not(.loading)", { timeout: 15000 });
+  const overview = page.locator(".pn-digest:not(.loading)");
+  await overview.scrollIntoViewIfNeeded();
+  const box = await overview.boundingBox();
+  check("Sunday's restored overview is visible in the browser viewport", box && box.height > 0 && box.y >= 0 && box.y + box.height <= 900);
+  check("a Sunday split over multiple pages shows its complete summary automatically", asked.length === 1 && asked[0].day === "2026-10-04" && sortedKey(asked[0].shas) === sortedKey(notes.slice(0, 6).map((n) => n.sha)) && await page.locator(".pn-day .pn-row").count() === 6, JSON.stringify({ reads, asked }));
+  check("automatic completion stops at Sunday's boundary and keeps older changes available", reads.includes(2) && reads.includes(4) && reads.includes(6) && await page.locator(".pn-more button").isVisible());
+  await page.click(".pn-more button");
+  await page.waitForFunction(() => document.querySelectorAll(".pn-day .pn-row").length === 7);
+  check("manual older paging resumes at the completed day without duplicates or omissions", await page.locator(".pn-day .pn-row").count() === 7 && await page.locator(".pn-more button").count() === 0);
+  await ctx.close();
+}
+
 /** The console left open past midnight: today's group turns into "Yesterday" and is summarized then,
  *  with no reload. The browser's clock is faked so the lab need not wait for a real midnight. */
 async function rolloverPass(browser, dataDir) {
-  const today = daysOf(150).find((d) => d.day === localDay(Date.now()));
+  const today = daysOf(initialCount()).find((d) => d.day === localDay(Date.now()));
   if (!today?.busy) {
     console.log(`  (rollover pass skipped: today has ${today?.facing.length ?? 0} operator-facing changes, a digest needs 5)`);
     return;
@@ -361,7 +408,7 @@ async function upcomingPass(browser, dataDir) {
 
 (async () => {
   requireBuild();
-  const local = history(150);
+  const local = history(initialCount());
   // Mark the 8th-newest commit as last seen, so the seven above it are "new" in the ways that count.
   const seenIdx = Math.min(7, local.length - 1);
   const expectedNew = local.slice(0, seenIdx).filter((c) => !c.internal).length;
@@ -374,6 +421,7 @@ async function upcomingPass(browser, dataDir) {
     await desktopPass(browser, dataDir, expectedNew, local[seenIdx].sha, local);
     await upcomingPass(browser, dataDir);
     await digestPass(browser, dataDir);
+    await boundaryPass(browser);
     await rolloverPass(browser, dataDir);
     await phonePass(browser, dataDir);
     await browser.close();

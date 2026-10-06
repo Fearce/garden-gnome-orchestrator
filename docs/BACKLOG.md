@@ -14,10 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Restore missing ended-day patch-note summaries** (2026-10-06, Thistlewatt).
-  Owner reports Sunday October 4 has no overview; investigating paging and digest failures.
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
+
+- **Restore ended-day patch-note summaries across page boundaries** (2026-10-06, Thistlewatt).
+  Patch-note browser lab 31/31, types, isolated builds, patch-note gate, README 70/70 and privacy pass; awaiting served-bundle verification.
 
 - **QA: preserve held tab drags on touchscreens** (2026-10-05, Brindle Cog).
   Separate mouse/touch sensors fix native pointercancel; board-head-lab 54/54, gates 230/230, types/builds/privacy pass. Independent review required.

@@ -39,6 +39,7 @@ interface PatchNotesState {
   upcoming: PatchNote[];
   entries: PatchNote[];
   hasMore: boolean;
+  lastDayComplete: boolean;
   loading: boolean;
   error: string | null;
   /** The newest commit the operator has seen in this area; entries above it are "new to you". */
@@ -96,10 +97,33 @@ function writeSeen(sha: string): void {
   }
 }
 
-async function fetchPage(skip: number): Promise<PatchNotesPage> {
+async function fetchRawPage(skip: number): Promise<PatchNotesPage> {
   const res = await fetch(apiUrl(`/api/patch-notes?skip=${skip}`), { cache: "no-store" });
   if (!res.ok) throw new Error(`patch notes request failed (${res.status})`);
   return (await res.json()) as PatchNotesPage;
+}
+
+/** Finish a calendar day before displaying its overview, even across git pages. Keep the next
+ * day's rows for the next user-requested page rather than loading the whole history automatically. */
+async function fetchPage(skip: number): Promise<PatchNotesPage & { lastDayComplete: boolean }> {
+  const page = await fetchRawPage(skip);
+  const last = page.entries.at(-1);
+  const day = last ? localDay(last.at) : null;
+  if (!page.hasMore || !day) return { ...page, lastDayComplete: true };
+  while (page.hasMore) {
+    const next = await fetchRawPage(skip + page.entries.length);
+    if (next.error) throw new Error(next.error);
+    if (!next.entries.length) {
+      if (next.hasMore) throw new Error("patch notes paging made no progress");
+      page.hasMore = false;
+      break;
+    }
+    const boundary = next.entries.findIndex((note) => localDay(note.at) !== day);
+    page.entries.push(...(boundary < 0 ? next.entries : next.entries.slice(0, boundary)));
+    if (boundary >= 0) return { ...page, hasMore: true, lastDayComplete: true };
+    page.hasMore = next.hasMore;
+  }
+  return { ...page, lastDayComplete: true };
 }
 
 async function fetchDigest(day: string, shas: string[]): Promise<string> {
@@ -130,7 +154,7 @@ export const usePatchNotes = create<PatchNotesState>((set, get) => {
       }
       set({ running: page.running, pending: page.pending ?? [], upcoming: page.upcoming, error: page.error });
       // Same HEAD: keep what is loaded, so a refresh does not collapse the older pages the operator opened.
-      if (page.head !== get().head || get().entries.length === 0) set({ head: page.head, entries: page.entries, hasMore: page.hasMore });
+      if (page.head !== get().head || get().entries.length === 0) set({ head: page.head, entries: page.entries, hasMore: page.hasMore, lastDayComplete: page.lastDayComplete });
     } catch (e) {
       set({ error: (e as Error).message });
     } finally {
@@ -145,6 +169,7 @@ export const usePatchNotes = create<PatchNotesState>((set, get) => {
     upcoming: [],
     entries: [],
     hasMore: false,
+    lastDayComplete: true,
     loading: false,
     error: null,
     seenSha: readSeen(),
@@ -161,7 +186,7 @@ export const usePatchNotes = create<PatchNotesState>((set, get) => {
       try {
         const page = await fetchPage(entries.length);
         const known = new Set(entries.map((e) => e.sha));
-        set({ entries: [...entries, ...page.entries.filter((e) => !known.has(e.sha))], hasMore: page.hasMore });
+        set({ entries: [...entries, ...page.entries.filter((e) => !known.has(e.sha))], hasMore: page.hasMore, lastDayComplete: page.lastDayComplete });
       } catch (e) {
         set({ error: (e as Error).message });
       } finally {
