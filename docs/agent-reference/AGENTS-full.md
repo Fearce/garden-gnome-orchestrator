@@ -206,17 +206,18 @@ Gate: `test:office-gating`.
 
 ## Shared-worktree commits
 
-The index is shared too. Before committing, inspect both `git diff --cached` and `git diff`; never use
-`git add -A`, `git add .`, or a bare `git commit`. For separate files, use
-`python <safe_commit.py> -m "type: summary" -- path/to/file` so foreign
-staged work cannot enter the commit. When another agent changed the same file, use
-`python <stage_my_hunks.py> --list path/to/file` (locate both with `findtool.py`), select only your hunks,
-verify the cached diff, then commit exactly the tree you verified. A plain `git commit` re-reads the
-shared index, and a peer staging between your check and your commit lands their files in it (hit
-2026-09-28). Freeze the tree at verification and commit it atomically:
-`T=$(git write-tree); P=$(git rev-parse HEAD); git diff --stat $P $T` (confirm only your files), then
-`git update-ref HEAD $(git commit-tree $T -p $P -F msg.txt) $P` — it refuses if HEAD moved. These tools are the required
-commit boundary for concurrent work; do not hand-roll an index patch or rely on interactive `git add -p`.
+Clean checkouts take priority over task ownership. Review and preserve all pending source,
+configuration and documentation changes, including peer changes, and commit them before handoff.
+Use separately attributed Conventional Commits and appropriate checks; the owner authorizes this
+without another permission request. Coordinate in the office, but do not leave peer work dirty or
+let it block integration or deployment. Ignored runtime/build data and credentials stay untracked.
+
+The index is shared too. Inspect `git diff --cached` and `git diff` before each commit and name the
+reviewed paths explicitly with `python <safe_commit.py> -m "type: summary" -- path/to/file`
+(locate it with `findtool.py`). Use the checkout's own index and ordinary path-limited commits.
+Never use a temporary index, `commit-tree` or `update-ref` to commit onto a checked-out branch:
+that leaves its index behind the branch and exposes staged reversals. Preserve peer content in
+shared files; do not discard, stash or silently rewrite it to obtain a clean checkout.
 
 ## Deliverables (agent-produced files)
 A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the
