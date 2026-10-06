@@ -1318,6 +1318,7 @@ export interface OrchestratorSettings {
   tokenConservationMode: boolean;
   // Per-subscription exact model/effort fallback. Off by default; the threshold defaults to 90% and
   // trips when EITHER a provider's 5-hour or weekly used-percent reaches it.
+  allowCreditSpending: Record<string, boolean>; // prepaid subscription balances only; default off
   usageSaving: UsageSavingPolicies;
   // ---- Subscriptions: which provider backs the implementor (hard routing gate at dispatch) ----
   // Claude is the default backend. Planner/researcher/QA start on Claude and fail over to an enabled
@@ -1653,6 +1654,8 @@ export interface RateLimitInfo {
   rejectedAt?: number;
   rateLimitType?: "five_hour" | "seven_day" | "seven_day_opus" | "seven_day_sonnet" | "overage";
   utilization?: number;
+  overageStatus?: "allowed" | "allowed_warning" | "rejected";
+  overageInUse?: boolean;
 }
 
 // ---- Normalized agent stream events (decoupled from SDK message shapes) ----

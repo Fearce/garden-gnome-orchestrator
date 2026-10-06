@@ -46,6 +46,8 @@ export interface AgentRunConfig {
   forkSession?: boolean;
   /** Per-run subscription token — lets concurrent agents run on different accounts. */
   oauthToken?: string;
+  allowCredits?: boolean; // a verified prepaid fallback, never normal included dispatch
+
   /** Alternate Anthropic-compatible endpoint (z.ai GLM). When set with `authToken`, the run is routed
    *  there via ANTHROPIC_BASE_URL instead of the Claude subscription — see buildEnv. */
   baseUrl?: string;
@@ -657,7 +659,9 @@ export class AgentRun implements AgentRunLike {
       }
       case "rate_limit_event":
         if (m.rate_limit_info) {
-          const info = m.rate_limit_info as RateLimitInfo;
+          const raw = m.rate_limit_info as RateLimitInfo;
+          const covered = this.cfg.allowCredits === true && (raw.overageStatus === "allowed" || raw.overageStatus === "allowed_warning");
+          const info = covered && raw.status === "rejected" ? { ...raw, status: "allowed" as const } : raw;
           if (info.status === "rejected") {
             this.rateLimited = true;
             this.rateLimitInfo = info;

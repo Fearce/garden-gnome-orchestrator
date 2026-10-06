@@ -259,6 +259,11 @@ export function chatgptLoginAvailable(): boolean {
 
 /** Whether the Codex backend has ANY usable auth right now — a ChatGPT login (source or seeded isolated)
  *  or a configured API key. The dispatch gate uses this to decide whether Codex can implement. */
+/** Mirrors seedCodexAuth precedence without allowing a prepaid fallback to use API billing. */
+export function codexSubscriptionAuthAvailable(hasApiKey: boolean): boolean {
+  return !!chatgptLoginSource() || (!hasApiKey && isolatedAuthMode() === "chatgpt");
+}
+
 export function codexAuthAvailable(hasApiKey: boolean): boolean {
   return chatgptLoginAvailable() || !!isolatedAuthMode() || hasApiKey;
 }

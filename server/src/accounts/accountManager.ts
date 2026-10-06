@@ -1,4 +1,5 @@
 import type { EventHub } from "../events.js";
+import { fetchPrepaidCredits, prepaidCreditsReady, type PrepaidCredits } from "./prepaidCredits.js";
 import { fallbackModelFor } from "../config.js";
 import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
@@ -66,6 +67,8 @@ export interface PersistedAccountUsage {
   modelLimits?: Record<string, number>;
   // A run can learn about a session/quota cap before the next dashboard ping. Keep that latch across a
   // deploy so boot cannot immediately route a cap-parked task back to the same subscription.
+  organizationId?: string | null;
+  creditRejectedUntil?: number;
   rateLimited?: boolean;
   rateLimitWindow?: string | null;
   rateLimitResetAt?: number | null;
@@ -410,6 +413,8 @@ export class AccountManager {
   private restorePersistedCap(st: AccountState, persisted: PersistedAccountUsage, now: number): void {
     // Snapshot versions before cap persistence lack these optional fields and naturally restore as
     // clear. A future reset is the durable provider hold; an expired/unknown legacy value is not.
+    st.organizationId = persisted.organizationId ?? null;
+    if (persisted.creditRejectedUntil != null && persisted.creditRejectedUntil > now) this.creditRejections.set(st.account.id, persisted.creditRejectedUntil);
     const heldCap =
       persisted.rateLimited === true &&
       persistedCapIsCredible(persisted.rateLimitWindow ?? null, persisted.rateLimitResetAt ?? null, now);
@@ -548,6 +553,7 @@ export class AccountManager {
     const next = token.trim() || undefined;
     if (st.account.profileToken === next) return;
     st.account.profileToken = next;
+    this.prepaidCredits.delete(st.account.id);
     st.resetCredits = null;
     st.resetCreditsError = null;
     st.updatedAt = Date.now();
@@ -571,12 +577,18 @@ export class AccountManager {
    * banked reset is most useful.
    */
   private async readResetCredits(st: AccountState): Promise<void> {
+    this.prepaidCredits.delete(st.account.id);
     const token = st.account.profileToken?.trim();
     if (!token) {
       this.applyResetCredits(st, null, null);
       return;
     }
-    const result = await fetchProfileUsage(token);
+    const [result, paid] = await Promise.all([
+      fetchProfileUsage(token),
+      st.organizationId ? fetchPrepaidCredits(token, st.organizationId) : Promise.resolve(null),
+    ]);
+    if (st.account.profileToken?.trim() !== token) return;
+    if (paid) this.prepaidCredits.set(st.account.id, paid);
     if (!result.ok) {
       this.applyResetCredits(st, null, profileErrorMessage(result.reason));
       return;
@@ -670,6 +682,8 @@ export class AccountManager {
       holdUntil: st.holdUntil,
       extWakeAt: st.extWakeAt,
       modelLimits: liveModelLimits(st, now),
+      organizationId: st.organizationId,
+      creditRejectedUntil: this.creditRejections.get(st.account.id),
       rateLimited: capActive,
       rateLimitWindow: capActive ? st.rateLimitWindow : null,
       rateLimitResetAt: capActive ? st.rateLimitResetAt : null,
@@ -683,6 +697,10 @@ export class AccountManager {
    *  during the hold. */
   private async pingOne(a: Account, expectIdle = false, scheduledProbe = false): Promise<PingUsage | null> {
     const sentAt = Date.now();
+    const previous = this.states.get(a.id);
+    const exhausted = previous && ((previous.fiveHour ?? 0) >= 100 && (previous.fiveHourReset ?? 0) > sentAt
+      || (previous.sevenDay ?? 0) >= 100 && (previous.sevenDayReset ?? 0) > sentAt);
+    if (exhausted) return null; // polling must not spend credits just to read exhausted meters
     const r = await pingUsage(a.token);
     const st = this.states.get(a.id);
     if (!st) return null;
@@ -927,6 +945,7 @@ export class AccountManager {
     if (!st) return;
     const now = Date.now();
     if (info.status === "rejected") {
+      if (this.canSpendCredits(st, now)) this.creditRejections.set(accountId, now + 5 * 60_000);
       st.rateLimited = true;
       st.rateLimitWindow = info.rateLimitType ?? null;
       // A stated reset that is already PAST means the window rolled over between the run's request and
@@ -1026,7 +1045,7 @@ export class AccountManager {
 
   private accountHasSafetyHeadroom(state: AccountState, now: number): boolean {
     const threshold = this.tokenSafetyLimit;
-    if (threshold == null) return true;
+    if (threshold == null || this.canSpendCredits(state, now)) return true;
     const blocked = (used: number | null, reset: number | null): boolean =>
       used != null && used >= threshold && (reset == null || reset > now);
     return !blocked(state.fiveHour, state.fiveHourReset) && !blocked(state.sevenDay, state.sevenDayReset);
@@ -1081,7 +1100,7 @@ export class AccountManager {
     const { usable, pool, allOverSafety, capacity } = this.selectionPool(now, demand);
     pool.sort(this.primaryOrder(allOverSafety));
     const chosen = pool[0]!;
-    const capacityWindows = accountCapacityWindows(chosen, now, this.tokenSafetyLimit ?? HARD_LIMIT);
+    const capacityWindows = this.canSpendCredits(chosen, now) ? [] : accountCapacityWindows(chosen, now, this.tokenSafetyLimit ?? HARD_LIMIT);
     return {
       account: chosen.account,
       hasHeadroom: usable.includes(chosen),
@@ -1107,7 +1126,7 @@ export class AccountManager {
     const candidates = [...this.states.values()].filter((s) => {
       if (s.account.id === excludeId || !s.enabled) return false;
       const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
-      return !limited && accountHasHardHeadroom(s, now) && this.accountHasSafetyHeadroom(s, now);
+      return (!limited && accountHasHardHeadroom(s, now) && this.accountHasSafetyHeadroom(s, now)) || this.canSpendCredits(s, now);
     });
     if (!candidates.length) return null;
     // Honor the soft weekly ceiling here too: fail over to a sub still under its ceiling when one exists,
@@ -1215,13 +1234,14 @@ export class AccountManager {
     const enabled = all.filter((state) => state.enabled);
     const base = enabled.length ? enabled : all;
     return base.map((state) => {
-      const windows = accountCapacityWindows(state, now, this.tokenSafetyLimit ?? HARD_LIMIT);
+      const paid = this.canSpendCredits(state, now);
+      const windows = paid ? [] : accountCapacityWindows(state, now, this.tokenSafetyLimit ?? HARD_LIMIT);
       const limited = state.rateLimited && (state.rateLimitResetAt == null || state.rateLimitResetAt > now);
       return {
         account: state.account,
         windows,
         assessment: assessCapacity(windows, demand, now),
-        hasHeadroom: !limited && accountHasHardHeadroom(state, now) && this.accountHasSafetyHeadroom(state, now),
+        hasHeadroom: paid || (!limited && accountHasHardHeadroom(state, now) && this.accountHasSafetyHeadroom(state, now)),
         nextViableAt: nextViableAt(windows, demand, now),
       };
     });
@@ -1316,6 +1336,7 @@ export class AccountManager {
         .map(([model, resetsAt]) => ({ model, fallback: fallbackModelFor(model) ?? model, resetsAt })),
       resetCredits: s.resetCredits ?? undefined,
       resetCreditsError: s.resetCreditsError,
+      prepaidCredits: this.prepaidCredits.get(s.account.id),
       profileTokenPresent: !!s.account.profileToken?.trim(),
       updatedAt: s.updatedAt,
       error: s.error,
@@ -1324,6 +1345,35 @@ export class AccountManager {
 
   private publish(): void {
     this.hub.publish({ type: "accounts", accounts: this.dto() });
+  }
+
+  private creditPolicies: Record<string, boolean> = {};
+  private allowCreditFallback: () => boolean = () => false;
+  private prepaidCredits = new Map<string, PrepaidCredits>();
+  private creditRejections = new Map<string, number>();
+
+  setCreditSpending(policies: Record<string, boolean>, allowed: () => boolean): void {
+    this.creditPolicies = policies;
+    this.allowCreditFallback = allowed;
+  }
+
+  includedHasHeadroom(now = Date.now()): boolean {
+    return [...this.states.values()].some((s) => s.enabled
+      && !(s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now))
+      && accountHasHardHeadroom(s, now));
+  }
+
+  creditFallbackForToken(token: string | undefined): boolean {
+    const state = [...this.states.values()].find((s) => !!token && s.account.token === token);
+    return !!state && this.canSpendCredits(state, Date.now());
+  }
+
+  private canSpendCredits(state: AccountState, now: number): boolean {
+    const exhausted = state.rateLimited || (state.fiveHour ?? 0) >= 100 || (state.sevenDay ?? 0) >= 100;
+    return exhausted && state.enabled && this.creditPolicies[state.account.id] === true
+      && (this.creditRejections.get(state.account.id) ?? 0) <= now
+      && prepaidCreditsReady(this.prepaidCredits.get(state.account.id), now)
+      && this.allowCreditFallback();
   }
 
   private selectionPool(now: number, demand?: CapacityDemand): {
@@ -1339,7 +1389,7 @@ export class AccountManager {
     const base = enabledStates.length ? enabledStates : all;
     const usable = base.filter((s) => {
       const limited = s.rateLimited && (s.rateLimitResetAt == null || s.rateLimitResetAt > now);
-      return !limited && accountHasHardHeadroom(s, now) && this.accountHasSafetyHeadroom(s, now);
+      return (!limited && accountHasHardHeadroom(s, now) && this.accountHasSafetyHeadroom(s, now)) || this.canSpendCredits(s, now);
     });
     // First keep a long task off a pool that cannot plausibly carry it. The soft weekly ceiling and the
     // operator's spread/perishable preference are tiebreaks INSIDE that capacity tier, never above it.

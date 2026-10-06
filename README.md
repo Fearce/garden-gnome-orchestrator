@@ -220,8 +220,18 @@ resumes automatically.
 
 The Codex top-bar chip shows the reported ChatGPT credit balance in place of the 5-hour
 meter when the plan has no 5-hour window, while keeping the weekly usage meter. The balance
-is rounded up to a whole credit; hover for the decimal balance. Credits are display-only
-and do not change routing or cap checks.
+is rounded up to a whole credit; hover for the decimal balance.
+
+Each Claude and Codex subscription has **Allow credits to be spent** in **Settings >
+Subscriptions**, off by default. It admits credit-backed runs only after every enabled
+provider has exhausted its included allowance. Codex requires a positive, finite prepaid
+balance and ChatGPT login; this fallback never switches to API-key billing. Claude requires
+a matching profile token (the banked-reset token), enabled usage credits, a positive prepaid
+balance, and verified auto-reload off. Missing, expired, or stale billing information blocks
+the fallback. Anthropic API Console credits cannot fund a Claude subscription run.
+GGO never purchases credits or enables auto-reload. Provider billing settings govern
+credit use within an already-running turn; this routing switch is not a provider billing
+control. A real credit rejection parks work rather than repeatedly retrying it.
 
 An optional free task pool (**Settings > Free AI connections**) can run the planner or
 reader of a small, low-risk task on a free-tier API. Everything else stays on the

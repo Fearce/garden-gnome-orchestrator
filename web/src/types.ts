@@ -723,6 +723,7 @@ export interface AccountDTO {
   // not known (no profile token, or the read failed); `available: 0` is what says none are banked.
   resetCredits?: ResetCreditsDTO;
   resetCreditsError?: string | null;
+  prepaidCredits?: { balance: number; currency: string; autoReload: boolean; enabled: boolean; readAt: number };
   profileTokenPresent?: boolean;
   updatedAt: number;
   error?: string | null;
@@ -872,6 +873,7 @@ export interface OrchestratorSettings {
   // against it is capped to GPT-6 Luna. Claude is never downgraded (Opus 5.5 only). Never overrides a
   // strict model pin or an auto-select pick.
   tokenConservationMode: boolean;
+  allowCreditSpending: Record<string, boolean>; // prepaid subscription balances only; default off
   usageSaving: UsageSavingPolicies; // off by default; each subscription defaults to a 90% threshold
   // Subscriptions: which provider backs the implementor (server-authoritative hard gate). Claude is the
   // default backend; individual Claude accounts toggle via AccountDTO.enabled (account.set), not here.

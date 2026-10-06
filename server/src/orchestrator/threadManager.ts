@@ -17,7 +17,7 @@ import {
   type UserContent,
 } from "../agents/runner.js";
 import { InputLedger } from "../agents/inputLedger.js";
-import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
+import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, codexSubscriptionAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { withCommunicationSystemPolicy, withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
 import { normalizeDirectorDirectives } from "../agents/directorDirectives.js";
 import { codexAllowanceReopened, codexPools, codexUsageCapped, liveCodexUsage, readCodexUsage, readCodexUsageForSnapshot } from "../agents/codexUsage.js";
@@ -1326,6 +1326,7 @@ export class ThreadManager implements OrchestratorApi {
     this.reconcileReviewInjectionsAfterRestart();
     this.reconcileManualDeployments();
     this.applyAccountEnabled();
+    this.applyCreditSpending();
     this.applyAccountWeeklySafety();
     this.applyAccountProfileTokens();
     this.accounts.setSpreadUsage(this.settingBool("setting_spread_usage", false));
@@ -3269,6 +3270,7 @@ export class ThreadManager implements OrchestratorApi {
       autoBurn: this.settingBool("setting_auto_burn", false),
       resetBurn: this.resetBurnSetting(),
       tokenConservationMode: this.settingBool("setting_token_conservation_mode", false),
+      allowCreditSpending: this.creditSpendingSettings(),
       usageSaving: this.usageSavingSettings(),
       codexEnabled: this.settingBool("setting_codex_enabled", false),
       codexModel: this.codexModel(),
@@ -4399,7 +4401,7 @@ export class ThreadManager implements OrchestratorApi {
     if (opts?.resume) resolved.resume = opts.resume;
     if (target.provider === "claude") {
       resolved.oauthToken = this.accounts.byId(target.accountId)?.token || undefined;
-      return new AgentRun(resolved);
+      return new AgentRun({ ...resolved, allowCredits: this.accounts.creditFallbackForToken?.(resolved.oauthToken) ?? false });
     }
     if (target.provider === "zai") {
       resolved.baseUrl = config.zai.baseUrl;
@@ -4530,7 +4532,7 @@ export class ThreadManager implements OrchestratorApi {
         cfg.oauthToken = account.token;
         cfg.memoryHooks = this.memory.agentHooks("cowork");
         target = { provider, model, effort, accountId: account.id, accountLabel: account.label };
-        agent = new AgentRun(cfg);
+        agent = new AgentRun({ ...cfg, allowCredits: this.accounts.creditFallbackForToken?.(cfg.oauthToken) ?? false });
         startContent = this.communicationContent(contentWithImages(prompt, images));
       } else if (provider === "codex") {
         const saving = savingFor(CODEX_SUB_ID);
@@ -5668,6 +5670,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.autoBurn !== undefined) this.db.kvSet("setting_auto_burn", patch.autoBurn ? "1" : "0");
     if (patch.resetBurnSubId !== undefined) this.setResetBurn(patch.resetBurnSubId);
     if (patch.tokenConservationMode !== undefined) this.db.kvSet("setting_token_conservation_mode", patch.tokenConservationMode ? "1" : "0");
+    if (patch.allowCreditSpending !== undefined) {
+      this.db.kvSet("setting_allow_credit_spending", JSON.stringify(this.sanitizeCreditSpending(patch.allowCreditSpending)));
+      this.applyCreditSpending();
+    }
     if (patch.usageSaving !== undefined) this.db.kvSet("setting_usage_saving", JSON.stringify(sanitizeUsageSaving(patch.usageSaving)));
     if (patch.codexEnabled !== undefined) this.db.kvSet("setting_codex_enabled", patch.codexEnabled ? "1" : "0");
     if (patch.codexEffort !== undefined && CODEX_EFFORTS.includes(patch.codexEffort)) this.db.kvSet("setting_codex_effort", patch.codexEffort);
@@ -6317,6 +6323,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     demand?: CapacityDemand,
     modelOverride?: string,
     ignoreGeneralCapLatch = false,
+    includedOnly = false,
   ): ProviderCandidate {
     const now = Date.now();
     const u = readCodexUsage();
@@ -6354,6 +6361,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       ),
       startupCooldownUntil,
     );
+    const paid = !includedOnly && !ignoreGeneralCapLatch && !dedicated && this.codexCreditsReady();
     const selectedPoolReady =
       !poolCapped &&
       !nearLimit(fiveHour, fiveHourReset) &&
@@ -6364,14 +6372,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       hasHeadroom:
         startupCooldownUntil == null &&
         // probe-accounts mirrors this exact general-or-dedicated pool decision as separate ladder rungs.
-        selectedPoolReady,
+        (selectedPoolReady || paid),
       fiveHour: fiveHour,
       fiveHourReset,
       sevenDay,
       sevenDayReset,
       weeklySafetyPct: this.settings().codexWeeklySafetyPct,
-      capacityLabel: dedicated?.limitName ?? (dedicated?.limitId ? `Codex ${dedicated.limitId}` : "Codex general pool"),
-      capacityWindows,
+      capacityLabel: paid ? "Codex prepaid credits" : dedicated?.limitName ?? (dedicated?.limitId ? `Codex ${dedicated.limitId}` : "Codex general pool"),
+      capacityWindows: paid ? [] : capacityWindows,
     };
   }
 
@@ -6838,10 +6846,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           const stale = !pool && usage != null && now - usage.updatedAt > ROUTING_USAGE_STALE_MS;
           const near = (pct: number | null, reset: number | null): boolean =>
             pct != null && pct >= (dedicated ? POOL_HARD_LIMIT_PCT : CODEX_HARD_LIMIT) && (reset == null || reset > now);
+          const paid = !dedicated && this.codexCreditsReady();
           options.push({
             provider: "codex",
-            label: dedicated ? `Codex ${dedicated.limitName ?? dedicated.limitId}` : "Codex general pool",
-            windows: withStartupHealthCooldown(
+            label: paid ? "Codex prepaid credits" : dedicated ? `Codex ${dedicated.limitName ?? dedicated.limitId}` : "Codex general pool",
+            windows: paid ? [] : withStartupHealthCooldown(
               withCapLatch(
                 capacityWindowsWithFreshness(
                   standardCapacityWindows(fiveHour, fiveHourReset, sevenDay, sevenDayReset),
@@ -6857,10 +6866,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             ),
             hasHeadroom:
               startupCooldownUntil == null &&
-              !capActive &&
+              (paid || (!capActive &&
               !near(fiveHour, fiveHourReset) &&
               !near(sevenDay, sevenDayReset) &&
-              (!dedicated || poolHasHeadroom(dedicated, now)),
+              (!dedicated || poolHasHeadroom(dedicated, now)))),
           });
         }
       }
@@ -7004,8 +7013,44 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (exactPool?.modelSlug) return this.codexProviderCandidate(role, demand, model).hasHeadroom;
     }
     if (this.dedicatedPoolReadyFor(role, demand)) return true;
+    if (this.codexCreditsReady()) return true;
     if (this.codexCapActive()) return false;
     return this.codexProviderCandidate(role, demand).hasHeadroom;
+  }
+
+  private sanitizeCreditSpending(value: Record<string, boolean>): Record<string, boolean> {
+    return Object.fromEntries([CODEX_SUB_ID, ...config.accounts.map((a) => a.id)]
+      .map((id) => [id, value[id] === true]));
+  }
+
+  private creditSpendingSettings(): Record<string, boolean> {
+    try { return this.sanitizeCreditSpending(JSON.parse(this.db.kvGet("setting_allow_credit_spending") ?? "{}")); }
+    catch { return this.sanitizeCreditSpending({}); }
+  }
+
+  private applyCreditSpending(): void {
+    const api = this.accounts as AccountManager & { setCreditSpending?: (policies: Record<string, boolean>, allowed: () => boolean) => void };
+    api.setCreditSpending?.(this.creditSpendingSettings(), () => !this.includedCapacityAvailable());
+  }
+
+  /** Credits are a last resort across all enabled providers, never a cheaper-headroom preference. */
+  private includedCapacityAvailable(): boolean {
+    const api = this.accounts as AccountManager & { includedHasHeadroom?: () => boolean };
+    if (api.includedHasHeadroom ? api.includedHasHeadroom() : this.accounts.hasHeadroom()) return true;
+    if (this.settings().codexEnabled && codexAuthAvailable(!!this.openaiApiKey())
+      && this.codexProviderCandidate(undefined, undefined, undefined, false, true).hasHeadroom) return true;
+    return this.grokImplementorReady() || this.zaiImplementorReady();
+  }
+
+  private codexCreditsReady(): boolean {
+    if (!this.creditSpendingSettings()[CODEX_SUB_ID] || !codexSubscriptionAuthAvailable(!!this.openaiApiKey()) || this.includedCapacityAvailable()) return false;
+    // A real rejection still wins: a positive balance cannot bypass a provider spend-control refusal.
+    if (this.codexCapUntil != null && this.codexCapUntil > Date.now()) return false;
+    const usage = readCodexUsage();
+    const c = usage?.credits;
+    const exhausted = usage?.limitState === "reached" || (usage?.fiveHour ?? 0) >= 100 || (usage?.sevenDay ?? 0) >= 100;
+    return exhausted && !!usage && Date.now() - usage.updatedAt < 10 * 60_000
+      && c?.hasCredits === true && c.unlimited === false && c.balance != null && c.balance > 0;
   }
 
   /** Restore each Claude account's persisted enabled flag into the live AccountManager on boot. */
@@ -9204,7 +9249,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         if (resume) cfg.resume = resume;
         agent = this.createRoleAgent("zai", () => new ZaiAgentRun(cfg));
       } else {
-        agent = this.createRoleAgent("claude", () => new AgentRun(cfg));
+        agent = this.createRoleAgent("claude", () => new AgentRun({ ...cfg, allowCredits: this.accounts.creditFallbackForToken?.(cfg.oauthToken) ?? false }));
       }
       this.wireRun(agent, thread.id, run.id, role, accountId);
       this.track(thread.id, agent);
@@ -10141,7 +10186,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // it's alone in the repo, withOfficeNote returns the kickoff untouched — no office overhead.
       // Default mode skips this outright: it has no office MCP tools to coordinate with anyway.
       if (!opts?.resume && !vanilla) startKickoff = this.withOfficeNote(thread, "implementor", kickoff, true);
-      agent = new AgentRun(cfg);
+      agent = new AgentRun({ ...cfg, allowCredits: this.accounts.creditFallbackForToken?.(cfg.oauthToken) ?? false });
     }
     this.wireRun(agent, thread.id, runId, "implementor", accountId);
     this.stopDisplacedImplementor(thread.id);

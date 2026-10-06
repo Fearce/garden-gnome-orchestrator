@@ -1593,10 +1593,35 @@ function AccountEffort({ accountId }: { accountId: string }) {
   return <EffortCapField value={value} options={options} onChange={onChange} />;
 }
 
+function CreditSpendingField({ subId }: { subId: string }) {
+  const settings = useStore((s) => s.settings);
+  const setSettings = useStore((s) => s.setSettings);
+  const enabled = settings.allowCreditSpending?.[subId] === true;
+  const paid = useStore((s) => s.accounts.find((a) => a.id === subId)?.prepaidCredits);
+  const codex = useStore((s) => s.codexUsage?.credits);
+  const status = subId === CODEX_SUB_ID
+    ? codex && !codex.unlimited ? `${codex.balance ?? 0} prepaid Codex credits reported.` : "Prepaid Codex balance has not been verified."
+    : paid ? `${paid.balance.toFixed(2)} ${paid.currency} prepaid; usage credits ${paid.enabled ? "enabled" : "disabled"}; auto-reload ${paid.autoReload ? "ON ? fallback blocked" : "off"}.`
+    : "Prepaid balance and auto-reload status have not been verified; fallback is blocked.";
+  return <div className="sub-field">
+    <div className="usage-saving-head">
+      <label className="sub-label">Allow credits to be spent</label>
+      <button type="button" className={"switch" + (enabled ? " on" : "")} role="switch"
+        aria-label={`Allow credits to be spent for ${subId}`} aria-checked={enabled}
+        onClick={() => setSettings({ allowCreditSpending: { ...settings.allowCreditSpending, [subId]: !enabled } })} />
+    </div>
+    <div className="sub-msg dim">Use existing prepaid credits only when every enabled subscription is exhausted. No purchases or API billing.
+      {subId !== CODEX_SUB_ID && " Requires a matching banked-reset token, enabled Claude usage credits, a verified prepaid balance, and auto-reload off."}
+      {" Provider billing settings govern credit use within a running turn."}
+      <br />{status}
+    </div>
+  </div>;
+}
+
 function AccountUsageSaving({ accountId }: { accountId: string }) {
   const models = useStore((s) => s.settings.claudeModels);
   const defaultModel = useStore((s) => s.settings.modelDefaults.implementor ?? "claude-opus-5-5");
-  return <UsageSavingField subId={accountId} models={models} defaultModel={defaultModel} effortsFor={claudeEffortsForModel} />;
+  return <><CreditSpendingField subId={accountId} /><UsageSavingField subId={accountId} models={models} defaultModel={defaultModel} effortsFor={claudeEffortsForModel} /></>;
 }
 
 /** The soft WEEKLY-safety ceiling for one Claude account. At/above this weekly utilization the sub sheds new
@@ -1918,6 +1943,7 @@ function SubscriptionsSection() {
 
         <CodexModels />
         <CodexEffortField />
+        <CreditSpendingField subId={CODEX_SUB_ID} />
         <UsageSavingField
           subId={CODEX_SUB_ID}
           models={codexModelOptions(settings.codexModels)}

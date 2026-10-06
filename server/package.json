@@ -247,6 +247,8 @@
     "test:model-request": "tsx src/tests/modelRequest.itest.ts",
     "test:model-request-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/model-request-ui.test.tsx",
     "test:token-conservation": "tsx src/tests/tokenConservation.test.ts",
+    "test:credit-spending": "tsx src/tests/creditSpending.test.ts",
+    "credit-spending-lab": "node scripts/credit-spending-lab.cjs",
     "test:usage-saving": "tsx src/tests/usageSaving.test.ts",
     "test:usage-saving-resume-drift": "tsx src/tests/usageSavingResumeDrift.itest.ts",
     "test:role-run-effort": "tsx src/tests/roleRunEffort.itest.ts",

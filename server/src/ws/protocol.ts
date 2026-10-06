@@ -85,6 +85,7 @@ export interface AccountDTO {
   resetCreditsError?: string | null;
   // Whether a `user:profile` token is configured for this subscription. The token itself is never
   // broadcast — this is the same write-only treatment the Discord/z.ai keys get.
+  prepaidCredits?: { balance: number; currency: string; autoReload: boolean; enabled: boolean; readAt: number };
   profileTokenPresent?: boolean;
   updatedAt: number;
   error?: string | null;
@@ -456,6 +457,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         // A Claude account id or "codex"; null stops the burn. Eligibility is checked server-side.
         resetBurnSubId: z.string().min(1).max(64).nullable(),
         tokenConservationMode: z.boolean(),
+        allowCreditSpending: z.record(z.string().min(1).max(64), z.boolean()).refine((m) => Object.keys(m).length <= 64),
         usageSaving: z
           .record(
             z.string().min(1).max(64),

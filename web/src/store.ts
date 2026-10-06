@@ -911,6 +911,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   autoBurn: false,
   resetBurn: null,
   tokenConservationMode: false,
+  allowCreditSpending: {},
   usageSaving: {},
   codexEnabled: false,
   codexModel: "gpt-6-astra",
