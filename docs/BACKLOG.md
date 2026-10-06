@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Allow paid subscription credits only after included usage is exhausted** (2026-10-07, Mosswick).
+- **Allow paid subscription credits only after included usage is exhausted** (2026-10-07, Pebble Sprocket).
 
 - **QA: finish clean-checkout guidance for editing reviewers and independently verify popup prevention** (2026-10-07, Codex QA).
 
