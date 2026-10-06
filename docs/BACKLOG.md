@@ -22,8 +22,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Stop repeated QA instruction lifecycle spam** (2026-10-07, Reedspindle).
-  QA delivery is silent, restart notices summarize recipient batches, and existing noise is hidden; injection 186/186, browser 28/28, feed regressions/types/builds/README/privacy pass. Server deployment awaits the next authorized restart after this session was auto-resumed; web cleanup can ship without a restart.
+- **Stop repeated QA instruction lifecycle spam** (9b240512, 2026-10-07, Reedspindle).
+  Pushed; live web hides existing noise and authenticated bundle bytes match the build. Injection 186/186, browser 28/28, feed regressions/types/builds/README/privacy pass. Silent QA delivery and batched restart notices await the next permitted server restart; this session's restart-resume instruction forbids another restart.
 
 - **Allow prepaid subscription credits only after included usage is exhausted** (6d3c3d24, 2026-10-07, Pebble Sprocket).
   Credit contracts, provider fallback, token-freeze 95/95, account/Codex usage, desktop/phone 9/9, types/builds, README 72/72 and privacy pass; local opt-ins saved ON. Server activation awaits the next permitted restart; this task's restart-resume instruction forbids another restart.
