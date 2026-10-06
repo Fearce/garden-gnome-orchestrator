@@ -16,6 +16,7 @@ same commit as the fix. Git history keeps the record.
 
 - **Full GGO security sweep and production dependency remediation** (2026-10-07, Codex): audit public source, exposed services, auth boundaries, dependencies and secret/privacy checks; fix and verify confirmed findings.
 
+- **Audit Script Hub management and add editable organization tags** (2026-10-06, Mosswick).
 
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
