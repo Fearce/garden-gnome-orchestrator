@@ -50,6 +50,10 @@ cannot be reached by one. Never make Classic conditional — no `:root:not([data
   `[data-theme="<id>"] [data-theme-preview="classic"]` — otherwise it advertises your palette.
 - **Animate arrivals only.** The feed streams and the board re-sorts on live data; animating
   either flickers. Every animation needs a `prefers-reduced-motion` opt-out.
+- **Mix a warm colour into a surface `in oklab`, never `in oklch`.** OKLCH interpolates hue, and
+  `--danger` (hue 25) to `--bg-1` (hue 264) takes the short way through magenta, so a strong red
+  tint renders purple (the Surveillance alert's peak, 2026-10-06). Mixing with `transparent` keeps
+  the hue and is fine in either space.
 - **`.theme-transition` is on `<html>` for the length of the cross-fade only.** Leaving a
   global `transition: … !important` live would put a fade on every state change in the app.
 
