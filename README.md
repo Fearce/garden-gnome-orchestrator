@@ -236,6 +236,10 @@ the fallback. Anthropic API Console credits cannot fund a Claude subscription ru
 GGO never purchases credits or enables auto-reload. Provider billing settings govern
 credit use within an already-running turn; this routing switch is not a provider billing
 control. A real credit rejection parks work rather than repeatedly retrying it.
+Codex telemetry does not report automatic credit purchase settings: turn automatic top-up off
+in the provider's billing settings before enabling this fallback to spend only existing funds.
+Balance freshness is checked separately from usage meters, so a new meter reading cannot
+extend an older balance's 20-minute eligibility window.
 
 An optional free task pool (**Settings > Free AI connections**) can run the planner or
 reader of a small, low-risk task on a free-tier API. Everything else stays on the

@@ -268,6 +268,11 @@ try {
     const rollout = parseCodexCredits({ has_credits: false, unlimited: false, balance: "0" });
     check("the rollout's snake_case credit block parses too", rollout?.balance === 0 && !rollout.hasCredits, JSON.stringify(rollout));
     check("a missing credit block is unknown, not zero", parseCodexCredits(undefined) === null && parseCodexCredits(null) === null);
+    check("missing or malformed credit flags are unknown", [
+      { hasCredits: true, balance: "100" },
+      { unlimited: false, balance: "100" },
+      { hasCredits: true, unlimited: "false", balance: "100" },
+    ].every((value) => parseCodexCredits(value) === null));
     check(
       "an unreadable balance is unknown, not zero",
       parseCodexCredits({ hasCredits: true, unlimited: false, balance: "lots" }) === null &&
@@ -317,6 +322,17 @@ try {
       readCodexUsageForSnapshot()?.credits?.balance === 12300.5,
       JSON.stringify(readCodexUsageForSnapshot()?.credits),
     );
+    const balanceAt = Date.now() - 21 * 60_000;
+    noteCodexPing({fiveHour:100,sevenDay:100,fiveHourReset:at+86_400_000,sevenDayReset:at+86_400_000,
+      planType:"pro",updatedAt:balanceAt,credits:{balance:100,hasCredits:true,unlimited:false}});
+    writeRollout(sourceHome,Date.now()+10_000,100,100);
+    __codexUsageTestHooks.clearReadCache();
+    const merged = readCodexUsage();
+    check("new rollout meters retain the balance's original timestamp",
+      merged?.credits?.balance === 100 && merged.creditsUpdatedAt === balanceAt && merged.updatedAt > balanceAt,
+      JSON.stringify(merged));
+    check("presentation retains the balance's original timestamp too",
+      readCodexUsageForSnapshot()?.creditsUpdatedAt === balanceAt);
   }
 
   console.log(`\n=== RESULT: ${failed === 0 ? "PASS" : "FAIL"} - ${passed} passed, ${failed} failed ===`);

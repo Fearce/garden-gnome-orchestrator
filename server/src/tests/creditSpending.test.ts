@@ -104,6 +104,11 @@ try {
  noteCodexPing({fiveHour:100,sevenDay:100,fiveHourReset:reset,sevenDayReset:reset,planType:"pro",updatedAt:Date.now(),limitState:"reached",credits:{balance:55000,hasCredits:true,unlimited:false}});
  assert.equal(t.codexImplementorReady(),true);
  assert.equal(t.codexProviderCandidate().capacityLabel,"Codex prepaid credits");
+ for (const creditAt of [Date.now()-1200001,Date.now()+10000,NaN]) {
+  noteCodexPing({fiveHour:100,sevenDay:100,fiveHourReset:reset,sevenDayReset:reset,planType:"pro",updatedAt:Date.now(),creditsUpdatedAt:creditAt,limitState:"reached",credits:{balance:55000,hasCredits:true,unlimited:false}});
+  assert.equal(t.codexCreditsReady(),false); // fresh meters cannot refresh stale or invalid funds
+ }
+ noteCodexPing({fiveHour:100,sevenDay:100,fiveHourReset:reset,sevenDayReset:reset,planType:"pro",updatedAt:Date.now(),limitState:"reached",credits:{balance:55000,hasCredits:true,unlimited:false}});
  t.noteCodexCap({status:"rejected",resetsAt:reset},undefined,false);
  assert.equal(t.codexCreditsReady(),true); // subscription-only rejection cannot strand prepaid funds
  t.noteCodexCap({status:"rejected",resetsAt:reset},undefined,true);

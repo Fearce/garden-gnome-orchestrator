@@ -7049,8 +7049,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (Number(this.db.kvGet("codex_credit_rejected_until") ?? 0) > Date.now()) return false;
     const usage = readCodexUsage();
     const c = usage?.credits;
+    const creditReadAt = usage?.creditsUpdatedAt ?? usage?.updatedAt;
     const exhausted = usage?.limitState === "reached" || (usage?.fiveHour ?? 0) >= 100 || (usage?.sevenDay ?? 0) >= 100;
     return exhausted && !!usage && usage.updatedAt <= Date.now() && Date.now() - usage.updatedAt < PREPAID_FRESH_MS
+      && creditReadAt != null && Number.isFinite(creditReadAt) && creditReadAt <= Date.now() && Date.now() - creditReadAt < PREPAID_FRESH_MS
       && c?.hasCredits === true && c.unlimited === false && c.balance != null && c.balance > 0;
   }
 

@@ -49,6 +49,8 @@ export interface CodexUsageDTO {
    *  (Pro Lite) shows this in that window's place. Both the live ping and rollout snapshots carry it;
    *  ABSENT means the reading did not say, never "no credits". */
   credits?: CodexCreditsDTO;
+  /** Time the balance was actually read; newer usage meters cannot refresh an older balance. */
+  creditsUpdatedAt?: number;
 }
 
 export interface CodexCreditsDTO {
@@ -78,6 +80,7 @@ interface RateLimits {
 export function parseCodexCredits(raw: unknown): CodexCreditsDTO | null {
   if (!raw || typeof raw !== "object") return null;
   const v = raw as { hasCredits?: unknown; has_credits?: unknown; unlimited?: unknown; balance?: unknown };
+  if (typeof v.unlimited !== "boolean" || typeof (v.hasCredits ?? v.has_credits) !== "boolean") return null;
   const unlimited = v.unlimited === true;
   const hasCredits = (v.hasCredits ?? v.has_credits) === true;
   const balance = typeof v.balance === "string" && v.balance.trim() ? Number(v.balance) : typeof v.balance === "number" ? v.balance : NaN;
@@ -89,6 +92,10 @@ export function parseCodexCredits(raw: unknown): CodexCreditsDTO | null {
 export function withCodexCredits(raw: unknown): { credits?: CodexCreditsDTO } {
   const credits = parseCodexCredits(raw);
   return credits ? { credits } : {};
+}
+
+function creditFields(source: CodexUsageDTO | null | undefined): Pick<CodexUsageDTO, "credits" | "creditsUpdatedAt"> {
+  return source?.credits ? { credits: source.credits, creditsUpdatedAt: source.creditsUpdatedAt ?? source.updatedAt } : {};
 }
 
 /** A rate-limit window normalized from either wire shape (rollout snake_case / app-server camelCase). */
@@ -320,7 +327,7 @@ export function readCodexUsageForSnapshot(): CodexUsageDTO | null {
   const live = liveCodexUsage();
   const pools = live?.pools?.length ? live.pools : freshest.pools;
   // An older CLI's rollout can win `freshest` without a credit block; the live read still knows it.
-  const credits = freshest.credits ?? live?.credits;
+  const credits = creditFields(freshest.credits ? freshest : live);
   return {
     ...cloneUsage(freshest)!,
     wakeAt,
@@ -328,7 +335,7 @@ export function readCodexUsageForSnapshot(): CodexUsageDTO | null {
     // to come from that same reading or the two halves describe different moments.
     ...restoreLimitState(pools === freshest.pools ? freshest.limitState : live?.limitState),
     ...(pools?.length ? { pools } : {}),
-    ...(credits ? { credits } : {}),
+    ...credits,
   };
 }
 
@@ -385,6 +392,8 @@ function loadPersistedCache(): CodexUsageDTO | null {
       pools: Array.isArray(value.pools) ? value.pools.map(restorePool) : undefined,
       ...restoreResetCredits(value.resetCredits),
       ...withCodexCredits(value.credits),
+      ...(typeof value.creditsUpdatedAt === "number" && Number.isFinite(value.creditsUpdatedAt)
+        ? { creditsUpdatedAt: value.creditsUpdatedAt } : {}),
     };
   } catch {
     return null;
@@ -439,7 +448,7 @@ function readCodexUsageUncached(now: number): CodexUsageDTO | null {
   // working, and it carries no `rateLimitResetCredits` at all — spreading `best` alone therefore made a
   // granted reset disappear from the chip the moment a turn ran.
   const resetCredits = codexResetCredits();
-  const credits = best.credits ?? liveCodexUsage()?.credits;
+  const credits = creditFields(best.credits ? best : liveCodexUsage());
   const inferred = turnFiveHourReset(latestTurn, now);
   if ((best.fiveHourReset == null || best.fiveHourReset <= now) && inferred) {
     return {
@@ -449,10 +458,10 @@ function readCodexUsageUncached(now: number): CodexUsageDTO | null {
       wakeAt,
       ...(pools ? { pools } : {}),
       ...(resetCredits ? { resetCredits } : {}),
-      ...(credits ? { credits } : {}),
+      ...credits,
     };
   }
-  return { ...best, wakeAt, ...(pools ? { pools } : {}), ...(resetCredits ? { resetCredits } : {}), ...(credits ? { credits } : {}) };
+  return { ...best, wakeAt, ...(pools ? { pools } : {}), ...(resetCredits ? { resetCredits } : {}), ...credits };
 }
 
 /** Banked resets from the freshest live ping, or null when no fresh ping has landed. Separate from
