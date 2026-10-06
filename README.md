@@ -130,7 +130,10 @@ be put in any order: drag one along the board header, or use Settings → Interf
 - **Script Hub, Surveillance, Home and Sidekick** (each off until you turn it on under
   Settings → Interface). Optional tabs for local services, each served by its own worker
   process that starts the first time you open the tab and exits when idle. Surveillance shows
-  live cameras and browses and plays recordings. Per-camera **Notifications on/off** controls
+  live cameras and browses and plays recordings. Script Hub hides agent-managed entries by default;
+  each card's **Organize** control saves **My app / Agent-managed**, a display category and tags.
+  Search includes tags; category and tag filters plus name/category/recovery sorting organize the list.
+  These labels are saved on the server and do not change script supervision. Per-camera **Notifications on/off** controls
   enable a ping on picture-detected movement and an unread Surveillance tab count. Unread alerts
   make the tab throb from dark to bright red with a pulsing count, or a prominent motion button
   beneath the area selector on narrow screens (a steady highlight with reduced motion). Opening the tab

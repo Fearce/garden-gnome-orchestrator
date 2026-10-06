@@ -16,7 +16,6 @@ same commit as the fix. Git history keeps the record.
 
 - **Full GGO security sweep and production dependency remediation** (2026-10-07, Codex): audit public source, exposed services, auth boundaries, dependencies and secret/privacy checks; fix and verify confirmed findings.
 
-- **Audit Script Hub management and add editable organization tags** (2026-10-06, Mosswick).
 
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
@@ -24,6 +23,9 @@ same commit as the fix. Git history keeps the record.
 
 - **Add effort selection to the Task model dialog** (2026-10-06, Bramble Dial).
   Model-supported tiers and durable next-start effort; integration 59/59, desktop/phone browser 27/27, types/builds/README/privacy pass. Server deployment pending: restart-resume instruction prohibits another restart.
+
+- **Audit Script Hub management and pre-tag every registry entry** (2026-10-06, Saffron Rivet).
+  Editable management/categories/tags; browser 22/22, types/builds/README/privacy pass. Script Hub regressions pass; broad module suite hits the tracked Home idle-start timeout. Live audit/deploy proof pending.
 
 
 

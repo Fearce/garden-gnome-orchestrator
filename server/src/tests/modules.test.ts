@@ -584,13 +584,13 @@ const hub: Server = createServer((req, res) => {
     return json({
       generatedAt: new Date().toISOString(),
       scripts: [
-        { id: "alpha", owner: "alex", displayName: "Alpha", category: "tools", description: "A long description", keepAlive: true, start: { executable: "node", args: ["alpha.js"] }, status: { state: "running", processes: [{ processId: 4242, name: "node.exe", commandLine: "node alpha.js" }] } },
+        { id: "alpha", owner: "alex", agentManaged: true, tags: ["support"], displayName: "Alpha", category: "tools", description: "A long description", keepAlive: true, start: { executable: "node", args: ["alpha.js"] }, status: { state: "running", processes: [{ processId: 4242, name: "node.exe", commandLine: "node alpha.js" }] } },
         { id: "beta", displayName: "Beta", start: { executable: "beta.exe" }, status: { state: "stopped", processes: [] } },
         { id: "script-hub", start: { workingDir: join(root, "nowhere") } },
       ],
     });
   }
-  if (req.url === "/api/scripts") return json({ scripts: [{ id: "sidekick", displayName: "Sidekick", start: { executable: join(root, "Sidekick.exe") } }, { id: "overlay", displayName: "Overlay" }] });
+  if (req.url === "/api/scripts") return json({ scripts: [{ id: "alpha" }, { id: "beta" }, { id: "sidekick", displayName: "Sidekick", start: { executable: join(root, "Sidekick.exe") } }, { id: "overlay", displayName: "Overlay" }] });
   if (req.method === "POST" && req.url === "/api/start") return json({ ok: true });
   res.writeHead(404, { "content-type": "application/json" });
   res.end(JSON.stringify({ error: "not here" }));
@@ -651,6 +651,42 @@ try {
     const service = await api("/api/modules/scripthub/service");
     assert.equal(service.body.state, "running");
     assert.ok(pidAlive(service.body.pid));
+  });
+
+  await test("Script Hub: explicit management, durable edits and atomic audits preserve hidden scripts", async () => {
+    const url = "/api/modules/scripthub/api";
+    const before = (await api(`${url}/status`)).body;
+    assert.equal(before.scripts.find((s: { id: string }) => s.id === "alpha").management, "agent", "a personal owner does not override explicit agent management");
+    assert.deepEqual(before.scripts.find((s: { id: string }) => s.id === "alpha").tags, ["support"]);
+    const personal = { management: "personal", category: "My tools", tags: [" Dashboard ", "dashboard", "utility"] };
+    assert.equal((await api(`${url}/scripts/alpha/organization`, { method: "PUT", body: personal })).status, 200);
+    const [hidden, other] = await Promise.all([
+      api(`${url}/hidden`, { method: "PUT", body: { hiddenScripts: ["beta"] } }),
+      api(`${url}/scripts/beta/organization`, { method: "PUT", body: { management: "agent", category: "Services", tags: [] } }),
+    ]);
+    assert.equal(hidden.status, 200);
+    assert.equal(other.status, 200);
+    const file = modulePaths(dataDir, "scripthub").config;
+    const saved = JSON.parse(readFileSync(file, "utf8")).value;
+    assert.deepEqual(saved.hiddenScripts, ["beta"]);
+    assert.deepEqual(saved.organization.alpha, { ...personal, tags: ["dashboard", "utility"] });
+    assert.equal(saved.organization.beta.management, "agent");
+    const status = (await api(`${url}/status`)).body.scripts.find((s: { id: string }) => s.id === "alpha");
+    assert.equal(status.management, "personal");
+    assert.equal(status.category, "My tools");
+    assert.equal(status.keepAlive, true, "organization does not change supervision");
+    const prior = readFileSync(file, "utf8");
+    for (const invalid of [null, { ...personal, management: "unknown" }, { ...personal, category: " " }, { ...personal, tags: ["a,b"] }, { ...personal, tags: Array(21).fill("x") }]) {
+      assert.equal((await api(`${url}/scripts/alpha/organization`, { method: "PUT", body: invalid })).status, 400);
+    }
+    assert.equal((await api(`${url}/organization`, { method: "PUT", body: { scripts: { alpha: personal, missing: personal } } })).status, 404);
+    assert.equal(readFileSync(file, "utf8"), prior, "invalid audits and edits write nothing");
+    assert.equal((await api(`${url}/organization`, { method: "PUT", body: { scripts: { alpha: personal, beta: personal } } })).status, 200);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).value.organization.beta.management, "personal");
+    await supervisor.stop("scripthub");
+    const restarted = (await api(`${url}/status`)).body;
+    assert.equal(restarted.scripts.find((s: { id: string }) => s.id === "beta").management, "personal", "edits survive worker restart");
+    assert.deepEqual(restarted.hiddenScripts, ["beta"]);
   });
 
   await test("Home: concurrent first requests share one worker, and the token never leaves the server", async () => {
@@ -868,7 +904,7 @@ try {
     assert.equal(state.status, 200, JSON.stringify(state.body));
     assert.equal(state.body.rules[0].name, "Game");
     assert.equal(state.body.log.entries[0].message, "watching 1 task");
-    assert.deepEqual(state.body.hubScripts, [{ id: "overlay", name: "Overlay" }]);
+    assert.deepEqual(state.body.hubScripts, [{ id: "alpha", name: "alpha" }, { id: "beta", name: "beta" }, { id: "overlay", name: "Overlay" }]);
     const stale = await api(`/api/modules/sidekick/api/rules/${RULE_ID}`, { method: "PUT", body: { revision: "old", rule: { name: "Game", triggerProcess: "Example.exe", companions: [] } } });
     assert.equal(stale.status, 409);
     assert.equal(stale.body.code, "stale_config");

@@ -16,6 +16,8 @@ interface Script {
   owner: string | null;
   displayName: string;
   category: string;
+  management: "personal" | "agent";
+  tags: string[];
   keepAlive: boolean;
   command: string;
   consolidated: boolean;
@@ -39,6 +41,8 @@ type StatusFilter = "all" | "running" | "stopped" | "keepalive" | "recovering";
 interface Filters {
   search: string;
   category: string;
+  tag: string;
+  sort: "name" | "urgency" | "category";
   status: StatusFilter;
   hideConsolidated: boolean;
   showHidden: boolean;
@@ -46,7 +50,7 @@ interface Filters {
 }
 
 const FILTERS_KEY = "ggo-scripthub-filters";
-const DEFAULT_FILTERS: Filters = { search: "", category: "all", status: "all", hideConsolidated: true, showHidden: false, showAgentManaged: false };
+const DEFAULT_FILTERS: Filters = { search: "", category: "all", tag: "all", sort: "name", status: "all", hideConsolidated: true, showHidden: false, showAgentManaged: false };
 const PENDING_TIMEOUT_MS = 30_000;
 
 function loadFilters(): Filters {
@@ -57,8 +61,7 @@ function loadFilters(): Filters {
   }
 }
 
-/** Script Hub's registry names a person in `owner` for entries they decide on; an entry without one is a daemon agents supervise. */
-const isAgentManaged = (script: Script) => !script.owner;
+const isAgentManaged = (script: Script) => script.management === "agent";
 const isRecovering = (script: Script) => script.keepAlive && script.status.state !== "running" && !script.consolidated;
 
 export function ScriptHub() {
@@ -184,8 +187,10 @@ function ScriptHubBody() {
   const pool = filters.showAgentManaged ? data.scripts : data.scripts.filter((s) => !isAgentManaged(s));
   const agentManagedCount = data.scripts.filter(isAgentManaged).length;
   const matches = (script: Script) => matchesFilters(script, filters, hiddenSet, details);
-  const visible = pool.filter(matches).sort(byUrgency);
-  const categories = [...new Set(pool.map((s) => s.category))].sort();
+  const visible = pool.filter(matches).sort(filters.sort === "urgency" ? byUrgency : (a, b) =>
+    (filters.sort === "category" ? a.category.localeCompare(b.category) : 0) || a.displayName.localeCompare(b.displayName));
+  const categories = [...new Set(data.scripts.map((s) => s.category))].sort();
+  const tags = [...new Set(data.scripts.flatMap((s) => s.tags))].sort();
   const recovering = data.scripts.filter(isRecovering);
   const degraded = data.scripts.map((s) => s.status.processEnumeration).find((e) => e && e.fresh === false) ?? null;
   const hiddenCount = pool.filter((s) => hiddenSet.has(s.id)).length;
@@ -214,6 +219,15 @@ function ScriptHubBody() {
             </option>
           ))}
         </select>
+        <select className="mod-select" value={filters.tag} onChange={(e) => setFilters({ ...filters, tag: e.target.value })} aria-label="Tag">
+          <option value="all">All tags</option>
+          {tags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+        </select>
+        <select className="mod-select" value={filters.sort} onChange={(e) => setFilters({ ...filters, sort: e.target.value as Filters["sort"] })} aria-label="Sort scripts">
+          <option value="name">Name A-Z</option>
+          <option value="category">Category, then name</option>
+          <option value="urgency">Recovery first</option>
+        </select>
         <select className="mod-select" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value as StatusFilter })} aria-label="Status">
           <option value="all">Any status</option>
           <option value="running">Running</option>
@@ -233,6 +247,7 @@ function ScriptHubBody() {
           <input type="checkbox" checked={filters.showAgentManaged} onChange={(e) => setFilters({ ...filters, showAgentManaged: e.target.checked })} />
           Show agent-managed{agentManagedCount ? ` (${agentManagedCount})` : ""}
         </label>
+        <button className="btn sm ghost" onClick={() => setFilters({ ...DEFAULT_FILTERS })}>Reset filters</button>
         <span className="sh-count mono">
           {visible.length === pool.length ? `${pool.length} scripts` : `${visible.length} of ${pool.length} scripts`} · {formatAgo(data.generatedAt)}
         </span>
@@ -253,6 +268,11 @@ function ScriptHubBody() {
               onAction={(action) => void runAction(script.id, action)}
               onKeepAlive={() => void toggleKeepAlive(script)}
               onHide={() => void toggleHidden(script.id)}
+              onTag={(tag) => setFilters({ ...filters, tag })}
+              onOrganize={async (organization) => {
+                await moduleJson("scripthub", `/scripts/${encodeURIComponent(script.id)}/organization`, { method: "PUT", body: organization });
+                await status.refresh();
+              }}
               onLogs={() =>
                 setOpenLogs((open) => {
                   const next = new Set(open);
@@ -283,6 +303,7 @@ function matchesFilters(script: Script, filters: Filters, hidden: Set<string>, d
   if (hidden.has(script.id) && !filters.showHidden) return false;
   if (filters.hideConsolidated && script.consolidated) return false;
   if (filters.category !== "all" && script.category !== filters.category) return false;
+  if (filters.tag !== "all" && !script.tags.includes(filters.tag)) return false;
   const running = script.status.state === "running";
   if (filters.status === "running" && !running) return false;
   if (filters.status === "stopped" && (running || script.consolidated)) return false;
@@ -291,7 +312,7 @@ function matchesFilters(script: Script, filters: Filters, hidden: Set<string>, d
   const q = filters.search.trim().toLowerCase();
   if (!q) return true;
   const d = details?.scripts[script.id];
-  return [script.displayName, script.id, script.category, script.command, d?.description, ...(d?.notes ?? []), ...(d?.aliases ?? [])].filter(Boolean).join(" ").toLowerCase().includes(q);
+  return [script.displayName, script.id, script.category, ...script.tags, script.command, d?.description, ...(d?.notes ?? []), ...(d?.aliases ?? [])].filter(Boolean).join(" ").toLowerCase().includes(q);
 }
 
 /** Keep-Alive entries that are down first, then running ones without Keep Alive, then the rest. */
@@ -330,12 +351,15 @@ function ScriptCard(props: {
   onKeepAlive: () => void;
   onHide: () => void;
   onLogs: () => void;
+  onTag: (tag: string) => void;
+  onOrganize: (organization: Organization) => Promise<void>;
 }) {
   const { script, detail, pending } = props;
   const [notesOpen, setNotesOpen] = useState(false);
+  const [organizing, setOrganizing] = useState(false);
   const state = script.consolidated ? "consolidated" : script.status.state;
   return (
-    <article className={`sh-card${props.hidden ? " is-hidden" : ""}`}>
+    <article className={`sh-card${props.hidden ? " is-hidden" : ""}`} data-script-id={script.id}>
       <div className="sh-card-head">
         <h4 title={script.displayName}>
           {script.displayName}
@@ -351,6 +375,10 @@ function ScriptCard(props: {
       {detail?.description ? <p className="sh-desc">{detail.description}</p> : null}
       <div className="sh-meta mono">
         {script.id} · {script.category}
+      </div>
+      <div className="sh-labels">
+        <span className="mod-chip">{isAgentManaged(script) ? "Agent-managed" : "My app"}</span>
+        {script.tags.map((tag) => <button key={tag} className="sh-tag" onClick={() => props.onTag(tag)} title={`Filter by ${tag}`}>{tag}</button>)}
       </div>
       <code className="sh-cmd" title={script.command}>
         {script.command || "no start command"}
@@ -399,8 +427,46 @@ function ScriptCard(props: {
           <Icon name="logs" size={13} /> Logs
         </button>
       </div>
+      <button className="sh-link" onClick={() => setOrganizing((open) => !open)} aria-expanded={organizing}>Organize</button>
+      {organizing ? <OrganizationEditor script={script} onSave={props.onOrganize} onClose={() => setOrganizing(false)} /> : null}
       {props.logsOpen ? <LogPanel id={script.id} onClose={props.onLogs} /> : null}
     </article>
+  );
+}
+
+type Organization = Pick<Script, "management" | "category" | "tags">;
+
+function OrganizationEditor({ script, onSave, onClose }: { script: Script; onSave: (value: Organization) => Promise<void>; onClose: () => void }) {
+  const [management, setManagement] = useState(script.management);
+  const [category, setCategory] = useState(script.category);
+  const [tags, setTags] = useState(script.tags.join(", "));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <form className="sh-organize" aria-label={`Organize ${script.displayName}`} onSubmit={async (event) => {
+      event.preventDefault();
+      setSaving(true);
+      setError(null);
+      try {
+        await onSave({ management, category, tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean) });
+        onClose();
+      } catch (cause) {
+        setError(errorText(cause));
+      } finally {
+        setSaving(false);
+      }
+    }}>
+      <fieldset disabled={saving}>
+        <label>Managed as<select className="mod-select" value={management} onChange={(event) => setManagement(event.target.value as Script["management"])}>
+          <option value="personal">My app</option><option value="agent">Agent-managed</option>
+        </select></label>
+        <label>Category<input required maxLength={80} value={category} onChange={(event) => setCategory(event.target.value)} /></label>
+        <label>Tags (comma separated)<input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="e.g. games, dashboard" /></label>
+        <p>Labels organize this list. They do not change how the script runs.</p>
+        {error ? <p role="alert">{error}</p> : null}
+        <div className="sh-actions"><button className="btn sm" type="submit">{saving ? "Saving..." : "Save organization"}</button><button className="btn sm ghost" type="button" onClick={onClose}>Cancel</button></div>
+      </fieldset>
+    </form>
   );
 }
 

@@ -399,3 +399,12 @@ textarea.mod-input { resize: vertical; min-height: 54px; line-height: 1.45; }
   .home-hero { grid-template-columns: minmax(0, 1fr); }
   .mod-heading h3 { font-size: 24px; }
 }
+
+/* Script labels and the per-card organization editor. */
+.sh-labels { display: flex; flex-wrap: wrap; gap: 6px; }
+.sh-tag { border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); color: var(--text-dim); padding: 4px 8px; font-size: 11px; cursor: pointer; overflow-wrap: anywhere; }
+.sh-organize fieldset { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--line); border-radius: var(--r-sm); margin: 0; padding: 12px; min-width: 0; }
+.sh-organize label { display: flex; flex-direction: column; gap: 5px; color: var(--text-dim); font-size: 12px; }
+.sh-organize input, .sh-organize select { width: 100%; min-width: 0; box-sizing: border-box; }
+.sh-organize p { margin: 0; color: var(--text-faint); font-size: 11px; }
+.sh-organize [role="alert"] { color: var(--danger); }
