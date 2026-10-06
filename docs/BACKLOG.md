@@ -23,8 +23,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Collapse Patch notes days into browsable summaries** (2026-10-07, Bramblewick).
-  Browser 42/42, patch-notes gate, types/builds, README 72/72 and privacy pass; live web verification pending.
+- **Collapse Patch notes days into browsable summaries** (16e241c7, 2026-10-07, Bramblewick).
+  Pushed and web built; browser 42/42, patch-notes gate, types/builds, README 72/72 and privacy pass. Live served bundle and folding controls pass with controlled history; real authenticated history timed out, awaiting live proof.
 
 - **Add effort selection to the Task model dialog** (2026-10-06, Bramble Dial).
   Model-supported tiers and durable next-start effort; integration 59/59, desktop/phone browser 27/27, types/builds/README/privacy pass. Server deployment pending: restart-resume instruction prohibits another restart.
@@ -84,6 +84,9 @@ same commit as the fix. Git history keeps the record.
   Completed full sweep passes 222/232 gates; supervisor reports 11/12 because only two duplicate boots fit the retry window. Nine other failures are Windows EBUSY fixture cleanup, including token-freeze, auto-model and silent-resume. Evidence: server/data/gates-last.json and gates-live logs.
 
 14. **Clear residual Graphify and desktop build dependency advisories** (2026-10-07, Codex): production Graphify transitive dependencies retain 7 moderate / 4 low advisories; the desktop development tree retains 8 moderate through Electron Builder. Recheck compatible upstream fixes without breaking the bundled CLI.
+
+15. **Restore local Patch notes history loading** (2026-10-07, Bramblewick).
+  After the security deployment, authenticated /api/patch-notes?skip=0&limit=150 timed out at 30s and the live panel stayed on Reading the change history; isolated real-history lab passed 42/42 and controlled live UI folding passed. Coordinate with the active loading-recovery task.
 
 ## Blocked / waiting
 
