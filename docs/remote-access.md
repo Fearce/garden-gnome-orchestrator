@@ -20,9 +20,9 @@ those requests apart by the forwarding headers the tunnel adds (`X-Forwarded-For
 - **Fails closed.** If Google sign-in is not configured, every tunnelled request gets 403.
 - **Secure cookies.** Session and sign-in cookies set over the HTTPS tunnel carry `Secure`.
 
-**Off unless you switch it on.** Every rule above is inert until `REMOTE_ACCESS=1` is in
-`server/.env`, so other installs, including ones behind their own reverse proxy, behave exactly
-as before.
+**Google-only tunnel access is off unless you switch it on.** Other installs keep their
+normal sign-in methods. A request carrying forwarding headers never qualifies for local-only
+deploy or memory-hook access, even when `REMOTE_ACCESS` is off.
 
 **Localhost never asks for sign-in while it is on.** A direct visit to `localhost:4317` or
 `127.0.0.1:4317` is signed in automatically. That covers only a direct connection from this PC

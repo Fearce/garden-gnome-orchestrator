@@ -316,6 +316,8 @@ non-local without a password or Google sign-in configured, the server refuses an
 to `127.0.0.1`. Do not put it on the public internet directly. For access from anywhere, use
 the Google-locked Tailscale Funnel link in [docs/remote-access.md](docs/remote-access.md)
 (`npm run remote-access -- on`), which keeps the listener on `127.0.0.1`.
+An ordinary reverse proxy must still use GGO sign-in; forwarded requests cannot call local-only
+deploy routes without a session.
 
 **What stays local:** the database, attachments and logs live under `server/data/` by default
 (or your configured `DATA_DIR`). Environment settings live in the gitignored `server/.env`;

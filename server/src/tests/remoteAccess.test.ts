@@ -19,9 +19,18 @@ const proxied = { ip: "127.0.0.1", headers: { "x-forwarded-for": "203.0.113.9", 
 delete process.env.REMOTE_ACCESS;
 assert.equal(remoteAccessEnabled(), false);
 assert.equal(isTunneled(proxied), false, "no tunnel rules without REMOTE_ACCESS=1");
-assert.equal(isDirectLocal(proxied), true, "loopback stays local, as before");
+assert.equal(isDirectLocal(proxied), false, "a proxy is never a direct local caller, even with REMOTE_ACCESS off");
 assert.deepEqual(loginOptions(proxied, { google: false, password: false }), { required: false, google: false, password: false });
 assert.equal(remoteCookieAttributes(proxied), "");
+{
+  const app = Fastify();
+  app.get("/api/deploy/status", async (req, reply) =>
+    isDirectLocal(req) ? { ok: true } : reply.code(401).send({ error: "unauthorized" }));
+  assert.equal((await app.inject({ url: "/api/deploy/status" })).statusCode, 200);
+  assert.equal((await app.inject({ url: "/api/deploy/status", headers: proxied.headers })).statusCode, 401,
+    "an ordinary loopback reverse proxy cannot use local-only deploy access");
+  await app.close();
+}
 {
   const app = Fastify();
   registerRemoteGate(app, { googleEnabled: () => false, isAuthed: () => false });

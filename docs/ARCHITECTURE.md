@@ -1119,9 +1119,10 @@ Three controls that make the console a hands-off, anywhere replacement for the C
   `isAuthed` accepts that one cookie. `authRequired()` is true if either method is set; the `/ws`
   upgrade + attachment endpoint enforce it.
   - **Password** (`AUTH_PASSWORD`) — `POST /api/login` checks it (timing-safe) behind a **per-IP
-    wrong-password cooldown** (`LOGIN_COOLDOWN_MS`, default 30s; 429 + `retryMs` while locked), so a
-    short PIN is brute-force-safe. The cookie holds the *signed session*, never the password, so the
-    PIN is only testable through the cooldown-gated endpoint. Works over the raw LAN IP (the tablet).
+    wrong-password cooldown** (`LOGIN_COOLDOWN_MS`, default 30s; 429 + `retryMs` while locked). A
+    long, unique password is still required: the cooldown is per IP and not a substitute for password
+    strength. The cookie holds the *signed session*, never the password; `SESSION_SECRET` is a separate
+    random key, generated at each start when unset. Works over the raw LAN IP (the tablet).
   - **Google OIDC** (`GOOGLE_CLIENT_ID`/`SECRET`, `ALLOWED_EMAIL`) — `/api/auth/google` 302s to Google
     with a CSRF `state` bound to a one-time cookie; `/api/auth/callback` decodes the trusted `id_token`,
     checks `aud` + `email_verified` + the allowlist, sets the session. Google **rejects raw private-IP
@@ -1136,7 +1137,8 @@ Three controls that make the console a hands-off, anywhere replacement for the C
   (`/api/me` hides the password, `/api/login` refuses), every route except the static bundle and the
   four sign-in routes needs the session (an `onRequest` hook registered before all routes), the
   loopback exemption on `/api/deploy/*` does not apply, cookies gain `Secure`, and without Google
-  configured every tunnelled request is 403. All of it is inert unless `REMOTE_ACCESS=1`; when on,
+  configured every tunnelled request is 403. The Google-only gate requires `REMOTE_ACCESS=1`, but
+  any forwarded request loses direct-local privileges regardless of that setting. When on,
   a direct loopback request whose Host names this machine is signed in automatically, so localhost
   never prompts. Setup and the owner steps: `docs/remote-access.md`.
 - **Plan-approval gate** (global toggle, persisted in `kv:require_plan_approval`).

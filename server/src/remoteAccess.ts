@@ -57,9 +57,11 @@ function hasForwardingHeaders(req: RequestLike): boolean {
   return FORWARDING_HEADERS.some((name) => req.headers[name] !== undefined);
 }
 
-/** A process on this machine talking to the server directly, not through a tunnel. */
+/** A process on this machine talking to the server directly, not through any proxy.
+ * Forwarding headers disqualify it even when REMOTE_ACCESS is off: an ordinary
+ * reverse proxy also connects from loopback, and must not gain local-only routes. */
 export function isDirectLocal(req: RequestLike): boolean {
-  return isLoopbackAddress(req.ip) && !isTunneled(req);
+  return isLoopbackAddress(req.ip) && !hasForwardingHeaders(req);
 }
 
 /** What the sign-in screen offers this request. A tunnel never gets the password form. */
