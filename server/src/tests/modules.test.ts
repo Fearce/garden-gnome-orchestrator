@@ -1,4 +1,5 @@
 // Gate for the optional local-service modules (Script Hub, Surveillance, Home, Sidekick): the pure pieces
+// Run only Script Hub checks from server/: node --import tsx src/tests/modules.test.ts --scripthub
 // (secret masking, Sidekick's settings edits, frame pacing) and the worker lifecycle with real worker
 // processes against a stand-in Script Hub — nothing starts before it is asked for, one worker per module,
 // configs migrate from the Deck, secrets never reach the browser, idle workers exit, stale builds are

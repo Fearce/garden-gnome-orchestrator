@@ -123,6 +123,8 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
   changes the upstream runtime category, Keep Alive or start/stop behavior. `PUT /organization`
   accepts a reviewed `{scripts: {id: {management, tags}}}` audit atomically; unknown ids or
   invalid labels reject the whole audit. Per-card saves use `PUT /scripts/:id/organization`.
+  Focused checks: from `server/`, run `node --import tsx src/tests/modules.test.ts --scripthub`;
+  the browser regression is `node scripts/scripthub-organization-lab.cjs` after building both halves.
 - **Surveillance** shows live camera tiles, records, plays recordings back, and edits and discovers
   cameras. A camera with a snapshot URL is polled at its own refresh interval. A stream-only camera gets
   one on-demand ffmpeg preview, or the recorder's own frames while recording. Reolink privacy mode can be
