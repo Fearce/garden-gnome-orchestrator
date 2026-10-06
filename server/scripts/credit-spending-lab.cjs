@@ -10,6 +10,7 @@ async function open(page) {
  if(!r.ok())throw Error(`Login HTTP ${r.status()}`);
  await page.goto(base);
  await page.click('[aria-label="Open settings"]');
+ await page.waitForFunction(() => [...document.querySelectorAll('[data-settings-category="subscriptions"], .settings-mobile-nav select[aria-label="Settings category"]')].some(el => el.getBoundingClientRect().width > 0));
  const rail=page.locator('[data-settings-category="subscriptions"]');
  if(await rail.isVisible())await rail.click();
  else await page.selectOption('.settings-mobile-nav select[aria-label="Settings category"]',"subscriptions");
