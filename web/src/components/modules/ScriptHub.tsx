@@ -15,7 +15,6 @@ interface Script {
   id: string;
   owner: string | null;
   displayName: string;
-  category: string;
   management: "personal" | "agent";
   tags: string[];
   keepAlive: boolean;
@@ -40,9 +39,8 @@ type StatusFilter = "all" | "running" | "stopped" | "keepalive" | "recovering";
 
 interface Filters {
   search: string;
-  category: string;
   tag: string;
-  sort: "name" | "urgency" | "category";
+  sort: "name" | "urgency";
   status: StatusFilter;
   hideConsolidated: boolean;
   showHidden: boolean;
@@ -50,7 +48,7 @@ interface Filters {
 }
 
 const FILTERS_KEY = "ggo-scripthub-filters";
-const DEFAULT_FILTERS: Filters = { search: "", category: "all", tag: "all", sort: "name", status: "all", hideConsolidated: true, showHidden: false, showAgentManaged: false };
+const DEFAULT_FILTERS: Filters = { search: "", tag: "all", sort: "name", status: "all", hideConsolidated: true, showHidden: false, showAgentManaged: false };
 const PENDING_TIMEOUT_MS = 30_000;
 
 function loadFilters(): Filters {
@@ -187,9 +185,7 @@ function ScriptHubBody() {
   const pool = filters.showAgentManaged ? data.scripts : data.scripts.filter((s) => !isAgentManaged(s));
   const agentManagedCount = data.scripts.filter(isAgentManaged).length;
   const matches = (script: Script) => matchesFilters(script, filters, hiddenSet, details);
-  const visible = pool.filter(matches).sort(filters.sort === "urgency" ? byUrgency : (a, b) =>
-    (filters.sort === "category" ? a.category.localeCompare(b.category) : 0) || a.displayName.localeCompare(b.displayName));
-  const categories = [...new Set(data.scripts.map((s) => s.category))].sort();
+  const visible = pool.filter(matches).sort(filters.sort === "urgency" ? byUrgency : (a, b) => a.displayName.localeCompare(b.displayName));
   const tags = [...new Set(data.scripts.flatMap((s) => s.tags))].sort();
   const recovering = data.scripts.filter(isRecovering);
   const degraded = data.scripts.map((s) => s.status.processEnumeration).find((e) => e && e.fresh === false) ?? null;
@@ -209,23 +205,14 @@ function ScriptHubBody() {
       <div className="sh-filters">
         <label className="sh-search">
           <Icon name="search" size={14} />
-          <input type="search" placeholder="Search scripts" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} aria-label="Search scripts" />
+          <input type="search" placeholder="Search apps, services or tags" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} aria-label="Search scripts" />
         </label>
-        <select className="mod-select" value={filters.category} onChange={(e) => setFilters({ ...filters, category: e.target.value })} aria-label="Category">
-          <option value="all">All categories</option>
-          {categories.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
         <select className="mod-select" value={filters.tag} onChange={(e) => setFilters({ ...filters, tag: e.target.value })} aria-label="Tag">
           <option value="all">All tags</option>
           {tags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
         </select>
         <select className="mod-select" value={filters.sort} onChange={(e) => setFilters({ ...filters, sort: e.target.value as Filters["sort"] })} aria-label="Sort scripts">
           <option value="name">Name A-Z</option>
-          <option value="category">Category, then name</option>
           <option value="urgency">Recovery first</option>
         </select>
         <select className="mod-select" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value as StatusFilter })} aria-label="Status">
@@ -302,7 +289,6 @@ function HubError({ error, onRetry, stale }: { error: unknown; onRetry: () => vo
 function matchesFilters(script: Script, filters: Filters, hidden: Set<string>, details: Details | null): boolean {
   if (hidden.has(script.id) && !filters.showHidden) return false;
   if (filters.hideConsolidated && script.consolidated) return false;
-  if (filters.category !== "all" && script.category !== filters.category) return false;
   if (filters.tag !== "all" && !script.tags.includes(filters.tag)) return false;
   const running = script.status.state === "running";
   if (filters.status === "running" && !running) return false;
@@ -312,7 +298,7 @@ function matchesFilters(script: Script, filters: Filters, hidden: Set<string>, d
   const q = filters.search.trim().toLowerCase();
   if (!q) return true;
   const d = details?.scripts[script.id];
-  return [script.displayName, script.id, script.category, ...script.tags, script.command, d?.description, ...(d?.notes ?? []), ...(d?.aliases ?? [])].filter(Boolean).join(" ").toLowerCase().includes(q);
+  return [script.displayName, script.id, ...script.tags, script.command, d?.description, ...(d?.notes ?? []), ...(d?.aliases ?? [])].filter(Boolean).join(" ").toLowerCase().includes(q);
 }
 
 /** Keep-Alive entries that are down first, then running ones without Keep Alive, then the rest. */
@@ -374,7 +360,7 @@ function ScriptCard(props: {
       </div>
       {detail?.description ? <p className="sh-desc">{detail.description}</p> : null}
       <div className="sh-meta mono">
-        {script.id} · {script.category}
+        {script.id}
       </div>
       <div className="sh-labels">
         <span className="mod-chip">{isAgentManaged(script) ? "Agent-managed" : "My app"}</span>
@@ -434,11 +420,10 @@ function ScriptCard(props: {
   );
 }
 
-type Organization = Pick<Script, "management" | "category" | "tags">;
+type Organization = Pick<Script, "management" | "tags">;
 
 function OrganizationEditor({ script, onSave, onClose }: { script: Script; onSave: (value: Organization) => Promise<void>; onClose: () => void }) {
   const [management, setManagement] = useState(script.management);
-  const [category, setCategory] = useState(script.category);
   const [tags, setTags] = useState(script.tags.join(", "));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -448,7 +433,7 @@ function OrganizationEditor({ script, onSave, onClose }: { script: Script; onSav
       setSaving(true);
       setError(null);
       try {
-        await onSave({ management, category, tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean) });
+        await onSave({ management, tags: tags.split(",").map((tag) => tag.trim()).filter(Boolean) });
         onClose();
       } catch (cause) {
         setError(errorText(cause));
@@ -460,7 +445,6 @@ function OrganizationEditor({ script, onSave, onClose }: { script: Script; onSav
         <label>Managed as<select className="mod-select" value={management} onChange={(event) => setManagement(event.target.value as Script["management"])}>
           <option value="personal">My app</option><option value="agent">Agent-managed</option>
         </select></label>
-        <label>Category<input required maxLength={80} value={category} onChange={(event) => setCategory(event.target.value)} /></label>
         <label>Tags (comma separated)<input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="e.g. games, dashboard" /></label>
         <p>Labels organize this list. They do not change how the script runs.</p>
         {error ? <p role="alert">{error}</p> : null}

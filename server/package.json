@@ -365,7 +365,8 @@
     "code-nav-lab": "node scripts/code-nav-lab.cjs",
     "reset-redeem-lab": "node scripts/reset-redeem-lab.cjs",
     "smoke:deliverables": "node scripts/deliverables-smoke.cjs",
-    "scripthub-organization-lab": "node scripts/scripthub-organization-lab.cjs"
+    "scripthub-organization-lab": "node scripts/scripthub-organization-lab.cjs",
+    "test:scripthub": "tsx src/tests/modules.test.ts --scripthub"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.292",

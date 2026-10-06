@@ -114,14 +114,14 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
 ## The four modules
 
 - **Script Hub** talks to the Script Hub service at `SCRIPT_HUB_URL`. It covers the script list with
-  search, category, status and visibility filters; Start, Stop and Keep Alive; notes; and a live log tail.
+  search, tag, status and visibility filters; Start, Stop and Keep Alive; notes; and a live log tail.
   The worker trims and gzips the hub's large status payload. Hidden scripts and organization overrides
-  are stored in GGO. **Organize** edits management (My app or Agent-managed), a display category and up
+  are stored in GGO. **Organize** edits management (My app or Agent-managed) and up
   to 20 tags per script. Explicit registry `agentManaged` metadata takes precedence over the legacy
   owner convention; a saved local edit takes precedence over both. Tags are searchable, filterable
-  and clickable. Sorting offers name, category then name, or recovery first. Organization never
+  and clickable. Sorting offers name or recovery first. Organization never
   changes the upstream runtime category, Keep Alive or start/stop behavior. `PUT /organization`
-  accepts a reviewed `{scripts: {id: {management, category, tags}}}` audit atomically; unknown ids or
+  accepts a reviewed `{scripts: {id: {management, tags}}}` audit atomically; unknown ids or
   invalid labels reject the whole audit. Per-card saves use `PUT /scripts/:id/organization`.
 - **Surveillance** shows live camera tiles, records, plays recordings back, and edits and discovers
   cameras. A camera with a snapshot URL is polled at its own refresh interval. A stream-only camera gets

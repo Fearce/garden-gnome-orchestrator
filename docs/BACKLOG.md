@@ -24,8 +24,8 @@ same commit as the fix. Git history keeps the record.
 - **Add effort selection to the Task model dialog** (2026-10-06, Bramble Dial).
   Model-supported tiers and durable next-start effort; integration 59/59, desktop/phone browser 27/27, types/builds/README/privacy pass. Server deployment pending: restart-resume instruction prohibits another restart.
 
-- **Audit Script Hub management and pre-tag every registry entry** (2026-10-06, Saffron Rivet).
-  Editable management/categories/tags; browser 22/22, types/builds/README/privacy pass. Script Hub regressions pass; broad module suite hits the tracked Home idle-start timeout. Live audit/deploy proof pending.
+- **Audit Script Hub management and pre-tag every registry entry** (2026-10-06, Copperfen Quill).
+  Tags only, tag-aware search and pre-tagging; focused API 3/3, desktop/phone browser 26/26, types/builds/README/privacy pass. Broad modules retain tracked Home idle-start timeout; live audit/deploy proof pending.
 
 
 

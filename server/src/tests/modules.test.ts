@@ -37,6 +37,7 @@ import { HttpError } from "../modules/worker/router.js";
 
 let checks = 0;
 async function test(name: string, fn: () => Promise<void> | void) {
+  if (process.argv.includes("--scripthub") && !name.startsWith("Script Hub:")) return;
   await fn();
   console.log(`✓ ${name}`);
   checks++;
@@ -658,11 +659,11 @@ try {
     const before = (await api(`${url}/status`)).body;
     assert.equal(before.scripts.find((s: { id: string }) => s.id === "alpha").management, "agent", "a personal owner does not override explicit agent management");
     assert.deepEqual(before.scripts.find((s: { id: string }) => s.id === "alpha").tags, ["support"]);
-    const personal = { management: "personal", category: "My tools", tags: [" Dashboard ", "dashboard", "utility"] };
+    const personal = { management: "personal", tags: [" Dashboard ", "dashboard", "utility"] };
     assert.equal((await api(`${url}/scripts/alpha/organization`, { method: "PUT", body: personal })).status, 200);
     const [hidden, other] = await Promise.all([
       api(`${url}/hidden`, { method: "PUT", body: { hiddenScripts: ["beta"] } }),
-      api(`${url}/scripts/beta/organization`, { method: "PUT", body: { management: "agent", category: "Services", tags: [] } }),
+      api(`${url}/scripts/beta/organization`, { method: "PUT", body: { management: "agent", tags: [] } }),
     ]);
     assert.equal(hidden.status, 200);
     assert.equal(other.status, 200);
@@ -673,10 +674,9 @@ try {
     assert.equal(saved.organization.beta.management, "agent");
     const status = (await api(`${url}/status`)).body.scripts.find((s: { id: string }) => s.id === "alpha");
     assert.equal(status.management, "personal");
-    assert.equal(status.category, "My tools");
     assert.equal(status.keepAlive, true, "organization does not change supervision");
     const prior = readFileSync(file, "utf8");
-    for (const invalid of [null, { ...personal, management: "unknown" }, { ...personal, category: " " }, { ...personal, tags: ["a,b"] }, { ...personal, tags: Array(21).fill("x") }]) {
+    for (const invalid of [null, { ...personal, management: "unknown" }, { ...personal, tags: ["a,b"] }, { ...personal, tags: Array(21).fill("x") }]) {
       assert.equal((await api(`${url}/scripts/alpha/organization`, { method: "PUT", body: invalid })).status, 400);
     }
     assert.equal((await api(`${url}/organization`, { method: "PUT", body: { scripts: { alpha: personal, missing: personal } } })).status, 404);
@@ -1032,4 +1032,5 @@ try {
   await rm(root, { recursive: true, force: true }).catch(() => undefined);
 }
 
+assert.ok(checks > 0, "at least one module check ran");
 console.log(`\nmodules: ${checks} checks passed`);

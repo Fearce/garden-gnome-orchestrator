@@ -11,9 +11,9 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const check = createChecks();
 const scripts = [
   { id: "alpha", owner: "alex", displayName: "Alpha app", category: "tools", tags: ["dashboard"] },
-  { id: "beta", owner: "alex", agentManaged: true, displayName: "Beta worker", category: "tools", tags: ["maintenance"] },
+  { id: "beta", owner: "alex", agentManaged: true, keepAlive: true, displayName: "Beta worker", category: "tools", tags: ["maintenance"] },
   { id: "gamma", agentManaged: false, displayName: "Gamma game", category: "games", tags: ["play"] },
-].map((script) => ({ ...script, status: { state: "stopped", processes: [], tasks: [] } }));
+].map((script) => ({ ...script, status: { state: script.id === "gamma" ? "running" : "stopped", processes: [], tasks: [] } }));
 
 (async () => {
   requireBuild();
@@ -61,25 +61,26 @@ const scripts = [
       check(`${label}: filter survives reload`, await page.getByLabel("Tag", { exact: true }).inputValue() === "play");
       await page.getByRole("button", { name: "Reset filters", exact: true }).click();
       await page.getByLabel("Show agent-managed", { exact: false }).check();
-      await page.getByLabel("Sort scripts").selectOption("category");
-      check(`${label}: category sort groups names`, JSON.stringify(await page.locator(".sh-card h4").allTextContents()) === JSON.stringify(["Gamma game", "Alpha app", "Beta worker"]));
+      check(`${label}: categories are absent`, await page.getByLabel("Category", { exact: true }).count() === 0);
+      check(`${label}: name sort orders the full list`, JSON.stringify(await page.locator(".sh-card h4").allTextContents()) === JSON.stringify(["Alpha app", "Beta worker", "Gamma game"]));
+      await page.getByLabel("Sort scripts").selectOption("urgency");
+      check(`${label}: recovery sort prioritizes the recovering worker`, JSON.stringify(await page.locator(".sh-card h4").allTextContents()) === JSON.stringify(["Beta worker", "Gamma game", "Alpha app"]));
       await page.getByRole("button", { name: "Reset filters", exact: true }).click();
       const card = page.locator('[data-script-id="gamma"]');
       await card.getByRole("button", { name: "Organize", exact: true }).click();
       const editor = card.getByRole("form");
-      await editor.getByLabel("Category", { exact: true }).fill("My games");
       await editor.getByLabel("Tags (comma separated)").fill("play, Favourite, favourite");
       if (!phone) {
         await page.route("**/scripts/gamma/organization", (route) => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "test save failure" }) }));
         await editor.getByRole("button", { name: "Save organization" }).click();
         await editor.getByRole("alert").waitFor();
-        check("failed save keeps the editable draft", await editor.getByLabel("Category", { exact: true }).inputValue() === "My games");
+        check("failed save keeps the editable draft", await editor.getByLabel("Tags (comma separated)").inputValue() === "play, Favourite, favourite");
         await page.unroute("**/scripts/gamma/organization");
       }
       await editor.getByRole("button", { name: "Save organization" }).click();
       await editor.waitFor({ state: "detached" });
       await card.getByRole("button", { name: "favourite", exact: true }).waitFor();
-      check(`${label}: normalized tags and category survive API save`, (await card.textContent()).includes("My games") && await card.getByRole("button", { name: "favourite", exact: true }).count() === 1);
+      check(`${label}: normalized tags survive API save`, await card.getByRole("button", { name: "favourite", exact: true }).count() === 1);
       await card.getByRole("button", { name: "favourite", exact: true }).click();
       check(`${label}: tag badge filters`, await page.getByLabel("Tag", { exact: true }).inputValue() === "favourite");
       await page.getByRole("button", { name: "Reset filters", exact: true }).click();
