@@ -172,6 +172,7 @@ export interface Thread {
   /** Strict owner-requested implementor model. `model` is the canonical runtime id; null means the
    * request could not be resolved and the task is blocked rather than silently downgraded. */
   modelRequest?: ModelRequest | null;
+  effortOverride?: Effort | null;
   /** Owner switches for optional roles on this task; an absent role follows settings + route. */
   roleToggles?: RoleToggles | null;
   closedAt?: number | null;
@@ -1644,7 +1645,7 @@ export type ClientCommand =
   | { type: "thread.startImmediately"; threadId: string }
   | { type: "thread.proceed"; threadId: string }
   | { type: "thread.deadline"; threadId: string; deadlineAt: number | null }
-  | { type: "thread.model"; threadId: string; provider: ImplementorProvider | null; model: string | null; clientId?: string }
+  | { type: "thread.model"; threadId: string; provider: ImplementorProvider | null; model: string | null; effort?: Effort | null; clientId?: string }
   | { type: "thread.role"; threadId: string; role: ToggleableRole; enabled: boolean | null }
   | { type: "thread.cancel"; threadId: string }
   | { type: "thread.retry"; threadId: string }

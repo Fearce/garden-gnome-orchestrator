@@ -3962,6 +3962,7 @@ export class ThreadManager implements OrchestratorApi {
     threadId: string,
     provider: ImplementorProvider | null,
     model: string | null,
+    effort?: Effort | null,
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
@@ -3995,8 +3996,16 @@ export class ThreadManager implements OrchestratorApi {
       };
     }
 
+    if (effort != null) {
+      const supported: readonly Effort[] = provider === "codex" ? this.codexSupportedEfforts(request!.model!)
+        : provider === "claude" ? claudeEffortsForModel(request!.model!)
+        : provider === "grok" ? grokEffortsForModel(request!.model!)
+        : provider === "zai" ? zaiEffortsForModel(request!.model!) : EFFORTS;
+      if (!supported.includes(effort)) return { ok: false, state: thread.state, error: `The selected model does not support ${effort} effort. Choose a supported effort or Auto.` };
+    }
+    const nextEffort = effort === undefined ? thread.effortOverride ?? null : effort;
     const current = thread.modelRequest;
-    const unchanged = current?.provider === request?.provider && current?.model === request?.model && (!!current === !!request);
+    const unchanged = current?.provider === request?.provider && current?.model === request?.model && (!!current === !!request) && (thread.effortOverride ?? null) === nextEffort;
     if (unchanged) return { ok: true, state: thread.state, message: request ? "That exact task model is already pinned." : "This task already uses Auto routing." };
 
     // A model pin is an owner-directed routing change. Stop the live implementor first, then persist
@@ -4016,7 +4025,7 @@ export class ThreadManager implements OrchestratorApi {
       };
     }
 
-    let updated = this.db.setModelRequest(threadId, request);
+    let updated = this.db.setModelRequest(threadId, request, nextEffort);
     if (!updated) return { ok: false, error: "No such task." };
     // A prior automatic choice belongs to the old routing decision. Strict routing ignores it, but
     // clearing it prevents a later return to Auto from reviving a stale model instead of re-selecting.
@@ -4033,9 +4042,10 @@ export class ThreadManager implements OrchestratorApi {
     }
 
     this.hub.publish({ type: "thread.upsert", thread: updated });
-    const content = request
+    const routingContent = request
       ? `◆ Task implementor pinned to ${providerLabel(request.provider!)} · ${request.model}. No fallback model is allowed. This takes effect on the next implementor start.`
       : "◆ Task implementor returned to Auto routing. The next implementor start will choose from the available providers and models.";
+    const content = `${routingContent} Effort: ${nextEffort ?? "Auto"}${nextEffort ? " (within subscription caps)" : ""}.`;
     const message = this.db.addMessage({ threadId, role: "director", kind: "system", content });
     this.hub.publish({ type: "thread.message", threadId, message });
     this.hub.log("info", `${content} [${threadId.slice(0, 8)}]`);

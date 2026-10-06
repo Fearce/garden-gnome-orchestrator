@@ -78,6 +78,10 @@ only: it never edits or commits.
 
 ## A look around
 
+The Task model dialog lets you pin an exact provider, model and supported effort for the next
+implementor start. Effort on Auto lets GGO choose within subscription caps; Use Auto clears both
+the model pin and effort override. Interrupt a running implementor before changing these choices.
+
 Open a task and you get its whole trail: which agents ran, what they cost, what they
 found, and any file they produced. The composer at the bottom injects new information
 into the running agent without restarting it.

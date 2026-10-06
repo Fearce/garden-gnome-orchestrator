@@ -363,7 +363,7 @@ export async function handleCommand(
         socket,
         cmd.threadId,
         "model",
-        await ctx.manager.setThreadModel(cmd.threadId, cmd.provider, cmd.model),
+        await ctx.manager.setThreadModel(cmd.threadId, cmd.provider, cmd.model, cmd.effort),
         cmd.clientId,
       );
       break;

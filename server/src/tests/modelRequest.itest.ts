@@ -209,7 +209,18 @@ async function main(): Promise<void> {
     JSON.stringify(selectedThread.modelRequest),
   );
   check("retargeting removes the stale automatic pick", db.getThreadStageOutputs(selectable.id).modelPick === undefined);
+  const effortChange = await mgr.setThreadModel(selectable.id, "codex", SPARK, "high");
+  check("effort-only changes persist even when the model stays pinned", effortChange.ok && db.getThread(selectable.id)?.effortOverride === "high");
+  const unsupportedEffort = await mgr.setThreadModel(selectable.id, "codex", SPARK, "ultra");
+  check("unsupported model effort is rejected without changing the saved effort", !unsupportedEffort.ok && db.getThread(selectable.id)?.effortOverride === "high");
+  await mgr.setThreadModel(selectable.id, "codex", SPARK);
+  check("older model-only clients preserve an existing effort override", db.getThread(selectable.id)?.effortOverride === "high");
+  await mgr.setThreadModel(selectable.id, "codex", SPARK, null);
+  check("Auto effort clears the override while preserving the exact model", db.getThread(selectable.id)?.effortOverride == null && db.getThread(selectable.id)?.modelRequest?.model === SPARK);
+  await mgr.setThreadModel(selectable.id, "codex", SPARK, "medium");
   check("the task feed records the exact no-fallback choice", db.listMessages(selectable.id).some((message) => message.content.includes(`Codex · ${SPARK}`) && message.content.includes("No fallback")));
+  db.resetThreadForRetry(selectable.id);
+  check("Retry retains the selected task effort", db.getThread(selectable.id)?.effortOverride === "medium");
 
   const unknown = await mgr.setThreadModel(selectable.id, "codex", "gpt-not-in-this-catalog");
   check("an unknown provider/model pair is rejected without changing the pin", !unknown.ok && db.getThread(selectable.id)?.modelRequest?.model === SPARK, unknown.error);
@@ -225,7 +236,8 @@ async function main(): Promise<void> {
   check("a running implementor is interrupted before acquiring the new pin", liveChange.ok && db.getThread(selectable.id)?.modelRequest?.model === "claude-opus-5-5", liveChange.error);
   check("retargeting disposes the old frozen-model handle before Resume", oldHandleStopped && !internals.live.has(selectable.id));
   db.updateThread(selectable.id, { state: "paused" });
-  const auto = await mgr.setThreadModel(selectable.id, null, null);
+  const auto = await mgr.setThreadModel(selectable.id, null, null, null);
+  check("Use Auto clears the effort along with the model pin", db.getThread(selectable.id)?.effortOverride == null);
   check("a parked task can return to automatic routing", auto.ok && db.getThread(selectable.id)?.modelRequest == null);
 
   const readOnly = db.createThread({ title: "Reader", workspace, rawPrompt: "", brief: "Report it.", lane: "read" });
@@ -236,6 +248,7 @@ async function main(): Promise<void> {
   const wireAuto = clientCommandSchema.safeParse({ type: "thread.model", threadId: selectable.id, provider: null, model: null });
   const wireBadProvider = clientCommandSchema.safeParse({ type: "thread.model", threadId: selectable.id, provider: "other", model: SPARK });
   check("the authenticated WS protocol carries exact and Auto model selections", wirePin.success && wireAuto.success && !wireBadProvider.success);
+  check("the WS protocol accepts effort and rejects invalid tiers", clientCommandSchema.safeParse({ type: "thread.model", threadId: selectable.id, provider: "codex", model: SPARK, effort: "high" }).success && !clientCommandSchema.safeParse({ type: "thread.model", threadId: selectable.id, provider: null, model: null, effort: "invalid" }).success);
 
   console.log("\n4 — exact capacity gate, runtime row, resume, and cap recovery never substitute Sol");
   const realRequestedModelCapacitySnapshot = internals.requestedModelCapacitySnapshot.bind(mgr);
@@ -245,6 +258,9 @@ async function main(): Promise<void> {
   };
   internals.requestedModelCapacitySnapshot = () => readySnapshot;
   const runtimeThread = db.createThread({ title: "Exact Luna runtime", workspace, rawPrompt: "", brief: "Run it.", modelRequest: strictLuna() });
+  await mgr.setThreadModel(runtimeThread.id, "codex", SPARK, "low");
+  const runtimeEffort = internals.implementorEffort(runtimeThread.id, "high");
+  check("the saved effort wins over the planner on the next start", runtimeEffort === "low");
   const provider = internals.gateImplementorProvider(runtimeThread, { capParkOnExhaustion: true, effort: "max" });
   check("strict gate selects only the request's provider", provider === "codex", String(provider));
 
@@ -252,7 +268,7 @@ async function main(): Promise<void> {
   const originalWireRun = internals.wireRun.bind(mgr);
   internals.wireRun = (): never => { throw new Error(wireSentinel); };
   try {
-    internals.startImplementor(runtimeThread, "KICKOFF", { effort: "max" });
+    internals.startImplementor(runtimeThread, "KICKOFF", { effort: runtimeEffort });
   } catch (error) {
     check("test intercepted the run at the intended pre-spawn boundary", String(error).includes(wireSentinel), String(error));
   } finally {
@@ -260,6 +276,7 @@ async function main(): Promise<void> {
   }
   const runtimeRun = db.listRuns(runtimeThread.id).at(-1);
   check("the actual agent_run model is Luna", runtimeRun?.model === SPARK, JSON.stringify(runtimeRun));
+  check("the actual agent_run records the selected task effort", runtimeRun?.effort === "low", JSON.stringify(runtimeRun));
   check("the runtime account identifies the Luna model", runtimeRun?.account === `codex:${SPARK}`, String(runtimeRun?.account));
   check("no Sol implementor row was created", !db.listRuns(runtimeThread.id).some((run) => run.model === SOL));
 

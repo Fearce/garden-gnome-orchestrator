@@ -2104,8 +2104,13 @@ export class Db {
 
   /** Persist a task-local strict model request independently of routine state updates, then return the
    * fresh row for immediate WS broadcast. */
-  setModelRequest(id: string, request: ModelRequest | null): Thread | null {
+  setModelRequest(id: string, request: ModelRequest | null, effort?: Effort | null): Thread | null {
     const at = now();
+    if (effort !== undefined) {
+      const result = this.raw.prepare("UPDATE threads SET model_request = ?, effort_override = ?, updated_at = ? WHERE id = ?")
+        .run(request ? JSON.stringify(request) : null, effort, at, id);
+      return result.changes ? this.getThread(id) : null;
+    }
     const result = this.raw
       .prepare("UPDATE threads SET model_request = ?, updated_at = ? WHERE id = ?")
       .run(request ? JSON.stringify(request) : null, at, id);

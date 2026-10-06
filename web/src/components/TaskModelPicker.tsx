@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { modelLabel } from "../lib/format.js";
+import { effortLabel, modelLabel } from "../lib/format.js";
 import { mergeModelOptions } from "../lib/models.js";
 import { useStore } from "../store.js";
-import type { ImplementorProvider, ModelRequest, OrchestratorSettings, Thread } from "../types.js";
+import { claudeEffortsForModel, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type Effort, type ImplementorProvider, type ModelRequest, type OrchestratorSettings, type Thread } from "../types.js";
 
 const PROVIDERS: ImplementorProvider[] = ["claude", "codex", "grok", "zai"];
 const PROVIDER_LABEL: Record<ImplementorProvider, string> = {
@@ -70,16 +70,23 @@ export function TaskModelPicker({ thread, active: runActive }: { thread: Thread;
   const [open, setOpen] = useState(false);
   const [provider, setProvider] = useState<ImplementorProvider>("claude");
   const [model, setModel] = useState("");
+  const [effort, setEffort] = useState<Effort | "auto">("auto");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
 
   const target = targets.find((item) => item.provider === provider) ?? targets[0];
+  const efforts = provider === "codex" ? settings.codexModelEfforts[model] ?? codexEffortsForModel(model)
+    : provider === "grok" ? grokEffortsForModel(model)
+    : provider === "zai" ? zaiEffortsForModel(model)
+    : claudeEffortsForModel(model);
+  const selectedEffort = effort === "auto" || (efforts as readonly Effort[]).includes(effort) ? effort : "auto";
+  useEffect(() => { setEffort(selectedEffort); }, [selectedEffort]);
   const request = thread.modelRequest;
   const exactPin = !!request?.provider && !!request.model;
   // An unresolved strict request is not Auto routing: it still blocks substitution until the owner
   // chooses an exact target or explicitly clears it. Keep that legacy state visible on the trigger.
-  const constrained = !!request;
+  const constrained = !!request || !!thread.effortOverride;
   const currentLabel = exactPin
     ? `${PROVIDER_LABEL[request.provider!]} · ${modelLabel(request.model)}`
     : request
@@ -93,6 +100,7 @@ export function TaskModelPicker({ thread, active: runActive }: { thread: Thread;
       setModel(request?.provider === initial.provider && request.model && initial.models.includes(request.model) ? request.model : initial.models[0] ?? "");
     }
     setError("");
+    setEffort(thread.effortOverride ?? "auto");
     setOpen(true);
   };
 
@@ -119,7 +127,7 @@ export function TaskModelPicker({ thread, active: runActive }: { thread: Thread;
     }
     setError("");
     setBusy(true);
-    const ok = await setTaskModel(thread.id, nextProvider, nextModel);
+    const ok = await setTaskModel(thread.id, nextProvider, nextModel, nextProvider && selectedEffort !== "auto" ? selectedEffort : null);
     setBusy(false);
     if (ok) setOpen(false);
     else setError("The task did not accept this model change. Check the task notice and try again.");
@@ -146,6 +154,7 @@ export function TaskModelPicker({ thread, active: runActive }: { thread: Thread;
             <div>
               <strong>Task model</strong>
               <span>{currentLabel}</span>
+              <span>Effort: {thread.effortOverride ? effortLabel(thread.effortOverride) : "Auto"}</span>
             </div>
             <button type="button" onClick={() => setOpen(false)} aria-label="Close model picker">×</button>
           </div>
@@ -180,15 +189,23 @@ export function TaskModelPicker({ thread, active: runActive }: { thread: Thread;
                 {(target?.models ?? []).map((option) => <option key={option} value={option}>{modelLabel(option)}</option>)}
               </select>
             </label>
+            <label style={{ gridColumn: "1 / -1" }}>
+              <span>Effort</span>
+              <select aria-label="Task effort" value={selectedEffort} disabled={busy || !target?.enabled || !model}
+                onChange={(event) => setEffort(event.target.value as Effort | "auto")}>
+                <option value="auto">Auto</option>
+                {efforts.map((option) => <option key={option} value={option}>{effortLabel(option)}</option>)}
+              </select>
+            </label>
           </div>
           <p className={active ? "task-model-warning active" : "task-model-warning"}>
             {active
               ? "Interrupt the current implementor before changing this pin. Its files and saved task history stay intact."
-              : "An exact pin never falls back. If that model is unavailable or capped, this task waits or stops visibly."}
+              : "An exact pin never falls back. If that model is unavailable or capped, this task waits or stops visibly. Effort applies on the next start, within subscription caps; Auto lets GGO choose."}
           </p>
           {error ? <div className="task-model-error" role="alert">{error}</div> : null}
           <div className="task-model-actions">
-            <button type="button" className="btn ghost sm" disabled={busy || active || !request} onClick={() => void apply(null, null)}>
+            <button type="button" className="btn ghost sm" disabled={busy || active || !constrained} onClick={() => void apply(null, null)}>
               Use Auto
             </button>
             <button

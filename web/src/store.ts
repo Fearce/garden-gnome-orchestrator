@@ -464,7 +464,7 @@ interface State {
   startImmediately: (threadId: string) => void;
   proceed: (threadId: string) => void;
   setDeadline: (threadId: string, deadlineAt: number | null) => Promise<boolean>;
-  setTaskModel: (threadId: string, provider: ImplementorProvider | null, model: string | null) => Promise<boolean>;
+  setTaskModel: (threadId: string, provider: ImplementorProvider | null, model: string | null, effort?: Effort | null) => Promise<boolean>;
   setTaskRole: (threadId: string, role: ToggleableRole, enabled: boolean | null) => Promise<boolean>;
   cancel: (threadId: string) => void;
   retry: (threadId: string) => void;
@@ -1744,9 +1744,9 @@ export const useStore = create<State>((set) => ({
   proceed: (threadId) => sendCommand({ type: "thread.proceed", threadId }),
   setDeadline: (threadId, deadlineAt) =>
     sendThreadActionCommand({ type: "thread.deadline", threadId, deadlineAt }, "deadline", threadId),
-  setTaskModel: (threadId, provider, model) => {
+  setTaskModel: (threadId, provider, model, effort) => {
     const clientId = newOutboundId();
-    return sendThreadActionCommand({ type: "thread.model", threadId, provider, model, clientId }, "model", threadId);
+    return sendThreadActionCommand({ type: "thread.model", threadId, provider, model, effort, clientId }, "model", threadId);
   },
   setTaskRole: (threadId, role, enabled) =>
     sendThreadActionCommand({ type: "thread.role", threadId, role, enabled }, "role", threadId),

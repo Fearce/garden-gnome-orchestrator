@@ -14,11 +14,14 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Add effort selection to the Task model dialog** (2026-10-06, Bramble Dial).
+
 
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Add effort selection to the Task model dialog** (2026-10-06, Bramble Dial).
+  Model-supported tiers and durable next-start effort; integration 59/59, desktop/phone browser 27/27, types/builds/README/privacy pass. Server deployment pending: restart-resume instruction prohibits another restart.
 
 
 

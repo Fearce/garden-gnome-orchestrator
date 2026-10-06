@@ -102,6 +102,12 @@ function readModelRequest(dataDir, threadId = TASK_ID) {
   return row?.model_request ? JSON.parse(row.model_request) : null;
 }
 
+function readEffort(dataDir) {
+  const db = new Database(path.join(dataDir, "orchestrator.sqlite"), { readonly: true });
+  try { return db.prepare("SELECT effort_override FROM threads WHERE id = ?").get(TASK_ID).effort_override; }
+  finally { db.close(); }
+}
+
 async function waitForModelRequest(dataDir, predicate, message) {
   for (let i = 0; i < 80; i++) {
     const request = readModelRequest(dataDir);
@@ -182,6 +188,9 @@ async function desktopPass(browser, dataDir, shots, errors) {
   check("Codex exposes at least one exact model", !!expectedModel, JSON.stringify(modelValues));
   if (!expectedModel) throw new Error("No Codex model was available in the task picker.");
   await model.selectOption(expectedModel);
+  const effort = page.getByLabel("Task effort", { exact: true });
+  check("effort defaults to Auto", await effort.inputValue() === "auto");
+  await effort.selectOption("high");
   await page.getByRole("button", { name: "Pin exact model", exact: true }).click();
   await popover.waitFor({ state: "detached" });
 
@@ -191,6 +200,7 @@ async function desktopPass(browser, dataDir, shots, errors) {
     "Exact task model was not persisted",
   );
   check("the click persists the exact provider/model with a selection timestamp", !!request, JSON.stringify(request));
+  check("the effort is persisted with the exact model", readEffort(dataDir) === "high");
   check(
     "the closed trigger visibly carries the new pin",
     (await trigger.getAttribute("data-task-model")) === expectedModel && (await trigger.getAttribute("class"))?.includes("pinned"),
@@ -211,7 +221,11 @@ async function desktopPass(browser, dataDir, shots, errors) {
   popover = page.locator('[role="dialog"][aria-label="Choose exact task model"]');
   await popover.waitFor({ state: "visible" });
   await page.screenshot({ path: path.join(shots, "task-model-desktop.png") });
-  await page.getByRole("button", { name: "Close model picker", exact: true }).click();
+  await page.getByLabel("Task effort", { exact: true }).selectOption("medium");
+  await page.getByRole("button", { name: "Pin exact model", exact: true }).click();
+  await popover.waitFor({ state: "detached" });
+  await waitForModelRequest(dataDir, (value) => value?.model === expectedModel && readEffort(dataDir) === "medium", "Effort-only change did not persist");
+  check("changing only effort preserves the exact model", readEffort(dataDir) === "medium");
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30_000 });
@@ -224,8 +238,15 @@ async function desktopPass(browser, dataDir, shots, errors) {
   );
 
   await trigger.click();
+  check("saved effort survives reload and reopening", await page.getByLabel("Task effort", { exact: true }).inputValue() === "medium");
+  await page.getByLabel("Task effort", { exact: true }).selectOption("auto");
+  await page.getByRole("button", { name: "Pin exact model", exact: true }).click();
+  await waitForModelRequest(dataDir, (value) => value?.model === expectedModel && readEffort(dataDir) === null, "Auto effort did not clear the override");
+  check("Auto effort keeps the exact model pin", readModelRequest(dataDir)?.model === expectedModel);
+  await trigger.click();
   await page.getByRole("button", { name: "Use Auto", exact: true }).click();
   await waitForModelRequest(dataDir, (value) => value === null, "Auto routing did not clear the task pin");
+  check("Use Auto clears the durable effort override", readEffort(dataDir) === null);
   await page.waitForFunction(() => {
     const trigger = document.querySelector('[aria-label="Choose task provider and model"]');
     return trigger?.getAttribute("data-task-model") === "auto" && !trigger.classList.contains("pinned");
@@ -308,6 +329,8 @@ async function phonePass(browser, shots, errors) {
       return !!hit && (hit === element || element.contains(hit));
     }),
   );
+  const effortBox = boxBounds(await page.getByLabel("Task effort", { exact: true }).boundingBox());
+  check("phone: effort is visible and fits the viewport", !!effortBox && effortBox.left >= 0 && effortBox.right <= 390 && effortBox.bottom <= 844);
   await page.screenshot({ path: path.join(shots, "task-model-phone.png") });
   await context.close();
 }

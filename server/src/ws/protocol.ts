@@ -392,6 +392,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     threadId: z.string(),
     provider: z.enum(["claude", "codex", "grok", "zai"]).nullable(),
     model: z.string().trim().min(1).max(100).nullable(),
+    effort: z.enum(CODEX_EFFORTS).nullable().optional(),
     clientId: z.string().uuid().optional(),
   }),
   // Per-task role switch. enabled null = Auto (global setting + task-aware route); true/false beats both.
