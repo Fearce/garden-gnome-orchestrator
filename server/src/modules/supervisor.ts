@@ -232,7 +232,10 @@ export class ModuleSupervisor {
         if (health) return { port: record.port, token: record.token, health };
       }
       // A second worker that found one already running exits at once; its record is the live one.
-      if (!(await isLiveNodeProcess(pid)) && !record) throw new Error(`the ${id} worker exited during startup${await logTail(paths.log)}`);
+      // This pid came from our own spawn. Checking existence is enough here; Windows tasklist
+      // can take seconds and miss readiness (or falsely report an exit when enumeration times out).
+      // Keep the executable-name check in killWorker, where pid reuse could kill an unrelated app.
+      if (!pidExists(pid) && !record) throw new Error(`the ${id} worker exited during startup${await logTail(paths.log)}`);
     }
     throw new Error(`the ${id} worker did not answer within ${START_TIMEOUT_MS / 1000}s${await logTail(paths.log)}`);
   }

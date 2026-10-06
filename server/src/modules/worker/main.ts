@@ -56,6 +56,8 @@ class WorkerProcess {
     });
     const record: WorkerRecord = { module: this.module, pid: process.pid, port, token: this.token, build: this.build, startedAt: this.startedAt };
     await writeAtomic(this.paths.record, `${JSON.stringify(record)}\n`);
+    // Importing configuration and starting the listener are startup work, not idle time.
+    this.lastActivityAt = Date.now();
     setInterval(() => this.checkIdle(), Math.min(IDLE_CHECK_MS, Math.max(250, this.idleExitMs / 2))).unref();
     for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK"] as const) process.on(signal, () => void this.exit(`received ${signal}`));
     log(`${this.module} worker ready on 127.0.0.1:${port} (build ${this.build}, pid ${process.pid})`);

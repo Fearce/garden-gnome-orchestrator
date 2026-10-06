@@ -545,6 +545,8 @@ process.env.LOCALAPPDATA = localAppData;
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(400, 1), Buffer.from([0xff, 0xd9])]);
 const hubCalls: string[] = [];
 let hubPort = 0;
+let homeImportDelayMs = 0;
+let homeImportedAt = 0;
 const hub: Server = createServer((req, res) => {
   hubCalls.push(`${req.method} ${req.url}`);
   const json = (body: unknown) => {
@@ -556,7 +558,15 @@ const hub: Server = createServer((req, res) => {
     return res.end(JPEG);
   }
   if (req.url === "/api/settings/hiddenScripts") return json({ value: ["beta"] });
-  if (req.url === "/api/settings/home-control") return json({ value: { devices: [{ id: "vac-1", name: "Hall vacuum", token: TOKEN, host: "192.0.2.10", refreshMs: 10_000 }] } });
+  if (req.url === "/api/settings/home-control") {
+    const imported = () => {
+      homeImportedAt = Date.now();
+      json({ value: { devices: [{ id: "vac-1", name: "Hall vacuum", token: TOKEN, host: "192.0.2.10", refreshMs: 10_000 }] } });
+    };
+    if (homeImportDelayMs) setTimeout(imported, homeImportDelayMs);
+    else imported();
+    return;
+  }
   if (req.url === "/api/settings/surveillance") {
     return json({ value: { recordingRoot: "", recordingRootParked: join(root, "recordings"), cameras: [{ id: "cam-1", name: "Porch", password: "pw-secret", snapshotUrl: `http://admin:pw-secret@127.0.0.1:${hubPort}/snap.jpg`, previewStrategy: "snapshot", refreshMs: 250 }] } });
   }
@@ -926,11 +936,15 @@ try {
     assert.equal(existsSync(modulePaths(dataDir, "home").record), false);
   });
 
-  await test("an idle worker exits by itself", async () => {
+  await test("startup longer than the idle window gets a full idle window after readiness, then exits", async () => {
     const idleDir = join(root, "idle");
     const idle = new ModuleSupervisor({ dataDir: idleDir, build: "build-one", hubUrl, idleExitMs: 1_200 });
     extraSupervisors.push(idle);
-    const connection = await idle.ensure("home");
+    homeImportDelayMs = 1_600;
+    homeImportedAt = 0;
+    const connection = await idle.ensure("home").finally(() => { homeImportDelayMs = 0; });
+    assert.ok(homeImportedAt > 0, "the delayed import completed");
+    assert.ok(connection.health.lastActivityAt >= homeImportedAt, "the idle countdown starts after importing settings");
     await waitFor("idle exit", () => idle.status("home"), (s) => s.state === "stopped", 20_000);
     // The record goes first and the process ends a moment later as it exits by itself.
     await waitFor("idle worker process gone", async () => pidAlive(connection.health.pid), (alive) => !alive, 10_000);
