@@ -34,6 +34,7 @@ export interface Camera {
   uiCollapsed: boolean;
   /** Whether the open console should ping and count movement in this camera's pictures. */
   notificationsEnabled: boolean;
+  motionSensitivity: "low" | "medium" | "high";
   /** Whether this camera records while recording is on (24/7 or on schedule). */
   recordEnabled: boolean;
   recordingDir: string;
@@ -88,6 +89,7 @@ export function blankCamera(overrides: Partial<Camera> = {}): Camera {
     previewHeight: 0,
     uiCollapsed: false,
     notificationsEnabled: false,
+    motionSensitivity: "medium",
     recordEnabled: true,
     recordingDir: "",
     recordingFps: 2,
@@ -129,6 +131,7 @@ export function normalizeCamera(raw: unknown): Camera {
     previewHeight: clampInt(input.previewHeight, 0, 4000, 0),
     uiCollapsed: input.uiCollapsed === true,
     notificationsEnabled: input.notificationsEnabled === true,
+    motionSensitivity: input.motionSensitivity === "low" || input.motionSensitivity === "high" ? input.motionSensitivity : "medium",
     recordEnabled: input.recordEnabled !== false,
     recordingDir: text(input.recordingDir, 1024),
     recordingFps: clampInt(input.recordingFps, 1, 12, 2),

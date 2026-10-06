@@ -1,10 +1,17 @@
+type Sensitivity = "low" | "medium" | "high";
+const THRESHOLDS = {
+  low: { pixelChange: 35, changedFraction: 0.20 },
+  medium: { pixelChange: 20, changedFraction: 0.08 },
+  high: { pixelChange: 12, changedFraction: 0.04 },
+} satisfies Record<Sensitivity, { pixelChange: number; changedFraction: number }>;
+
 /** Picture-change detection on a small luminance grid; uniform exposure shifts are ignored. */
 export class MotionDetector {
   private previous: Float32Array | null = null;
   private at = 0;
   private lastAlert = -Infinity;
 
-  sample(pixels: Uint8ClampedArray, at: number, maxGapMs = 30_000): boolean {
+  sample(pixels: Uint8ClampedArray, at: number, maxGapMs = 30_000, sensitivity: Sensitivity = "medium"): boolean {
     if (at <= this.at) return false;
     const grid = new Float32Array(pixels.length / 4);
     let mean = 0;
@@ -19,9 +26,10 @@ export class MotionDetector {
     this.previous = grid;
     this.at = at;
     if (!before || before.length !== grid.length || gap > maxGapMs) return false;
+    const threshold = THRESHOLDS[sensitivity] ?? THRESHOLDS.medium;
     let changed = 0;
-    for (let i = 0; i < grid.length; i++) if (Math.abs(grid[i]! - before[i]!) > 20) changed++;
-    if (changed / grid.length < 0.08 || at - this.lastAlert < 30_000) return false;
+    for (let i = 0; i < grid.length; i++) if (Math.abs(grid[i]! - before[i]!) > threshold.pixelChange) changed++;
+    if (changed / grid.length < threshold.changedFraction || at - this.lastAlert < 30_000) return false;
     this.lastAlert = at;
     return true;
   }

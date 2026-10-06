@@ -122,6 +122,9 @@ keeps the stored value. A vacuum's notes mask its miIO token too. A camera's not
   toggled. The module needs ffmpeg for recording, stream-only previews and playback: a path set under
   Recording settings, else the copy GGO installed for Remote control, else one on `PATH`.
   Each camera has **Notifications on/off**, saved in its configuration and off by default.
+  Camera settings also save **Motion sensitivity** per camera: Low requires stronger changes across
+  more of the picture to reduce false alerts, Medium preserves the original thresholds, and High
+  detects smaller movements. Choose a level and **Save camera** to apply it to monitoring immediately.
   Enabled cameras detect changes in a 32-by-24 luminance grid in the browser, ping independently of
   the task notification bell and add to the unread Surveillance tab count. Unread alerts give the tab
   a red border, a fill and glow that throb from dark to bright red, and a pulsing count; narrow
@@ -217,7 +220,8 @@ from a stale page cannot turn recording on or off.
   picture, button/wheel/pinch/keyboard zoom, drag pan and limits, rotation, frame resizing, reset, phone fallback) against mocked module
   routes and a mocked frame socket, after `npm run build --prefix web`. It never contacts a camera.
 - `npm run surveillance-notifications-lab --prefix server` checks per-camera toggles, independent
-  motion pings, unread counts, cooldown, reloads, a shared socket, narrow layouts and explicit Stop
+  motion pings, unread counts, cooldown, reloads, saved sensitivity and false-alert suppression,
+  a shared socket, narrow layouts and explicit Stop
   against mocked camera pictures and module routes. Build web first; no real camera is contacted.
 - `npm run modules-lab --prefix server` drives all four tabs in a browser against a throwaway instance;
   the header of `server/scripts/modules-lab.cjs` lists the build steps. It never starts or stops a

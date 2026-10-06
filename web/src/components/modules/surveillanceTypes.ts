@@ -25,6 +25,7 @@ export interface Camera {
   previewHeight: number;
   uiCollapsed: boolean;
   notificationsEnabled: boolean;
+  motionSensitivity: "low" | "medium" | "high";
   recordEnabled: boolean;
   recordingDir: string;
   recordingFps: number;

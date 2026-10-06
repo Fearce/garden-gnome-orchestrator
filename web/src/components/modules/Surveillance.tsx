@@ -400,6 +400,7 @@ function blankCamera(): Camera {
     previewHeight: 0,
     uiCollapsed: false,
     notificationsEnabled: false,
+    motionSensitivity: "medium",
     recordEnabled: true,
     recordingDir: "",
     recordingFps: 2,
@@ -478,6 +479,13 @@ function CameraDialog(props: { camera: Camera; isNew: boolean; onClose: () => vo
           </Field>
           <Field label="Motion notifications" hint="Ping and count movement while this console is open, including other tabs. One alert per camera every 30 seconds; picture changes and lighting can trigger alerts.">
             <label><input type="checkbox" checked={camera.notificationsEnabled === true} onChange={(e) => { unlockMotionSound(); set("notificationsEnabled", e.target.checked); }} /> Notifications on</label>
+          </Field>
+          <Field label="Motion sensitivity" hint="Choose Low to reduce false alerts from small picture changes. Medium is the original sensitivity; High picks up smaller movements. Save camera to apply.">
+            <select className="mod-select" aria-label="Motion sensitivity" value={camera.motionSensitivity ?? "medium"} onChange={(e) => set("motionSensitivity", e.target.value as Camera["motionSensitivity"])}>
+              <option value="low">Low — fewer alerts</option>
+              <option value="medium">Medium — standard</option>
+              <option value="high">High — smaller movements</option>
+            </select>
           </Field>
           <Field label="Location">
             <input className="mod-input" value={camera.location} onChange={(e) => set("location", e.target.value)} />

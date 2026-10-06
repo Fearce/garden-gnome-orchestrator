@@ -14,9 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Add per-camera motion sensitivity to reduce false Surveillance notifications** (2026-10-06, Fernspindle).
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
+
+- **Add per-camera motion sensitivity to reduce false Surveillance notifications** (2026-10-06, Fernspindle).
+  Low/Medium/High saved per camera; motion browser 38/38, modules 37 checks plus follow-ups, types/builds/README/privacy pass. Deployment and live control check pending.
 
 
 - **QA: make unread Surveillance alerts conspicuous and verify module readiness** (2026-10-06, Codex QA).

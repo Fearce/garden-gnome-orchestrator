@@ -128,6 +128,8 @@ be put in any order: drag one along the board header, or use Settings → Interf
   beneath the area selector on narrow screens (a steady highlight with reduced motion). Opening the tab
   clears the count. Notifications default off and work while this console is open, including other
   board tabs. Cameras share one picture socket; each camera alerts at most once every 30 seconds.
+  In camera settings, choose **Motion sensitivity → Low** for fewer false alerts, then **Save camera**.
+  Medium keeps the original sensitivity; High detects smaller movements. Each camera saves its own level.
   Lighting or other picture changes can trigger detection; browser sleep pauses monitoring and
   sound needs a click in the console after loading. Click a camera picture (or its enlarge button)
   for a fullscreen view; scroll, pinch or use the zoom buttons to magnify, drag to pan, and

@@ -23,3 +23,32 @@ const other = new MotionDetector();
 assert.equal(other.sample(picture(), 100_000), false);
 assert.equal(other.sample(picture(0, true), 101_000), true, "another camera has its own cooldown");
 console.log("Motion detection checks passed");
+
+function patchPicture(width: number, contrast: number): Uint8ClampedArray {
+  const pixels = picture();
+  for (let y = 0; y < 24; y++) for (let x = 0; x < width; x++) {
+    pixels.set([50 + contrast, 50 + contrast, 50 + contrast, 255], (y * 32 + x) * 4);
+  }
+  return pixels;
+}
+function detects(width: number, contrast: number, sensitivity: "low" | "medium" | "high"): boolean {
+  const detector = new MotionDetector();
+  detector.sample(picture(), 100_000);
+  return detector.sample(patchPicture(width, contrast), 101_000, 30_000, sensitivity);
+}
+assert.equal(detects(4, 80, "medium"), true, "original sensitivity detects a modest changed area");
+assert.equal(detects(4, 80, "low"), false, "low suppresses modest changed areas");
+assert.equal(detects(8, 40, "medium"), true, "original sensitivity detects lower contrast changes");
+assert.equal(detects(8, 40, "low"), false, "low suppresses lower contrast changes");
+assert.equal(detects(8, 130, "low"), true, "low still detects substantial movement");
+assert.equal(detects(2, 40, "medium"), false, "standard ignores small movements");
+assert.equal(detects(2, 40, "high"), true, "high picks up small movements");
+for (const sensitivity of ["low", "medium", "high"] as const) {
+  const detector = new MotionDetector();
+  detector.sample(picture(), 100_000);
+  assert.equal(detector.sample(picture(40), 101_000, 30_000, sensitivity), false);
+  assert.equal(detector.sample(picture(40, true), 102_000, 30_000, sensitivity), true);
+  assert.equal(detector.sample(picture(40), 103_000, 30_000, sensitivity), false, "all levels retain cooldown");
+  assert.equal(detector.sample(picture(), 200_000, 30_000, sensitivity), false, "all levels rebaseline after sleep");
+}
+console.log("Sensitivity regressions passed");

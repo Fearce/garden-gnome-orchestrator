@@ -114,6 +114,13 @@ await test("surveillance: motion notifications default off and survive masked co
   assert.equal(normalizeCamera({ ...saved.cameras[0], notificationsEnabled: false }).notificationsEnabled, false);
 });
 
+await test("surveillance: per-camera sensitivity defaults safely and survives masked saves", () => {
+  const config = normalizeConfig({ cameras: [{ id: "a", motionSensitivity: "low" }, { id: "b", motionSensitivity: "high" }, { id: "c" }, { id: "d", motionSensitivity: "invalid" }] });
+  assert.deepEqual(config.cameras.map(c => c.motionSensitivity), ["low", "high", "medium", "medium"]);
+  const saved = normalizeConfig({ ...config, cameras: config.cameras.map(maskCamera) });
+  assert.deepEqual(saved.cameras.map(c => c.motionSensitivity), ["low", "high", "medium", "medium"]);
+});
+
 await test("surveillance: a password written into a camera's notes is masked and survives a save", () => {
   const notes = "Login admin / pw-secret.\nFallback: rtsp://viewer:other-pass@192.0.2.21:554/s1 (ask sam@example.com)";
   const stored = normalizeCamera({ id: "cam-1", name: "Porch", password: "pw-secret", notes });

@@ -98,11 +98,12 @@ export function useMotionNotifications(enabled: boolean, viewing: boolean): numb
       image.src = entry.url;
       try {
         await image.decode();
-        if (closed || !current.current.some(c => c.id === id && c.notificationsEnabled)) return;
+        const latestCamera = current.current.find(c => c.id === id && c.notificationsEnabled);
+        if (closed || !latestCamera) return;
         ctx.drawImage(image, 0, 0, 32, 24);
         let detector = detectors.get(id);
         if (!detector) detectors.set(id, detector = new MotionDetector());
-        if (detector.sample(ctx.getImageData(0, 0, 32, 24).data, entry.at, Math.max(30_000, camera.refreshMs * 2))) {
+        if (detector.sample(ctx.getImageData(0, 0, 32, 24).data, entry.at, Math.max(30_000, latestCamera.refreshMs * 2), latestCamera.motionSensitivity)) {
           beep();
           if (!watching.current || document.hidden) setCount(n => n + 1);
         }

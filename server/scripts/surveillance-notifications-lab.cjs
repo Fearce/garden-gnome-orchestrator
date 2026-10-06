@@ -51,8 +51,10 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
       const ctx = c.getContext('2d');
       ctx.fillStyle = '#333'; ctx.fillRect(0, 0, 320, 240);
       const still = c.toDataURL('image/jpeg').split(',')[1];
+      ctx.fillStyle = '#ddd'; ctx.fillRect(0, 0, 40, 240);
+      const small = c.toDataURL('image/jpeg').split(',')[1];
       ctx.fillStyle = '#ddd'; ctx.fillRect(0, 0, 100, 240);
-      return { still, moving: c.toDataURL('image/jpeg').split(',')[1] };
+      return { still, small, moving: c.toDataURL('image/jpeg').split(',')[1] };
     });
     let sockets = 0, active = 0;
     const feeds = new Set();
@@ -65,7 +67,7 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
       for (const socket of feeds) for (const id of ['a', 'b']) {
         const header = Buffer.from(JSON.stringify({ id, at: Date.now() }));
         const len = Buffer.alloc(2); len.writeUInt16BE(header.length);
-        socket.send(Buffer.concat([len, header, Buffer.from(movement[id] ? pictures.moving : pictures.still, 'base64')]));
+        socket.send(Buffer.concat([len, header, Buffer.from(movement[id] === 'small' ? pictures.small : movement[id] ? pictures.moving : pictures.still, 'base64')]));
       }
     }, 250);
     await page.request.post(`${BASE}/api/login`, { data: { password: authPassword() } });
@@ -187,6 +189,34 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     delaySaves = false;
     await toggle('Porch').click();
     await page.waitForFunction(() => document.querySelector('[aria-label="Motion notifications for Porch"]').getAttribute('aria-pressed') === 'true');
+    await page.getByRole('button', { name: 'Edit Kitchen', exact: true }).click();
+    check('legacy cameras open at standard sensitivity', await page.getByLabel('Motion sensitivity', { exact: true }).inputValue() === 'medium');
+    await page.getByLabel('Motion sensitivity', { exact: true }).selectOption('low');
+    await page.getByLabel('Notifications on', { exact: true }).check();
+    await page.getByRole('button', { name: 'Save camera', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[aria-label="Motion sensitivity"]'));
+    check('sensitivity saves independently per camera', config.cameras[1].motionSensitivity === 'low' && !config.cameras[0].motionSensitivity);
+    movement.a = false; movement.b = false;
+    await page.waitForTimeout(700);
+    await page.click('.bt-tasks');
+    const quietPings = await page.evaluate(() => window.__pings);
+    movement.b = 'small'; await page.waitForTimeout(700);
+    movement.b = false; await page.waitForTimeout(700);
+    check('low sensitivity suppresses modest picture changes without a ping or unread count', await page.evaluate(() => window.__pings) === quietPings && await page.locator('.bt-surveillance .board-tab-count').count() === 0);
+    await page.click('.bt-surveillance');
+    await page.getByRole('button', { name: 'Edit Kitchen', exact: true }).click();
+    check('saved sensitivity is restored when reopening camera settings', await page.getByLabel('Motion sensitivity', { exact: true }).inputValue() === 'low');
+    await page.setViewportSize({ width: 320, height: 700 });
+    check('sensitivity control fits a phone dialog', await page.getByLabel('Motion sensitivity', { exact: true }).evaluate(el => { const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth; }));
+    await page.getByLabel('Motion sensitivity', { exact: true }).selectOption('high');
+    await page.getByRole('button', { name: 'Save camera', exact: true }).click();
+    await page.waitForFunction(() => !document.querySelector('[aria-label="Motion sensitivity"]'));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.click('.bt-tasks'); await page.waitForTimeout(500);
+    movement.b = 'small';
+    await page.waitForFunction(() => document.querySelector('.bt-surveillance .board-tab-count')?.textContent === '1');
+    check('saved higher sensitivity immediately detects the same modest changes', config.cameras[1].motionSensitivity === 'high');
+    await page.click('.bt-surveillance');
     await page.getByRole('button', { name: 'Stop', exact: true }).click();
     await page.waitForTimeout(6000);
     const stoppedTickets = ticketCalls;
