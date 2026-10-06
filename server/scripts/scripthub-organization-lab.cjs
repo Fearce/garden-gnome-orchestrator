@@ -108,11 +108,20 @@ const scripts = [
       await entryEditor.getByLabel("Launch type", { exact: true }).fill("process");
       await entryEditor.getByLabel("Executable", { exact: true }).fill("node");
       await entryEditor.getByLabel("Arguments (JSON array)").fill('["game.js", "--test"]');
+      // Key-by-key typing: separators must survive the controlled-input round trip.
+      const notesField = entryEditor.getByLabel("Notes (one per line)");
+      await notesField.press("End");
+      await notesField.press("Enter");
+      await notesField.pressSequentially("second note");
+      await entryEditor.getByLabel("Aliases (comma separated)").fill("");
+      await entryEditor.getByLabel("Aliases (comma separated)").pressSequentially("gg, my game");
+      check(`${label}: typed list separators survive`, await notesField.inputValue() === `${label} concurrent update\nsecond note` && await entryEditor.getByLabel("Aliases (comma separated)").inputValue() === "gg, my game");
       await entryEditor.getByRole("button", { name: "Save entry", exact: true }).click();
       await entryEditor.waitFor({ state: "detached" });
       check(`${label}: entry edits update cards`, await card.locator(".sh-desc").textContent() === `${label} edited description` && await card.locator(".sh-cmd").textContent() === "node game.js --test");
       const savedEntry = registry().scripts.find((script) => script.id === "gamma");
       check(`${label}: launch edits saved to actual registry`, savedEntry.start.executable === "node" && savedEntry.start.args[1] === "--test" && savedEntry.notes[0] === `${label} concurrent update`);
+      check(`${label}: typed notes and aliases saved as lists`, JSON.stringify(savedEntry.notes) === JSON.stringify([`${label} concurrent update`, "second note"]) && JSON.stringify(savedEntry.aliases) === JSON.stringify(["gg", "my game"]));
       await card.getByRole("button", { name: "Organize", exact: true }).click();
       const editor = card.getByRole("form");
       await editor.getByLabel("Tags (comma separated)").fill("play, Favourite, favourite");

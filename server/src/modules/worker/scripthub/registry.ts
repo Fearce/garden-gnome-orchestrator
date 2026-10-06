@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { open, readFile, unlink } from "node:fs/promises";
+import { open, readFile, stat, unlink } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { writeAtomic } from "../configStore.js";
@@ -8,7 +8,8 @@ import { HttpError } from "../router.js";
 
 type Entry = Record<string, unknown> & { id: string };
 type Registry = Record<string, unknown> & { scripts: Entry[] };
-const revisionOf = (entry: Entry) => createHash("sha256").update(JSON.stringify(entry)).digest("hex");
+const LOCK_STALE_MS = 30_000;
+const revisionOf =(entry: Entry) => createHash("sha256").update(JSON.stringify(entry)).digest("hex");
 
 /** Discover the shared file through the hub's own entry; no client-supplied file paths. */
 export async function registryPath(hubUrl: string): Promise<string> {
@@ -89,6 +90,9 @@ export async function editEntry(path: string, id: string, body: unknown) {
     try { lock = await open(lockPath, "wx"); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Same rule as Script Hub's upsert_script.py: a lock older than 30s belongs to a crashed holder.
+      const age = await stat(lockPath).then((info) => Date.now() - info.mtimeMs, () => 0);
+      if (age > LOCK_STALE_MS) { await unlink(lockPath).catch(() => undefined); continue; }
       if (Date.now() >= deadline) throw new HttpError(409, "Another agent is updating Script Hub. Try saving again.");
       await delay(100);
     }
@@ -103,6 +107,6 @@ export async function editEntry(path: string, id: string, body: unknown) {
     return { entry, revision: revisionOf(entry) };
   } finally {
     await lock.close();
-    await unlink(lockPath);
+    await unlink(lockPath).catch(() => undefined);
   }
 }

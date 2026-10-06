@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -35,6 +35,14 @@ test("registry editing preserves peer entries, unknown settings and rejects stal
     ]);
     assert.equal(simultaneous.filter((item) => item.status === "fulfilled").length, 1);
     assert.equal(simultaneous.filter((item) => item.status === "rejected").length, 1);
+    await assert.rejects(readFile(`${file}.lock`), { code: "ENOENT" });
+    // A crashed upsert helper's lock goes stale after 30s, matching upsert_script.py.
+    const latest = await readEntry(file, "alpha");
+    await writeFile(`${file}.lock`, "12345");
+    const old = new Date(Date.now() - 60_000);
+    await utimes(`${file}.lock`, old, old);
+    await editEntry(file, "alpha", { revision: latest.revision, entry: { ...latest.entry, description: "After stale lock" } });
+    assert.equal(JSON.parse(await readFile(file, "utf8")).scripts[0].description, "After stale lock");
     await assert.rejects(readFile(`${file}.lock`), { code: "ENOENT" });
   } finally { await rm(root, { recursive: true, force: true }); }
 });

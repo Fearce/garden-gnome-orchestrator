@@ -442,6 +442,13 @@ function EntryEditor({ script, onSaved, onClose }: { script: Script; onSaved: ()
   const [loaded, setLoaded] = useState<{ entry: RegistryEntry; revision: string } | null>(null);
   const [draft, setDraft] = useState("");
   const [args, setArgs] = useState("[]");
+  // Raw text for list fields, so a typed newline, comma or space survives until the next character.
+  const [notesText, setNotesText] = useState("");
+  const [aliasesText, setAliasesText] = useState("");
+  const syncListText = (value: Partial<RegistryEntry> | null | undefined) => {
+    setNotesText(Array.isArray(value?.notes) ? value.notes.join("\n") : typeof value?.notes === "string" ? value.notes : "");
+    setAliasesText(Array.isArray(value?.aliases) ? value.aliases.join(", ") : "");
+  };
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -450,7 +457,8 @@ function EntryEditor({ script, onSaved, onClose }: { script: Script; onSaved: ()
       setLoaded(result);
       setDraft(JSON.stringify(result.entry, null, 2));
       setArgs(JSON.stringify(result.entry.start?.args ?? []));
-    }, (cause) => { if (!abort.signal.aborted) setError(errorText(cause)); });
+      syncListText(result.entry);
+    },(cause) => { if (!abort.signal.aborted) setError(errorText(cause)); });
     return () => abort.abort();
   }, [script.id]);
   let entry: RegistryEntry | null = null;
@@ -485,8 +493,14 @@ function EntryEditor({ script, onSaved, onClose }: { script: Script; onSaved: ()
       <fieldset disabled={!entry}>
         <label>Name<input value={entry?.displayName ?? ""} onChange={(event) => update({ displayName: event.target.value })} /></label>
         <label>Description<textarea aria-label="Description" value={entry?.description ?? ""} onChange={(event) => update({ description: event.target.value })} /></label>
-        <label>Notes (one per line)<textarea aria-label="Notes (one per line)" value={Array.isArray(entry?.notes) ? entry.notes.join("\n") : entry?.notes ?? ""} onChange={(event) => update({ notes: event.target.value.split("\n").filter(Boolean) })} /></label>
-        <label>Aliases (comma separated)<input value={entry?.aliases?.join(", ") ?? ""} onChange={(event) => update({ aliases: event.target.value.split(",").map((alias) => alias.trim()).filter(Boolean) })} /></label>
+        <label>Notes (one per line)<textarea aria-label="Notes (one per line)" value={notesText} onChange={(event) => {
+          setNotesText(event.target.value);
+          update({ notes: event.target.value.split(/\r?\n/).filter((note) => note.trim()) });
+        }} /></label>
+        <label>Aliases (comma separated)<input value={aliasesText} onChange={(event) => {
+          setAliasesText(event.target.value);
+          update({ aliases: event.target.value.split(",").map((alias) => alias.trim()).filter(Boolean) });
+        }} /></label>
         <label>Launch type<input value={entry?.start?.type ?? ""} onChange={(event) => start({ type: event.target.value })} placeholder="process, python or task" /></label>
         <label>Executable<input value={entry?.start?.executable ?? ""} onChange={(event) => start({ executable: event.target.value })} /></label>
         <label>Working directory<input value={entry?.start?.workingDir ?? ""} onChange={(event) => start({ workingDir: event.target.value })} /></label>
@@ -499,7 +513,7 @@ function EntryEditor({ script, onSaved, onClose }: { script: Script; onSaved: ()
       </fieldset>
       <details><summary>Advanced entry JSON</summary><label>Registry entry<textarea aria-label="Registry entry" rows={16} value={draft} onChange={(event) => {
         setDraft(event.target.value);
-        try { const value = JSON.parse(event.target.value); setArgs(JSON.stringify(value.start?.args ?? [])); } catch { /* Keep invalid draft. */ }
+        try { const value = JSON.parse(event.target.value); setArgs(JSON.stringify(value?.start?.args ?? [])); syncListText(value); } catch { /* Keep invalid draft. */ }
       }} /></label></details>
       <p>Launch changes apply on the next start; other settings apply when Script Hub next reads the registry. Use Organize for tags and management, and Keep Alive for supervision.</p>
       {error ? <p role="alert">{error}</p> : null}
