@@ -19,7 +19,7 @@ Reviewed the public source tree, server and browser authentication boundaries, r
 - Google ID token claim regression and server typecheck: passed.
 - Markdown link rendering test and browser check: passed; web typecheck and build passed.
 - Production dependency override audit, PDF parser test, privacy scan, and README claims: passed.
-- Live server deployment verification: build matches committed HEAD; direct local request 200, forwarded unauthenticated request 401, foreign-origin request 403. The shared checkout's web build contains another task's uncommitted UI work, so this is not a clean web artifact verification.
+- Live server build `d37edad7` contains both security fix commits and their compiled code; direct local request 200, forwarded unauthenticated request 401, foreign-origin request 403. Later peer commits moved HEAD beyond that deployed build, so `deploy --verify` now reports a mismatch from their pending server changes. The shared checkout's web build contained another task's uncommitted UI work at sweep verification time.
 - A broad free-gate run encountered the previously tracked module startup timeout and supervisor duplicate-boot timing failure under concurrent load. The run was stopped after those failures and is not a green suite verdict; focused security checks above passed.
 
 ## Open risks and follow-up
