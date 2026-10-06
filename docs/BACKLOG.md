@@ -15,6 +15,7 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 
+- **Make Script Hub registry entries editable from the UI** (2026-10-07, Codex): follow-up to the completed tags audit; edit descriptive and launch settings with durable conflict-safe saves.
 
 - **QA: finish clean-checkout guidance for editing reviewers and independently verify popup prevention** (2026-10-07, Codex QA).
 
