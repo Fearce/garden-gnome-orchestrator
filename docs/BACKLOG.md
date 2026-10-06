@@ -15,6 +15,7 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
+- **Prevent worktree sweep PowerShell console popups** (2026-10-06, Thistlecrank).
 
 ## Shipped, awaiting live proof
 
