@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import Fastify from "fastify";
+import { registerBrowserOriginGuard } from "../crossSite.js";
 import {
   isDirectLocal,
   isLoopbackHost,
@@ -147,6 +148,41 @@ async function trustedApp(enabled: boolean) {
   const app = await trustedApp(false);
   const off = await app.inject({ url: "/api/me", headers: { host: "localhost:4317" } });
   assert.deepEqual(off.json(), { authed: false }, "off unless the owner opts in");
+  await app.close();
+}
+
+// A browser on another site must not receive the session minted for direct localhost,
+// use it for an API write, or open the main read/write WebSocket with it.
+{
+  const app = Fastify();
+  registerBrowserOriginGuard(app);
+  registerLocalAutoSignIn(app, {
+    enabled: () => true,
+    isAuthed: (cookie) => /orch_session=minted/.test(cookie ?? ""),
+    sessionCookie: () => "orch_session=minted; HttpOnly; SameSite=Lax; Path=/",
+  });
+  let writes = 0;
+  app.post("/api/update/apply", async () => ({ writes: ++writes }));
+  app.get("/api/me", async () => ({ ok: true }));
+  app.get("/api/auth/callback", async () => ({ ok: true }));
+  app.get("/ws", async () => ({ ok: true }));
+  await app.ready();
+  const host = { host: "localhost:4317" };
+  const cross = await app.inject({ method: "POST", url: "/api/update/apply", headers: { ...host, "sec-fetch-site": "cross-site", origin: "https://evil.example" } });
+  assert.equal(cross.statusCode, 403);
+  assert.equal(cross.headers["set-cookie"], undefined, "cross-site requests never mint a session");
+  assert.equal(writes, 0);
+  assert.equal((await app.inject({ url: "/api/me", headers: { ...host, "sec-fetch-site": "cross-site" } })).statusCode, 403, "API reads also reject another site");
+  assert.equal((await app.inject({ method: "POST", url: "/api/update/apply", headers: { ...host, origin: "https://evil.example" } })).statusCode, 403, "Origin fallback covers clients without Fetch Metadata");
+  assert.equal((await app.inject({ method: "POST", url: "/api/update/apply", headers: { ...host, "sec-fetch-site": "same-origin" } })).statusCode, 200, "console writes still work");
+  assert.equal(writes, 1);
+  assert.equal((await app.inject({ url: "/ws", headers: { ...host, origin: "https://evil.example" } })).statusCode, 403, "WebSocket upgrade checks Origin");
+  assert.equal((await app.inject({ url: "/ws", headers: { ...host, origin: "null" } })).statusCode, 403);
+  assert.equal((await app.inject({ url: "/ws", headers: { ...host, origin: "http://localhost:3940" } })).statusCode, 200, "the local Deck may proxy from another loopback port");
+  assert.equal((await app.inject({ url: "/ws", headers: { ...host, origin: "http://localhost:4317" } })).statusCode, 200);
+  assert.equal((await app.inject({ url: "/ws", headers: { host: "127.0.0.1:4317", "x-forwarded-for": "203.0.113.9", "x-forwarded-host": "owner.example", origin: "https://owner.example" } })).statusCode, 200, "the public same-origin proxy remains usable");
+  assert.equal((await app.inject({ url: "/ws", headers: { host: "127.0.0.1:4317", "x-forwarded-for": "203.0.113.9", "x-forwarded-host": "owner.example", origin: "https://evil.example" } })).statusCode, 403);
+  assert.equal((await app.inject({ url: "/api/auth/callback", headers: { ...host, "sec-fetch-site": "cross-site" } })).statusCode, 200, "Google's callback must remain reachable");
   await app.close();
 }
 

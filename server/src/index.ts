@@ -12,6 +12,7 @@ import {
 } from "./remoteAccess.js";
 import type { FastifyInstance, FastifyServerOptions } from "fastify";
 import websocket from "@fastify/websocket";
+import { registerBrowserOriginGuard } from "./crossSite.js";
 import fastifyStatic from "@fastify/static";
 import { registerConsoleMount, rewriteConsoleUrl } from "./webMount.js";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -386,6 +387,7 @@ async function main(): Promise<void> {
   async function buildApp(serverOpts: ListenerOptions): Promise<FastifyInstance> {
     const app = Fastify({ ...serverOpts, rewriteUrl: rewriteConsoleUrl });
     registerConsoleMount(app);
+    registerBrowserOriginGuard(app);
     // First, so it covers every route below: a request relayed by a local tunnel is internet traffic.
     registerRemoteGate(app, { googleEnabled, isAuthed });
     // With the remote link on, localhost never asks for sign-in; only the public link does.
