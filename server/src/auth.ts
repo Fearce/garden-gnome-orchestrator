@@ -108,6 +108,17 @@ export function checkState(state: string | undefined, cookieNonce: string | unde
   return safeEq(state.slice(0, state.lastIndexOf(".")), cookieNonce);
 }
 
+/** Validate the identity claims returned by Google's server-side code exchange. */
+export function verifiedGoogleEmail(claims: unknown, expectedAudience: string | undefined, nowSeconds = Date.now() / 1000): string | null {
+  if (!claims || typeof claims !== "object" || Array.isArray(claims)) return null;
+  const token = claims as Record<string, unknown>;
+  if (token.iss !== "https://accounts.google.com" && token.iss !== "accounts.google.com") return null;
+  if (!expectedAudience || token.aud !== expectedAudience) return null;
+  if (typeof token.exp !== "number" || !Number.isFinite(token.exp) || token.exp <= nowSeconds) return null;
+  if (token.email_verified !== true) return null;
+  return typeof token.email === "string" && token.email.length > 0 ? token.email : null;
+}
+
 /** Exchange an auth code for the user's verified email (decodes the trusted id_token). */
 export async function exchangeCodeForEmail(code: string, redirectUri: string): Promise<string | null> {
   try {
@@ -130,14 +141,7 @@ export async function exchangeCodeForEmail(code: string, redirectUri: string): P
     // for the code-exchange path). Do NOT reuse this decode for a browser-supplied token.
     const payloadB64 = j.id_token.split(".")[1];
     if (!payloadB64) return null;
-    const claims = JSON.parse(Buffer.from(payloadB64, "base64url").toString()) as {
-      email?: string;
-      email_verified?: boolean;
-      aud?: string;
-    };
-    if (claims.aud !== config.googleClientId) return null; // token minted for our client
-    if (!claims.email || claims.email_verified === false) return null;
-    return claims.email;
+    return verifiedGoogleEmail(JSON.parse(Buffer.from(payloadB64, "base64url").toString()), config.googleClientId);
   } catch {
     return null;
   }

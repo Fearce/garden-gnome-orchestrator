@@ -125,6 +125,7 @@ const GATES = [
   "test:portal-link",
   "test:desktop",
   "test:remote-access",
+  "test:google-auth",
   "test:markdown-links",
   "test:archive-thread",
   "test:restore-archived-deliverables",
