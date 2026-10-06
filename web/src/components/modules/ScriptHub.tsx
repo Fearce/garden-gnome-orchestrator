@@ -59,7 +59,8 @@ function loadFilters(): Filters {
   }
 }
 
-const isAgentManaged = (script: Script) => script.management === "agent";
+// A client update can arrive before its independent worker is refreshed.
+const isAgentManaged = (script: Script) => script.management ? script.management === "agent" : !script.owner;
 const isRecovering = (script: Script) => script.keepAlive && script.status.state !== "running" && !script.consolidated;
 
 export function ScriptHub() {
@@ -186,7 +187,7 @@ function ScriptHubBody() {
   const agentManagedCount = data.scripts.filter(isAgentManaged).length;
   const matches = (script: Script) => matchesFilters(script, filters, hiddenSet, details);
   const visible = pool.filter(matches).sort(filters.sort === "urgency" ? byUrgency : (a, b) => a.displayName.localeCompare(b.displayName));
-  const tags = [...new Set(data.scripts.flatMap((s) => s.tags))].sort();
+  const tags = [...new Set(data.scripts.flatMap((s) => s.tags ?? []))].sort();
   const recovering = data.scripts.filter(isRecovering);
   const degraded = data.scripts.map((s) => s.status.processEnumeration).find((e) => e && e.fresh === false) ?? null;
   const hiddenCount = pool.filter((s) => hiddenSet.has(s.id)).length;
@@ -289,7 +290,7 @@ function HubError({ error, onRetry, stale }: { error: unknown; onRetry: () => vo
 function matchesFilters(script: Script, filters: Filters, hidden: Set<string>, details: Details | null): boolean {
   if (hidden.has(script.id) && !filters.showHidden) return false;
   if (filters.hideConsolidated && script.consolidated) return false;
-  if (filters.tag !== "all" && !script.tags.includes(filters.tag)) return false;
+  if (filters.tag !== "all" && !(script.tags ?? []).includes(filters.tag)) return false;
   const running = script.status.state === "running";
   if (filters.status === "running" && !running) return false;
   if (filters.status === "stopped" && (running || script.consolidated)) return false;
@@ -298,7 +299,7 @@ function matchesFilters(script: Script, filters: Filters, hidden: Set<string>, d
   const q = filters.search.trim().toLowerCase();
   if (!q) return true;
   const d = details?.scripts[script.id];
-  const text = [script.displayName, script.id, ...script.tags, script.command, d?.description, ...(d?.notes ?? []), ...(d?.aliases ?? [])].filter(Boolean).join(" ").toLowerCase();
+  const text = [script.displayName, script.id, ...(script.tags ?? []), script.command, d?.description, ...(d?.notes ?? []), ...(d?.aliases ?? [])].filter(Boolean).join(" ").toLowerCase();
   return q.split(/\s+/).every((term) => text.includes(term));
 }
 
@@ -365,7 +366,7 @@ function ScriptCard(props: {
       </div>
       <div className="sh-labels">
         <span className="mod-chip">{isAgentManaged(script) ? "Agent-managed" : "My app"}</span>
-        {script.tags.map((tag) => <button key={tag} className="sh-tag" onClick={() => props.onTag(tag)} title={`Filter by ${tag}`}>{tag}</button>)}
+        {(script.tags ?? []).map((tag) => <button key={tag} className="sh-tag" onClick={() => props.onTag(tag)} title={`Filter by ${tag}`}>{tag}</button>)}
       </div>
       <code className="sh-cmd" title={script.command}>
         {script.command || "no start command"}
@@ -424,8 +425,8 @@ function ScriptCard(props: {
 type Organization = Pick<Script, "management" | "tags">;
 
 function OrganizationEditor({ script, onSave, onClose }: { script: Script; onSave: (value: Organization) => Promise<void>; onClose: () => void }) {
-  const [management, setManagement] = useState(script.management);
-  const [tags, setTags] = useState(script.tags.join(", "));
+  const [management, setManagement] = useState(script.management ?? (isAgentManaged(script) ? "agent" : "personal"));
+  const [tags, setTags] = useState((script.tags ?? []).join(", "));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   return (

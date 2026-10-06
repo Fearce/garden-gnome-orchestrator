@@ -47,8 +47,20 @@ const scripts = [
         else await page.click(".board-tab.bt-scripthub");
         await page.waitForSelector('[data-script-id="alpha"]', { timeout: 60_000 });
       }
+      if (!phone) await page.route("**/api/modules/scripthub/api/status", async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        data.scripts = data.scripts.map(({ management, tags, ...script }) => script);
+        await route.fulfill({ response, json: data });
+      });
       await page.goto(BASE);
       await open();
+      if (!phone) {
+        check("client tolerates an older worker during deployment", errors.length === 0 && await page.locator(".sh-card").count() === 2);
+        await page.unroute("**/api/modules/scripthub/api/status");
+        await page.reload();
+        await open();
+      }
       const label = phone ? "phone" : "desktop";
       check(`${label}: explicit agent entry with a person owner is hidden`, await page.locator('[data-script-id="beta"]').count() === 0);
       check(`${label}: explicit personal entry without an owner is visible`, await page.locator('[data-script-id="gamma"]').count() === 1);

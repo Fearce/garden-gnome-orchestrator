@@ -26,8 +26,6 @@ same commit as the fix. Git history keeps the record.
 - **Add effort selection to the Task model dialog** (2026-10-06, Bramble Dial).
   Model-supported tiers and durable next-start effort; integration 59/59, desktop/phone browser 27/27, types/builds/README/privacy pass. Server deployment pending: restart-resume instruction prohibits another restart.
 
-- **Audit Script Hub management and pre-tag every registry entry** (2026-10-06, Copperfen Quill).
-  Tags only, tag-aware search and pre-tagging; focused API 3/3, desktop/phone browser 26/26, types/builds/README/privacy pass. Broad modules retain tracked Home idle-start timeout; live audit/deploy proof pending.
 
 
 
@@ -95,6 +93,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-07 **Audit Script Hub management and pre-tag every entry, using tags only** (08ac3d65, Copperfen Quill): 289 entries tagged, 29 personal/260 agent-managed, 22 tags; live API/browser and durable metadata pass, hidden choices and supervision preserved. Focused API 3/3, browser 27/27, types/builds/README/privacy pass; broad modules retain tracked Home idle-start timeout.
+
 - 2026-10-06 **Prevented worktree PowerShell popups and enforced clean committed checkouts** (b3919727, Thistlecrank): live build verified; three deployed process scans returned data with no popup events; cleanup, CLI kickoff, office, goals, types and README/privacy checks passed. Peer changes were preserved in separate commits; Claude/Codex global rules and generated prompts now prioritize clean checkouts.
 - 2026-10-06 **Reverify optimization after the server restart** (Mosswhistle): live build b3919727 matches runtime sources; fresh desktop/phone 1,400-task lab passes with zero transcript renders over 480 background events. Live startup has no errors/overflow: desktop cold/warm 1.1/0.5 s, throttled phone 12.8/8.2 s; 2.3 MB hello and console-smoke shutdown timeout remain tracked above.
 
@@ -125,4 +125,3 @@ No open entries.
 - 2026-10-05 **Show ChatGPT credits in the Codex chip when the plan has no 5-hour window** (2f5d8db1, b57220c9, Codex implementor): pushed and live build verified without another restart; authenticated browser confirms the credit row and retained weekly meter. Credit reader 34/34, four-width chip lab, synthetic balance rerun, README 69/69, typechecks and privacy pass; README updated and public fixtures use synthetic balances. The restart sweep's process-enumeration timeout is tracked under Ready. Follow-up: chip-lab now asserts the balance, label and replacement of 5h while preserving weekly usage; browser pass and four mutation rejections verified.
 - 2026-10-05 **Show and edit vacuum cleaning schedules in Home** (1ee269ff, Dustpan Wren): pushed to master; live Home API adopts the existing 09:00–22:00/99% pair, desktop editor and phone card pass with automation/Home/recording files unchanged. Module gate, 12 schedule regressions, 10 browser checks, types/builds, README and privacy pass; custom automation fields and occupied ids are preserved.
 
-- 2026-10-05 **QA: report stalled Script Hub bodies as unavailable-service timeouts** (332a87c4, Codex QA): pushed and live build verified; 35 module checks plus Home response/visibility checks, 229/229 gates, builds/types/privacy and 70/70 browser checks pass. Stalls return 504 and interrupted bodies 503 with hubDown; cancellation and recovery remain correct. Lab HTTP/WS/owner-message p95 idle-to-load: 5.3/6.6/53.2 to 3.4/3.2/67.9 ms, zero stalls. Independent review required.
