@@ -21,9 +21,6 @@ _(none: claim from Ready)_
 - **Per-camera Surveillance motion notifications, ping and unread tab count** (2026-10-06, Moss Lantern).
   Isolated motion browser lab 14/14, viewer 28/28, motion/config checks, types/build/privacy/README pass; module suite hits tracked Home idle-start timing failure. Deployment/live controls pending.
 
-- **Restore ended-day patch-note summaries across page boundaries** (2026-10-06, Thistlewatt).
-  Patch-note browser lab 31/31, types, isolated builds, patch-note gate, README 70/70 and privacy pass; awaiting served-bundle verification.
-
 - **QA: preserve held tab drags on touchscreens** (2026-10-05, Brindle Cog).
   Separate mouse/touch sensors fix native pointercancel; board-head-lab 54/54, gates 230/230, types/builds/privacy pass. Independent review required.
 
@@ -51,7 +48,7 @@ _(none: claim from Ready)_
 
 7. **Recover the staged GGO deployment after its refused restart** (2026-10-05, Codex QA): deploy built/staged e464439f but live remains 2f5d8db1 with four differing runtime inputs; health reports an unreachable Script Hub and a pending retry. Hub status returned a stale process snapshot whose refresh was still running. Verify a fresh listener/build after recovery.
 
-8. **Find why `addMessage` INSERTs hold the event loop 1â€“3.8 s** (2026-10-05, Lanternroot): crash.log 01:28â€“01:33Z on build 57414a66 blocks every minute on `INSERT INTO messages` (worst 3.8s; 4â€“12 slow statements/min). A 30 s `/api/health` baseline with no memory traffic still peaked at 0.4â€“0.8 s; memory's own index lives in a worker on a separate file.
+8. **Find why `addMessage` INSERTs hold the event loop 1–3.8 s** (2026-10-05, Lanternroot): crash.log 01:28–01:33Z on build 57414a66 blocks every minute on `INSERT INTO messages` (worst 3.8s; 4–12 slow statements/min). A 30 s `/api/health` baseline with no memory traffic still peaked at 0.4–0.8 s; memory's own index lives in a worker on a separate file.
 
 ## Blocked / waiting
 
@@ -68,6 +65,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-06 **Restore ended-day patch-note summaries across page boundaries** (b0910387, Thistlewatt): live browser shows Sunday October 4 summary covering all 58 operator-facing changes automatically; deployed bundle bytes match. Patch-note lab 31/31, patch-note gate, types, builds, README 70/70 and privacy pass.
+
 - 2026-10-05 **Re-orderable board tabs: drag in the header, move in Settings** (Tabwhittle): board-head-lab 45/45 (drag Surveillance to #2, reload, Settings move/reset, narrow select), live console check on :4317, gates 230/230.
 - 2026-10-05 **QA: bound Surveillance pan to the fitted camera picture** (Codex QA): 28/28 browser checks keep the real picture in bounds at both pan extremes, after rotation, new frame dimensions and zoom-out; web types/build, module regressions, README and privacy pass. Independent QA required.
 
@@ -79,7 +78,7 @@ No open entries.
 - 2026-10-05 **Recheck Windows process-enumeration timeout under gate load** (Lanternroot): a tasklist overrun with no earlier list no longer 503s Sidekick's whole state; liveness reads unknown (`processListError`, power disabled) while rules and the editor keep working. Unit check of the unreadable list, `test:modules` 35/35, browser check 8/8 on the live tab.
 - 2026-10-05 **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (..2cbe8718, Lanternroot; QA fixes 2e01c75f, acd38bfe, ebb90b79, 2cbe8718; claude-setup b867df3, cd7f875): live build 2cbe8718 (`--verify` matches HEAD); live Settings shows 1319 memories, 8743 passages, every card current, extraction idle, and a Haiku recall in 1.0 s. All 1310 pre-task memories present (0 missing); 29 bad auto-extractions trashed after source fixes. Eval R@1/R@2/MRR 0.894/0.925/0.909 (pgvector 0.519/0.644/0.630), off-topic 1/25, trigger audit 530/530. Evidence report, live screenshots and the 10 raw eval files are deliverable cards on the task. Ollama STAYS_DOWN.
 - 2026-10-05 **Show ChatGPT credits in the Codex chip when the plan has no 5-hour window** (2f5d8db1, b57220c9, Codex implementor): pushed and live build verified without another restart; authenticated browser confirms the credit row and retained weekly meter. Credit reader 34/34, four-width chip lab, synthetic balance rerun, README 69/69, typechecks and privacy pass; README updated and public fixtures use synthetic balances. The restart sweep's process-enumeration timeout is tracked under Ready. Follow-up: chip-lab now asserts the balance, label and replacement of 5h while preserving weekly usage; browser pass and four mutation rejections verified.
-- 2026-10-05 **Show and edit vacuum cleaning schedules in Home** (1ee269ff, Dustpan Wren): pushed to master; live Home API adopts the existing 09:00â€“22:00/99% pair, desktop editor and phone card pass with automation/Home/recording files unchanged. Module gate, 12 schedule regressions, 10 browser checks, types/builds, README and privacy pass; custom automation fields and occupied ids are preserved.
+- 2026-10-05 **Show and edit vacuum cleaning schedules in Home** (1ee269ff, Dustpan Wren): pushed to master; live Home API adopts the existing 09:00–22:00/99% pair, desktop editor and phone card pass with automation/Home/recording files unchanged. Module gate, 12 schedule regressions, 10 browser checks, types/builds, README and privacy pass; custom automation fields and occupied ids are preserved.
 
 - 2026-10-05 **QA: report stalled Script Hub bodies as unavailable-service timeouts** (332a87c4, Codex QA): pushed and live build verified; 35 module checks plus Home response/visibility checks, 229/229 gates, builds/types/privacy and 70/70 browser checks pass. Stalls return 504 and interrupted bodies 503 with hubDown; cancellation and recovery remain correct. Lab HTTP/WS/owner-message p95 idle-to-load: 5.3/6.6/53.2 to 3.4/3.2/67.9 ms, zero stalls. Independent review required.
 - 2026-10-05 **Owner report: cameras stuck on "Waiting for a picture..." and Home Assistant not answering** (Ferrule Juniper): live build 38078a69 showed 5/5 pictures on direct HTTP/HTTPS, the Deck proxy and LAN HTTPS; a foreign-Origin handshake through the Deck upgraded and streamed while a cross-site one got 403. The stopped `homeassistant_xiaomi` container was started from the Home tab's own Start (answered in 20s, vacuum live) and its restart policy, drifted to `no`, was restored to the compose file's `unless-stopped`.
@@ -95,5 +94,3 @@ No open entries.
 - 2026-10-04 **QA: preserve failed Deck imports, mask device-note tokens and bound camera relay buffers** (6970c5e0, Mistcap Reed): pushed and live in build a628a671; 25 module checks plus visibility, 43 browser-lab checks including recording through an actual restart, 12 live desktop/mobile checks plus Settings/reload checks; all 228 gates covered across the full run and two build-dependent reruns; configs retained and the evidence deliverable serves correctly.
 
 - 2026-10-04 **QA: Supervisor delivery recovery, repeated-text browser checks and activity-query stalls** (2da95383, bad7f5c9, Bramble Gauge): deployed build c710345d; 16/16 delivery and 17/17 read-receipt browser checks; activity index rehearsed at 236 to 80 reads with 824 identical rows. Live browser replay cleared Sending in 55ms without another owner copy; 80 HTTP/WS samples p95 3.5/2.6ms, worst five-minute lag 1.1s. Typechecks/build and focused gates pass except the inherited privacy issue in Ready.
-
-- 2026-10-04 **Script Hub, Surveillance, Home and Sidekick moved from the Dashboard Deck into optional GGO tabs** (066b6908..d4d23aa1, Ferrule Juniper): live build ec829269 passed 16/16 browser checks (hidden by default, reload persistence, on-demand start, migrated 5 cameras/1 vacuum/287 scripts/3 Sidekick rules, no secrets in responses, socket and polling cleanup); isolated lab 42/42 incl. explicit recording start/stop and worker recovery; live HTTP p95 4.5ms before, 3.8ms with modules under load, zero event-loop stalls (docs/reports/local-service-modules-2026-10-04.md); Deck cards retired (ac14700).
