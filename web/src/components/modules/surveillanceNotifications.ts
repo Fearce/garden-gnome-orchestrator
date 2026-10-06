@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { beep } from "../../lib/notify.js";
 import { fetchServiceStatus, moduleJson } from "./moduleApi.js";
 import { MotionDetector } from "./motionDetection.js";
+import { recordMotion } from "./motionActivity.js";
 import { useFrameStream } from "./surveillanceFrames.js";
 import type { Camera, SurveillanceConfig } from "./surveillanceTypes.js";
 
@@ -104,6 +105,7 @@ export function useMotionNotifications(enabled: boolean, viewing: boolean): numb
         let detector = detectors.get(id);
         if (!detector) detectors.set(id, detector = new MotionDetector());
         if (detector.sample(ctx.getImageData(0, 0, 32, 24).data, entry.at, Math.max(30_000, latestCamera.refreshMs * 2), latestCamera.motionSensitivity)) {
+          recordMotion({ cameraId: id, cameraName: latestCamera.name || id, at: entry.at });
           beep();
           if (!watching.current || document.hidden) setCount(n => n + 1);
         }

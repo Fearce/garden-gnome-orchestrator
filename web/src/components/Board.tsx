@@ -1,4 +1,5 @@
 import { useMotionNotifications } from "./modules/surveillanceNotifications.js";
+import { useMotionActivity } from "./modules/motionActivity.js";
 import { lazy, Suspense, memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useShallow } from "zustand/react/shallow";
 import {
@@ -406,18 +407,20 @@ function BoardTabs() {
   };
   usePatchNotesWatch();
   const motionUnread = counts.surveillance ?? 0;
+  const latestMotion = useMotionActivity()[0];
+  const motionLabel = latestMotion ? `Motion: ${latestMotion.cameraName}` : "Surveillance motion";
   return (
     <><label className="board-area-select">Area<select aria-label="Board area" value={boardView} onChange={e => setBoardView(e.target.value as BoardView)}>{tabs.map(tab => <option value={tab.view} key={tab.view}>{tab.label}{counts[tab.view] ? ` (${counts[tab.view]})` : ""}</option>)}</select></label>
     {shownModules.includes("surveillance") && motionUnread > 0 && boardView !== "surveillance" ? (
       <button className="board-motion-alert surveillance-alert" onClick={() => setBoardView("surveillance")}>
-        Surveillance motion <span className="board-tab-count">{motionUnread}</span>
+        {motionLabel} <span className="board-tab-count">{motionUnread}</span>
       </button>
     ) : null}
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
       <SortableContext items={tabs.map((tab) => tab.view)} strategy={rectSortingStrategy}>
         <div className="board-tabs" aria-label="Board areas">
           {tabs.map((tab) => (
-            <SortableBoardTab key={tab.view} tab={tab} active={boardView === tab.view} count={counts[tab.view]} onOpen={() => setBoardView(tab.view)} />
+            <SortableBoardTab key={tab.view} tab={tab} active={boardView === tab.view} count={counts[tab.view]} alertLabel={tab.view === "surveillance" && motionUnread ? motionLabel : undefined} onOpen={() => setBoardView(tab.view)} />
           ))}
         </div>
       </SortableContext>
@@ -427,14 +430,14 @@ function BoardTabs() {
 
 /** One header tab you can drag along the strip. Only the pointer listeners are spread: dnd-kit's
  *  attributes would turn the active tab's heading into a button. */
-function SortableBoardTab({ tab, active, count, onOpen }: { tab: BoardTab; active: boolean; count: number | null; onOpen: () => void }) {
+function SortableBoardTab({ tab, active, count, alertLabel, onOpen }: { tab: BoardTab; active: boolean; count: number | null; alertLabel?: string; onOpen: () => void }) {
   const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: tab.view });
   const style: CSSProperties = { transform: CSS.Translate.toString(transform), transition };
   const dragging = isDragging ? " board-tab-dragging" : "";
   if (active) return <h2 ref={setNodeRef} style={style} className={dragging.trim() || undefined} {...listeners}>{tab.label}</h2>;
   return (
     <button ref={setNodeRef} style={style} className={"board-tab bt-" + tab.view + dragging + (tab.view === "surveillance" && count ? " surveillance-alert" : "")} onClick={onOpen} title={`${tab.title}. Drag to reorder.`} {...listeners}>
-      {tab.label}
+      {alertLabel ? `${tab.label} — ${alertLabel}` : tab.label}
       {count ? <span className="board-tab-count">{count}</span> : null}
     </button>
   );

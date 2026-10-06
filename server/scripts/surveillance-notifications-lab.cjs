@@ -88,6 +88,7 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     movement.a = true;
     await page.waitForFunction(() => document.querySelector('.bt-surveillance .board-tab-count')?.textContent === '1');
     check('enabled camera movement increments inactive tab', await page.locator('.bt-surveillance .board-tab-count').textContent() === '1');
+    check('desktop alert identifies the triggering camera', (await page.locator('.bt-surveillance').textContent()).includes('Motion: Porch'));
     const pulse = locator => locator.evaluate(el => ({
       animation: getComputedStyle(el).animationName,
       running: el.getAnimations().some(a => a.playState === 'running'),
@@ -118,10 +119,12 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     await page.reload(); await page.waitForSelector('.accounts .acct', { state: 'attached' });
     await page.waitForSelector('.bt-surveillance .board-tab-count');
     check('unread count survives reload', await page.locator('.bt-surveillance .board-tab-count').textContent() === '1');
+    check('triggering camera survives reload', (await page.locator('.bt-surveillance').textContent()).includes('Motion: Porch'));
     for (const width of [768, 320]) {
       await page.setViewportSize({ width, height: 700 });
       const alert = page.locator('.board-motion-alert');
       check(`unread motion is visible beside the current area at ${width}px`, await alert.isVisible() && await page.locator('[aria-label="Board area"]').inputValue() === 'tasks' && await alert.locator('.board-tab-count').textContent() === '1');
+      check(`narrow alert names the triggering camera at ${width}px`, (await alert.textContent()).includes('Motion: Porch'));
       const animation = await pulse(alert);
       check(`motion button pulses and fits the screen at ${width}px`, animation.running && animation.animation === 'surveillance-alert-pulse' && await alert.evaluate(el => {
         const r = el.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.height >= 44;
@@ -135,6 +138,11 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.waitForSelector('[aria-label="Motion notifications for Porch"]');
     check('enabled preference survives reload', await toggle('Porch').getAttribute('aria-pressed') === 'true');
+    const history = page.getByRole('region', { name: 'Recent motion', exact: true });
+    check('opening Surveillance preserves the camera and detection time', await history.locator('li strong').first().textContent() === 'Porch' && !!await history.locator('time').first().getAttribute('datetime'));
+    await history.getByRole('button', { name: 'Settings for Porch', exact: true }).first().click();
+    check('motion history opens the triggering camera sensitivity settings', await page.getByLabel('Motion sensitivity', { exact: true }).isVisible());
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     await page.setViewportSize({ width: 320, height: 700 });
     check('notification controls fit narrow camera tiles', await page.locator('.sv-tile-head button').evaluateAll(buttons => buttons.every(button => {
       const r = button.getBoundingClientRect(), tile = button.closest('.sv-tile').getBoundingClientRect();
@@ -150,6 +158,7 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     movement.b = false;
     await page.waitForFunction(() => document.querySelector('.board-motion-alert .board-tab-count')?.textContent === '1');
     check('new motion arrives as a visible pulsating alert on a narrow screen', await page.locator('.board-motion-alert').isVisible() && (await pulse(page.locator('.board-motion-alert'))).running);
+    check('new camera alert identifies Kitchen', (await page.locator('.board-motion-alert').textContent()).includes('Motion: Kitchen'));
     movement.a = false;
     await page.waitForFunction(() => document.querySelector('.board-motion-alert .board-tab-count')?.textContent === '2');
     check('independent camera notifications accumulate in the narrow alert count', await page.locator('.board-motion-alert .board-tab-count').textContent() === '2');
@@ -157,6 +166,9 @@ function check(label, value) { assert.ok(value, label); checks++; console.log(`P
     check('accumulated notifications remain prominent when returning to desktop', await page.locator('.bt-surveillance .board-tab-count').textContent() === '2' && (await pulse(page.locator('.bt-surveillance'))).running);
     await page.click('.bt-surveillance'); await page.waitForSelector('[aria-label="Motion notifications for Kitchen"]');
     check('opening the desktop alert stops the pulse and clears accumulated notifications', await page.locator('.surveillance-alert').count() === 0);
+    check('history retains detections from both cameras after acknowledging alerts', (await history.locator('li strong').allTextContents()).includes('Porch') && (await history.locator('li strong').allTextContents()).includes('Kitchen'));
+    await history.getByRole('button', { name: 'Clear history', exact: true }).click();
+    check('clear history removes stored activity', await history.count() === 0 && await page.evaluate(() => sessionStorage.getItem('ggo:surveillance-motion-activity')) === '[]');
     await toggle('Kitchen').click();
     await page.waitForFunction(() => document.querySelector('[aria-label="Motion notifications for Kitchen"]').getAttribute('aria-pressed') === 'false');
     await toggle('Porch').click();

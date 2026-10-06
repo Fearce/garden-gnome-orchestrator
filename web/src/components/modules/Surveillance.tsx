@@ -9,6 +9,7 @@ import type { Camera, CameraRecording, PreviewStrategy, RecordingMode, Recording
 
 import { useFrameStream, type FrameStore, type LiveFrameEntry, type StreamStatus } from "./surveillanceFrames.js";
 import { unlockMotionSound, motionConfigChanged } from "./surveillanceNotifications.js";
+import { clearMotionActivity, useMotionActivity } from "./motionActivity.js";
 
 interface Preset {
   id: string;
@@ -49,6 +50,7 @@ type SaveableConfig = Pick<SurveillanceConfig, "recordingRoot" | "ffmpegPath" | 
 type Dialog = { kind: "camera"; camera: Camera; isNew: boolean } | { kind: "discover" } | { kind: "settings" } | null;
 
 function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void }) {
+  const motionActivity = useMotionActivity();
   const config = usePoll((signal) => moduleJson<SurveillanceConfig>("surveillance", "/config", { signal }), null);
   const recording = usePoll((signal) => moduleJson<RecordingView>("surveillance", "/recording", { signal }), 5_000);
   const [current, setCurrent] = useState<SurveillanceConfig | null>(null);
@@ -146,6 +148,21 @@ function SurveillanceBody({ onRecordingChange }: { onRecordingChange: () => void
   return (
     <div className="sv">
       <RecordingBar config={current} view={recording.data} busy={modeBusy} onMode={(mode) => void setMode(mode)} onSettings={() => setDialog({ kind: "settings" })} />
+
+      {motionActivity.length > 0 ? (
+        <section className="sv-motion-activity" aria-label="Recent motion">
+          <div className="sv-bar"><strong>Recent motion</strong><button className="btn ghost sm" onClick={clearMotionActivity}>Clear history</button></div>
+          <p>Last 20 detections in this browser tab. Open camera settings to lower motion sensitivity.</p>
+          <ol>{motionActivity.map((event, index) => {
+            const camera = current.cameras.find(c => c.id === event.cameraId);
+            return <li key={`${event.cameraId}:${event.at}:${index}`}>
+              <strong>{event.cameraName}</strong>
+              <time dateTime={new Date(event.at).toISOString()}>{new Date(event.at).toLocaleString()}</time>
+              {camera ? <button className="btn ghost sm" onClick={() => setDialog({ kind: "camera", camera: structuredClone(camera), isNew: false })}>Settings for {camera.name || camera.id}</button> : <span>Camera removed</span>}
+            </li>;
+          })}</ol>
+        </section>
+      ) : null}
 
       {error ? <Notice tone="bad" title="That did not work">{error}</Notice> : null}
       {recording.error ? (

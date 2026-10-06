@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Identify triggering cameras in Surveillance motion alerts and recent activity** (2026-10-06, Bramble Lens).
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
 
@@ -62,6 +62,8 @@ same commit as the fix. Git history keeps the record.
 
 10. **Restore Git drawer untracked files in baseline fallback** (2026-10-06, Thistlewatt): full test:git passes 75 checks but fails both null/invalid-baseline assertions: README appears while the untracked task note is missing (expected 2 files, actual 1). Evidence: server/data/gates-live/204-test-git.log.
 
+11. **Stabilize Surveillance legacy recording restart verification** (2026-10-06, Bramble Lens): two test:modules runs failed at modules.test.ts:859/862 after legacy armed recording restart (active=false, then worker readiness exceeded 20s); motion browser 47/47 passed, no worker code changed.
+
 ## Blocked / waiting
 
 - **Purge cached private-project reference from PR #10** (owner action: include old PR body in the GitHub Support request).
@@ -77,31 +79,23 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-06 **Identify triggering cameras in Surveillance alerts and recent motion history** (Bramble Lens): motion browser 47/47, viewer 28/28, types/build/README/privacy pass; live bundle matches and camera name, settings shortcut and phone history verified. Module legacy recording restart failures tracked under Ready.
 - 2026-10-06 **Add per-camera motion sensitivity to reduce false Surveillance notifications** (2d48cc69, Fernspindle): pushed to master and live build verified; live selector and current worker config confirmed with camera settings and recording mode preserved. Motion browser 38/38, modules 37 plus follow-ups, detector regressions, types/builds/README/privacy pass.
-
 - 2026-10-06 **Move director actions beside For / With and hide them while expanded** (dc695797, Bramble Pixel): live browser sees all four controls above the message field and served bundle bytes match; desktop lab 22/22, phone 44/44, types/builds/README/privacy pass.
-
 - 2026-10-06 **Make unread Surveillance alerts throb so they cannot be missed** (Ember Gantry): fill and glow pulse dark to bright red (OKLab, no purple drift), count badge swells; motion browser 32/32 compares trough and peak frames on desktop, 768px and 320px; board-head 54/54, themes, README 70/70, privacy pass.
 - 2026-10-06 **Keep ordinary task resumes scoped after server restarts** (Thistlewatt): restart guidance now requires live-build and task-specific verification; full sweeps remain required for health/quality tasks. Doc-path probe and privacy checks pass; documentation only.
-
 - 2026-10-06 **Per-camera Surveillance motion notifications, ping and unread tab count** (74f6de90, Moss Lantern): pushed and live controls/current worker verified with recording preserved; motion browser 14/14, viewer 28/28, types/build/privacy/README pass. Module suite retains tracked Home idle-start failure.
 - 2026-10-06 **Restore ended-day patch-note summaries across page boundaries** (b0910387, Thistlewatt): live browser shows Sunday October 4 summary covering all 58 operator-facing changes automatically; deployed bundle bytes match. Patch-note lab 31/31, patch-note gate, types, builds, README 70/70 and privacy pass.
-
 - 2026-10-05 **Re-orderable board tabs: drag in the header, move in Settings** (Tabwhittle): board-head-lab 45/45 (drag Surveillance to #2, reload, Settings move/reset, narrow select), live console check on :4317, gates 230/230.
 - 2026-10-05 **QA: bound Surveillance pan to the fitted camera picture** (Codex QA): 28/28 browser checks keep the real picture in bounds at both pan extremes, after rotation, new frame dimensions and zoom-out; web types/build, module regressions, README and privacy pass. Independent QA required.
-
 - 2026-10-05 **Open Surveillance camera pictures fullscreen with digital pan and zoom** (Mosswick): 20/20 isolated browser checks cover native fullscreen, phone fallback, wheel/pinch/keyboard zoom, drag pan, reset, focus and continuing frames on one socket; types, module gate, README 70/70 and privacy pass. Web built for deployment; authenticated live entry serves the exact updated Surveillance bundle.
-
 - 2026-10-05 **Show office chat gnome counts, names and activity indicators** (16abc9bf; Widdershank Pebbletail): live Hide/Show roster keeps the count visible and remembers the browser choice. Desktop/320px browser checks prove reclaimed chatter space, reopen/reload persistence, task navigation and live updates; gating 57/57 plus roster regressions, types/build, README 70/70 and privacy pass. Original office/relay lab 53/53.
-
 - 2026-10-05 **A Codex QA verdict quoting `DELIVERABLE:` no longer parks the task as "QA could not complete"** (dfe93a08, Lanternroot): live build 68588b8c carries the `"`-in-path refusal (`server/dist/agents/officeBridge.js`); `test:office-bridge` replays the verdict that broke task 6b9aab39 and parses it. Full gates 230/230.
 - 2026-10-05 **Recheck Windows process-enumeration timeout under gate load** (Lanternroot): a tasklist overrun with no earlier list no longer 503s Sidekick's whole state; liveness reads unknown (`processListError`, power disabled) while rules and the editor keep working. Unit check of the unreadable list, `test:modules` 35/35, browser check 8/8 on the live tab.
 - 2026-10-05 **Replace Ollama memory with Haiku and Luna and build RAG memory into GGO** (..2cbe8718, Lanternroot; QA fixes 2e01c75f, acd38bfe, ebb90b79, 2cbe8718; claude-setup b867df3, cd7f875): live build 2cbe8718 (`--verify` matches HEAD); live Settings shows 1319 memories, 8743 passages, every card current, extraction idle, and a Haiku recall in 1.0 s. All 1310 pre-task memories present (0 missing); 29 bad auto-extractions trashed after source fixes. Eval R@1/R@2/MRR 0.894/0.925/0.909 (pgvector 0.519/0.644/0.630), off-topic 1/25, trigger audit 530/530. Evidence report, live screenshots and the 10 raw eval files are deliverable cards on the task. Ollama STAYS_DOWN.
 - 2026-10-05 **Show ChatGPT credits in the Codex chip when the plan has no 5-hour window** (2f5d8db1, b57220c9, Codex implementor): pushed and live build verified without another restart; authenticated browser confirms the credit row and retained weekly meter. Credit reader 34/34, four-width chip lab, synthetic balance rerun, README 69/69, typechecks and privacy pass; README updated and public fixtures use synthetic balances. The restart sweep's process-enumeration timeout is tracked under Ready. Follow-up: chip-lab now asserts the balance, label and replacement of 5h while preserving weekly usage; browser pass and four mutation rejections verified.
 - 2026-10-05 **Show and edit vacuum cleaning schedules in Home** (1ee269ff, Dustpan Wren): pushed to master; live Home API adopts the existing 09:00–22:00/99% pair, desktop editor and phone card pass with automation/Home/recording files unchanged. Module gate, 12 schedule regressions, 10 browser checks, types/builds, README and privacy pass; custom automation fields and occupied ids are preserved.
-
 - 2026-10-05 **QA: report stalled Script Hub bodies as unavailable-service timeouts** (332a87c4, Codex QA): pushed and live build verified; 35 module checks plus Home response/visibility checks, 229/229 gates, builds/types/privacy and 70/70 browser checks pass. Stalls return 504 and interrupted bodies 503 with hubDown; cancellation and recovery remain correct. Lab HTTP/WS/owner-message p95 idle-to-load: 5.3/6.6/53.2 to 3.4/3.2/67.9 ms, zero stalls. Independent review required.
 - 2026-10-05 **Owner report: cameras stuck on "Waiting for a picture..." and Home Assistant not answering** (Ferrule Juniper): live build 38078a69 showed 5/5 pictures on direct HTTP/HTTPS, the Deck proxy and LAN HTTPS; a foreign-Origin handshake through the Deck upgraded and streamed while a cross-site one got 403. The stopped `homeassistant_xiaomi` container was started from the Home tab's own Start (answered in 20s, vacuum live) and its restart policy, drifted to `no`, was restored to the compose file's `unless-stopped`.
 - 2026-10-05 **QA: wait for Home's page-wide probe before checking outage controls** (Codex QA): modules-lab 74/74, live direct/proxy desktop/phone 24/24, three authenticated report downloads, preserved configs and recording; types, isolated builds, privacy and README pass. Full gates 228/229; dispatch-latency passed two focused reruns, with its load-sensitive assertion tracked under Ready.
 - 2026-10-04 **Independent module deployment QA** (a6eba134, 38078a69; Codex QA): 74/74 isolated and 13/13 live proxy/browser checks, preserved local configurations and recording, authenticated report downloads; all 229 gates covered green after the Calendar task's 28a0706f repair. Includes the Deck-proxy camera socket and explicit Home Assistant Start (d8481ca2), serialized Sidekick rule saves (e9ce82a3) and explicit Stop that holds with the tab open (58e13ef5), all live in 38078a69. Evidence: docs/reports/local-service-modules-independent-qa-2026-10-04.md.
-- 2026-10-04 **Auto-burn subscriptions within 24 hours of weekly reset** (1a3e8dba, Moss Spark): pushed to master and live build verified; authenticated live hello reports autoBurn=false and the served entry matches dist with the new control. Browser lab 21/21; routing/Codex/boundary regression, burn/model/goal/Director gates, typechecks/build, README and privacy checks pass.

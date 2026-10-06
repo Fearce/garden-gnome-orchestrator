@@ -126,7 +126,10 @@ be put in any order: drag one along the board header, or use Settings → Interf
   enable a ping on picture-detected movement and an unread Surveillance tab count. Unread alerts
   make the tab throb from dark to bright red with a pulsing count, or a prominent motion button
   beneath the area selector on narrow screens (a steady highlight with reduced motion). Opening the tab
-  clears the count. Notifications default off and work while this console is open, including other
+  clears the count. Alerts name the latest triggering camera; **Recent motion** inside Surveillance
+  keeps the last 20 detections with camera names, times and a shortcut to each camera's settings.
+  History survives reloads in the same browser tab until you clear it; opening Surveillance keeps it.
+  Notifications default off and work while this console is open, including other
   board tabs. Cameras share one picture socket; each camera alerts at most once every 30 seconds.
   In camera settings, choose **Motion sensitivity → Low** for fewer false alerts, then **Save camera**.
   Medium keeps the original sensitivity; High detects smaller movements. Each camera saves its own level.
