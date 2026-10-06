@@ -15,8 +15,8 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
-- **Prevent worktree sweep PowerShell console popups** (2026-10-06, Thistlecrank).
-  Source fix df62954d; cleanup gate, types, README/privacy and three real windowless process scans passed. Deployment waits on a peer's uncommitted main-checkout backlog claim.
+- **Prevent worktree sweep PowerShell popups and prioritize clean committed checkouts** (2026-10-06, Thistlecrank).
+  Launcher and generated-policy fixes verified: cleanup, CLI kickoff, office, goals, types, README/privacy checks and three real windowless process scans passed; awaiting deployment.
 
 ## Shipped, awaiting live proof
 
