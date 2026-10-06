@@ -61,6 +61,16 @@ async function openTask(page, title) {
       "running",
       now - 3500,
     );
+    // Reproduce the old per-instruction noise alongside content the owner must still see.
+    const spam = [
+      "[delivered] RI-1234abcd reached active qa run 8765abcd; its verdict is held until the instruction is acknowledged and acted on.",
+      "\u21aa RI-1234abcd survived the server restart; prior QA delivery is no longer claimed, and the next QA run will receive it with its attachments.",
+      "\u29d7 RI-1234abcd survived the server restart and is queued for the next implementor run; it is not claimed as delivered to the dead one.",
+    ];
+    const message = db.prepare("INSERT INTO messages (id,thread_id,role,kind,content,created_at) VALUES (?,?,?,?,?,?)");
+    for (let i = 0; i < 24; i++) message.run(`qa-noise-${i}`, "11111111-1111-4111-8111-111111111111", "director", "system", spam[i % spam.length], now + i);
+    message.run("qa-owner-note", "11111111-1111-4111-8111-111111111111", "director", "system", "[accepted] RI-1234abcd: please keep my instruction visible", now + 25);
+    message.run("qa-restart-summary", "11111111-1111-4111-8111-111111111111", "director", "system", "QA has 8 pending instructions after the server restart.", now + 26);
     db.close();
 
     const chromium = loadChromium();
@@ -74,6 +84,25 @@ async function openTask(page, title) {
     await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 }); // hello landed
 
     await openTask(page, "REVIEWED TASK");
+    async function checkNoise(label) {
+      // Selection paints the panel before its paged history arrives, especially after reload.
+      await page.waitForFunction(() => {
+        const text = document.querySelector(".detail-body")?.textContent ?? "";
+        return text.includes("please keep my instruction visible") && text.includes("8 pending instructions");
+      }, { timeout: 20000 });
+      const body = await page.textContent(".detail-body");
+      check(`${label}: old QA delivery/restart spam is hidden`, !spam.some((line) => body.includes(line)));
+      check(`${label}: the owner instruction remains visible`, body.includes("please keep my instruction visible"));
+      check(`${label}: the concise restart summary remains visible`, body.includes("8 pending instructions"));
+    }
+    await checkNoise("desktop");
+    await page.setViewportSize({ width: 582, height: 912 });
+    await checkNoise("narrow panel");
+    await page.reload();
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
+    await openTask(page, "REVIEWED TASK");
+    await checkNoise("reloaded history");
+    await page.setViewportSize({ width: 1500, height: 950 });
     const qa = await titles(page);
     check("QA-stage composer names its actual recipient", /QA reviewer/i.test((await placeholder(page)) ?? ""), await placeholder(page));
     check("QA-stage Inject tooltip names QA", /Send to QA now/.test(qa.inject ?? ""), qa.inject);
@@ -109,7 +138,9 @@ async function openTask(page, title) {
     );
     const failedBadge = (await page.textContent(".detail-head .badge")) ?? "";
     check("the no-live QA path stays visibly in QA", /qa/i.test(failedBadge), failedBadge);
-    check("the failed no-live path retains the typed directive", (await page.inputValue(".inject-bar textarea")).includes("no QA handle"), await page.inputValue(".inject-bar textarea"));
+    const failedDirective = page.locator(".fi.system").filter({ hasText: "no QA handle" }).filter({ has: page.locator(".delivery-receipt.failed") });
+    await failedDirective.waitFor({ state: "visible" });
+    check("the failed no-live path retains the directive with a failed receipt", await failedDirective.count() === 1 && (await failedDirective.textContent()).includes("Not delivered"), await failedDirective.textContent());
 
     // ...and the click itself, end to end through the socket: a task in `qa` must survive it.
     await openTask(page, "REVIEWED TASK");

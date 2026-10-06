@@ -2615,7 +2615,8 @@ export class ThreadManager implements OrchestratorApi {
    * dead structured-review run had actually acknowledged/delivered. QA gets the row back on its next
    * charged reviewer retry. Auto-review intentionally does not auto-relaunch after a bounce, so its
    * unfinished instructions move to an explicit implementor queue (or settle handled when that writer
-   * had already completed). Every transition adds a durable feed line; a restart never leaves a stale
+   * had already completed). Transitions remain durable; restart notices summarize a batch of instructions
+   * rather than flooding the feed. A restart never leaves a stale
    * "delivered" claim pointing at a process that no longer exists. */
   private reconcileReviewInjectionsAfterRestart(): void {
     for (const thread of this.db.listThreads()) {
@@ -2631,9 +2632,7 @@ export class ThreadManager implements OrchestratorApi {
           "The server restarted before the QA-directed instruction reached a terminal state; the next QA run must acknowledge it again.",
           null,
         );
-        for (const row of requeued) {
-          this.reviewInjectionFeed(thread.id, `↪ ${reviewInjectionLabel(row.id)} survived the server restart; prior QA delivery is no longer claimed, and the next QA run will receive it with its attachments.`);
-        }
+        this.reviewInjectionFeed(thread.id, `↪ QA has ${requeued.length} pending instruction${requeued.length === 1 ? "" : "s"} after the server restart. The next QA run will receive them with their attachments; acknowledgement is still required.`);
       }
       const qaImplementorClaimed = open.filter((row) => row.lane === "qa" && row.status === "delivered_implementor");
       if (qaImplementorClaimed.length) {
@@ -2641,7 +2640,7 @@ export class ThreadManager implements OrchestratorApi {
           qaImplementorClaimed.map((row) => row.id),
           "The server restarted before the implementor finished this QA-lane instruction; it is retained for the next implementor run.",
         );
-        for (const row of queued) this.reviewInjectionFeed(thread.id, `⧗ ${reviewInjectionLabel(row.id)} survived the server restart and is queued for the next implementor run; it is not claimed as delivered to the dead one.`);
+        this.reviewInjectionFeed(thread.id, `⧗ ${queued.length} QA instruction${queued.length === 1 ? " is" : "s are"} retained after the server restart for the next implementor run.`);
       }
 
       const reviewer = open.filter((row) => row.lane === "reviewer");
@@ -12934,6 +12933,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   private markReviewInjectionsDelivered(rows: ReviewInjection[], role: "qa" | "reviewer", runId: string): void {
     const delivered = this.reviewInjections.markReviewerDelivered(rows.map((row) => row.id), runId);
+    // QA resumes can redeliver a whole batch after every deploy. Exact-run delivery is recorded in
+    // the durable store; repeating that bookkeeping in the feed adds no owner action.
+    if (role === "qa") return;
     for (const row of delivered) {
       this.reviewInjectionFeed(
         row.threadId,

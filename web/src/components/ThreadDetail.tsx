@@ -29,7 +29,7 @@ import { WorkspacePath } from "./WorkspacePath.js";
 import { TaskBranch } from "./TaskBranch.js";
 import { ReceiptMarks } from "./InjectionReceipts.js";
 import { useSwipeDismiss } from "../lib/swipe.js";
-import { isToolActivity } from "../lib/feedFilter.js";
+import { isQaLifecycleNoise, isToolActivity } from "../lib/feedFilter.js";
 import { IOS_PHONE } from "../lib/iosPhone.js";
 
 // A task remounts on Close/Forward. Retain the iPhone's reading position for this page session,
@@ -746,7 +746,7 @@ export function ThreadDetail() {
   // Deliverables are a durable file index, intentionally independent of transcript retention. A long
   // task can trim old activity without hiding files the owner still needs to View or Download.
   const deliverables = id ? [id, ...collabIds].flatMap((t) => threadDeliverables[t] ?? []) : [];
-  const feedItems = useMemo(() => feed.filter((f) => !(f.kind === "finding" && f.finding.kind === "deliverable")), [feed]);
+  const feedItems = useMemo(() => feed.filter((f) => !isQaLifecycleNoise(f) && !(f.kind === "finding" && f.finding.kind === "deliverable")), [feed]);
 
   const [roleFilter, setRoleFilter] = useState<Role | "all">(savedReading.current?.role ?? "all");
   // Persisted globally: the detail panel remounts per task (key={selected}), so without this the

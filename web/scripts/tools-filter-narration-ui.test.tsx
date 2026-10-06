@@ -17,7 +17,7 @@ import type { AgentRun, FeedItem, Message, Role, Thread } from "../src/types.js"
 // ThreadDetail's graph reaches a component stylesheet plain Node cannot load. Must precede the
 // dynamic component import below — see ssrCssStub.mjs.
 import "./ssrCssStub.mjs";
-import { isToolActivity } from "../src/lib/feedFilter.js";
+import { isQaLifecycleNoise, isToolActivity } from "../src/lib/feedFilter.js";
 
 const storage = new Map<string, string>();
 Object.assign(globalThis, {
@@ -199,3 +199,14 @@ assert.ok(!rendered(onlyTools, "OnlyTool") && !rendered(onlyTools, "OnlyPreview"
 assert.ok(rendered(onlyTools, "Nothing to show"), "an all-tools feed with tools hidden shows the empty state");
 
 console.log("\nTools-filter narration checks passed.");
+
+const deliveryNoise: FeedItem = { kind: "system", role: "director", at,
+  text: "[delivered] RI-1234abcd reached active qa run 8765abcd; its verdict is held until the instruction is acknowledged and acted on." };
+assert.equal(isQaLifecycleNoise(deliveryNoise), true);
+assert.equal(isQaLifecycleNoise({ ...deliveryNoise, role: "qa" }), false);
+assert.equal(isQaLifecycleNoise({ ...deliveryNoise, text: deliveryNoise.text + " Owner instruction" }), false);
+assert.equal(isQaLifecycleNoise({ ...deliveryNoise, attachments: [{ name: "note.png", mediaType: "image/png", dataBase64: "iVBORw0KGgo=" }] }), false);
+assert.equal(isQaLifecycleNoise({ kind: "text", role: "qa", at, runId: "qa", text: deliveryNoise.text }), false);
+assert.equal(isQaLifecycleNoise({ ...deliveryNoise, text: "[accepted] RI-1234abcd: please keep this instruction" }), false);
+assert.equal(isQaLifecycleNoise({ ...deliveryNoise, text: "QA has 8 pending instructions after the server restart." }), false);
+console.log("QA lifecycle filter preserves owner instructions, attachments, summaries and agent prose.");

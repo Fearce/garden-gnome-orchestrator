@@ -1069,7 +1069,11 @@ async function main(): Promise<void> {
       const accepted = store.create({ threadId: id, lane: "qa", mode: "append", instruction: "already waiting for QA" });
       const queued = store.create({ threadId: id, lane: "qa", mode: "append", instruction: "queued for the implementor", status: "queued_implementor" });
       const claimed = store.create({ threadId: id, lane: "qa", mode: "append", instruction: "delivered to a QA run that died" });
-      store.markReviewerDelivered([claimed.id], "dead-qa-run");
+      const batch = Array.from({ length: 20 }, (_, i) => store.create({ threadId: id, lane: "qa", mode: "append", instruction: `pending instruction ${i}`, attachmentIds: ["retained-image"] }));
+      h.internals.markReviewInjectionsDelivered([claimed, ...batch], "qa", "dead-qa-run");
+      check("QA batch delivery does not add per-instruction feed chatter", !h.db.listMessages(id).some((m) => m.content.startsWith("[delivered]")));
+      check("all instructions retain exact-run delivery and attachments", batch.every((r) => store.get(r.id)?.reviewerRunId === "dead-qa-run" && store.get(r.id)?.attachmentIds.includes("retained-image")));
+
       const implClaimed = store.create({ threadId: id, lane: "qa", mode: "interrupt", instruction: "delivered to an implementor that died", status: "queued_implementor" });
       store.markImplementorDelivered([implClaimed.id], "dead-impl-run");
 
@@ -1083,7 +1087,8 @@ async function main(): Promise<void> {
       check("a row claimed by a dead QA run is requeued for QA", store.get(claimed.id)?.status === "accepted" && store.get(claimed.id)?.reviewerRunId == null, JSON.stringify(store.get(claimed.id)));
       check("a row claimed by a dead implementor is queued for the next implementor", store.get(implClaimed.id)?.status === "queued_implementor", store.get(implClaimed.id)?.status);
       const first = restartLines();
-      check("the first boot announced exactly the two withdrawn claims", first.length === 2, JSON.stringify(first));
+      check("the first boot summarized both recipient batches in two lines", first.length === 2 && first.some((c) => c.includes("21 pending instructions")), JSON.stringify(first));
+      check("every batched instruction is requeued with its attachments", batch.every((r) => store.get(r.id)?.status === "accepted" && store.get(r.id)?.reviewerRunId == null && store.get(r.id)?.attachmentIds.includes("retained-image")));
       reboot();
       reboot();
       check("later boots add no restart lines", restartLines().length === first.length, JSON.stringify(restartLines()));

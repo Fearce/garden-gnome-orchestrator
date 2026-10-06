@@ -76,6 +76,8 @@ checks, and asks you directly about anything only you can decide. It then marks 
 done in your place or hands it back with the reasons it could not sign off. It reviews
 only: it never edits or commits.
 
+QA restart notices summarize pending instructions per recipient. Routine QA redelivery bookkeeping is retained in durable history but hidden from the task feed; owner instructions and attachments remain visible.
+
 ## A look around
 
 The Task model dialog lets you pin an exact provider, model and supported effort for the next
