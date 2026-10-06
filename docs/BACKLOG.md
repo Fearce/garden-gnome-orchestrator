@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **Add per-camera motion sensitivity to reduce false Surveillance notifications** (2026-10-06, Fernspindle).
 
 ## Shipped, awaiting live proof
 
