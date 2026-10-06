@@ -14,10 +14,12 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: keep module startup polling within the idle window** (2026-10-06, Codex QA).
-  Surveillance notification review reproduces false startup exits and the tracked Home idle-start failure; remove startup process enumeration and start idle time at readiness.
+_(none: claim from Ready)_
 
 ## Shipped, awaiting live proof
+
+- **QA: keep module startup polling within the idle window** (f4e3260b, 2026-10-06, Codex QA).
+  Native startup liveness and idle countdown from readiness resolve the tracked module idle-start failure; module gate 36 worker checks plus follow-ups, motion browser 18/18, viewer 28/28, live 4/4, types/builds/privacy/README pass. Independent review required.
 
 - **QA: preserve rapid per-camera notification changes** (2026-10-06, Mosswick).
   Serialized camera updates; motion browser 18/18, viewer 28/28, types/builds/README/privacy pass. Module suite retains tracked Home idle-start failure; independent review required.
