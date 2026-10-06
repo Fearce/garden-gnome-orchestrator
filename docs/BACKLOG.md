@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Make Hide Done include pinned completed tasks** (2026-10-07, Moss Lantern).
+
 - **QA: finish clean-checkout guidance for editing reviewers and independently verify popup prevention** (2026-10-07, Codex QA).
 
 - **Full GGO security sweep and production dependency remediation** (2026-10-07, Codex): audit public source, exposed services, auth boundaries, dependencies and secret/privacy checks; fix and verify confirmed findings.
