@@ -14,7 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-_(none: claim from Ready)_
+- **QA: keep module startup polling within the idle window** (2026-10-06, Codex QA).
+  Surveillance notification review reproduces false startup exits and the tracked Home idle-start failure; remove startup process enumeration and start idle time at readiness.
 
 ## Shipped, awaiting live proof
 
