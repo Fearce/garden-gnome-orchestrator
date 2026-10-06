@@ -16,6 +16,8 @@ same commit as the fix. Git history keeps the record.
 
 - **Allow paid subscription credits only after included usage is exhausted** (2026-10-07, Pebble Sprocket).
 
+- **Collapse Patch notes days into browsable summaries** (2026-10-07, Bramblewick).
+
 - **QA: finish clean-checkout guidance for editing reviewers and independently verify popup prevention** (2026-10-07, Codex QA).
 
 - **Full GGO security sweep and production dependency remediation** (2026-10-07, Codex): audit public source, exposed services, auth boundaries, dependencies and secret/privacy checks; fix and verify confirmed findings.
