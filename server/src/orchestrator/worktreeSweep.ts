@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, lstatSync, statSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { readdir, rm, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { runGit } from "../gitService.js";
 import type { TaskWorktree, Thread } from "../types.js";
@@ -36,6 +36,8 @@ export interface SweepEntry {
 
 export interface SweepOptions {
   dryRun?: boolean;
+  /** Pause this long after every 200 files deleted, so a live game or build sharing the disk is not starved. */
+  throttleMs?: number;
   /** Threads (all states) used to decide who owns a worktree. */
   threads: readonly Thread[];
   now?: number;
@@ -119,7 +121,25 @@ async function dirSize(path: string): Promise<number> {
 }
 
 /** Remove ignored build output from a kept worktree. Symlinked folders (shared node_modules) are never followed. */
-async function trimHeavy(w: Listed, dryRun: boolean): Promise<number> {
+async function removeTree(dir: string, throttleMs: number): Promise<void> {
+  if (throttleMs > 0) {
+    let n = 0;
+    const walk = async (d: string): Promise<void> => {
+      for (const e of await readdir(d, { withFileTypes: true })) {
+        const p = join(d, e.name);
+        if (e.isDirectory()) await walk(p);
+        else {
+          await unlink(p).catch(() => undefined); // a junction is not a directory entry here: the link goes, never its target
+          if (++n % 200 === 0) await new Promise((r) => setTimeout(r, throttleMs));
+        }
+      }
+    };
+    await walk(dir).catch(() => undefined);
+  }
+  await rm(dir, { recursive: true, force: true, maxRetries: 2 }).catch(() => undefined);
+}
+
+async function trimHeavy(w: Listed, o: SweepOptions): Promise<number> {
   let freed = 0;
   for (const name of HEAVY_DIRS) {
     const dir = join(w.path, name);
@@ -133,7 +153,7 @@ async function trimHeavy(w: Listed, dryRun: boolean): Promise<number> {
     if ((await gitText(w.path, ["ls-files", "--", name])) !== "") continue; // tracked content: not build output
     if ((await runGit(w.path, ["check-ignore", "-q", `${name}/`], 30_000, { urgent: true })).code !== 0) continue; // not ignored
     freed += await dirSize(dir);
-    if (!dryRun) await rm(dir, { recursive: true, force: true, maxRetries: 2 }).catch(() => undefined);
+    if (!o.dryRun) await removeTree(dir, o.throttleMs ?? 0);
   }
   return freed;
 }
@@ -156,6 +176,7 @@ async function decide(repo: string, w: Listed, o: SweepOptions, lines: readonly 
   const unsaved = await unsavedCommits(repo, base || null, w.branch);
   if (unsaved > 0) return entry("kept", await trimmedNote(w, o, `${unsaved} commit(s) not merged into ${base ?? "base"} and not pushed`));
   if (o.dryRun) return entry("removed", "merged or pushed; would remove", await dirSize(w.path));
+  await trimHeavy(w, o); // ignored output first, throttled, so the folder removal below is quick
   const baseSha = (await gitText(repo, ["merge-base", base ?? "HEAD", w.branch])) ?? "";
   const tw: TaskWorktree = { repo, path: w.path, branch: w.branch, base: base || null, baseSha, links: [], createdAt: 0 };
   const result = await retireTaskWorktree(tw);
@@ -166,7 +187,7 @@ async function decide(repo: string, w: Listed, o: SweepOptions, lines: readonly 
 async function trimmedNote(w: Listed, o: SweepOptions, why: string): Promise<string> {
   const owner = ownerOf(w, o.threads);
   if (owner && !TERMINAL_STATES.has(owner.state)) return why;
-  const freed = await trimHeavy(w, !!o.dryRun);
+  const freed = await trimHeavy(w, o);
   return freed > 0 ? `${why}; ${o.dryRun ? "would trim" : "trimmed"} ${(freed / 1e9).toFixed(2)} GB of build output` : why;
 }
 

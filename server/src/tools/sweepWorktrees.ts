@@ -22,7 +22,7 @@ const repos = repoArgs.length ? repoArgs : await reposOf(threads);
 
 let freed = 0;
 for (const repo of repos) {
-  for (const e of await sweepRepoWorktrees(repo, { dryRun: !apply, threads })) {
+  for (const e of await sweepRepoWorktrees(repo, { dryRun: !apply, threads, throttleMs: 250 })) {
     freed += e.freedBytes ?? 0;
     console.log(`${e.action.padEnd(7)} ${e.path} [${e.branch ?? "-"}] ${e.reason}${e.freedBytes ? ` (${(e.freedBytes / 1e9).toFixed(2)} GB)` : ""}`);
   }

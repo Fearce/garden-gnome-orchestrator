@@ -7566,7 +7566,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     try {
       const threads = this.db.listThreads();
       for (const repo of await reposOf(threads)) {
-        for (const e of await sweepRepoWorktrees(repo, { threads })) {
+        for (const e of await sweepRepoWorktrees(repo, { threads, throttleMs: 250 })) {
           if (e.action === "removed" || e.reason.includes("trimmed")) this.hub.log("info", `Worktree sweep: ${e.action} ${e.path} (${e.reason}).`);
         }
       }
