@@ -159,6 +159,9 @@ same commit as the fix. Git history keeps the record.
 
 ## Blocked / waiting
 
+- **Scheduled Token safety hours: surface retained implementation screenshots** (2026-10-07, Thistle Gauge QA; task 0caebaa9).
+  The implementor retained `schedule-desktop.png`, `schedule-phone.png`, `schedule-overnight.png`, and `schedule-no-days.png` outside the task workspace without deliverable cards. Copy them into the task workspace, verify each copy opens, then post each as a deliverable. QA shortened the Only during set hours hint; schedule browser 29/29, safety browser 23/23, seven focused gates, full types, builds, README and direct privacy checks pass. Independent review remains. The gate runner's `gates@localhost` identity falsely matches the word gates in privacy scans; the direct privacy gate and tree scan pass.
+
 - **Verify Claude prepaid funds before enabling credit-backed dispatch** (2026-10-07, Pebble Sprocket).
   Read-only provider checks found one expired profile credential and one zero prepaid balance with usage credits disabled. Requires matching current credentials and prepaid subscription funds with auto-reload off; API Console balances are separate.
 

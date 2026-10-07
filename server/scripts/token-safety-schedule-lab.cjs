@@ -22,6 +22,7 @@ const PORT = 4339;
 const BASE = `http://127.0.0.1:${PORT}`;
 const KEY = "setting_token_limit_schedule";
 const NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const SCHEDULE_HINT = "Apply the limit on your chosen days and hours. Outside them, work can continue as capacity allows. Off: the limit applies all day.";
 const check = createChecks();
 
 function seed(dataDir) {
@@ -93,6 +94,9 @@ async function main() {
     console.log("\n1. the schedule switch");
     let { context, page } = await openUsage(browser, { width: 1440, height: 900 });
     const toggle = page.getByRole("switch", { name: "Only during set hours", exact: true });
+    const scheduleRow = page.locator(".settings-row").filter({ has: toggle });
+    check("the schedule description is short and explains on, outside hours and off", (await scheduleRow.locator(".settings-row-hint").innerText()) === SCHEDULE_HINT);
+    await scheduleRow.screenshot({ path: path.join(shots, "schedule-description-desktop.png") });
     check("the switch sits under the enabled limit, off by default", (await toggle.getAttribute("aria-checked")) === "false");
     check("no editor while the schedule is off", (await page.locator(".tss").count()) === 0);
     await toggle.click();
@@ -170,6 +174,9 @@ async function main() {
     ({ context, page } = await openUsage(browser, { width: 390, height: 844 }));
     await page.waitForSelector(".tss", { state: "visible", timeout: 15_000 });
     check("the schedule survives a restart", (await pressedDays(page)) === "M+ T+ W+ T+ F+ S- S-" && (await page.inputValue('input[aria-label="Start time"]')) === "08:00");
+    const phoneRow = page.locator(".settings-row").filter({ has: page.getByRole("switch", { name: "Only during set hours", exact: true }) });
+    check("the phone uses the same concise description", (await phoneRow.locator(".settings-row-hint").innerText()) === SCHEDULE_HINT);
+    await phoneRow.screenshot({ path: path.join(shots, "schedule-description-phone.png") });
     const fit = await page.evaluate(() => {
       const box = (sel) => document.querySelector(sel)?.getBoundingClientRect();
       const tss = box(".tss");

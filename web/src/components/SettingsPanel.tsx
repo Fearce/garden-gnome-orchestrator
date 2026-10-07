@@ -471,7 +471,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                 {settings.tokenLimitEnabled && (
                   <ToggleRow
                     label="Only during set hours"
-                    hint="Off (default): the limit applies around the clock. On: it applies only on the chosen weekdays between the start and end time, and is suspended outside them so queued and parked work can run. When the hours begin, running work over the limit is parked with its session saved, exactly as when you switch the limit on. When they end, the freeze lifts: parked tasks resume and held dispatches start as provider capacity allows. Provider caps and tasks you paused are unaffected."
+                    hint="Apply the limit on your chosen days and hours. Outside them, work can continue as capacity allows. Off: the limit applies all day."
                     on={settings.tokenLimitSchedule.enabled}
                     onChange={(v) => setSettings({ tokenLimitSchedule: { ...settings.tokenLimitSchedule, enabled: v } })}
                   />
