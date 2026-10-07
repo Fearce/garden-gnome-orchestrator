@@ -18,6 +18,52 @@ function check(name: string, cond: boolean, detail?: string): void {
 const personal = { id: "acct1", label: "personal", token: "tok-personal" };
 const secondary = { id: "acct2", label: "secondary", token: "tok-secondary" };
 
+console.log("account-usage: concurrent dispatch balancing");
+const balanceManager = new AccountManager([personal, secondary], new EventHub());
+const balanceStates = (balanceManager as any).states;
+const balanceNow = Date.now();
+Object.assign(balanceStates.get(personal.id), { fiveHour: 10, sevenDay: 10, sevenDayReset: balanceNow + 60_000 });
+Object.assign(balanceStates.get(secondary.id), { fiveHour: 20, sevenDay: 30, sevenDayReset: balanceNow + 600_000 });
+const loads = new Map([[personal.id, 0], [secondary.id, 0]]);
+balanceManager.setDispatchLoadReader((id) => loads.get(id) ?? 0);
+const launches: string[] = [];
+for (let i = 0; i < 12; i++) {
+  const preview = balanceManager.dispatchPreview().account.id;
+  check(`preview ${i + 1} does not reserve a slot`, balanceManager.dispatchPreview().account.id === preview);
+  const picked = balanceManager.select().account.id;
+  check(`launch ${i + 1} matches preview`, picked === preview);
+  launches.push(picked);
+  loads.set(picked, loads.get(picked)! + 1);
+}
+check("twelve launches spread six per subscription despite unequal telemetry", loads.get(personal.id) === 6 && loads.get(secondary.id) === 6);
+check("reset priority breaks equal-load ties", launches[0] === personal.id);
+loads.set(secondary.id, 5);
+check("a freed subscription takes the next dispatch", balanceManager.dispatchPreview().account.id === secondary.id);
+balanceManager.setSpreadUsage(true);
+check("live load outranks stale spread-usage preference", balanceManager.select().account.id === secondary.id);
+balanceManager.setResetBurn(personal.id, balanceNow + 600_000);
+check("explicit reset burn still overrides balancing", balanceManager.select().account.id === personal.id);
+balanceManager.setResetBurn(null);
+balanceStates.get(secondary.id).rateLimited = true;
+balanceStates.get(secondary.id).rateLimitResetAt = balanceNow + 600_000;
+check("an idle capped subscription stays excluded", balanceManager.dispatchPreview().account.id === personal.id);
+balanceStates.get(secondary.id).rateLimited = false;
+balanceStates.get(secondary.id).weeklySafetyPct = 25;
+check("soft weekly safety outranks lighter load", balanceManager.dispatchPreview().account.id === personal.id);
+balanceStates.get(secondary.id).weeklySafetyPct = 100;
+balanceStates.get(secondary.id).fiveHour = 97;
+balanceStates.get(secondary.id).fiveHourReset = balanceNow + 3_600_000;
+const burstDemand = { label: "substantial task", expectedDurationMs: 600_000, expectedBurnPct: 15, reservePct: 4, substantial: true };
+check("viable runway outranks lighter load", balanceManager.dispatchPreview(burstDemand).account.id === personal.id);
+balanceStates.get(secondary.id).fiveHour = 20;
+balanceManager.applyEnabled(secondary.id, false);
+check("a disabled subscription stays excluded", balanceManager.select().account.id === personal.id);
+balanceManager.applyEnabled(secondary.id, true);
+const third = { id: "acct3", label: "third", token: "tok-third" };
+const failoverBalance = new AccountManager([personal, secondary, third], new EventHub());
+failoverBalance.setDispatchLoadReader((id) => id === secondary.id ? 4 : 0);
+check("failover uses the less loaded alternative", failoverBalance.selectFailover(personal.id)?.id === third.id);
+
 console.log("account-usage: subscription token safety gate");
 const safetyManager = new AccountManager([personal, secondary], new EventHub());
 const safetyStates = (safetyManager as any).states;

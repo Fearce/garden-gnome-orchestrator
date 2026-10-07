@@ -1044,6 +1044,7 @@ export class ThreadManager implements OrchestratorApi {
   // One pending "has the implementor read the owner's injection yet?" watch per task (injectionPickup.ts).
   private readonly injectionPickupWatches = new Set<string>();
   private readonly activeRuns = new Map<string, Set<AgentRunLike>>();
+  private readonly runAccounts = new WeakMap<AgentRunLike, string>();
   // The cross-machine office, when the operator has joined one. Null is the normal, fully-working state:
   // every office path degrades to the local-only behaviour it had before the feature existed.
   private online: OnlineOffice | null = null;
@@ -1281,6 +1282,7 @@ export class ThreadManager implements OrchestratorApi {
     readonly accounts: AccountManager,
     readonly freeProviders?: FreeProviderService,
   ) {
+    this.accounts.setDispatchLoadReader?.((id) => this.subscriptionLoad(id));
     this.reviewInjections = new ReviewInjectionStore(db);
     this.injectionReceipts = new InjectionReceipts(db, hub);
     // No run survives a restart, so nothing still holds a receipt that was only handed over.
@@ -2982,6 +2984,21 @@ export class ThreadManager implements OrchestratorApi {
   private untrack(threadId: string, agent: AgentRunLike): void {
     this.activeRuns.get(threadId)?.delete(agent);
     this.online?.refreshPresence();
+  }
+
+  /** Count only live handles: completed, parked and interrupted history reserves no capacity. */
+  private subscriptionLoad(accountId: string): number {
+    let count = 0;
+    for (const runs of this.activeRuns.values()) {
+      for (const agent of runs) if (this.runAccounts.get(agent) === accountId) count++;
+    }
+    return count;
+  }
+
+  private providerDispatchLoad(provider: ImplementorProvider, demand?: CapacityDemand): number {
+    const accountId = provider === "claude" ? this.accounts.dispatchPreview(demand).account.id
+      : provider === "codex" ? "openai-codex" : provider === "grok" ? "xai-grok" : "zai";
+    return this.subscriptionLoad(accountId);
   }
 
   // ---- OrchestratorApi: reads ----
@@ -6430,14 +6447,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // carry their backend ceilings.
     const safety = weeklySafetyPool(capacityPool);
     const pool = safety.candidates;
-    // Spread usage: balance across ALL backends by lowest weekly usage. The all-over-safety no-freeze
-    // fallback (most headroom) supersedes both it and the default soonest-reset order.
+    // Inside the eligible tier spread live agents first, before the next usage refresh can report
+    // their burn. Equal loads retain the configured usage preference and safety fallback.
     const priority = safety.allOver
       ? providerSafetyFallbackPriority
       : this.settings().spreadUsage
         ? providerSpreadUsage
         : providerPriority;
-    return pool.reduce((best, c) => (priority(best, c) <= 0 ? best : c));
+    const loads = new Map(pool.map((c) => [c, this.providerDispatchLoad(c.provider, demand)]));
+    return pool.reduce((best, c) => ((loads.get(best)! - loads.get(c)! || priority(best, c)) <= 0 ? best : c));
   }
 
   private burningCandidate(candidates: ProviderCandidate[], demand?: CapacityDemand): ProviderCandidate | undefined {
@@ -17128,6 +17146,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   }
 
   private wireRun(agent: AgentRunLike, threadId: string, runId: string, role: Role, accountId: string): void {
+    this.runAccounts.set(agent, accountId);
     this.requireAgentName(threadId, role);
     const recipient = receiptRecipientOf(role);
     if (recipient) {

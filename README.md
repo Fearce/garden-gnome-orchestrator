@@ -296,9 +296,13 @@ burn choices take priority. Turning Auto-burn off stops automatic burns. It does
 resets; existing burn routing still respects hard limits and task model/provider choices.
 
 **More than one Claude subscription?** Set `ACCOUNT_1_TOKEN`, `ACCOUNT_2_TOKEN` and so on
-(up to 8). Dispatches route to burn the perishable weekly allowance first, and the top bar
-shows live 5-hour and weekly usage per subscription. Perishable-first remains the tiebreaker
-among subscriptions with enough task-sized runway.
+(up to 8). New agent launches prefer the subscription with fewer active agents among those
+with enough task-sized runway and under their soft weekly safety ceiling. This spreads a burst
+of tasks before usage readings catch up. Equal loads use perishable weekly allowance first
+(or lowest weekly usage with **Spread usage** on). The same balancing applies across eligible
+backends; task model/provider pins and **Prepare a sub for reset** still take priority.
+Finished agents release their slots, and saved sessions keep their existing routing rules.
+The top bar shows live 5-hour and weekly usage per subscription.
 
 ## Quick start
 

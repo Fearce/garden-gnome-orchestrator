@@ -14,7 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Spread concurrent agent launches across available subscriptions** (2026-10-07, Fernspanner).
+
 
 
 
@@ -35,6 +35,9 @@ same commit as the fix. Git history keeps the record.
 
 - **Resume restart-interrupted sessions on their previous provider** (cd78bbaf, 2026-10-07, Codex).
   Restart affinity 11/11 and restart-drain pass; previous provider retained in guided/Default modes and QA fix rounds, with normal fallback when unavailable. Live build 68887045 predates the fix; activation and production restart proof await the next permitted restart (this task prohibits another restart).
+
+- **Spread concurrent agent launches across available subscriptions** (2026-10-07, Fernspanner).
+  Twelve live-handle launches balance 6/6; routing, auto-model, capacity, reset-burn, types/build, README and privacy pass. Server activation awaits the next permitted restart; this task resumed after a restart and forbids another.
 
 - **QA: honor revoked cloud opt-in at the session launch boundary** (2026-10-07, Codex QA).
   Regression reproduced a launch after revocation; final account/repository checks now prevent it. Nine focused gates, types/builds, 62 desktop/phone checks and live controls/guide serving verified; independent QA remains.

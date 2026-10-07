@@ -333,10 +333,9 @@ export function bySpreadUsage(
  * reset phase (Claude subs + Codex), so the windows reset spread-out instead of
  * all at once — and an account something else keeps waking (a background service) is
  * detected and left unheld, its phase anchoring the rest.
- * `select()` round-robins until burn is known, then **burns the account whose
- * weekly window resets soonest** — spending the "perishable" weekly allowance
- * first and keeping the one with days of runway in reserve — avoiding any that
- * 429-rejected until its reset passes (see `bySelectionPriority`).
+ * `select()` spreads live agents across the eligible subscriptions first. Equal
+ * loads spend the "perishable" weekly allowance first (or lowest usage with the
+ * spread setting), avoiding any that 429-rejected until its reset passes.
  */
 export class AccountManager {
   private readonly states = new Map<string, AccountState>();
@@ -344,6 +343,7 @@ export class AccountManager {
   private readonly resetTimers = new Map<string, NodeJS.Timeout>();
   private preferredId: string | undefined;
   private selSeq = 0;
+  private dispatchLoad: (accountId: string) => number = () => 0;
   // When on, selection targets the sub with the lowest weekly usage to balance burn across all subs,
   // overriding the default perishable-first order. Operator toggle ("Spread usage"), applied on boot.
   private spreadUsage = false;
@@ -949,10 +949,16 @@ export class AccountManager {
     return id ? candidates.find((s) => s.account.id === id) : undefined;
   }
 
-  /** The primary selection comparator: spread-usage balancing when the operator toggle is on, else the
-   *  default perishable-first order. The all-over-safety fallback (most headroom) supersedes both. */
+  /** Spread live agents inside the eligible tier before telemetry-based preferences. Reset burn
+   *  narrows the pool earlier; safety and capacity gates therefore still outrank concurrency. */
   private primaryOrder(allOverSafety: boolean): (x: AccountState, y: AccountState) => number {
-    return allOverSafety ? bySafetyFallbackPriority : this.spreadUsage ? bySpreadUsage : bySelectionPriority;
+    const priority = allOverSafety ? bySafetyFallbackPriority : this.spreadUsage ? bySpreadUsage : bySelectionPriority;
+    return (x, y) => this.dispatchLoad(x.account.id) - this.dispatchLoad(y.account.id) || priority(x, y);
+  }
+
+  /** Live agents reserve subscription capacity immediately, before the next usage ping. */
+  setDispatchLoadReader(read: (accountId: string) => number): void {
+    this.dispatchLoad = read;
   }
 
   private enabledCount(): number {
@@ -1099,6 +1105,7 @@ export class AccountManager {
     this.preferredId = chosen.account.id;
     this.releaseHold(chosen); // dispatch traffic starts the held window anyway — refresh the read now
     this.publish();
+    const loadSuffix = pool.length > 1 ? ` · ${this.dispatchLoad(chosen.account.id)} active agents before launch` : "";
     const capacitySuffix = demand && capacity
       ? ` · ${capacity.assessments.get(chosen)?.status ?? "unknown"} runway for ${demand.label}`
       : "";
@@ -1109,8 +1116,8 @@ export class AccountManager {
         : !pool.some(hasBurnData)
         ? "round-robin (no burn data yet)"
         : this.spreadUsage
-          ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} — spread: lowest weekly usage`
-          : `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} · resets ${untilReset(chosen.sevenDayReset, now)} — soonest weekly reset`) + capacitySuffix;
+          ? `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} — spread: lowest weekly usage preference`
+          : `weekly ${fmt(chosen.sevenDay)} · 5h ${fmt(chosen.fiveHour)} · resets ${untilReset(chosen.sevenDayReset, now)} — soonest weekly reset preference`) + loadSuffix + capacitySuffix;
     return { account: chosen.account, reason };
   }
 

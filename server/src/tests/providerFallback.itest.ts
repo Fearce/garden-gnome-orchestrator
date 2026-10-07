@@ -100,6 +100,38 @@ const root = mkdtempSync(join(tmpdir(), "provider-fallback-"));
 const workspace = join(root, "workspace");
 mkdirSync(workspace, { recursive: true });
 const db = new Db(join(root, "orchestrator.sqlite"));
+// Exercise the production account-load callback and wire/track/untrack lifecycle together.
+// Agent leaves only record listeners; no paid model or provider process is started.
+{
+  const { AccountManager: RealAccounts } = await import("../accounts/accountManager.js");
+  const balanceDb = new Db(join(root, "balance.sqlite"));
+  const balanceHub = new EventHub();
+  const subs = [{ id: "sub-a", label: "Sub A", token: "test-a" }, { id: "sub-b", label: "Sub B", token: "test-b" }];
+  const accounts = new RealAccounts(subs, balanceHub);
+  const states = (accounts as any).states;
+  Object.assign(states.get("sub-a"), { fiveHour: 10, sevenDay: 10, sevenDayReset: Date.now() + 60_000 });
+  Object.assign(states.get("sub-b"), { fiveHour: 20, sevenDay: 20, sevenDayReset: Date.now() + 600_000 });
+  const balance = new ThreadManager(balanceDb, balanceHub, new FileMemoryService(join(root, "balance-memory")), accounts) as any;
+  const started: { threadId: string; agent: object; accountId: string }[] = [];
+  for (let i = 0; i < 12; i++) {
+    const task = balanceDb.createThread({ title: `Balanced launch ${i}`, workspace, rawPrompt: "verify", brief: "verify" });
+    const account = accounts.select().account;
+    const row = balanceDb.createRun({ threadId: task.id, role: i % 2 ? "qa" : "implementor", model: "test-model", account: account.label });
+    const agent = { onEvent: () => () => {}, onEnd: () => {} };
+    balance.wireRun(agent, task.id, row.id, row.role, account.id);
+    balance.track(task.id, agent);
+    started.push({ threadId: task.id, agent, accountId: account.id });
+  }
+  check("real launch bookkeeping spreads implementor and QA handles six per subscription", balance.subscriptionLoad("sub-a") === 6 && balance.subscriptionLoad("sub-b") === 6);
+  const freed = started.find((run) => run.accountId === "sub-b")!;
+  balance.untrack(freed.threadId, freed.agent);
+  check("released handles free capacity even with old starting run rows", accounts.dispatchPreview().account.id === "sub-b");
+  const claudePool = { provider: "claude", hasHeadroom: true, fiveHour: 20, sevenDay: 20, sevenDayReset: Date.now() + 600_000, weeklySafetyPct: 100 };
+  const codexPool = { ...claudePool, provider: "codex", sevenDayReset: Date.now() + 3_600_000 };
+  check("cross-backend dispatch counts the selected Claude sub rather than its aggregate", balance.providerDispatchLoad("claude") === 5);
+  check("an unused eligible backend takes the next automatic dispatch", balance.preferredProviderCandidate([claudePool, codexPool]).provider === "codex");
+  balanceDb.raw.close();
+}
 const accountStub = new StubAccounts();
 const manager = new ThreadManager(db, new EventHub(), new FileMemoryService(join(root, "memory")), accountStub as unknown as AccountManager);
 const thread = db.createThread({ title: "QA falls back after a Codex cap", workspace, rawPrompt: "verify", brief: "verify" });
@@ -109,6 +141,14 @@ const preferredReset = Date.now() + 12 * 60 * 60_000;
 const personalCandidate = { provider: "claude", hasHeadroom: true, fiveHour: 10, sevenDay: 54, sevenDayReset: preferredReset, weeklySafetyPct: 100 };
 const codexCandidate = { provider: "codex", hasHeadroom: true, fiveHour: 10, sevenDay: 38, sevenDayReset: Date.now() + 60 * 60_000, weeklySafetyPct: 100 };
 check("ordinary provider routing spends the sooner-resetting pool", internals.preferredProviderCandidate([personalCandidate, codexCandidate]).provider === "codex");
+const balancingAgent = { onEvent: () => () => {}, onEnd: () => {} };
+const balancingRow = db.createRun({ threadId: thread.id, role: "implementor", model: "test-model", account: "codex:test-model" });
+internals.wireRun(balancingAgent, thread.id, balancingRow.id, "implementor", "openai-codex");
+internals.track(thread.id, balancingAgent);
+check("a live Codex agent moves the next dispatch to Claude", internals.preferredProviderCandidate([personalCandidate, codexCandidate]).provider === "claude");
+check("load never sends work to a capped alternative", internals.preferredProviderCandidate([{ ...personalCandidate, hasHeadroom: false }, codexCandidate]).provider === "codex");
+internals.untrack(thread.id, balancingAgent);
+check("completed agents release their subscription load", internals.preferredProviderCandidate([personalCandidate, codexCandidate]).provider === "codex");
 manager.setSettings({ resetBurnSubId: "claude-a" });
 check("a burn is published in settings", manager.settings().resetBurn?.subId === "claude-a");
 check("a Claude burn selects Claude across providers", internals.preferredProviderCandidate([personalCandidate, codexCandidate]).provider === "claude");

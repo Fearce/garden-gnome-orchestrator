@@ -32,6 +32,15 @@ against Codex/Grok. So "balance across everything" = layer 1 balances the subs *
 Claude, layer 2 balances Claude-vs-Codex-vs-Grok. Add a new routing policy = add a
 parallel comparator in BOTH files (`byX` + `providerX`) and flip to it in both places.
 
+**Concurrent launches spread automatically** (2026-10-07). Inside the hard-availability,
+task-runway and soft-safety tier, both layers prefer the subscription with fewer live
+agent handles before their telemetry-based comparators. ThreadManager wires each agent's
+account into a WeakMap and reads only tracked handles, so a burst balances immediately
+and completed/interrupted history reserves nothing. Claude's backend load is the selected
+subscription's load, not the sum across all Claude subscriptions. Previews reserve nothing;
+actual starts are tracked synchronously. Model/provider pins and saved-session affinity
+retain their routing, and reset burn still narrows the pool above balancing.
+
 ## The reset burn sits ABOVE both comparators
 "Prepare a sub for reset" (Settings → Usage & limits, kv `setting_reset_burn`, logic in
 `orchestrator/resetBurn.ts`) names ONE sub (a Claude account id or `codex`) that takes every
