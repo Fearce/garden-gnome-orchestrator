@@ -75,7 +75,7 @@ export function CloudSessions({ active = true, source }: { active?: boolean; sou
   return <div className="cloud-sessions">
     <p>Send repository work to Claude on Anthropic’s cloud. Good fits include documentation, code reviews, tests, and fixes that run in a Linux checkout.</p>
     <p>Promotional cloud session credits apply to sessions you start in Claude Code. <strong>Routines are excluded from this promotion and spend regular subscription usage.</strong> After eligible credits expire or run out, regular plan usage applies. Routine tokens cannot read this balance. Subscription usage chips show cloud dollars when a matching profile token is configured. GGO cannot enforce a credits-only limit. Check <a href="https://claude.ai/settings/usage" target="_blank" rel="noreferrer">Claude usage</a> before starting jobs.</p>
-    <p>Jobs keep running when this PC is off. Monitor, steer, stop, and review them using their Claude session links. GGO records submission, not completion; cloud output does not stream into the local task feed.</p>
+    <p>Jobs keep running when this PC is off. Monitor, steer, stop, and review them using their Claude session links. Browser handoffs and routines need review in Claude. Automatic subtasks return their final report to GGO for the parent to review.</p>
     {source && <p className="cloud-note">The original task stays paused. {method === "routine" ? "Cloud uses the routine’s configured branch, repositories, and environment." : "Choose the repository, branch, model and environment in Claude before starting the session."} Push needed commits first; local files, attachments, memory, services, and pending changes are not sent. Review the cloud result before resuming locally.</p>}
     {error && <p role="alert" className="cloud-error">{error}</p>}
     {notice && <p role="status">{notice}</p>}
@@ -98,6 +98,7 @@ export function CloudSessions({ active = true, source }: { active?: boolean; sou
       {snapshot.automatic.jobs.map(j => <article className="cloud-job" key={j.threadId}>
         <span>{j.repository} · {j.state} · parent review required</span>
         {j.url && <a href={j.url} target="_blank" rel="noreferrer">Open automatic cloud session</a>}{j.error && <p className="cloud-error">{j.error}</p>}
+        {j.state === "uncertain" && <><p>Check the remote outcome and stop unfinished work in Claude before allowing another job on this account.</p><button type="button" className="btn ghost sm" disabled={busy} onClick={() => void act(async () => { await request(`/automatic/jobs/${j.threadId}/checked`, "POST"); setNotice("Remote check recorded. This subtask will not be submitted again."); })}>I checked this cloud session</button></>}
       </article>)}
     </form>}
     <label>Dispatch method<select value={method} onChange={e => { setMethod(e.target.value); setCloudReady(false); }}><option value="session">Cloud session — promotional credits eligible</option><option value="routine">Routine API — regular usage, no promotional credits</option></select></label>

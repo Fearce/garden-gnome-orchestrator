@@ -7,7 +7,7 @@ import type { Account } from "./account.js";
 import { pingUsage, type PingFailReason, type PingUsage } from "./usagePing.js";
 import { claimClaudeReset, fetchProfileUsage, type ProfileFailReason } from "./profileUsage.js";
 import type { RedeemOutcome, ResetCreditsDTO } from "./resetCredits.js";
-import { cloudCreditsReady, type CloudCreditsDTO } from "./cloudCredits.js";
+import { cloudCreditsReady, fetchCloudFallbackCredits, type CloudCreditsDTO } from "./cloudCredits.js";
 import { ResetStagger, WINDOW_MS } from "./resetStagger.js";
 import { logCrash } from "../crashLog.js";
 import {
@@ -1339,19 +1339,21 @@ export class AccountManager {
 
   /** Credit-eligible cloud dispatch uses the verified profile login, never an inference-only token.
    * Refresh before each launch. Overage must be OFF: GGO cannot stop a VM precisely at balance zero. */
-  async cloudFallbackAccount(id: string): Promise<{ id: string; label: string; token: string } | null> {
+  async cloudFallbackAccount(id: string): Promise<{ id: string; label: string; token: string; organizationId: string; remainingCredits: number } | null> {
     const state = this.states.get(id);
     if (!state?.enabled || !state.account.profileToken || !state.organizationId) return null;
-    await this.readResetCredits(state);
+    const token = state.account.profileToken.trim(), organizationId = state.organizationId;
+    const credits = await fetchCloudFallbackCredits(token, organizationId);
+    if (state.organizationId !== organizationId || state.account.profileToken?.trim() !== token) return null;
+    state.cloudCredits = credits;
     this.publish();
     const now = Date.now();
     const exhausted = (state.rateLimited && (state.rateLimitResetAt == null || state.rateLimitResetAt > now))
       || (state.fiveHour != null && state.fiveHour >= 100 && (state.fiveHourReset == null || state.fiveHourReset > now))
       || (state.sevenDay != null && state.sevenDay >= 100 && (state.sevenDayReset == null || state.sevenDayReset > now));
-    const paid = this.prepaidCredits.get(id);
     if (!state.enabled || !exhausted || !cloudCreditsReady(state.cloudCredits, now)
-      || !paid || paid.enabled || now - paid.readAt >= 5 * 60_000) return null;
-    return { id, label: state.account.label, token: state.account.profileToken!.trim() };
+      || state.organizationId !== organizationId || state.account.profileToken?.trim() !== token) return null;
+    return { id, label: state.account.label, token, organizationId, remainingCredits: state.cloudCredits!.remaining };
   }
 
   dto(): AccountDTO[] {

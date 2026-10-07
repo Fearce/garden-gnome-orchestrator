@@ -43,6 +43,7 @@ const USAGE_EXIT_CODE = 2;
 
 const GATES = [
   "test:cloud-sessions",
+  "test:cloud-subtasks",
   "test:ide",
   "test:remote-control",
   "test:modules",

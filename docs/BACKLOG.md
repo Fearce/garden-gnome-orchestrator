@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Automatically offload suitable subtasks to enabled Claude cloud credits when a subscription is exhausted** (2026-10-07, Codex implementor).
-  Finish credit-eligible CLI dispatch, account/balance admission, parent result review and cap regressions; surface the setup guide.
 
 
 
@@ -31,6 +29,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Automatic Claude cloud subtasks after subscription caps** (2026-10-07, Codex implementor).
+  Real hosted subtasks returned reports on both accounts and consumed promotional funds; cap/lifecycle/protocol gates, browser 62/62, types/builds pass. Server deployment and live policy verification remain.
 
 - **QA: handle unreadable cloud credits and clarify session handoff** (3cd69764, 2026-10-07, Bramble Gauge).
   Null-response crash reproduced and fixed; seven focused gates, all types/builds and desktop/phone cloud lab 52/52 pass. Live chips show both balances beneath names. Independent QA and the new automatic cloud-subtask directive remain.

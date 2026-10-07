@@ -8,7 +8,7 @@ export interface Account {
    *
    * `token` above is a setup-token, which Anthropic scopes to `user:inference` only — enough to run
    * every agent, and not enough to read `/api/oauth/usage`, where banked resets live. This one is used
-   * for that single GET and nothing else. Absent is the normal state: without it the account reports
+   * for identity/balance reads and opted-in credit-eligible cloud subtasks. Absent is the normal state: without it the account reports
    * its banked resets as unconfigured rather than as none.
    *
    * Set from `ACCOUNT_<n>_PROFILE_TOKEN` at boot, or from Settings → Subscriptions at runtime

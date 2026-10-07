@@ -270,6 +270,16 @@ The optional routine API path submits directly and saves session links, but
 Start an eligible task only after checking the balance. Subscription usage chips show cloud
 dollars and expiry when a matching profile token can read them; unknown reads show
 `cloud ?`. These dollars never increase local agent quota or prepaid fallback funds.
+For automatic offload, enable subscriptions and allow repositories under **Automatic
+cloud subtasks**. Agents mark standalone Claude subtasks with `cloudWork: "review"`
+or `"change"`; when a subscription caps, GGO starts a normal hosted cloud session,
+waits for its result and returns it to the parent for review. Account identity,
+fresh promotional funds, paid usage credits off, and clean pushed repository state
+are checked before dispatch. Cloud changes use a separate branch; GGO does not merge
+or deploy them. Each session has a $5 estimated budget ceiling and a 40-turn limit.
+This uses the OAuth session protocol observed in Claude Code 2.1.292, rather than a
+public automation API; provider changes can require an adapter update. Interrupted
+or uncertain sessions are never automatically resubmitted.
 GGO cannot enforce credits-only spending. Start an
 independent cloud task there, or interrupt a local task and use **Send to cloud**.
 Jobs keep running with this PC off. Monitor, stop, and review

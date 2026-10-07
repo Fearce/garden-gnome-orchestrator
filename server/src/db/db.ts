@@ -334,6 +334,11 @@ function parseSubTask(raw: unknown): SubTaskSpec | null {
           spawnedByRole: v.spawnedByRole,
           spawnedByName: v.spawnedByName ?? null,
           spawnedByRunId: v.spawnedByRunId ?? null,
+          ...(v.provider === "claude" && (v.cloudWork === "review" || v.cloudWork === "change") ? { cloudWork: v.cloudWork } : {}),
+          ...(v.provider === "claude" && (v.cloudWork === "review" || v.cloudWork === "change") && v.cloud && typeof v.cloud.accountId === "string"
+            && typeof v.cloud.repository === "string" && /^[\w.-]+\/[\w.-]+$/.test(v.cloud.repository)
+            && typeof v.cloud.branch === "string" && typeof v.cloud.head === "string" && /^[a-f0-9]{40,64}$/.test(v.cloud.head)
+            ? { cloud: v.cloud } : {}),
         }
       : null;
   } catch {

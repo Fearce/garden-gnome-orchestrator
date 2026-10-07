@@ -471,7 +471,7 @@ function TaskMode({ thread }: { thread: Thread }) {
                 title={`${c.title} — ${stateLabel(c.state)}\n${subTaskRuntime(c.subTask!)}${c.subTask!.spawnedByName ? `\nspawned by ${c.subTask!.spawnedByName}` : ""}\nOpen to watch it or message it directly.`}
               >
                 <span className="taskmode-collab-dot" aria-hidden="true" />
-                <span className="subtask-provider mono">{PROVIDER_SHORT[c.subTask!.provider]}</span>
+                <span className="subtask-provider mono">{c.subTask!.cloud ? "Claude cloud" : PROVIDER_SHORT[c.subTask!.provider]}</span>
                 <span className="taskmode-collab-title">{c.title}</span>
                 <span className="taskmode-collab-state">{stateLabel(c.state)}</span>
               </button>
@@ -487,7 +487,7 @@ const PROVIDER_SHORT: Record<SubAgentProvider, string> = { claude: "Claude", cod
 
 /** "Codex · gpt-5.6-sol · high" — what a sub-agent actually runs on. */
 function subTaskRuntime(spec: SubTaskSpec): string {
-  return [PROVIDER_SHORT[spec.provider], spec.model, spec.effort].filter(Boolean).join(" · ");
+  return [spec.cloud ? "Claude cloud" : PROVIDER_SHORT[spec.provider], spec.model, spec.effort].filter(Boolean).join(" · ");
 }
 
 const DEADLINE_PRESETS = [

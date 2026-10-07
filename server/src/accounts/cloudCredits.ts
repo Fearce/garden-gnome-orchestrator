@@ -14,6 +14,21 @@ export function cloudCreditsReady(value: CloudCreditsDTO | null | undefined, now
     && value.readAt <= now && now - value.readAt < CLOUD_CREDITS_FRESH_MS;
 }
 
+/** No prepaid balance is required to use the promotion. Verify only identity and the overage toggle. */
+export async function fetchCloudFallbackCredits(token: string, organizationId: string): Promise<CloudCreditsDTO | null> {
+  const headers = { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", "user-agent": "claude-cli/2.0.0" };
+  try {
+    const profile = await fetch("https://api.anthropic.com/api/oauth/profile", { headers, signal: AbortSignal.timeout(12_000) });
+    if (!profile.ok) return null;
+    const identity = await profile.json() as { organization?: { uuid?: unknown } } | null;
+    if (identity?.organization?.uuid !== organizationId) return null;
+    const response = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", { headers, signal: AbortSignal.timeout(12_000) });
+    if (!response.ok) return null;
+    const usage = await response.json() as { extra_usage?: { is_enabled?: unknown }; iguana_necktie?: unknown } | null;
+    return usage?.extra_usage?.is_enabled === false ? parseCloudCredits(usage.iguana_necktie) : null;
+  } catch { return null; }
+}
+
 export function parseCloudCredits(raw: unknown, readAt = Date.now()): CloudCreditsDTO | null {
   if (!raw || typeof raw !== "object") return null;
   const v = raw as Record<string, unknown>;

@@ -19,6 +19,11 @@ export function registerCloudSessionRoutes(app: FastifyInstance, service: CloudS
       if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) throw new CloudError("Expected a cloud policy object.");
       return automatic.configure(req.body);
     });
+    routes.post<{ Params: { id: string } }>("/api/cloud-sessions/automatic/jobs/:id/checked", async req => {
+      if (!automatic) throw new CloudError("Automatic cloud subtasks are unavailable.", 503);
+      automatic.markChecked(req.params.id);
+      return { ok: true };
+    });
     routes.put<{ Body: Record<string, unknown> }>("/api/cloud-sessions/connections", async (req) => {
       if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) throw new CloudError("Expected a connection object.");
       return service.save(req.body);

@@ -6,13 +6,14 @@ An optional [routine fire API](https://platform.claude.com/docs/en/api/claude-co
 path submits unattended work with different billing. This is an explicit lane under
 **Settings > Claude cloud**. It can
 also take an interrupted task through **Send to cloud** in its detail controls.
-Normal local tasks and provider fallback do not select cloud automatically.
+An opted-in automatic lane runs suitable Claude **subtasks** when a subscription
+is exhausted. Ordinary parent tasks continue using local routing.
 
 ## Credits and suitable work
 
 Claude's **Cloud session credits** are distinct from subscription prepaid usage and
 Anthropic Console API credits. Claude applies eligible promotional credits on the
-account starting an interactive cloud session. Its Usage page shows the remaining balance and expiry;
+account starting an eligible web, desktop, CLI or mobile cloud session. Its Usage page shows the remaining balance and expiry;
 after exhaustion or expiry, regular plan usage applies. Moving work to this lane can
 use the promotional balance rather than the local subscription allowance while that
 balance lasts. It does not reduce the tokens the cloud task itself uses.
@@ -31,7 +32,7 @@ completion state. Subscription usage chips show promotional cloud dollars from t
 same profile-token usage read used for banked resets. The profile's organization
 must match the subscription's identity; otherwise the chip shows `cloud ?`, never
 a guessed zero. The tooltip gives allowance, expiry and read time; expired, locked
-and stale balances are distinguished. Cloud dollars never change local routing or
+and stale balances are distinguished. Cloud dollars are never local quota or
 prepaid credit fallback. GGO cannot enforce a credits-only spend ceiling. Check the account's
 billing controls and balance at [Claude Usage](https://claude.ai/settings/usage).
 GGO neither purchases credits nor changes provider billing settings.
@@ -44,6 +45,62 @@ Subscriptions**. The token must belong to that subscription; an expired token
 requires replacement and shows an unknown balance until a successful read. A
 setup-token alone cannot read the cloud balance. Connecting the profile token
 does not change which Claude account the browser uses to start cloud tasks.
+
+## Automatic subtasks after a Claude cap
+
+1. Open **Settings > Claude cloud > Automatic cloud subtasks**. Enable the
+   subscriptions whose promotional credits you want to use, list the allowed
+   GitHub repositories (`owner/repository`, one per line), and save. Opt-in is
+   stored locally and defaults off. Each account still needs its matching
+   profile-scoped login under **Settings > Subscriptions** and GitHub/cloud
+   onboarding in Claude. Automatic sessions use this login, independent of the browser.
+2. Keep **usage credits** off in Claude for each opted-in account. GGO verifies
+   this read-only before every launch; it never changes billing settings. This
+   prevents paid overage after promotional funds expire or run out. Remaining
+   regular plan usage may still apply; there is no provider credits-only stop switch.
+3. Agents declare standalone suitable work using `cloudWork: "review"` (read-only
+   findings) or `cloudWork: "change"` (changes on a separate branch) in a Claude
+   subtask. This declaration means no parent transcript, local services, private
+   files, credentials, attachments, deployments or unfinished local changes are
+   needed. The same field works in `spawn_subagent` and the CLI `SUBTASK` bridge.
+   GGO chooses cloud automatically only after an enabled subscription hits its
+   actual cap; safety reserves or soft thresholds alone do not qualify.
+4. Before starting, GGO refreshes the matching account's balance and billing
+   status, refuses zero/expired/locked/stale/unreadable grants, and verifies that
+   the repository is allowed, clean and pushed. It prepares a shallow temporary
+   checkout at that exact pushed commit. The original checkout, local credentials,
+   attachments and memory are not uploaded. A subtask that caps mid-run can switch
+   if its original standalone brief and the current pushed state still qualify.
+5. GGO creates a normal hosted session through the OAuth session protocol used
+   by Claude Code 2.1.292 and waits for its authenticated worker result event.
+   The remote clones the exact verified commit, using the account's active Default
+   Anthropic cloud environment (or its first active hosted environment). Review
+   tasks disable shell and editing tools; change tasks get a separate push branch.
+   Every session uses auto permission mode, a 40-turn limit and an estimated
+   budget ceiling of the smaller of $5 or the admitted promotional balance.
+   GGO records a run and session link durably.
+   The child settles for review; the normal subtask barrier delivers the report
+   to the spawning agent once. That agent must review and integrate any returned
+   branch before claiming its own task complete. No automatic merge or deployment.
+
+One cloud observer per subscription runs at a time. A failed admission follows
+ordinary local subtask routing; a submitted but uncertain session never silently
+falls back to another billed run. Timeout, interruption, network failure or restart
+retains its record and link and requires checking Claude before creating another
+independent subtask. Resume does not submit a duplicate. **Interrupt** stops GGO's
+observer, and cancelling a parent cancels its child observation, but the remote VM
+can keep running. Use the Claude session link to steer or stop it. GGO does not
+forward owner messages into a cloud session; it directs you to that link.
+An uncertain job also holds further automatic work on its subscription. After
+checking the remote outcome and stopping unfinished work, click **I checked this
+cloud session** to release that account for independent new subtasks. Its original
+record remains, so acknowledging it does not permit a duplicate of the same task.
+
+The installed CLI 2.1.292 rejects new-session `-p --cloud` and requires an interactive
+terminal for creation. GGO therefore uses its observed OAuth session protocol;
+this is an undocumented provider interface, and a provider change can require an
+adapter update. There is no API-key fallback. The provider applies the promotional
+grant; the launcher is a cloud session, never a routine, project or remote-control run.
 
 ## Start an eligible cloud session
 
@@ -124,8 +181,19 @@ routing; a submission failure never silently starts a local or API-billed agent.
 `npm run test:cloud-sessions --prefix server` uses a fake provider to exercise
 authentication, endpoint validation, token redaction, dispatch, duplicate protection,
 restart recovery and ambiguous failures without spending credits.
+`npm run test:cloud-subtasks --prefix server` exercises real task dispatch,
+cap-triggered and mid-run admission, refreshed identity/billing checks, result
+delivery and parent review, interruption and duplicate protection with fake session/git leaves.
+It also exercises the real session adapter with fake HTTP responses: exact-commit
+creation, hosted environment selection, separate push branches, worker-only completion,
+budget failure and a lost create response that must never be retried.
 `npm run cloud-sessions-lab --prefix server` drives the real console in an isolated
 desktop and phone browser with a stubbed cloud API. Live promotional credit
-consumption requires an eligible interactive cloud session and a before/after
+consumption requires an eligible hosted cloud session and a before/after
 provider balance read; the local gate does not prove it. Routines cannot prove
 promotional credit consumption because they are excluded from the promotion.
+
+Live hosted smoke tests also exercised automatic subtask admission with a simulated
+local cap in an isolated GGO database. Both subscriptions returned repository
+command findings through the real run/report path, and a before/after provider
+read confirmed promotional credit consumption. Production caps were not altered.

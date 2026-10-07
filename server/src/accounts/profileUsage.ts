@@ -8,11 +8,9 @@
 //
 // So this read needs a SECOND, profile-scoped token per subscription — the `claudeAiOauth.accessToken`
 // from a machine where `claude login` has run. It is optional by design: without one the account simply
-// reports `unconfigured` and the console says so, rather than showing a confident zero. Nothing about
-// dispatch, routing or capacity depends on it.
-//
-// It is never used to run a model. Keeping it strictly to this one GET is what makes adding a
-// broader-scoped token to the configuration a small, auditable decision.
+// reports `unconfigured` and the console says so, rather than showing a confident zero. Normal local
+// routing does not depend on it. Opted-in cloud subtasks use the matching login and verified grant;
+// that path also checks billing before launching a cloud worker.
 
 import { randomUUID } from "node:crypto";
 import { parseCloudCredits, type CloudCreditsDTO } from "./cloudCredits.js";

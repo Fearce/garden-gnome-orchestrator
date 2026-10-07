@@ -201,6 +201,7 @@
     "test:zai-cap": "tsx src/tests/zaiCapDetect.test.ts",
     "test:free-providers": "tsx src/tests/freeProviders.test.ts",
     "test:cloud-sessions": "tsx src/tests/cloudSessions.test.ts",
+    "test:cloud-subtasks": "tsx src/tests/cloudSubtasks.itest.ts",
     "cloud-sessions-lab": "node scripts/cloud-sessions-lab.cjs",
     "test:free-provider-routing": "tsx src/tests/freeProviderRouting.itest.ts",
     "test:console-probe": "node ../web/scripts/console-smoke.test.cjs",

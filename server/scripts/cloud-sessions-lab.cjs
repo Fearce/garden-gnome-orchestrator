@@ -29,8 +29,19 @@ async function pass(browser, phone) {
       });
     });
     let connections = [], jobs = [], sent;
+    let automatic = { accountIds: [], repositories: [], accounts: [{ id: 'cloud-account-0', label: 'Cloud account 1', enabled: false, ready: true }],
+      jobs: [{ threadId:'cloud-child',parentId:TASK,repository:'example/webapp',state:'uncertain',url:'https://claude.ai/code/session_auto_lab',error:'Observer was interrupted.' }] };
     await page.route('**/api/cloud-sessions**', async route => {
       const req = route.request(), url = new URL(req.url());
+      if (req.method() === 'PUT' && url.pathname.endsWith('/automatic')) {
+        const draft = req.postDataJSON();
+        automatic = { ...automatic, ...draft };
+        return route.fulfill({json:{accountIds:automatic.accountIds,repositories:automatic.repositories}});
+      }
+      if (req.method() === 'POST' && url.pathname.endsWith('/checked')) {
+        automatic.jobs[0].state = 'checked';
+        return route.fulfill({json:{ok:true}});
+      }
       if (req.method() === 'PUT') {
         const draft = req.postDataJSON();
         check('browser sends the token only on save', draft.token === 'sk-ant-oat01-lab');
@@ -43,7 +54,7 @@ async function pass(browser, phone) {
         jobs.unshift({id:String(jobs.length),title:sent.title,label:'Cloud A',repository:'example/webapp',createdAt:Date.now(),state:'submitted',sourceThreadId:sent.sourceThreadId || null,url:'https://claude.ai/code/session_lab',error:null});
         return route.fulfill({json:jobs[0]});
       }
-      return route.fulfill({json:{connections,jobs,routinePrompt:'Execute the task in the routine-fire-payload block.'}});
+      return route.fulfill({json:{connections,jobs,automatic,routinePrompt:'Execute the task in the routine-fire-payload block.'}});
     });
     const login = await page.request.post(`${BASE}/api/login`, {data:{password:authPassword()}});
     if (!login.ok()) throw new Error(`Lab login failed: HTTP ${login.status()}`);
@@ -64,6 +75,18 @@ async function pass(browser, phone) {
     if (phone) await page.getByLabel('Settings category',{exact:true}).selectOption('cloud');
     else await page.locator('[data-settings-category="cloud"]').click();
     let panel = page.locator('[data-settings-panel="cloud"] .cloud-sessions');
+    const autoPanel = panel.getByRole('form',{name:'Automatic cloud subtasks'});
+    await autoPanel.getByRole('button',{name:'Enable cloud credits for Cloud account 1',exact:true}).click();
+    await autoPanel.getByLabel('Allowed cloud repositories').fill('example/webapp\nexample/library');
+    await autoPanel.getByRole('button',{name:'Save automatic cloud settings',exact:true}).click();
+    await panel.getByRole('status').waitFor();
+    check('automatic account opt-in and repository policy save',automatic.accountIds[0]==='cloud-account-0' && automatic.repositories.join(',')==='example/webapp,example/library');
+    check('automatic controls retain saved opt-in',await autoPanel.getByRole('button',{name:'Disable cloud credits for Cloud account 1',exact:true}).getAttribute('aria-pressed')==='true');
+    check('automatic cloud link and parent review visible',await autoPanel.getByRole('link',{name:'Open automatic cloud session',exact:true}).getAttribute('href')==='https://claude.ai/code/session_auto_lab' && (await autoPanel.textContent()).includes('parent review required'));
+    await autoPanel.getByRole('button',{name:'I checked this cloud session',exact:true}).click();
+    await panel.getByRole('status').waitFor();
+    check('remote acknowledgement holds original task record',automatic.jobs[0].state==='checked' && automatic.jobs[0].threadId==='cloud-child');
+    check('automatic settings fit viewport',await autoPanel.evaluate(e=>e.scrollWidth<=e.clientWidth+1));
     check('credit-eligible session is the default',await panel.getByLabel('Dispatch method').inputValue() === 'session');
     await panel.getByLabel('Cloud session repository').fill('example/webapp');
     await panel.getByLabel('Task title',{exact:true}).fill('Review code');
