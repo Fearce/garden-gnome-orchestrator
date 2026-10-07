@@ -66,7 +66,7 @@ export function RepoQuestionCard({ q, context, onAnswer }: { q: Question; contex
     const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
     const matches = (row: RepoRow) => terms.every((t) => row.path.toLowerCase().includes(t) || row.label.toLowerCase().includes(t));
     const seen = new Set<string>();
-    return [...suggested.filter(matches), ...found].filter((row) => {
+    return [...suggested.filter(matches), ...found.filter(matches)].filter((row) => {
       const key = repoKey(row.path);
       if (seen.has(key)) return false;
       seen.add(key);
@@ -74,7 +74,7 @@ export function RepoQuestionCard({ q, context, onAnswer }: { q: Question; contex
     });
   }, [suggested, found, query]);
 
-  useEffect(() => setActive((i) => Math.min(i, Math.max(rows.length - 1, 0))), [rows.length]);
+  useEffect(() => setActive((i) => Math.max(0, Math.min(i, rows.length - 1))), [rows.length]);
   useEffect(() => {
     listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
   }, [active]);
@@ -91,14 +91,14 @@ export function RepoQuestionCard({ q, context, onAnswer }: { q: Question; contex
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActive((i) => Math.min(i + 1, rows.length - 1));
+      setActive((i) => Math.max(0, Math.min(i + 1, rows.length - 1)));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setActive((i) => Math.max(i - 1, 0));
-    } else if (e.key === "Enter" && rows[active]) {
+    } else if (e.key === "Enter") {
       e.preventDefault();
       if ((e.metaKey || e.ctrlKey) && q.multiSelect && picked.length) onAnswer(picked.join("\n"));
-      else choose(rows[active]);
+      else if (rows[active]) choose(rows[active]);
     }
   };
 

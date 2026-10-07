@@ -178,7 +178,13 @@ async function checkPicker(page, check, tag, shots, dataDir, repos, pick) {
   check(`${tag}: the picker fits the viewport`, await page.locator(".repo-question").evaluate((el) => { const r = el.getBoundingClientRect(); return r.left >= -0.5 && r.right <= window.innerWidth + 0.5; }));
   await page.screenshot({ path: path.join(shots, `${tag}-7-picker.png`) });
 
+  // Keep the discovery response pending while ArrowDown is pressed on an empty result list.
+  await page.route("**/api/repos/search?*", async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await route.continue();
+  });
   await search.fill("light");
+  await search.press("ArrowDown");
   try {
     await page.waitForFunction(() => [...document.querySelectorAll(".repo-row-name")].some((e) => e.textContent.trim() === "lighthouse"), null, { timeout: 8_000 });
   } catch {
@@ -186,6 +192,11 @@ async function checkPicker(page, check, tag, shots, dataDir, repos, pick) {
   }
   const found = await rows();
   check(`${tag}: search finds a repo that was not suggested`, found[0] === "lighthouse", JSON.stringify(found));
+  check(`${tag}: a result arriving after ArrowDown has an active row`, await page.locator(".repo-row.active").count() === 1);
+  await search.fill("no-such-repository");
+  check(`${tag}: a changed query immediately hides old search results`, await page.locator(".repo-row").count() === 0);
+  await search.fill("light");
+  await page.waitForFunction(() => [...document.querySelectorAll(".repo-row-name")].some((e) => e.textContent.trim() === "lighthouse"));
   await page.screenshot({ path: path.join(shots, `${tag}-8-picker-search.png`) });
   if (pick === "keyboard") {
     await search.press("ArrowDown");
@@ -204,6 +215,29 @@ async function checkPicker(page, check, tag, shots, dataDir, repos, pick) {
   check(`${tag}: the request is dispatched into the picked repo`, await waitForTasks(dataDir, repos.lighthouse, before + 1));
   await page.waitForTimeout(1_500);
   check(`${tag}: and only once`, tasksIn(dataDir, repos.lighthouse) === before + 1, String(tasksIn(dataDir, repos.lighthouse)));
+  await page.unroute("**/api/repos/search?*");
+}
+
+async function checkMultiPicker(page, check, dataDir, repos) {
+  const before = [tasksIn(dataDir, repos.orchard), tasksIn(dataDir, repos.harbor)];
+  await page.locator(".composer textarea").first().fill("update the shared logger in orchard and harbor");
+  await page.locator("button.composer-send:visible").first().click();
+  const search = page.getByRole("combobox", { name: "Search repositories" });
+  await search.waitFor({ state: "visible" });
+  check("desktop: a multi-repo request permits multiple choices", await page.getByRole("listbox", { name: "Repositories" }).getAttribute("aria-multiselectable") === "true");
+  await page.locator(".repo-row", { hasText: "orchard" }).first().click();
+  await page.locator(".repo-row", { hasText: "harbor" }).first().click();
+  await search.fill("no-such-repository");
+  await page.waitForTimeout(300);
+  await search.press("Control+Enter");
+  const closed = await page.locator(".repo-question").waitFor({ state: "hidden", timeout: 1500 }).then(() => true, () => false);
+  check("desktop: Ctrl+Enter submits chosen repos with an empty filtered list", closed);
+  // Retain the dispatch checks even on the old keyboard implementation.
+  if (!closed) await page.getByRole("button", { name: "Use 2 repos" }).click();
+  check("desktop: multi-repo request dispatches to orchard", await waitForTasks(dataDir, repos.orchard, before[0] + 1));
+  check("desktop: multi-repo request dispatches to harbor", await waitForTasks(dataDir, repos.harbor, before[1] + 1));
+  await page.waitForTimeout(1500);
+  check("desktop: each chosen repo receives exactly one task", tasksIn(dataDir, repos.orchard) === before[0] + 1 && tasksIn(dataDir, repos.harbor) === before[1] + 1);
 }
 
 async function main() {
@@ -237,6 +271,7 @@ async function main() {
       check("desktop: AUTO survives a reload", await isOn(page));
       check("desktop: and the field is still locked after it", await page.locator(".ws-wrap input.ws").first().isDisabled());
       await checkPicker(page, check, "desktop", shots, dataDir, repos, "keyboard");
+      await checkMultiPicker(page, check, dataDir, repos);
       await page.locator(".auto-repo-toggle").click();
       await waitForPersisted(dataDir, "setting_auto_repo", "0");
       await context.close();
