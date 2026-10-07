@@ -283,7 +283,7 @@
     "test:goal-continuation": "tsx src/tests/goalContinuation.itest.ts",
     "test:continuation-progress": "tsx src/tests/continuationProgress.itest.ts",
     "test:implementor-handover": "tsx src/tests/implementorHandover.itest.ts",
-    "test:cli-role-kickoff": "tsx src/tests/cliRoleKickoff.test.ts",
+    "test:cli-role-kickoff": "tsx src/tests/cliRoleKickoff.test.ts && tsx src/tests/cliRoleContent.itest.ts",
     "test:per-repo": "tsx src/tests/perRepoConcurrency.itest.ts",
     "test:dispatch-latency": "tsx src/tests/gitHeadFiles.test.ts && tsx src/tests/dispatchLatency.itest.ts",
     "test:slots": "tsx src/tests/concurrencySlots.itest.ts",
