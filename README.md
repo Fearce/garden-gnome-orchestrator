@@ -73,7 +73,9 @@ own branch in a linked git worktree, then rebases and fast-forwards it back into
 branch when it is done. A task alone in its repo just works in place.
 Git writes from agents and the Git console share a transaction queue across linked
 worktrees. Use `node server/scripts/git-transaction.cjs --repo <checkout> -- <program> <arguments>`
-to run a commit helper or mutation script; the default queue wait is 120 seconds.
+to run a commit helper or mutation script; the default queue wait is ten minutes.
+Use `--timeout-ms <milliseconds>` before `--` to choose a shorter wait (0–600000).
+The wait bounds admission to the queue; it does not interrupt an active transaction.
 Use `node server/scripts/git-integrate.cjs --repo <main-checkout> --worktree <task-checkout>`
 for an atomic rebase and fast-forward, then verify and push if authorized. Commit reviewed
 peer source and documentation in separately attributed commits before integrating;

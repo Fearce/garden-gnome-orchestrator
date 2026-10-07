@@ -224,7 +224,10 @@ Queue each Git mutation or multi-step mutation script with
 This includes the safe-commit helper. The queue uses a SQLite transaction in Git's common
 directory, shared by linked worktrees, console actions, self-update fetch/pull and worktree
 creation. SQLite releases the lock on process exit; native Git lock files are never removed.
-Waits default to 120 seconds; a CLI wait timeout returns 75. Do not nest CLI wrappers.
+Waits default to ten minutes so a burst of serial commit hooks can drain without repeated
+two-minute refusals. `--timeout-ms <milliseconds>` before `--` selects 0–600000 ms;
+a CLI admission timeout returns 75 before its command runs. The wait does not interrupt
+an active transaction. Do not nest CLI wrappers.
 Use `git-integrate.cjs --repo <main-checkout> --worktree <task-checkout>` for one locked
 rebase/fast-forward sequence; run verification outside the queue and wrap authorized pushes
 separately. Direct commands that bypass this wrapper still contend with Git's native locks.

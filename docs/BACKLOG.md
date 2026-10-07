@@ -102,6 +102,8 @@ same commit as the fix. Git history keeps the record.
 ## Ready (priority order)
 
 1. **Bound repository pre-commit history scans and reconcile old shared-index doctrine** (2026-10-07, Codex; task 6973a43e): observed a repository guard scanning 2,908 commits on every commit and instructions requiring peer authors plus autostash; its own commit helper also needs automatic queue adoption. GGO now supplies a shared transaction command; narrow history lookup without weakening stale-reversal detection.
+1. **Recover abandoned native Git locks after planned server restarts** (2026-10-07, Flax Thorpe; task 6973a43e).
+   Two live interruptions left native index locks after the OS queue released; both required audited archival with unchanged real-index hashes. Keep immediate restarts, but add recovery that refuses active or uncertain owners.
 
 1. **Identify the process that removed production console assets** (2026-10-07, Codex Recovery): live index referenced missing JavaScript with only compressed remnants left; restored build boots and production rebuilds now retain old assets, but the deleting process is unproven. Also define bounded pruning of retained assets without breaking open clients.
 

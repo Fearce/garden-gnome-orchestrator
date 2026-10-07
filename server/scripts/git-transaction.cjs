@@ -7,7 +7,9 @@ const { promisify } = require('node:util');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const Database = require('better-sqlite3');
 const active = new AsyncLocalStorage();
-const WAIT_MS = 120_000;
+// A burst of commit hooks across several agents can legitimately take minutes.
+// This bounds admission only; it never interrupts a transaction that owns the lock.
+const WAIT_MS = 600_000;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function commonDirectory(repo) {
