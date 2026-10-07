@@ -37,7 +37,7 @@ same commit as the fix. Git history keeps the record.
 ## Shipped, awaiting live proof
 
 - **QA: distinguish throttled cloud-credit reads from rejected profile tokens** (2026-10-07, Codex QA).
-  HTTP 429 regression now preserves unknown credits and waits for refresh; HTTP 401 still requests a login. Cloud/reset gates, types/build and desktop/phone 62/62 pass; matching local login refreshed and guide serves. Independent QA remains.
+  HTTP 429 regression preserves unknown credits and waits for refresh; HTTP 401 still requests a login. Cloud/reset gates, types/build and desktop/phone 62/62 pass; refreshed matching local login restores both live balance chips and guide serves. Deployed d15fe425; independent QA remains.
 
 
 - **Spread concurrent agent launches across available subscriptions** (2026-10-07, Fernspanner).
@@ -136,9 +136,6 @@ same commit as the fix. Git history keeps the record.
 
 
 ## Blocked / waiting
-
-- **Renew the rejected profile login for an opted-in Claude cloud subscription** (2026-10-07, Codex QA).
-  Live verification shows one `cloud ?` chip and HTTP 401 from its saved profile login; the current local CLI login belongs to the other subscription. Requires a current matching profile token in Settings > Subscriptions before that account's cloud balance or automatic subtasks can work.
 
 - **Verify Claude prepaid funds before enabling credit-backed dispatch** (2026-10-07, Pebble Sprocket).
   Read-only provider checks found one expired profile credential and one zero prepaid balance with usage credits disabled. Requires matching current credentials and prepaid subscription funds with auto-reload off; API Console balances are separate.
