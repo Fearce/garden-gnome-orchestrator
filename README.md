@@ -123,6 +123,13 @@ Max and Ultra where supported. It chooses the smallest confident effort for the 
 all tasks indexed for sorting and counts; completed cards load their previews and checkout details
 only when their page becomes visible. Opening a task loads its full history separately.
 
+The chat composer's repo path field is optional: a path typed there is used exactly as written.
+The **Auto** switch inside the field's right edge picks the repo for each send instead. While it is
+on, the field, its folder button and the REPOS chips are disabled. A path in your message, a repo
+name it mentions, or a follow-up to the previous request decides the repo; when that is unclear, a
+searchable picker lists the candidates, and the request is sent once you choose. A request naming
+several repos can become one task per repo. The setting persists; turn Auto off to choose manually.
+
 Open a task and you get its whole trail: which agents ran, what they cost, what they
 found, and any file they produced. The composer at the bottom injects new information
 into the running agent without restarting it.
