@@ -3515,6 +3515,8 @@ body.dl-resizing { user-select: none; }
   .rail .composer-options.sheet .repo-add { min-width: var(--tap); min-height: var(--tap); font-size: 18px; }
   .composer-sheet-ws { display: flex; align-items: center; gap: 8px; }
   .rail .composer-sheet-ws input.ws { min-height: var(--tap); padding: 0 12px; font-size: 16px; }
+  /* Keep typed text clear of the larger touch-sized AUTO switch. */
+  .rail .composer-sheet-ws .ws-wrap.has-trailing input.ws { padding-right: 80px; }
   .rail .composer-sheet-ws .attach-btn { width: var(--tap); min-width: var(--tap); padding: 0; }
   .rail .composer-sheet-ws .ws-menu { top: calc(100% + 4px); bottom: auto; }
   .rail .composer-options.sheet .composer-mode { flex-wrap: wrap; gap: 8px; }
