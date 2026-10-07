@@ -8,6 +8,7 @@ const PORT = 4455;
 const BASE = `http://127.0.0.1:${PORT}`;
 const check = createChecks();
 const TASK = '10000000-0000-4000-8000-000000000001';
+const CLOUD_CHILD = '10000000-0000-4000-8000-000000000002';
 async function pass(browser, phone) {
   const context = await browser.newContext({ viewport: phone ? {width:390,height:844} : {width:1440,height:1000}, isMobile:phone, hasTouch:phone });
   try {
@@ -141,6 +142,15 @@ async function pass(browser, phone) {
     await page.getByRole('button',{name:'Send to cloud',exact:true}).click();
     await page.getByRole('dialog',{name:'Send task to Claude cloud',exact:true}).getByRole('link',{name:'Open Claude session',exact:true}).waitFor();
     check('reopening restores the cloud link',true);
+    await page.getByRole('button',{name:'Close cloud panel',exact:true}).click();
+    await page.locator('.subtask-chip').filter({hasText:'Hosted review child'}).click();
+    if(phone && await page.getByRole('button',{name:'Expand header',exact:true}).count()) await page.getByRole('button',{name:'Expand header',exact:true}).click();
+    const hostedLink = page.getByRole('link',{name:'Open cloud session',exact:true});
+    await hostedLink.waitFor();
+    check('cloud child opens its hosted session',await hostedLink.getAttribute('href')==='https://claude.ai/code/session_lab');
+    check('cloud child has no local resume',await page.getByRole('button',{name:'Resume',exact:false}).count()===0);
+    check('cloud child has no local retry',await page.getByRole('button',{name:'Retry',exact:false}).count()===0);
+    check('cloud child has no local auto-review',await page.getByRole('button',{name:'Auto-review',exact:false}).count()===0);
     check(`${phone?'phone':'desktop'}: no browser errors`,errors.length === 0,errors.join(' | '));
   } finally { await context.close(); }
 }
@@ -153,6 +163,9 @@ async function main() {
     const db = new Database(path.join(dataDir,'orchestrator.sqlite'));
     const at=Date.now();
     db.prepare("INSERT INTO threads(id,title,state,workspace,brief,raw_prompt,created_at,updated_at) VALUES(?,?,'paused',?,?,?, ?,?)").run(TASK,'Cloud lab paused task',dataDir,'Fix repository unit tests','Fix repository unit tests',at,at);
+    const spec = {provider:'claude',model:'test-cloud',effort:null,spawnedByRole:'implementor',spawnedByName:'Lab',spawnedByRunId:null,cloudWork:'review',cloudOnly:true,cloud:{accountId:'cloud-account-0',repository:'example/webapp',branch:'main',head:'a'.repeat(40)}};
+    db.prepare("INSERT INTO threads(id,title,state,workspace,brief,raw_prompt,parent_id,sub_task,created_at,updated_at) VALUES(?,?,'review',?,?,?,?,?,?,?)").run(CLOUD_CHILD,'Hosted review child',dataDir,'Read repository','Read repository',TASK,JSON.stringify(spec),at,at);
+    db.prepare("INSERT INTO agent_runs(id,thread_id,role,model,account,session_id,state,started_at,ended_at) VALUES(?,?,'implementor','test-cloud','claude-cloud:Lab','session_lab','done',?,?)").run('cloud-lab-run',CLOUD_CHILD,at,at);
     db.close();
     browser = await loadChromium().launch({headless:true});
     await pass(browser,false);

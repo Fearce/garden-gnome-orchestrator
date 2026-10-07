@@ -293,7 +293,9 @@ routing and reports why cloud admission failed. Explicit cloud work uses only pu
 HEAD; unrelated pending local files stay on this machine. Account identity,
 fresh promotional funds, paid usage credits off, and pushed repository state
 are checked before dispatch; automatic cap fallback also requires a clean checkout. Cloud changes use a separate branch; GGO does not merge
-or deploy them. Each session has a $5 estimated budget ceiling and a 40-turn limit.
+or deploy them. Cloud children offer a hosted session link; resume, retry and review
+are handled in Claude or the parent task. Each session has a $5 estimated budget
+ceiling and a 40-turn limit.
 This uses the OAuth session protocol observed in Claude Code 2.1.292, rather than a
 public automation API; provider changes can require an adapter update. Interrupted
 or uncertain sessions are never automatically resubmitted.

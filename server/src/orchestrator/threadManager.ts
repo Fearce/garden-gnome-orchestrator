@@ -13487,6 +13487,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.injectionReceipts.withInjection(threadId, message, () => this.injectThreadInner(threadId, message, mode, images, options));
   }
 
+  private cloudControlRefusal(thread: Thread | null): ThreadActionResult | null {
+    if (!thread || (!thread.subTask?.cloud && !thread.subTask?.cloudOnly)) return null;
+    const job = this.cloudSubtasks.jobs().find(j => j.threadId === thread.id);
+    return { ok: false, state: thread.state, error: `Steer this cloud session in Claude: ${job?.url ?? "https://claude.ai/code"}. No local agent was started. Review its result in the parent task.` };
+  }
+
   private async injectThreadInner(
     threadId: string,
     message: string,
@@ -13495,10 +13501,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     options: { recipient?: "implementor" | "qa" | "reviewer"; standing?: boolean } = {},
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
-    if (thread?.subTask?.cloud) {
-      const job = this.cloudSubtasks.jobs().find(j => j.threadId === threadId);
-      return { ok: false, state: thread.state, error: `Steer this cloud session in Claude: ${job?.url ?? "https://claude.ai/code"}. No local agent was started.` };
-    }
+    const cloudRefusal = this.cloudControlRefusal(thread);
+    if (cloudRefusal) return cloudRefusal;
     // A Jev sub-task has no session to steer: the owner's message is another question against its state.
     if (thread && isJevSubTask(thread)) {
       if (options.standing === false) return { ok: false, state: thread.state, error: "A Jev sub-task only answers the owner's questions." };
@@ -14180,6 +14184,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   ): Promise<ThreadActionResult> {
     let thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    const cloudRefusal = this.cloudControlRefusal(thread);
+    if (cloudRefusal) return cloudRefusal;
     if (this.db.getThreadStageOutputs(threadId).manualProceed) {
       return { ok: false, state: thread.state, error: "This task is waiting for the owner to click Proceed." };
     }
@@ -14763,6 +14769,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   async retryThread(threadId: string): Promise<ThreadActionResult> {
     let thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    const cloudRefusal = this.cloudControlRefusal(thread);
+    if (cloudRefusal) return cloudRefusal;
     if (thread.state !== "cancelled") {
       return { ok: false, error: `Only a cancelled task can be retried (this one is ${thread.state}).` };
     }
@@ -14968,6 +14976,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   async autoReview(threadId: string, source: AutoReviewSource = "owner"): Promise<ThreadActionResult> {
     let thread = this.db.getThread(threadId);
     if (!thread) return { ok: false, error: "No such task." };
+    const cloudRefusal = this.cloudControlRefusal(thread);
+    if (cloudRefusal) return cloudRefusal;
     if (source !== "owner" && this.settings().manualSupervisionEnabled) {
       return { ok: false, state: thread.state, error: "Manual supervision requires an owner click before review." };
     }

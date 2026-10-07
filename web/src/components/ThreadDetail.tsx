@@ -939,7 +939,10 @@ export function ThreadDetail() {
   const canInterrupt = isLive || qaStage;
   // Resume covers a failed task too: the pipeline is resume-aware and re-runs from the stage that
   // died (reusing saved plan/research and the implementor's prior session) instead of from scratch.
-  const isResumable = thread.state === "paused" || thread.state === "review" || thread.state === "failed";
+  const isCloudChild = !!(thread.subTask?.cloud || thread.subTask?.cloudOnly);
+  const cloudSessionId = threadRuns.find(run => run.account?.startsWith("claude-cloud:") && run.sessionId)?.sessionId;
+  const cloudSessionUrl = cloudSessionId ? `https://claude.ai/code/${encodeURIComponent(cloudSessionId)}` : "https://claude.ai/code";
+  const isResumable = !isCloudChild && (thread.state === "paused" || thread.state === "review" || thread.state === "failed");
   const awaitingProceed = thread.state === "paused" && thread.error?.startsWith("Awaiting Proceed to ");
   const manualInjectBlocked = manualSupervision && (qaStage || awaitingProceed);
   const terminal = isTerminal(thread.state);
@@ -1147,12 +1150,15 @@ export function ThreadDetail() {
                   ▶ Proceed
                 </button>
               )}
+              {isCloudChild && (
+                <a className="btn primary sm" href={cloudSessionUrl} target="_blank" rel="noreferrer" title="Steer or stop this hosted session in Claude. Review its result in the parent task.">Open cloud session</a>
+              )}
               {isResumable && !awaitingProceed && (
                 <button className="btn primary sm" onClick={() => resume(id)}>
                   ▶ Resume
                 </button>
               )}
-              {thread.state === "cancelled" && (
+              {thread.state === "cancelled" && !isCloudChild && (
                 <button
                   className="btn primary sm"
                   onClick={() => retry(id)}
@@ -1161,7 +1167,7 @@ export function ThreadDetail() {
                   ↻ Retry
                 </button>
               )}
-              {(thread.state === "review" || thread.state === "reviewing") && (
+              {!isCloudChild && (thread.state === "review" || thread.state === "reviewing") && (
                 <button
                   className={"btn review sm" + (frozen ? " frozen-ctl" : "")}
                   onClick={() => {

@@ -39,7 +39,7 @@ same commit as the fix. Git history keeps the record.
 ## Shipped, awaiting live proof
 
 - **Explicit Claude cloud requests never silently launch locally** (2026-10-07, Thimblewick; task 10379cdb).
-  Cloud-only before-cap/dirty-parent admission, no-local refusal, durable choice and visible fallback reasons pass; subtask 46/46 and desktop/phone 62/62 pass. Live cloud-only round trip pending.
+  Live c0cb1279 hosted review returned findings; both balance chips verified beneath names. Review reproduced a local Resume escape; server control guard is committed/compiled for the next permitted restart, while the web guard is published. Cloud regressions, auto-review 214/214 and desktop/phone 70/70 pass; independent live API refusal proof remains.
 
 
 - **QA: stabilize supervisor duplicate-boot retry verification under load** (838f708a, 2026-10-07, Codex QA).

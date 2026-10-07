@@ -161,6 +161,15 @@ try {
   assert.equal(localStarts.length, startsBeforeRefusals, "explicit cloud never invokes local implementation");
   assert.equal(manager.cloudSubtasks.jobs().find(j => j.threadId === required.thread!.id)?.state, "review");
   assert.match(db.listMessages(parentId).map(m => m.content).join("\n"), /Explicit cloud before cap.*on Claude cloud/);
+  const localResume = internals.resumeImplementorOnly;
+  let localResumeCalls = 0;
+  internals.resumeImplementorOnly = async () => { localResumeCalls++; return { ok: true, state: "implementing" }; };
+  const resumedCloud = await manager.resumeThread(required.thread!.id, undefined, true);
+  assert.equal(resumedCloud.ok, false, "finished cloud child cannot resume locally");
+  assert.match(resumedCloud.error ?? "", /cloud session in Claude/);
+  assert.equal(localResumeCalls, 0, "cloud-only review never reaches local resume");
+  assert.equal((await manager.autoReview(required.thread!.id)).ok, false, "cloud results are reviewed in the parent, without a local review pipeline");
+  internals.resumeImplementorOnly = localResume;
   dirty = false;
   const ordinary = await manager.subTasks.spawn(spawner, { ...input, title: "Automatic local with reason" });
   assert.equal(ordinary.ok, true);
@@ -231,6 +240,13 @@ try {
   assert.equal(db.getThread(pending.id)?.state, "paused", "interrupt stops local observer");
   (finish as (() => void) | undefined)?.(); await new Promise(r => setTimeout(r, 100));
   assert.equal(manager.cloudSubtasks.jobs().find(j => j.threadId === pending.id)?.state, "uncertain", "interrupted remote work never pretends to be stopped");
+  const stoppedResume = await manager.resumeThread(pending.id, "Continue", true);
+  assert.equal(stoppedResume.ok, false, "paused cloud child cannot resume locally");
+  assert.match(stoppedResume.error ?? "", /session_test/);
+  assert.equal(db.getThread(pending.id)?.state, "paused", "refusing resume preserves the cloud child and observer state");
+  internals.setState(pending.id, "cancelled");
+  assert.equal((await manager.retryThread(pending.id)).ok, false, "retry cannot erase a cloud child's recorded outcome");
+  assert.equal(db.getThread(pending.id)?.state, "cancelled");
   const before = calls;
   const recovery = new CloudSubtaskService({ db, accounts: new StubAccounts() as unknown as AccountsType,
     setState: (id, state, error) => internals.setState(id, state, error), message: () => {} }, automatic.runner, automatic.git);

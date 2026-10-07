@@ -118,7 +118,9 @@ failure explains why and follows ordinary local subtask routing; an explicit
 `cloudOnly` request refuses instead. A submitted but uncertain session never silently
 falls back to another billed run. Timeout, interruption, network failure or restart
 retains its record and link and requires checking Claude before creating another
-independent subtask. Resume does not submit a duplicate. **Interrupt** stops GGO's
+independent subtask. Cloud children have **Open cloud session** in place of local Resume/Retry/review
+controls. These actions are also refused server-side; review the returned work in
+the parent task. Resume does not submit a duplicate. **Interrupt** stops GGO's
 observer, and cancelling a parent cancels its child observation, but the remote VM
 can keep running. Use the Claude session link to steer or stop it. GGO does not
 forward owner messages into a cloud session; it directs you to that link.
