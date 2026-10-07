@@ -28,7 +28,7 @@ same commit as the fix. Git history keeps the record.
 ## Shipped, awaiting live proof
 
 - **QA: verify CLI question chips in desktop and phone browsers and activate the bridge** (2026-10-07, Moss Quill).
-  Twelve browser flows prove Codex/Grok choice, multi-choice and free-text chips, durable answers, held completion and same-session continuation; 11 focused gates, all types and application builds pass. Activation and independent review remain.
+  Pushed/integrated browser regression 01f33516; 12 Codex/Grok desktop/phone choice, multi-choice and free-text flows, 11 focused gates, all types/builds, README 74/74 and privacy pass. Deploy verification confirms live build 4995ab97 contains the question bridge. Independent QA remains.
 
 - **Offload repository tasks using promotional cloud credits and show balances under subscription names** (3471a225, 2026-10-07, Thimblewick).
   Committed/pushed; eligible live smoke returned directories/port without edits and promotional balance fell by $0.46. Desktop/phone 48/48, account/reset/cloud tests, types/builds, README 74/74 and privacy pass. Corrected web handoff is published; balance reader is built but activation awaits lifting the restart-resume prohibition. One subscription's profile token remains expired, so its balance is unknown.
