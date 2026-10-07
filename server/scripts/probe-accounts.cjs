@@ -114,6 +114,7 @@ const MIRRORED_HEADROOM_TERMS = {
     // general rung; dedicatedPoolRungs mirrors every model allowance. Together they implement the exact
     // selected-pool decision represented by this local in codexProviderCandidate.
     selectedPoolReady: "backendState + dedicatedPoolRungs (per-pool meters + cap latches)",
+    paid: "codexPrepaidReady (opt-in, subscription auth, exhausted included capacity, fresh finite balance and rejection latch)",
   },
 };
 
@@ -147,13 +148,16 @@ const pct = (v) => (v == null ? "  —" : `${String(Math.round(v)).padStart(3)}%
  *  carries the deadline routing itself is waiting on. A SPENT window is reported separately from a latched
  *  cap so the readout can say which one is holding the rung — they need different reactions (a latch
  *  self-expires; a spent weekly waits for the real reset). */
-function backendState({ enabledKey, capKey, cooldownKey, usageFile, freshness }, kv, at, usage = () => null) {
+function backendState({ enabledKey, capKey, cooldownKey, usageFile, freshness }, kv, at, usage = () => null, creditContext = {}) {
   if (kv(enabledKey) !== "1") return { available: false, reason: "disabled" };
   const cooldownUntil = cooldownKey ? Number(kv(cooldownKey)) : 0;
   if (Number.isFinite(cooldownUntil) && cooldownUntil > at) return { available: false, reason: "startup cooldown", until: cooldownUntil };
+  const meters = usageFile ? usage(usageFile) : null;
+  if (usageFile === "codex-usage-cache.json" && codexPrepaidReady(meters, kv, at, creditContext)) {
+    return { available: true, reason: "prepaid", meters };
+  }
   const until = Number(kv(capKey));
   if (Number.isFinite(until) && until > at) return { available: false, reason: "capped", until };
-  const meters = usageFile ? usage(usageFile) : null;
   // Mirrors grokProviderCandidate's `noAllowance`. A plan that STATES it meters nothing has no window to
   // run down, so every spent-window test below passes it and it would print as a live rung forever — the
   // "no windows left to check, therefore fine" shape of the same blind spot the header describes. A real
@@ -173,6 +177,20 @@ function backendState({ enabledKey, capKey, cooldownKey, usageFile, freshness },
     };
   }
   return { available: true, reason: "ready", meters };
+}
+
+/** Mirrors codexCreditsReady; missing auth or cross-provider context cannot prove paid readiness. */
+function codexPrepaidReady(usage, kv, at, { subscriptionAuthenticated, includedCapacityAvailable } = {}) {
+  let allowed;
+  try { allowed = JSON.parse(kv("setting_allow_credit_spending") ?? "{}").codex === true; }
+  catch { return false; }
+  if (!allowed || subscriptionAuthenticated !== true || includedCapacityAvailable !== false
+    || Number(kv("codex_credit_rejected_until") ?? 0) > at) return false;
+  const fresh = (value) => Number.isFinite(value) && value <= at && at - value < 20 * 60_000;
+  const c = usage?.credits;
+  const exhausted = usage?.limitState === "reached" || (usage?.fiveHour ?? 0) >= 100 || (usage?.sevenDay ?? 0) >= 100;
+  return exhausted && fresh(usage?.updatedAt) && fresh(usage?.creditsUpdatedAt ?? usage?.updatedAt)
+    && c?.hasCredits === true && c.unlimited === false && c.balance != null && c.balance > 0;
 }
 
 // How far out a window's reported reset can be before it is not believable as that window's reset. z.ai's
@@ -410,7 +428,7 @@ function printDedicatedPools(backends, kv, usage) {
   }
 }
 
-function main() {
+async function main() {
   const dbPath = path.resolve(__dirname, "..", "data", "orchestrator.sqlite");
   const db = new Database(dbPath, { readonly: true });
   db.pragma("busy_timeout = 5000");
@@ -435,7 +453,7 @@ function main() {
     const extRecent = v.extWakeAt != null && now - v.extWakeAt < EXT_WAKE_TTL_MS;
     const stale = v.usageAt != null && now - v.usageAt > STALE_MS;
     const mls = Object.entries(v.modelLimits ?? {}).filter(([, t]) => t > now);
-    if (claudeHasHeadroom(v)) claudeRungs++;
+    if (kv(`account_enabled_${id}`) !== "0" && claudeHasHeadroom(v)) claudeRungs++;
 
     console.log(`■ ${labels[id] ?? id}  (${id})`);
     console.log(`    5h ${pct(v.fiveHour)}  · resets ${countdown(v.fiveHourReset)}`);
@@ -477,12 +495,20 @@ function main() {
           ? `, reset unknown (backend reported ${new Date(s.reportedReset).toISOString().slice(0, 10)}, too far out to be a ${s.window} period)`
           : ", reset unknown"),
     ready: (s) => "available" + (s.meters ? ` (${meterSummary(s.meters)})` : " (no usage reading yet)"),
+    prepaid: () => "available through opted-in prepaid credits (included capacity exhausted)",
     // No countdown: nothing is going to elapse. Only an upgraded plan clears this, so say what to do.
     "no allowance": (s) =>
       `NO ROOM — ${s.meters?.plan ? `the ${s.meters.plan} plan` : "this plan"} includes no metered allowance` +
       `; upgrade it or turn the backend off in Settings`,
   };
-  const backends = BACKENDS.map((b) => ({ ...b, ...backendState(b, kv, now, readBackendUsage) }));
+  let backends = BACKENDS.map((b) => ({ ...b, ...backendState(b, kv, now, readBackendUsage) }));
+  let subscriptionAuthenticated = false;
+  try {
+    const { codexSubscriptionAuthAvailable } = await import("../dist/agents/codexRunner.js");
+    subscriptionAuthenticated = codexSubscriptionAuthAvailable(!!(kv("openai_api_key") || process.env.OPENAI_API_KEY));
+  } catch { /* No compiled runtime: paid readiness remains unproved. */ }
+  const creditContext = { subscriptionAuthenticated, includedCapacityAvailable: claudeRungs > 0 || backends.some((b) => b.available) };
+  backends = backends.map((b) => ({ ...b, ...backendState(b, kv, now, readBackendUsage, creditContext) }));
   console.log("Failover ladder — where an implementor lands when every Claude sub above is capped:");
   for (const b of backends) console.log(`  ${b.available ? "✓" : "✗"} ${b.name.padEnd(6)} ${NOTE[b.reason](b)}`);
 
@@ -513,10 +539,11 @@ function main() {
   db.close();
 }
 
-if (require.main === module) main();
+if (require.main === module) main().catch((error) => { console.error(error.message); process.exitCode = 1; });
 
 module.exports = {
   backendState,
+  codexPrepaidReady,
   dedicatedPoolRungs,
   readPoolLatches,
   POOL_HARD_LIMIT_PCT,

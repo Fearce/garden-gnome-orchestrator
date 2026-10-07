@@ -11,6 +11,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   backendState,
+  codexPrepaidReady,
   claudeHasHeadroom,
   spentWindow,
   spentCredits,
@@ -35,6 +36,26 @@ const kvOf = (map) => (key) => (key in map ? map[key] : null);
 // A meters stub, standing in for reading data/<file>. Absent file ⇒ null, exactly like a missing cache.
 const usageOf = (meters) => () => meters ?? null;
 const CODEX = { enabledKey: "setting_codex_enabled", capKey: "codex_cap_until", cooldownKey: "provider_startup_cooldown_codex_until", usageFile: "codex-usage-cache.json" };
+
+// Paid fallback must agree with the live router without bypassing opt-in or spending controls.
+const paidUsage = { updatedAt: NOW, creditsUpdatedAt: NOW, sevenDay: 100,
+  credits: { hasCredits: true, unlimited: false, balance: 12 } };
+const paidKv = { setting_codex_enabled: "1", setting_allow_credit_spending: JSON.stringify({ codex: true }), codex_cap_until: String(NOW + HOUR) };
+const paidContext = { subscriptionAuthenticated: true, includedCapacityAvailable: false };
+assert.equal(codexPrepaidReady(paidUsage, kvOf(paidKv), NOW, paidContext), true);
+assert.equal(backendState(CODEX, kvOf(paidKv), NOW, usageOf(paidUsage), paidContext).reason, "prepaid");
+for (const context of [{}, { ...paidContext, subscriptionAuthenticated: false }, { ...paidContext, includedCapacityAvailable: true }]) {
+  assert.equal(codexPrepaidReady(paidUsage, kvOf(paidKv), NOW, context), false);
+}
+for (const usage of [null, { ...paidUsage, updatedAt: NOW - HOUR }, { ...paidUsage, creditsUpdatedAt: NOW - HOUR },
+  { ...paidUsage, updatedAt: NOW + 1 }, { ...paidUsage, sevenDay: 20 },
+  { ...paidUsage, credits: { ...paidUsage.credits, balance: 0 } }, { ...paidUsage, credits: { ...paidUsage.credits, unlimited: true } }]) {
+  assert.equal(codexPrepaidReady(usage, kvOf(paidKv), NOW, paidContext), false);
+}
+assert.equal(codexPrepaidReady(paidUsage, kvOf({ ...paidKv, setting_allow_credit_spending: "{}" }), NOW, paidContext), false);
+assert.equal(codexPrepaidReady(paidUsage, kvOf({ ...paidKv, codex_credit_rejected_until: String(NOW + HOUR) }), NOW, paidContext), false);
+assert.equal(backendState(CODEX, kvOf({ ...paidKv, setting_codex_enabled: "0" }), NOW, usageOf(paidUsage), paidContext).reason, "disabled");
+assert.equal(backendState(CODEX, kvOf({ ...paidKv, provider_startup_cooldown_codex_until: String(NOW + HOUR) }), NOW, usageOf(paidUsage), paidContext).reason, "startup cooldown");
 
 // --- backendState: enabled + not cap-latched is the ONLY available state ---------------------------
 assert.deepEqual(

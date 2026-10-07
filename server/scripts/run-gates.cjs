@@ -217,6 +217,7 @@ const GATES = [
   "test:model-request",
   "test:model-request-ui",
   "test:token-conservation",
+  "test:credit-spending",
   "test:usage-saving",
   "test:usage-saving-resume-drift",
   "test:role-run-effort",
