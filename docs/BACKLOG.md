@@ -97,6 +97,12 @@ same commit as the fix. Git history keeps the record.
 15. **Investigate intermittent slow live Patch notes loading** (2026-10-07, Bramblewick).
   During concurrent security/credit verification, the live panel waited over 60s and an authenticated API probe timed out; a repeat API read returned 200/150 entries and real-history live folding passed. Isolated history lab passed 42/42.
 
+16. **Migrate remaining major package updates against feature contracts** (2026-10-07, Brindlewick).
+  Compatible server/web/relay/desktop updates are applied; Graphify 0.19 removes the officeparser dependency used by the bundled PDF parser contract. SQLite 13, TypeScript 7, dotenv 18, React Markdown 10 and Monaco 0.57 need their own migration checks.
+
+17. **Measure the remaining task-start delay beyond board loading** (2026-10-07, Brindlewick).
+  Dispatch probe separates typical row creation (0–0.2 s), first run (2–14 s) and first CLI output (18–40 s), with a 34.6 s creation outlier. Lazy cards and direct Git baseline reads address two delays; existing SQLite stall investigation and provider startup still need live attribution under load.
+
 ## Blocked / waiting
 
 - **Verify Claude prepaid funds before enabling credit-backed dispatch** (2026-10-07, Pebble Sprocket).
