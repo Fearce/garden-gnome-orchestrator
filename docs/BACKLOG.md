@@ -125,6 +125,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-07 **Route agent questions through GGO chips and resume on answers** (41945c65, 01f33516, Codex QA): pushed and integrated; deployment verification confirms live build 4995ab97 contains the bridge. Twelve desktop/phone Codex/Grok browser flows prove chips, durable answers, held completion and same-session continuation; types, builds and focused regression gates pass.
+
 - 2026-10-07 **Offload eligible tasks to Claude cloud and show both subscription credit balances** (3471a225, 50813f1c, Thimblewick): live build 4995ab97; provider-verified matching profile logins and authenticated desktop/phone browsers show both balances beneath names. Eligible read-only smoke consumed $0.46 promotional credit; cloud lab 48/48, account/reset/cloud tests, types/builds, README 74/74 and privacy pass. Profile tokens require renewal after expiry.
 
 - 2026-10-07 **Restore blank console and retain assets during production rebuilds** (Codex Recovery): live direct/proxy entry assets match disk with JavaScript MIME; browser renders sign-in, and a subsequent production rebuild preserves the previous entry bundle. README 74/74 and privacy pass; backend stayed running.
@@ -160,5 +162,3 @@ No open entries.
 
 - 2026-10-06 **Per-camera Surveillance motion notifications, ping and unread tab count** (74f6de90, Moss Lantern): pushed and live controls/current worker verified with recording preserved; motion browser 14/14, viewer 28/28, types/build/privacy/README pass. Module suite retains tracked Home idle-start failure.
 - 2026-10-06 **Restore ended-day patch-note summaries across page boundaries** (b0910387, Thistlewatt): live browser shows Sunday October 4 summary covering all 58 operator-facing changes automatically; deployed bundle bytes match. Patch-note lab 31/31, patch-note gate, types, builds, README 70/70 and privacy pass.
-
-- 2026-10-05 **Re-orderable board tabs: drag in the header, move in Settings** (Tabwhittle): board-head-lab 45/45 (drag Surveillance to #2, reload, Settings move/reset, narrow select), live console check on :4317, gates 230/230.
