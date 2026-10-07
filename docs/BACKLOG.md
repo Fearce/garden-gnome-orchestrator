@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Automatically offload suitable subtasks to enabled Claude cloud credits when a subscription is exhausted** (2026-10-07, Codex implementor).
+  Finish credit-eligible CLI dispatch, account/balance admission, parent result review and cap regressions; surface the setup guide.
+
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -66,10 +69,6 @@ same commit as the fix. Git history keeps the record.
   Desktop units 19/19 and new real-window regressions pass; application types/builds, Windows packaging and privacy pass. Clean-exit lab failures and distribution delivery remain under Ready.
 
 ## Ready (priority order)
-
-1. **Automatically offload suitable subtasks to enabled Claude cloud credits when a subscription is exhausted** (2026-10-07, owner directive; Bramble Gauge QA): the current cloud lane requires manual browser handoff and is excluded from automatic routing. Add credit-eligible dispatch, suitability and account/balance checks, parent/subtask lifecycle and review, with cap-triggered and fail-closed regressions; routine API runs cannot use promotional credits.
-
-2. **Surface the cloud setup guide as a deliverable** (2026-10-07, Bramble Gauge QA): `docs/claude-cloud-sessions.md` exists and opens in the task workspace, but this task has no deliverable findings. The implementor must verify the file and post its absolute workspace path; QA cannot surface an implementor's missing artifact.
 
 1. **Identify the process that removed production console assets** (2026-10-07, Codex Recovery): live index referenced missing JavaScript with only compressed remnants left; restored build boots and production rebuilds now retain old assets, but the deleting process is unproven. Also define bounded pruning of retained assets without breaking open clients.
 
