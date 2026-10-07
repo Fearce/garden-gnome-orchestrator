@@ -14,7 +14,9 @@ const db = new Db(":memory:");
 const accounts = { onUsageRefresh() {}, effectiveUtilization: () => null, soonestResetAt: () => null, hasHeadroom: () => true, setPingInterval() {}, applyEnabled() {}, applyWeeklySafetyPct() {}, setSpreadUsage() {}, setProviderRuntime: async () => {} };
 // Access process-spawning seams only; runRole builds the real launch and recovery prompts.
 const manager = new ThreadManager(db, new EventHub(), new FileMemoryService(root), accounts as any) as any;
-manager.wireRun = () => {};
+manager.wireRun = (agent: object, threadId: string, runId: string, recipient: string) => {
+  manager.receiptLanes.set(agent, { threadId, runId, recipient, provider: "codex" });
+};
 manager.officeCheckIn = () => {};
 manager.ensureGroup = () => {};
 manager.roleSessionModelDrifted = () => false;
@@ -43,8 +45,11 @@ try {
       return agent;
     };
     const thread = db.createThread({ title: "Structured QA fixture", workspace: root, rawPrompt: "Review", brief: "Review" });
+    manager.directSend(null, { threadId: thread.id, role: "qa" }, "Quiet fixture mail");
     await manager.runRole(thread, "qa", blocks, () => ({ model: "unused", systemPrompt: "Review the repository." }), resume, { forcedProvider: provider });
     verify(started, `${provider} ${resume ? "resumed" : "fresh"} launch`);
+    assert.ok(JSON.stringify(started).includes("Quiet fixture mail"), "scheduled QA launch receives its unread mail");
+    assert.equal(manager.directRead({ threadId: thread.id, role: "qa" }).unread, 1, "launch does not acknowledge mail");
     if (resume) verify(recovery, `${provider} fresh-session recovery`);
   }
   console.log("PASS Codex/Grok fresh, resumed and recovery QA content preserves text, images and inbox guidance");
