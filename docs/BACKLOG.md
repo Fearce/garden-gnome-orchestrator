@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA: honor revoked cloud opt-in at the session launch boundary** (2026-10-07, Codex QA).
+  Account verification and repository preparation await before session creation; recheck opt-in before the external launch.
+
 
 
 
