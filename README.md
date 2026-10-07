@@ -257,11 +257,14 @@ reader of a small, low-risk task on a free-tier API. Everything else stays on th
 subscription backends. See [docs/free-ai-provider-connections.md](docs/free-ai-provider-connections.md).
 
 **Settings > Claude cloud** sends repository-only work to Anthropic-hosted Claude
-Code sessions through configured routine API triggers. Claude applies eligible cloud
-session credits on the routine's account, then regular plan usage after expiry or
-exhaustion; GGO cannot read this balance or enforce credits-only spending. Start an
+Code sessions. The default path opens Claude with the repository and brief filled in;
+review the account, branch, model and environment and start the session there.
+Eligible promotional cloud session credits apply before regular plan usage.
+The optional routine API path submits directly and saves session links, but
+**routines are excluded from promotional cloud session credits** and spend regular usage.
+GGO cannot read the cloud balance or enforce credits-only spending. Start an
 independent cloud task there, or interrupt a local task and use **Send to cloud**.
-Jobs keep running with this PC off. GGO saves session links; monitor, stop, and review
+Jobs keep running with this PC off. Monitor, stop, and review
 results in Claude before merging. Local services, files, memory and attachments are
 not sent. This explicit lane does not participate in automatic provider fallback.
 Setup and limitations: [Claude cloud sessions](docs/claude-cloud-sessions.md).

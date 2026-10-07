@@ -39,6 +39,19 @@ async function pass(browser, phone) {
     if (phone) await page.getByLabel('Settings category',{exact:true}).selectOption('cloud');
     else await page.locator('[data-settings-category="cloud"]').click();
     let panel = page.locator('[data-settings-panel="cloud"] .cloud-sessions');
+    check('credit-eligible session is the default',await panel.getByLabel('Dispatch method').inputValue() === 'session');
+    await panel.getByLabel('Cloud session repository').fill('example/webapp');
+    await panel.getByLabel('Task title',{exact:true}).fill('Review code');
+    await panel.getByLabel('Task brief',{exact:true}).fill('Read the parser & report findings.');
+    check('handoff requires suitability',await panel.getByRole('link',{name:'Open credit-eligible cloud session',exact:true}).count() === 0);
+    await panel.getByRole('checkbox').check();
+    const prefill = new URL(await panel.getByRole('link',{name:'Open credit-eligible cloud session',exact:true}).getAttribute('href'));
+    check('official prefill includes only repository and edited brief',prefill.origin === 'https://claude.ai' && prefill.searchParams.get('repositories') === 'example/webapp' && prefill.searchParams.get('prompt').includes('parser & report') && !prefill.href.includes('sk-ant-'));
+    check('opening form is not claimed as submission',jobs.length === 0 && (await panel.textContent()).includes('does not submit a job'));
+    await panel.getByLabel('Task brief',{exact:true}).fill('Long brief '.repeat(1500));
+    const longLink = new URL(await panel.getByRole('link',{name:'Open credit-eligible cloud session',exact:true}).getAttribute('href'));
+    check('long brief uses copy rather than truncated URL',!longLink.searchParams.has('prompt') && (await panel.textContent()).includes('too long'));
+    await panel.getByLabel('Dispatch method').selectOption('routine');
     await panel.getByLabel('Connection label (include the Claude account)').fill('Cloud A');
     await panel.getByLabel('GitHub repository',{exact:true}).fill('example/webapp');
     await panel.getByLabel('Routine fire URL or ID').fill('trig_lab');
@@ -67,6 +80,8 @@ async function pass(browser, phone) {
     await modal.waitFor();
     await page.waitForFunction(()=>document.querySelector('.cloud-modal textarea')?.value==='Fix repository unit tests',null,{timeout:20000});
     check('paused-task brief is prefilled',await modal.getByLabel('Task brief',{exact:true}).inputValue() === 'Fix repository unit tests');
+    check('paused-task handoff defaults to eligible session',await modal.getByLabel('Dispatch method').inputValue() === 'session');
+    await modal.getByLabel('Dispatch method').selectOption('routine');
     await modal.getByRole('checkbox').check();
     await modal.getByRole('button',{name:'Start in Claude cloud',exact:true}).click();
     await modal.getByRole('link',{name:'Open Claude session',exact:true}).waitFor();

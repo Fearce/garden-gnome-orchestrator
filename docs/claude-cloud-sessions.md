@@ -1,8 +1,10 @@
 # Claude cloud sessions
 
-GGO can send repository tasks to Anthropic-hosted Claude Code sessions through the
-documented [routine fire API](https://platform.claude.com/docs/en/api/claude-code/routines-fire).
-This is a separate, explicit dispatch lane under **Settings > Claude cloud**. It can
+GGO prepares repository tasks for Anthropic-hosted Claude Code sessions using
+[documented prefilled session links](https://code.claude.com/docs/en/web-quickstart#pre-fill-sessions).
+An optional [routine fire API](https://platform.claude.com/docs/en/api/claude-code/routines-fire)
+path submits unattended work with different billing. This is an explicit lane under
+**Settings > Claude cloud**. It can
 also take an interrupted task through **Send to cloud** in its detail controls.
 Normal local tasks and provider fallback do not select cloud automatically.
 
@@ -10,10 +12,13 @@ Normal local tasks and provider fallback do not select cloud automatically.
 
 Claude's **Cloud session credits** are distinct from subscription prepaid usage and
 Anthropic Console API credits. Claude applies eligible promotional credits on the
-account that owns the routine. Its Usage page shows the remaining balance and expiry;
+account starting an interactive cloud session. Its Usage page shows the remaining balance and expiry;
 after exhaustion or expiry, regular plan usage applies. Moving work to this lane can
 use the promotional balance rather than the local subscription allowance while that
 balance lasts. It does not reduce the tokens the cloud task itself uses.
+**Projects and routines are excluded from the promotion**, including API-triggered
+routines. They spend regular subscription usage, even while cloud session credits remain.
+See [Anthropic's promotion terms](https://support.claude.com/en/articles/17152539-cloud-sessions-bonus-credit-promotion).
 
 Good candidates are documentation, repository review, unit tests, and code changes
 that can be verified in a Linux checkout. Keep desktop automation, local database
@@ -26,9 +31,30 @@ completion state. GGO cannot enforce a credits-only spend ceiling. Check the acc
 billing controls and balance at [Claude Usage](https://claude.ai/settings/usage).
 GGO neither purchases credits nor changes provider billing settings.
 
-## Connect a routine
+## Start an eligible cloud session
 
-1. Sign into the Claude account holding the credits and open
+1. In **Settings > Claude cloud**, keep the default **Cloud session** dispatch method.
+   A routine or token is not required. For a paused local task, use **Send to cloud**;
+   its title and brief are prefilled.
+2. Enter the GitHub `owner/repository`, title and brief, and confirm cloud suitability.
+3. Click **Open credit-eligible cloud session**. GGO opens the official Claude Code
+   form with the repository and task prefilled. Sign into the account holding the
+   credits, verify the repository, branch, model and cloud environment, then start
+   the task in Claude. Opening the form alone does not start work.
+4. For briefs whose encoded URL exceeds 8,000 characters, use **Copy cloud brief**,
+   open the form, and paste the brief before starting. The brief in a prefilled URL
+   may remain in browser history; avoid including sensitive information.
+5. Monitor and review in Claude. GGO does not receive a session ID or track submission
+   for this browser handoff. The original local task stays paused; opening the form
+   again can create another independent session, so check Claude before repeating.
+
+Only the edited brief and repository selection are sent. Local transcripts, memory,
+attachments and credentials are not included. GitHub must already be connected to
+Claude; select the branch containing any prerequisite commits you pushed.
+
+## Connect a routine (regular usage)
+
+1. Sign into the Claude account whose regular usage should fund the runs and open
    [Claude routines](https://claude.ai/code/routines).
 2. Create a routine, attach one GitHub repository, and configure its cloud environment
    and base branch. Repository access must be connected in Claude. Select the model
@@ -52,6 +78,7 @@ Changing GGO's repository label does not change the routine's attached repositor
 
 ## Dispatch and review
 
+For direct API dispatch, choose **Routine API** (not eligible for promotional credits).
 Enter a title and brief, select the routine, confirm cloud suitability, and click
 **Start in Claude cloud**. Each submission creates an independent session and survives
 GGO shutdown. GGO retains the newest 100 submission records, including the account
