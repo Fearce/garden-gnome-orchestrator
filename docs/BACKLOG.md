@@ -43,8 +43,8 @@ same commit as the fix. Git history keeps the record.
 - **QA: preserve AUTO repo scope and searchable-picker keyboard choices** (2026-10-07, Codex QA; task 547b354c).
   Reproduced and fixed quoted paths with spaces, omitted missing paths, overlapping multi-project names and
   ambiguous follow-ups; fixed stale search rows, empty-list focus and filtered multi-selection submission.
-  AUTO/routing/README gates 7/7, direct privacy gate/tree scan, all types/builds and desktop/narrow/phone browser
-  89/89 pass. Privacy checks pass directly; the gate-runner identity regression is fixed by peer commit 7ea9613b.
+  AUTO/routing/README/privacy gates 8/8, direct privacy tree scan, all types/builds and desktop/narrow/phone browser
+  89/89 pass after integration. The gate-runner identity regression is fixed by peer commit 7ea9613b.
   Server activation and independent review follow integration.
 
 
