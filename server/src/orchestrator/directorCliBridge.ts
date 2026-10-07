@@ -9,6 +9,7 @@ import type { Scheduler } from "./scheduler.js";
 import { applyGoalChange, describeGoal, type GoalRunner } from "./goals.js";
 import type { GoalOwnerStatus, ImplementorProvider } from "../types.js";
 import { findWorkspaces } from "../workspace/findWorkspace.js";
+import { askRepoChoice } from "../workspace/autoRepo.js";
 import { normalizeDuration } from "./timedTasks.js";
 import { clampAgentCount } from "./shotgun.js";
 import { formatTokenShift } from "./usageWindows.js";
@@ -52,6 +53,7 @@ export const DIRECTOR_CLI_SCHEMA: JsonSchemaLike = {
       },
     },
     multiSelect: { type: "boolean" },
+    repos: { type: "array", items: { type: "string" } },
     note: { type: "string" },
     url: { type: "string" },
     id: { type: "string" },
@@ -88,6 +90,7 @@ export interface DirectorCliAction {
   question?: string;
   options?: Array<{ label: string; description?: string }>;
   multiSelect?: boolean;
+  repos?: string[];
   note?: string;
   url?: string;
   id?: string;
@@ -124,7 +127,7 @@ command. Use kind="reply" with message only when you are ready to speak to ${con
 
 Commands and fields:
 - reply: message
-- ask_user: header, question, options?, multiSelect?
+- ask_user: header, question, options?, multiSelect?, repos? (repos ONLY when asking which repository: candidate absolute paths, options empty; the owner gets a searchable repo picker and the result names the chosen path(s))
 - find_workspace: query
 - dispatch: title, workspace, brief, model?, effort?, duration?, agents? — set model ONLY by copying an explicit owner model/capacity request (for example "GPT Spark"); omit it otherwise. The server resolves and strictly pins the canonical model. Set effort (low|medium|high|max) whenever the owner asked for one, in the message ("with high effort", "a max effort task") or in their standing directives — and ONLY then.
 - dispatch_read: title, workspace, brief
@@ -168,6 +171,15 @@ export async function executeDirectorCliAction(
   try {
     switch (action.kind) {
       case "ask_user": {
+        if (action.repos) {
+          const result = await askRepoChoice(api, {
+            header: required(action, "header").slice(0, 40),
+            question: required(action, "question"),
+            repos: action.repos,
+            multiSelect: action.multiSelect === true,
+          });
+          return outcome("ask_user", result.error ? `ERROR: ${result.text}` : result.text);
+        }
         const answer = await api.askUser({
           threadId: null,
           header: required(action, "header").slice(0, 40),

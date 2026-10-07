@@ -57,6 +57,7 @@ import { registerCalendarRoutes } from "./calendar/routes.js";
 import { GoalRunner } from "./orchestrator/goals.js";
 import { OnlineOffice } from "./office/onlineOffice.js";
 import { SKIP as FS_SKIP } from "./workspace/findWorkspace.js";
+import { searchRepos } from "./workspace/autoRepo.js";
 import { knownWorkspaces, revealWorkspace } from "./workspace/revealWorkspace.js";
 import { startWebAutoBuild } from "./webAutoBuild.js";
 import { refreshStatus, getStatus, applyUpdate, startUpdatePoll, stagedBuildStamp, claimCheckoutForRuntimeBump } from "./update.js";
@@ -809,6 +810,13 @@ async function main(): Promise<void> {
       // dirname() is idempotent at a drive root (dirname("C:\\") === "C:\\"); null means "no Up".
       const up = dirname(path);
       return { path, parent: up === path ? null : up, dirs };
+    });
+
+    // The AUTO repo picker's search box: verified workspaces (recents, earlier tasks' repos, git checkouts
+    // beside them and under the search roots) whose path contains every typed word. No query lists them all.
+    app.get<{ Querystring: { q?: string } }>("/api/repos/search", async (req, reply) => {
+      if (!isAuthed(req.headers.cookie)) return reply.code(401).send({ error: "unauthorized" });
+      return { repos: searchRepos(String(req.query.q ?? "").slice(0, 200), director.autoRepoContext()) };
     });
 
     // Shell-style path completion for the dispatch path field. Unlike /api/fs/ls (which browses the

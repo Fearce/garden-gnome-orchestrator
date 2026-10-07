@@ -495,6 +495,10 @@ export interface QuestionOption {
   description?: string;
 }
 
+/** "repo" = an AUTO repo clarification: each option's `description` is a verified absolute repo path, the
+ *  console renders a searchable repo picker, and the answer is the chosen path(s), one per line. */
+export type QuestionKind = "repo";
+
 export interface Question {
   id: string;
   threadId: string | null; // null = a director-level question
@@ -503,6 +507,7 @@ export interface Question {
   question: string;
   options: QuestionOption[]; // empty => free-text answer
   multiSelect: boolean;
+  kind?: QuestionKind; // absent = an ordinary question
   answer?: string | null;
   answeredAt?: number | null;
   createdAt: number;
@@ -1408,6 +1413,9 @@ export interface OrchestratorSettings {
   defaultModeEffort: Effort | "auto"; // effort for the next default-mode dispatch; "auto" (default) = GGO decides
   maxRecentRepos: number; // how many recent-repo chips the composer shows (clamped 1–20, default 5)
   recentRepos: string[]; // recently-dispatched repo paths, most-recent first (capped at maxRecentRepos)
+  // Composer AUTO repo mode (default off): the repo field and REPOS chips are locked, and each send infers
+  // its repo from the message, the conversation and verified workspaces (workspace/autoRepo.ts).
+  autoRepo: boolean;
   // ---- Per-(subscription × role) model selection ----
   modelOverrides: ModelOverrides; // operator-picked models: {subId → {role → modelId}} (writable via settings.set)
   // Per-Claude-account MAX reasoning-effort cap ({accountId → effort}). The director/planner still picks

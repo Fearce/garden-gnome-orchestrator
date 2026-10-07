@@ -288,13 +288,13 @@ export async function handleCommand(
 ): Promise<void> {
   switch (cmd.type) {
     case "prompt.new":
-      ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images, cmd.source, cmd.clientId);
+      ctx.director.handleUserMessage(cmd.text, cmd.workspace, cmd.images, cmd.source, cmd.clientId, cmd.autoRepo);
       break;
     case "prompt.direct":
-      await ctx.director.dispatchDirect(cmd.text, cmd.workspace, cmd.images, cmd.clientId, cmd.skipSelfImprovement);
+      await ctx.director.dispatchDirect(cmd.text, cmd.workspace, cmd.images, cmd.clientId, cmd.skipSelfImprovement, cmd.autoRepo);
       break;
     case "prompt.vanilla":
-      await ctx.director.dispatchVanilla(cmd.text, cmd.workspace, cmd.images, cmd.model, cmd.effort, cmd.clientId);
+      await ctx.director.dispatchVanilla(cmd.text, cmd.workspace, cmd.images, cmd.model, cmd.effort, cmd.clientId, cmd.autoRepo);
       break;
     case "cowork.create":
       sendCoworkAction(socket, "create", cmd.worktree ? await ctx.cowork.createInWorktree(cmd) : ctx.cowork.create(cmd), cmd.clientId);
@@ -338,6 +338,8 @@ export async function handleCommand(
     }
     case "question.answer":
       ctx.manager.answerOwnerQuestion(cmd.questionId, cmd.answer);
+      // An AUTO repo question that outlived a restart has no waiting turn; its saved request dispatches here.
+      await ctx.director.resumeRepoQuestion(cmd.questionId, cmd.answer);
       break;
     case "thread.inject":
       sendThreadAction(

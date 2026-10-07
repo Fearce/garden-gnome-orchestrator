@@ -73,6 +73,7 @@ import type {
   ModelEffortStat,
   OperatorNote,
   Question,
+  QuestionKind,
   QuestionOption,
   ReviewerOutput,
   Role,
@@ -547,6 +548,7 @@ function rowToQuestion(r: Row): Question {
     question: r.question as string,
     options: JSON.parse((r.options as string) || "[]") as QuestionOption[],
     multiSelect: Boolean(r.multi_select),
+    ...(r.kind === "repo" ? { kind: "repo" as const } : {}),
     answer: (r.answer as string | null) ?? null,
     answeredAt: (r.answered_at as number | null) ?? null,
     createdAt: r.created_at as number,
@@ -1066,6 +1068,8 @@ export class Db {
       "ALTER TABLE goal_steps ADD COLUMN turn_fingerprint TEXT",
       // NULL = not read yet; GoalRunner fills settled steps from their reports once (`backfillStepStatus`).
       "ALTER TABLE goal_steps ADD COLUMN last_status TEXT",
+      // NULL = an ordinary question; "repo" = AUTO repo clarification, answered from a searchable repo picker.
+      "ALTER TABLE questions ADD COLUMN kind TEXT",
       // Goals no longer have a step budget; the NOT NULL column would reject every new goal.
       "ALTER TABLE goals DROP COLUMN max_steps",
     ]) {
@@ -3194,6 +3198,7 @@ export class Db {
     question: string;
     options: QuestionOption[];
     multiSelect: boolean;
+    kind?: QuestionKind;
   }): Question {
     const q: Question = {
       id: newId(),
@@ -3203,16 +3208,17 @@ export class Db {
       question: input.question,
       options: input.options,
       multiSelect: input.multiSelect,
+      ...(input.kind ? { kind: input.kind } : {}),
       answer: null,
       answeredAt: null,
       createdAt: now(),
     };
     this.raw
       .prepare(
-        `INSERT INTO questions(id, thread_id, run_id, header, question, options, multi_select, answer, answered_at, created_at)
-         VALUES(@id, @threadId, @runId, @header, @question, @options, @multiSelect, NULL, NULL, @createdAt)`,
+        `INSERT INTO questions(id, thread_id, run_id, header, question, options, multi_select, kind, answer, answered_at, created_at)
+         VALUES(@id, @threadId, @runId, @header, @question, @options, @multiSelect, @kind, NULL, NULL, @createdAt)`,
       )
-      .run({ ...q, options: JSON.stringify(q.options), multiSelect: q.multiSelect ? 1 : 0 });
+      .run({ ...q, options: JSON.stringify(q.options), multiSelect: q.multiSelect ? 1 : 0, kind: q.kind ?? null });
     return q;
   }
 

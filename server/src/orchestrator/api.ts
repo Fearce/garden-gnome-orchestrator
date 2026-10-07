@@ -4,7 +4,7 @@ import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
 import type { TokenShiftReport } from "./usageWindows.js";
 import type { OfficeNameResult } from "./officeNames.js";
-import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, JevJson, JevQuestion, ManualDeploymentClaim, QuestionOption, Role, Severity, ShotgunAssignment, SubTaskSpec, TaskWorktree, Thread, ThreadLane, ToggleableRole } from "../types.js";
+import type { AutoReviewSource, ChatMessage, ChatScope, Effort, Finding, FindingKind, ImageAttachment, ImplementorProvider, JevJson, JevQuestion, ManualDeploymentClaim, Question, QuestionKind, QuestionOption, Role, Severity, ShotgunAssignment, SubTaskSpec, TaskWorktree, Thread, ThreadLane, ToggleableRole } from "../types.js";
 import type { SubTaskService } from "./subTasks.js";
 
 /** What a director dispatch falls back to when the tool call leaves a field empty. `effort` is one the
@@ -58,6 +58,9 @@ export interface AskUserInput {
   question: string;
   options: QuestionOption[];
   multiSelect: boolean;
+  kind?: QuestionKind;
+  /** Called with the stored question before the owner sees it, so a caller can key state to its id. */
+  onAsked?: (question: Question) => void;
 }
 
 export interface PostFindingInput {

@@ -80,6 +80,7 @@
     "test:reader": "tsx src/tests/reader.itest.ts",
     "test:vanilla-lane": "tsx src/tests/vanillaLane.itest.ts",
     "test:route-selection": "tsx src/tests/routeSelection.test.ts",
+    "test:auto-repo": "tsx src/tests/autoRepo.test.ts",
     "test:route-pipeline": "tsx src/tests/routeSelection.itest.ts",
     "test:task-role-toggles": "tsx src/tests/taskRoleToggles.itest.ts",
     "test:routing-notes": "tsx src/tests/routingNotes.itest.ts",

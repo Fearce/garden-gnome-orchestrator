@@ -299,6 +299,9 @@ const imageAttachmentSchema = z.object({
   dataBase64: z.string(),
 });
 const imagesField = z.array(imageAttachmentSchema).max(8).optional();
+// The send was made in AUTO repo mode: the server infers the repo and ignores any `workspace`, so a stale
+// manual pick a client still holds can never become the authoritative target.
+const autoRepoField = z.literal(true).optional();
 const coworkAttachmentSchema = z.object({
   name: z.string().trim().min(1).max(240),
   mediaType: z.string().trim().min(1).max(200),
@@ -312,11 +315,11 @@ const coworkAttachmentsField = z.array(coworkAttachmentSchema).max(MAX_COWORK_AT
 export const clientCommandSchema = z.discriminatedUnion("type", [
   // source:"voice" marks a spoken prompt (voice-gateway): the director gets a TTS-aware note
   // appended so it answers conversationally and confirms aloud before dispatching.
-  z.object({ type: z.literal("prompt.new"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, source: z.literal("voice").optional(), clientId: z.string().uuid().optional() }),
+  z.object({ type: z.literal("prompt.new"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, source: z.literal("voice").optional(), clientId: z.string().uuid().optional(), autoRepo: autoRepoField }),
   // Skip-director mode: bypass the provider-neutral director and dispatch straight into the pipeline
   // (its first active stage — planner if enabled, else the implementor). workspace is required since
   // there's no director to resolve one.
-  z.object({ type: z.literal("prompt.direct"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, clientId: z.string().uuid().optional(), skipSelfImprovement: z.literal(true).optional() }),
+  z.object({ type: z.literal("prompt.direct"), text: z.string().min(1), workspace: z.string().optional(), images: imagesField, clientId: z.string().uuid().optional(), skipSelfImprovement: z.literal(true).optional(), autoRepo: autoRepoField }),
   // Default mode: dispatch straight to the vanilla lane (no director, no wrapper prompt, no
   // planner/QA/self-improvement/review — one stock implementor session that stays warm). model/effort
   // ride along from the composer's own pick; omitted/"auto" = GGO decides at dispatch time.
@@ -328,6 +331,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
     model: z.string().max(100).optional(),
     effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
     clientId: z.string().uuid().optional(),
+    autoRepo: autoRepoField,
   }),
   // Co-work sessions select either Auto (both fields absent) or one exact provider/model pair. The
   // service enforces the pair invariant and validates live catalog/capacity before the first process.
@@ -534,6 +538,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         defaultModeEffort: z.enum(["auto", "low", "medium", "high", "xhigh", "max"]),
         maxRecentRepos: z.number().int().min(1).max(20),
         recentRepos: z.array(z.string().max(600)).max(50),
+        autoRepo: z.boolean(),
         // Per-(subscription × role) model picks: {subId → {role → modelId}}. Role keys are the five valid
         // roles, but the pick is PARTIAL (usually one role) — so the inner record must be z.partialRecord:
         // Zod v4's enum-keyed z.record is EXHAUSTIVE (demands all five keys), which would reject every

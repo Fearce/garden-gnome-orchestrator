@@ -18,6 +18,8 @@ import { normalizeDuration } from "./timedTasks.js";
 import { resetBurnEndsAt } from "./resetBurn.js";
 import { clampAgentCount } from "./shotgun.js";
 import { existsSync } from "node:fs";
+import { basename } from "node:path";
+import { autoRepoQuestion, parseRepoAnswer, resolveAutoRepo, type AutoRepoContext, type AutoRepoDecision } from "../workspace/autoRepo.js";
 import { DIRECTOR_CLI_PROTOCOL, DIRECTOR_CLI_SCHEMA, executeDirectorCliAction, type DirectorCliAction } from "./directorCliBridge.js";
 import { withDirectorTurnPolicy } from "../agents/communicationPolicy.js";
 import { normalizeDirectorDirectives, withDirectorDirectivesUpdate } from "../agents/directorDirectives.js";
@@ -27,6 +29,14 @@ const MAX_CLI_ACTIONS = 20;
 const DIRECTOR_TARGET_KV = "director_target_key";
 const DIRECTOR_IDLE_KV = "director_idle_since";
 const DIRECTOR_BUSY_KV = "director_was_working";
+/** The repo the latest request from the director chat went to, `{path, at}`: what an AUTO follow-up continues. */
+const LAST_REPO_KV = "director_last_repo";
+/** A follow-up continues the previous repo only this soon after it; later, AUTO asks again. */
+const LAST_REPO_TTL_MS = 12 * 60 * 60_000;
+/** `<prefix><questionId>` holds a direct/default-mode request waiting on its AUTO repo question. */
+const PENDING_REPO_KV = "auto_repo_pending:";
+/** How many of the newest tasks' repos AUTO inference reads as known workspaces. */
+const MAX_TASK_REPOS = 300;
 /** Written while auto model selection also picked the director; read by nothing now, cleared on boot. */
 const RETIRED_DIRECTOR_TARGET_AUTO_KV = "director_target_auto";
 /** Director subscription sharing was removed: the donor's offers and the recipient's chosen share are
@@ -79,6 +89,8 @@ export class Director {
   /** CLI processes end immediately after emitting their structured result. Bridge execution can await
    *  server work, so onEnd must not settle the turn while handleCliResult still owns that result. */
   private readonly cliHandling = new WeakSet<AgentRunLike>();
+  /** AUTO repo questions this process is awaiting; any other open one with a saved request outlived a restart. */
+  private readonly liveRepoQuestions = new Set<string>();
 
   constructor(
     private readonly api: ThreadManager,
@@ -154,7 +166,7 @@ export class Director {
     return true;
   }
 
-  handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice" | "discord", messageId?: string): void {
+  handleUserMessage(text: string, workspace?: string, images?: ImageAttachment[], source?: "voice" | "discord", messageId?: string, autoRepo?: boolean): void {
     if (this.replayedOwnerMessage(messageId)) return;
     const refs = (images ?? []).map((img) =>
       this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
@@ -170,6 +182,7 @@ export class Director {
       );
       return;
     }
+    if (autoRepo) workspace = undefined;
     if (workspace?.trim() && existsSync(workspace.trim())) this.api.rememberRecentRepo(workspace);
     // A new user turn opens a fresh segment; a dispatch during it links back to this prompt (+ the
     // director's replies, appended as they stream) so the task is reachable from a search hit.
@@ -180,10 +193,14 @@ export class Director {
     // A follow-up that steers a live turn keeps an ask made earlier in it unless it names a new one.
     this.turnEffort = detectEffortRequest(text) ?? this.turnEffort;
     // A path the owner typed in the path field is AUTHORITATIVE — it's the exact dispatch workspace, not
-    // a hint to re-resolve. Tell the director to use it verbatim and skip find_workspace entirely.
-    const base = workspace
-      ? `${text}\n\n[TARGET WORKSPACE — ${config.ownerName} set this explicitly. Use this EXACT absolute path as the dispatch workspace; do NOT call find_workspace and do NOT substitute another path: ${workspace}]`
-      : text;
+    // a hint to re-resolve. Tell the director to use it verbatim and skip find_workspace entirely. In AUTO
+    // repo mode the field is locked and ignored: the director infers this request's repo, seeded with the
+    // server's own inference, and an earlier manual tag must not carry over into it.
+    const base = autoRepo
+      ? `${text}\n\n${autoRepoTag(resolveAutoRepo(text, this.autoRepoContext()))}`
+      : workspace
+        ? `${text}\n\n[TARGET WORKSPACE — ${config.ownerName} set this explicitly. Use this EXACT absolute path as the dispatch workspace; do NOT call find_workspace and do NOT substitute another path: ${workspace}]`
+        : text;
     const note = sourceNote(source);
     const content = contentWithImages(note ? `${base}\n\n${note}` : base, this.pendingImages.map(toImageBlock));
     this.pending = content;
@@ -226,7 +243,14 @@ export class Director {
    * one. The user message + a confirmation are echoed into the director chat so the transcript shows
    * what was sent; the long-lived director session is left completely untouched.
    */
-  async dispatchDirect(text: string, workspace?: string, images?: ImageAttachment[], messageId?: string, skipSelfImprovement?: true): Promise<void> {
+  async dispatchDirect(
+    text: string,
+    workspace?: string,
+    images?: ImageAttachment[],
+    messageId?: string,
+    skipSelfImprovement?: true,
+    autoRepo?: boolean,
+  ): Promise<void> {
     if (this.replayedOwnerMessage(messageId)) return;
     // Skip-director is an EXPLICIT owner choice, so honor it unconditionally: even a scheduling-shaped
     // message goes straight to the pipeline. (We used to reroute anything that looked like a schedule
@@ -234,11 +258,15 @@ export class Director {
     // surprised the owner, who set it on purpose. Instead we dispatch as asked and, when the message
     // genuinely reads like a "set up / change a schedule" request, drop a non-blocking note pointing at
     // the director route — informing without ever hijacking the toggle.)
-    const refs = (images ?? []).map((img) =>
-      this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
-    );
-    const userMsg = this.db.addDirectorMessage({ id: messageId, role: "user", kind: "text", content: text, attachments: refs });
-    this.hub.publish({ type: "director.message", message: userMsg });
+    const userMsg = this.echoOwnerMessage(text, images, messageId);
+    const request: DirectRequest = {
+      route: "direct",
+      text,
+      userMsgId: userMsg.id,
+      attachmentIds: (userMsg.attachments ?? []).map((a) => a.id),
+      ...(skipSelfImprovement === true ? { skipSelfImprovement: true as const } : {}),
+    };
+    if (autoRepo) return this.dispatchAuto(request, images);
 
     const ws = workspace?.trim();
     // Skip-director dispatches straight below (no director tool call), so link this prompt to the task
@@ -255,8 +283,13 @@ export class Director {
       );
       return;
     }
-    this.api.rememberRecentRepo(ws);
+    await this.launch(request, images, [ws]);
+  }
 
+  /** One skip-director task in `ws`. `scope` names the AUTO reason and any sibling repos of a request
+   *  that spans several, so the confirmation says where it went and why. */
+  private async launchDirect(request: DirectRequest, images: ImageAttachment[] | undefined, ws: string, scope: LaunchScope): Promise<void> {
+    const { text } = request;
     const title = directTitle(text);
     // The composer's effort pick rides along: with no planner-adjacent director in the loop, the owner
     // chooses how hard the implementor works. "auto" keeps the planner (or the high default) in charge.
@@ -265,20 +298,22 @@ export class Director {
     const id = await this.api.dispatch({
       title,
       workspace: ws,
-      brief: text,
+      brief: briefFor(text, ws, scope),
       images,
       effort: detectEffortRequest(text) ?? (effort === "auto" ? undefined : effort),
-      ...(skipSelfImprovement === true ? { skipSelfImprovement: true as const } : {}),
+      ...(request.skipSelfImprovement === true ? { skipSelfImprovement: true as const } : {}),
       ...this.taskModeDefaults(),
     });
-    const note = this.postDirectorNote(`Skipped the director — dispatched "${title}" straight to the pipeline (task ${id.slice(0, 8)}).`);
+    const note = this.postDirectorNote(
+      `Skipped the director: dispatched "${title}" straight to the pipeline in ${whereNote(ws, scope)} (task ${id.slice(0, 8)}).`,
+    );
     // Link BOTH the prompt (precedes the task) and the confirmation note (follows it) — the note would
     // otherwise be misfiled under the next task by the history backfill's timeline heuristic.
-    this.db.linkDirectorMessagesToThread([userMsg.id, note.id], id);
+    this.db.linkDirectorMessagesToThread([request.userMsgId, note.id], id);
     // Only orchestrator schedules (cron entries) can be created/changed by the director's tools — an
     // implementor can't. When the message explicitly asks to schedule a task, say so without overriding
     // the toggle: it was still dispatched as asked; turning Skip Director off is how to reach the scheduler.
-    if (looksLikeScheduleRequest(text)) {
+    if (scope.first && looksLikeScheduleRequest(text)) {
       this.postDirectorNote(
         `Heads up: you mentioned a scheduled task, but Skip Director is on so I dispatched this straight to the pipeline as asked. If you meant to set up or change a recurring schedule (which I handle directly, not an implementor), turn Skip Director off and resend.`,
       );
@@ -287,6 +322,112 @@ export class Director {
     // line. Mint a proper title with a cheap Haiku call after dispatch (best-effort, never blocks the
     // pipeline) — unless the owner turned it off to save those tokens.
     if (this.api.settings().skipDirectorRetitle) void this.api.retitleFromBrief(id, text);
+  }
+
+  /** Echo the owner's message into the director chat (the browser outbox's receipt) with its attachments stored. */
+  private echoOwnerMessage(text: string, images: ImageAttachment[] | undefined, messageId: string | undefined): DirectorMessage {
+    const refs = (images ?? []).map((img) =>
+      this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
+    );
+    const userMsg = this.db.addDirectorMessage({ id: messageId, role: "user", kind: "text", content: text, attachments: refs });
+    this.hub.publish({ type: "director.message", message: userMsg });
+    return userMsg;
+  }
+
+  /** Dispatch one direct/default-mode request to each repo, one task per repo. */
+  private async launch(request: DirectRequest, images: ImageAttachment[] | undefined, repos: string[], autoReason?: string): Promise<void> {
+    for (const [i, ws] of repos.entries()) {
+      this.api.rememberRecentRepo(ws);
+      this.rememberLastRepo(ws);
+      const scope: LaunchScope = { first: i === 0, autoReason, siblings: repos.filter((r) => r !== ws) };
+      if (request.route === "vanilla") await this.launchVanilla(request, images, ws, scope);
+      else await this.launchDirect(request, images, ws, scope);
+    }
+  }
+
+  /**
+   * AUTO repo mode on a route with no director: infer the repo, and when that is not certain ask the owner
+   * with named candidates in a searchable picker. The request is saved against the question, so the answer
+   * dispatches it exactly once, even when a restart killed the turn that asked (resumeRepoQuestion).
+   */
+  private async dispatchAuto(request: DirectRequest, images: ImageAttachment[] | undefined): Promise<void> {
+    const decision = resolveAutoRepo(request.text, this.autoRepoContext());
+    if (decision.kind === "resolved") return this.launch(request, images, decision.repos, decision.reason);
+    const asked = autoRepoQuestion(decision);
+    this.postDirectorNote(`AUTO repo: ${autoRepoWaitNote(decision)} I'll dispatch "${directTitle(request.text)}" once you pick.`);
+    let questionId = "";
+    const answer = await this.api.askUser({
+      threadId: null,
+      ...asked,
+      multiSelect: decision.multiSelect,
+      kind: "repo",
+      onAsked: (q) => {
+        questionId = q.id;
+        this.liveRepoQuestions.add(q.id);
+        this.db.kvSet(PENDING_REPO_KV + q.id, JSON.stringify(request));
+      },
+    });
+    this.liveRepoQuestions.delete(questionId);
+    this.db.kvDelete(PENDING_REPO_KV + questionId);
+    await this.launchPicked(request, images, answer);
+  }
+
+  private async launchPicked(request: DirectRequest, images: ImageAttachment[] | undefined, answer: string): Promise<void> {
+    const repos = parseRepoAnswer(answer);
+    if (!repos.length) {
+      this.postDirectorNote(`I didn't dispatch "${directTitle(request.text)}": no repo was picked. Send it again, or turn AUTO off and choose the repo yourself.`);
+      return;
+    }
+    await this.launch(request, images, repos, repos.length > 1 ? "you picked these repos" : "you picked it");
+  }
+
+  /**
+   * The answer to an AUTO repo question whose asking turn is gone, because GGO restarted while it was open.
+   * The saved request is dispatched from here instead, once. Returns false for every other question.
+   */
+  async resumeRepoQuestion(questionId: string, answer: string): Promise<boolean> {
+    if (this.liveRepoQuestions.has(questionId)) return false;
+    const raw = this.db.kvGet(PENDING_REPO_KV + questionId);
+    if (!raw) return false;
+    this.db.kvDelete(PENDING_REPO_KV + questionId);
+    const request = JSON.parse(raw) as DirectRequest;
+    const images = request.attachmentIds.flatMap((id) => {
+      const file = this.db.getAttachment(id);
+      return file ? [{ name: file.name, mediaType: file.mediaType, dataBase64: file.data } as ImageAttachment] : [];
+    });
+    await this.launchPicked(request, images.length ? images : undefined, answer);
+    return true;
+  }
+
+  /** What AUTO inference reads: remembered repos, earlier tasks' repos, the search roots, and the repo the
+   *  previous request went to while it is recent enough to continue. */
+  autoRepoContext(): AutoRepoContext {
+    return {
+      recent: this.api.settings().recentRepos,
+      taskWorkspaces: this.api.listThreads().slice(0, MAX_TASK_REPOS).map((t) => t.homeWorkspace || t.workspace),
+      searchRoots: config.workspaceSearchRoots,
+      lastRepo: this.lastRepo(),
+    };
+  }
+
+  private lastRepo(): string | null {
+    try {
+      const saved = JSON.parse(this.db.kvGet(LAST_REPO_KV) ?? "null") as { path?: string; at?: number } | null;
+      return saved?.path && Date.now() - (saved.at ?? 0) < LAST_REPO_TTL_MS ? saved.path : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The repo the latest request from this conversation went to, so a follow-up can continue there. */
+  private rememberLastRepo(path: string): void {
+    this.db.kvSet(LAST_REPO_KV, JSON.stringify({ path, at: Date.now() }));
+  }
+
+  private rememberDispatchedRepo(threadId: string): void {
+    const thread = this.api.getThread(threadId);
+    const ws = thread?.homeWorkspace || thread?.workspace;
+    if (ws) this.rememberLastRepo(ws);
   }
 
   /**
@@ -302,13 +443,19 @@ export class Director {
     model?: string,
     effort?: Effort,
     messageId?: string,
+    autoRepo?: boolean,
   ): Promise<void> {
     if (this.replayedOwnerMessage(messageId)) return;
-    const refs = (images ?? []).map((img) =>
-      this.db.addAttachment({ name: img.name, mediaType: img.mediaType, data: img.dataBase64 }),
-    );
-    const userMsg = this.db.addDirectorMessage({ id: messageId, role: "user", kind: "text", content: text, attachments: refs });
-    this.hub.publish({ type: "director.message", message: userMsg });
+    const userMsg = this.echoOwnerMessage(text, images, messageId);
+    const request: DirectRequest = {
+      route: "vanilla",
+      text,
+      userMsgId: userMsg.id,
+      attachmentIds: (userMsg.attachments ?? []).map((a) => a.id),
+      ...(model?.trim() ? { model: model.trim() } : {}),
+      ...(effort ? { effort } : {}),
+    };
+    if (autoRepo) return this.dispatchAuto(request, images);
 
     const ws = workspace?.trim();
     if (!ws) {
@@ -321,22 +468,26 @@ export class Director {
       this.postDirectorNote(`Can't dispatch directly: "${ws}" doesn't exist on disk. Fix the workspace path and send again.`);
       return;
     }
-    this.api.rememberRecentRepo(ws);
+    await this.launch(request, images, [ws]);
+  }
 
+  /** One default-mode (vanilla lane) task in `ws`. */
+  private async launchVanilla(request: DirectRequest, images: ImageAttachment[] | undefined, ws: string, scope: LaunchScope): Promise<void> {
+    const { text } = request;
     const title = directTitle(text);
     const id = await this.api.dispatch({
       title,
       workspace: ws,
-      brief: text,
+      brief: briefFor(text, ws, scope),
       images,
       lane: "vanilla",
-      requestedModel: model?.trim() || undefined,
-      effort: effort ?? detectEffortRequest(text) ?? undefined,
+      requestedModel: request.model,
+      effort: request.effort ?? detectEffortRequest(text) ?? undefined,
     });
     const note = this.postDirectorNote(
-      `Default mode — dispatched "${title}" as a single vanilla session (task ${id.slice(0, 8)}). It stays warm; reply on the task or click Mark done when you're finished.`,
+      `Default mode: dispatched "${title}" as a single vanilla session in ${whereNote(ws, scope)} (task ${id.slice(0, 8)}). It stays warm; reply on the task or click Mark done when you're finished.`,
     );
-    this.db.linkDirectorMessagesToThread([userMsg.id, note.id], id);
+    this.db.linkDirectorMessagesToThread([request.userMsgId, note.id], id);
   }
 
   /** The composer's task-mode picks, normalized for dispatch: a wall-clock work window and/or a
@@ -401,6 +552,7 @@ export class Director {
     const director = createDirectorServer(this.api, () => this.pendingImages, (threadId) => {
       this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, threadId);
       this.turnDispatchId = threadId; // later replies this turn (the "dispatched X" note) belong here too
+      this.rememberDispatchedRepo(threadId);
     }, this.scheduler, this.notes, () => this.turnTaskMode(), this.goals);
     const memory = createMemoryServer(this.api.memory, { write: true });
     const { conciseAgentCommunication: conciseCommunication, directorDirectives: directives } = this.api.settings();
@@ -607,6 +759,7 @@ export class Director {
     if (outcome.dispatchedId) {
       this.db.linkDirectorMessagesToThread(this.currentTurnMsgIds, outcome.dispatchedId);
       this.turnDispatchId = outcome.dispatchedId;
+      this.rememberDispatchedRepo(outcome.dispatchedId);
     }
     if (outcome.result && isCommittedCliAction(action.kind) && !outcome.result.startsWith("ERROR:")) {
       this.cliCommittedResult = outcome.result;
@@ -827,4 +980,61 @@ export function looksLikeScheduleRequest(text: string): boolean {
 function directTitle(text: string): string {
   const firstLine = text.split("\n").map((l) => l.trim()).find(Boolean) ?? text.trim();
   return firstLine.length > 60 ? firstLine.slice(0, 57).trimEnd() + "…" : firstLine || "Direct task";
+}
+
+/** A direct or default-mode request as dispatch needs it, saved verbatim while an AUTO repo question is open. */
+interface DirectRequest {
+  route: "direct" | "vanilla";
+  text: string;
+  userMsgId: string;
+  attachmentIds: string[];
+  skipSelfImprovement?: true;
+  model?: string;
+  effort?: Effort;
+}
+
+/** Where one task of a request goes: why AUTO picked the repo (absent for a typed path), and the other
+ *  repos a request spanning several projects was split across. */
+interface LaunchScope {
+  first: boolean;
+  autoReason?: string;
+  siblings: string[];
+}
+
+const repoName = (path: string): string => basename(path.replace(/[/\\]+$/, "")) || path;
+
+/** The confirmation's "in <repo>" phrase, naming AUTO's reason when it chose. */
+function whereNote(ws: string, scope: LaunchScope): string {
+  return scope.autoReason ? `${repoName(ws)} (\`${ws}\`; AUTO repo: ${scope.autoReason})` : `${repoName(ws)} (\`${ws}\`)`;
+}
+
+/** The brief for one repo of a request. A request split across repos tells each task which part is its own. */
+function briefFor(text: string, ws: string, scope: LaunchScope): string {
+  if (!scope.siblings.length) return text;
+  return `${text}\n\n[This request spans several repos. This task covers ${ws} only; separate tasks cover ${scope.siblings.join(", ")}.]`;
+}
+
+/** The director-chat line shown while an AUTO repo question waits for the owner. */
+function autoRepoWaitNote(decision: Extract<AutoRepoDecision, { kind: "ask" }>): string {
+  if (decision.reason === "missing") return `\`${decision.missingPath}\` doesn't exist, so I'm asking which repo you meant.`;
+  if (decision.reason === "multiple") return "your message names more than one repo, so I'm asking which ones it's for.";
+  if (decision.reason === "ambiguous") return "more than one repo could fit, so I'm asking which one.";
+  return "I couldn't tell which repo this is for, so I'm asking.";
+}
+
+/**
+ * The AUTO repo instruction appended to a director turn. The composer's repo field is locked in AUTO, so
+ * nothing in it reaches the turn; this tag replaces the manual TARGET WORKSPACE tag, retires any earlier
+ * one in the conversation, and hands the director the server's inference to confirm or overrule.
+ */
+export function autoRepoTag(decision: AutoRepoDecision): string {
+  const owner = config.ownerName;
+  const head = `[REPO MODE: AUTO. ${owner}'s repo field is off, so infer the repo for THIS request. Any earlier [TARGET WORKSPACE] tag in this conversation was a one-off manual pick and does not apply here.`;
+  const rules = `A path ${owner} wrote in the message is authoritative. Never guess between repos: when it is not certain, call ask_user with \`repos\` set to the candidate paths (a searchable repo picker), then dispatch once to what they pick. A request that spans several repos gets one dispatch per repo. Say which repo each task went to.`;
+  if (decision.kind === "resolved") {
+    return `${head} Server inference: ${decision.repos.join(", ")} (${decision.reason}). Use it unless the message or the conversation clearly points elsewhere. ${rules}]`;
+  }
+  const listed = decision.candidates.map((c, i) => `${i + 1}. ${c.path} (${c.why})`).join("; ");
+  const why = decision.reason === "missing" ? `the path ${decision.missingPath} does not exist` : decision.reason === "multiple" ? "several repos are named" : decision.reason === "ambiguous" ? "more than one repo fits" : "nothing in the message names a repo";
+  return `${head} Server inference: not certain (${why}).${listed ? ` Candidates: ${listed}.` : ""} Use the conversation only when it makes the repo certain (a follow-up to work you just dispatched); otherwise ask. ${rules}]`;
 }

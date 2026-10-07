@@ -3105,7 +3105,9 @@ export class ThreadManager implements OrchestratorApi {
       question: input.question,
       options: input.options,
       multiSelect: input.multiSelect,
+      kind: input.kind,
     });
+    input.onAsked?.(q);
     // A task-scoped question pauses the task into awaiting_user; restore on answer.
     const t = input.threadId ? this.db.getThread(input.threadId) : undefined;
     if (input.threadId && t) {
@@ -3408,6 +3410,7 @@ export class ThreadManager implements OrchestratorApi {
       defaultModeEffort: this.defaultModeEffort(),
       maxRecentRepos: this.settingNum("setting_max_recent_repos", 5, 1, 20),
       recentRepos: this.recentRepos(),
+      autoRepo: this.settingBool("setting_auto_repo", false),
       // Show the safe review target, not an old stored id that dispatch will refuse. Keep the raw
       // override below unchanged: that preserves the fact that this is a substitution, which is what
       // makes the replacement run at the owner's requested low effort.
@@ -5857,6 +5860,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     if (patch.maxRecentRepos !== undefined) this.db.kvSet("setting_max_recent_repos", String(patch.maxRecentRepos));
     // A console from before recentRepos.remember/forget still sends the whole list.
     if (patch.recentRepos !== undefined) this.writeRecentRepos(patch.recentRepos, patch.maxRecentRepos);
+    if (patch.autoRepo !== undefined) this.db.kvSet("setting_auto_repo", patch.autoRepo ? "1" : "0");
     // A patch naming a superseded model (an old console, the API) is stored as its line's newest member.
     this.logModelUpgrades(this.migrateModelSettings());
     const settings = this.settings();

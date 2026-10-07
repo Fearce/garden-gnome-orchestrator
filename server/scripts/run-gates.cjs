@@ -172,6 +172,7 @@ const GATES = [
   "test:reader",
   "test:vanilla-lane",
   "test:route-selection",
+  "test:auto-repo",
   "test:route-pipeline",
   "test:task-role-toggles",
   "test:routing-notes",

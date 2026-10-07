@@ -12,6 +12,7 @@ import { config } from "../config.js";
 import { normalizeDuration } from "../orchestrator/timedTasks.js";
 import { clampAgentCount } from "../orchestrator/shotgun.js";
 import { findWorkspaces } from "../workspace/findWorkspace.js";
+import { askRepoChoice } from "../workspace/autoRepo.js";
 import { formatTokenShift } from "../orchestrator/usageWindows.js";
 
 /**
@@ -46,8 +47,18 @@ export function createDirectorServer(
         .optional()
         .describe("Multiple-choice options. Omit for a free-text answer."),
       multiSelect: z.boolean().default(false).describe("Allow selecting more than one option."),
+      repos: z
+        .array(z.string())
+        .optional()
+        .describe(
+          `ONLY when asking which repository a request is for: the candidate absolute paths, best first (leave options empty). ${config.ownerName} gets a searchable repo picker and the answer is the chosen path(s), one per line. Paths that do not exist are dropped.`,
+        ),
     },
     async (args) => {
+      if (args.repos) {
+        const result = await askRepoChoice(api, { header: args.header, question: args.question, repos: args.repos, multiSelect: args.multiSelect });
+        return { content: [{ type: "text", text: result.text }], ...(result.error ? { isError: true } : {}) };
+      }
       const answer = await api.askUser({
         threadId: null,
         header: args.header,
