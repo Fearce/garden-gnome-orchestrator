@@ -423,6 +423,7 @@ interface State {
   // several tasks at once (the screensaver). `refresh` re-asks for loaded ones too: after a reconnect
   // their feeds missed whatever streamed while the socket was gone. The selected task is never asked.
   prefetchThreadHistory: (threadIds: string[], refresh?: boolean) => void;
+  prefetchThreadSummaries: (threadIds: string[]) => void;
   selectCowork: (id: string | null) => void;
   createCowork: (input: { name?: string; workspace: string; provider?: CoworkSession["requestedProvider"]; model?: string | null; worktree?: boolean }) => boolean;
   sendCowork: (sessionId: string, text: string, mode?: "turn" | CoworkSteeringMode, attachments?: FileAttachment[]) => boolean;
@@ -1256,6 +1257,8 @@ function clearTimers(): void {
 
 /** Returns whether the command actually went out — callers with optimistic in-flight state (e.g. the
  *  chatroom's per-room loading flag) roll back when the socket was closed and the send was dropped. */
+const summaryRequests = new Map<string, number>();
+
 function sendCommand(cmd: ClientCommand): boolean {
   if (socket && socket.readyState === WebSocket.OPEN) {
     try {
@@ -1549,6 +1552,7 @@ export const useStore = create<State>((set) => ({
   boardView: "tasks",
 
   select: (id) => {
+    if (id) useStore.getState().prefetchThreadSummaries([id]);
     const sent = id ? sendCommand({ type: "thread.history", threadId: id }) : false;
     set((s) => ({
       selectedThreadId: id,
@@ -1567,6 +1571,15 @@ export const useStore = create<State>((set) => ({
     const sent = sendCommand({ type: "thread.history", threadId, before });
     if (sent) set({ threadHistoryLoading: { ...s.threadHistoryLoading, [threadId]: true } });
     return sent;
+  },
+  prefetchThreadSummaries: (threadIds) => {
+    const state = useStore.getState();
+    const now = Date.now();
+    const ids = [...new Set(threadIds)].filter((id) => state.threads[id]?.summaryDeferred &&
+      now - (summaryRequests.get(id) ?? 0) > 10_000).slice(0, 30);
+    if (ids.length && sendCommand({ type: "thread.summaries", threadIds: ids })) {
+      for (const id of ids) summaryRequests.set(id, now);
+    }
   },
   prefetchThreadHistory: (threadIds, refresh = false) => {
     const s = useStore.getState();
@@ -2260,8 +2273,17 @@ function upsertRoom(rooms: ChatRoomSummary[], m: ChatMessage): ChatRoomSummary[]
 function applyEvent(ev: ServerEvent): void {
   switch (ev.type) {
     case "hello": {
+      summaryRequests.clear();
       const threads: Record<string, Thread> = {};
-      for (const t of ev.threads) threads[t.id] = t;
+      const previous = useStore.getState().threads;
+      for (const t of ev.threads) {
+        // A reconnect need not reload old cards already hydrated at this exact revision.
+        const loaded = previous[t.id];
+        threads[t.id] = t.summaryDeferred && loaded && !loaded.summaryDeferred && loaded.updatedAt === t.updatedAt
+          ? { ...loaded, ...t, briefPreview: loaded.briefPreview, latestMessagePreview: loaded.latestMessagePreview,
+              worktrees: loaded.worktrees, summaryDeferred: false }
+          : t;
+      }
       const coworkSessions: Record<string, CoworkSession> = {};
       for (const session of ev.coworkSessions ?? []) coworkSessions[session.id] = session;
       const director: DirectorItem[] = ev.director.map((m: DirectorMessage) => ({
@@ -2628,6 +2650,21 @@ function applyEvent(ev: ServerEvent): void {
         return { repoBusy: false, repoResult: { ...ev.result, action: ev.action, at: Date.now() }, repoDiffs, gitStatus: {}, gitDiffs: {} };
       });
       break;
+    case "thread.summaries": {
+      for (const id of ev.threadIds) summaryRequests.delete(id);
+      useStore.setState((s) => {
+        const threads = { ...s.threads };
+        for (const thread of ev.threads) {
+          const current = threads[thread.id];
+          // A delayed page response cannot resurrect a removed task or overwrite a newer live event.
+          if (current && current.updatedAt <= thread.updatedAt) {
+            threads[thread.id] = { ...current, ...thread, summaryDeferred: false };
+          }
+        }
+        return { threads };
+      });
+      break;
+    }
     case "thread.upsert":
       useStore.setState((s) => {
         const prev = s.threads[ev.thread.id];
@@ -3080,7 +3117,7 @@ export async function login(password: string): Promise<{ ok: boolean; retryMs?: 
 
 export function connect(): void {
   clearTimers(); // never let a prior socket's intervals outlive it and stack
-  const ws = new WebSocket(wsUrl());
+  const ws = new WebSocket(wsUrl() + "?lazySummaries=1");
   let receivedHello = false;
   socket = ws;
   ws.onopen = () => {

@@ -15,6 +15,8 @@ import { startLatestMessagePreviewBackfill } from "../db/previewBackfill.js";
 import { EventHub } from "../events.js";
 import { BRIEF_PREVIEW_CHARS } from "../types.js";
 import { createHelloCache } from "../ws/hub.js";
+import { compactBoardThread } from "../ws/boardSnapshot.js";
+import { clientCommandSchema } from "../ws/protocol.js";
 import type { ServerEvent } from "../ws/protocol.js";
 
 const dir = mkdtempSync(join(tmpdir(), "gg-performance-paths-"));
@@ -54,6 +56,22 @@ try {
   assert.equal(typeof summary.briefPreview, "string", "board summary carries a brief preview");
   assert.ok((summary.briefPreview as string).startsWith("enriched brief"), "preview is the brief's own text");
   assert.ok((summary.briefPreview as string).length <= 200, "preview is clipped, not the whole brief");
+
+  const lazyBoardRow = db.listThreadSummaries().find((item) => item.id === thread.id)!;
+  const activeCompact = compactBoardThread(lazyBoardRow);
+  assert.equal(activeCompact.briefPreview, lazyBoardRow.briefPreview, "active tasks keep current previews");
+  assert.equal(activeCompact.summaryDeferred, undefined, "active tasks are immediately complete");
+  const doneRow = { ...lazyBoardRow, state: "done" as const, pinnedAt: 123, latestMessagePreview: "result ".repeat(25) };
+  const deferred = compactBoardThread(doneRow);
+  assert.equal(deferred.id, doneRow.id, "old tasks remain indexed");
+  assert.equal(deferred.pinnedAt, 123, "lazy previews do not change pinning");
+  assert.equal(deferred.summaryDeferred, true, "old card details are explicitly deferred");
+  assert.equal(deferred.latestMessagePreview, "", "old previews leave the initial frame");
+  assert.equal(doneRow.latestMessagePreview, "result ".repeat(25), "compaction never mutates the cached snapshot");
+  assert.ok(JSON.stringify(deferred).length < JSON.stringify(doneRow).length * 0.7, "lazy old cards materially reduce startup bytes");
+  assert.equal(clientCommandSchema.safeParse({ type: "thread.summaries", threadIds: [thread.id] }).success, true);
+  assert.equal(clientCommandSchema.safeParse({ type: "thread.summaries", threadIds: Array(31).fill(thread.id) }).success, false,
+    "one visible page cannot request an unbounded summary response");
 
   const multiline = db.createThread({
     title: "Multi-line brief",

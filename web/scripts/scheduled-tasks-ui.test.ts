@@ -53,7 +53,7 @@ Object.defineProperty(globalThis, "WebSocket", { value: FakeWebSocket, configura
 const { connect, useStore } = await import("../src/store.js");
 connect();
 const socket = FakeWebSocket.instances[0]!;
-assert.equal(socket.url, "ws://localhost/ws");
+assert.equal(socket.url, "ws://localhost/ws?lazySummaries=1");
 socket.readyState = FakeWebSocket.OPEN;
 socket.onopen?.();
 socket.sent.length = 0; // ignore connect's initial recovery snapshot

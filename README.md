@@ -84,6 +84,13 @@ The Task model dialog lets you pin an exact provider, model and supported effort
 implementor start. Effort on Auto lets GGO choose within subscription caps; Use Auto clears both
 the model pin and effort override. Interrupt a running implementor before changing these choices.
 
+Auto-select compares current accessible model families for ordinary tasks, retaining flagship
+requirements for broad or risky work and preferring the newest available member of each line.
+It considers every supported effort tier within your subscription caps, including XHigh,
+Max and Ultra where supported. It chooses the smallest confident effort for the task. The board keeps
+all tasks indexed for sorting and counts; completed cards load their previews and checkout details
+only when their page becomes visible. Opening a task loads its full history separately.
+
 Open a task and you get its whole trail: which agents ran, what they cost, what they
 found, and any file they produced. The composer at the bottom injects new information
 into the running agent without restarting it.

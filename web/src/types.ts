@@ -166,6 +166,8 @@ export interface Thread {
   briefPreview?: string;
   /** Latest readable task message, clipped for the board snapshot. Full history remains lazy-loaded. */
   latestMessagePreview?: string;
+  /** Old card previews/checkouts arrive only when the card becomes visible. */
+  summaryDeferred?: boolean;
   /** Internal task context; omitted from the board hello snapshot. */
   rawPrompt?: string;
   error?: string | null;
@@ -1481,6 +1483,7 @@ export interface SharedRepo {
 }
 
 export type ServerEvent =
+  | { type: "thread.summaries"; threadIds: string[]; threads: Thread[] }
   | {
       type: "hello";
       /** Missing on an older server that has not yet restarted onto the new build. */
@@ -1660,6 +1663,7 @@ export type ClientCommand =
   | { type: "thread.pin"; threadId: string; pinned: boolean }
   | { type: "thread.dismiss"; threadId: string }
   | { type: "thread.history"; threadId: string; before?: MessageCursor }
+  | { type: "thread.summaries"; threadIds: string[] }
   | { type: "thread.approve"; threadId: string; approved: boolean; feedback?: string }
   | { type: "approval.set"; on: boolean }
   | { type: "settings.set"; settings: SettingsPatch }

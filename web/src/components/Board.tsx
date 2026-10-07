@@ -171,6 +171,7 @@ function orderByManual(active: BoardItem[], order: string[]): BoardItem[] {
 
 export function Board() {
   const threads = useStore((s) => s.threads);
+  const connected = useStore((s) => s.connected);
   const boardView = useStore((s) => s.boardView);
   const showCompleted = useStore((s) => s.showCompleted);
   const dndEnabled = useStore((s) => s.taskDragAndDrop);
@@ -233,6 +234,10 @@ export function Board() {
   }, [pageCount, page]);
   const cur = Math.min(page, pageCount - 1);
   const pageItems = list.slice(cur * PER_PAGE, cur * PER_PAGE + PER_PAGE);
+  const visibleTaskIds = pageItems.filter((item) => item.kind === "task").map((item) => item.id);
+  useEffect(() => {
+    if (boardView === "tasks" && connected) useStore.getState().prefetchThreadSummaries(visibleTaskIds);
+  }, [boardView, connected, threads, visibleTaskIds.join("\n")]);
 
   // Keep the persisted order canonical while DnD is on: this mirrors `list`, so it folds brand-new tasks
   // in, drops stale ids, and — since `list` is regrouped by the sort's primary key — records a card's new
@@ -537,6 +542,7 @@ const CLOSED_OPEN_KEY = "orch-closed-open";
 /** The Closed holding area: a quiet, collapsed-by-default row at the bottom of the board. It's a
  *  safety net, not something you browse — so it stays out of the way until you expand it. */
 function ClosedSection({ threads, sessions }: { threads: Thread[]; sessions: CoworkSession[] }) {
+  const connected = useStore((s) => s.connected);
   const [page, setPage] = useState(0);
   const [open, setOpen] = useState(() => {
     try {
@@ -551,6 +557,9 @@ function ClosedSection({ threads, sessions }: { threads: Thread[]; sessions: Cow
   const cur = Math.min(page, pageCount - 1);
   const start = cur * pageSize;
   const end = start + pageSize;
+  useEffect(() => {
+    if (open && connected) useStore.getState().prefetchThreadSummaries(threads.slice(start, end).map((thread) => thread.id));
+  }, [open, connected, threads, start, end]);
   if (count === 0) return null;
   const toggle = () =>
     setOpen((v) => {

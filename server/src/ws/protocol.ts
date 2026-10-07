@@ -97,6 +97,7 @@ export type { GrokUsageDTO } from "../agents/grokUsage.js";
 export type { ZaiUsageDTO } from "../agents/zaiUsage.js";
 
 export type ServerEvent =
+  | { type: "thread.summaries"; threadIds: string[]; threads: ThreadSummary[] }
   | {
       type: "hello";
       startQaSupported: true;
@@ -419,6 +420,7 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("thread.restore"), threadId: z.string() }),
   z.object({ type: z.literal("thread.pin"), threadId: z.string(), pinned: z.boolean() }),
   z.object({ type: z.literal("thread.dismiss"), threadId: z.string() }),
+  z.object({ type: z.literal("thread.summaries"), threadIds: z.array(z.string().min(1).max(100)).min(1).max(30) }),
   z.object({
     type: z.literal("thread.history"),
     threadId: z.string(),

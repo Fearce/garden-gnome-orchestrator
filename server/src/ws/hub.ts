@@ -26,6 +26,7 @@ import { logCrash } from "../crashLog.js";
 import { CHAT_PAGE_SIZE, CODEX_SUB_ID, THREAD_HISTORY_PAGE_SIZE } from "../types.js";
 import type { Message, OrchestratorSettings, Thread, ThreadSummary } from "../types.js";
 import { injectThreadWithReceipt } from "./threadInjectionReceipt.js";
+import { compactBoardThread } from "./boardSnapshot.js";
 
 /** Owner-facing rewrite for CLI structured-role walls (Grok multi-turn QA especially). Idempotent
  *  on already-humanized prose so new runs and pre-fix raw messages share one display path. */
@@ -237,7 +238,16 @@ export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
       }
       return;
     }
-    send(socket, helloSnapshot());
+    // Negotiate only with clients that understand lazy card summaries. Older consoles and probe
+    // clients retain the complete snapshot, including through snapshot.request after reconnect.
+    const lazySummaries = new URL(request.url, "http://localhost").searchParams.get("lazySummaries") === "1";
+    const snapshot = (): ServerEvent => {
+      const event = helloSnapshot();
+      return lazySummaries && event.type === "hello"
+        ? { ...event, threads: event.threads.map(compactBoardThread) }
+        : event;
+    };
+    send(socket, snapshot());
     const unsubscribe = ctx.hub.subscribe((event) => send(socket, event));
 
     socket.on("message", (raw: Buffer) => {
@@ -257,7 +267,7 @@ export function registerWs(fastify: FastifyInstance, ctx: WsContext): void {
       // director_messages.id` and took the whole orchestrator's crash guards with it, mid-QA-run. One
       // bad command must never be able to do that. The command is still recorded where a failure is
       // read from — the hub log the console shows, and crash.log, which the nightly sweep scans.
-      void handleCommand(ctx, socket, result.data, helloSnapshot).catch((error) => {
+      void handleCommand(ctx, socket, result.data, snapshot).catch((error) => {
         ctx.hub.log("error", `Command ${result.data.type} failed: ${error instanceof Error ? error.message : String(error)}`);
         logCrash(`ws.command.${result.data.type}`, error);
       });
@@ -406,6 +416,12 @@ export async function handleCommand(
     case "thread.dismiss":
       ctx.manager.dismissThread(cmd.threadId);
       break;
+    case "thread.summaries": {
+      const wanted = new Set(cmd.threadIds);
+      send(socket, { type: "thread.summaries", threadIds: cmd.threadIds,
+        threads: ctx.db.listThreadSummaries().filter((thread) => wanted.has(thread.id)) });
+      break;
+    }
     case "thread.history": {
       const thread = ctx.db.getThread(cmd.threadId);
       const page = ctx.db.listMessagePage(cmd.threadId, THREAD_HISTORY_PAGE, cmd.before);
