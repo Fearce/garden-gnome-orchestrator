@@ -68,6 +68,9 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    emptyOutDir: true,
+    // Production serves this directory during rebuilds. Keep the previous entry and hashed
+    // chunks available if a build is interrupted, and for clients still using the old entry.
+    // Disposable lab builds explicitly opt into --emptyOutDir instead.
+    emptyOutDir: false,
   },
 });

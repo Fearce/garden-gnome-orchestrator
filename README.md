@@ -378,6 +378,10 @@ enable, the notification channels you set up, and the Online Office relay if you
 | `npm run typecheck` | server, web and relay. |
 | `npm run test:gates` | The full local test suite. No agents or quota; three gates run at a time, slowest first by the last run's timings. Set `GGO_GATE_JOBS=1` to diagnose timing-sensitive failures serially. |
 
+Production console rebuilds retain previous hashed assets in `web/dist`, so rebuilding does
+not first erase the running console or its lazy-loaded chunks. Disposable lab builds use
+`--emptyOutDir`; do not clear the production output while it is being served.
+
 ### Desktop app (optional)
 
 The browser console is the full product. On Windows x64 you can also run it in its own window:

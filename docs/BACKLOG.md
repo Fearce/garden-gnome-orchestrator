@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Restore console boot after missing frontend assets** (2026-10-07, Codex Recovery).
-  Live index references missing JavaScript bundles; asset URLs return the HTML fallback and the console stays blank.
-
 - **Dispatch suitable repository tasks to Claude cloud sessions using promotional credits** (2026-10-07, Thimblewick).
 
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
@@ -68,6 +65,8 @@ same commit as the fix. Git history keeps the record.
   Desktop units 19/19 and new real-window regressions pass; application types/builds, Windows packaging and privacy pass. Clean-exit lab failures and distribution delivery remain under Ready.
 
 ## Ready (priority order)
+
+1. **Identify the process that removed production console assets** (2026-10-07, Codex Recovery): live index referenced missing JavaScript with only compressed remnants left; restored build boots and production rebuilds now retain old assets, but the deleting process is unproven. Also define bounded pruning of retained assets without breaking open clients.
 
 1. **Remove remote proxy metadata as a local-auth trust boundary** (2026-10-07, Codex): a loopback proxy that strips every forwarding header cannot be distinguished from a direct local caller on the current single listener; use a separate listener or authenticated proxy protocol before supporting such proxies. Security sweep report records the assumption.
 
@@ -127,6 +126,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-07 **Restore blank console and retain assets during production rebuilds** (Codex Recovery): live direct/proxy entry assets match disk with JavaScript MIME; browser renders sign-in, and a subsequent production rebuild preserves the previous entry bundle. README 74/74 and privacy pass; backend stayed running.
 
 - 2026-10-07 **Nightly quality, provider currency and task responsiveness sweep** (7306a850, Brindlewick): pushed and deployed; 235/235 gates, types/builds, desktop 19/19, README 73/73 and privacy pass. Live lazy snapshots retain 1,425 tasks with a 62% smaller index and 30 visible summaries in 27 ms; 1,400-task desktop/phone lab passes. Current toolchains and model families verified. Cold SQL/CLI delays, writer contention, major migrations and published-secret remediation remain tracked above. The performance gate now verifies that refused live-index CLI arguments never open SQLite.
 
