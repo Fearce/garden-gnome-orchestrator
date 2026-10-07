@@ -27,9 +27,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Nightly quality, provider currency and task responsiveness sweep** (7832df05, 2026-10-07, Brindlewick).
-  Pushed; 235/235 gates, types/builds, 1,400-task desktop/phone lazy-card lab, desktop 19/19, README 73/73 and privacy pass. Git baselines read in 3–5 ms versus 125–668 ms via processes. Server deployment and live startup proof are next; published-secret remediation remains owner-blocked.
-
 - **Stop repeated QA instruction lifecycle spam** (9b240512, 2026-10-07, Reedspindle).
   Pushed; live web hides existing noise and authenticated bundle bytes match the build. Injection 186/186, browser 28/28, feed regressions/types/builds/README/privacy pass. Silent QA delivery and batched restart notices await the next permitted server restart; this session's restart-resume instruction forbids another restart.
 
@@ -102,7 +99,11 @@ same commit as the fix. Git history keeps the record.
   Compatible server/web/relay/desktop updates are applied; Graphify 0.19 removes the officeparser dependency used by the bundled PDF parser contract. SQLite 13, TypeScript 7, dotenv 18, React Markdown 10 and Monaco 0.57 need their own migration checks.
 
 17. **Measure the remaining task-start delay beyond board loading** (2026-10-07, Brindlewick).
-  Dispatch probe separates typical row creation (0–0.2 s), first run (2–14 s) and first CLI output (18–40 s), with a 34.6 s creation outlier. Lazy cards and direct Git baseline reads address two delays; existing SQLite stall investigation and provider startup still need live attribution under load.
+  Typical first CLI output remains 18-40 s. Restart-wave cold toolCallsAfter reads held SQLite for 1.8-2.3 s; fresh startup must be distinguished from steady state. The read-only optimize-tool-digest.cjs probe demonstrates watermark scans; index experiments are restricted to memory fixtures.
+
+18. **Handle SQLite writer contention without crashing streamed-agent handlers** (2026-10-07, Brindlewick).
+  An attempted online index rebuild caused an uncaught database-is-locked error in addMessage and a supervised restart. The transaction rolled back, the original index remains and seven tasks resumed. Never rebuild the live index; investigate bounded write retries and scheduled offline maintenance.
+
 
 ## Blocked / waiting
 
@@ -121,6 +122,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-07 **Nightly quality, provider currency and task responsiveness sweep** (7306a850, Brindlewick): pushed and deployed; 235/235 gates, types/builds, desktop 19/19, README 73/73 and privacy pass. Live lazy snapshots retain 1,425 tasks with a 62% smaller index and 30 visible summaries in 27 ms; 1,400-task desktop/phone lab passes. Current toolchains and model families verified. Cold SQL/CLI delays, writer contention, major migrations and published-secret remediation remain tracked above.
 
 - 2026-10-07 **Restore authenticated public reverse-proxy access after security hardening** (1d74f651, Bramblebolt): pushed and deployed; live mounted sign-in, authenticated health and public-origin WebSocket hello pass, signed-out deploy 401 and foreign origin 403; public edge still requires its access gate. Auth regressions, Google tunnel browser 19/19, desktop/tablet prefix browser, types/builds, README 73/73 and privacy pass.
   Follow-up: the prefix-proxy lab now submits the visible password form and receives hello without a reload on desktop and tablet; both pass.
@@ -157,4 +160,3 @@ No open entries.
 
 - 2026-10-05 **Open Surveillance camera pictures fullscreen with digital pan and zoom** (Mosswick): 20/20 isolated browser checks cover native fullscreen, phone fallback, wheel/pinch/keyboard zoom, drag pan, reset, focus and continuing frames on one socket; types, module gate, README 70/70 and privacy pass. Web built for deployment; authenticated live entry serves the exact updated Surveillance bundle.
 
-- 2026-10-05 **Show office chat gnome counts, names and activity indicators** (16abc9bf; Widdershank Pebbletail): live Hide/Show roster keeps the count visible and remembers the browser choice. Desktop/320px browser checks prove reclaimed chatter space, reopen/reload persistence, task navigation and live updates; gating 57/57 plus roster regressions, types/build, README 70/70 and privacy pass. Original office/relay lab 53/53.
