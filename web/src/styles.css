@@ -876,6 +876,55 @@ button.office-roster-member:focus-visible { outline: 2px solid var(--accent); ou
 .ws-opt.hi { background: color-mix(in oklch, var(--accent) 16%, var(--bg-2)); color: var(--text); }
 .ws-opt.hi svg { color: var(--accent); }
 
+/* ---- AUTO repo switch, inset in the repo field's right edge ----
+   The field reserves room on its right so typed text never runs under the switch. The state reads from
+   the knob's side of the track and its fill, the accent only reinforces it. */
+.ws-wrap.has-trailing input.ws { padding-right: 72px; text-overflow: ellipsis; }
+.auto-repo-toggle {
+  position: absolute; top: 3px; bottom: 3px; right: 3px;
+  display: inline-flex; align-items: center; gap: 6px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2);
+  color: var(--text-faint); cursor: pointer;
+  font: 600 9.5px/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+/* A larger hit area than the drawn pill, still inside the field. */
+.auto-repo-toggle::before { content: ""; position: absolute; inset: -3px; }
+.auto-repo-toggle:hover { color: var(--text-dim); border-color: var(--line-strong); }
+.auto-repo-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.auto-repo-track {
+  position: relative; flex: none; box-sizing: border-box; width: 18px; height: 10px;
+  border: 1px solid currentColor; border-radius: 5px;
+}
+.auto-repo-knob {
+  position: absolute; top: 1px; left: 1px; box-sizing: border-box; width: 6px; height: 6px;
+  border: 1px solid currentColor; border-radius: 50%; background: transparent;
+  transition: transform 0.14s, background 0.14s;
+}
+.auto-repo-toggle.on {
+  color: var(--accent); border-color: color-mix(in oklch, var(--accent) 50%, var(--line));
+  background: color-mix(in oklch, var(--accent) 12%, var(--bg-2));
+}
+.auto-repo-toggle.on:hover { background: color-mix(in oklch, var(--accent) 18%, var(--bg-2)); border-color: var(--accent); }
+.auto-repo-toggle.on .auto-repo-knob { transform: translateX(8px); background: currentColor; }
+@media (prefers-reduced-motion: reduce) { .auto-repo-knob { transition: none; } }
+/* Locked by AUTO: still legible, plainly not editable. */
+.ws-wrap.locked input.ws { cursor: not-allowed; border-style: dashed; background: var(--bg-1); }
+.ws-wrap.locked input.ws::placeholder { color: var(--text-dim); }
+.composer .row .attach-btn:disabled, .composer-sheet-ws .attach-btn:disabled { opacity: 0.4; }
+.recent-repos.locked .repo-chip { border-style: dashed; background: none; }
+.recent-repos.locked .repo-chip-pick:disabled { cursor: not-allowed; color: var(--text-faint); }
+.repo-add:disabled { cursor: not-allowed; opacity: 0.45; }
+.repo-add:disabled:hover { color: var(--text-faint); border-color: var(--line); }
+.recent-repos-auto {
+  flex: 0 0 auto; padding: 2px 6px; border: 1px solid color-mix(in oklch, var(--accent) 45%, var(--line));
+  border-radius: var(--r-sm); color: var(--accent); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+}
+@media (pointer: coarse) {
+  .ws-wrap.has-trailing input.ws { padding-right: 84px; }
+  .auto-repo-toggle { padding: 0 11px; }
+}
+
 /* ---- image attachments (composer previews + chat thumbnails) ---- */
 .composer.dragging, .composer-options.dragging, .inject-bar.dragging { outline: 2px dashed var(--accent); outline-offset: -4px; border-radius: var(--r-md); }
 .composer-thumbs { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -2975,6 +3024,47 @@ body.dl-resizing { user-select: none; }
 .modal textarea { width: 100%; min-height: 58px; resize: vertical; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-md); padding: 9px 11px; font-family: var(--font-sans); font-size: 14px; }
 .modal textarea:focus { outline: none; border-color: var(--accent); }
 .modal .m-foot { display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
+
+/* ---- AUTO repo question: a searchable repo picker ---- */
+.repo-search {
+  display: flex; align-items: center; gap: 8px; padding: 0 11px; min-height: 40px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md); color: var(--text-faint);
+}
+.repo-search:focus-within { border-color: var(--accent); }
+.repo-search input {
+  flex: 1; min-width: 0; height: 38px; border: none; outline: none; background: none; color: var(--text);
+  font-family: var(--font-mono); font-size: 12.5px;
+}
+.repo-list {
+  list-style: none; margin: 0; padding: 4px; display: flex; flex-direction: column; gap: 2px;
+  max-height: min(46vh, 360px); overflow-y: auto;
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-md);
+}
+.repo-row {
+  display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 6px 10px;
+  border: 1px solid transparent; border-radius: var(--r-sm); cursor: pointer;
+}
+.repo-row.active { background: var(--bg-3); border-color: var(--line-strong); }
+.repo-row.picked { border-color: var(--accent); }
+.repo-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.repo-row-name { font-weight: 600; font-size: 13.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repo-row-path { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repo-row-tag {
+  flex: none; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--accent); border: 1px solid color-mix(in oklch, var(--accent) 40%, var(--line)); border-radius: var(--r-sm); padding: 2px 6px;
+}
+.repo-check {
+  flex: none; width: 16px; height: 16px; border: 1px solid var(--line-strong); border-radius: 4px;
+  display: grid; place-items: center;
+}
+.repo-row.picked .repo-check { background: var(--accent); border-color: var(--accent); }
+.repo-row.picked .repo-check::after {
+  content: ""; width: 4px; height: 8px; margin-top: -2px;
+  border: solid var(--bg); border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.repo-empty { padding: 14px 10px; font-size: 12.5px; color: var(--text-faint); }
+.repo-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; }
+.repo-hint { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
 
 /* ---- folder picker ---- */
 .modal.folder-picker { width: min(520px, 92vw); }

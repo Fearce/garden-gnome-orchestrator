@@ -86,6 +86,9 @@ export function Director() {
   const showPickers = useStore((s) => s.settings.showComposerPickers);
   const recentRepos = useStore((s) => s.settings.recentRepos);
   const maxRecentRepos = useStore((s) => s.settings.maxRecentRepos);
+  // AUTO repo mode: the path field, its folder button and the REPOS chips are locked, and every send lets
+  // the server infer that request's repo. The manual path stays in `ws` so turning AUTO off restores it.
+  const autoRepo = useStore((s) => s.settings.autoRepo);
   const rememberRepo = useStore((s) => s.rememberRepo);
   const forgetRepo = useStore((s) => s.forgetRepo);
   const isCompact = useMediaMatch(COMPACT_MQ);
@@ -219,7 +222,7 @@ export function Director() {
     return () => ro.disconnect();
   }, []);
 
-  const directNeedsWs = (skip || vanillaMode) && !ws.trim();
+  const directNeedsWs = (skip || vanillaMode) && !autoRepo && !ws.trim();
 
   const submit = () => {
     const t = text.trim();
@@ -227,10 +230,10 @@ export function Director() {
     lastSentRef.current = t;
     const w = ws.trim();
     const sent = vanillaMode
-      ? sendVanilla(t, w || undefined, att.images, vanillaModel || undefined, vanillaEffort === "auto" ? undefined : vanillaEffort)
+      ? sendVanilla(t, w || undefined, att.images, vanillaModel || undefined, vanillaEffort === "auto" ? undefined : vanillaEffort, autoRepo)
       : skip
-        ? sendDirect(t, w || undefined, att.images)
-        : sendPrompt(t, w || undefined, att.images);
+        ? sendDirect(t, w || undefined, att.images, autoRepo)
+        : sendPrompt(t, w || undefined, att.images, autoRepo);
     if (!sent) return;
     setText("");
     att.clear();
@@ -279,16 +282,28 @@ export function Director() {
     <>
       <PathInput
         className="ws"
-        value={ws}
+        value={autoRepo ? "" : ws}
         onChange={setWs}
-        placeholder={isPhone ? "Exact repo path (optional)" : "exact repo path (optional — used as-is)  e.g. /Users/you/project"}
-        title="If set, this exact path is the dispatch workspace — the director uses it verbatim instead of resolving a path itself. Leave blank to let the director find the repo from your description."
+        disabled={autoRepo}
+        ariaLabel="Repository path"
+        placeholder={
+          autoRepo
+            ? isPhone ? "Repo picked per request" : "repo picked per request from your message"
+            : isPhone ? "Exact repo path (optional)" : "exact repo path (optional — used as-is)  e.g. /Users/you/project"
+        }
+        title={
+          autoRepo
+            ? "AUTO is on: each send's repo is inferred from your message and the conversation. Turn AUTO off to set a path."
+            : "If set, this exact path is the dispatch workspace — the director uses it verbatim instead of resolving a path itself. Leave blank to let the director find the repo from your description."
+        }
+        trailing={<AutoRepoToggle on={autoRepo} onToggle={() => setSettings({ autoRepo: !autoRepo })} />}
       />
       <button
         className="btn ghost sm attach-btn"
         type="button"
-        title="Browse for a folder"
+        title={autoRepo ? "Turn AUTO off to browse for a folder" : "Browse for a folder"}
         aria-label="Browse for a folder"
+        disabled={autoRepo}
         onClick={() => setPicker("path")}
       >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -333,9 +348,9 @@ export function Director() {
               ? "Direct task…"
               : `Message ${directorName}…`
           : vanillaMode
-            ? "Default mode — one stock session, no wrapper prompt. Set the repo path below.  (⌘/Ctrl+Enter to send)"
+            ? `Default mode — one stock session, no wrapper prompt. ${autoRepo ? "AUTO picks the repo." : "Set the repo path below."}  (⌘/Ctrl+Enter to send)`
             : skip
-              ? "Direct to task-aware route — set the repo path below.  (⌘/Ctrl+Enter to send)"
+              ? `Direct to task-aware route — ${autoRepo ? "AUTO picks the repo." : "set the repo path below."}  (⌘/Ctrl+Enter to send)`
               : "Describe a task…  (paste or drop images · ⌘/Ctrl+Enter to send)"
       }
       onChange={(e) => setText(e.target.value)}
@@ -483,16 +498,22 @@ export function Director() {
           </div>
         )}
         {/* Always rendered, even with no chips: the + is how a repo gets here without dispatching to it. */}
-        <div className={"recent-repos" + (isCompact && !isPhone ? " compact" : "")} role="group" aria-label="Recent repositories">
+        <div
+          className={"recent-repos" + (isCompact && !isPhone ? " compact" : "") + (autoRepo ? " locked" : "")}
+          role="group"
+          aria-label={autoRepo ? "Recent repositories (AUTO picks the repo; turn AUTO off to choose)" : "Recent repositories"}
+        >
               <span className="recent-repos-label mono">repos</span>
+              {autoRepo && <span className="recent-repos-auto mono" aria-hidden="true">auto</span>}
               {recentRepos.slice(0, maxRecentRepos).map((p) => {
-                const active = isSameRepo(p, ws);
+                const active = !autoRepo && isSameRepo(p, ws);
                 return (
-                  <span key={p} className={"repo-chip" + (active ? " on" : "")} title={p}>
+                  <span key={p} className={"repo-chip" + (active ? " on" : "")} title={autoRepo ? `${p}\nAUTO is on: turn it off to choose this repo` : p}>
                     <button
                       type="button"
                       className="repo-chip-pick"
                       aria-pressed={active}
+                      disabled={autoRepo}
                       onClick={() => setWs(p)}
                     >
                       {repoLabel(p)}
@@ -513,7 +534,8 @@ export function Director() {
                 type="button"
                 className="repo-add"
                 aria-label="Add a repository"
-                title="Add a repository to this list"
+                title={autoRepo ? "Turn AUTO off to add and choose a repository" : "Add a repository to this list"}
+                disabled={autoRepo}
                 onClick={() => setPicker("add")}
               >
                 +
@@ -591,7 +613,8 @@ export function Director() {
           <ComposerContextBar
             open={sheetOpen}
             onToggle={() => setSheetOpen((open) => !open)}
-            workspace={ws.trim()}
+            workspace={autoRepo ? "" : ws.trim()}
+            autoRepo={autoRepo}
             skip={skip}
             vanilla={vanillaMode}
             needsWorkspace={directNeedsWs}
@@ -645,13 +668,14 @@ export function Director() {
 
 /** The phone composer's one-line summary of where the next send goes: the repo, the route, and any
  *  costly task mode. It replaces three rows of desktop controls and opens the sheet that holds them. */
-function ComposerContextBar({ open, onToggle, workspace, skip, vanilla, needsWorkspace }: {
+function ComposerContextBar({ open, onToggle, workspace, autoRepo, skip, vanilla, needsWorkspace }: {
   open: boolean;
   onToggle: () => void;
   workspace: string;
   skip: boolean;
   vanilla: boolean;
   needsWorkspace: boolean;
+  autoRepo: boolean;
 }) {
   const minutes = useStore((s) => s.settings.taskDurationMinutes);
   const agents = useStore((s) => s.settings.taskAgentCount);
@@ -666,18 +690,45 @@ function ComposerContextBar({ open, onToggle, workspace, skip, vanilla, needsWor
       type="button"
       className={"composer-options-toggle" + (open ? " open" : "") + (needsWorkspace ? " warn" : "")}
       aria-expanded={open}
-      aria-label={`Send options: ${workspace ? repoLabel(workspace) : "any repo"}, ${route}${taskMode ? `, ${taskMode}` : ""}`}
+      aria-label={`Send options: ${autoRepo ? "repo picked automatically" : workspace ? repoLabel(workspace) : "any repo"}, ${route}${taskMode ? `, ${taskMode}` : ""}`}
       onClick={onToggle}
     >
       <svg className="ctx-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
       </svg>
       <span className="ctx-repo" title={workspace || undefined}>
-        {workspace ? repoLabel(workspace) : needsWorkspace ? "Pick a repo" : "Any repo"}
+        {autoRepo ? "Auto repo" : workspace ? repoLabel(workspace) : needsWorkspace ? "Pick a repo" : "Any repo"}
       </span>
       <span className={"ctx-route" + (skip || vanilla ? " lit" : "")}>{route}</span>
       {taskMode ? <span className="ctx-mode">{taskMode}</span> : null}
       <span className="ctx-chevron" aria-hidden="true" />
+    </button>
+  );
+}
+
+/** The AUTO repo switch, set inside the right edge of the repo path field. A native button, so Tab reaches
+ *  it and Space/Enter flip it; `role="switch"` + `aria-checked` announce the state. On screen the state is
+ *  carried by the knob's side of the track and its fill as well as the accent, never by colour alone. It
+ *  stays usable while AUTO locks the field around it, because it is the way back to choosing manually. */
+export function AutoRepoToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label="AUTO repository selection"
+      className={"auto-repo-toggle" + (on ? " on" : "")}
+      title={
+        on
+          ? "AUTO on: each send's repo is picked from your message and the conversation. Click to choose the repo yourself."
+          : "AUTO off: click to have each send's repo picked from your message instead of this field."
+      }
+      onClick={onToggle}
+    >
+      <span className="auto-repo-track" aria-hidden="true">
+        <span className="auto-repo-knob" />
+      </span>
+      <span className="auto-repo-label">Auto</span>
     </button>
   );
 }

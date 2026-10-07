@@ -441,11 +441,11 @@ interface State {
   // Search the whole director conversation and every task (title, brief, conversation), or clear it.
   searchDirector: (query: string) => void;
   clearDirectorSearch: () => void;
-  sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[]) => boolean;
-  sendDirect: (text: string, workspace?: string, images?: ImageAttachment[]) => boolean;
+  sendPrompt: (text: string, workspace?: string, images?: ImageAttachment[], autoRepo?: boolean) => boolean;
+  sendDirect: (text: string, workspace?: string, images?: ImageAttachment[], autoRepo?: boolean) => boolean;
   // Default mode: dispatch straight to the vanilla lane. model/effort are the composer's own pick for
   // this send ("auto"/omitted = GGO decides).
-  sendVanilla: (text: string, workspace?: string, images?: ImageAttachment[], model?: string, effort?: Effort) => boolean;
+  sendVanilla: (text: string, workspace?: string, images?: ImageAttachment[], model?: string, effort?: Effort, autoRepo?: boolean) => boolean;
   // Stop the director when it's busy but spinning (looping without replying or dispatching).
   cancelDirector: () => void;
   answer: (questionId: string, answer: string) => void;
@@ -956,6 +956,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   defaultModeEffort: "auto",
   maxRecentRepos: 5,
   recentRepos: [],
+  autoRepo: false,
   modelOverrides: {},
   accountEffortCaps: {},
   modelDefaults: {},
@@ -1078,6 +1079,12 @@ function restorePersistedOutbound(): OutboundMessage[] {
   const restored = storedOutbound();
   for (const { message, command } of restored) outboundCommands.set(message.id, command);
   return restored.map(({ message }) => message);
+}
+
+/** A send's repo fields. In AUTO repo mode no path travels at all, so a stale manual pick still held in
+ *  the composer can never reach the server as the authoritative target. */
+export function repoTarget(workspace: string | undefined, autoRepo: boolean | undefined): { workspace?: string; autoRepo?: true } {
+  return autoRepo ? { autoRepo: true } : { workspace: workspace || undefined };
 }
 
 function newOutboundId(): string {
@@ -1697,25 +1704,25 @@ export const useStore = create<State>((set) => ({
     sendCommand({ type: "director.search", query: q });
   },
   clearDirectorSearch: () => set({ directorSearch: null }),
-  sendPrompt: (text, workspace, images) => {
+  sendPrompt: (text, workspace, images, autoRepo) => {
     const content = text.trim();
     if (!content) return false;
     const clientId = newOutboundId();
     return sendOutbound(
       { id: clientId, surface: "director", content, createdAt: Date.now(), status: "sending" },
-      { type: "prompt.new", text: content, workspace: workspace || undefined, images: images?.length ? images : undefined, clientId },
+      { type: "prompt.new", text: content, ...repoTarget(workspace, autoRepo), images: images?.length ? images : undefined, clientId },
     );
   },
-  sendDirect: (text, workspace, images) => {
+  sendDirect: (text, workspace, images, autoRepo) => {
     const content = text.trim();
     if (!content) return false;
     const clientId = newOutboundId();
     return sendOutbound(
       { id: clientId, surface: "director", content, createdAt: Date.now(), status: "sending" },
-      { type: "prompt.direct", text: content, workspace: workspace || undefined, images: images?.length ? images : undefined, clientId },
+      { type: "prompt.direct", text: content, ...repoTarget(workspace, autoRepo), images: images?.length ? images : undefined, clientId },
     );
   },
-  sendVanilla: (text, workspace, images, model, effort) => {
+  sendVanilla: (text, workspace, images, model, effort, autoRepo) => {
     const content = text.trim();
     if (!content) return false;
     const clientId = newOutboundId();
@@ -1724,7 +1731,7 @@ export const useStore = create<State>((set) => ({
       {
         type: "prompt.vanilla",
         text: content,
-        workspace: workspace || undefined,
+        ...repoTarget(workspace, autoRepo),
         images: images?.length ? images : undefined,
         model: model || undefined,
         effort: effort || undefined,

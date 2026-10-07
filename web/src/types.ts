@@ -431,6 +431,9 @@ export interface Question {
   question: string;
   options: QuestionOption[];
   multiSelect: boolean;
+  /** "repo" = AUTO repo clarification: option descriptions are verified repo paths, the answer is the
+   *  chosen path(s), one per line, and the card renders a searchable repo picker. */
+  kind?: "repo";
   answer?: string | null;
   answeredAt?: number | null;
   createdAt: number;
@@ -949,6 +952,7 @@ export interface OrchestratorSettings {
   defaultModeEffort: Effort | "auto"; // effort for the next default-mode dispatch; "auto" = GGO decides
   maxRecentRepos: number;
   recentRepos: string[];
+  autoRepo: boolean; // AUTO repo mode: the repo field and chips are locked; each send infers its repo server-side
   // Per-(subscription × role) model picks. See ModelOverrides. modelDefaults/claudeModels/codexModels
   // are read-only (server-derived): the built-in per-role defaults and the pickable model lists.
   modelOverrides: ModelOverrides;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { apiUrl } from "../lib/base.js";
 
 interface Entry {
@@ -11,19 +11,27 @@ interface Entry {
  *  queries GET /api/fs/complete for child directories matching the fragment after the last separator
  *  and shows them in a small dropdown: ↑/↓ to move, Enter/Tab to accept (a directory appends its
  *  segment + separator so you can keep walking down), click to accept, Esc to dismiss. Requests are
- *  debounced, except a freshly-typed separator fires immediately (you've committed a segment). */
+ *  debounced, except a freshly-typed separator fires immediately (you've committed a segment).
+ *  `trailing` sits inside the field's right edge (the composer's AUTO toggle) with the text kept clear
+ *  of it; `disabled` locks the field itself while that control stays usable. */
 export function PathInput({
   value,
   onChange,
   className,
   placeholder,
   title,
+  ariaLabel,
+  disabled,
+  trailing,
 }: {
   value: string;
   onChange: (v: string) => void;
   className?: string;
   placeholder?: string;
   title?: string;
+  ariaLabel?: string;
+  disabled?: boolean;
+  trailing?: ReactNode;
 }) {
   const [entries, setEntries] = useState<Entry[]>([]);
   const [open, setOpen] = useState(false);
@@ -107,13 +115,15 @@ export function PathInput({
   };
 
   return (
-    <div className="ws-wrap">
+    <div className={"ws-wrap" + (trailing ? " has-trailing" : "") + (disabled ? " locked" : "")}>
       <input
         ref={inputRef}
         className={className}
         value={value}
         placeholder={placeholder}
         title={title}
+        aria-label={ariaLabel}
+        disabled={disabled}
         autoComplete="off"
         spellCheck={false}
         onChange={(e) => change(e.target.value)}
@@ -122,7 +132,8 @@ export function PathInput({
         // Close on blur, but defer so a suggestion's mousedown/click lands first.
         onBlur={() => setTimeout(() => setOpen(false), 120)}
       />
-      {open && entries.length > 0 && (
+      {trailing}
+      {open && !disabled && entries.length > 0 && (
         <ul className="ws-menu" role="listbox">
           {entries.map((e, i) => (
             <li
