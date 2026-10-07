@@ -137,6 +137,9 @@ same commit as the fix. Git history keeps the record.
 
 ## Blocked / waiting
 
+- **Renew the rejected profile login for an opted-in Claude cloud subscription** (2026-10-07, Codex QA).
+  Live verification shows one `cloud ?` chip and HTTP 401 from its saved profile login; the current local CLI login belongs to the other subscription. Requires a current matching profile token in Settings > Subscriptions before that account's cloud balance or automatic subtasks can work.
+
 - **Verify Claude prepaid funds before enabling credit-backed dispatch** (2026-10-07, Pebble Sprocket).
   Read-only provider checks found one expired profile credential and one zero prepaid balance with usage credits disabled. Requires matching current credentials and prepaid subscription funds with auto-reload off; API Console balances are separate.
 
