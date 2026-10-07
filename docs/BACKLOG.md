@@ -40,7 +40,7 @@ same commit as the fix. Git history keeps the record.
 ## Shipped, awaiting live proof
 
 - **Explicit Claude cloud requests never silently launch locally** (2026-10-07, Thimblewick; task 10379cdb).
-  Live c0cb1279 hosted review returned findings; both balance chips verified beneath names. Review reproduced a local Resume escape; server control guard is committed/compiled for the next permitted restart, while the web guard is published. Cloud regressions, auto-review 214/214 and desktop/phone 70/70 pass; live UI controls verified. Follow-up guard 8228cf7e is locally integrated, but origin rejects pushes with HTTP 500; server activation and live API refusal proof await a permitted restart.
+  Live c0cb1279 hosted review returned findings; both balance chips verified beneath names. Review reproduced a local Resume escape; server control guard is committed/compiled for the next permitted restart, while the web guard is published. Cloud regressions, auto-review 214/214 and desktop/phone 70/70 pass; live UI controls verified. Follow-up guard 8228cf7e is integrated/pushed after transient origin HTTP 500 recovered; server activation and live API refusal proof await a permitted restart.
 
 - **Direct gnome chat and quiet inbox** (2026-10-07, Moss Quill; task 6640a188).
   Inbox integration 22/22, desktop/phone/CLI lab 28/28, office gates, vanilla 23/23, types/builds/README/privacy pass. Server activation awaits the next permitted restart; restart-resume instructions prohibit another this turn.
