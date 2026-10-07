@@ -45,6 +45,7 @@ Subscriptions**. The token must belong to that subscription; an expired token
 requires replacement and shows an unknown balance until a successful read. A
 setup-token alone cannot read the cloud balance. Connecting the profile token
 does not change which Claude account the browser uses to start cloud tasks.
+Throttled credit reads retry on the next refresh and do not require a new login.
 
 ## Automatic subtasks after a Claude cap
 

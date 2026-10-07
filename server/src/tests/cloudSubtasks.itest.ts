@@ -243,6 +243,16 @@ try {
     paidEnabled = true; assert.equal(await realAccounts.cloudFallbackAccount("verified"), null, "paid overage enabled rejected"); paidEnabled = false;
     grant = 0; assert.equal(await realAccounts.cloudFallbackAccount("verified"), null, "depleted fresh grant rejected"); grant = 100;
     state.rateLimited = false; state.fiveHour = 10; assert.equal(await realAccounts.cloudFallbackAccount("verified"), null, "uncapped refreshed account rejected");
+
+    // A throttled balance read must not ask the operator to replace a valid login.
+    for (const status of [429, 401]) {
+      globalThis.fetch = (async () => new Response(JSON.stringify({ error: { type: status === 429 ? "rate_limit_error" : "authentication_error" } }), { status })) as typeof fetch;
+      await (realAccounts as any).readResetCredits(state);
+      assert.equal(realAccounts.dto()[0]?.cloudCredits, undefined, "failed credit reads keep cloud admission closed");
+      const error = realAccounts.dto()[0]?.resetCreditsError ?? "";
+      assert.match(error, status === 429 ? /rate.limited.*next refresh/i : /profile token rejected/i);
+      if (status === 429) assert.doesNotMatch(error, /re-copy|replace|rejected/i, "throttling does not demand a new login");
+    }
   } finally { globalThis.fetch = oldFetch; }
 
   // Exercise the real hosted-session protocol, including the exact source of result events.

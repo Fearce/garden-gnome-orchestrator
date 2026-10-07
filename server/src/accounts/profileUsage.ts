@@ -33,11 +33,12 @@ const USAGE_URL = process.env.PROFILE_USAGE_URL?.trim() || "https://api.anthropi
  *  - `scope`: the token was accepted but lacks `user:profile` — almost always a setup-token pasted
  *             into the field by mistake, which is worth saying plainly instead of "auth failed".
  *  - `auth`:    rejected outright (401/403 that is not a scope complaint) — expired or wrong account.
+ *  - `rate-limit`: the provider throttled this read; retry at the next refresh without replacing the login.
  *  - `network`/`timeout`: kept apart for the reason `usagePing.ts` documents — on this box a timeout
  *             usually means the local event loop was starved, not that the API is unreachable.
  *  - `unreadable`: HTTP 200 whose body carried no `cedar_ember` block we could parse.
  */
-export type ProfileFailReason = "unconfigured" | "scope" | "auth" | "network" | "timeout" | "unreadable";
+export type ProfileFailReason = "unconfigured" | "scope" | "auth" | "rate-limit" | "network" | "timeout" | "unreadable";
 
 export type ProfileUsageResult =
   | { ok: true; credits: ResetCreditsDTO | null; organizationId: string | null; cloudCredits?: CloudCreditsDTO }
@@ -105,6 +106,7 @@ export async function fetchProfileUsage(token: string, timeoutMs = 12_000): Prom
  *  auth failure. Matched on the documented `error_code` first and the required-scope list second, so a
  *  reworded message cannot silently demote a scope problem into "expired token, log in again". */
 function classifyRejection(status: number, body: string): ProfileFailReason {
+  if (status === 429) return "rate-limit";
   if (status !== 401 && status !== 403) return "auth";
   if (/oauth_scope_insufficient/.test(body) || /user:profile/.test(body)) return "scope";
   return "auth";

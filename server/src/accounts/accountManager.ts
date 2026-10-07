@@ -1507,6 +1507,8 @@ function profileErrorMessage(reason: ProfileFailReason): string | null {
       return "profile token lacks user:profile — paste the claude login token, not a setup-token";
     case "auth":
       return "profile token rejected — re-copy it from ~/.claude/.credentials.json";
+    case "rate-limit":
+      return "credit read rate-limited by provider — retries on the next refresh";
     case "network":
       return "banked-reset read failed (network)";
     case "timeout":
