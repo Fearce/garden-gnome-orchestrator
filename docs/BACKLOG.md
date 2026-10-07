@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Connect the personal subscription cloud balance with a current matching profile login** (2026-10-07, Thimblewick).
+  Owner requested the second balance; a read-only saved login authenticates and its provider organization matches the personal subscription.
+
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -31,7 +34,7 @@ same commit as the fix. Git history keeps the record.
   Pushed/integrated browser regression 01f33516; 12 Codex/Grok desktop/phone choice, multi-choice and free-text flows, 11 focused gates, all types/builds, README 74/74 and privacy pass. Deploy verification confirms live build 4995ab97 contains the question bridge. Independent QA remains.
 
 - **Offload repository tasks using promotional cloud credits and show balances under subscription names** (3471a225, 2026-10-07, Thimblewick).
-  Committed/pushed; eligible live smoke returned directories/port without edits and promotional balance fell by $0.46. Desktop/phone 48/48, account/reset/cloud tests, types/builds, README 74/74 and privacy pass. Corrected web handoff is published; balance reader is built but activation awaits lifting the restart-resume prohibition. One subscription's profile token remains expired, so its balance is unknown.
+  Committed/pushed; eligible live smoke returned directories/port without edits and promotional balance fell by $0.46. Desktop/phone 48/48, account/reset/cloud tests, types/builds, README 74/74 and privacy pass. Live build 4995ab97 and authenticated desktop/phone browsers prove the balance reader is active and the cloud amount appears under the subscription name. Connecting the personal subscription's fresh matching profile login is in progress.
 
 - **Route CLI agent questions through GGO question chips and resume on answers** (41945c65, 2026-10-07, Puddle Astrolabe).
   Pushed; 6/6 focused gates, server/web types, builds, README 74/74 and privacy pass. Dist is staged with --no-restart; live remains 843bd2a3. Activation awaits the next permitted server restart; this session's restart-resume instruction forbids another restart.
