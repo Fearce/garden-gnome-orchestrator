@@ -64,6 +64,7 @@ async function pass(browser, phone) {
     await page.getByRole('button',{name:'Send to cloud',exact:true}).click();
     const modal = page.getByRole('dialog',{name:'Send task to Claude cloud',exact:true});
     await modal.waitFor();
+    await page.waitForFunction(()=>document.querySelector('.cloud-modal textarea')?.value==='Fix repository unit tests');
     check('paused-task brief is prefilled',await modal.getByLabel('Task brief',{exact:true}).inputValue() === 'Fix repository unit tests');
     await modal.getByRole('checkbox').check();
     await modal.getByRole('button',{name:'Start in Claude cloud',exact:true}).click();
