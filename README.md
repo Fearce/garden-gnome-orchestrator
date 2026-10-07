@@ -529,7 +529,9 @@ Open **Office > Gnome inbox** to find local gnomes, inspect their incoming and s
 messages, and send a quiet message as the owner. Messages persist across restarts,
 show unread/read status, and support earlier history. Owner inspection never marks
 an agent's mail read. A direct message never interrupts, wakes, resumes or dispatches
-an agent; an away gnome reads it when it next works. Remote gnomes still use the
+an agent; an away gnome reads it when it next works. The directory lists only gnomes
+that are working now or ran within the last 24 hours; older ones are hidden (mail
+addressed to their threadId and role is still accepted). Remote gnomes still use the
 Online Office rooms.
 
 Claude agents use `inbox_directory`, `inbox_send`, `inbox_read`, and

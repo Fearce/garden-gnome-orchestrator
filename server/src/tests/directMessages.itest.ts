@@ -70,6 +70,19 @@ try {
   check("recipient can acknowledge HTTP mail", () => { assert.equal(acked.json().acknowledged, 2); assert.equal(manager.directRead(to).unread, 0); });
   const directory = await app.inject({ url: "/api/gnome-inbox/agent/directory", headers: agent });
   check("agent directory omits other unread counts and remotes", () => { assert.equal(directory.statusCode, 200); assert.ok(directory.json().every((entry: Record<string, unknown>) => !("unread" in entry) && !("instance" in entry))); });
+  const stale = db.createThread({ title: "Long finished", workspace: "C:/example/old", rawPrompt: "fixture" });
+  db.createRun({ threadId: stale.id, role: "implementor", model: "fixture", account: "fixture", effort: "low" });
+  manager.setOfficeName(stale.id, "implementor", "Dusty Fern");
+  const dayAgo = Date.now() - 25 * 60 * 60 * 1000;
+  db.raw.prepare("UPDATE agent_runs SET started_at=?, ended_at=? WHERE thread_id=?").run(dayAgo - 60_000, dayAgo, stale.id);
+  const ownerDirectory = await app.inject({ url: "/api/gnome-inbox/directory", headers: owner });
+  check("directory hides gnomes idle for 24h+ and keeps recent ones", () => {
+    const names = ownerDirectory.json().map((entry: { name: string }) => entry.name);
+    assert.ok(names.includes("Aster Ink") && names.includes("Copper Vale"));
+    assert.ok(!names.includes("Dusty Fern"));
+    assert.ok(!manager.directDirectory().some(entry => entry.threadId === stale.id));
+  });
+  check("hidden idle gnome can still receive mail by address", () => assert.equal(manager.directSend(from, { threadId: stale.id, role: "implementor" }, "Still reachable").recipientName, "Dusty Fern"));
   for (let index = 0; index < 105; index++) manager.directSend(from, to, `letter ${index}`);
   const latest = manager.directRead(to);
   const older = manager.directRead(to, latest.messages[0]!.id);

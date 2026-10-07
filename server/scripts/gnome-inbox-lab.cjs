@@ -28,9 +28,14 @@ async function main() {
     const run = db.createRun({ threadId: thread.id, role: "implementor", model: "fixture", account: "fixture", effort: "low" });
     db.updateRun(run.id, { state: "done", endedAt: Date.now() });
   }
+  // A gnome whose last run ended over a day ago: the directory must hide it.
+  const stale = db.createThread({ title: "Long finished fixture", workspace: "C:/example/old", rawPrompt: "fixture" });
+  const staleRun = db.createRun({ threadId: stale.id, role: "implementor", model: "fixture", account: "fixture", effort: "low" });
+  db.updateRun(staleRun.id, { state: "done", endedAt: Date.now() - 25 * 60 * 60 * 1000 });
+  db.raw.prepare("UPDATE agent_runs SET started_at=? WHERE id=?").run(Date.now() - 26 * 60 * 60 * 1000, staleRun.id);
   const from = { threadId: a.id, role: "implementor" };
   const to = { threadId: b.id, role: "implementor" };
-  const names = { [`${a.id}::implementor`]: "Aster Ink", [`${b.id}::implementor`]: "Copper Vale" };
+  const names = { [`${a.id}::implementor`]: "Aster Ink", [`${b.id}::implementor`]: "Copper Vale", [`${stale.id}::implementor`]: "Dusty Fern" };
   db.kvSet("office_names", JSON.stringify(names));
   const letters = new DirectMessages(db, (id, role) => names[`${id}::${role}`]);
   const senderToken = letters.capability(from);
@@ -67,6 +72,7 @@ async function main() {
         await page.getByRole("alert").waitFor({ state: "detached" });
       }
       await page.getByRole("button", { name: /Copper Vale.*implementor/ }).click();
+      check(`${mobile ? "phone" : "desktop"} directory hides gnomes idle for 24h+`, await page.locator(".gnome-inbox-people button").count() === 2 && !(await page.locator(".gnome-inbox-people").innerText()).includes("Dusty Fern"));
       await page.locator(".gnome-inbox-letters").getByText("History letter 104", { exact: true }).waitFor();
       check(`${mobile ? "phone" : "desktop"} selected inbox has unread status`, (await page.locator(".gnome-inbox-conversation h3").innerText()).includes(`${mobile ? 106 : 105} unread`));
       await page.getByRole("button", { name: "Earlier messages", exact: true }).click();

@@ -122,7 +122,7 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
   );
 
   const address = { threadId: ctx.threadId, role: ctx.role };
-  const inboxDirectory = tool("inbox_directory", "Find local gnomes by stable threadId and role. Active=false means mail waits until they next read it. Remote gnomes use office/team chat.", {}, async () => ({ content: [{ type: "text", text: JSON.stringify(api.directDirectory().map(({ unread: _unread, ...gnome }) => gnome)) }] }));
+  const inboxDirectory = tool("inbox_directory", "Find local gnomes (working now or active within 24h) by stable threadId and role. Active=false means mail waits until they next read it. Remote gnomes use office/team chat.", {}, async () => ({ content: [{ type: "text", text: JSON.stringify(api.directDirectory().map(({ unread: _unread, ...gnome }) => gnome)) }] }));
   const inboxSend = tool("inbox_send", "Send a quiet direct message to one local gnome. Persists in their inbox without steering, interrupting, waking or resuming them.", {
     threadId: z.string().min(1), role: z.enum(ROLES), message: z.string().trim().min(1).max(2000),
   }, async args => {

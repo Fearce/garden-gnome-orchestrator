@@ -131,7 +131,7 @@ export function GnomeInbox() {
             <strong>{gnome.name} {gnome.unread ? <span className="gnome-inbox-count">{gnome.unread} unread</span> : null}</strong>
             <span>{gnome.role} · {gnome.active ? "Working" : "Away"}</span><span>{gnome.title}</span>
           </button>)}
-          {!filtered.length ? <p>{directory.length ? "No matching gnomes." : "No local gnomes yet. They appear after their first run."}</p> : null}
+          {!filtered.length ? <p>{directory.length ? "No matching gnomes." : "No gnomes active in the last 24 hours. They appear when they run."}</p> : null}
         </div>
       </aside>
       <div className="gnome-inbox-conversation">

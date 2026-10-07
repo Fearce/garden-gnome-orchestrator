@@ -646,6 +646,8 @@ type SilentCapableRole = Extract<Role, "implementor" | "qa" | "reviewer">;
 
 const MAX_RESULT_PREVIEW = 600;
 const QUESTION_TIMEOUT_MS = 20 * 60 * 1000;
+/** The direct-inbox directory hides a gnome with no run activity for this long (owner: a day). */
+const DIRECT_DIRECTORY_IDLE_MS = 24 * 60 * 60 * 1000;
 // SDK result subtypes that mean "involuntarily cut off, not finished" — the orchestrator silently
 // warm-resumes these instead of carrying half-done work into QA. A genuine finish is `success`; a usage
 // cap is detected separately (agent.rateLimited). Kept as a set so more cutoff subtypes can join here.
@@ -16758,12 +16760,20 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const active = new Set(this.officeRoster("").filter(entry => !entry.instance).map(entry => agentKey(entry.threadId, entry.role)));
     const unread = this.directInbox.unreadCounts();
     const threads = new Map((this.db.raw.prepare("SELECT id, title FROM threads").all() as { id: string; title: string }[]).map(thread => [thread.id, thread]));
+    // A gnome idle for a day or more is hidden: every agent ever named keeps its name override, so
+    // without this cutoff the directory lists hundreds of long-finished agents. Mail to a hidden
+    // gnome's threadId/role still works; it just isn't offered in the list.
+    const recentSince = Date.now() - DIRECT_DIRECTORY_IDLE_MS;
+    const recent = new Set((this.db.raw.prepare(`SELECT thread_id, role FROM agent_runs
+      GROUP BY thread_id, role HAVING max(coalesce(ended_at, started_at)) >= ?`)
+      .all(recentSince) as { thread_id: string; role: string }[]).map(row => agentKey(row.thread_id, row.role as Role)));
     return Object.entries(this.officeNameOverrides()).flatMap(([key, name]) => {
       const split = key.lastIndexOf("::");
       const threadId = key.slice(0, split);
       const role = key.slice(split + 2) as Role;
       const thread = threads.get(threadId);
       if (!thread || !isRole(role) || role === "director") return [];
+      if (!active.has(key) && !recent.has(key)) return [];
       return [{ threadId, role, name, title: thread.title, active: active.has(key), unread: unread.get(key) ?? 0 }];
     }).sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
   }
