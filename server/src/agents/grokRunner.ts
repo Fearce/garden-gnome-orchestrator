@@ -1,3 +1,5 @@
+import { CLI_QUESTION_DOCTRINE } from "./prompts.js";
+import { CliQuestionGate, type CliQuestion } from "./cliQuestions.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -11,7 +13,7 @@ import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.
 import { withAgentToolPath } from "./env.js";
 import { InputLedger } from "./inputLedger.js";
 import { latestFamilyModel } from "./modelFamily.js";
-import { endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, endsWithOpenSubTaskMarker, endsWithOpenGoalProgressMarker, extractCliBridgeMessages } from "./officeBridge.js";
+import { endsWithOpenQuestionMarker, endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, endsWithOpenSubTaskMarker, endsWithOpenGoalProgressMarker, extractCliBridgeMessages } from "./officeBridge.js";
 import {
   formatStructuredRoleFeed,
   parseStructuredText,
@@ -55,6 +57,8 @@ export interface GrokRunConfig {
   onSubTask?: (spec: unknown) => void;
   /** A standalone `GOAL_PROGRESS: {json}` line — the CLI's report_goal_progress (orchestrator/goalWork.ts). */
   onGoalProgress?: (report: unknown) => void;
+  /** ASK_USER JSON markers create real chips and hold completion until an answer arrives. */
+  onAskUser?: (question: CliQuestion) => Promise<string>;
 }
 
 /** Pull the plain text out of a UserContent (string or content-block array). Grok headless takes only a
@@ -193,6 +197,10 @@ export class GrokAgentRun implements AgentRunLike {
   // ends so it can stop attempting resume for this thread (resume keeps producing nothing → go fresh).
   resumeHealed = false;
 
+  private readonly questions = new CliQuestionGate(
+    (question) => this.cfg.onAskUser ? this.cfg.onAskUser(question) : Promise.reject(new Error("Question bridge unavailable")),
+    (text) => { if (!this.stopped) this.send(text); },
+  );
   private child: ChildProcess | undefined;
   private turnStarting = false;
   private turnActive = false;
@@ -349,6 +357,7 @@ export class GrokAgentRun implements AgentRunLike {
    *  be attached to a Grok headless turn, so they're dropped here; the kickoff text still describes them. */
   private async runTurn(prompt: string, resumeId?: string, inputIds: string[] = []): Promise<void> {
     if (this.stopped) return;
+    if (this.cfg.onAskUser && !prompt.includes(CLI_QUESTION_DOCTRINE)) prompt = `${CLI_QUESTION_DOCTRINE}\n\n${prompt}`;
     this.turnInputIds = inputIds;
     this.turnStarting = true;
     this.sawTerminal = false;
@@ -640,6 +649,7 @@ export class GrokAgentRun implements AgentRunLike {
       !endsWithOpenDeliverableMarker(this.textBuf) &&
       !endsWithOpenManualDeploymentMarker(this.textBuf) &&
       !endsWithOpenSubTaskMarker(this.textBuf) &&
+      !endsWithOpenQuestionMarker(this.textBuf) &&
       !endsWithOpenGoalProgressMarker(this.textBuf)
     ) {
       this.textBuf += "\n";
@@ -652,6 +662,7 @@ export class GrokAgentRun implements AgentRunLike {
   private harvestCliBridgePosts(opts?: { openEnded?: boolean }): void {
     if (!this.textBuf) return;
     const bridge = extractCliBridgeMessages(this.textBuf, opts);
+    if (!this.stopped) for (const question of bridge.questions) this.questions.submit(question);
     for (const post of bridge.posts) {
       try {
         this.cfg.onOfficeChat?.(post.scope, post.body);
@@ -797,9 +808,9 @@ export class GrokAgentRun implements AgentRunLike {
     return undefined;
   }
 
-  private onTurnClose(code: number | null): void {
+  private async onTurnClose(code: number | null): Promise<void> {
     this.turnStarting = false;
-    this.turnActive = false;
+    this.turnActive = true;
     this.child = undefined;
     this.clearWatchdog();
     this.cleanupPrompt();
@@ -808,6 +819,8 @@ export class GrokAgentRun implements AgentRunLike {
     // Emit the accumulated assistant text (and parse structured output) before resolving the result.
     const structured = this.flushText();
     if (this.pendingTerminalResult && structured !== undefined) this.pendingTerminalResult.structuredOutput = structured;
+    if (this.questions.waiting) await this.questions.wait();
+    this.turnActive = false;
     if (this.stopped) {
       if (!this.finished) {
         this.finished = true;

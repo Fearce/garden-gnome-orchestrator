@@ -33,7 +33,7 @@ export function createDirectorServer(
 ): McpServerConfig {
   const askUser = tool(
     "ask_user",
-    `Ask ${config.ownerName} a clarifying question BEFORE dispatching work, when the request is ambiguous or you're filling a gap they likely forgot to mention. Prefer multiple-choice options when you can; leave options empty for a free-text answer. Blocks until they answer. Don't over-ask — bundle related questions, and only ask what actually changes what you'd dispatch. Keep the question SHORT: a sentence or two of the essential ask, not a wall of text.`,
+    `Ask ${config.ownerName} a clarifying question BEFORE dispatching work, when the request is ambiguous or you're filling a gap they likely forgot to mention. Prefer multiple-choice options when you can; leave options empty for a free-text answer. Blocks until they answer. Don't over-ask — bundle related questions, and only ask what actually changes what you'd dispatch. Keep the question SHORT: a sentence or two of the essential ask, not a wall of text. Every question that needs the owner's answer must use this tool so it appears as a GGO question chip; never leave an actionable question only in task-chat prose.`,
     {
       header: z.string().describe("A 1-3 word chip label for the question, e.g. 'Target repo'."),
       question: z

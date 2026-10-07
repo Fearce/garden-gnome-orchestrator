@@ -135,6 +135,7 @@ const GATES = [
   "test:dedupe-deliverable-findings",
   "test:recovery-features",
   "test:office-bridge",
+  "test:cli-questions",
   "test:office-names",
   "test:agent-names",
   "test:office-gating",

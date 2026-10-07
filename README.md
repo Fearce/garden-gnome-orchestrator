@@ -12,6 +12,10 @@ card on a live board you can watch, interrupt, feed new information to, and resu
 It runs on your machine, against your repos, on your Claude subscription. There is no
 hosted service and no metered API billing.
 
+Agent questions appear as GGO question chips, with multiple-choice or free-text answers.
+Claude and z.ai use the question tool; Codex and Grok use an `ASK_USER` JSON bridge.
+The task waits for your answer and continues in the same session.
+
 ## Why it exists
 
 The workflow this replaces is one people already do by hand:

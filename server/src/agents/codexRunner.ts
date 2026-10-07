@@ -1,3 +1,5 @@
+import { CLI_QUESTION_DOCTRINE } from "./prompts.js";
+import { CliQuestionGate, type CliQuestion } from "./cliQuestions.js";
 import { currentCodexModel, isGpt6Model } from "./codexModelGeneration.js";
 import { latestFamilyModel } from "./modelFamily.js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -61,6 +63,8 @@ export interface CodexRunConfig {
   onSubTask?: (spec: unknown) => void;
   /** A standalone `GOAL_PROGRESS: {json}` line — the CLI's report_goal_progress (orchestrator/goalWork.ts). */
   onGoalProgress?: (report: unknown) => void;
+  /** ASK_USER JSON markers create real chips and hold completion until an answer arrives. */
+  onAskUser?: (question: CliQuestion) => Promise<string>;
   /** When set, this run is a structured role (planner/researcher/qa) rather than the free-form implementor:
    *  the CLI can't be handed our json_schema tool, so the kickoff instructs it to end with a fenced ```json
    *  block, and its final message is parsed against this schema into `result.structuredOutput`. A parse/shape
@@ -357,6 +361,10 @@ export class CodexAgentRun implements AgentRunLike {
   startupWedgeScope: "session" | "provider" | undefined;
   capped = false;
 
+  private readonly questions = new CliQuestionGate(
+    (question) => this.cfg.onAskUser ? this.cfg.onAskUser(question) : Promise.reject(new Error("Question bridge unavailable")),
+    (text) => { if (!this.stopped) this.send(text); },
+  );
   private child: ChildProcess | undefined;
   // runTurn does async auth/image preparation before it spawns the CLI. Treat that window as busy too:
   // otherwise an office message arriving there starts a second Codex process beside the first.
@@ -574,6 +582,7 @@ export class CodexAgentRun implements AgentRunLike {
 
   private async runTurn(prompt: string, resumeId?: string, images: CodexImage[] = [], inputIds: string[] = []): Promise<void> {
     if (this.stopped) return;
+    if (this.cfg.onAskUser && !prompt.includes(CLI_QUESTION_DOCTRINE)) prompt = `${CLI_QUESTION_DOCTRINE}\n\n${prompt}`;
     this.turnInputIds = inputIds;
     this.turnStarting = true;
     this.sawTerminal = false;
@@ -815,6 +824,7 @@ export class CodexAgentRun implements AgentRunLike {
           // A Codex item is one completed AgentMessage, not Grok's delimiter-less concatenation of
           // model turns. Disable the glued-turn guess so punctuation/Unicode/Markdown remain exact data.
           const bridge = extractCliBridgeMessages(item.text, { detectGluedTurns: false });
+          if (!this.stopped) for (const question of bridge.questions) this.questions.submit(question);
           for (const post of bridge.posts) {
             try {
               this.cfg.onOfficeChat?.(post.scope, post.body);
@@ -976,15 +986,17 @@ export class CodexAgentRun implements AgentRunLike {
     this.emit(evt);
   }
 
-  private onTurnClose(code: number | null): void {
+  private async onTurnClose(code: number | null): Promise<void> {
     this.turnStarting = false;
-    this.turnActive = false;
+    this.turnActive = true;
     this.child = undefined;
     this.clearWatchdog();
     // codex has already read this turn's attached images by now — drop the temp files.
     this.cleanupImages();
     const wasInterrupt = this.interrupting;
     this.interrupting = false;
+    if (this.questions.waiting) await this.questions.wait();
+    this.turnActive = false;
     if (this.stopped) {
       if (!this.finished) {
         this.finished = true;

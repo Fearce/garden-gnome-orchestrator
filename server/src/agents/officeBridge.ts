@@ -1,3 +1,4 @@
+import { parseCliQuestion, type CliQuestion } from "./cliQuestions.js";
 import { NOTE_MAX_CHARS, type ChatScope } from "../types.js";
 
 /**
@@ -158,8 +159,10 @@ export function extractCliBridgeMessages(
   manualDeployments: CliManualDeployment[];
   subTasks: CliSubTask[];
   goalProgress: CliGoalProgress[];
+  questions: CliQuestion[];
 } {
-  const progress = extractGoalProgress(text, opts);
+  const questions = extractQuestions(text, opts);
+  const progress = extractGoalProgress(questions.visible, opts);
   const spawns = extractSubTasks(progress.visible, opts);
   const deployment = extractManualDeployments(spawns.visible, opts);
   const files = extractDeliverables(deployment.visible, opts);
@@ -174,7 +177,31 @@ export function extractCliBridgeMessages(
     manualDeployments: deployment.manualDeployments,
     subTasks: spawns.subTasks,
     goalProgress: progress.goalProgress,
+    questions: questions.questions,
   };
+}
+
+/** Questions are standalone JSON lines; incomplete streaming lines remain untouched. */
+export function extractQuestions(text: string, opts?: ExtractOfficeChatOpts): { visible: string; questions: CliQuestion[] } {
+  const questions: CliQuestion[] = [];
+  const visible = text.replace(/(^|\n)[ \t]*`?ASK_USER[ \t]*:[ \t]*(\{[^\r\n]*)(?=\r?\n|$)/g, (line, prefix: string, body: string, offset: number) => {
+    if (opts?.openEnded === false && offset + line.length === text.length) return line;
+    try {
+      const question = parseCliQuestion(JSON.parse(body.replace(/`[ \t]*$/, "")));
+      if (!question) return line;
+      questions.push(question);
+      return prefix;
+    } catch { return line; }
+  });
+  return { visible, questions };
+}
+
+export function endsWithOpenQuestionMarker(text: string): boolean {
+  return /(?:^|\n)[ \t]*`?ASK_USER[ \t]*:[^\r\n]*$/.test(text);
+}
+
+function startsQuestionMarker(text: string, i: number): boolean {
+  return /^`?ASK_USER[ \t]*:[ \t]*\{/.test(text.slice(i, i + 40));
 }
 
 /** Strip valid one-line `GOAL_PROGRESS: {json}` markers. A payload that is not a JSON object stays visible;
@@ -590,7 +617,7 @@ function takeOperatorNoteBody(
       complete = true;
       break;
     }
-    if (startsOfficeMarker(text, i) || startsDeliverableMarker(text, i) || startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i) || startsGoalProgressMarker(text, i)) {
+    if (startsOfficeMarker(text, i) || startsDeliverableMarker(text, i) || startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i) || startsGoalProgressMarker(text, i) || startsQuestionMarker(text, i)) {
       complete = true;
       break;
     }
@@ -633,7 +660,7 @@ function takeDeliverableBody(
       complete = true;
       break;
     }
-    if (startsDeliverableMarker(text, i) || startsOfficeMarker(text, i) || startsOperatorNoteMarker(text, i) || startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i) || startsGoalProgressMarker(text, i)) {
+    if (startsDeliverableMarker(text, i) || startsOfficeMarker(text, i) || startsOperatorNoteMarker(text, i) || startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i) || startsGoalProgressMarker(text, i) || startsQuestionMarker(text, i)) {
       complete = true;
       break;
     }
@@ -726,6 +753,7 @@ export function endsWithOpenManualDeploymentMarker(text: string): boolean {
 
 function endsWithOpenCliBridgeMarker(text: string): boolean {
   return (
+    endsWithOpenQuestionMarker(text) ||
     endsWithOpenOfficeMarker(text) ||
     endsWithOpenOperatorNoteMarker(text) ||
     endsWithOpenDeliverableMarker(text) ||
@@ -760,6 +788,7 @@ function takeJsonBridgeBody(
       break;
     }
     if (
+      startsQuestionMarker(text, i) ||
       startsOfficeMarker(text, i) ||
       startsOperatorNoteMarker(text, i) ||
       startsDeliverableMarker(text, i) ||
@@ -854,7 +883,7 @@ function takeOfficeBody(
       break;
     }
 
-    if (startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i) || startsGoalProgressMarker(text, i)) {
+    if (startsManualDeploymentMarker(text, i) || startsSubTaskMarker(text, i) || startsGoalProgressMarker(text, i) || startsQuestionMarker(text, i)) {
       bodyParts.push(text.slice(lineStart, i));
       complete = true;
       break;

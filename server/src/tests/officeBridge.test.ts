@@ -610,3 +610,28 @@ import { parseStructuredText } from "../agents/structuredText.js";
 }
 
 console.log("All officeBridge extraction checks passed.");
+
+// Owner questions use standalone, validated JSON, never a heuristic over ordinary prose.
+{
+  const payload = { header: "Credit source", question: "Where are the credits?", options: [{ label: "Cloud" }, { label: "API", description: "Console balance" }] };
+  const marker = `ASK_USER: ${JSON.stringify(payload)}`;
+  const parsed = extractCliBridgeMessages(`Need one detail.\n${marker}\n`);
+  assert.deepEqual(parsed.questions, [{ ...payload, multiSelect: false }]);
+  assert.equal(parsed.visible, "Need one detail.");
+  assert.deepEqual(extractCliBridgeMessages(`\`${marker}\``).questions, parsed.questions);
+  for (let i = marker.indexOf("{") + 1; i <= marker.length; i++) {
+    const partial = marker.slice(0, i);
+    const held = extractCliBridgeMessages(partial, { openEnded: false });
+    assert.equal(held.questions.length, 0);
+    assert.equal(held.visible, partial, "streaming JSON remains byte-exact until terminated");
+  }
+  assert.equal(extractCliBridgeMessages(marker + "\n", { openEnded: false }).questions.length, 1);
+  assert.equal(extractCliBridgeMessages('ASK_USER: {"header":"Missing question"}').questions.length, 0);
+  assert.equal(extractCliBridgeMessages('ASK_USER: {bad json}').visible, 'ASK_USER: {bad json}');
+  assert.equal(extractCliBridgeMessages(`Example: ${marker}`).questions.length, 0);
+  assert.equal(extractCliBridgeMessages("Where are the credits?\n- Cloud\n- API").questions.length, 0);
+  const free = extractCliBridgeMessages('ASK_USER: {"header":"Access","question":"Which account?"}').questions[0]!;
+  assert.deepEqual(free.options, []);
+  assert.equal(extractCliBridgeMessages('ASK_USER: {"header":"Access","question":"Which?","options":["bad"]}').questions.length, 0);
+  assert.equal(extractCliBridgeMessages('ASK_USER: {"header":"Access","question":"Which?","multiSelect":"yes"}').questions.length, 0);
+}

@@ -89,7 +89,7 @@ import { noteZaiCap, readZaiUsage, zaiAllowanceReopened, zaiUsageCapped } from "
 import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, CURATED_ZAI_MODELS, uniq } from "../agents/modelCatalog.js";
 import { clampEffort, coworkerRunOptions, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort, reviewerConfig } from "../agents/roles.js";
 import { jsonContractInstruction, type JsonSchemaLike } from "../agents/structuredText.js";
-import { CODEX_IMPLEMENTOR_DOCTRINE, COWORKER_PROMPT, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
+import { CLI_QUESTION_DOCTRINE, CODEX_IMPLEMENTOR_DOCTRINE, COWORKER_PROMPT, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createGitReadServer } from "../bus/gitReadServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
@@ -3017,9 +3017,11 @@ export class ThreadManager implements OrchestratorApi {
     });
     // A task-scoped question pauses the task into awaiting_user; restore on answer.
     const t = input.threadId ? this.db.getThread(input.threadId) : undefined;
-    if (input.threadId && t && t.state !== "awaiting_user") {
-      this.awaitingPrev.set(q.id, t.state);
-      this.setState(input.threadId, "awaiting_user");
+    if (input.threadId && t) {
+      const earlier = this.db.listOpenQuestions().find((other) => other.id !== q.id && other.threadId === input.threadId && this.awaitingPrev.has(other.id));
+      const previous = earlier ? this.awaitingPrev.get(earlier.id)! : t.state;
+      this.awaitingPrev.set(q.id, previous);
+      if (t.state !== "awaiting_user") this.setState(input.threadId, "awaiting_user");
     }
     // The director asks questions of its own, with no task behind them — then the header IS the subject.
     this.notifyOwner(`🔔 needs you: ${input.header} — ${input.question}`, {
@@ -3110,7 +3112,7 @@ export class ThreadManager implements OrchestratorApi {
     const q = this.db.getQuestion(questionId);
     if (q?.threadId) {
       const t = this.db.getThread(q.threadId);
-      if (t && t.state === "awaiting_user") this.setState(q.threadId, prev);
+      if (t && t.state === "awaiting_user" && !this.db.listOpenQuestions().some((other) => other.threadId === q.threadId)) this.setState(q.threadId, prev);
     }
   }
 
@@ -9219,6 +9221,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           onOperatorNote: (body, url) => {
             this.postCliOperatorNote(thread, role, body, url);
           },
+          onAskUser: (question) => this.askUser({ ...question, threadId: thread.id, runId: run.id }),
           onDeliverable: (label, path) => {
             this.postCliDeliverable(thread, role, run.id, label, path);
           },
@@ -9243,6 +9246,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           onOperatorNote: (body, url) => {
             this.postCliOperatorNote(thread, role, body, url);
           },
+          onAskUser: (question) => this.askUser({ ...question, threadId: thread.id, runId: run.id }),
           onDeliverable: (label, path) => {
             this.postCliDeliverable(thread, role, run.id, label, path);
           },
@@ -10053,8 +10057,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       runId = run.id;
       this.emitRun(run.id);
       // The Codex CLI is a separate process; the in-process bus MCP server can't attach to it, so a
-      // Codex implementor runs without interactive post_finding/ask_user/read_findings — a documented
-      // degradation. Text bridges preserve office chat, owner notes, and deliverable cards; the QA loop
+      // Codex implementor runs without interactive post_finding/read_findings — a documented
+      // degradation. Text bridges preserve questions, office chat, owner notes, and deliverable cards; the QA loop
       // still reviews its output, and the doctrine makes it commit. A fresh start gets the doctrine plus
       // the (toolless) peer heads-up so it knows to avoid collisions.
       if (!opts?.resume && !vanilla) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, this.withOfficeNote(thread, "implementor", kickoff, false)].filter(Boolean).join("\n\n");
@@ -10078,6 +10082,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         onOperatorNote: (body, url) => {
           this.postCliOperatorNote(thread, "implementor", body, url);
         },
+        onAskUser: (question) => this.askUser({ ...question, threadId: thread.id, runId }),
         onDeliverable: (label, path) => {
           this.postCliDeliverable(thread, "implementor", runId, label, path);
         },
@@ -10104,7 +10109,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       runId = run.id;
       this.emitRun(run.id);
       // Like Codex, the Grok CLI is a separate process with no in-process bus MCP tools (no
-      // post_finding/ask_user) and no per-tool feed events — a documented degradation. The doctrine makes
+      // post_finding) and no per-tool feed events — a documented degradation. The doctrine makes
       // it commit; the QA loop still reviews the real diff. A fresh start gets the doctrine + peer heads-up.
       if (!opts?.resume) startKickoff = [GROK_IMPLEMENTOR_DOCTRINE, this.withOfficeNote(thread, "implementor", kickoff, false)].filter(Boolean).join("\n\n");
       const grokAgent = new GrokAgentRun({
@@ -10122,6 +10127,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         onOperatorNote: (body, url) => {
           this.postCliOperatorNote(thread, "implementor", body, url);
         },
+        onAskUser: (question) => this.askUser({ ...question, threadId: thread.id, runId }),
         onDeliverable: (label, path) => {
           this.postCliDeliverable(thread, "implementor", runId, label, path);
         },
@@ -17750,7 +17756,7 @@ export function cliRoleKickoff(
           "For deliverables: check the git diff / new files yourself — do not call read_findings. Do not invent tool calls.",
         ].join(" ")
       : role === "reviewer"
-        ? "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the review directly; do not invent tool calls. If accepting depends on an owner decision you cannot ask for here, return accept:false with that decision as a concrete issue; never accept on a guess."
+        ? "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the review directly; do not invent tool calls. If accepting depends on an owner decision, use the ASK_USER question bridge and wait; never accept on a guess."
         : role === "reader" && provider === "Codex"
           ? "The post_finding MCP tool is unavailable on this fallback. Investigate read-only, put the COMPLETE owner-facing answer (including concrete file/commit references) in the final schema object's `answer` field, and set answered/escalated normally. The orchestrator will record that answer as the task finding. Do not invent tool calls."
         : "The orchestrator-specific bus/office MCP tools are unavailable on this fallback. Complete the core role directly; do not invent tool calls.";
@@ -17771,6 +17777,7 @@ export function cliRoleKickoff(
     system,
     safety,
     noMcp,
+    CLI_QUESTION_DOCTRINE,
     cliDeliverable,
     cliOperatorNote,
     "When the orchestrator asks you to name yourself, `office_set_name` is unavailable here: emit one standalone `OFFICE[name]: <your name>` line instead.",

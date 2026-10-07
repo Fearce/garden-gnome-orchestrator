@@ -91,3 +91,9 @@ console.log("cli role kickoff: editing QA doctrine reaches Codex and Grok withou
   assert.match(kickoff as string, /final schema object's `answer` field/i);
   assert.match(kickoff as string, /remain read-only/i);
 }
+
+for (const prompt of [CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE, readOnly]) {
+  assert.match(prompt, /ASK_USER: \{/);
+  assert.match(prompt, /end this turn immediately/);
+  assert.doesNotMatch(prompt, /stop and explain it clearly in your final message/);
+}

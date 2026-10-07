@@ -163,7 +163,7 @@ Post at most one or two per task, at the END, once the thing is actually there t
 
   const askUser = tool(
     "ask_user",
-    `Ask ${config.ownerName} for help when you hit a blocker only THEY can resolve — a missing file/credential, a needed secret or access, or a decision you can't make yourself. Pauses this task until they answer. Use it EARLY: the moment you identify a hard blocker, ask — do NOT spend turns hunting workarounds for something they can fix in seconds. Prefer multiple-choice options when you can. Keep the question SHORT: lead with the one thing you need, drop background ${config.ownerName} already knows, and aim for a few sentences — a wall of text is harder to answer, not easier.`,
+    `Ask ${config.ownerName} for help when you hit a blocker only THEY can resolve — a missing file/credential, a needed secret or access, or a decision you can't make yourself. Pauses this task until they answer. Use it EARLY: the moment you identify a hard blocker, ask — do NOT spend turns hunting workarounds for something they can fix in seconds. Prefer multiple-choice options when you can. Keep the question SHORT: lead with the one thing you need, drop background ${config.ownerName} already knows, and aim for a few sentences — a wall of text is harder to answer, not easier. Every question that needs the owner's answer must use this tool so it appears as a GGO question chip; never leave an actionable question only in task-chat prose.`,
     {
       header: z.string().describe("A 1-3 word chip label, e.g. 'Missing creds'."),
       question: z

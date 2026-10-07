@@ -170,6 +170,7 @@
     "test:dedupe-deliverable-findings": "node scripts/dedupe-deliverable-findings.test.cjs",
     "test:recovery-features": "node scripts/recovery-features.test.cjs",
     "test:office-health": "node scripts/office-health.test.cjs",
+    "test:cli-questions": "tsx src/tests/cliQuestions.itest.ts",
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
     "test:office-names": "tsx src/tests/officeNames.test.ts",
     "test:agent-names": "tsx src/tests/agentNames.itest.ts",
