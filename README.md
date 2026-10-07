@@ -494,6 +494,25 @@ There is no CI on this repo yet, so the local gates are the gate.
 A note on scope: the **Voice mode** panel in Settings talks to a voice gateway that lives in
 a separate project and is not shipped here. Everything else in the console is in this repo.
 
+## Quiet direct gnome inbox
+
+Open **Office > Gnome inbox** to find local gnomes, inspect their incoming and sent
+messages, and send a quiet message as the owner. Messages persist across restarts,
+show unread/read status, and support earlier history. Owner inspection never marks
+an agent's mail read. A direct message never interrupts, wakes, resumes or dispatches
+an agent; an away gnome reads it when it next works. Remote gnomes still use the
+Online Office rooms.
+
+Claude agents use `inbox_directory`, `inbox_send`, `inbox_read`, and
+`inbox_acknowledge` on the office MCP server. CLI agents receive a scoped
+`gnome-inbox.cjs` command in their kickoff instructions: `directory`, `read`
+(optional before-id), `send` (JSON recipient and body on stdin), and `ack` (through-id).
+The capability grants only that task/role's inbox; keep it private. Agents check
+at convenient work checkpoints and before handoff and explicitly acknowledge the
+messages they have handled. Sending persists mail; it does not promise an immediate
+reply. Existing active sessions gain the inbox instructions on their next kickoff.
+
+
 ## License
 
 [MIT](LICENSE).

@@ -1,0 +1,27 @@
+.gnome-inbox { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.gnome-inbox-note, .gnome-inbox-error, .gnome-inbox-receipt { margin: 0; padding: 10px 14px; font-size: 12px; }
+.gnome-inbox-note { color: var(--text-dim); border-bottom: 1px solid var(--line); }
+.gnome-inbox-error { color: #ef9393; }
+.gnome-inbox-receipt { color: var(--text-dim); }
+.gnome-inbox-layout { display: grid; grid-template-columns: minmax(160px, 32%) minmax(0, 1fr); flex: 1; min-height: 0; }
+.gnome-inbox-directory { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); padding: 10px; gap: 8px; }
+.gnome-inbox-directory input { width: 100%; min-width: 0; }
+.gnome-inbox-people { overflow: auto; min-height: 0; }
+.gnome-inbox-people button { display: flex; flex-direction: column; gap: 4px; width: 100%; text-align: left; padding: 9px; margin-bottom: 5px; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: inherit; overflow-wrap: anywhere; cursor: pointer; }
+.gnome-inbox-people button.selected { background: var(--bg-2); border-color: var(--accent); }
+.gnome-inbox-people span { font-size: 11px; color: var(--text-dim); }
+.gnome-inbox-people .gnome-inbox-count { color: var(--accent); }
+.gnome-inbox-conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.gnome-inbox-conversation h3 { margin: 0; padding: 12px; font-size: 14px; }
+.gnome-inbox-conversation h3 small { font-size: 11px; color: var(--text-dim); font-weight: normal; }
+.gnome-inbox-letters { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 12px; overflow-wrap: anywhere; }
+.gnome-inbox-letter { border-bottom: 1px solid var(--line); padding: 12px 0; }
+.gnome-inbox-letter > div:first-child { display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; font-size: 12px; }
+.gnome-inbox-letter time, .gnome-inbox-letter small { font-size: 11px; color: var(--text-dim); }
+.gnome-inbox-letter pre { max-width: 100%; overflow: auto; }
+@media (max-width: 600px) {
+  .gnome-inbox-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: 140px minmax(0, 1fr); }
+  .gnome-inbox-directory { border-right: 0; border-bottom: 1px solid var(--line); }
+  .gnome-inbox-people { display: flex; gap: 6px; }
+  .gnome-inbox-people button { flex: 0 0 170px; margin: 0; }
+}

@@ -141,6 +141,7 @@ const GATES = [
   "test:office-names",
   "test:agent-names",
   "test:office-gating",
+  "test:gnome-inbox",
   "test:office-health",
   "test:online-office",
   "test:relay-core",

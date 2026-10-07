@@ -1,3 +1,4 @@
+import { GnomeInbox } from "./GnomeInbox.js";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore, type OutboundDeliveryStatus } from "../store.js";
@@ -507,9 +508,11 @@ export function Office() {
 }
 
 function OfficePanel() {
+  const [inboxOpen, setInboxOpen] = useState(false);
   const officeRoom = useStore((s) => s.officeRoom)!;
   const close = useStore((s) => s.closeOffice);
-  const open = useStore((s) => s.openOffice);
+  const openRoom = useStore((s) => s.openOffice);
+  const open = (room: string) => { setInboxOpen(false); openRoom(room); };
   const rooms = useStore((s) => s.chatRooms);
   const chat = useStore((s) => s.chat);
   const roomHistory = useStore((s) => s.roomHistory);
@@ -651,12 +654,13 @@ function OfficePanel() {
       <div className="office-panel" role="dialog" aria-modal="true" aria-label="Office chat">
         <div className="office-panel-head">
           <div className="office-tabs">
-            <button className={"office-tab" + (officeRoom === GENERAL_ROOM ? " on" : "")} onClick={() => open(GENERAL_ROOM)}>
+            <button className={"office-tab" + (!inboxOpen && officeRoom === GENERAL_ROOM ? " on" : "")} onClick={() => open(GENERAL_ROOM)}>
               Office
             </button>
+            <button className={"office-tab" + (inboxOpen ? " on" : "")} onClick={() => setInboxOpen(true)}>Gnome inbox</button>
             {showDirectorsTab ? (
               <button
-                className={"office-tab directors" + (directorsOpen ? " on" : "")}
+                className={"office-tab directors" + (!inboxOpen && directorsOpen ? " on" : "")}
                 onClick={() => open(DIRECTORS_ROOM)}
                 title="The directors' room — you and whoever else is running an orchestrator right now. Agents never see it."
               >
@@ -666,7 +670,7 @@ function OfficePanel() {
             {projectRooms.map(({ room: r, direct }) => (
               <button
                 key={r.room}
-                className={"office-tab" + (officeRoom === r.room ? " on" : "")}
+                className={"office-tab" + (!inboxOpen && officeRoom === r.room ? " on" : "")}
                 onClick={() => open(r.room)}
                 title={direct ? `Direct chat for ${r.workspace}` : roomTabTitle(r)}
               >
@@ -680,6 +684,7 @@ function OfficePanel() {
             ✕
           </button>
         </div>
+        {inboxOpen ? <GnomeInbox /> : <>
         <div className="office-panel-sub">
           {directorsOpen
             ? "The directors' room — the people running these consoles, across machines. No agent reads this one."
@@ -751,6 +756,7 @@ function OfficePanel() {
             Send
           </button>
         </div>
+        </>}
       </div>
     </>
   );

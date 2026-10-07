@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Direct gnome chat and quiet inbox** (2026-10-07, Moss Quill; task 6640a188).
-  Separate persisted messages, scoped agent access and owner inbox UI; no agent interruption.
 
 - **Observe and repair Git queue under increased live agent pressure** (2026-10-07, Flax Thorpe; task 6973a43e).
   Queue deployed; orphan index preserved and eight peer commits landed. Owner is adding agents; a fresh native-lock refusal shows mixed adoption still needs observation.
@@ -43,6 +41,9 @@ same commit as the fix. Git history keeps the record.
 
 - **Explicit Claude cloud requests never silently launch locally** (2026-10-07, Thimblewick; task 10379cdb).
   Live c0cb1279 hosted review returned findings; both balance chips verified beneath names. Review reproduced a local Resume escape; server control guard is committed/compiled for the next permitted restart, while the web guard is published. Cloud regressions, auto-review 214/214 and desktop/phone 70/70 pass; independent live API refusal proof remains.
+
+- **Direct gnome chat and quiet inbox** (2026-10-07, Moss Quill; task 6640a188).
+  Inbox integration 22/22, desktop/phone/CLI lab 28/28, office gates, vanilla 23/23, types/builds/README/privacy pass. Server activation awaits the next permitted restart; restart-resume instructions prohibit another this turn.
 
 
 - **QA: stabilize supervisor duplicate-boot retry verification under load** (838f708a, 2026-10-07, Codex QA).

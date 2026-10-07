@@ -36,6 +36,10 @@ export const T = {
   officeLook: `mcp__${OFFICE_SERVER}__office_look`,
   officeSetName: `mcp__${OFFICE_SERVER}__office_set_name`,
   chatPost: `mcp__${OFFICE_SERVER}__chat_post`,
+  inboxDirectory: `mcp__${OFFICE_SERVER}__inbox_directory`,
+  inboxSend: `mcp__${OFFICE_SERVER}__inbox_send`,
+  inboxRead: `mcp__${OFFICE_SERVER}__inbox_read`,
+  inboxAcknowledge: `mcp__${OFFICE_SERVER}__inbox_acknowledge`,
   chatRead: `mcp__${OFFICE_SERVER}__chat_read`,
   gitRead: `mcp__${GIT_SERVER}__git_read`,
   askUser: `mcp__${DIRECTOR_SERVER}__ask_user`,
@@ -59,7 +63,7 @@ export const T = {
 } as const;
 
 export const BUS_TOOLS = [T.postFinding, T.postDeliverable, T.handoffManualDeployment, T.readFindings, T.notifyThread, T.busAskUser, T.postNote];
-export const OFFICE_TOOLS = [T.officeLook, T.officeSetName, T.chatPost, T.chatRead];
+export const OFFICE_TOOLS = [T.officeLook, T.officeSetName, T.chatPost, T.chatRead, T.inboxDirectory, T.inboxSend, T.inboxRead, T.inboxAcknowledge];
 // Read-only tools the reader lane runs with — the codebase-read surface (Read/Grep/Glob are built-in and
 // added alongside these in readerConfig) plus allowlisted git history. No write/edit/shell tool appears
 // here, and readerConfig hard-blocks them via disallowedTools under bypassPermissions.

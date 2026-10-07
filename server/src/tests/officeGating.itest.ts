@@ -133,7 +133,7 @@ async function main(): Promise<void> {
       check("placeholder CLI → kickoff asks for an OFFICE[name] line", unnamedCli.includes("OFFICE[name]:") && !unnamedCli.includes("office_set_name"), unnamedCli);
       check("placeholder → the agent goes by its generated name, never its bare role", /^[A-Z][a-z]+ [A-Z][a-z]+$/.test(h.mgr.officeName(a.id, "implementor")), h.mgr.officeName(a.id, "implementor"));
       check("named → setOfficeName keeps the agent's own pick", h.mgr.setOfficeName(a.id, "implementor", "  Marigold  ").name === "Marigold");
-      check("solo + named → withOfficeNote leaves the kickoff untouched", h.internals.withOfficeNote(a, "implementor", "KICKOFF", true) === "KICKOFF");
+      check("solo named kickoff adds quiet inbox guidance without group coordination", h.internals.withOfficeNote(a, "implementor", "KICKOFF", true).startsWith("KICKOFF\n\nDirect gnome messages") && !h.internals.withOfficeNote(a, "implementor", "KICKOFF", true).includes("chat_post"));
 
       const b = h.thread("Build the exporter", REPO_A);
       h.seedLive(b.id, "planner");

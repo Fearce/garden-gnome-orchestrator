@@ -2,7 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { OrchestratorApi } from "../orchestrator/api.js";
-import type { ChatScope, Role } from "../types.js";
+import { ROLES, type ChatScope, type Role } from "../types.js";
 import { OFFICE_SERVER } from "../agents/toolNames.js";
 
 export interface OfficeContext {
@@ -36,7 +36,9 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
       const roster = api.officeRoster(ctx.threadId);
       const me = api.officeName(ctx.threadId, ctx.role);
       const others = roster.filter((r) => !r.self);
-      const youAre = `You go by "${me}" in the office (invent your own name, or change it, with office_set_name).`;
+      const unread = api.directRead({ threadId: ctx.threadId, role: ctx.role }).unread;
+      const inboxNote = ` Your quiet inbox has ${unread} unread message(s); use inbox_read when convenient.`;
+      const youAre = `You go by "${me}" in the office (invent your own name, or change it, with office_set_name).${inboxNote}`;
       if (!others.length) {
         return { content: [{ type: "text", text: `${youAre}\nYou're the only agent working right now — the office is quiet. No one else to coordinate with.` }] };
       }
@@ -119,9 +121,24 @@ export function createOfficeServer(api: OrchestratorApi, ctx: OfficeContext): Mc
     },
   );
 
+  const address = { threadId: ctx.threadId, role: ctx.role };
+  const inboxDirectory = tool("inbox_directory", "Find local gnomes by stable threadId and role. Active=false means mail waits until they next read it. Remote gnomes use office/team chat.", {}, async () => ({ content: [{ type: "text", text: JSON.stringify(api.directDirectory().map(({ unread: _unread, ...gnome }) => gnome)) }] }));
+  const inboxSend = tool("inbox_send", "Send a quiet direct message to one local gnome. Persists in their inbox without steering, interrupting, waking or resuming them.", {
+    threadId: z.string().min(1), role: z.enum(ROLES), message: z.string().trim().min(1).max(2000),
+  }, async args => {
+    try { return { content: [{ type: "text", text: JSON.stringify(api.directSend(address, { threadId: args.threadId, role: args.role }, args.message)) }] }; }
+    catch (error) { return { content: [{ type: "text", text: (error as Error).message }], isError: true }; }
+  });
+  const inboxRead = tool("inbox_read", "Read your own incoming and sent direct messages at convenient checkpoints. Does not mark them read; acknowledge only messages you handled. Older pages use before from the first message id.", {
+    before: z.number().int().positive().optional(),
+  }, async args => ({ content: [{ type: "text", text: JSON.stringify(api.directRead(address, args.before)) }] }));
+  const inboxAcknowledge = tool("inbox_acknowledge", "Mark only your incoming messages through this id as read after handling them.", {
+    throughId: z.number().int().positive(),
+  }, async args => ({ content: [{ type: "text", text: JSON.stringify({ acknowledged: api.directAcknowledge(address, args.throughId) }) }] }));
+
   return createSdkMcpServer({
     name: OFFICE_SERVER,
     version: "0.1.0",
-    tools: [officeLook, setName, chatPost, chatRead],
+    tools: [officeLook, setName, chatPost, chatRead, inboxDirectory, inboxSend, inboxRead, inboxAcknowledge],
   });
 }

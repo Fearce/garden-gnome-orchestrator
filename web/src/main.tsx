@@ -1,3 +1,4 @@
+import "./components/gnomeInbox.css";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 // The console's three typefaces ship in the bundle (@fontsource = the same faces the old Google

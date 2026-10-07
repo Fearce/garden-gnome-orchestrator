@@ -1,3 +1,4 @@
+import { registerDirectMessageRoutes } from "./office/directMessageRoutes.js";
 import Fastify from "fastify";
 import { registerPortalLink } from "./portalLink.js";
 import { createDesktopTickets, DESKTOP_SIGN_IN_COOKIE, desktopHandoffPage, registerDesktopRoutes } from "./desktop.js";
@@ -424,6 +425,7 @@ async function main(): Promise<void> {
     registerRemoteControlRoutes(app, remoteControl, isAuthed);
     registerModuleRoutes(app, modules, isAuthed);
     registerMemoryRoutes(app, { memory, settings: memorySettings, endpoint: memoryEndpoint, isAuthed });
+    registerDirectMessageRoutes(app, manager, isAuthed);
     registerPortalLink(app, isAuthed);
     registerDesktopRoutes(app, {
       isAuthed,

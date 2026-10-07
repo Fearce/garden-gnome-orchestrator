@@ -176,6 +176,8 @@
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
     "test:office-names": "tsx src/tests/officeNames.test.ts",
     "test:agent-names": "tsx src/tests/agentNames.itest.ts",
+    "test:gnome-inbox": "tsx src/tests/directMessages.itest.ts",
+    "gnome-inbox-lab": "node scripts/gnome-inbox-lab.cjs",
     "test:office-gating": "tsx src/tests/officeGating.itest.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/office-navigation.test.tsx",
     "test:online-office": "tsx src/tests/onlineOffice.itest.ts",
     "test:relay-core": "tsx ../relay/src/core.test.ts",

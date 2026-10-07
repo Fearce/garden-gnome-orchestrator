@@ -1,3 +1,4 @@
+import { DirectMessages, type GnomeAddress } from "../office/directMessages.js";
 import { currentCodexModel, currentCodexModels, isGpt6Model } from "../agents/codexModelGeneration.js";
 import { familyUpgradeNote, invalidateModelFamilyRoster, latestFamilyModel, newestInFamily, sameModelFamily, setModelFamilyRoster, withoutSupersededModels } from "../agents/modelFamily.js";
 import type { AccountDispatchPreview, AccountManager } from "../accounts/accountManager.js";
@@ -9275,8 +9276,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       let accountId = provider === "claude" ? acct!.id : "";
       if (provider === "codex") {
         accountId = "openai-codex";
-        const fullKickoff = cliRoleKickoff(cfg, roleKickoff, role, "Codex");
-        if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Codex");
+        const fullKickoff = `${cliRoleKickoff(cfg, roleKickoff, role, "Codex")}\n\n${this.inboxNote(thread.id, role, false)}`;
+        if (!resume) startMessage = `${cliRoleKickoff(cfg, message, role, "Codex")}\n\n${this.inboxNote(thread.id, role, false)}`;
         agent = this.createRoleAgent("codex", () => new CodexAgentRun({
           model,
           effort: codexEffort!,
@@ -9304,8 +9305,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         }));
       } else if (provider === "grok") {
         accountId = "xai-grok";
-        const fullKickoff = cliRoleKickoff(cfg, roleKickoff, role, "Grok");
-        if (!resume) startMessage = cliRoleKickoff(cfg, message, role, "Grok");
+        const fullKickoff = `${cliRoleKickoff(cfg, roleKickoff, role, "Grok")}\n\n${this.inboxNote(thread.id, role, false)}`;
+        if (!resume) startMessage = `${cliRoleKickoff(cfg, message, role, "Grok")}\n\n${this.inboxNote(thread.id, role, false)}`;
         agent = this.createRoleAgent("grok", () => new GrokAgentRun({
           model,
           effort: effort as GrokEffort,
@@ -16663,6 +16664,31 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return this.officeNameMap();
   }
 
+  private inboxService?: DirectMessages;
+  get directInbox(): DirectMessages {
+    return this.inboxService ??= new DirectMessages(this.db, (id, role) => this.officeName(id, role));
+  }
+
+  directDirectory(): Array<GnomeAddress & { name: string; title: string; active: boolean; unread: number }> {
+    const active = new Set(this.officeRoster("").filter(entry => !entry.instance).map(entry => agentKey(entry.threadId, entry.role)));
+    const unread = this.directInbox.unreadCounts();
+    const threads = new Map((this.db.raw.prepare("SELECT id, title FROM threads").all() as { id: string; title: string }[]).map(thread => [thread.id, thread]));
+    return Object.entries(this.officeNameOverrides()).flatMap(([key, name]) => {
+      const split = key.lastIndexOf("::");
+      const threadId = key.slice(0, split);
+      const role = key.slice(split + 2) as Role;
+      const thread = threads.get(threadId);
+      if (!thread || !isRole(role) || role === "director") return [];
+      return [{ threadId, role, name, title: thread.title, active: active.has(key), unread: unread.get(key) ?? 0 }];
+    }).sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
+  }
+
+  directSend(sender: GnomeAddress, recipient: GnomeAddress, body: string) {
+    return this.directInbox.send(sender, recipient, body);
+  }
+  directRead(address: GnomeAddress, before?: number) { return this.directInbox.list(address, before); }
+  directAcknowledge(address: GnomeAddress, throughId: number) { return this.directInbox.acknowledge(address, throughId); }
+
   chatPost(input: ChatPostInput): ChatMessage {
     const t = this.db.getThread(input.threadId);
     const workspace = t ? homeWorkspaceOf(t) : "";
@@ -17064,11 +17090,16 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\n${[risk, how, isolate, edits && localPeers ? GIT_TRANSACTION_GUIDANCE : null].filter(Boolean).join(" ")}`;
   }
 
-  /** Append the office note to a kickoff when — and only when — a teammate already shares the repo.
-   *  Returns `text` unchanged for a solo task, so the caller's kickoff carries zero office overhead
-   *  until collaboration actually begins. */
+  /** Scoped CLI mail access follows a gnome across fresh runs without granting owner APIs. */
+  private inboxNote(threadId: string, role: Role, withTools: boolean): string {
+    return withTools
+      ? "Direct gnome messages are quiet and never interrupt work. Use inbox_directory to find local recipients, inbox_send to ping one, inbox_read at convenient checkpoints and before handoff, then inbox_acknowledge through the last message you handled. Office/team chat is still for shared announcements."
+      : `Direct gnome messages are quiet and never interrupt work. At convenient checkpoints and before handoff, read your inbox with node "${resolve(config.serverRoot, "scripts/gnome-inbox.cjs")}" http://127.0.0.1:${config.port} ${this.directInbox.capability({ threadId, role })} read. Use the same command with directory to find local recipient threadId/role, send with JSON {recipient:{threadId,role},body} on stdin, or ack <through-id> after handling messages. Never print or share the inbox capability. Reading does not acknowledge; owner viewing does not acknowledge either.`;
+  }
+
+  /** Always include quiet inbox guidance; group coordination is included only with a teammate. */
   private withOfficeNote(thread: Thread, role: Role, text: string, withTools = true): string {
-    const notes = [this.namingNote(thread.id, role, withTools), this.officeNote(thread, role, withTools)].filter(Boolean);
+    const notes = [this.namingNote(thread.id, role, withTools), this.officeNote(thread, role, withTools), this.inboxNote(thread.id, role, withTools)].filter(Boolean);
     return notes.length ? `${text}\n\n${notes.join("\n\n")}` : text;
   }
 

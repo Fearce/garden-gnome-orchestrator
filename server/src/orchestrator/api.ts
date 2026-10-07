@@ -1,3 +1,4 @@
+import type { GnomeAddress, DirectMessage } from "../office/directMessages.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
@@ -159,7 +160,12 @@ export interface OrchestratorApi {
   /** Record a step agent's milestone report on its goal; the reply lists the goal's milestones. */
   reportGoalProgress(threadId: string, report: unknown): { ok: true; message: string } | { ok: false; error: string };
 
-  /** Post a message to the office (general room) or this task's project room; broadcasts it live. */
+  /** Quiet direct mail is persisted separately and never steers or wakes a runner. */
+  directDirectory(): Array<GnomeAddress & { name: string; title: string; active: boolean; unread: number }>;
+  directSend(sender: GnomeAddress, recipient: GnomeAddress, body: string): DirectMessage;
+  directRead(address: GnomeAddress, before?: number): { messages: DirectMessage[]; unread: number; hasMore: boolean };
+  directAcknowledge(address: GnomeAddress, throughId: number): number;
+  /** Post a message to the office or project room; broadcasts it live. */
   chatPost(input: ChatPostInput): ChatMessage;
 
   /** Read recent office chat from the caller's perspective (general, this task's project room, or both). */
