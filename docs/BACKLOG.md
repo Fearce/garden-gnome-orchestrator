@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA: verify Script Hub editing and repair filtering for the literal `all` tag** (2026-10-07, Codex QA).
+  Audit CSV now exists in the task workspace, but its refused deliverable still has no accepted replacement card.
 
 - **QA: independently verify prepaid credit fallback and existing-balance-only safety** (2026-10-07, Codex QA).
 
