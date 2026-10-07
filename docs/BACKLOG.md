@@ -16,8 +16,6 @@ same commit as the fix. Git history keeps the record.
 
 - **Dispatch suitable repository tasks to Claude cloud sessions using promotional credits** (2026-10-07, Thimblewick).
 
-- **Route CLI agent questions through GGO question chips and resume on answers** (2026-10-07, Puddle Astrolabe).
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -30,6 +28,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Route CLI agent questions through GGO question chips and resume on answers** (41945c65, 2026-10-07, Puddle Astrolabe).
+  Pushed; 6/6 focused gates, server/web types, builds, README 74/74 and privacy pass. Dist is staged with --no-restart; live remains 843bd2a3. Activation awaits the next permitted server restart; this session's restart-resume instruction forbids another restart.
 
 - **Stop repeated QA instruction lifecycle spam** (9b240512, 2026-10-07, Reedspindle).
   Pushed; live web hides existing noise and authenticated bundle bytes match the build. Injection 186/186, browser 28/28, feed regressions/types/builds/README/privacy pass. Silent QA delivery and batched restart notices await the next permitted server restart; this session's restart-resume instruction forbids another restart.
