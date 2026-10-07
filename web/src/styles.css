@@ -3063,8 +3063,9 @@ body.dl-resizing { user-select: none; }
   border: solid var(--bg); border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 .repo-empty { padding: 14px 10px; font-size: 12.5px; color: var(--text-faint); }
-.repo-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; }
+.repo-foot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; }
 .repo-hint { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-faint); }
+.repo-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 
 /* ---- folder picker ---- */
 .modal.folder-picker { width: min(520px, 92vw); }

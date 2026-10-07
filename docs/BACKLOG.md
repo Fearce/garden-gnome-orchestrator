@@ -45,6 +45,9 @@ same commit as the fix. Git history keeps the record.
   91/91 pass. The gate-runner identity regression is fixed by peer commit 7ea9613b.
   Live source process restarted after integration; web bundle and four screenshot-card downloads match.
   Independent review remains; source-mode deployment identity is tracked under Ready.
+  Claude QA round 2 (Thimble Quill): the picker had no way out short of a pick or the 20-minute timeout
+  (none after a restart). Added **Don't send**, which answers with no path, so nothing dispatches.
+  Lab 95/95 including the decline path; auto-repo gate, types, web build, README claims and privacy pass.
 
 
 - **Explicit Claude cloud requests never silently launch locally** (2026-10-07, Thimblewick; task 10379cdb).

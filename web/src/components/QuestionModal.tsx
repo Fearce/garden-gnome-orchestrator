@@ -15,6 +15,9 @@ export function QuestionModal() {
   return <QuestionCard key={q.id} q={q} context={context} onAnswer={(a) => answer(q.id, a)} />;
 }
 
+/** The answer when the owner declines the repo picker: no path, so nothing is dispatched. */
+const REPO_PICK_DECLINED = "(no repo picked: the owner chose not to send this)";
+
 interface RepoRow {
   path: string;
   label: string;
@@ -163,11 +166,18 @@ export function RepoQuestionCard({ q, context, onAnswer }: { q: Question; contex
           </ul>
           <div className="repo-foot">
             <span className="repo-hint">{q.multiSelect ? "↑↓ move · Enter selects · Ctrl+Enter dispatches" : "↑↓ move · Enter picks"}</span>
-            {q.multiSelect && (
-              <button className="btn primary" disabled={!picked.length} onClick={() => onAnswer(picked.join("\n"))}>
-                {picked.length > 1 ? `Use ${picked.length} repos` : "Use repo"}
+            <span className="repo-actions">
+              {/* The way out when none of the repos is right. The answer names no path, so the server
+                  dispatches nothing and says so (parseRepoAnswer yields no repo). */}
+              <button type="button" className="btn ghost" onClick={() => onAnswer(REPO_PICK_DECLINED)}>
+                Don't send
               </button>
-            )}
+              {q.multiSelect && (
+                <button type="button" className="btn primary" disabled={!picked.length} onClick={() => onAnswer(picked.join("\n"))}>
+                  {picked.length > 1 ? `Use ${picked.length} repos` : "Use repo"}
+                </button>
+              )}
+            </span>
           </div>
         </div>
       </div>

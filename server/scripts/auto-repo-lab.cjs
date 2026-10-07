@@ -241,6 +241,33 @@ async function checkMultiPicker(page, check, dataDir, repos) {
   check("desktop: each chosen repo receives exactly one task", tasksIn(dataDir, repos.orchard) === before[0] + 1 && tasksIn(dataDir, repos.harbor) === before[1] + 1);
 }
 
+function taskCount(dataDir) {
+  const db = new Database(path.join(dataDir, "orchestrator.sqlite"), { readonly: true });
+  const n = db.prepare("SELECT COUNT(*) AS n FROM threads").get().n;
+  db.close();
+  return n;
+}
+
+/** Declining the picker sends nothing: the modal closes, no task is created, and the chat says why. */
+async function checkDecline(page, check, dataDir) {
+  const before = taskCount(dataDir);
+  await page.locator(".composer textarea").first().fill("make the build quicker (decline)");
+  await page.locator("button.composer-send:visible").first().click();
+  const search = page.getByRole("combobox", { name: "Search repositories" });
+  await search.waitFor({ state: "visible" });
+  const decline = page.getByRole("button", { name: "Don't send" });
+  check("desktop: the picker offers a way out", await decline.isVisible());
+  await decline.click();
+  const closed = await page.locator(".repo-question").waitFor({ state: "detached", timeout: 10_000 }).then(() => true, () => false);
+  check("desktop: Don't send closes the picker", closed);
+  const said = await page
+    .waitForFunction(() => document.body.innerText.includes("no repo was picked"), null, { timeout: 10_000 })
+    .then(() => true, () => false);
+  check("desktop: the chat says nothing was dispatched", said);
+  await page.waitForTimeout(1_500);
+  check("desktop: declining dispatches no task", taskCount(dataDir) === before, `${before} -> ${taskCount(dataDir)}`);
+}
+
 async function main() {
   requireBuild();
   requireFreshWebBuild();
@@ -273,6 +300,7 @@ async function main() {
       check("desktop: and the field is still locked after it", await page.locator(".ws-wrap input.ws").first().isDisabled());
       await checkPicker(page, check, "desktop", shots, dataDir, repos, "keyboard");
       await checkMultiPicker(page, check, dataDir, repos);
+      await checkDecline(page, check, dataDir);
       await page.locator(".auto-repo-toggle").click();
       await waitForPersisted(dataDir, "setting_auto_repo", "0");
       await context.close();
