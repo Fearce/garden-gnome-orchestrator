@@ -230,6 +230,15 @@ rebase/fast-forward sequence; run verification outside the queue and wrap author
 separately. Direct commands that bypass this wrapper still contend with Git's native locks.
 Repository instructions requiring an existing branch override worktree guidance.
 
+An abandoned native `index.lock` from an interrupted, pre-queue Git command still blocks
+queued staging. Do not identify its owner by listing unrelated Git processes: verify the
+checkout/common directory and process ancestry. A live or uncertain lock stays untouched.
+Recovery requires a complete process inventory, no possible surviving Git owner, an unchanged
+lock snapshot and exclusive file access while holding the repository transaction. Preserve
+the orphan's bytes in a uniquely named quarantine under `.git`, record its hash/timestamps,
+and verify the real index hash is unchanged. Never delete an active lock, reset the index,
+or discard peer work. Watch the queued retries and actual commit receipts after recovery.
+
 ## Deliverables (agent-produced files)
 A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the
 right panel. It's a `findings` row with `kind='deliverable'`, a `path` (absolute or workspace-relative)

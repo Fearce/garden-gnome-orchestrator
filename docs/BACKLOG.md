@@ -35,8 +35,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Serialize Git transactions for concurrent agents and preserve reviewed peer work** (661b5fc2, fdd71f38, 2026-10-07, Flax Thorpe; task 6973a43e).
-  Live build fdd71f38 verified; eight same-checkout tasks confirm repeated locks/manual windows and six lane/repair agents acknowledge queue adoption. Real commits/rebase/fast-forward/push use the queue; 27 focused checks, CLI kickoff, types/build and privacy pass. First observed peer commit through the queue remains pending; owner stopped test expansion for live observation.
 
 - **QA: stabilize supervisor duplicate-boot retry verification under load** (838f708a, 2026-10-07, Codex QA).
   Full suite 237/239 before repair; supervisor now 12/12 standalone and passes with affinity/revival/fallback (4/4 gates), types/builds/browser/privacy pass. Fixture tree reaped; independent review remains.
@@ -159,6 +157,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-07 **Serialize Git transactions for concurrent agents and preserve reviewed peer work** (661b5fc2, fdd71f38, Flax Thorpe): pushed/live verified; abandoned pre-queue index lock archived with its bytes and current index hash preserved. Six real peer commits landed after recovery, with concurrent queue/writer observation and published peer receipts; 27 focused checks, CLI kickoff, types/build and privacy pass. Hook-history cost remains Ready.
 
 - 2026-10-07 **Keep restart-interrupted sessions on their previous provider, including promoted reads and admission parks** (cd78bbaf, aac45dca, Codex): live build d15fe425 contains both fixes; production restart retained the exact Codex/Sol session. Affinity 19/19, token-freeze, types/builds, README 74/74 and privacy pass. Completed full sweep 235/239; QA-budget 161/161, Default 23/23 and doc-path 18/18 pass after fixture/build repairs. Supervisor timing remains intermittent (standalone 12/12, serial subset 11/12), tracked in Ready.
 
