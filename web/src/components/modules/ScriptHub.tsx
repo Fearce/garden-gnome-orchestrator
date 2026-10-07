@@ -39,7 +39,8 @@ type StatusFilter = "all" | "running" | "stopped" | "keepalive" | "recovering";
 
 interface Filters {
   search: string;
-  tag: string;
+  /** "" means every tag. Any non-empty value is a real tag, including one named "all". */
+  tagFilter: string;
   sort: "name" | "urgency";
   status: StatusFilter;
   hideConsolidated: boolean;
@@ -48,12 +49,14 @@ interface Filters {
 }
 
 const FILTERS_KEY = "ggo-scripthub-filters";
-const DEFAULT_FILTERS: Filters = { search: "", tag: "all", sort: "name", status: "all", hideConsolidated: true, showHidden: false, showAgentManaged: false };
+const DEFAULT_FILTERS: Filters = { search: "", tagFilter: "", sort: "name", status: "all", hideConsolidated: true, showHidden: false, showAgentManaged: false };
 const PENDING_TIMEOUT_MS = 30_000;
 
 function loadFilters(): Filters {
   try {
-    return { ...DEFAULT_FILTERS, ...(JSON.parse(localStorage.getItem(FILTERS_KEY) ?? "{}") as Partial<Filters>) };
+    // Older builds stored `tag`, where "all" was ambiguous with a real tag of that name; start that filter fresh.
+    const { tag: _legacyTag, ...saved } = JSON.parse(localStorage.getItem(FILTERS_KEY) ?? "{}") as Partial<Filters> & { tag?: unknown };
+    return { ...DEFAULT_FILTERS, ...saved };
   } catch {
     return DEFAULT_FILTERS;
   }
@@ -187,7 +190,8 @@ function ScriptHubBody() {
   const agentManagedCount = data.scripts.filter(isAgentManaged).length;
   const matches = (script: Script) => matchesFilters(script, filters, hiddenSet, details);
   const visible = pool.filter(matches).sort(filters.sort === "urgency" ? byUrgency : (a, b) => a.displayName.localeCompare(b.displayName));
-  const tags = [...new Set(data.scripts.flatMap((s) => s.tags ?? []))].sort();
+  // A saved filter for a tag nobody carries any more stays visible, so the empty list is explained.
+  const tags = [...new Set([...data.scripts.flatMap((s) => s.tags ?? []), ...(filters.tagFilter ? [filters.tagFilter] : [])])].sort();
   const recovering = data.scripts.filter(isRecovering);
   const degraded = data.scripts.map((s) => s.status.processEnumeration).find((e) => e && e.fresh === false) ?? null;
   const hiddenCount = pool.filter((s) => hiddenSet.has(s.id)).length;
@@ -208,8 +212,8 @@ function ScriptHubBody() {
           <Icon name="search" size={14} />
           <input type="search" placeholder="Search apps, services or tags" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} aria-label="Search scripts" />
         </label>
-        <select className="mod-select" value={filters.tag} onChange={(e) => setFilters({ ...filters, tag: e.target.value })} aria-label="Tag">
-          <option value="all">All tags</option>
+        <select className="mod-select" value={filters.tagFilter} onChange={(e) => setFilters({ ...filters, tagFilter: e.target.value })} aria-label="Tag">
+          <option value="">All tags</option>
           {tags.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
         </select>
         <select className="mod-select" value={filters.sort} onChange={(e) => setFilters({ ...filters, sort: e.target.value as Filters["sort"] })} aria-label="Sort scripts">
@@ -256,7 +260,7 @@ function ScriptHubBody() {
               onAction={(action) => void runAction(script.id, action)}
               onKeepAlive={() => void toggleKeepAlive(script)}
               onHide={() => void toggleHidden(script.id)}
-              onTag={(tag) => setFilters({ ...filters, tag })}
+              onTag={(tag) => setFilters({ ...filters, tagFilter: tag })}
               onEdited={() => status.refresh()}
               onOrganize={async (organization) => {
                 await moduleJson("scripthub", `/scripts/${encodeURIComponent(script.id)}/organization`, { method: "PUT", body: organization });
@@ -291,7 +295,7 @@ function HubError({ error, onRetry, stale }: { error: unknown; onRetry: () => vo
 function matchesFilters(script: Script, filters: Filters, hidden: Set<string>, details: Details | null): boolean {
   if (hidden.has(script.id) && !filters.showHidden) return false;
   if (filters.hideConsolidated && script.consolidated) return false;
-  if (filters.tag !== "all" && !(script.tags ?? []).includes(filters.tag)) return false;
+  if (filters.tagFilter && !(script.tags ?? []).includes(filters.tagFilter)) return false;
   const running = script.status.state === "running";
   if (filters.status === "running" && !running) return false;
   if (filters.status === "stopped" && (running || script.consolidated)) return false;

@@ -10,7 +10,7 @@ const PORT = Number(process.env.SCRIPTHUB_LAB_PORT || 4507);
 const BASE = `http://127.0.0.1:${PORT}`;
 const check = createChecks();
 const scripts = [
-  { id: "alpha", owner: "alex", displayName: "Alpha app", category: "tools", tags: ["dashboard"] },
+  { id: "alpha", owner: "alex", displayName: "Alpha app", category: "tools", tags: ["all", "dashboard"] },
   { id: "beta", owner: "alex", agentManaged: true, keepAlive: true, displayName: "Beta worker", category: "tools", tags: ["maintenance"] },
   { id: "gamma", agentManaged: false, displayName: "Gamma game", category: "games", tags: ["play"] },
 ].map((script) => ({ ...script, status: { state: script.id === "gamma" ? "running" : "stopped", processes: [], tasks: [] } }));
@@ -76,6 +76,11 @@ const scripts = [
       await page.waitForSelector('[data-script-id="gamma"]');
       check(`${label}: filter survives reload`, await page.getByLabel("Tag", { exact: true }).inputValue() === "play");
       await page.getByRole("button", { name: "Reset filters", exact: true }).click();
+      await page.getByLabel("Tag", { exact: true }).selectOption({ label: "all" });
+      check(`${label}: a tag named "all" filters like any other tag`, JSON.stringify(await page.locator(".sh-card h4").allTextContents()) === JSON.stringify(["Alpha app"]));
+      await page.locator('[data-script-id="alpha"]').getByRole("button", { name: "all", exact: true }).click();
+      check(`${label}: the "all" tag badge filters instead of clearing the filter`, await page.locator(".sh-card").count() === 1 && await page.getByLabel("Tag", { exact: true }).inputValue() === "all");
+      await page.getByRole("button", { name: "Reset filters", exact: true }).click();
       await page.getByLabel("Show agent-managed", { exact: false }).check();
       check(`${label}: categories are absent`, await page.getByLabel("Category", { exact: true }).count() === 0);
       check(`${label}: name sort orders the full list`, JSON.stringify(await page.locator(".sh-card h4").allTextContents()) === JSON.stringify(["Alpha app", "Beta worker", "Gamma game"]));
@@ -118,6 +123,8 @@ const scripts = [
       check(`${label}: typed list separators survive`, await notesField.inputValue() === `${label} concurrent update\nsecond note` && await entryEditor.getByLabel("Aliases (comma separated)").inputValue() === "gg, my game");
       await entryEditor.getByRole("button", { name: "Save entry", exact: true }).click();
       await entryEditor.waitFor({ state: "detached" });
+      // The description arrives through a separate /details fetch after the status refresh; give it a moment.
+      await card.locator(".sh-desc", { hasText: `${label} edited description` }).waitFor({ timeout: 10_000 }).catch(() => undefined);
       check(`${label}: entry edits update cards`, await card.locator(".sh-desc").textContent() === `${label} edited description` && await card.locator(".sh-cmd").textContent() === "node game.js --test");
       const savedEntry = registry().scripts.find((script) => script.id === "gamma");
       check(`${label}: launch edits saved to actual registry`, savedEntry.start.executable === "node" && savedEntry.start.args[1] === "--test" && savedEntry.notes[0] === `${label} concurrent update`);
