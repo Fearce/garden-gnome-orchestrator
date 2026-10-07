@@ -27,7 +27,12 @@ The operator must confirm that the brief needs only the attached repository and 
 environment. This is an explicit suitability decision, not an inference model call.
 
 Routine tokens allow submission only: they cannot read balances, transcripts, or
-completion state. GGO cannot enforce a credits-only spend ceiling. Check the account's
+completion state. Subscription usage chips show promotional cloud dollars from the
+same profile-token usage read used for banked resets. The profile's organization
+must match the subscription's identity; otherwise the chip shows `cloud ?`, never
+a guessed zero. The tooltip gives allowance, expiry and read time; expired, locked
+and stale balances are distinguished. Cloud dollars never change local routing or
+prepaid credit fallback. GGO cannot enforce a credits-only spend ceiling. Check the account's
 billing controls and balance at [Claude Usage](https://claude.ai/settings/usage).
 GGO neither purchases credits nor changes provider billing settings.
 
