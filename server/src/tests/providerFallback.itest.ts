@@ -130,6 +130,10 @@ const db = new Db(join(root, "orchestrator.sqlite"));
   const codexPool = { ...claudePool, provider: "codex", sevenDayReset: Date.now() + 3_600_000 };
   check("cross-backend dispatch counts the selected Claude sub rather than its aggregate", balance.providerDispatchLoad("claude") === 5);
   check("an unused eligible backend takes the next automatic dispatch", balance.preferredProviderCandidate([claudePool, codexPool]).provider === "codex");
+  check("exact subscription candidates use their own load", balance.preferredProviderCandidate([
+    { ...claudePool, accountId: "sub-a", sevenDayReset: Date.now() + 60_000 },
+    { ...claudePool, accountId: "sub-b" },
+  ]).accountId === "sub-b");
   balanceDb.raw.close();
 }
 const accountStub = new StubAccounts();

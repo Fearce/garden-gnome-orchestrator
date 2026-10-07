@@ -548,6 +548,8 @@ interface RoleSession {
 
 export interface ProviderCandidate {
   provider: ImplementorProvider;
+  /** An exact Claude subscription when this candidate already represents one. */
+  accountId?: string;
   hasHeadroom: boolean;
   fiveHour: number | null;
   fiveHourReset?: number | null;
@@ -2995,8 +2997,8 @@ export class ThreadManager implements OrchestratorApi {
     return count;
   }
 
-  private providerDispatchLoad(provider: ImplementorProvider, demand?: CapacityDemand): number {
-    const accountId = provider === "claude" ? this.accounts.dispatchPreview(demand).account.id
+  private providerDispatchLoad(provider: ImplementorProvider, demand?: CapacityDemand, selectedAccountId?: string): number {
+    const accountId = provider === "claude" ? selectedAccountId ?? this.accounts.dispatchPreview(demand).account.id
       : provider === "codex" ? "openai-codex" : provider === "grok" ? "xai-grok" : "zai";
     return this.subscriptionLoad(accountId);
   }
@@ -4350,6 +4352,7 @@ export class ThreadManager implements OrchestratorApi {
       const dto = this.accounts.dto().find((entry) => entry.id === target.accountId);
       return {
         provider: "claude",
+        accountId: target.accountId,
         hasHeadroom: option?.hasHeadroom ?? false,
         fiveHour: dto?.fiveHour ?? null,
         fiveHourReset: dto?.fiveHourReset ?? null,
@@ -6205,6 +6208,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const c = preview.call(this.accounts, demand);
       return {
         provider: "claude",
+        accountId: c.account.id,
         hasHeadroom: c.hasHeadroom ?? this.accounts.hasHeadroom(),
         fiveHour: c.fiveHour ?? null,
         fiveHourReset: c.fiveHourReset ?? null,
@@ -6454,7 +6458,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       : this.settings().spreadUsage
         ? providerSpreadUsage
         : providerPriority;
-    const loads = new Map(pool.map((c) => [c, this.providerDispatchLoad(c.provider, demand)]));
+    const loads = new Map(pool.map((c) => [c, this.providerDispatchLoad(c.provider, demand, c.accountId)]));
     return pool.reduce((best, c) => ((loads.get(best)! - loads.get(c)! || priority(best, c)) <= 0 ? best : c));
   }
 
