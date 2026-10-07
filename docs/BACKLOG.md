@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Serialize Git transactions for concurrent agents and preserve reviewed peer work** (2026-10-07, Codex; task 6973a43e).
+  Shared-index commits and worktree integrations need a cross-process queue; owner supplied a live example of agents waiting on peers to commit.
+
 
 
 
