@@ -1104,6 +1104,8 @@ export interface ModelEffortStat extends ModelStat {
 export type WorkspaceMode = "worktree" | "guided" | "umbrella" | "in-place";
 
 export interface StageOutputs {
+  /** Restart recovery remains pending across admission parks and early resume state changes. */
+  restartResumePending?: boolean;
   /** Decided by ThreadManager.prepareTaskWorkspace; absent until then and on older tasks. */
   workspaceMode?: WorkspaceMode;
   /** Durable task-local restriction; retries retain it and other tasks keep their settings. */

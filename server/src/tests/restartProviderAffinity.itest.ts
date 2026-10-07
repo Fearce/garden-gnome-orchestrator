@@ -165,6 +165,49 @@ try {
     check("the Default-mode gate keeps Codex", chosen === "codex", String(chosen));
   }
 
+  console.log("\nRecovery intent survives state changes and admission parks");
+  {
+    const t = task("promoted reader", "read");
+    priorSession(t.id, "codex:openai-codex", "promoted-codex-session");
+    db.updateThreadStageOutputs(t.id, { readerDone: true });
+    interruptedByRestart(t.id);
+    const realResume = internals.resumeImplementorOnly;
+    let chosen: string | undefined;
+    let carriesRestartNotice = false;
+    internals.resumeImplementorOnly = async () => {
+      const current = db.getThread(t.id)!;
+      chosen = internals.gateImplementorProvider(current);
+      carriesRestartNotice = internals.restartResumePending(current);
+    };
+    await mgr.resumeThread(t.id);
+    internals.resumeImplementorOnly = realResume;
+    check("promoted read resume keeps Codex after its early state transition", chosen === "codex", String(chosen));
+    check("promoted read resume retains the restart notice", carriesRestartNotice);
+    internals.resuming.delete(t.id);
+  }
+  {
+    const t = task("token safety park");
+    priorSession(t.id, "codex:openai-codex", "token-park-session");
+    interruptedByRestart(t.id);
+    internals.parkRestartResumeForTokenSafety(db.getThread(t.id));
+    check("token park durably retains recovery intent", db.getThreadStageOutputs(t.id).restartResumePending === true);
+    // The freeze wake converts its admission marker; it must not depend on the old error text.
+    db.updateThread(t.id, { state: "review", error: "waiting for capacity" });
+    check("token park wake keeps Codex", internals.gateImplementorProvider(db.getThread(t.id)) === "codex");
+    check("token park wake still carries the restart notice", internals.restartResumePending(db.getThread(t.id)));
+  }
+  {
+    const t = task("capacity park");
+    priorSession(t.id, "codex:openai-codex", "cap-park-session");
+    interruptedByRestart(t.id);
+    internals.capParked.set(t.id, "implementor");
+    internals.settleReview(t.id, "waiting");
+    check("capacity park replaces the restart error", !db.getThread(t.id)?.error?.startsWith("interrupted by a server restart"));
+    check("capacity park wake keeps Codex", internals.gateImplementorProvider(db.getThread(t.id)) === "codex");
+    internals.setState(t.id, "cancelled");
+    check("terminal state clears pending recovery", db.getThreadStageOutputs(t.id).restartResumePending === false);
+  }
+
   console.log("\nA QA-only restart retry pins the implementor's backend for its fix rounds");
   {
     const t = task("qa retry");

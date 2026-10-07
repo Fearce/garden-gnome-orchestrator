@@ -7287,9 +7287,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  hands a Codex session to Claude (or the reverse), discarding the session and spending a pool the task
    *  was never routed to. Undefined for any other resume, or when that backend can no longer serve. */
   private restartAffinityProvider(thread: Thread, demand: CapacityDemand): ImplementorProvider | undefined {
-    if (!thread.error?.startsWith(RESTART_ERROR_PREFIX)) return undefined;
+    if (!this.restartResumePending(thread)) return undefined;
     const prior = this.priorImplementorProvider(thread.id);
     return prior && this.providerSafeForRole(prior, "implementor", demand) ? prior : undefined;
+  }
+
+  private restartResumePending(thread: Thread): boolean {
+    return thread.error?.startsWith(RESTART_ERROR_PREFIX) === true ||
+      this.db.getThreadStageOutputs(thread.id).restartResumePending === true;
   }
 
   private noteRestartAffinity(threadId: string, kept: ImplementorProvider, routed: ImplementorProvider): void {
@@ -8117,6 +8122,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         threadId,
         error?.trim() || `Auto-review stopped because the task moved to ${state}.`,
       );
+    }
+    // Resume can publish an early implementing state or replace the error with a capacity/freeze
+    // park before the provider gate runs. Retain recovery intent until an implementor actually starts.
+    if (["done", "cancelled", "closed"].includes(state)) {
+      if (this.db.getThreadStageOutputs(threadId).restartResumePending) {
+        this.db.updateThreadStageOutputs(threadId, { restartResumePending: false });
+      }
+    } else if (current?.error?.startsWith(RESTART_ERROR_PREFIX)) {
+      this.db.updateThreadStageOutputs(threadId, { restartResumePending: true });
     }
     const t = this.db.updateThread(threadId, { state, error: error ?? null });
     if (!t) return;
@@ -10293,6 +10307,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const startContent = this.implementorStartContent(thread.id, kickoff, startKickoff, !!opts?.resume, opts?.images);
     const firstInput = vanilla ? startContent : this.prepareRunInput(agent, this.communicationContent(startContent));
     agent.start(firstInput);
+    if (this.db.getThreadStageOutputs(thread.id).restartResumePending) {
+      this.db.updateThreadStageOutputs(thread.id, { restartResumePending: false });
+    }
     this.noteRunInput(agent, firstInput);
     return { run: agent, runId, accountId };
   }
@@ -10340,7 +10357,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // restart again). A server-restart interruption stamps RESTART_ERROR_PREFIX, and that error survives
     // until startImplementor (below) flips the state, so every resume that skips finished stages reaches
     // here with it still set. Reading fresh means no in-memory flag to leak or mis-fire on a later resume.
-    const restartNote = this.db.getThread(thread.id)?.error?.startsWith(RESTART_ERROR_PREFIX) ? RESTART_RESUME_NOTE : undefined;
+    const currentThread = this.db.getThread(thread.id);
+    const restartNote = currentThread && this.restartResumePending(currentThread) ? RESTART_RESUME_NOTE : undefined;
     if (restartNote) this.hub.log("info", `Resume on ${thread.id.slice(0, 8)} carries the restart-already-completed notice (won't restart again).`);
     // Every branch below carries this: a standing owner directive must reach a fresh/cold-resumed session
     // (this function's whole reason to exist per its own doc comment) exactly as reliably as a warm one

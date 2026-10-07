@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA fixes: preserve restart recovery through parks and activate provider affinity** (2026-10-07, Codex).
+  Promoted-read and parked recovery regressions pass 19/19; full gates and deployment verification in progress.
+
 
 
 
@@ -33,8 +36,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Resume restart-interrupted sessions on their previous provider** (cd78bbaf, 2026-10-07, Codex).
-  Restart affinity 11/11 and restart-drain pass; previous provider retained in guided/Default modes and QA fix rounds, with normal fallback when unavailable. Live build 68887045 predates the fix; activation and production restart proof await the next permitted restart (this task prohibits another restart).
 
 - **Spread concurrent agent launches across available subscriptions** (2026-10-07, Fernspanner).
   Twelve live-handle launches balance 6/6; routing, auto-model, capacity, reset-burn, types/build, README and privacy pass. Server activation awaits the next permitted restart; this task resumed after a restart and forbids another.
