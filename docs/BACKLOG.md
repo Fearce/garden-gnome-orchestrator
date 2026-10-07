@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Dispatch suitable repository tasks to Claude cloud sessions using promotional credits** (2026-10-07, Thimblewick).
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -28,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Offload repository tasks using promotional cloud credits and show balances under subscription names** (3471a225, 2026-10-07, Thimblewick).
+  Committed/pushed; eligible live smoke returned directories/port without edits and promotional balance fell by $0.46. Desktop/phone 48/48, account/reset/cloud tests, types/builds, README 74/74 and privacy pass. Corrected web handoff is published; balance reader is built but activation awaits lifting the restart-resume prohibition. One subscription's profile token remains expired, so its balance is unknown.
 
 - **Route CLI agent questions through GGO question chips and resume on answers** (41945c65, 2026-10-07, Puddle Astrolabe).
   Pushed; 6/6 focused gates, server/web types, builds, README 74/74 and privacy pass. Dist is staged with --no-restart; live remains 843bd2a3. Activation awaits the next permitted server restart; this session's restart-resume instruction forbids another restart.
