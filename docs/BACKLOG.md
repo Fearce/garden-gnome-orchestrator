@@ -16,7 +16,7 @@ same commit as the fix. Git history keeps the record.
 
 
 - **Observe and repair Git queue under increased live agent pressure** (2026-10-07, Flax Thorpe; task 6973a43e).
-  Queue deployed; orphan index preserved and eight peer commits landed. Owner is adding agents; a fresh native-lock refusal shows mixed adoption still needs observation.
+  Ten-minute admission is pushed; live newer commits repeatedly overtook pushes waiting over six minutes. Repairing arrival ordering; native-lock recovery and unwrapped writers remain separate observed gaps.
 
 
 
