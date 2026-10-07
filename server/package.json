@@ -171,6 +171,7 @@
     "test:recovery-features": "node scripts/recovery-features.test.cjs",
     "test:office-health": "node scripts/office-health.test.cjs",
     "test:cli-questions": "tsx src/tests/cliQuestions.itest.ts",
+    "cli-questions-lab": "node scripts/cli-questions-lab.cjs",
     "test:office-bridge": "tsx src/tests/officeBridge.test.ts",
     "test:office-names": "tsx src/tests/officeNames.test.ts",
     "test:agent-names": "tsx src/tests/agentNames.itest.ts",

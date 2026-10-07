@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: verify CLI question chips in desktop and phone browsers and activate the bridge** (2026-10-07, Moss Quill).
-
 - **Dispatch suitable repository tasks to Claude cloud sessions using promotional credits** (2026-10-07, Thimblewick).
 
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
@@ -30,6 +28,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA: verify CLI question chips in desktop and phone browsers and activate the bridge** (2026-10-07, Moss Quill).
+  Twelve browser flows prove Codex/Grok choice, multi-choice and free-text chips, durable answers, held completion and same-session continuation; 11 focused gates, all types and application builds pass. Activation and independent review remain.
 
 - **Route CLI agent questions through GGO question chips and resume on answers** (41945c65, 2026-10-07, Puddle Astrolabe).
   Pushed; 6/6 focused gates, server/web types, builds, README 74/74 and privacy pass. Dist is staged with --no-restart; live remains 843bd2a3. Activation awaits the next permitted server restart; this session's restart-resume instruction forbids another restart.
