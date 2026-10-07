@@ -6,6 +6,8 @@ export interface CloudRunResult {
   result: string | null;
   ok: boolean;
   error: string | null;
+  /** False only when GGO provably never sent the create request, so no billable session can exist. */
+  started?: boolean;
 }
 export interface CloudRunInput {
   token: string;
@@ -31,6 +33,7 @@ type ObjectValue = Record<string, any>;
 export async function runCloudSession(input: CloudRunInput, request: typeof fetch = fetch,
   pause: (signal: AbortSignal) => Promise<unknown> = signal => delay(10_000, undefined, { signal })): Promise<CloudRunResult> {
   let sessionId: string | null = null;
+  let createSent = false;
   const signal = AbortSignal.any([input.signal, AbortSignal.timeout(30 * 60_000)]);
   const headers = { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json",
     "anthropic-version": "2023-06-01", "anthropic-client-platform": process.platform,
@@ -53,13 +56,14 @@ export async function runCloudSession(input: CloudRunInput, request: typeof fetc
     const hosted = Array.isArray(environments.environments) ? environments.environments.filter((e: ObjectValue) =>
       e?.kind === "anthropic_cloud" && e.state === "active" && /^env_[A-Za-z0-9_-]+$/.test(e.environment_id)) : [];
     const environment = hosted.find((e: ObjectValue) => e.name === "Default") ?? hosted[0];
-    if (!environment) return { sessionId, result: null, ok: false,
+    if (!environment) return { sessionId, result: null, ok: false, started: false,
       error: "No active Anthropic cloud environment. Complete Claude Code cloud onboarding for this subscription." };
     const outputBranch = input.work === "change" ? `claude/ggo-${randomUUID().slice(0, 8)}` : null;
     const prompt = input.prompt + (outputBranch
       ? `\nUse the cloud checkout's generated branch ${outputBranch} for all commits and pushes. Do not create or push another branch. Your parent will review this branch before integration.` : "");
     // Environment discovery awaits the provider. Recheck local opt-in immediately before POST.
     if (signal.aborted || input.canCreate?.() === false) throw new Error("Cloud opt-in was removed");
+    createSent = true;
     const created = await read("/code/sessions", {
       title: "GGO repository subtask", environment_id: environment.environment_id,
       events: [
@@ -107,7 +111,12 @@ export async function runCloudSession(input: CloudRunInput, request: typeof fetc
       await pause(signal);
     }
     throw new Error("Observer stopped");
-  } catch {
+  } catch (error) {
+    // Before the create request nothing can be billed or running, so do not demand a remote check.
+    if (!createSent) return { sessionId: null, result: null, ok: false, started: false,
+      error: error instanceof Error && error.message === "Cloud opt-in was removed"
+        ? "Cloud opt-in was removed. No cloud session was started."
+        : "No cloud session was started. Check this subscription's Claude cloud access before retrying." };
     // Do not expose provider bodies or secrets; preserve uncertainty even if create returned no ID.
     return { sessionId, result: null, ok: false,
       error: "No verified cloud result. Check Claude's session list before starting more cloud work; a session may still be running." };

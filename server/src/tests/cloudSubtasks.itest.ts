@@ -63,6 +63,7 @@ automatic.runner = async (input: CloudRunInput) => {
   assert.equal(input.repository, "example/webapp");
   assert.equal(input.revision, head);
   assert.ok(input.prompt.includes("Read-only: do not edit"));
+  if (mode === "unsent") return { ok: false, sessionId: null, result: null, started: false, error: "Cloud opt-in was removed. No cloud session was started." };
   input.onSession("session_test");
   if (hold) await new Promise<void>(resolve => { finish = resolve; input.signal.addEventListener("abort", () => resolve(), { once: true }); });
   return { ok: mode === "ok" && !input.signal.aborted, sessionId: "session_test", result: mode === "ok" && !input.signal.aborted ? "Repository review: parser has a missing bounds check." : null, error: mode === "ok" && !input.signal.aborted ? null : "No verified cloud result." };
@@ -125,6 +126,13 @@ try {
   await manager.cloudSubtasks.run(db.getThread(child.id)!);
   assert.equal(calls, 1, "resume never re-submits cloud work");
   assert.ok(!JSON.stringify(manager.cloudSubtasks.snapshot()).includes("test-profile-login"), "snapshot redacts credentials");
+  mode = "unsent";
+  const unsent = (await manager.subTasks.spawn(spawner, { ...input, title: "Unsent cloud create" })).thread!;
+  await settled(unsent.id);
+  mode = "ok";
+  const unsentJob = manager.cloudSubtasks.jobs().find(j => j.threadId === unsent.id)!;
+  assert.equal(unsentJob.state, "checked", "a provably unsent create does not demand a remote check");
+  assert.ok(await manager.cloudSubtasks.admit(parent, "review"), "an unsent create does not block the account");
 
   // Exercise the actual cap-result loop, not only initial dispatch admission.
   const cappedChild = db.createThread({ title: "Capped child", workspace, rawPrompt: input.brief, brief: input.brief,
@@ -272,8 +280,12 @@ try {
   assert.equal((await runCloudSession({ ...protocolInput, signal: aborted.signal }, provider, async () => {})).ok, false);
   assert.equal(sessionCount, 0, "aborted work cannot create a session");
   sessionCount = 0;
-  assert.equal((await runCloudSession({ ...protocolInput, canCreate: () => false }, provider, async () => {})).ok, false);
+  const revokedCreate = await runCloudSession({ ...protocolInput, canCreate: () => false }, provider, async () => {});
+  assert.equal(revokedCreate.ok, false);
   assert.equal(sessionCount, 0, "revocation after environment discovery cannot create a session");
+  assert.equal(revokedCreate.started, false, "an unsent create is not reported as a possibly running session");
+  assert.match(revokedCreate.error ?? "", /opt-in was removed/);
+  assert.equal(lost.started, undefined, "a lost create response stays uncertain");
   console.log("cloud-subtasks: cap dispatch, mid-run fallback, admission, parent result, interrupt and restart checks passed");
 } finally {
   for (const timer of [internals.capSupervisor, internals.tokenResumeTimer, internals.capResumeWake]) if (timer) clearTimeout(timer);

@@ -95,6 +95,9 @@ An uncertain job also holds further automatic work on its subscription. After
 checking the remote outcome and stopping unfinished work, click **I checked this
 cloud session** to release that account for independent new subtasks. Its original
 record remains, so acknowledging it does not permit a duplicate of the same task.
+A launch that stops before GGO sends the session-create request (opt-in revoked,
+interrupted, no active cloud environment, or a failed environment read) cannot have
+started remote work. GGO records it as already checked, so it does not hold the account.
 
 The installed CLI 2.1.292 rejects new-session `-p --cloud` and requires an interactive
 terminal for creation. GGO therefore uses its observed OAuth session protocol;

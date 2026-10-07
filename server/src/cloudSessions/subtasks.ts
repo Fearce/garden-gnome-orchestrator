@@ -183,11 +183,12 @@ export class CloudSubtaskService {
           this.host.message(thread.id, `Claude cloud session: ${job.url}`, run.id);
         },
       });
-      job.state = result.ok ? "review" : "uncertain";
+      // A provably unsent create leaves nothing remote to check: keep the record, but do not block the account.
+      job.state = result.ok ? "review" : result.started === false ? "checked" : "uncertain";
       job.result = result.result; job.error = result.error;
       this.saveJob(job);
       this.host.db.updateRun(run.id, { state: result.ok ? "done" : "error", endedAt: Date.now(), error: job.error });
-      this.host.message(thread.id, result.ok ? `Cloud result — parent review required\nSession: ${job.url}\n${result.result}` : `${result.error}\n${job.url ?? "Check Claude's session list."}`, run.id);
+      this.host.message(thread.id, result.ok ? `Cloud result — parent review required\nSession: ${job.url}\n${result.result}` : result.started === false ? String(result.error) : `${result.error}\n${job.url ?? "Check Claude's session list."}`, run.id);
       if (!controller.signal.aborted) this.host.setState(thread.id, "review", job.error);
     } catch (error) {
       const message = error instanceof CloudError ? error.message : "Cloud observation failed. Check Claude before retrying.";
