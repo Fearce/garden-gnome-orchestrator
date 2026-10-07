@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Exercise the visible login form in the prefix-proxy browser regression** (2026-10-07, Bramblebolt).
+
 - **QA: independently verify prepaid credit fallback and existing-balance-only safety** (2026-10-07, Codex QA).
 
 
