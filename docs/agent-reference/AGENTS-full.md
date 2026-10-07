@@ -228,6 +228,11 @@ Waits default to ten minutes so a burst of serial commit hooks can drain without
 two-minute refusals. `--timeout-ms <milliseconds>` before `--` selects 0–600000 ms;
 a CLI admission timeout returns 75 before its command runs. The wait does not interrupt
 an active transaction. Do not nest CLI wrappers.
+Admission tickets preserve arrival order so later commits cannot overtake waiting pushes.
+Each ticket holds an exclusive SQLite lease, released by the OS on exit; a free lease
+proves an abandoned ticket can be removed. PID and age fields are diagnostic only.
+Clients started before this upgrade still use the original writer lock and remain
+mutually exclusive, but enter the ordered admission list only after their next invocation.
 Use `git-integrate.cjs --repo <main-checkout> --worktree <task-checkout>` for one locked
 rebase/fast-forward sequence; run verification outside the queue and wrap authorized pushes
 separately. Direct commands that bypass this wrapper still contend with Git's native locks.

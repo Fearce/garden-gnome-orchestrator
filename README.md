@@ -76,6 +76,9 @@ worktrees. Use `node server/scripts/git-transaction.cjs --repo <checkout> -- <pr
 to run a commit helper or mutation script; the default queue wait is ten minutes.
 Use `--timeout-ms <milliseconds>` before `--` to choose a shorter wait (0–600000).
 The wait bounds admission to the queue; it does not interrupt an active transaction.
+Registered callers take turns in arrival order. Each ticket holds an OS-backed lease,
+so crashed waiters are skipped without using PID or age guesses. This protects queue
+metadata; a native Git lock abandoned during a killed commit still needs a separate audit.
 Use `node server/scripts/git-integrate.cjs --repo <main-checkout> --worktree <task-checkout>`
 for an atomic rebase and fast-forward, then verify and push if authorized. Commit reviewed
 peer source and documentation in separately attributed commits before integrating;

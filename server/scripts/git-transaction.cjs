@@ -1,6 +1,7 @@
 // One cross-process writer queue per Git object store, including linked worktrees.
 // SQLite owns the lock. Never remove Git lock files.
-const { realpathSync } = require('node:fs');
+const { realpathSync, mkdirSync, existsSync, unlinkSync } = require('node:fs');
+const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 const { execFile, spawn } = require('node:child_process');
 const { promisify } = require('node:util');
@@ -11,6 +12,98 @@ const active = new AsyncLocalStorage();
 // This bounds admission only; it never interrupts a transaction that owns the lock.
 const WAIT_MS = 600_000;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const sqliteBusy = error => error.code === 'SQLITE_BUSY' || error.code === 'SQLITE_LOCKED';
+
+function busyError(timeoutMs) {
+  const error = new Error(`Git transaction queue timed out after ${timeoutMs} ms before starting the command. Retry after the active transaction finishes; do not delete index.lock or other Git locks.`);
+  error.code = 'GGO_GIT_BUSY';
+  return error;
+}
+
+async function retryBusy(fn, deadline, timeoutMs) {
+  for (;;) {
+    try { return fn(); }
+    catch (error) {
+      if (!sqliteBusy(error)) throw error;
+      if (Date.now() >= deadline) throw busyError(timeoutMs);
+      await sleep(Math.min(100 + Math.floor(Math.random() * 100), Math.max(1, deadline - Date.now())));
+    }
+  }
+}
+
+// Admission has its own short-lived WAL writes. A transaction holds the original
+// guard below, so older clients and server processes still exclude new clients.
+// Each ticket also holds an exclusive SQLite lease: the OS, rather than a PID or
+// elapsed-time guess, proves whether a waiting process is still alive.
+async function registerTicket(commonDir, deadline, timeoutMs) {
+  const directory = path.join(commonDir, 'ggo-git-queue-leases');
+  mkdirSync(directory, { recursive: true });
+  const token = randomUUID();
+  const leasePath = path.join(directory, `${token}.sqlite`);
+  let lease, db, row;
+  try {
+    lease = new Database(leasePath, { timeout: 0 });
+    lease.exec('CREATE TABLE lease_guard (id INTEGER PRIMARY KEY); BEGIN EXCLUSIVE');
+    db = await retryBusy(() => new Database(path.join(commonDir, 'ggo-git-admission.sqlite'), { timeout: 0 }), deadline, timeoutMs);
+    await retryBusy(() => {
+      db.pragma('journal_mode = WAL');
+      db.exec('CREATE TABLE IF NOT EXISTS pending (id INTEGER PRIMARY KEY AUTOINCREMENT, token TEXT NOT NULL UNIQUE, requested_at INTEGER NOT NULL, pid INTEGER NOT NULL)');
+    }, deadline, timeoutMs);
+    row = await retryBusy(() => db.prepare('INSERT INTO pending (token, requested_at, pid) VALUES (?, ?, ?)').run(token, Date.now(), process.pid), deadline, timeoutMs);
+    let closed = false;
+    return {
+      id: Number(row.lastInsertRowid), token, db, directory,
+      close() {
+        if (closed) return;
+        closed = true;
+        let removed = false;
+        try { db.prepare('DELETE FROM pending WHERE id=? AND token=?').run(Number(row.lastInsertRowid), token); removed = true; }
+        catch (error) { if (!sqliteBusy(error)) console.error(`Git admission cleanup: ${error.message}`); }
+        finally { try { db.close(); } finally { lease.close(); } }
+        // A busy cleanup leaves the row and the now-unlocked lease for the next
+        // caller to reap. Never leave a registered row without its lease file.
+        if (removed) { try { unlinkSync(leasePath); } catch {} }
+      },
+    };
+  } catch (error) {
+    db?.close(); lease?.close();
+    try { unlinkSync(leasePath); } catch {}
+    throw error;
+  }
+}
+
+function ticketIsAlive(ticket, candidate) {
+  if (!/^[0-9a-f-]{36}$/.test(candidate.token)) throw new Error('Invalid Git admission ticket; inspect queue metadata without touching native Git locks.');
+  const leasePath = path.join(ticket.directory, `${candidate.token}.sqlite`);
+  if (!existsSync(leasePath)) {
+    // A completed owner may have withdrawn since our head snapshot. Otherwise
+    // missing evidence is uncertainty, never permission to bypass that ticket.
+    if (!ticket.db.prepare('SELECT id FROM pending WHERE id=? AND token=?').get(candidate.id, candidate.token)) return false;
+    throw new Error('Git admission ticket has no lease file; inspect queue metadata without touching native Git locks.');
+  }
+  let probe;
+  try {
+    probe = new Database(leasePath, { timeout: 0, fileMustExist: true });
+    probe.exec('BEGIN EXCLUSIVE; ROLLBACK');
+    return false;
+  } catch (error) {
+    if (sqliteBusy(error)) return true;
+    // Completion can race the file open after the existence check.
+    if (!ticket.db.prepare('SELECT id FROM pending WHERE id=? AND token=?').get(candidate.id, candidate.token)) return false;
+    throw error;
+  } finally { probe?.close(); }
+}
+
+function firstInLine(ticket) {
+  for (;;) {
+    const head = ticket.db.prepare('SELECT id, token FROM pending ORDER BY id LIMIT 1').get();
+    if (!head) throw new Error('Git admission lost its own ticket; command was not started.');
+    if (head.id === ticket.id && head.token === ticket.token) return true;
+    if (ticketIsAlive(ticket, head)) return false;
+    ticket.db.prepare('DELETE FROM pending WHERE id=? AND token=?').run(head.id, head.token);
+    try { unlinkSync(path.join(ticket.directory, `${head.token}.sqlite`)); } catch {}
+  }
+}
 
 async function commonDirectory(repo) {
   const { stdout } = await promisify(execFile)('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
@@ -23,9 +116,15 @@ async function commonDirectory(repo) {
 async function acquire(commonDir, timeoutMs = WAIT_MS) {
   const deadline = Date.now() + timeoutMs;
   const lockPath = path.join(commonDir, 'ggo-git-transactions.sqlite');
-  for (;;) {
+  const ticket = await registerTicket(commonDir, deadline, timeoutMs);
+  try { for (;;) {
     let db;
     try {
+      if (!firstInLine(ticket)) {
+        if (Date.now() >= deadline) throw busyError(timeoutMs);
+        await sleep(Math.min(100 + Math.floor(Math.random() * 100), Math.max(1, deadline - Date.now())));
+        continue;
+      }
       db = new Database(lockPath, { timeout: 0 });
       db.exec('CREATE TABLE IF NOT EXISTS transaction_guard (id INTEGER PRIMARY KEY)');
       db.exec('BEGIN EXCLUSIVE');
@@ -33,19 +132,15 @@ async function acquire(commonDir, timeoutMs = WAIT_MS) {
       return () => {
         if (released) return;
         released = true;
-        try { db.exec('ROLLBACK'); } finally { db.close(); }
+        try { db.exec('ROLLBACK'); } finally { try { db.close(); } finally { ticket.close(); } }
       };
     } catch (error) {
       db?.close();
-      if (error.code !== 'SQLITE_BUSY' && error.code !== 'SQLITE_LOCKED') throw error;
-      if (Date.now() >= deadline) {
-        const busy = new Error(`Git transaction queue timed out after ${timeoutMs} ms. Retry after the active transaction finishes; do not delete index.lock or other Git locks.`);
-        busy.code = 'GGO_GIT_BUSY';
-        throw busy;
-      }
+      if (!sqliteBusy(error)) throw error;
+      if (Date.now() >= deadline) throw busyError(timeoutMs);
       await sleep(Math.min(100 + Math.floor(Math.random() * 100), Math.max(1, deadline - Date.now())));
     }
-  }
+  } } catch (error) { ticket.close(); throw error; }
 }
 
 async function withCommonDirectory(commonDir, fn, timeoutMs = WAIT_MS) {
