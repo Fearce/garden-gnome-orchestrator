@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Verify and integrate restart session provider affinity** (2026-10-07, Codex; ggo/restart-resume-same-provider-6c66f550).
-  Existing implementation recovered after restart; verifying regression gates and integrating into master.
 
 
 
@@ -32,6 +30,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Resume restart-interrupted sessions on their previous provider** (cd78bbaf, 2026-10-07, Codex).
+  Restart affinity 11/11 and restart-drain pass; previous provider retained in guided/Default modes and QA fix rounds, with normal fallback when unavailable. Live build 68887045 predates the fix; activation and production restart proof await the next permitted restart (this task prohibits another restart).
 
 - **QA: honor revoked cloud opt-in at the session launch boundary** (2026-10-07, Codex QA).
   Regression reproduced a launch after revocation; final account/repository checks now prevent it. Nine focused gates, types/builds, 62 desktop/phone checks and live controls/guide serving verified; independent QA remains.
