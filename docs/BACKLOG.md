@@ -40,14 +40,10 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Restore inbox access on CLI resume and bound browser failures** (2026-10-07, Moss Quill; task 6640a188).
-  Inbox checks 23/23, vanilla 23/23 and desktop/phone/CLI lab 30/30 pass; includes missing-endpoint and real 15-second stalled-send checks. Owner authorized restart; deployment and live proof follow.
 
 - **Explicit Claude cloud requests never silently launch locally** (2026-10-07, Thimblewick; task 10379cdb).
   Live c0cb1279 hosted review returned findings; both balance chips verified beneath names. Review reproduced a local Resume escape; server control guard is committed/compiled, while the web guard is published. Cloud regressions, auto-review 214/214 and desktop/phone 70/70 pass; live UI controls verified. Follow-up guard 8228cf7e is integrated/pushed. Owner chose to keep the server guard staged for the next restart; live API refusal proof follows activation.
 
-- **Direct gnome chat and quiet inbox** (2026-10-07, Moss Quill; task 6640a188).
-  Inbox checks 23/23, desktop/phone/CLI lab 30/30, office gates, vanilla 23/23, types/builds/README/privacy pass. Owner authorized activation after confirming live build c0cb1279 returns 404 for the inbox; deployment and live proof follow.
 
 
 - **QA: stabilize supervisor duplicate-boot retry verification under load** (838f708a, 2026-10-07, Codex QA).
@@ -178,6 +174,11 @@ No open entries.
 
 - 2026-10-07 **Scheduled hours for the Token safety limit** (8e7c5267, Tock Thistlewick): owner chose the Token safety limit, not the goal burn-rate guard. Settings > Usage & limits has an M T W T F S S strip, start/end times, an explicit IANA zone and live on/off status with the next change. Live GGO (restarted 17:56 on HEAD) persists Mon-Fri 08:00-16:00 Europe/Copenhagen with the 90% limit; production browser shows "Suspended now. Applies again Thu 08:00." at 1440 and 390px. Schedule 35/35, token-freeze 112/112 (Test M), schedule UI, schedule lab 27/27, token-safety lab 23/23, conservation 29/29, server+web types, README 74/74 and privacy pass.
 
+- 2026-10-07 **Restore inbox access on CLI resume and bound browser failures** (895076a0, Moss Quill): pushed and deployed; live resumed CLI capability works. Inbox 23/23, vanilla 23/23, browser/CLI 30/30 pass, including missing endpoint and 15-second send timeout with draft recovery.
+- 2026-10-07 **Direct gnome chat and quiet inbox** (eae8261c, 895076a0, Moss Quill): live build 895076a0; scoped self-check message 1 sent, read in the production browser and explicitly acknowledged, while owner inspection preserved unread status. Types/builds, office regressions, README 74/74 and privacy pass; direct mail is local and never wakes agents.
+
+
+
 - 2026-10-07 **Keep restart-interrupted sessions on their previous provider, including promoted reads and admission parks** (cd78bbaf, aac45dca, Codex): live build d15fe425 contains both fixes; production restart retained the exact Codex/Sol session. Affinity 19/19, token-freeze, types/builds, README 74/74 and privacy pass. Completed full sweep 235/239; QA-budget 161/161, Default 23/23 and doc-path 18/18 pass after fixture/build repairs. Supervisor timing remains intermittent (standalone 12/12, serial subset 11/12), tracked in Ready.
 
 - 2026-10-07 **Stop inherited QA after a registration-only follow-up** (Moss Quill): live task settled done with durable QA-off; Script Hub reports the app running. Task-role controls 38/38, README 74/74 and privacy pass; README explains inherited routing and task overrides.
@@ -211,8 +212,3 @@ No open entries.
 - 2026-10-06 **Identify triggering cameras in Surveillance alerts and recent motion history** (Bramble Lens): motion browser 47/47, viewer 28/28, types/build/README/privacy pass; live bundle matches and camera name, settings shortcut and phone history verified. Module legacy recording restart failures tracked under Ready.
 
 - 2026-10-06 **Add per-camera motion sensitivity to reduce false Surveillance notifications** (2d48cc69, Fernspindle): pushed to master and live build verified; live selector and current worker config confirmed with camera settings and recording mode preserved. Motion browser 38/38, modules 37 plus follow-ups, detector regressions, types/builds/README/privacy pass.
-
-- 2026-10-06 **Move director actions beside For / With and hide them while expanded** (dc695797, Bramble Pixel): live browser sees all four controls above the message field and served bundle bytes match; desktop lab 22/22, phone 44/44, types/builds/README/privacy pass.
-
-- 2026-10-06 **Make unread Surveillance alerts throb so they cannot be missed** (Ember Gantry): fill and glow pulse dark to bright red (OKLab, no purple drift), count badge swells; motion browser 32/32 compares trough and peak frames on desktop, 768px and 320px; board-head 54/54, themes, README 70/70, privacy pass.
-- 2026-10-06 **Keep ordinary task resumes scoped after server restarts** (Thistlewatt): restart guidance now requires live-build and task-specific verification; full sweeps remain required for health/quality tasks. Doc-path probe and privacy checks pass; documentation only.
