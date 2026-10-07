@@ -78,7 +78,14 @@ Use `--timeout-ms <milliseconds>` before `--` to choose a shorter wait (0–6000
 The wait bounds admission to the queue; it does not interrupt an active transaction.
 Registered callers take turns in arrival order. Each ticket holds an OS-backed lease,
 so crashed waiters are skipped without using PID or age guesses. This protects queue
-metadata; a native Git lock abandoned during a killed commit still needs a separate audit.
+metadata; a native Git lock abandoned during a killed commit needs a separate audit.
+On Windows, the CLI waits for native index locks before staging helpers run and can
+archive a proven abandoned lock: it must be unchanged for two minutes, no Git process
+may predate its last write (missing process metadata refuses recovery), exclusive
+access must succeed, and the real index hash must remain unchanged. Lock bytes and
+unique audit receipts stay under Git's common directory. Active or uncertain locks
+remain untouched; other platforms require manual orphan auditing. Push/fetch skip
+index preflight because they do not use the index.
 Use `node server/scripts/git-integrate.cjs --repo <main-checkout> --worktree <task-checkout>`
 for an atomic rebase and fast-forward, then verify and push if authorized. Commit reviewed
 peer source and documentation in separately attributed commits before integrating;

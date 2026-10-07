@@ -467,7 +467,7 @@ async function main() {
 
   // Unlike compiled TS, this shared CLI/server library is loaded from the checkout.
   // A HEAD-only dist build cannot exclude its uncommitted working-tree bytes.
-  if (plan.serverBlockers.includes("server/scripts/git-transaction.cjs")) {
+  if (plan.serverBlockers.some(file => ["server/scripts/git-transaction.cjs", "server/scripts/git-recover-index.ps1"].includes(file))) {
     log("Commit the reviewed Git transaction runtime before deploying; it is loaded directly from this checkout.");
     process.exit(1);
   }

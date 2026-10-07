@@ -1,6 +1,6 @@
 // One cross-process writer queue per Git object store, including linked worktrees.
-// SQLite owns the lock. Never remove Git lock files.
-const { realpathSync, mkdirSync, existsSync, unlinkSync } = require('node:fs');
+// SQLite owns the writer lock. Never delete or override active native Git locks.
+const { realpathSync, mkdirSync, existsSync, unlinkSync, statSync } = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const path = require('node:path');
 const { execFile, spawn } = require('node:child_process');
@@ -156,14 +156,54 @@ async function withGitTransaction(repo, fn, timeoutMs = WAIT_MS) {
   return withCommonDirectory(await commonDirectory(repo), fn, timeoutMs);
 }
 
+async function waitForIndex(repo, commonDir, deadline) {
+  const { stdout } = await promisify(execFile)('git', ['rev-parse', '--path-format=absolute', '--git-path', 'index'], {
+    cwd: repo, windowsHide: true, timeout: 15_000,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
+  });
+  const lock = stdout.trim() + '.lock';
+  let announced = false, nextAudit = 0;
+  while (existsSync(lock)) {
+    if (!announced) {
+      console.error('Git transaction is waiting for a native index lock; the command has not started. Active or uncertain owners remain untouched.');
+      announced = true;
+    }
+    if (Date.now() >= deadline) {
+      const error = new Error('Git transaction timed out waiting for a native index lock before starting the command. Inspect its owner; do not delete the lock or reset the index.');
+      error.code = 'GGO_GIT_BUSY';
+      throw error;
+    }
+    let age;
+    try { age = Date.now() - statSync(lock).mtimeMs; }
+    catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+    if (process.platform === 'win32' && age >= 120_000 && Date.now() >= nextAudit) {
+      nextAudit = Date.now() + 10_000;
+      try {
+        const result = await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-File', path.join(__dirname, 'git-recover-index.ps1'), '-CommonDirectory', commonDir, '-LockPath', lock], { windowsHide: true, timeout: Math.max(1, Math.min(30_000, deadline - Date.now())) });
+        if (result.stdout.trim()) console.error(`Git transaction preserved an abandoned native index lock; audit receipt: ${JSON.parse(result.stdout.trim())}`);
+      } catch (error) {
+        // Exit 75 means pre-move uncertainty. A failed post-move verification or
+        // an interrupted audit stops our command instead of hiding that failure.
+        if (error.code !== 75) throw error;
+      }
+    }
+    await sleep(Math.min(200, Math.max(1, deadline - Date.now())));
+  }
+}
+
 // Conservative classification: reads do not queue, unknown commands do. Configuration
 // flags precede the verb at several call sites; never confuse a flag value with a verb.
-function isGitWrite(args) {
+function gitVerbIndex(args) {
   let i = 0;
   while (i < args.length && args[i].startsWith('-')) {
     const arg = args[i++];
     if (['-c', '-C', '--git-dir', '--work-tree', '--namespace'].includes(arg)) i++;
   }
+  return i;
+}
+
+function isGitWrite(args) {
+  const i = gitVerbIndex(args);
   const verb = args[i];
   if (verb === 'worktree') return !['list'].includes(args[i + 1]);
   if (verb === 'remote') return !['-v', '--verbose', 'get-url', 'show'].includes(args[i + 1]);
@@ -183,12 +223,21 @@ async function main(argv) {
     else throw new Error('Usage: node git-transaction.cjs [--repo <checkout>] [--timeout-ms <milliseconds>] -- <program> <arguments...>');
   }
   if (!command.length || !Number.isSafeInteger(timeoutMs) || timeoutMs > 600_000) throw new Error('Provide a command and a wait between 0 and 600000 ms.');
-  const code = await withGitTransaction(repo, () => new Promise((resolve, reject) => {
+  const deadline = Date.now() + timeoutMs;
+  const commonDir = await commonDirectory(repo);
+  const code = await withCommonDirectory(commonDir, async () => {
+    // Push/fetch do not use the index. Unknown helpers may stage/commit, so wait
+    // before starting them rather than partially executing and blindly retrying.
+    const directGit = /^git(?:\.exe)?$/i.test(path.basename(command[0]));
+    const gitArgs = command.slice(1);
+    const refOnly = directGit && ['push', 'fetch'].includes(gitArgs[gitVerbIndex(gitArgs)]);
+    if (!refOnly) await waitForIndex(repo, commonDir, deadline);
+    return new Promise((resolve, reject) => {
     // The lock covers the whole command (including a multi-step commit helper or integration script).
     // Keep it until the child closes, including when a signal asks the wrapper to exit.
     const child = spawn(command[0], command.slice(1), {
       cwd: repo, stdio: 'inherit', shell: false, windowsHide: true,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_OPTIONAL_LOCKS: '0' },
     });
     const stop = signal => child.kill(signal);
     const onInt = () => stop('SIGINT'), onTerm = () => stop('SIGTERM');
@@ -196,7 +245,8 @@ async function main(argv) {
     const cleanup = () => { process.off('SIGINT', onInt); process.off('SIGTERM', onTerm); };
     child.once('error', error => { cleanup(); reject(error); });
     child.once('close', code => { cleanup(); resolve(code ?? 1); });
-  }), timeoutMs);
+    });
+  }, Math.max(0, deadline - Date.now()));
   process.exitCode = code;
 }
 

@@ -19,7 +19,7 @@ const REPO = path.resolve(__dirname, "..", "..");
 /** What tsc compiles into the RUNNING server. `tsconfig.json` is an input (its target/lib change the
  *  emitted JS); `package.json` is not (a dependency bump changes `node_modules`, not `dist`, and is
  *  handled by an install, not a rebuild). */
-const SERVER_RUNTIME = ["server/src", "server/tsconfig.json", "server/scripts/git-transaction.cjs"];
+const SERVER_RUNTIME = ["server/src", "server/tsconfig.json", "server/scripts/git-transaction.cjs", "server/scripts/git-recover-index.ps1"];
 /** Compiled, but never executed by the server — so a committed test or probe must NOT read as drift.
  *  Health has excluded these since it started comparing content; `--verify` now agrees. */
 const SERVER_NOT_RUNTIME = [":(exclude)server/src/tests", ":(exclude)server/src/tools"];

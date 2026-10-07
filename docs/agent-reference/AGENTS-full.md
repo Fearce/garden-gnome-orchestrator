@@ -223,7 +223,7 @@ Queue each Git mutation or multi-step mutation script with
 `node server/scripts/git-transaction.cjs --repo <checkout> -- <program> <arguments>`.
 This includes the safe-commit helper. The queue uses a SQLite transaction in Git's common
 directory, shared by linked worktrees, console actions, self-update fetch/pull and worktree
-creation. SQLite releases the lock on process exit; native Git lock files are never removed.
+creation. SQLite releases the lock on process exit; native Git lock files are never deleted.
 Waits default to ten minutes so a burst of serial commit hooks can drain without repeated
 two-minute refusals. `--timeout-ms <milliseconds>` before `--` selects 0–600000 ms;
 a CLI admission timeout returns 75 before its command runs. The wait does not interrupt
@@ -233,6 +233,13 @@ Each ticket holds an exclusive SQLite lease, released by the OS on exit; a free 
 proves an abandoned ticket can be removed. PID and age fields are diagnostic only.
 Clients started before this upgrade still use the original writer lock and remain
 mutually exclusive, but enter the ordered admission list only after their next invocation.
+The Windows CLI waits for native index locks before invoking staging helpers. Its
+`git-recover-index.ps1` audit can archive an unchanged, two-minute-old lock only when
+every Git process is newer, complete creation metadata is available, paths contain
+no reparse points, exclusive read access succeeds and repeated hashes/timestamps
+agree. Unique lock and JSON receipts go under Git's common directory; the real
+index hash must stay unchanged. Active or uncertain owners are retained through the
+bounded wait. Other platforms retain manual recovery; push/fetch do not use index preflight.
 Use `git-integrate.cjs --repo <main-checkout> --worktree <task-checkout>` for one locked
 rebase/fast-forward sequence; run verification outside the queue and wrap authorized pushes
 separately. Direct commands that bypass this wrapper still contend with Git's native locks.
