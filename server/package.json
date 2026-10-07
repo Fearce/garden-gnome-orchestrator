@@ -119,7 +119,7 @@
     "test:goals": "tsx src/tests/goals.test.ts && tsx src/tests/goalSession.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/goals-ui.test.tsx",
     "test:notes": "tsx src/tests/operatorNotes.test.ts",
     "test:task-search": "tsx src/tests/taskSearch.test.ts",
-    "test:performance-paths": "tsx src/tests/performancePaths.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/socket-startup.test.ts",
+    "test:performance-paths": "tsx src/tests/performancePaths.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/socket-startup.test.ts && node scripts/probe-tool-digest.cjs --self-test",
     "test:memory-mirrors": "tsx src/tests/memoryMirrors.test.ts",
     "test:memory-rag": "tsx src/tests/memoryRag.test.ts",
     "test:wal-checkpointer": "tsx src/tests/walCheckpointer.test.ts",

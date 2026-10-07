@@ -123,7 +123,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
-- 2026-10-07 **Nightly quality, provider currency and task responsiveness sweep** (7306a850, Brindlewick): pushed and deployed; 235/235 gates, types/builds, desktop 19/19, README 73/73 and privacy pass. Live lazy snapshots retain 1,425 tasks with a 62% smaller index and 30 visible summaries in 27 ms; 1,400-task desktop/phone lab passes. Current toolchains and model families verified. Cold SQL/CLI delays, writer contention, major migrations and published-secret remediation remain tracked above.
+- 2026-10-07 **Nightly quality, provider currency and task responsiveness sweep** (7306a850, Brindlewick): pushed and deployed; 235/235 gates, types/builds, desktop 19/19, README 73/73 and privacy pass. Live lazy snapshots retain 1,425 tasks with a 62% smaller index and 30 visible summaries in 27 ms; 1,400-task desktop/phone lab passes. Current toolchains and model families verified. Cold SQL/CLI delays, writer contention, major migrations and published-secret remediation remain tracked above. The performance gate now verifies that refused live-index CLI arguments never open SQLite.
 
 - 2026-10-07 **Restore authenticated public reverse-proxy access after security hardening** (1d74f651, Bramblebolt): pushed and deployed; live mounted sign-in, authenticated health and public-origin WebSocket hello pass, signed-out deploy 401 and foreign origin 403; public edge still requires its access gate. Auth regressions, Google tunnel browser 19/19, desktop/tablet prefix browser, types/builds, README 73/73 and privacy pass.
   Follow-up: the prefix-proxy lab now submits the visible password form and receives hello without a reload on desktop and tablet; both pass.

@@ -28,6 +28,12 @@ function measure(db, threadId, afterSeq) {
     hash: createHash('sha256').update(JSON.stringify(rows)).digest('hex') };
 }
 function selfTest() {
+  class ForbiddenDatabase {
+    constructor() { assert.fail('refused CLI arguments must never open SQLite'); }
+  }
+  for (const args of [['--apply'], ['--self-test', '--apply']]) {
+    assert.throws(() => main(args, ForbiddenDatabase), /Live index changes are forbidden/);
+  }
   assert.throws(() => tune({ name: 'live.sqlite' }), /restricted to in-memory/);
   const db = new Database(':memory:');
   try {
@@ -55,10 +61,10 @@ function selfTest() {
   } finally { db.close(); }
 }
 
-function main() {
-  assert.ok(!process.argv.includes('--apply'), 'Live index changes are forbidden: schedule offline maintenance instead');
-  if (process.argv.includes('--self-test')) { selfTest(); return; }
-  const db = new Database(path.join(__dirname, '..', 'data', 'orchestrator.sqlite'), { readonly: true });
+function main(args = process.argv, DatabaseClass = Database) {
+  assert.ok(!args.includes('--apply'), 'Live index changes are forbidden: schedule offline maintenance instead');
+  if (args.includes('--self-test')) { selfTest(); return; }
+  const db = new DatabaseClass(path.join(__dirname, '..', 'data', 'orchestrator.sqlite'), { readonly: true });
   db.pragma('busy_timeout = 5000');
   try {
     const task = db.prepare(`SELECT thread_id, COUNT(*) n, MAX(rowid) last FROM messages
