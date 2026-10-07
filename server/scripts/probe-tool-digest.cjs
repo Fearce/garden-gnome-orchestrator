@@ -1,6 +1,6 @@
 // Read-only diagnosis of the live tool-call watermark query.
 // Candidate index changes are tested exclusively in an in-memory fixture.
-// node server/scripts/optimize-tool-digest.cjs --self-test
+// node server/scripts/probe-tool-digest.cjs --self-test
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const path = require('node:path');
@@ -28,6 +28,7 @@ function measure(db, threadId, afterSeq) {
     hash: createHash('sha256').update(JSON.stringify(rows)).digest('hex') };
 }
 function selfTest() {
+  assert.throws(() => tune({ name: 'live.sqlite' }), /restricted to in-memory/);
   const db = new Database(':memory:');
   try {
     db.exec(`CREATE TABLE messages(thread_id TEXT, role TEXT, content TEXT, kind TEXT, created_at INTEGER);

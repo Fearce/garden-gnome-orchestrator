@@ -99,7 +99,7 @@ same commit as the fix. Git history keeps the record.
   Compatible server/web/relay/desktop updates are applied; Graphify 0.19 removes the officeparser dependency used by the bundled PDF parser contract. SQLite 13, TypeScript 7, dotenv 18, React Markdown 10 and Monaco 0.57 need their own migration checks.
 
 17. **Measure the remaining task-start delay beyond board loading** (2026-10-07, Brindlewick).
-  Typical first CLI output remains 18-40 s. Restart-wave cold toolCallsAfter reads held SQLite for 1.8-2.3 s; fresh startup must be distinguished from steady state. The read-only optimize-tool-digest.cjs probe demonstrates watermark scans; index experiments are restricted to memory fixtures.
+  Typical first CLI output remains 18-40 s. Restart-wave cold toolCallsAfter reads held SQLite for 1.8-2.3 s; fresh startup must be distinguished from steady state. The read-only probe-tool-digest.cjs demonstrates watermark scans; index experiments are restricted to memory fixtures. Steady desktop cold/warm readiness is 0.9/0.9 s; throttled phone 8.9/4.9 s.
 
 18. **Handle SQLite writer contention without crashing streamed-agent handlers** (2026-10-07, Brindlewick).
   An attempted online index rebuild caused an uncaught database-is-locked error in addMessage and a supervised restart. The transaction rolled back, the original index remains and seven tasks resumed. Never rebuild the live index; investigate bounded write retries and scheduled offline maintenance.
