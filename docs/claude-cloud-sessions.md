@@ -199,6 +199,12 @@ consumption requires an eligible hosted cloud session and a before/after
 provider balance read; the local gate does not prove it. Routines cannot prove
 promotional credit consumption because they are excluded from the promotion.
 
+A deploy does not enable the automatic lane; its opt-in lives in the local database.
+To check it headlessly after logging in, read `automatic` from `GET /api/cloud-sessions`
+(`accountIds`, `repositories`, per-account `enabled`/`ready`, `jobs`). `ready` stays false
+until that subscription is actually capped. `PUT /api/cloud-sessions/automatic` with
+`{"accountIds": [...], "repositories": ["owner/repository"]}` replaces the whole policy.
+
 Live hosted smoke tests also exercised automatic subtask admission with a simulated
 local cap in an isolated GGO database. Both subscriptions returned repository
 command findings through the real run/report path, and a before/after provider
