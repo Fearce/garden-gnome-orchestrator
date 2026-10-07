@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA: recheck subscription eligibility immediately before cloud session creation** (2026-10-07, Codex QA).
+  Reproduced an authorized create after disabling the subscription during environment discovery; verify account/cap/credential/balance changes at the final POST boundary.
+
 
 
 
