@@ -60,6 +60,10 @@ function check(label: string, cond: boolean, detail?: string): void {
 }
 
 class StubAccounts {
+  dispatchPreview(): Record<string, unknown> {
+    return { account: { id: "acct-a", label: "Sub A" }, hasHeadroom: true, fiveHour: 0,
+      fiveHourReset: null, sevenDay: 0, sevenDayReset: null, weeklySafetyPct: 100 };
+  }
   onUsageRefresh(_cb: () => void): void {}
   auxToken(): string | undefined { return undefined; }
   effectiveUtilization(): number | null {
@@ -316,7 +320,7 @@ async function main(): Promise<void> {
         return priorStart();
       };
       await internals.runPipeline(id, "OWNER-STEER: also rename the flag");
-      check("the resumed fix-round implementor receives the owner's Resume note", notes.length === 1 && !!notes[0]?.includes("OWNER-STEER"), JSON.stringify(notes));
+      check("the resumed fix-round implementor receives the owner's Resume note", notes.length === 1 && !!notes[0]?.includes("OWNER-STEER"), JSON.stringify({ notes, error: h.db.getThread(id)?.error }));
       check("QA follows the fix round and accepts", JSON.stringify(h.qaRounds) === "[2]" && h.db.getThread(id)?.state === "done", JSON.stringify(h.qaRounds));
     } finally {
       h.dispose();
