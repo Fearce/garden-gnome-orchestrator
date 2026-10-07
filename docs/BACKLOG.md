@@ -17,6 +17,9 @@ same commit as the fix. Git history keeps the record.
 - **Automatically offload suitable subtasks to enabled Claude cloud credits when a subscription is exhausted** (2026-10-07, Codex implementor).
   Finish credit-eligible CLI dispatch, account/balance admission, parent result review and cap regressions; surface the setup guide.
 
+- **Stop inherited QA for a completed registration follow-up and document task controls** (2026-10-07, Moss Quill).
+  Original broad route reopened a full review after a narrow registration-only follow-up; verify the live task settles with QA off.
+
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
