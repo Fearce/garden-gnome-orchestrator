@@ -189,6 +189,3 @@ No open entries.
 
 - 2026-10-06 **Make unread Surveillance alerts throb so they cannot be missed** (Ember Gantry): fill and glow pulse dark to bright red (OKLab, no purple drift), count badge swells; motion browser 32/32 compares trough and peak frames on desktop, 768px and 320px; board-head 54/54, themes, README 70/70, privacy pass.
 - 2026-10-06 **Keep ordinary task resumes scoped after server restarts** (Thistlewatt): restart guidance now requires live-build and task-specific verification; full sweeps remain required for health/quality tasks. Doc-path probe and privacy checks pass; documentation only.
-
-- 2026-10-06 **Per-camera Surveillance motion notifications, ping and unread tab count** (74f6de90, Moss Lantern): pushed and live controls/current worker verified with recording preserved; motion browser 14/14, viewer 28/28, types/build/privacy/README pass. Module suite retains tracked Home idle-start failure.
-- 2026-10-06 **Restore ended-day patch-note summaries across page boundaries** (b0910387, Thistlewatt): live browser shows Sunday October 4 summary covering all 58 operator-facing changes automatically; deployed bundle bytes match. Patch-note lab 31/31, patch-note gate, types, builds, README 70/70 and privacy pass.
