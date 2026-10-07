@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Document a single queued fetch, merge and push transaction** (2026-10-07, Flax Thorpe; task 6973a43e, post-task improvement).
+
 
 
 
