@@ -89,6 +89,21 @@ try {
  await (pingable as any).pingOne(ps.account,false,false,true);
  assert.equal(calls.filter((u)=>u.endsWith("/v1/messages")).length,1);
  pingable.stop();
+ // First boot has no persisted org: wait for the inference identity before reading prepaid funds.
+ globalThis.fetch = (async (url) => {
+  if (String(url).endsWith("/v1/messages")) {
+   await new Promise((resolve) => setTimeout(resolve, 10));
+   return new Response("{}", {headers:{"anthropic-ratelimit-unified-5h-utilization":"0",
+    "anthropic-ratelimit-unified-7d-utilization":"0", "anthropic-organization-id":"org-test"}});
+  }
+  return new Response(JSON.stringify(String(url).endsWith("/profile")?{organization:{uuid:"org-test"}}:
+   String(url).endsWith("/credits")?{amount:25000,currency:"USD",auto_reload_settings:{enabled:false}}:{extra_usage:{is_enabled:true}}));
+ }) as typeof fetch;
+ const fresh = new AccountManager([{id:"fresh",label:"Fresh account",token:"test-inference",profileToken:"test-profile"}],hub);
+ try {
+  await (fresh as any).bootPing();
+  assert.equal(fresh.dto()[0]?.prepaidCredits?.balance,250);
+ } finally {fresh.stop();}
 } finally {globalThis.fetch=originalFetch;}
 // Codex credited dispatch must pass the same capacity inventory that wakes parked tasks.
 mkdirSync(process.env.CODEX_SOURCE_HOME!,{recursive:true});

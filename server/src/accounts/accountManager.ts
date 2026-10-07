@@ -506,7 +506,10 @@ export class AccountManager {
     // Banked resets are read for every account at boot too, held ones included (see `readResetCredits`
     // for why that cannot disturb the stagger). Without this a restart hid every Claude reset badge,
     // and the only way to redeem one, until the first periodic ping minutes later.
-    await Promise.all([...toPing.map((a) => this.pingOne(a)), ...[...this.states.values()].map((st) => this.readResetCredits(st))]);
+    // The inference headers identify the account's org. Read prepaid funds only after that
+    // identity is available, including on a fresh installation with no persisted org snapshot.
+    await Promise.all(toPing.map((a) => this.pingOne(a)));
+    await Promise.all([...this.states.values()].map((st) => this.readResetCredits(st)));
     for (const { a, p } of toHold) {
       const at = Date.now();
       // Re-decide against the clock the pings above advanced: a weekly reset that elapsed while they
