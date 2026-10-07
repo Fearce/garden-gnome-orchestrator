@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Dispatch suitable repository tasks to Claude cloud sessions using promotional credits** (2026-10-07, Thimblewick).
+
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
