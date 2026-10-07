@@ -80,6 +80,10 @@ async function testVanillaConfig(): Promise<void> {
 
 // ---- harness ------------------------------------------------------------------------------------
 class StubAccounts {
+  dispatchPreview(): Record<string, unknown> {
+    return { account: this.select(), hasHeadroom: true, fiveHour: 0, fiveHourReset: null,
+      sevenDay: 0, sevenDayReset: null, weeklySafetyPct: 100 };
+  }
   onUsageRefresh(_cb: () => void): void {}
   effectiveUtilization(): number | null { return null; }
   soonestResetAt(): number | null { return null; }
