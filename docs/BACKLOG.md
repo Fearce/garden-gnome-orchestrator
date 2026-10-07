@@ -172,6 +172,7 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-07 **Scheduled hours for the Token safety limit** (8e7c5267, Tock Thistlewick): owner chose the Token safety limit, not the goal burn-rate guard. Settings > Usage & limits has an M T W T F S S strip, start/end times, an explicit IANA zone and live on/off status with the next change. Live GGO (restarted 17:56 on HEAD) persists Mon-Fri 08:00-16:00 Europe/Copenhagen with the 90% limit; production browser shows "Suspended now. Applies again Thu 08:00." at 1440 and 390px. Schedule 35/35, token-freeze 112/112 (Test M), schedule UI, schedule lab 27/27, token-safety lab 23/23, conservation 29/29, server+web types, README 74/74 and privacy pass.
 
 - 2026-10-07 **Keep restart-interrupted sessions on their previous provider, including promoted reads and admission parks** (cd78bbaf, aac45dca, Codex): live build d15fe425 contains both fixes; production restart retained the exact Codex/Sol session. Affinity 19/19, token-freeze, types/builds, README 74/74 and privacy pass. Completed full sweep 235/239; QA-budget 161/161, Default 23/23 and doc-path 18/18 pass after fixture/build repairs. Supervisor timing remains intermittent (standalone 12/12, serial subset 11/12), tracked in Ready.
 
