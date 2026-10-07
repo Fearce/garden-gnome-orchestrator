@@ -9359,8 +9359,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       let accountId = provider === "claude" ? acct!.id : "";
       if (provider === "codex") {
         accountId = "openai-codex";
-        const fullKickoff = `${cliRoleKickoff(cfg, roleKickoff, role, "Codex")}\n\n${this.inboxNote(thread.id, role, false)}`;
-        if (!resume) startMessage = `${cliRoleKickoff(cfg, message, role, "Codex")}\n\n${this.inboxNote(thread.id, role, false)}`;
+        const fullKickoff = cliRoleStartContent(cfg, roleKickoff, role, "Codex", this.inboxNote(thread.id, role, false));
+        if (!resume) startMessage = cliRoleStartContent(cfg, message, role, "Codex", this.inboxNote(thread.id, role, false));
         else startMessage = this.inboxResumeKickoff(thread.id, role, message);
         agent = this.createRoleAgent("codex", () => new CodexAgentRun({
           model,
@@ -9389,8 +9389,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         }));
       } else if (provider === "grok") {
         accountId = "xai-grok";
-        const fullKickoff = `${cliRoleKickoff(cfg, roleKickoff, role, "Grok")}\n\n${this.inboxNote(thread.id, role, false)}`;
-        if (!resume) startMessage = `${cliRoleKickoff(cfg, message, role, "Grok")}\n\n${this.inboxNote(thread.id, role, false)}`;
+        const fullKickoff = cliRoleStartContent(cfg, roleKickoff, role, "Grok", this.inboxNote(thread.id, role, false));
+        if (!resume) startMessage = cliRoleStartContent(cfg, message, role, "Grok", this.inboxNote(thread.id, role, false));
         else startMessage = this.inboxResumeKickoff(thread.id, role, message);
         agent = this.createRoleAgent("grok", () => new GrokAgentRun({
           model,
@@ -17962,6 +17962,21 @@ function prependUserContentWithImages(content: UserContent, note: string, images
   if (typeof prefix === "string") return prependUserContent(content, prefix);
   if (typeof content === "string") return [...prefix, { type: "text", text: content }];
   return [...prefix, ...content];
+}
+
+/** A fresh CLI role turn: the role kickoff followed by the inbox note. A kickoff carrying pasted images
+ * is a content-block array and must stay one; interpolating it into a template string delivered the
+ * brief as "[object Object],[object Object]". */
+export function cliRoleStartContent(
+  cfg: AgentRunConfig,
+  content: string | unknown[],
+  role: StructuredRole,
+  provider: "Codex" | "Grok",
+  note: string,
+): string | unknown[] {
+  const kickoff = cliRoleKickoff(cfg, content, role, provider);
+  if (!note) return kickoff;
+  return typeof kickoff === "string" ? `${kickoff}\n\n${note}` : [...kickoff, { type: "text", text: note }];
 }
 
 /** Turn a Claude structured-role config into a self-contained CLI kickoff. CLI backends cannot attach

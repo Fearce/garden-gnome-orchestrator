@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE, IMPLEMENTOR_APPEND, QA_FIX_PROMPT, QA_PROMPT } from "../agents/prompts.js";
 import type { AgentRunConfig } from "../agents/runner.js";
-import { cliRoleKickoff } from "../orchestrator/threadManager.js";
+import { cliRoleKickoff, cliRoleStartContent } from "../orchestrator/threadManager.js";
 
 function qaKickoff(systemPrompt: string, disallowedTools: string[]): string {
   const cfg: AgentRunConfig = {
@@ -107,3 +107,26 @@ for (const prompt of [CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE, IMP
   assert.match(prompt, /never remove cloudOnly/);
   assert.match(prompt, /Confirm the spawn result says \*\*Claude cloud\*\*/);
 }
+
+// A kickoff with pasted images is a content-block array. Appending the inbox note by template
+// interpolation once delivered a QA brief to Codex as "[object Object],[object Object],[object Object]".
+for (const provider of ["Codex", "Grok"] as const) {
+  const cfg: AgentRunConfig = { model: "test-model", cwd: process.cwd(), systemPrompt: QA_PROMPT };
+  const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
+  const note = "Quiet inbox: read it at checkpoints.";
+  const start = cliRoleStartContent(cfg, [{ type: "text", text: "# QA review for task: Example brief" }, image], "qa", provider, note);
+  assert.ok(Array.isArray(start), `${provider}: an image kickoff must stay a content-block array`);
+  const blocks = start as Array<{ type: string; text?: string }>;
+  const text = blocks.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  assert.doesNotMatch(JSON.stringify(blocks), /\[object Object\]/, `${provider}: no block may be stringified`);
+  assert.match(text, /# QA review for task: Example brief/, `${provider}: the brief arrives as readable text`);
+  assert.match(text, /Temporary provider fallback/, `${provider}: the CLI role prelude is kept`);
+  assert.equal(blocks.at(-1)?.text, note, `${provider}: the inbox note follows the kickoff`);
+  assert.ok(blocks.includes(image as never), `${provider}: the pasted image is preserved`);
+
+  const plain = cliRoleStartContent(cfg, "Review the completed task.", "qa", provider, note);
+  assert.equal(typeof plain, "string");
+  assert.match(plain as string, /Review the completed task\.\n\nQuiet inbox: read it at checkpoints\.$/, `${provider}: a text kickoff keeps the note appended`);
+}
+
+console.log("cli role kickoff: image kickoffs reach Codex and Grok as readable blocks, not [object Object]");
