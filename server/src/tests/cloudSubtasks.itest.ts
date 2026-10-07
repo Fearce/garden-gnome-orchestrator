@@ -28,6 +28,7 @@ const credits = { remaining: 100, limit: 100, used: 0, expiresAt: clock + 864000
 const account = { id: "cloud-test", label: "Cloud test", enabled: true, rateLimited: true, fiveHour: 100, sevenDay: 20,
   fiveHourReset: clock + 3600000, cloudCredits: credits };
 let credentialValid = true;
+let duringAccountVerification: (() => void) | undefined;
 class StubAccounts {
   dto() { return [account]; }
   hasHeadroom() { return false; }
@@ -35,7 +36,10 @@ class StubAccounts {
   onUsageRefresh() {} effectiveUtilization() { return null; } soonestResetAt() { return null; }
   setPingInterval() {} applyEnabled() {} applyWeeklySafetyPct() {} setSpreadUsage() {} setProfileToken() {}
   auxToken() { return undefined; }
-  async cloudFallbackAccount() { return credentialValid ? { id: account.id, label: account.label, token: "test-profile-login", organizationId: "org-test", remainingCredits: credits.remaining } : null; }
+  async cloudFallbackAccount() {
+    duringAccountVerification?.();
+    return credentialValid ? { id: account.id, label: account.label, token: "test-profile-login", organizationId: "org-test", remainingCredits: credits.remaining } : null;
+  }
 }
 const manager = new ThreadManager(db, hub, new FileMemoryService(join(root, "memory")), new StubAccounts() as unknown as AccountsType);
 const internals = manager as any;
@@ -86,6 +90,19 @@ try {
   await settled(invalidAccount.id);
   assert.equal(calls, 0, "unverified launch account never starts a cloud agent");
   credentialValid = true;
+  duringAccountVerification = () => manager.cloudSubtasks.configure({ accountIds: [], repositories: ["example/webapp"] });
+  const revoked = (await manager.subTasks.spawn(spawner, { ...input, title: "Revoked cloud opt-in" })).thread!;
+  await settled(revoked.id);
+  assert.equal(calls, 0, "revoking opt-in during verification prevents session creation");
+  assert.match(db.getThread(revoked.id)?.error ?? "", /opt-in was removed/);
+  duringAccountVerification = undefined;
+  manager.cloudSubtasks.configure({ accountIds: [account.id], repositories: ["example/webapp"] });
+  duringAccountVerification = () => manager.cloudSubtasks.configure({ accountIds: [account.id], repositories: [] });
+  const revokedRepository = (await manager.subTasks.spawn(spawner, { ...input, title: "Revoked cloud repository" })).thread!;
+  await settled(revokedRepository.id);
+  assert.equal(calls, 0, "revoking repository permission during verification prevents session creation");
+  duringAccountVerification = undefined;
+  manager.cloudSubtasks.configure({ accountIds: [account.id], repositories: ["example/webapp"] });
   for (const bad of [{ ...credits, remaining: 0 }, { ...credits, expiresAt: clock - 1 }, { ...credits, locked: true }, { ...credits, readAt: clock - 3600000 }, { ...credits, readAt: clock + 3600000 }]) {
     assert.equal(cloudCreditsReady(bad), false);
     account.cloudCredits = bad;
@@ -254,6 +271,9 @@ try {
   sessionCount = 0;
   assert.equal((await runCloudSession({ ...protocolInput, signal: aborted.signal }, provider, async () => {})).ok, false);
   assert.equal(sessionCount, 0, "aborted work cannot create a session");
+  sessionCount = 0;
+  assert.equal((await runCloudSession({ ...protocolInput, canCreate: () => false }, provider, async () => {})).ok, false);
+  assert.equal(sessionCount, 0, "revocation after environment discovery cannot create a session");
   console.log("cloud-subtasks: cap dispatch, mid-run fallback, admission, parent result, interrupt and restart checks passed");
 } finally {
   for (const timer of [internals.capSupervisor, internals.tokenResumeTimer, internals.capResumeWake]) if (timer) clearTimeout(timer);

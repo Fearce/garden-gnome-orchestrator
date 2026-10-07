@@ -142,8 +142,6 @@ export class CloudSubtaskService {
     try {
       const currentPolicy = this.policy();
       if (!currentPolicy.accountIds.includes(cloud.accountId) || !currentPolicy.repositories.includes(cloud.repository)) throw new CloudError("Cloud opt-in was removed. No task started.");
-      const account = await this.host.accounts.cloudFallbackAccount(cloud.accountId);
-      if (!account) throw new CloudError("Cloud account, cap, promotional balance or overage-off verification failed. No task started.");
       if (controller.signal.aborted) return;
       checkout = await mkdtemp(join(tmpdir(), "ggo-cloud-subtask-"));
       const clone = await this.git("git", ["clone", "--depth", "1", "--single-branch", "--branch", cloud.branch, "--", `https://github.com/${cloud.repository}.git`, checkout], { urgent: true, timeoutMs: 60_000 });
@@ -151,6 +149,13 @@ export class CloudSubtaskService {
       const head = await this.git("git", ["rev-parse", "HEAD"], { cwd: checkout, urgent: true });
       if (head.code !== 0 || head.stdout.trim() !== cloud.head) throw new CloudError("The remote branch moved. Prepare a new standalone subtask from its current state.");
       if (controller.signal.aborted) return;
+      // Refresh at the launch boundary: cloning can outlive a cap or credential change. Opt-in
+      // may also be revoked while the provider read awaits, so check it again before creation.
+      const account = await this.host.accounts.cloudFallbackAccount(cloud.accountId);
+      if (!account) throw new CloudError("Cloud account, cap, promotional balance or overage-off verification failed. No task started.");
+      if (controller.signal.aborted) return;
+      const launchPolicy = this.policy();
+      if (!launchPolicy.accountIds.includes(cloud.accountId) || !launchPolicy.repositories.includes(cloud.repository)) throw new CloudError("Cloud opt-in was removed. No task started.");
       const run = this.host.db.createRun({ threadId: thread.id, role: "implementor", model: spec.model || "sonnet", account: `claude-cloud:${account.label}` });
       job = { threadId: thread.id, parentId: thread.parentId, accountId: cloud.accountId, repository: cloud.repository, runId: run.id,
         state: "starting", sessionId: null, url: null, result: null, error: null, createdAt: Date.now() };
@@ -166,6 +171,10 @@ export class CloudSubtaskService {
         repository: cloud.repository, revision: cloud.head, remainingCredits: account.remainingCredits,
         work: spec.cloudWork,
         prompt, model: spec.model || "sonnet", effort: spec.effort, signal: controller.signal,
+        canCreate: () => {
+          const policy = this.policy();
+          return policy.accountIds.includes(cloud.accountId) && policy.repositories.includes(cloud.repository);
+        },
         onSession: id => {
           if (!CLOUD_SESSION_ID.test(id) || !job) return;
           job.sessionId = id; job.url = `https://claude.ai/code/${id}`; job.state = "running";

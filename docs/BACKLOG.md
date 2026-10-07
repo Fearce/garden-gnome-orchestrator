@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: honor revoked cloud opt-in at the session launch boundary** (2026-10-07, Codex QA).
-  Account verification and repository preparation await before session creation; recheck opt-in before the external launch.
-
 
 
 
@@ -32,6 +29,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA: honor revoked cloud opt-in at the session launch boundary** (2026-10-07, Codex QA).
+  Regression reproduced a launch after revocation; final account/repository checks now prevent it. Nine focused gates, types/builds, 62 desktop/phone checks and live controls/guide serving verified; independent QA remains.
 
 - **Automatic Claude cloud subtasks after subscription caps** (d342c944, 2026-10-07, Thimblewick).
   Live build d342c944; production policy enables both subscriptions for this repository (browser-verified, chips $221.35/$248.79). Isolated hosted runs consumed promotional funds; awaits the first production cap-triggered `cloudWork` subtask.

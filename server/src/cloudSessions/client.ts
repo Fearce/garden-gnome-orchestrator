@@ -19,6 +19,7 @@ export interface CloudRunInput {
   effort?: string | null;
   signal: AbortSignal;
   onSession(id: string): void;
+  canCreate?(): boolean;
 }
 export const CLOUD_SESSION_ID = /^(?:session|cse)_[A-Za-z0-9_-]+$/;
 const API = "https://api.anthropic.com/v1";
@@ -57,6 +58,8 @@ export async function runCloudSession(input: CloudRunInput, request: typeof fetc
     const outputBranch = input.work === "change" ? `claude/ggo-${randomUUID().slice(0, 8)}` : null;
     const prompt = input.prompt + (outputBranch
       ? `\nUse the cloud checkout's generated branch ${outputBranch} for all commits and pushes. Do not create or push another branch. Your parent will review this branch before integration.` : "");
+    // Environment discovery awaits the provider. Recheck local opt-in immediately before POST.
+    if (signal.aborted || input.canCreate?.() === false) throw new Error("Cloud opt-in was removed");
     const created = await read("/code/sessions", {
       title: "GGO repository subtask", environment_id: environment.environment_id,
       events: [
