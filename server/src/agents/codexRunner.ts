@@ -1,4 +1,5 @@
 import { currentCodexModel, isGpt6Model } from "./codexModelGeneration.js";
+import { latestFamilyModel } from "./modelFamily.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -27,6 +28,8 @@ import {
 import { formatStructuredRoleFeed, parseStructuredText, type JsonSchemaLike } from "./structuredText.js";
 
 export interface CodexRunConfig {
+  /** An Auto-select choice validated against the authenticated catalog; preserve its model line. */
+  catalogModel?: boolean;
   /** The Codex model to run, e.g. `gpt-5.6-sol`. */
   model: string;
   /** Codex CLI reasoning effort, passed as model_reasoning_effort. */
@@ -404,9 +407,9 @@ export class CodexAgentRun implements AgentRunLike {
   private readonly memoryInputs: OwnerInputBuffer | null;
 
   constructor(private readonly cfg: CodexRunConfig) {
-    this.cfg = { ...cfg, model: currentCodexModel(cfg.model) };
+    this.cfg = { ...cfg, model: cfg.catalogModel ? latestFamilyModel(cfg.model) : currentCodexModel(cfg.model) };
     this.memoryInputs = cfg.memory ? new OwnerInputBuffer(cfg.memory.service, cfg.memory.run ?? "task") : null;
-    if (!isGpt6Model(this.cfg.model)) throw new Error(`GPT-6-only policy rejected Codex model: ${cfg.model}`);
+    if (!cfg.catalogModel && !isGpt6Model(this.cfg.model)) throw new Error(`GPT-6-only policy rejected Codex model: ${cfg.model}`);
     this.emitter.setMaxListeners(50);
   }
 

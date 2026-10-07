@@ -1,4 +1,3 @@
-import { isGpt6Model } from "../agents/codexModelGeneration.js";
 // Auto model selection: ONE cheap judgement call, made just before the implementor starts, that picks
 // which model implements this task and how hard it should think.
 //
@@ -14,7 +13,7 @@ import { isGpt6Model } from "../agents/codexModelGeneration.js";
 
 import { EFFORTS, type Effort, type ImplementorProvider, type ModelEffortStat, type ModelPick, type ModelStat } from "../types.js";
 import { isPolicyApprovedFlagship } from "./modelRoutingPolicy.js";
-import { claudeOpusVersion, isDisallowedClaudeModel, isRetiredClaudeOpus } from "./claudeOpusFloor.js";
+import { claudeOpusVersion, isRetiredClaudeOpus } from "./claudeOpusFloor.js";
 
 const SELECTOR_TIMEOUT_MS = 45_000;
 const MAX_OUTPUT_TOKENS = 300;
@@ -145,10 +144,9 @@ export function isLegacyCodexAutoModel(candidate: Pick<ModelCandidate, "provider
   return isLegacyCodexId(candidate.model);
 }
 
-/** A Claude model roles must not run on — an Opus below the floor or any non-Opus tier (Sonnet, Haiku,
- *  Fable). The owner runs Claude on Opus 5.5 only; see `claudeOpusFloor.ts`. */
+/** Superseded Opus picks are retired; other live Claude families remain adaptive candidates. */
 export function isRetiredClaudeAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {
-  return candidate.provider === "claude" && isDisallowedClaudeModel(candidate.model);
+  return candidate.provider === "claude" && claudeOpusVersion(candidate.model) !== null && isRetiredClaudeOpus(candidate.model);
 }
 
 function isCurrentClaudeOpusAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {
@@ -158,13 +156,10 @@ function isCurrentClaudeOpusAutoModel(candidate: Pick<ModelCandidate, "provider"
 }
 
 export function filterAutoSelectionCandidates<T extends Pick<ModelCandidate, "provider" | "model">>(candidates: readonly T[]): T[] {
-  const preferredCodexAvailable = candidates.some(isPreferredCodexAutoModel);
-  // Each backend's floor is gated on ITS own current option being dispatchable: a roster that offers
-  // only the retired tier must stay selectable rather than removing the backend from the choice.
+  // The task-specific capability floor is applied after this roster, rather than suppressing entire
+  // current families globally. A superseded Opus cannot return beside the current Opus generation.
   const currentOpusAvailable = candidates.some(isCurrentClaudeOpusAutoModel);
   return candidates.filter((candidate) => {
-    if (candidate.provider === "codex" && !isGpt6Model(candidate.model)) return false;
-    if (preferredCodexAvailable && isLegacyCodexAutoModel(candidate)) return false;
     return !currentOpusAvailable || !isRetiredClaudeAutoModel(candidate);
   });
 }
@@ -173,9 +168,7 @@ export function autoSelectableEffortsForCandidate(
   candidate: Pick<ModelCandidate, "provider" | "model">,
   efforts: readonly Effort[],
 ): Effort[] {
-  if (!isLegacyCodexAutoModel(candidate)) return [...efforts];
-  const capped = efforts.filter((effort) => EFFORTS.indexOf(effort) <= EFFORTS.indexOf("high"));
-  return capped.length ? capped : [...efforts];
+  return [...efforts];
 }
 
 function isFrontierTierCandidate(candidate: ModelCandidate): boolean {

@@ -1,6 +1,5 @@
-// The ceiling on every effort GGO chooses by itself — the route's fallback, the planner's judgement and
-// the automatic model pick. Above it (xhigh/max/ultra) runs only when the owner named that effort
-// (thread.effortOverride), and even then the per-subscription cap in Settings still bounds it.
+// The conservative route/planner fallback ceiling. Auto-select has its own task-aware judge and sees
+// every model-supported tier under explicit subscription caps, including xhigh/max/ultra.
 
 import { EFFORTS, type Effort } from "../types.js";
 

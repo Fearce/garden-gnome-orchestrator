@@ -35,6 +35,15 @@ stale, correct it in place and update its row.
 | Ship a **desktop app** for GGO, and on **Electron, Tauri or an installable PWA**? | **Electron, optional, in `desktop/`** (2026-10-04, owner's request; Electron was their first pick, and they invited a better option). It is a window around the same server-served console, so the web portal loses nothing. **Tauri 2** renders through WebView2, the same Chromium engine as Electron on Windows, so it gains no look or feel. Its smaller installer costs a Rust toolchain on every build machine, and it has no native-button title-bar overlay, so the window buttons would be hand-drawn. **A PWA** cannot start a stopped server, choose its own downloads, or take a `ggo://` hand-over. It also needs a Chromium browser and a secure origin, which a LAN `http://` address isn't. Electron's Window Controls Overlay makes the console's own top bar the title bar, with real Windows buttons and Snap Layouts. | [`../desktop/README.md`](../desktop/README.md) · [`../.claude/rules/desktop-app.md`](../.claude/rules/desktop-app.md) · `npm test --prefix desktop` · `npm run lab --prefix desktop` · `npm run test:desktop` |
 | Keep agent memory on **local Ollama embeddings + pgvector**, or move it into GGO on **subscription models**? | **Into GGO, with no embeddings at all** (2026-10-05, owner's request: Ollama used too much of the PC). None of GGO's subscriptions exposes an embeddings endpoint (Anthropic has none; OpenAI's needs a paid API key), so recall is a SQLite FTS5 shortlist judged by Haiku, with Luna on the Codex plan and then keyword ranking as bounded fallbacks. Model-written retrieval cards cover paraphrase. On the owner's corpus this beat the embeddings (prompt-mode R@1 0.52 → 0.88, R@2 0.64 → 0.92) with no resident local model. The index lives in an on-demand worker thread so the event loop never carries it. The Markdown files stay the source of truth. | [`agent-memory.md`](agent-memory.md) · `npm run test:memory-rag` |
 
+## Auto-select model coverage (2026-10-07)
+
+The owner's nightly-sweep brief supersedes blanket automatic model-family exclusions and the hidden
+High effort ceiling. Auto-select compares every current accessible family and exact supported effort
+of an enabled implementation backend, including distinct older Codex lines and non-Opus Claude
+families. Newest-in-family, task capability requirements, dedicated-pool exclusions, subscription
+caps and capacity gates still apply. Configured role defaults retain their existing floors.
+`test:auto-model`, `test:model-select` and `test:scoped-sonnet` exercise this boundary.
+
 ## Genuinely still open
 
 Reconstructing this list from five closed briefs is exactly the waste this register exists to

@@ -238,8 +238,8 @@ console.log("\n=== claude opus floor — the auto-selection roster ===\n");
   ];
   const kept = filterAutoSelectionCandidates(candidates).map((c) => `${c.provider}:${c.model}`);
   check("a retired Opus is dropped while a current one is dispatchable", !kept.includes("claude:claude-opus-5"), kept.join(","));
-  check("the current Opus stays and Sonnet is dropped", kept.includes("claude:claude-opus-5-5") && !kept.includes("claude:claude-sonnet-5"), kept.join(","));
-  check("the GPT-6-only Codex policy keeps current models and drops older ones", kept.includes("codex:gpt-6-sol") && !kept.includes("codex:gpt-5.5"), kept.join(","));
+  check("the current Opus and distinct Sonnet family stay", kept.includes("claude:claude-opus-5-5") && kept.includes("claude:claude-sonnet-5"), kept.join(","));
+  check("all accessible Codex families remain selectable", kept.includes("codex:gpt-6-sol") && kept.includes("codex:gpt-5.5"), kept.join(","));
 }
 {
   // Each backend's floor is gated on ITS own current option: a Claude roster offering only the retired

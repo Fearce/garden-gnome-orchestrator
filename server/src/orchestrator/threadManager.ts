@@ -143,7 +143,7 @@ import { deliverableRefusal, resolveTaskDeliverable } from "./deliverablePath.js
 import { buildGitProgressBlock, workspaceGitFingerprint } from "./gitProgress.js";
 import { ROUTE_POLICY_VERSION, selectRoute } from "./routeSelection.js";
 import { isScopedSonnetModel, planClaudeModel, SCOPED_SONNET_MODEL } from "./claudeModelRoute.js";
-import { AUTOMATIC_EFFORT_CEILING, automaticEffortOptions, capAutomaticEffort } from "./automaticEffort.js";
+import { AUTOMATIC_EFFORT_CEILING, capAutomaticEffort } from "./automaticEffort.js";
 import { getFileDiff, getTaskGitStatus, getHeadSha, getTaskGitSummary, runGit, type GitFileDiff, type GitStatus, type GitSummary } from "../gitService.js";
 import { validRepoPath } from "../git/repoOps.js";
 import { titleFromBrief } from "./titleFromInjection.js";
@@ -4186,10 +4186,10 @@ export class ThreadManager implements OrchestratorApi {
   private codexRosterModels(): string[] {
     if (chatgptLoginAvailable()) {
       const cli = this.modelCatalog.codexCliModels().map((model) => model.id);
-      return currentCodexModels(cli.length ? cli : CURATED_CODEX_MODELS);
+      return withoutSupersededModels(cli.length ? cli : CURATED_CODEX_MODELS);
     }
     const live = this.modelCatalog.codexModels();
-    return currentCodexModels(live.length ? live : CURATED_CODEX_MODELS);
+    return withoutSupersededModels(live.length ? live : CURATED_CODEX_MODELS);
   }
 
   /** Exact CLI-advertised tiers under ChatGPT auth; documented family fallbacks cover cold start and
@@ -4750,12 +4750,9 @@ export class ThreadManager implements OrchestratorApi {
       const accountId = this.accounts.dispatchPreview(demand).account.id;
       const saving = this.usageSavingTarget(accountId);
       const cap = this.accountMaxEffort(accountId);
-      // A task the route judged well-scoped offers Claude as its Sonnet alone: the route chose the line,
-      // so the selector weighs Claude against the other backends rather than Sonnet against Opus.
-      const scoped = opts.threadId ? this.scopedSonnet(opts.threadId, accountId, "implementor") : undefined;
       add(
         "claude",
-        saving ? [saving.model] : scoped ? [scoped] : this.claudeRosterModels(),
+        saving ? [saving.model] : this.claudeRosterModels().filter((model) => !this.accounts.isModelLimited(accountId, model)),
         (model) => saving ? [saving.effort] : underCap(claudeEffortsForModel(model), cap),
         () => claude,
       );
@@ -4865,14 +4862,14 @@ export class ThreadManager implements OrchestratorApi {
     const policy = stage.routeDecision?.modelPolicy;
     let saved = stage.modelPick;
     if (saved && isRetiredClaudeAutoModel(saved) && !this.isScopedSonnetPick(thread.id, saved)) {
-      // Only a task the route judged well-scoped may run Sonnet; any other Sonnet/Haiku/Fable pick (one made
-      // before scoped routing, or before the plan moved this task to Opus) must not resume its session.
+      // Superseded Opus picks are reselected. Current non-Opus families remain valid for adaptive work;
+      // the task policy below still rejects them for flagship-class work.
       this.db.updateThreadStageOutputs(thread.id, { modelPick: undefined });
       this.postFinding({
         threadId: thread.id,
         fromRole: "director",
-        summary: `Superseded automatic ${saved.model} route — this task runs Claude on Opus 5.5`,
-        detail: `The prior pick was ${saved.model} at ${saved.effort}. ${config.ownerName} runs Claude on Opus 5.5 except for work the route judges well-scoped, which runs on Sonnet 5.5; this task is not routed to Sonnet, so the next run starts fresh on Opus instead of resuming that session. Its run history remains intact.`,
+        summary: `Superseded automatic ${saved.model} route — selecting a current model`,
+        detail: `The prior pick was ${saved.model} at ${saved.effort}. Its Opus generation is retired. Auto-select will compare current accessible families within this task's capability requirements and subscription caps, then start a fresh session. Its run history remains intact.`,
         severity: "warning",
       });
       saved = undefined;
@@ -4928,8 +4925,9 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.blockFlagshipModelPolicy(thread, demand, candidates, policy!);
       return null;
     }
-    // The pick is an automatic choice, so it stays under the automatic ceiling; an owner pin beats it anyway.
-    const eligible = policySet.eligible.map((candidate) => ({ ...candidate, efforts: automaticEffortOptions(candidate.efforts) }));
+    // The roster already applies exact model support and the owner's subscription caps. Auto-select
+    // must see every remaining tier; the conservative route fallback is not a second hidden cap.
+    const eligible = policySet.eligible;
     const workspace = normalizeWorkspace(homeWorkspaceOf(thread));
     const preferredEffort = thread.effortOverride ?? plan?.effort ?? stage.plan?.effort ?? stage.routeDecision?.implementorEffort;
     const selection = {
@@ -5071,22 +5069,29 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const saving = this.usageSavingTarget(this.usageSavingSubId(provider, accountId));
     if (saving) return { model: saving.model, saving };
     const picked = this.pickedModel(threadId, provider);
-    if (provider === "codex") return { model: currentCodexModel(picked ?? this.providerRoleModel("codex", "implementor")), saving };
+    if (provider === "codex") return { model: picked ? latestFamilyModel(picked) : currentCodexModel(this.providerRoleModel("codex", "implementor")), saving };
     if (provider === "grok") return { model: picked ? latestFamilyModel(picked) : this.grokModel(), saving };
     if (provider === "zai") return { model: picked ? latestFamilyModel(picked) : this.zaiModel(), saving };
     const subId = accountId ?? this.accounts.dispatchPreview().account.id;
     return { model: picked ? this.claudePickedModel(threadId, subId, picked) : this.claudeTaskTarget(threadId, subId, "implementor").model, saving };
   }
 
-  /** An auto-pick's Claude model as it dispatches: the scoped Sonnet the roster offered stays Sonnet (or
-   *  its Opus fallback once its pool caps); every other pick takes the Opus floor. */
+  /** Whether a saved pick matches the scoped fallback used when Auto-select is disabled. */
   private isScopedSonnetPick(threadId: string, pick: Pick<ModelPick, "provider" | "model">): boolean {
     return pick.provider === "claude" && isScopedSonnetModel(pick.model) && this.wantsScopedSonnet(threadId, "implementor");
   }
 
   private claudePickedModel(threadId: string, subId: string, picked: string): string {
-    if (this.isScopedSonnetPick(threadId, { provider: "claude", model: picked })) return this.poolResolved(subId, picked);
-    return this.claudeOpusFloored(this.poolResolved(subId, picked)).model;
+    // Automatic picks already passed the task capability policy. Preserve their chosen family through
+    // dispatch and resume instead of recording Sonnet/Fable while silently spawning Opus.
+    const model = this.currentModel(picked);
+    const policy = this.db.getThreadStageOutputs(threadId).routeDecision?.modelPolicy;
+    const live = this.modelCatalog.claudeModels();
+    const unavailable = live.length > 0 && !withoutSupersededModels(live).includes(model);
+    if (unavailable || !modelMatchesPolicy({ provider: "claude", model }, policy)) {
+      return this.claudeOpusFloored(this.poolResolved(subId, picked)).model;
+    }
+    return this.poolResolved(subId, model);
   }
 
   /** The implementor's effort for this task: an operator pin beats everything, then the auto-selected
@@ -6334,7 +6339,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // for a run that will never touch it is exactly what would keep an idle pool out of the ladder —
     // and conversely, quoting the idle pool for an implementor would claim room it cannot use.
     const saving = ignoreGeneralCapLatch ? undefined : this.usageSavingTarget(CODEX_SUB_ID);
-    const model = currentCodexModel(modelOverride ?? saving?.model ?? (role ? this.codexRoleModel(role, demand) : this.codexModel()));
+    const model = modelOverride ? latestFamilyModel(modelOverride)
+      : currentCodexModel(saving?.model ?? (role ? this.codexRoleModel(role, demand) : this.codexModel()));
     const pools = this.codexPoolSnapshot();
     const pool = pools ? poolForModel(pools, model) : undefined;
     const dedicated = pool?.modelSlug ? pool : undefined;
@@ -10056,6 +10062,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // gpt-5 session) by restarting fresh — so it must carry the SAME doctrine + task a fresh start gets.
       const codexAgent = new CodexAgentRun({
         model,
+        catalogModel: !!this.pickedModel(thread.id, "codex"),
         effort,
         cwd: thread.workspace,
         apiKey: this.openaiApiKey() ?? "",

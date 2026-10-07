@@ -11,7 +11,9 @@ paths:
 
 Owner direction 2026-10-02: Sonnet 5.5 "is faster and excels at well-scoped tasks. It scores super low on
 agentic coding, but super high on normal coding." It refines the 09-27 "Opus 5.5 only" rule. The Opus
-floor still lifts every *configured* Sonnet; the route is the one automatic path to Sonnet.
+floor still lifts every *configured* Sonnet. Since 2026-10-07, Auto-select independently compares all
+accessible current families and exact supported efforts; scoped routing supplies the default when
+no automatic pick exists. Task capability requirements still constrain broad or risky work.
 
 ## Where the decision lives
 - `claudeModelRoute.ts` is pure: `routeClaudeModel(evidence)` turns the route classifier's own evidence
@@ -36,9 +38,10 @@ floor still lifts every *configured* Sonnet; the route is the one automatic path
   entry (the sub's row OR the `default` layer, which `claudeRoleConfigured` checks), then the scoped
   Sonnet (`scopedSonnet`), then the configured model with the Opus floor. "Auto" in Settings means
   the matrix row is empty, which is what lets the route choose.
-- Auto-selection: `implementorModelRoster({threadId})` offers Claude as the scoped Sonnet ALONE.
-  `filterAutoSelectionCandidates` keeps it because no current Opus sits beside it. A saved Sonnet pick
-  survives only through `isScopedSonnetPick`; any other Sonnet pick is wiped with a finding.
+- Auto-selection: `implementorModelRoster` offers all accessible current Claude families under the
+  subscription's effort cap, excluding latched model pools. The task capability policy then constrains
+  flagship work. A valid adaptive pick keeps its family through dispatch and resume; a superseded
+  Opus or a pick incompatible with the task policy is reselected.
 - Fallback: a Sonnet that is not in the roster, or whose pool is latched capped (`isModelLimited`), runs
   Opus and posts a one-time `Sonnet unavailable: <role> falls back to Opus` finding. A mid-run pool cap goes
   through `modelCapFallback` (`fallbackModelFor` covers Sonnet → `config.sonnetFallbackModel`). A pinned
@@ -54,6 +57,7 @@ floor still lifts every *configured* Sonnet; the route is the one automatic path
 
 ## Switch
 Settings → Auto model selection → "Sonnet for well-scoped work" (`scopedSonnetRouting`, kv
-`setting_scoped_sonnet_routing`, default on). Off = every Claude role on Opus, as before 2026-10-02.
+`setting_scoped_sonnet_routing`, default on). Off keeps the configured Opus fallback; it does not
+disable task-aware Auto-select choices.
 
 Gates: `test:claude-model-route` (pure, through `selectRoute`), `test:scoped-sonnet` (real ThreadManager).

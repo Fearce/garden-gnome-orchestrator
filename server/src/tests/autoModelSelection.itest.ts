@@ -261,6 +261,7 @@ async function main(): Promise<void> {
         "claude-sonnet-4-6",
         "claude-opus-5-5",
         "claude-sonnet-5",
+        "claude-fable-5",
         HAIKU,
       ];
       h.db.kvSet("cache_claude_models", JSON.stringify(live));
@@ -276,11 +277,9 @@ async function main(): Promise<void> {
       const candidates = h.internals.implementorModelRoster() as { model: string; efforts: Effort[] }[];
       const opus = candidates.find((candidate) => candidate.model === "claude-opus-5-5");
       check("Opus 5.5 exposes all five effort levels", opus?.efforts.join(",") === "low,medium,high,xhigh,max", JSON.stringify(opus));
-      // Owner rule 2026-09-27: every Claude role runs Opus 5.5. Adaptive selection had put a Sonnet
-      // implementor on ordinary work; no other Claude tier may reach the judge while Opus 5.5 is live.
       check(
-        "only Opus 5.5 is offered to automatic selection on Claude",
-        candidates.filter((candidate) => candidate.model.startsWith("claude-")).map((candidate) => candidate.model).join(",") === OPUS_5,
+        "all current Claude families reach adaptive automatic selection",
+        [OPUS_5, "claude-fable-5", "claude-sonnet-5", HAIKU].every((model) => candidates.some((candidate) => candidate.model === model)),
         JSON.stringify(candidates.map((candidate) => candidate.model)),
       );
     } finally {
@@ -327,7 +326,7 @@ async function main(): Promise<void> {
       const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
       const modelsFor = (provider: ImplementorProvider): string[] => roster.filter((candidate) => candidate.provider === provider).map((candidate) => candidate.model);
       check("modern Codex models reach the selector", ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
-      check("legacy Codex models stay out while GPT-5.6+ options are dispatchable", codex.slice(5).every((model) => !modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
+      check("distinct accessible Codex lines remain selectable beside GPT-6", ["gpt-5.6-terra", "gpt-daybreak-blue-latest", "gpt-5.4-mini", "gpt-5.3-codex-spark", "o3"].every((model) => modelsFor("codex").includes(model)), JSON.stringify(modelsFor("codex")));
       check("Codex Ultra reaches the selector when the live model advertises it", roster.find((candidate) => candidate.model === "gpt-6-sol")?.efforts.includes("ultra") === true);
       check("every current live Grok line reaches the selector", grok.slice(0, 3).every((model) => modelsFor("grok").includes(model)), JSON.stringify(modelsFor("grok")));
       check("a superseded Grok model stays out beside its newer line member", !modelsFor("grok").includes("grok-4.5"), JSON.stringify(modelsFor("grok")));
@@ -342,7 +341,7 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log("Test roster — legacy Codex remains a capped fallback only when no 5.6+ choice exists");
+  console.log("Test roster — every accessible Codex line retains its supported efforts");
   {
     const h = makeHarness();
     try {
@@ -355,8 +354,8 @@ async function main(): Promise<void> {
       h.internals.codexEffort = (): Effort => "ultra";
       const roster = h.internals.implementorModelRoster() as { provider: ImplementorProvider; model: string; efforts: Effort[] }[];
       const codexRoster = roster.filter((candidate) => candidate.provider === "codex");
-      check("legacy-only Codex catalog cannot launch", codexRoster.length === 0, JSON.stringify(codexRoster));
-      check("legacy Codex fallback is capped to High for automatic selection", codexRoster.every((candidate) => candidate.efforts.join(",") === "low,medium,high"), JSON.stringify(codexRoster));
+      check("an accessible older Codex line can launch", codexRoster.length > 0, JSON.stringify(codexRoster));
+      check("every supported Codex effort survives automatic selection", codexRoster.every((candidate) => candidate.efforts.join(",") === "low,medium,high,xhigh"), JSON.stringify(codexRoster));
     } finally {
       h.dispose();
     }
@@ -458,9 +457,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // The pick is an automatic choice, so it stays under the automatic ceiling (automaticEffort.ts) even
-  // when every model offers max and the judge asks for it; only an owner pin reaches past high.
-  console.log("\nTest B3 — an automatic pick never reaches past high");
+  // Auto-select sees every model-supported tier under the explicit subscription caps. The route's
+  // conservative fallback must not silently truncate the judge's roster to high.
+  console.log("\nTest B3 — Auto-select can choose every supported effort");
   {
     const h = makeHarness();
     try {
@@ -473,7 +472,28 @@ async function main(): Promise<void> {
       h.reply(pickReply(OPUS_5, "max"));
       const pick = (await h.internals.autoSelectModel(thread(h, id))) as ModelPick;
       check("the judge was consulted", h.calls() === 1, String(h.calls()));
-      check("a judge asking for max gets the route's effort instead", pick?.model === OPUS_5 && pick.effort === "medium", JSON.stringify(pick));
+      check("a judge asking for supported max retains max", pick?.model === OPUS_5 && pick.effort === "max", JSON.stringify(pick));
+
+      const supported: Effort[] = ["low", "medium", "high", "xhigh", "max", "ultra"];
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [
+        { ...policyCandidate(OPUS_5), efforts: ["low", "medium", "high", "max"] },
+        { provider: "codex", model: "gpt-6-astra", efforts: supported, note: "flagship", capacity: "test headroom" },
+      ];
+      for (const effort of supported) {
+        const task = h.seed();
+        h.reply(pickReply("gpt-6-astra", effort));
+        const chosen = (await h.internals.autoSelectModel(thread(h, task))) as ModelPick;
+        check(`Auto-select retains Codex ${effort}`, chosen?.model === "gpt-6-astra" && chosen.effort === effort, JSON.stringify(chosen));
+      }
+
+      h.internals.implementorModelRoster = (): ModelCandidate[] => [
+        { ...policyCandidate(SONNET_5), efforts: ["low", "medium", "high"] },
+        { ...policyCandidate(OPUS_5), efforts: ["low", "medium", "high"] },
+      ];
+      const boundedTask = h.seed();
+      h.reply(pickReply(OPUS_5, "max"));
+      const bounded = (await h.internals.autoSelectModel(thread(h, boundedTask))) as ModelPick;
+      check("an explicit roster cap still rejects max", bounded?.effort === "medium", JSON.stringify(bounded));
 
       const heavyOnly = h.seed();
       h.internals.implementorModelRoster = (): ModelCandidate[] => [policyCandidate(OPUS_5)];
@@ -839,7 +859,7 @@ async function main(): Promise<void> {
       check("the run records the picked model", run?.model === OPUS_5, String(run?.model));
       check("the run records the picked effort", run?.effort === "low", String(run?.effort));
 
-      // A pick stored before the Opus-only rule (task b9c181b7 ran Sonnet this way) never reaches a run.
+      // An adaptive automatic choice keeps its selected Claude family through the actual dispatch path.
       const legacy = h.seed();
       h.db.updateThreadStageOutputs(legacy, { modelPick: { provider: "claude", model: SONNET_5, effort: "medium", reason: "r" } });
       h.internals.implementorProvider.set(legacy, "claude");
@@ -849,7 +869,7 @@ async function main(): Promise<void> {
         /* the same sentinel */
       }
       const legacyRun = h.db.listRuns(legacy).find((r) => r.role === "implementor");
-      check("a stored Sonnet pick dispatches Opus 5.5 instead", legacyRun?.model === OPUS_5, String(legacyRun?.model));
+      check("an adaptive Sonnet pick dispatches the current selected family", legacyRun?.model?.startsWith("claude-sonnet-") === true, String(legacyRun?.model));
 
       // …and with no pick, the configured default is what runs — the feature must be invisible when off.
       const plain = h.seed();

@@ -22,10 +22,11 @@ import { WAKE_MODEL } from "../agents/codexUsagePing.js";
 import { CODEX_IMPLEMENTOR_DOCTRINE, DIRECTOR_PROMPT, GROK_IMPLEMENTOR_DOCTRINE, IMPLEMENTOR_APPEND, PLANNER_PROMPT } from "../agents/prompts.js";
 import { claudeTokenUsage } from "../agents/runner.js";
 import { codexTokenUsage } from "../agents/codexRunner.js";
+import { CodexAgentRun } from "../agents/codexRunner.js";
 import { providerIntent } from "../orchestrator/providerIntent.js";
 import { applyImplementorModelPolicy, isPolicyApprovedFlagship } from "../orchestrator/modelRoutingPolicy.js";
 import type { AgentRun, Effort, ImplementorModelPolicy } from "../types.js";
-import { codexEffortsForModel } from "../types.js";
+import { codexEffortsForModel, claudeEffortsForModel } from "../types.js";
 
 let passed = 0;
 let failed = 0;
@@ -187,11 +188,11 @@ console.log("Flagship capability floor");
     { provider: "claude", model: "claude-sonnet-5", efforts: ["low", "medium", "high"], note: "workhorse" },
   ];
   const filtered = filterAutoSelectionCandidates(roster);
-  check("older Codex models are hidden while GPT-5.6+ Codex is dispatchable", !filtered.some((candidate) => ["gpt-5.5", "gpt-4.1", "o3"].includes(candidate.model)) && filtered.some((candidate) => candidate.model === "gpt-6-luna"), JSON.stringify(filtered));
+  check("accessible Codex model lines survive the global filter", filtered.length === roster.length, JSON.stringify(filtered));
   const fallback = filterAutoSelectionCandidates(roster.filter((candidate) => candidate.model !== "gpt-6-luna"));
-  check("legacy-only Codex is refused", !fallback.some((candidate) => candidate.provider === "codex"), JSON.stringify(fallback));
-  check("legacy Codex auto-selection offers no extra-high tier", autoSelectableEffortsForCandidate(roster[0]!, roster[0]!.efforts).join(",") === "low,medium,high");
-  check("older non-GPT-5 Codex auto-selection is capped too", autoSelectableEffortsForCandidate(roster[1]!, roster[1]!.efforts).join(",") === "low,medium,high" && autoSelectableEffortsForCandidate(roster[2]!, roster[2]!.efforts).join(",") === "low,medium,high");
+  check("an older-only accessible catalog remains selectable", fallback.some((candidate) => candidate.provider === "codex"), JSON.stringify(fallback));
+  check("exact older Codex extra-high support is retained", autoSelectableEffortsForCandidate(roster[0]!, roster[0]!.efforts).join(",") === "low,medium,high,xhigh");
+  check("other catalogued Codex lines retain their exact supported efforts", autoSelectableEffortsForCandidate(roster[1]!, roster[1]!.efforts).join(",") === "low,medium,high,xhigh" && autoSelectableEffortsForCandidate(roster[2]!, roster[2]!.efforts).join(",") === "low,medium,high,xhigh");
 }
 
 {
@@ -297,7 +298,7 @@ console.log("Flagship capability floor");
     efforts: ["low", "medium", "high", "xhigh"],
   };
   const pick = parseSelection('{"model":"gpt-5.5","effort":"xhigh","reason":"legacy fallback"}', legacyCtx);
-  check("a legacy Codex fallback cannot spend extra-high effort", pick?.effort === "high", JSON.stringify(pick));
+  check("a catalogued Codex line can use its supported extra-high effort", pick?.effort === "xhigh", JSON.stringify(pick));
 }
 
 {
@@ -600,7 +601,10 @@ check("a GPT-6 point release is not an upgrade target", currentCodexModel("gpt-6
 check("a GPT-6 point-release Sol reaches Ultra before the CLI catalog loads", codexEffortsForModel("gpt-6.1-sol").includes("ultra"));
 check("a GPT-6 point-release Sol keeps its tier note", /GPT-6 workhorse/.test(modelNote("codex", "gpt-6.1-sol")));
 check("GPT-6.10 is not mistaken for anything else", isGpt6Model("gpt-6.10-luna") && !isGpt6Model("gpt-60-luna") && !isGpt6Model("gpt-6x"));
-check("retired models never return as automatic fallback", filterAutoSelectionCandidates([{provider: "codex", model: "gpt-5.6-sol"}, {provider: "codex", model: "gpt-5.6-luna"}]).length === 0);
+check("catalogued previous-generation families remain accessible to Auto-select", filterAutoSelectionCandidates([{provider: "codex", model: "gpt-5.6-sol"}, {provider: "codex", model: "gpt-5.6-luna"}]).length === 2);
+check("documented bare Opus 5 exposes all five efforts", claudeEffortsForModel("claude-opus-5").join() === "low,medium,high,xhigh,max");
+const catalogRun = new CodexAgentRun({ model: "gpt-5.6-terra", catalogModel: true, effort: "xhigh", cwd: process.cwd(), apiKey: "" });
+check("the CLI runner preserves a validated Auto-select model line", (catalogRun as unknown as { cfg: { model: string } }).cfg.model === "gpt-5.6-terra");
 
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"} — ${passed} passed, ${failed} failed`);
 if (failed) {
