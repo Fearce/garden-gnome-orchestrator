@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Stabilize supervisor duplicate-boot retry verification under load** (2026-10-07, Codex QA).
-  Restart affinity review: full gates 237/239; isolated sweep passes, supervisor still fails takeover after two boots in its 600 ms fixture window.
-
 
 
 
@@ -36,6 +33,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA: stabilize supervisor duplicate-boot retry verification under load** (838f708a, 2026-10-07, Codex QA).
+  Full suite 237/239 before repair; supervisor now 12/12 standalone and passes with affinity/revival/fallback (4/4 gates), types/builds/browser/privacy pass. Fixture tree reaped; independent review remains.
 
 - **QA: distinguish throttled cloud-credit reads from rejected profile tokens** (2026-10-07, Codex QA).
   HTTP 429 regression preserves unknown credits and waits for refresh; HTTP 401 still requests a login. Cloud/reset gates, types/build and desktop/phone 62/62 pass; refreshed matching local login restores both live balance chips and guide serves. Deployed d15fe425; independent QA remains.
@@ -132,6 +132,9 @@ same commit as the fix. Git history keeps the record.
 18. **Handle SQLite writer contention without crashing streamed-agent handlers** (2026-10-07, Brindlewick).
   An attempted online index rebuild caused an uncaught database-is-locked error in addMessage and a supervised restart. The transaction rolled back, the original index remains and seven tasks resumed. Never rebuild the live index; investigate bounded write retries and scheduled offline maintenance.
 
+
+19. **Stabilize worktree-sweep timing verification under concurrent gate load** (2026-10-07, Codex QA).
+  Full suite resolves 300 tasks in 5,199 ms against a 5,000 ms assertion; the serial rerun passes. Verify lookup counts independently of scheduler timing. Evidence: restart-affinity worktree's server/data/gates-last.log.
 
 ## Blocked / waiting
 
