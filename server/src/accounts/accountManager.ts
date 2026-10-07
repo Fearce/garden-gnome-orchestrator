@@ -638,7 +638,7 @@ export class AccountManager {
       return { ok: false, message: `The profile token filed under ${st.account.label} belongs to a different subscription, so nothing was spent.` };
     }
     const orgId = read.organizationId ?? st.organizationId;
-    if (read.credits.available <= 0 || !read.credits.redeemId || !orgId) {
+    if (!read.credits || read.credits.available <= 0 || !read.credits.redeemId || !orgId) {
       this.applyResetCredits(st, read.credits, null);
       this.publish();
       return { ok: false, message: `${st.account.label} has no banked reset available to use right now.` };
@@ -750,7 +750,10 @@ export class AccountManager {
     st.sevenDayReset = u.sevenDayReset;
     // Only ever widened, never cleared by a header-less response: this is the reference a profile
     // token is matched against, and losing it would silently turn a mismatch check into a no-op.
-    if (u.organizationId) st.organizationId = u.organizationId;
+    if (u.organizationId) {
+      if (st.organizationId !== u.organizationId) st.cloudCredits = null;
+      st.organizationId = u.organizationId;
+    }
     st.usageAt = now;
     st.usageStale = false;
     st.error = null;

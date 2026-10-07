@@ -42,7 +42,7 @@ const USAGE_URL = process.env.PROFILE_USAGE_URL?.trim() || "https://api.anthropi
 export type ProfileFailReason = "unconfigured" | "scope" | "auth" | "network" | "timeout" | "unreadable";
 
 export type ProfileUsageResult =
-  | { ok: true; credits: ResetCreditsDTO; organizationId: string | null; cloudCredits?: CloudCreditsDTO }
+  | { ok: true; credits: ResetCreditsDTO | null; organizationId: string | null; cloudCredits?: CloudCreditsDTO }
   | { ok: false; reason: ProfileFailReason };
 
 interface UsageBody {
@@ -84,9 +84,9 @@ export async function fetchProfileUsage(token: string, timeoutMs = 12_000): Prom
     return { ok: false, reason: "unreadable" };
   }
   const credits = parseClaudeResetCredits(body.cedar_ember, Date.now());
-  if (!credits) return { ok: false, reason: "unreadable" };
-  let uuid = body.organization?.uuid;
   const cloudCredits = parseCloudCredits(body.iguana_necktie);
+  if (!credits && !cloudCredits) return { ok: false, reason: "unreadable" };
+  let uuid = body.organization?.uuid;
   // Live usage responses often omit organization. Prove ownership using the same token's profile
   // before publishing cloud money on a subscription chip; no account-name or balance matching.
   if (cloudCredits && !(typeof uuid === "string" && uuid.trim())) {
