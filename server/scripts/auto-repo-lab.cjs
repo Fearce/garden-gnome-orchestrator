@@ -176,6 +176,7 @@ async function checkPicker(page, check, tag, shots, dataDir, repos, pick) {
   check(`${tag}: the picker offers the recent repos by name`, first.includes("orchard") && first.includes("harbor"), JSON.stringify(first));
   check(`${tag}: the search box has focus`, await search.evaluate((el) => el === document.activeElement));
   check(`${tag}: the picker fits the viewport`, await page.locator(".repo-question").evaluate((el) => { const r = el.getBoundingClientRect(); return r.left >= -0.5 && r.right <= window.innerWidth + 0.5; }));
+  check(`${tag}: full paths distinguish same-named repos without truncation`, await page.locator(".repo-row-path").evaluateAll((els) => els.every((el) => el.scrollWidth <= el.clientWidth + 1 && getComputedStyle(el).textOverflow !== "ellipsis")));
   await page.screenshot({ path: path.join(shots, `${tag}-7-picker.png`) });
 
   // Keep the discovery response pending while ArrowDown is pressed on an empty result list.

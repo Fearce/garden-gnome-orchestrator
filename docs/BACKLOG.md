@@ -39,10 +39,12 @@ same commit as the fix. Git history keeps the record.
 
 - **QA: preserve AUTO repo scope and searchable-picker keyboard choices** (2026-10-07, Codex QA; task 547b354c).
   Reproduced and fixed quoted paths with spaces, omitted missing paths, overlapping multi-project names and
-  ambiguous follow-ups; fixed stale search rows, empty-list focus and filtered multi-selection submission.
+  ambiguous follow-ups; fixed stale search rows, empty-list focus, filtered multi-selection submission and
+  truncated repo paths on phones.
   AUTO/routing/README/privacy gates 8/8, direct privacy tree scan, all types/builds and desktop/narrow/phone browser
-  89/89 pass after integration. The gate-runner identity regression is fixed by peer commit 7ea9613b.
-  Server activation and independent review follow integration.
+  91/91 pass. The gate-runner identity regression is fixed by peer commit 7ea9613b.
+  Live source process restarted after integration; web bundle and four screenshot-card downloads match.
+  Independent review remains; source-mode deployment identity is tracked under Ready.
 
 
 - **Explicit Claude cloud requests never silently launch locally** (2026-10-07, Thimblewick; task 10379cdb).
@@ -110,6 +112,12 @@ same commit as the fix. Git history keeps the record.
 ## Ready (priority order)
 
 1. **Define a separate packed-reference lock recovery policy** (2026-10-07, Flax Thorpe; task 6973a43e): a proven orphan was manually audited and archived with unchanged reference hashes after queued commits and rebases reported `packed-refs.lock`. Automatic recovery intentionally covers only `index.lock`; retain conservative ownership and reference-preservation checks for any extension.
+
+1. **Provide verifiable deployment identity for supervised source-mode launches** (2026-10-07, Codex QA):
+   `npm run deploy --prefix server` restarted the live supervised `tsx src/index.ts` process after AUTO repo
+   integration, and the web bundle matches the build. `deploy --verify` still exits 1 because source mode
+   intentionally reports no build stamp. Support source identity without treating a dist stamp as proof
+   of what a source process loaded. AUTO repo QA verified process creation after the changed source files.
 
 1. **Bound repository pre-commit history scans and reconcile old shared-index doctrine** (2026-10-07, Codex; task 6973a43e): observed a repository guard scanning 2,908 commits on every commit and instructions requiring peer authors plus autostash; its own commit helper also needs automatic queue adoption. GGO now supplies a shared transaction command; narrow history lookup without weakening stale-reversal detection.
 
