@@ -182,6 +182,8 @@ button { font-family: inherit; cursor: pointer; }
 .acct.limited { border-color: oklch(0.68 0.2 25 / 0.55); }
 .acct-head { display: flex; align-items: center; gap: 6px; }
 .acct-status { display: contents; }
+.acct-name { display: flex; flex-direction: column; min-width: 0; }
+.acct-name .acct-cloud { margin: 0; color: var(--accent); font-size: 8px; line-height: 10px; white-space: nowrap; }
 .acct-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
 .acct-dot.on { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .acct-label { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim); letter-spacing: 0.03em; text-transform: uppercase; }
@@ -272,6 +274,8 @@ button.acct-tag.reset-credit.redeeming { animation: reset-credit-pulse 1.1s ease
   .board-usage .acct-head { gap: 3px; min-width: 0; }
   .board-usage .acct-dot { width: 4px; height: 4px; flex: none; }
   .board-usage .acct-label { max-width: 62px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; line-height: 14px; }
+  .board-usage .acct-name .acct-label { line-height: 10px; }
+  .board-usage .acct-name .acct-cloud { font-size: 7.5px; line-height: 9px; }
   .board-usage .acct-status .acct-tag:not(.reset-credit) { display: none; }
   .board-usage .acct-status .reset-credit { margin: 0; font-size: 8px; line-height: 12px; padding: 0 2px; }
   .board-usage .acct-meters { flex-direction: column; gap: 0; }

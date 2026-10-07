@@ -703,7 +703,12 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
     <div className={cls} title={title}>
       <div className="acct-head">
         {multi ? <span className={"acct-dot" + (a.active ? " on" : "")} /> : null}
-        <span className="acct-label" title={a.label}>{a.label}</span>
+        <span className="acct-name">
+          <span className="acct-label" title={a.label}>{a.label}</span>
+          <span className={"acct-tag acct-cloud" + (!cloud || cloudExpired || cloud.locked || cloudStale ? " dim" : "")} title={cloudTitle} aria-label={cloudTitle}>
+            {cloudExpired ? "cloud expired" : cloud?.locked ? "cloud unavailable" : cloud ? `cloud $${cloud.remaining.toLocaleString(undefined, { maximumFractionDigits: 2 })}${cloudStale ? " · stale" : ""}` : "cloud ?"}
+          </span>
+        </span>
         <span className="acct-status">
           {a.rateLimited ? (
             <span className="acct-tag">limited</span>
@@ -713,9 +718,6 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
             <span className="acct-tag dim">stale</span>
           ) : null}
           <ResetCreditBadge credits={a.resetCredits} provider={a.label} target={{ provider: "claude", accountId: a.id }} now={now} />
-          <span className={"acct-tag" + (!cloud || cloudExpired || cloud.locked || cloudStale ? " dim" : "")} title={cloudTitle} aria-label={cloudTitle}>
-            {cloudExpired ? "cloud expired" : cloud?.locked ? "cloud unavailable" : cloud ? `cloud $${cloud.remaining.toLocaleString(undefined, { maximumFractionDigits: 2 })}${cloudStale ? " · stale" : ""}` : "cloud ?"}
-          </span>
           {modelLimits.map((ml) => (
             <span
               key={ml.model}
