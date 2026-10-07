@@ -13,7 +13,7 @@ const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function commonDirectory(repo) {
   const { stdout } = await promisify(execFile)('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
     cwd: repo, windowsHide: true, timeout: 15_000,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' },
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
   });
   return realpathSync(stdout.trim());
 }
@@ -89,7 +89,10 @@ async function main(argv) {
   const code = await withGitTransaction(repo, () => new Promise((resolve, reject) => {
     // The lock covers the whole command (including a multi-step commit helper or integration script).
     // Keep it until the child closes, including when a signal asks the wrapper to exit.
-    const child = spawn(command[0], command.slice(1), { cwd: repo, stdio: 'inherit', shell: false, windowsHide: true });
+    const child = spawn(command[0], command.slice(1), {
+      cwd: repo, stdio: 'inherit', shell: false, windowsHide: true,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never' },
+    });
     const stop = signal => child.kill(signal);
     const onInt = () => stop('SIGINT'), onTerm = () => stop('SIGTERM');
     process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);

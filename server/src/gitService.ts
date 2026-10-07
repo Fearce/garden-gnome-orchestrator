@@ -47,7 +47,7 @@ export async function runGit(cwd: string, args: string[], timeoutMs = gitTimeout
   // blocks the whole server for the duration of CreateProcess.
   const execute = () => runChild("git", ["--no-pager", ...args], {
     cwd,
-    env: { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
+    env: { GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never", GIT_OPTIONAL_LOCKS: "0" },
     timeoutMs,
     maxStdoutBytes: DIFF_MAX_BYTES * 2,
     urgent: opts.urgent === true,

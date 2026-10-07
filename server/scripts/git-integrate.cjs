@@ -9,7 +9,7 @@ const exec = promisify(execFile);
 async function git(repo, args) {
   const { stdout, stderr } = await exec('git', ['--no-pager', ...args], {
     cwd: repo, windowsHide: true, timeout: 180_000, maxBuffer: 2_000_000,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', GIT_EDITOR: 'true' },
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GCM_INTERACTIVE: 'never', GIT_OPTIONAL_LOCKS: '0', GIT_EDITOR: 'true' },
   });
   if (stderr.trim()) console.error(stderr.trim());
   return stdout.trim();

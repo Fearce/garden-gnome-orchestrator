@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Serialize Git transactions for concurrent agents and preserve reviewed peer work** (2026-10-07, Codex; task 6973a43e).
-  Eight live same-checkout tasks confirm repeated index locks and manual commit windows; queue and atomic integration implemented, activation and live adoption pending.
 
 
 
@@ -36,6 +34,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Serialize Git transactions for concurrent agents and preserve reviewed peer work** (661b5fc2, 2026-10-07, Codex; task 6973a43e).
+  Eight live same-checkout tasks confirm repeated locks/manual commit windows; 27 queue checks, CLI kickoff, types/build and privacy pass. Real rebase/fast-forward integrated both commits; activation and first agent commit through the queue remain pending. Owner stopped further test expansion to prioritize live observation.
 
 - **QA: stabilize supervisor duplicate-boot retry verification under load** (838f708a, 2026-10-07, Codex QA).
   Full suite 237/239 before repair; supervisor now 12/12 standalone and passes with affinity/revival/fallback (4/4 gates), types/builds/browser/privacy pass. Fixture tree reaped; independent review remains.
