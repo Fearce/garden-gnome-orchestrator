@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Direct gnome chat and quiet inbox** (2026-10-07, Moss Quill; task 6640a188).
+  Separate persisted messages, scoped agent access and owner inbox UI; no agent interruption.
+
 - **Observe and repair Git queue under increased live agent pressure** (2026-10-07, Flax Thorpe; task 6973a43e).
   Queue deployed; orphan index preserved and eight peer commits landed. Owner is adding agents; a fresh native-lock refusal shows mixed adoption still needs observation.
 
