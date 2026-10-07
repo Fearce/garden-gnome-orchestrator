@@ -3,6 +3,7 @@ import { basename, isAbsolute, join, relative } from "node:path";
 import { runChild } from "./childRunner.js";
 import { config } from "./config.js";
 import { isConfiguredCommitOnlyOrigin } from "./git/commitOnly.js";
+import { headFromFiles } from "./git/headFromFiles.js";
 
 // The shared git-service READ layer: real git reads (status, per-file diff, log, branch list, current
 // branch, ahead/behind vs upstream) over ARBITRARY task workspaces — the backing for the console's
@@ -870,6 +871,10 @@ function toRepoRelative(repoRoot: string, absFiles: string[]): string[] {
 /** The current HEAD sha of a workspace's repo, or null when it isn't a repo / has no commit yet. Used at
  *  dispatch to stamp the task's baseline. */
 export async function getHeadSha(workspace: string, opts: GitCallOptions = {}): Promise<string | null> {
+  if (opts.urgent) {
+    const head = await headFromFiles(workspace);
+    if (head) return head;
+  }
   const repoRoot = await resolveRepoRoot(workspace, opts);
   if (!repoRoot) return null;
   return okOut(await runGit(repoRoot, ["rev-parse", "HEAD"], gitTimeoutMs(), opts));
