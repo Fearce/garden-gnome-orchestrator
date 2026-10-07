@@ -15,7 +15,7 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 - **Serialize Git transactions for concurrent agents and preserve reviewed peer work** (2026-10-07, Codex; task 6973a43e).
-  Shared-index commits and worktree integrations need a cross-process queue; owner supplied a live example of agents waiting on peers to commit.
+  Eight live same-checkout tasks confirm repeated index locks and manual commit windows; queue and atomic integration implemented, activation and live adoption pending.
 
 
 
@@ -95,6 +95,8 @@ same commit as the fix. Git history keeps the record.
   Desktop units 19/19 and new real-window regressions pass; application types/builds, Windows packaging and privacy pass. Clean-exit lab failures and distribution delivery remain under Ready.
 
 ## Ready (priority order)
+
+1. **Bound repository pre-commit history scans and reconcile old shared-index doctrine** (2026-10-07, Codex; task 6973a43e): observed a repository guard scanning 2,908 commits on every commit and instructions requiring peer authors plus autostash; its own commit helper also needs automatic queue adoption. GGO now supplies a shared transaction command; narrow history lookup without weakening stale-reversal detection.
 
 1. **Identify the process that removed production console assets** (2026-10-07, Codex Recovery): live index referenced missing JavaScript with only compressed remnants left; restored build boots and production rebuilds now retain old assets, but the deleting process is unproven. Also define bounded pruning of retained assets without breaking open clients.
 

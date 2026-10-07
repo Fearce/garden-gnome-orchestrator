@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runChild } from "./childRunner.js";
+import { runGit as serviceRunGit } from "./gitService.js";
 import { config } from "./config.js";
 import { restartRoute } from "./selfRestart.js";
 import type { RestartRequestResult } from "./orchestrator/restartCoordinator.js";
@@ -92,11 +93,7 @@ async function runGit(args: string[], cwd = REPO_ROOT, timeoutMs = GIT_TIMEOUT_M
   // GIT_TERMINAL_PROMPT=0 makes a private remote fail fast instead of blocking on a credential prompt
   // (which would hang the poll forever); GIT_OPTIONAL_LOCKS=0 keeps a read from racing an index lock
   // held by a concurrent agent's git command.
-  const r = await runChild("git", args, {
-    cwd,
-    env: { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
-    timeoutMs,
-  });
+  const r = await serviceRunGit(cwd, args, timeoutMs);
   return { code: r.code, stdout: r.stdout, stderr: r.stderr };
 }
 

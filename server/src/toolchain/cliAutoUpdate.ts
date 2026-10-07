@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { runChild, runChildInProcess, type ChildResult } from "../childRunner.js";
+import { runGit } from "../gitService.js";
 import { isConfiguredCommitOnlyOrigin } from "../git/commitOnly.js";
 import type { CodexLauncher } from "../agents/codexLauncher.js";
 import type { RestartRequestResult } from "../orchestrator/restartCoordinator.js";
@@ -199,7 +200,7 @@ function fitsPlatform(entry: LockEntry, platform: string, arch: string): boolean
 
 const defaultExec: Exec = (cmd, args, { cwd, timeoutMs, long }) =>
   // Minutes-long installs and typechecks would pin one of the two pool workers the git reads share.
-  long ? runChildInProcess(cmd, args, { cwd, timeoutMs }) : runChild(cmd, args, { cwd, timeoutMs, env: { GIT_TERMINAL_PROMPT: "0" } });
+  cmd === "git" ? runGit(cwd, args, timeoutMs) : long ? runChildInProcess(cmd, args, { cwd, timeoutMs }) : runChild(cmd, args, { cwd, timeoutMs, env: { GIT_TERMINAL_PROMPT: "0" } });
 
 function readManifest(file: string): { version: string | null; claudeCodeVersion: string | null; optionalDependencies: Record<string, string> } {
   try {

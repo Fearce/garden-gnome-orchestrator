@@ -71,6 +71,15 @@ On desktop, the Director's Plan, Research, QA and Directives controls sit beside
 share a chat room to divide files. When another agent shares the repo, a task claims its
 own branch in a linked git worktree, then rebases and fast-forwards it back into the base
 branch when it is done. A task alone in its repo just works in place.
+Git writes from agents and the Git console share a transaction queue across linked
+worktrees. Use `node server/scripts/git-transaction.cjs --repo <checkout> -- <program> <arguments>`
+to run a commit helper or mutation script; the default queue wait is 120 seconds.
+Use `node server/scripts/git-integrate.cjs --repo <main-checkout> --worktree <task-checkout>`
+for an atomic rebase and fast-forward, then verify and push if authorized. Commit reviewed
+peer source and documentation in separately attributed commits before integrating;
+do not wait for the original author. The lock releases when its process exits and never
+removes Git's native locks. Reads, editing and tests stay parallel; file ownership still
+needs coordination, and direct Git writes outside the wrapper do not join the queue.
 The background worktree cleanup runs its Windows process and disk-size probes
 without opening PowerShell windows. Repository discovery checks each distinct
 folder once; stale cleanup waits 30 seconds after finished-task retirement so

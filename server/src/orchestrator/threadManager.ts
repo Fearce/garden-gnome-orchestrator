@@ -90,7 +90,7 @@ import { noteZaiCap, readZaiUsage, zaiAllowanceReopened, zaiUsageCapped } from "
 import { ModelCatalog, CURATED_CLAUDE_MODELS, CURATED_CODEX_MODELS, CURATED_GROK_MODELS, CURATED_ZAI_MODELS, uniq } from "../agents/modelCatalog.js";
 import { clampEffort, coworkerRunOptions, implementorConfig, plannerConfig, qaConfig, readerConfig, researcherConfig, resolveEffort, reviewerConfig } from "../agents/roles.js";
 import { jsonContractInstruction, type JsonSchemaLike } from "../agents/structuredText.js";
-import { CLI_QUESTION_DOCTRINE, CODEX_IMPLEMENTOR_DOCTRINE, COWORKER_PROMPT, GROK_IMPLEMENTOR_DOCTRINE } from "../agents/prompts.js";
+import { CLI_QUESTION_DOCTRINE, CODEX_IMPLEMENTOR_DOCTRINE, COWORKER_PROMPT, GROK_IMPLEMENTOR_DOCTRINE, GIT_TRANSACTION_GUIDANCE } from "../agents/prompts.js";
 import { createBusServer } from "../bus/busServer.js";
 import { createGitReadServer } from "../bus/gitReadServer.js";
 import { createOfficeServer } from "../bus/officeServer.js";
@@ -16968,7 +16968,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       : "Office coordination is now ON: call `office_look` to see who's here and their names, `chat_read(scope:\"team\")` what they've posted, and `chat_post(scope:\"team\")` to claim the files/areas you're about to change before you edit — then re-check `git diff` before committing so your commit holds your own hunks; before handoff, preserve any pending peer work in separately attributed commits instead of leaving it uncommitted. Their team messages arrive straight in your session; answer with `chat_post(scope:\"team\")` and adjust.";
     const thread = this.db.getThread(tid);
     const isolate = thread ? this.worktreeAdvice(thread, cli) : null;
-    this.sendCommunication(live.run, [intro, how, isolate].filter(Boolean).join(" "), { priority: "next" });
+    this.sendCommunication(live.run, [intro, how, isolate, GIT_TRANSACTION_GUIDANCE].filter(Boolean).join(" "), { priority: "next" });
   }
 
   /** The office's worktree guidance for an editing agent still in a shared main checkout: claim its own
@@ -17051,7 +17051,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           ? "You share this workspace, so you can step on each other's changes."
           : "You share this workspace.";
     const isolate = edits && localPeers ? this.worktreeAdvice(thread, !withTools) : null;
-    return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\n${[risk, how, isolate].filter(Boolean).join(" ")}`;
+    return `⚠️ OFFICE — you're NOT alone in this repo. ${peers.length} other agent(s) are working in ${thread.workspace} right now:\n${list}\n${[risk, how, isolate, edits && localPeers ? GIT_TRANSACTION_GUIDANCE : null].filter(Boolean).join(" ")}`;
   }
 
   /** Append the office note to a kickoff when — and only when — a teammate already shares the repo.

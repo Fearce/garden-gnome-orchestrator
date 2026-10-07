@@ -219,6 +219,17 @@ Never use a temporary index, `commit-tree` or `update-ref` to commit onto a chec
 that leaves its index behind the branch and exposes staged reversals. Preserve peer content in
 shared files; do not discard, stash or silently rewrite it to obtain a clean checkout.
 
+Queue each Git mutation or multi-step mutation script with
+`node server/scripts/git-transaction.cjs --repo <checkout> -- <program> <arguments>`.
+This includes the safe-commit helper. The queue uses a SQLite transaction in Git's common
+directory, shared by linked worktrees, console actions, self-update fetch/pull and worktree
+creation. SQLite releases the lock on process exit; native Git lock files are never removed.
+Waits default to 120 seconds; a CLI wait timeout returns 75. Do not nest CLI wrappers.
+Use `git-integrate.cjs --repo <main-checkout> --worktree <task-checkout>` for one locked
+rebase/fast-forward sequence; run verification outside the queue and wrap authorized pushes
+separately. Direct commands that bypass this wrapper still contend with Git's native locks.
+Repository instructions requiring an existing branch override worktree guidance.
+
 ## Deliverables (agent-produced files)
 A finding can be a **deliverable**: a file an agent surfaces for the owner to view/download from the
 right panel. It's a `findings` row with `kind='deliverable'`, a `path` (absolute or workspace-relative)

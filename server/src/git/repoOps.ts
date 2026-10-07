@@ -1,5 +1,6 @@
 import { existsSync, statSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
+import { withGitTransaction } from "./transaction.js";
 import {
   COMMIT_LOG_FORMAT,
   bustGitCaches,
@@ -470,6 +471,11 @@ async function collectCommitFiles(root: string, hash: string): Promise<GitFile[]
  *  that a checkout would clobber, a non-fast-forward pull, a failing pre-commit hook) comes back as
  *  ok:false carrying git's own words, so the operator decides what to do about it. */
 export async function runRepoAction(path: string, op: RepoOp): Promise<RepoActionResult> {
+  try { return await withGitTransaction(path, () => runLockedRepoAction(path, op)); }
+  catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
+}
+
+async function runLockedRepoAction(path: string, op: RepoOp): Promise<RepoActionResult> {
   const root = await resolveRepoRoot(path);
   if (!root) return fail("Not a git repository.");
   try {

@@ -37,6 +37,8 @@ for (const prompt of [IMPLEMENTOR_APPEND, CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLE
   assert.match(prompt, /Clean checkouts take priority over task ownership/, "every implementor backend receives the owner's clean-checkout priority");
   assert.match(prompt, /preserve peer changes in separately attributed Conventional Commits/, "peer changes are preserved rather than left dirty");
   assert.match(prompt, /standing owner authorization/, "checkpointing peer work must not require another permission request");
+  assert.match(prompt, /git-transaction\.cjs/, "every implementation backend receives the shared Git queue command");
+  assert.match(prompt, /do not wait for their author to commit/, "peer commits do not become an owner permission wait");
   assert.doesNotMatch(prompt, /none of your work uncommitted/, "the completion check covers all pending work");
   assert.match(prompt, /copy (?:the finished file|it) into the task workspace/i, "every implementor backend copies outside artifacts before posting");
   assert.match(prompt, /copy's absolute path/, "every implementor backend posts the workspace copy");
@@ -63,6 +65,7 @@ for (const provider of ["Codex", "Grok"] as const) {
   assert.match(text, /pending peer source, configuration and documentation changes in separately attributed Conventional Commits/, `${provider} editing QA must preserve and commit peer work`);
   assert.match(text, /Clean checkouts take priority over task ownership; this is standing owner authorization/, `${provider} editing QA must honor the owner's clean-checkout priority`);
   assert.match(text, /Push these commits unless the task handoff says auto-push is off/, `${provider} editing QA must apply the captured push policy to peer commits too`);
+  assert.match(text, /git-transaction\.cjs/, `${provider} editing QA uses the shared Git queue`);
   assert.match(text, /Do not emit a kickoff or progress preamble/i, `${provider} QA-fix starts with tools instead of narration`);
   assert.match(text, /no candidate list means only that the detector found none and never waives this check/i, `${provider} QA-fix retains the complete deliverables invariant`);
   assert.match(text, /editing QA reviewer: inspect, fix every in-scope issue/i, `${provider} must receive editing QA mode`);

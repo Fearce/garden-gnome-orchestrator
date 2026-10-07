@@ -23,7 +23,7 @@ function main() {
   try {
     // `dirty` means the build may contain uncommitted code — in this shared checkout that can be a
     // concurrent agent's WIP, so it is worth recording rather than silently conflating with HEAD.
-    info = { ...info, commit: git(["rev-parse", "HEAD"]), dirty: git(["status", "--porcelain", "--", "server/src"]) !== "" };
+    info = { ...info, commit: git(["rev-parse", "HEAD"]), dirty: git(["status", "--porcelain", "--", "server/src", "server/scripts/git-transaction.cjs"]) !== "" };
   } catch {
     info = { ...info, commit: null, dirty: null }; // no git (a tarball deploy) — health treats this as "unknown", not "stale"
   }

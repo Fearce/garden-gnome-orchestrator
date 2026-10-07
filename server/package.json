@@ -300,6 +300,7 @@
     "test:lazy-chunks-ui": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/lazy-chunks-ui.test.ts",
     "test:git-progress": "tsx src/tests/gitProgress.itest.ts",
     "test:repo-ops": "tsx src/tests/repoOps.itest.ts",
+    "test:git-transactions": "tsx src/tests/gitTransactions.itest.ts",
     "test:worktree-sweep": "tsx src/tests/worktreeSweep.itest.ts",
     "test:task-worktree": "tsx src/tests/taskWorktree.itest.ts",
     "test:worktree-name": "tsx src/tests/worktreeName.test.ts",

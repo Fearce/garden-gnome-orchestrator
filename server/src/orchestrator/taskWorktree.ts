@@ -3,6 +3,7 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { config } from "../config.js";
 import { isConfiguredCommitOnlyOrigin } from "../git/commitOnly.js";
 import { runGit } from "../gitService.js";
+import { withGitTransaction } from "../git/transaction.js";
 import type { TaskWorktree } from "../types.js";
 
 /**
@@ -173,20 +174,22 @@ export async function createTaskWorktree(input: CreateTaskWorktreeInput): Promis
   if (!root) return { ok: false, error: `"${input.repoPath}" is not inside a git repository.` };
   try {
     const main = await mainCheckoutOf(root);
-    const base = (await git(main, ["branch", "--show-current"])) || null;
-    const branch = input.branch?.trim() || taskBranchName(input.name?.trim() || input.title, input.threadId);
-    const busy = (await checkedOutBranches(main)).get(branch);
-    if (busy) return { ok: false, error: `Branch "${branch}" is already checked out in ${busy}. Work there only if it is yours, or give a different branch.` };
-    const exists = await branchExists(main, branch);
-    const startPoint = input.startPoint?.trim() || "HEAD";
-    const baseSha = await git(main, ["rev-parse", exists ? branch : startPoint]);
-    const folder = freeFolder(worktreesHome(main), worktreeFolderName(branch, input.threadId));
-    mkdirSync(dirname(folder), { recursive: true });
-    await git(main, exists ? ["worktree", "add", folder, branch] : ["worktree", "add", "-b", branch, folder, startPoint], ADD_TIMEOUT_MS);
-    const links = await provisionWorktree(main, folder);
-    const origin = await git(main, ["remote", "get-url", "origin"]).catch(() => null);
-    const commitOnly = isConfiguredCommitOnlyOrigin(origin, config.noPushRepoPattern);
-    return { ok: true, worktree: { repo: main, path: realpathSync(folder), branch, base, baseSha, commitOnly, links, createdAt: Date.now() } };
+    return await withGitTransaction(main, async (): Promise<WorktreeResult> => {
+      const base = (await git(main, ["branch", "--show-current"])) || null;
+      const branch = input.branch?.trim() || taskBranchName(input.name?.trim() || input.title, input.threadId);
+      const busy = (await checkedOutBranches(main)).get(branch);
+      if (busy) return { ok: false, error: `Branch "${branch}" is already checked out in ${busy}. Work there only if it is yours, or give a different branch.` };
+      const exists = await branchExists(main, branch);
+      const startPoint = input.startPoint?.trim() || "HEAD";
+      const baseSha = await git(main, ["rev-parse", exists ? branch : startPoint]);
+      const folder = freeFolder(worktreesHome(main), worktreeFolderName(branch, input.threadId));
+      mkdirSync(dirname(folder), { recursive: true });
+      await git(main, exists ? ["worktree", "add", folder, branch] : ["worktree", "add", "-b", branch, folder, startPoint], ADD_TIMEOUT_MS);
+      const links = await provisionWorktree(main, folder);
+      const origin = await git(main, ["remote", "get-url", "origin"]).catch(() => null);
+      const commitOnly = isConfiguredCommitOnlyOrigin(origin, config.noPushRepoPattern);
+      return { ok: true, worktree: { repo: main, path: realpathSync(folder), branch, base, baseSha, commitOnly, links, createdAt: Date.now() } };
+    });
   } catch (error) {
     return { ok: false, error: `The worktree could not be created: ${errorText(error)}` };
   }

@@ -4,6 +4,7 @@ import { runChild } from "./childRunner.js";
 import { config } from "./config.js";
 import { isConfiguredCommitOnlyOrigin } from "./git/commitOnly.js";
 import { headFromFiles } from "./git/headFromFiles.js";
+import { isGitWrite, withGitTransaction } from "./git/transaction.js";
 
 // The shared git-service READ layer: real git reads (status, per-file diff, log, branch list, current
 // branch, ahead/behind vs upstream) over ARBITRARY task workspaces — the backing for the console's
@@ -44,13 +45,16 @@ export async function runGit(cwd: string, args: string[], timeoutMs = gitTimeout
   // Runs on a worker thread (see childRunner.ts). This is the busiest git surface in the app — a board
   // of cards, the Changes drawer and the Git console all land here — and on Windows an in-process spawn
   // blocks the whole server for the duration of CreateProcess.
-  return runChild("git", ["--no-pager", ...args], {
+  const execute = () => runChild("git", ["--no-pager", ...args], {
     cwd,
     env: { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0" },
     timeoutMs,
     maxStdoutBytes: DIFF_MAX_BYTES * 2,
     urgent: opts.urgent === true,
   });
+  if (!isGitWrite(args)) return execute();
+  try { return await withGitTransaction(cwd, execute); }
+  catch (error) { return { code: -1, stdout: "", stderr: String(error instanceof Error ? error.message : error), timedOut: false }; }
 }
 
 /** `urgent`: a task dispatch or resume is blocked on this read. It skips ahead of queued display reads. */

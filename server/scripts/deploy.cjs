@@ -39,7 +39,7 @@ const PORT = Number(new URL(BASE).port || 80);
 
 /** Paths whose contents end up in `server/dist`. `tsc -p` compiles `src` only; nothing else here is
  *  input, however loudly it shows up in `git status`. */
-const SERVER_INPUT = /^server\/(src\/|tsconfig\.json$)/;
+const SERVER_INPUT = /^server\/(src\/|tsconfig\.json$|scripts\/git-transaction\.cjs$)/;
 /** Paths Vite bundles into `web/dist`. */
 const WEB_INPUT = /^web\/(src\/|index\.html$|vite\.config\.|tsconfig|package\.json$)/;
 
@@ -463,6 +463,13 @@ async function main() {
   if (args.includes("--plan")) {
     await printRestartPlan();
     process.exit(0);
+  }
+
+  // Unlike compiled TS, this shared CLI/server library is loaded from the checkout.
+  // A HEAD-only dist build cannot exclude its uncommitted working-tree bytes.
+  if (plan.serverBlockers.includes("server/scripts/git-transaction.cjs")) {
+    log("Commit the reviewed Git transaction runtime before deploying; it is loaded directly from this checkout.");
+    process.exit(1);
   }
 
   log("\nbuilding…");
