@@ -16,6 +16,8 @@ same commit as the fix. Git history keeps the record.
 
 - **Dispatch suitable repository tasks to Claude cloud sessions using promotional credits** (2026-10-07, Thimblewick).
 
+- **Route CLI agent questions through GGO question chips and resume on answers** (2026-10-07, Brindlewick).
+
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
