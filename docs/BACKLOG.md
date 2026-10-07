@@ -16,9 +16,6 @@ same commit as the fix. Git history keeps the record.
 
 
 
-- **Observe and repair Git queue under increased live agent pressure** (2026-10-07, Flax Thorpe; task 6973a43e).
-  Ordered ten-minute admission is pushed and handling live tickets. Three interrupted commits required audited native-lock archival; adding that conservative recovery to the CLI while continuing observation.
-
 
 
 
@@ -40,6 +37,9 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
+
+- **Activate ordered in-server Git admission after live CLI pressure repairs** (f3ce9c45, 2026-10-07, Flax Thorpe; task 6973a43e).
+  CLI live: 73 peer commits, eight pending tickets drained, automatic orphan archival preserved index hashes, final 12 minutes without new queue/native-lock failures. Cached server library awaits the next permitted restart; this resumed task forbids another.
 
 - **Explicit Claude cloud requests never silently launch locally** (2026-10-07, Thimblewick; task 10379cdb).
   Live c0cb1279 hosted review returned findings; both balance chips verified beneath names. Review reproduced a local Resume escape; server control guard is committed/compiled, while the web guard is published. Cloud regressions, auto-review 214/214 and desktop/phone 70/70 pass; live UI controls verified. Follow-up guard 8228cf7e is integrated/pushed. Owner chose to keep the server guard staged for the next restart; live API refusal proof follows activation.
