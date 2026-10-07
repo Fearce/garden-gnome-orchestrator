@@ -418,7 +418,7 @@ async function main(): Promise<void> {
     } });
     registerWs(app, { db, hub, manager, director, accounts, scheduler, goals, notes, repos, onlineOffice, cowork, codeContext, cliUpdater });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
-    registerCloudSessionRoutes(app, cloudSessions, db, isAuthed);
+    registerCloudSessionRoutes(app, cloudSessions, db, isAuthed, manager.cloudSubtasks);
     registerIdeRoutes(app, ide, isAuthed);
     registerCalendarRoutes(app, calendar, isAuthed);
     registerRemoteControlRoutes(app, remoteControl, isAuthed);

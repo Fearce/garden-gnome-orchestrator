@@ -107,6 +107,7 @@ export const spawnSubAgentShape = {
     .max(40_000)
     .optional()
     .describe("Coding sub-agents: the complete standalone brief — what to do and what 'done' means. The sub-agent sees only this plus the repo."),
+  cloudWork: z.enum(["review", "change"]).optional().describe("Claude only: declare a standalone repository-only job suitable for a Linux cloud checkout. No local services, private files, attachments, credentials, deployment, pending local changes or parent transcript required. When an opted-in subscription caps, GGO automatically runs this subtask using verified cloud credits; the parent must review its report/branch."),
   state: jevJson.optional().describe("Jev only: the content every question is judged against (a string, or JSON with named fields)."),
   questions: z
     .record(z.string(), z.any())
@@ -162,6 +163,7 @@ export interface SubTaskHost {
   injectThread(threadId: string, message: string, mode: "append" | "interrupt" | "queue", images?: undefined, options?: { standing?: boolean }): Promise<ThreadActionResult>;
   setState(threadId: string, state: ThreadState, error?: string | null): void;
   cancelThread(threadId: string): Promise<ThreadActionResult>;
+  admitCloud?(parent: Thread, work: SubTaskSpec["cloudWork"]): Promise<SubTaskSpec["cloud"] | undefined>;
 }
 
 // ---- the text agents read -------------------------------------------------------------------------
@@ -170,8 +172,8 @@ export function providerLabel(provider: SubAgentProvider): string {
   return { claude: "Claude", codex: "Codex", grok: "Grok", zai: "z.ai", jev: "Jev" }[provider];
 }
 
-export function subTaskRuntimeLabel(spec: Pick<SubTaskSpec, "provider" | "model" | "effort">): string {
-  return [providerLabel(spec.provider), spec.model, spec.effort].filter(Boolean).join(" · ");
+export function subTaskRuntimeLabel(spec: Pick<SubTaskSpec, "provider" | "model" | "effort" | "cloud">): string {
+  return [spec.cloud ? "Claude cloud" : providerLabel(spec.provider), spec.model, spec.effort].filter(Boolean).join(" · ");
 }
 
 /** How deep in a sub-task chain `thread` sits: 0 for a task nobody spawned. */
@@ -383,7 +385,12 @@ export class SubTaskService {
       spawnedByRole: spawner.role,
       spawnedByName,
       spawnedByRunId: spawner.runId,
+      ...(input.provider === "claude" && input.cloudWork ? { cloudWork: input.cloudWork } : {}),
     };
+    if (spec.cloudWork && this.host.admitCloud) spec.cloud = await this.host.admitCloud(parent, spec.cloudWork);
+    if (!this.host.db.getThread(parent.id) || ["cancelled", "closed"].includes(this.host.db.getThread(parent.id)!.state)) return this.refuse("The parent stopped during cloud admission.");
+    const newBounds = this.boundsProblem(parent);
+    if (newBounds) return this.refuse(newBounds);
     const id = await this.host.dispatch({
       title: input.title.trim(),
       workspace: parent.workspace,
@@ -401,7 +408,7 @@ export class SubTaskService {
     return {
       ok: true,
       thread: child,
-      message: `Spawned sub-task ${child.id} "${child.title}" on ${subTaskRuntimeLabel(spec)}${upgrade}. It works in this same repository and working tree. Its result comes back to you when it finishes — call wait_for_subtasks to block for it (about a minute per call), or keep working and it will be delivered.${waitNote}`,
+      message: `Spawned sub-task ${child.id} "${child.title}" on ${subTaskRuntimeLabel(spec)}${upgrade}. ${spec.cloud ? "It works from the pushed repository in Claude cloud; review its returned report and branch before integration." : "It works in this same repository and working tree."} Its result comes back to you when it finishes — call wait_for_subtasks to block for it (about a minute per call), or keep working and it will be delivered.${spec.cloud ? "" : waitNote}`,
     };
   }
 

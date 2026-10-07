@@ -3,6 +3,7 @@ import { familyUpgradeNote, invalidateModelFamilyRoster, latestFamilyModel, newe
 import type { AccountDispatchPreview, AccountManager } from "../accounts/accountManager.js";
 import { bySafetyHeadroom, untilReset, weeklySafetyPool } from "../accounts/accountManager.js";
 import { PREPAID_FRESH_MS } from "../accounts/prepaidCredits.js";
+import { CloudSubtaskService } from "../cloudSessions/subtasks.js";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 import type { MemoryService } from "../memory/memory.js";
@@ -1039,6 +1040,7 @@ export class ThreadManager implements OrchestratorApi {
   /** Sub-agents spawned into child threads (orchestrator/subTasks.ts). Built before restart
    *  reconciliation, which publishes state changes the service listens to. */
   readonly subTasks: SubTaskService;
+  readonly cloudSubtasks: CloudSubtaskService;
   // One pending "has the implementor read the owner's injection yet?" watch per task (injectionPickup.ts).
   private readonly injectionPickupWatches = new Set<string>();
   private readonly activeRuns = new Map<string, Set<AgentRunLike>>();
@@ -1285,6 +1287,13 @@ export class ThreadManager implements OrchestratorApi {
     this.injectionReceipts.recoverAfterRestart();
     this.db.onRunCreated((run) => this.ensureAgentName(run.threadId, run.role));
     this.backfillAgentNames();
+    this.cloudSubtasks = new CloudSubtaskService({ db, accounts,
+      setState: (id, state, error) => this.setState(id, state, error),
+      message: (id, text, runId) => {
+        const message = db.addMessage({ threadId: id, runId, role: "implementor", kind: "text", content: text });
+        hub.publish({ type: "thread.message", threadId: id, message });
+      },
+    });
     this.subTasks = new SubTaskService(this.subTaskHost());
     // Token-reset recovery is unconditional now. Remove obsolete persisted controls so an upgraded DB
     // cannot silently retain an "off" value that strands work, and settings snapshots have no dead data.
@@ -1874,6 +1883,7 @@ export class ThreadManager implements OrchestratorApi {
 
   /** A blocked subscription holds only work with no eligible alternate for its current stage/model. */
   private tokenSafetyBlocks(thread: Thread | null | undefined, role?: CapParkStage): boolean {
+    if (thread?.subTask?.cloud && this.subscriptionTokenSafety()) return false;
     if (!this.tokenLimitTripped) return false;
     if (!this.subscriptionTokenSafety()) return true;
     if (!thread) return false;
@@ -8447,6 +8457,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // The slot above is the task's first real opportunity to work. Stamp the durable deadline here,
       // not at dispatch, so time spent queued behind other pipelines never eats an owner's work window.
       thread = this.activateTimedWindow(thread);
+      if (thread.subTask?.cloud) {
+        await this.cloudSubtasks.run(thread);
+        return;
+      }
       const placed = await this.prepareTaskWorkspace(thread);
       if (!placed) return;
       thread = placed;
@@ -10552,6 +10566,21 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       }
       // Rate-limited: fail over to another account, or give up to "review" (return undefined so the
       // caller doesn't run QA on / mark done a half-finished implementation).
+      if (thread.subTask?.provider === "claude" && thread.subTask.cloudWork && !thread.subTask.cloud) {
+        const cloud = await this.cloudSubtasks.admit(thread, thread.subTask.cloudWork);
+        if (cloud) {
+          await current.stop();
+          const child = this.db.setSubTask(thread.id, { ...thread.subTask, cloud });
+          if (child && !this.cancelled(thread.id)) {
+            await this.cloudSubtasks.run(child);
+            const job = this.cloudSubtasks.jobs().find(j => j.threadId === thread.id);
+            return turn(job?.result
+              ? { type: "result", subtype: "success", isError: false, result: job.result }
+              : { type: "result", subtype: "error_during_execution", isError: true, result: job?.error ?? "Cloud subtask needs review." });
+          }
+          return turn(undefined);
+        }
+      }
       const next = this.failoverAccount(currentAccountId, demand);
       const sessionId = current.sessionId ?? this.lastImplementorSession.get(thread.id);
       // No account with headroom (vs. a missing session) means a cap parked this — flag it so the
@@ -11524,6 +11553,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       injectThread: (threadId, message, mode, images, options) => this.injectThread(threadId, message, mode, images, options),
       setState: (threadId, state, error) => this.setState(threadId, state, error),
       cancelThread: (threadId) => this.cancelThread(threadId),
+      admitCloud: (parent, work) => this.cloudSubtasks.admit(parent, work),
     };
   }
 
@@ -14582,6 +14612,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     this.stopping.add(threadId);
     this.dropFromQueue(threadId); // if it was waiting for a slot, it never starts now
     this.subTasks.abortJev(threadId);
+    this.cloudSubtasks.stop(threadId);
     const set = this.activeRuns.get(threadId);
     if (set) {
       for (const r of set) {

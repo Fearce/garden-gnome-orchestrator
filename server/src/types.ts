@@ -1479,6 +1479,9 @@ export interface SubTaskSpec {
   spawnedByRole: Role;
   spawnedByName: string | null; // the spawning agent's office name, so the child reads "spawned by Nim"
   spawnedByRunId: string | null;
+  /** Standalone repository work may automatically use cloud credits after Claude caps. */
+  cloudWork?: "review" | "change";
+  cloud?: { accountId: string; repository: string; branch: string; head: string };
 }
 
 // ---- Co-work: durable, human-led coding conversations ----

@@ -2,8 +2,9 @@ import type { FastifyInstance } from "fastify";
 import type { Db } from "../db/db.js";
 import { runChild } from "../childRunner.js";
 import { CloudError, CloudSessionService, githubRepository } from "./service.js";
+import type { CloudSubtaskService } from "./subtasks.js";
 
-export function registerCloudSessionRoutes(app: FastifyInstance, service: CloudSessionService, db: Pick<Db, "getThread" | "listRuns">, isAuthed: (cookie?: string) => boolean): void {
+export function registerCloudSessionRoutes(app: FastifyInstance, service: CloudSessionService, db: Pick<Db, "getThread" | "listRuns">, isAuthed: (cookie?: string) => boolean, automatic?: CloudSubtaskService): void {
   app.register(async (routes) => {
     routes.addHook("preHandler", async (req, reply) => {
       reply.header("cache-control", "no-store");
@@ -12,7 +13,12 @@ export function registerCloudSessionRoutes(app: FastifyInstance, service: CloudS
     routes.setErrorHandler((error, _req, reply) => {
       reply.code(error instanceof CloudError ? error.status : 500).send({ error: error instanceof CloudError ? error.message : "Cloud session request failed." });
     });
-    routes.get("/api/cloud-sessions", async () => service.snapshot());
+    routes.get("/api/cloud-sessions", async () => ({ ...service.snapshot(), automatic: automatic?.snapshot() }));
+    routes.put<{ Body: Record<string, unknown> }>("/api/cloud-sessions/automatic", async req => {
+      if (!automatic) throw new CloudError("Automatic cloud subtasks are unavailable.", 503);
+      if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) throw new CloudError("Expected a cloud policy object.");
+      return automatic.configure(req.body);
+    });
     routes.put<{ Body: Record<string, unknown> }>("/api/cloud-sessions/connections", async (req) => {
       if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) throw new CloudError("Expected a connection object.");
       return service.save(req.body);

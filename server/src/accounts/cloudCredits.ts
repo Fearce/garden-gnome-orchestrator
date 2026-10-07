@@ -8,6 +8,12 @@ export interface CloudCreditsDTO {
   readAt: number;
 }
 
+export const CLOUD_CREDITS_FRESH_MS = 5 * 60_000;
+export function cloudCreditsReady(value: CloudCreditsDTO | null | undefined, now = Date.now()): boolean {
+  return !!value && !value.locked && value.remaining > 0 && value.expiresAt > now
+    && value.readAt <= now && now - value.readAt < CLOUD_CREDITS_FRESH_MS;
+}
+
 export function parseCloudCredits(raw: unknown, readAt = Date.now()): CloudCreditsDTO | null {
   if (!raw || typeof raw !== "object") return null;
   const v = raw as Record<string, unknown>;
