@@ -91,8 +91,8 @@ export function CloudSessions({ active = true, source }: { active?: boolean; sou
     }); }}>
       <h4>Start a cloud task</h4>
       <label>Cloud routine<select value={connectionId} onChange={e => setConnectionId(e.target.value)} required><option value="">Choose a connection</option>{snapshot?.connections.map(c => <option key={c.id} value={c.id}>{c.label} · {c.repository}</option>)}</select></label>
-      <label>Task title<input required maxLength={200} value={title} onChange={e => { edited.current.title = true; setTitle(e.target.value); }} /></label>
-      <label>Task brief<textarea required rows={6} maxLength={60000} value={prompt} onChange={e => { edited.current.prompt = true; setPrompt(e.target.value); }} /></label>
+      <label>Task title<input aria-label="Task title" required maxLength={200} value={title} onChange={e => { edited.current.title = true; setTitle(e.target.value); }} /></label>
+      <label>Task brief<textarea aria-label="Task brief" required rows={6} maxLength={60000} value={prompt} onChange={e => { edited.current.prompt = true; setPrompt(e.target.value); }} /></label>
       <label className="cloud-confirm"><input type="checkbox" checked={cloudReady} onChange={e => setCloudReady(e.target.checked)} />This work needs only the connected repository and cloud environment, with no local machine access.</label>
       <button className="btn primary sm" disabled={busy || !connectionId || !cloudReady || !!alreadySent}>{busy ? "Working…" : "Start in Claude cloud"}</button>
       {alreadySent && <p>Already submitted. Check the session or Claude’s session list before starting more work.</p>}

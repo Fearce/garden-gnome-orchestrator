@@ -698,6 +698,7 @@ export function ThreadDetail() {
   const collabIds = useCollaboratorIds(threads, id);
   useCollaboratorHistories(collabIds);
   const leadFeed = useStore((s) => id ? s.threadFeeds[id] : undefined) ?? EMPTY_FEED;
+  const cloudBrief = leadFeed.find((item): item is Extract<FeedItem, { kind: "system" }> => item.kind === "system" && item.id === `brief:${id}`)?.text || thread?.brief || thread?.rawPrompt || "";
   const groupIds = useMemo(() => (id ? [id, ...collabIds] : []), [id, collabIds]);
   const drafts = useStore(useShallow((s) => taskRecords(s.threadDrafts, groupIds)));
   const thinkingDrafts = useStore(useShallow((s) => taskRecords(s.thinkingDrafts, groupIds)));
@@ -1588,7 +1589,7 @@ export function ThreadDetail() {
         <div className="scrim" onClick={() => setCloudOpen(false)}>
           <div className="modal cloud-modal" role="dialog" aria-modal="true" aria-label="Send task to Claude cloud" onClick={e => e.stopPropagation()}>
             <div className="m-head"><h3>Send task to Claude cloud</h3><button className="btn ghost sm" onClick={() => setCloudOpen(false)} aria-label="Close cloud panel">Close</button></div>
-            <div className="cloud-modal-body"><CloudSessions key={thread.id} source={thread} /></div>
+            <div className="cloud-modal-body"><CloudSessions key={thread.id} source={{ ...thread, brief: cloudBrief }} /></div>
           </div>
         </div>
       )}
