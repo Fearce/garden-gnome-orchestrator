@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Restore console boot after missing frontend assets** (2026-10-07, Codex Recovery).
+  Live index references missing JavaScript bundles; asset URLs return the HTML fallback and the console stays blank.
+
 - **Dispatch suitable repository tasks to Claude cloud sessions using promotional credits** (2026-10-07, Thimblewick).
 
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
