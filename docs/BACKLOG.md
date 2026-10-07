@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Verify and integrate restart session provider affinity** (2026-10-07, Codex; ggo/restart-resume-same-provider-6c66f550).
+  Existing implementation recovered after restart; verifying regression gates and integrating into master.
+
 
 
 
