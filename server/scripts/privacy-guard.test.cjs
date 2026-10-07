@@ -10,7 +10,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const vm = require("node:vm");
-const { lineFindings, scanTree, loadPrivateTerms, fakeSnowflake, harmlessIp, protectedFile } = require("./privacy-guard.cjs");
+const { lineFindings, scanTree, loadPrivateTerms, localIdentity, fakeSnowflake, harmlessIp, protectedFile } = require("./privacy-guard.cjs");
 
 const rules = (line, opts) => lineFindings(line, opts).map((f) => f.rule);
 const join = (...parts) => parts.join("");
@@ -62,6 +62,12 @@ try {
   assert.deepEqual(rules("frobcorpus is a different word", { privateTerms }), []);
   assert.deepEqual(rules("ship the frobcorp build // personalization-ok", { privateTerms }), [], "an explicit line marker");
   assert.deepEqual(loadPrivateTerms({ termsFile: path.join(tmp, "missing"), identity: [] }), [], "no file, no identity: nothing");
+  // A real address is private in full and by its local part; a placeholder identity (the gate runner's
+  // own gates.gitconfig) names no one and must not turn an ordinary word private.
+  assert.deepEqual(localIdentity({ username: "", email: join("jdoe42", "@", "mail.", "co") }), [join("jdoe42", "@", "mail.", "co"), "jdoe42"]);
+  for (const placeholder of ["gates@localhost", "gates@example.invalid", "lab@example.com", "bot@users.noreply.github.com"]) {
+    assert.deepEqual(localIdentity({ username: "", email: placeholder }), [], `${placeholder} is not a private identity`);
+  }
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
