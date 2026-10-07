@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **AUTO repo selection in the composer** (2026-10-07, Lantern Moss; task 547b354c). Server routing, picker and
-  toggle are committed with the `test:auto-repo` gate; remaining: deploy, then Playwright checks of placement, both states, locked controls and keyboard use.
-
 
 
 - **Observe and repair Git queue under increased live agent pressure** (2026-10-07, Flax Thorpe; task 6973a43e).

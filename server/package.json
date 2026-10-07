@@ -50,6 +50,7 @@
     "model-lab": "node scripts/model-select-lab.cjs",
     "memory-lab": "node scripts/memory-lab.cjs",
     "repo-chips-lab": "node scripts/repo-chips-lab.cjs",
+    "auto-repo-lab": "node scripts/auto-repo-lab.cjs",
     "livebench-lab": "node scripts/livebench-lab.cjs",
     "task-model-lab": "node scripts/task-model-lab.cjs",
     "appearance-lab": "node scripts/appearance-lab.cjs",
