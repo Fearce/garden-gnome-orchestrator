@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Verify Claude prepaid funds during the first startup probe** (2026-10-07, Pebble Sprocket).
+
 - **QA: independently verify prepaid credit fallback and existing-balance-only safety** (2026-10-07, Codex QA).
 
 
