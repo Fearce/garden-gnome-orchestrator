@@ -24,7 +24,9 @@ async function integrate(repo, worktree) {
       const rebase = await git(checkout, ['rev-parse', '--git-path', 'rebase-merge']);
       const apply = await git(checkout, ['rev-parse', '--git-path', 'rebase-apply']);
       const merge = await git(checkout, ['rev-parse', '--git-path', 'MERGE_HEAD']);
-      if ([rebase, apply, merge].some(p => require('node:fs').existsSync(path.resolve(checkout, p)))) throw new Error('Finish the existing merge or rebase before integrating.');
+      const cherryPick = await git(checkout, ['rev-parse', '--git-path', 'CHERRY_PICK_HEAD']);
+      const revert = await git(checkout, ['rev-parse', '--git-path', 'REVERT_HEAD']);
+      if ([rebase, apply, merge, cherryPick, revert].some(p => require('node:fs').existsSync(path.resolve(checkout, p)))) throw new Error('Finish the existing merge, rebase, cherry-pick or revert before integrating.');
     }
     const base = await git(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
     const branch = await git(worktree, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
