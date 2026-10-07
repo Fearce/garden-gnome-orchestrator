@@ -80,6 +80,11 @@ checks, and asks you directly about anything only you can decide. It then marks 
 done in your place or hands it back with the reasons it could not sign off. It reviews
 only: it never edits or commits.
 
+A follow-up on an existing task keeps that task's original route. For a small
+registration or launch follow-up, switch QA off in the task's agent controls if
+you want it to finish after implementation. Switching QA off stops an active
+review and persists for later resumes; switch it back to Auto to restore routing.
+
 QA restart notices summarize pending instructions per recipient. Routine QA redelivery bookkeeping is retained in durable history but hidden from the task feed; owner instructions and attachments remain visible.
 
 ## A look around

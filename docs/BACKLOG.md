@@ -17,8 +17,7 @@ same commit as the fix. Git history keeps the record.
 - **Automatically offload suitable subtasks to enabled Claude cloud credits when a subscription is exhausted** (2026-10-07, Codex implementor).
   Finish credit-eligible CLI dispatch, account/balance admission, parent result review and cap regressions; surface the setup guide.
 
-- **Stop inherited QA for a completed registration follow-up and document task controls** (2026-10-07, Moss Quill).
-  Original broad route reopened a full review after a narrow registration-only follow-up; verify the live task settles with QA off.
+
 
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
@@ -133,6 +132,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-07 **Stop inherited QA after a registration-only follow-up** (Moss Quill): live task settled done with durable QA-off; Script Hub reports the app running. Task-role controls 38/38, README 74/74 and privacy pass; README explains inherited routing and task overrides.
 
 - 2026-10-07 **Route agent questions through GGO chips and resume on answers** (41945c65, 01f33516, Codex QA): pushed and integrated; deployment verification confirms live build 4995ab97 contains the bridge. Twelve desktop/phone Codex/Grok browser flows prove chips, durable answers, held completion and same-session continuation; types, builds and focused regression gates pass.
 
