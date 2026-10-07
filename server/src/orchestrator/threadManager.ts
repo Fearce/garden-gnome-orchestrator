@@ -10352,11 +10352,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     },
   ): Promise<LiveImplementor | null> {
     if (this.cancelled(thread.id)) return null; // cancelled before we got here
-    // Re-derive the restart signal from the thread's PERSISTED error at this single resume chokepoint,
+    // Re-derive the restart signal from the thread's persisted error or recovery intent at this chokepoint,
     // so both the warm nudge and the cold seed tell the worker the restart already completed (don't
     // restart again). A server-restart interruption stamps RESTART_ERROR_PREFIX, and that error survives
-    // until startImplementor (below) flips the state, so every resume that skips finished stages reaches
-    // here with it still set. Reading fresh means no in-memory flag to leak or mis-fire on a later resume.
+    // until startImplementor (below) flips the state. Early state changes and admission parks retain
+    // the intent durably until a real implementor starts; reading fresh also covers a parked wake-up.
     const currentThread = this.db.getThread(thread.id);
     const restartNote = currentThread && this.restartResumePending(currentThread) ? RESTART_RESUME_NOTE : undefined;
     if (restartNote) this.hub.log("info", `Resume on ${thread.id.slice(0, 8)} carries the restart-already-completed notice (won't restart again).`);

@@ -559,7 +559,8 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   same warm/cold gate (below). `markInterrupted` flips working threads to `failed` (with an
   auto-resume promise) on boot but leaves `stage_outputs` intact, so a restart mid-task is recoverable
   rather than lost. The resume keeps the implementor on the backend that owns its session while that
-  backend can still serve (`restartAffinityProvider`, keyed on the persisted restart error), and a
+  backend can still serve (`restartAffinityProvider`, keyed on the persisted restart error or recovery
+  intent retained through admission parks and early resume state changes), and a
   QA-only restart retry pins that backend for its fix rounds (gate `test:restart-provider-affinity`);
   waiting threads keep their own controls (`paused` stays paused, an open `ask_user`
   question resumes the task when answered, `intake` is re-queued). A manual

@@ -74,12 +74,14 @@ spent. Tests: the auto-burn block in `test:provider-fallback`.
 
 ## A restart resume keeps its session's backend
 `gateImplementorProvider` / `gateVanillaProvider` first ask `restartAffinityProvider`: when the
-thread's persisted error starts with `RESTART_ERROR_PREFIX` and the backend of the run that owns the
+thread's persisted error starts with `RESTART_ERROR_PREFIX` (or `restartResumePending` retains that
+intent through an early state change or admission park) and the backend of the run that owns the
 session (`priorImplementorProvider`) passes `providerSafeForRole`, that backend wins over fresh usage
 routing (explicit provider intent in the brief still overrides it). The in-memory
 `implementorProvider` map dies with the process, so without this a restart re-routed every Codex
 session to Claude and discarded it. A QA-only retry skips the gate, so `keepPriorImplementorProvider`
-pins the same backend for its fix rounds. Test: `test:restart-provider-affinity`.
+pins the same backend for its fix rounds. Recovery intent clears when an implementor starts or the
+task reaches a terminal state. Test: `test:restart-provider-affinity`.
 
 ## Conventions that bite
 - Codex/Grok usage is real and comparable: their weekly `sevenDay` % comes from
