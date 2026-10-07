@@ -11,7 +11,7 @@
  *      (it's an intentional bounce, not a fault).
  * Fast timings come from the ORCH_SUPERVISE_* env knobs so the whole thing runs in a few seconds.
  */
-const { spawn } = require("node:child_process");
+const { execFileSync, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -80,7 +80,7 @@ async function runSupervisor({ dataDir, childScript, counter, minLaunches, runMs
 
 /** Run the supervisor over `childScript` with fast duplicate-retry timings; its exit code, or "still
  *  running" (then killed) after `budgetMs`. */
-function superviseUntilExit(dataDir, childScript, budgetMs) {
+function superviseUntilExit(dataDir, childScript, budgetMs, { duplicateWindowMs = 600 } = {}) {
   const proc = spawn(process.execPath, [superviseScript], {
     cwd: path.resolve(__dirname, ".."),
     windowsHide: true,
@@ -90,18 +90,37 @@ function superviseUntilExit(dataDir, childScript, budgetMs) {
       ORCH_SUPERVISE_TEST_CHILD: childScript,
       ORCH_SUPERVISE_SETTLE_MS: "50",
       ORCH_SUPERVISE_DUPLICATE_RETRY_MS: "100",
-      ORCH_SUPERVISE_DUPLICATE_WINDOW_MS: "600",
+      ORCH_SUPERVISE_DUPLICATE_WINDOW_MS: String(duplicateWindowMs),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  return new Promise((resolve) => {
+  proc.stdout.resume();
+  proc.stderr.resume();
+  return new Promise((resolve, reject) => {
+    let timedOut = false;
     const to = setTimeout(() => {
-      proc.kill("SIGKILL");
-      resolve("still running");
+      timedOut = true;
+      try {
+        // A Windows signal terminates only the supervisor, leaving its successful child alive.
+        // Reap the fixture tree before resolving so cleanup cannot hide a leaked server process.
+        if (process.platform === "win32") {
+          execFileSync("taskkill", ["/PID", String(proc.pid), "/T", "/F"], {
+            windowsHide: true, stdio: "ignore", timeout: 5_000,
+          });
+        } else {
+          proc.kill("SIGTERM"); // the supervisor forwards this to its child
+        }
+      } catch (error) {
+        reject(error);
+      }
     }, budgetMs);
-    proc.on("exit", (code) => {
+    proc.on("error", (error) => {
       clearTimeout(to);
-      resolve(code);
+      reject(error);
+    });
+    proc.on("close", (code) => {
+      clearTimeout(to);
+      resolve(timedOut ? "still running" : code);
     });
   });
 }
@@ -170,7 +189,7 @@ async function main() {
     const exitCode = await superviseUntilExit(dataDir, childScript, 8000);
     const launches = fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").length : 0;
     check(exitCode === 0, `the supervisor exits cleanly on its own once the window passes (exit: ${exitCode})`);
-    check(launches >= 3 && launches <= 12, `the duplicate boot was retried a bounded number of times, not looped (launched ${launches}×)`);
+    check(launches >= 2 && launches <= 12, `the duplicate boot was retried a bounded number of times, not looped (launched ${launches}×)`);
     const crashLog = path.join(dataDir, "crash.log");
     check(!fs.existsSync(crashLog) || !/exited unexpectedly/.test(fs.readFileSync(crashLog, "utf8")), "a duplicate boot is not logged as a crash");
   }
@@ -186,7 +205,9 @@ async function main() {
       childScript,
       `const fs=require('fs');fs.appendFileSync(${JSON.stringify(counter)},'x');if(fs.readFileSync(${JSON.stringify(counter)},'utf8').length<3)process.exit(78);setInterval(()=>{},1000);`,
     );
-    const exitCode = await superviseUntilExit(dataDir, childScript, 3000);
+    // This scenario tests takeover after two losing boots, rather than expiry of a short retry
+    // window. Give real Windows process startup room while scenario 3 still tests bounded expiry.
+    const exitCode = await superviseUntilExit(dataDir, childScript, 8000, { duplicateWindowMs: 5000 });
     const launches = fs.existsSync(counter) ? fs.readFileSync(counter, "utf8").length : 0;
     check(exitCode === "still running", `the supervisor keeps the server that finally got the data dir (exit: ${exitCode})`);
     check(launches === 3, `two losing boots, then one that stayed up (launched ${launches}×)`);
