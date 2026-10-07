@@ -35,8 +35,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Serialize Git transactions for concurrent agents and preserve reviewed peer work** (661b5fc2, 2026-10-07, Codex; task 6973a43e).
-  Eight live same-checkout tasks confirm repeated locks/manual commit windows; 27 queue checks, CLI kickoff, types/build and privacy pass. Real rebase/fast-forward integrated both commits; activation and first agent commit through the queue remain pending. Owner stopped further test expansion to prioritize live observation.
+- **Serialize Git transactions for concurrent agents and preserve reviewed peer work** (661b5fc2, fdd71f38, 2026-10-07, Flax Thorpe; task 6973a43e).
+  Live build fdd71f38 verified; eight same-checkout tasks confirm repeated locks/manual windows and six lane/repair agents acknowledge queue adoption. Real commits/rebase/fast-forward/push use the queue; 27 focused checks, CLI kickoff, types/build and privacy pass. First observed peer commit through the queue remains pending; owner stopped test expansion for live observation.
 
 - **QA: stabilize supervisor duplicate-boot retry verification under load** (838f708a, 2026-10-07, Codex QA).
   Full suite 237/239 before repair; supervisor now 12/12 standalone and passes with affinity/revival/fallback (4/4 gates), types/builds/browser/privacy pass. Fixture tree reaped; independent review remains.
