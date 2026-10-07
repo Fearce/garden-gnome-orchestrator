@@ -726,6 +726,7 @@ export interface AccountDTO {
   resetCredits?: ResetCreditsDTO;
   resetCreditsError?: string | null;
   prepaidCredits?: { balance: number; currency: string; autoReload: boolean; enabled: boolean; readAt: number };
+  cloudCredits?: { remaining: number; limit: number; used: number; expiresAt: number; locked: boolean; readAt: number };
   profileTokenPresent?: boolean;
   updatedAt: number;
   error?: string | null;

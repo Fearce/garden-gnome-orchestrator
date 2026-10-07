@@ -14,6 +14,17 @@ async function pass(browser, phone) {
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
+    await page.routeWebSocket('**/ws', ws => {
+      const upstream = ws.connectToServer();
+      upstream.onMessage(message => {
+        const data = JSON.parse(String(message));
+        if (Array.isArray(data.accounts)) data.accounts.forEach((a, i) => {
+          a.cloudCredits = { remaining: i ? 0 : 90, limit: 100, used: i ? 100 : 10,
+            expiresAt: Date.now() + (i ? -1 : 86400000), locked: false, readAt: Date.now() };
+        });
+        ws.send(JSON.stringify(data));
+      });
+    });
     let connections = [], jobs = [], sent;
     await page.route('**/api/cloud-sessions**', async route => {
       const req = route.request(), url = new URL(req.url());
@@ -35,6 +46,9 @@ async function pass(browser, phone) {
     if (!login.ok()) throw new Error(`Lab login failed: HTTP ${login.status()}`);
     await page.goto(BASE);
     await page.waitForSelector('.accounts .acct',{state:'attached',timeout:60000}).catch(async e=> { console.error('Lab load:',await page.title(),(await page.locator('body').innerText()).slice(0,800),errors.slice(0,4)); throw e; });
+    check('cloud dollar balance is visible on account chip',await page.locator('.accounts').getByText('cloud $90',{exact:true}).count() === 1);
+    check('expired cloud balance is distinguished',await page.locator('.accounts').getByText('cloud expired',{exact:true}).count() === 1);
+    check('chip explains expiry and routine exclusion',(await page.locator('.accounts').getByText('cloud $90',{exact:true}).getAttribute('title')).includes('excludes routines'));
     await page.getByRole('button',{name:'Open settings',exact:true}).click();
     if (phone) await page.getByLabel('Settings category',{exact:true}).selectOption('cloud');
     else await page.locator('[data-settings-category="cloud"]').click();

@@ -264,5 +264,48 @@ check("asking does not release the hold", heldState.holdUntil != null);
 heldState.enabled = false;
 check("a disabled subscription is not room", !heldManager.hasAuxAccount());
 
+console.log("account-usage: promotional cloud credits stay separate and identity-bound");
+const { parseCloudCredits } = await import("../accounts/cloudCredits.js");
+// Field names and dollar units verified against a live OAuth usage response; values are neutral.
+const cloudWire = { utilization: 10, resets_at: "2027-01-01T00:00:00Z", limit_dollars: 100, used_dollars: 10, remaining_dollars: 90, locked_reason: null };
+check("cloud values stay in dollars", parseCloudCredits(cloudWire)?.remaining === 90);
+check("reported remaining wins over subtraction", parseCloudCredits({ ...cloudWire, remaining_dollars: 88 })?.remaining === 88);
+check("missing remaining derives from allowance", parseCloudCredits({ ...cloudWire, remaining_dollars: undefined })?.remaining === 90);
+check("exhaustion is known zero", parseCloudCredits({ ...cloudWire, remaining_dollars: 0 })?.remaining === 0);
+check("expiry is absolute and retained", parseCloudCredits({ ...cloudWire, resets_at: "2020-01-01T00:00:00Z" })?.expiresAt === Date.parse("2020-01-01T00:00:00Z"));
+check("locked credits are unavailable", parseCloudCredits({ ...cloudWire, locked_reason: "account_paused" })?.locked === true);
+check("missing block is unknown", parseCloudCredits(null) === null);
+check("invalid numbers are rejected", parseCloudCredits({ ...cloudWire, remaining_dollars: -1 }) === null && parseCloudCredits({ ...cloudWire, limit_dollars: Infinity }) === null);
+check("malformed expiry is rejected", parseCloudCredits({ ...cloudWire, resets_at: "invalid" }) === null);
+const cloudAccount = { id: "cloud-acct", label: "Cloud test", token: "inference-token", profileToken: "profile-token" };
+const cloudManager = new AccountManager([cloudAccount], new EventHub());
+const cloudState = (cloudManager as any).states.get(cloudAccount.id);
+cloudState.organizationId = "11111111-1111-4111-8111-111111111111";
+let identity: string | null = cloudState.organizationId;
+globalThis.fetch = async (input) => {
+  const url = String(input);
+  if (url.endsWith("/profile")) return Response.json({ organization: { uuid: identity } });
+  if (url.includes("/prepaid/credits")) return Response.json({ amount: 0, currency: "USD", auto_reload_settings: { enabled: false } });
+  return Response.json({ cedar_ember: { eligible: false }, iguana_necktie: cloudWire });
+};
+try {
+  await (cloudManager as any).readResetCredits(cloudState);
+  check("matching profile publishes cloud money", cloudManager.dto()[0]?.cloudCredits?.remaining === 90);
+  check("cloud money does not become local prepaid funds", cloudManager.dto()[0]?.prepaidCredits?.balance === 0);
+  cloudState.fiveHour = 100;
+  cloudState.fiveHourReset = Date.now() + 60_000;
+  check("cloud money cannot make an exhausted local account dispatchable", !cloudManager.hasHeadroom());
+  identity = "22222222-2222-4222-8222-222222222222";
+  await (cloudManager as any).readResetCredits(cloudState);
+  check("wrong identity clears old cloud balance", cloudManager.dto()[0]?.cloudCredits === undefined);
+  identity = null;
+  await (cloudManager as any).readResetCredits(cloudState);
+  check("unproven identity never publishes money", cloudManager.dto()[0]?.cloudCredits === undefined);
+  identity = cloudState.organizationId;
+  await (cloudManager as any).readResetCredits(cloudState);
+  cloudManager.setProfileToken(cloudAccount.id, "");
+  check("removing profile token clears its cloud balance", cloudManager.dto()[0]?.cloudCredits === undefined);
+} finally { globalThis.fetch = originalFetch; }
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

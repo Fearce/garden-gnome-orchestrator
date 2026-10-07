@@ -7,6 +7,7 @@ import type { Account } from "./account.js";
 import { pingUsage, type PingFailReason, type PingUsage } from "./usagePing.js";
 import { claimClaudeReset, fetchProfileUsage, type ProfileFailReason } from "./profileUsage.js";
 import type { RedeemOutcome, ResetCreditsDTO } from "./resetCredits.js";
+import type { CloudCreditsDTO } from "./cloudCredits.js";
 import { ResetStagger, WINDOW_MS } from "./resetStagger.js";
 import { logCrash } from "../crashLog.js";
 import {
@@ -48,6 +49,7 @@ interface AccountState {
   resetCredits: ResetCreditsDTO | null;
   /** Why `resetCredits` is null, when there is something actionable to say. Null while unconfigured. */
   resetCreditsError: string | null;
+  cloudCredits: CloudCreditsDTO | null;
   /** The org this subscription's AGENT token belongs to, from the usage ping's response header. The
    *  profile token's own org is checked against it before its credits are attributed here. */
   organizationId: string | null;
@@ -383,6 +385,7 @@ export class AccountManager {
         extWakeAt: null,
         modelLimits: new Map(),
         resetCredits: null,
+        cloudCredits: null,
         resetCreditsError: null,
         organizationId: null,
         updatedAt: 0,
@@ -558,6 +561,7 @@ export class AccountManager {
     st.account.profileToken = next;
     this.prepaidCredits.delete(st.account.id);
     st.resetCredits = null;
+    st.cloudCredits = null;
     st.resetCreditsError = null;
     st.updatedAt = Date.now();
     this.publish();
@@ -582,6 +586,7 @@ export class AccountManager {
   private async readResetCredits(st: AccountState): Promise<void> {
     const token = st.account.profileToken?.trim();
     if (!token) {
+      st.cloudCredits = null;
       this.prepaidCredits.delete(st.account.id);
       this.applyResetCredits(st, null, null);
       return;
@@ -596,6 +601,7 @@ export class AccountManager {
     if (paid) this.prepaidCredits.set(st.account.id, paid);
     else this.prepaidCredits.delete(st.account.id);
     if (!result.ok) {
+      st.cloudCredits = null;
       this.applyResetCredits(st, null, profileErrorMessage(result.reason));
       return;
     }
@@ -603,9 +609,12 @@ export class AccountManager {
     // this chip — the one failure that makes this feature worse than not having it. Both orgs must be
     // known to reject; if either is unknown we have no evidence of a mismatch, so the reading stands.
     if (st.organizationId && result.organizationId && st.organizationId !== result.organizationId) {
+      st.cloudCredits = null;
       this.applyResetCredits(st, null, `profile token belongs to a different subscription (org ${result.organizationId.slice(0, 8)}…)`);
       return;
     }
+    st.cloudCredits = st.organizationId && st.organizationId === result.organizationId ? result.cloudCredits ?? null : null;
+    st.updatedAt = Date.now();
     this.applyResetCredits(st, result.credits, null);
   }
 
@@ -1347,6 +1356,7 @@ export class AccountManager {
       resetCredits: s.resetCredits ?? undefined,
       resetCreditsError: s.resetCreditsError,
       prepaidCredits: this.prepaidCredits.get(s.account.id),
+      cloudCredits: s.cloudCredits ?? undefined,
       profileTokenPresent: !!s.account.profileToken?.trim(),
       updatedAt: s.updatedAt,
       error: s.error,

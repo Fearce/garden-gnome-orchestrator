@@ -86,6 +86,7 @@ export interface AccountDTO {
   // Whether a `user:profile` token is configured for this subscription. The token itself is never
   // broadcast — this is the same write-only treatment the Discord/z.ai keys get.
   prepaidCredits?: { balance: number; currency: string; autoReload: boolean; enabled: boolean; readAt: number };
+  cloudCredits?: { remaining: number; limit: number; used: number; expiresAt: number; locked: boolean; readAt: number };
   profileTokenPresent?: boolean;
   updatedAt: number;
   error?: string | null;

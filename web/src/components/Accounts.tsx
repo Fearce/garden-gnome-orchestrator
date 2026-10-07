@@ -676,6 +676,12 @@ function useNow(active: boolean): number {
 }
 
 function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: number }) {
+  const cloud = a.cloudCredits;
+  const cloudExpired = !!cloud && cloud.expiresAt <= now;
+  const cloudStale = !!cloud && now - cloud.readAt >= 20 * 60_000;
+  const cloudTitle = cloud
+    ? `Promotional cloud credits: $${cloud.remaining.toFixed(2)} of $${cloud.limit.toFixed(2)} remaining. Expires ${new Date(cloud.expiresAt).toLocaleString()}. Read ${new Date(cloud.readAt).toLocaleString()}.${cloud.locked ? " Provider reports unavailable." : ""} Only eligible cloud sessions; excludes routines and local agents.`
+    : a.profileTokenPresent ? "Cloud credits unavailable: waiting for a valid usage read and matching subscription identity." : "Cloud credits unknown. Add this subscription's profile token in Settings > Subscriptions to read its promotional balance.";
   const stale = !!a.stale && (a.fiveHour != null || a.sevenDay != null);
   // An error with no usable read ever (blank meters) is the "broken" state we want
   // loud and visible — not buried in a hover tooltip the way it used to be.
@@ -707,6 +713,9 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
             <span className="acct-tag dim">stale</span>
           ) : null}
           <ResetCreditBadge credits={a.resetCredits} provider={a.label} target={{ provider: "claude", accountId: a.id }} now={now} />
+          <span className={"acct-tag" + (!cloud || cloudExpired || cloud.locked || cloudStale ? " dim" : "")} title={cloudTitle} aria-label={cloudTitle}>
+            {cloudExpired ? "cloud expired" : cloud?.locked ? "cloud unavailable" : cloud ? `cloud $${cloud.remaining.toLocaleString(undefined, { maximumFractionDigits: 2 })}${cloudStale ? " · stale" : ""}` : "cloud ?"}
+          </span>
           {modelLimits.map((ml) => (
             <span
               key={ml.model}

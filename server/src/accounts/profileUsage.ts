@@ -15,6 +15,7 @@
 // broader-scoped token to the configuration a small, auditable decision.
 
 import { randomUUID } from "node:crypto";
+import { parseCloudCredits, type CloudCreditsDTO } from "./cloudCredits.js";
 import { parseClaudeResetCredits, type RedeemOutcome, type ResetCreditsDTO } from "./resetCredits.js";
 
 /** `skip_spend=1` keeps the response to the usage/grant blocks — we want neither the spend figures nor
@@ -41,11 +42,12 @@ const USAGE_URL = process.env.PROFILE_USAGE_URL?.trim() || "https://api.anthropi
 export type ProfileFailReason = "unconfigured" | "scope" | "auth" | "network" | "timeout" | "unreadable";
 
 export type ProfileUsageResult =
-  | { ok: true; credits: ResetCreditsDTO; organizationId: string | null }
+  | { ok: true; credits: ResetCreditsDTO; organizationId: string | null; cloudCredits?: CloudCreditsDTO }
   | { ok: false; reason: ProfileFailReason };
 
 interface UsageBody {
   cedar_ember?: unknown;
+  iguana_necktie?: unknown;
   organization?: { uuid?: unknown } | null;
 }
 
@@ -83,8 +85,21 @@ export async function fetchProfileUsage(token: string, timeoutMs = 12_000): Prom
   }
   const credits = parseClaudeResetCredits(body.cedar_ember, Date.now());
   if (!credits) return { ok: false, reason: "unreadable" };
-  const uuid = body.organization?.uuid;
-  return { ok: true, credits, organizationId: typeof uuid === "string" && uuid.trim() ? uuid.trim() : null };
+  let uuid = body.organization?.uuid;
+  const cloudCredits = parseCloudCredits(body.iguana_necktie);
+  // Live usage responses often omit organization. Prove ownership using the same token's profile
+  // before publishing cloud money on a subscription chip; no account-name or balance matching.
+  if (cloudCredits && !(typeof uuid === "string" && uuid.trim())) {
+    try {
+      const identity = await fetch("https://api.anthropic.com/api/oauth/profile", {
+        headers: { Authorization: `Bearer ${token.trim()}`, "anthropic-beta": "oauth-2025-04-20" },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (identity.ok) uuid = ((await identity.json()) as UsageBody).organization?.uuid;
+    } catch { /* Cloud money remains unattributed if identity cannot be proven. */ }
+  }
+  return { ok: true, credits, organizationId: typeof uuid === "string" && uuid.trim() ? uuid.trim() : null,
+    ...(cloudCredits ? { cloudCredits } : {}) };
 }
 
 /** A scope complaint is a 403 naming `user:profile`; anything else in the 401/403 family is a plain

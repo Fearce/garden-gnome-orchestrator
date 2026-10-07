@@ -262,7 +262,10 @@ review the account, branch, model and environment and start the session there.
 Eligible promotional cloud session credits apply before regular plan usage.
 The optional routine API path submits directly and saves session links, but
 **routines are excluded from promotional cloud session credits** and spend regular usage.
-GGO cannot read the cloud balance or enforce credits-only spending. Start an
+Start an eligible task only after checking the balance. Subscription usage chips show cloud
+dollars and expiry when a matching profile token can read them; unknown reads show
+`cloud ?`. These dollars never increase local agent quota or prepaid fallback funds.
+GGO cannot enforce credits-only spending. Start an
 independent cloud task there, or interrupt a local task and use **Send to cloud**.
 Jobs keep running with this PC off. Monitor, stop, and review
 results in Claude before merging. Local services, files, memory and attachments are
