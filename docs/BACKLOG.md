@@ -172,6 +172,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-07 **Repair inbox requests beneath the console mount** (7c57dd9d, Moss Quill): production browser at the proxied /orchestrator/ mount loaded the directory and exact quiet self-check mail; viewing preserved prior unread. Mounted desktop/root phone browser and CLI 30/30, inbox integration 23/23, web typecheck and build pass.
+
 - 2026-10-07 **Scheduled hours for the Token safety limit** (8e7c5267, Tock Thistlewick): owner chose the Token safety limit, not the goal burn-rate guard. Settings > Usage & limits has an M T W T F S S strip, start/end times, an explicit IANA zone and live on/off status with the next change. Live GGO (restarted 17:56 on HEAD) persists Mon-Fri 08:00-16:00 Europe/Copenhagen with the 90% limit; production browser shows "Suspended now. Applies again Thu 08:00." at 1440 and 390px. Schedule 35/35, token-freeze 112/112 (Test M), schedule UI, schedule lab 27/27, token-safety lab 23/23, conservation 29/29, server+web types, README 74/74 and privacy pass.
 
 - 2026-10-07 **Restore inbox access on CLI resume and bound browser failures** (895076a0, Moss Quill): pushed and deployed; live resumed CLI capability works. Inbox 23/23, vanilla 23/23, browser/CLI 30/30 pass, including missing endpoint and 15-second send timeout with draft recovery.
