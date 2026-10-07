@@ -198,6 +198,8 @@
     "test:jev-client": "tsx src/tests/jevClient.test.ts",
     "test:zai-cap": "tsx src/tests/zaiCapDetect.test.ts",
     "test:free-providers": "tsx src/tests/freeProviders.test.ts",
+    "test:cloud-sessions": "tsx src/tests/cloudSessions.test.ts",
+    "cloud-sessions-lab": "node scripts/cloud-sessions-lab.cjs",
     "test:free-provider-routing": "tsx src/tests/freeProviderRouting.itest.ts",
     "test:console-probe": "node ../web/scripts/console-smoke.test.cjs",
     "test:version-watch": "tsx --tsconfig ../web/tsconfig.json ../web/scripts/version-watch.test.ts",

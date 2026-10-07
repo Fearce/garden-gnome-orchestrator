@@ -1,0 +1,19 @@
+.cloud-sessions { min-width: 0; color: var(--text); font-size: 13px; }
+.cloud-sessions p { line-height: 1.5; margin: 0 0 12px; }
+.cloud-sessions a { color: var(--accent); }
+.cloud-sessions label { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+.cloud-sessions input:not([type="checkbox"]), .cloud-sessions textarea, .cloud-sessions select { width: 100%; min-width: 0; box-sizing: border-box; padding: 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.cloud-sessions pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; background: var(--bg); font-size: 12px; }
+.cloud-setup { border: 1px solid var(--border); padding: 12px; border-radius: 8px; }
+.cloud-setup summary { cursor: pointer; font-weight: 600; }
+.cloud-setup ol { padding-left: 20px; line-height: 1.5; }
+.cloud-setup li { margin: 10px 0; }
+.cloud-connection { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 0; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+.cloud-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.cloud-sessions .cloud-confirm { flex-direction: row; align-items: flex-start; line-height: 1.5; }
+.cloud-confirm input { flex: 0 0 auto; margin-top: 3px; }
+.cloud-job { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.cloud-error { color: var(--danger, #e87979); }
+.cloud-note { padding: 10px; border: 1px solid var(--border); border-radius: 6px; }
+.cloud-modal { width: min(700px, calc(100vw - 24px)); max-height: calc(100dvh - 32px); overflow-y: auto; }
+.cloud-modal-body { padding: 16px; }

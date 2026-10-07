@@ -65,6 +65,8 @@ import { digestRequest, haikuDigestModel, PatchNoteDigests } from "./patchNoteDi
 import { registerWs } from "./ws/hub.js";
 import { FreeProviderService } from "./freeProviders/service.js";
 import { registerFreeProviderRoutes } from "./freeProviders/routes.js";
+import { CloudSessionService } from "./cloudSessions/service.js";
+import { registerCloudSessionRoutes } from "./cloudSessions/routes.js";
 import { IdeService } from "./ide/service.js";
 import { registerIdeRoutes } from "./ide/routes.js";
 import { RemoteControlService } from "./remoteControl/service.js";
@@ -123,6 +125,7 @@ async function main(): Promise<void> {
   const db = new Db(config.dbPath);
   new WalCheckpointer(db.raw, config.dbPath, { onFault: logCrash }).start();
   const freeProviders = new FreeProviderService(db);
+  const cloudSessions = new CloudSessionService(db);
   const hub = new EventHub();
   // One shared 5h-reset coordinator across every participant — the Claude subs AND Codex — so idle
   // window restarts are placed dynamically around each other's live reset phases (see resetStagger.ts).
@@ -415,6 +418,7 @@ async function main(): Promise<void> {
     } });
     registerWs(app, { db, hub, manager, director, accounts, scheduler, goals, notes, repos, onlineOffice, cowork, codeContext, cliUpdater });
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
+    registerCloudSessionRoutes(app, cloudSessions, db, isAuthed);
     registerIdeRoutes(app, ide, isAuthed);
     registerCalendarRoutes(app, calendar, isAuthed);
     registerRemoteControlRoutes(app, remoteControl, isAuthed);

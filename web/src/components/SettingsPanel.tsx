@@ -7,6 +7,7 @@ import { ago, effortLabel, since, timeLeft } from "../lib/format.js";
 import { useCoarseNow } from "../lib/timing.js";
 import { ModelSelect, useModelOverrides } from "./ModelSelect.js";
 import { FreeProviders } from "./FreeProviders.js";
+import { CloudSessions } from "./CloudSessions.js";
 import { LiveBenchRankings } from "./LiveBenchRankings.js";
 import { MemorySettings } from "./MemorySettings.js";
 import { RemoteControlSetup } from "./remote/RemoteControlSetup.js";
@@ -20,7 +21,7 @@ import { setBetaGnomes, setOldGnomesBeta, useBetaGnomes, useOldGnomesBeta } from
 import { BetaGnome } from "./BetaGnome.js";
 import { Gnome } from "./Gnome.js";
 
-type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "livebench" | "memory" | "voice-alerts" | "remote-control" | "office" | "appearance" | "interface";
+type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "cloud" | "livebench" | "memory" | "voice-alerts" | "remote-control" | "office" | "appearance" | "interface";
 
 interface SettingsCategory {
   id: SettingsCategoryId;
@@ -36,6 +37,7 @@ const SETTINGS_CATEGORIES = [
   { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced.", keywords: "tokens quota capacity allowance polling reset spread resume budget prepare burn banked max out" },
   { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits.", keywords: "claude anthropic codex openai chatgpt grok xai zai glm api keys accounts models effort weekly safety cli update upgrade version sdk runtime new model" },
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
+  { id: "cloud", section: "Providers", label: "Claude cloud", description: "Offload repository tasks to Claude cloud sessions.", keywords: "cloud credits remote tasks routines anthropic github offload" },
   { id: "livebench", section: "Providers", label: "LiveBench rankings", description: "Compare models on the newest cached LiveBench leaderboard; click any column to sort.", keywords: "livebench benchmark leaderboard rankings scores models compare reasoning coding agentic mathematics data analysis language instruction following global average organization" },
   { id: "memory", section: "Workspace", label: "Memory", description: "Your long-term memory files, how agents recall them, and what recall costs.", keywords: "memory memories recall rag remember forget haiku luna cards extraction index search knowledge notes ollama embeddings" },
   { id: "voice-alerts", section: "Workspace", label: "Voice & alerts", description: "Configure spoken updates and phone notifications.", keywords: "speech microphone speaker tts volume sound wake discord telegram phone bot" },
@@ -510,6 +512,12 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
             <SettingsCategoryPanel id="livebench" active={!isSearching && activeCategoryId === "livebench"}>
               <LiveBenchRankings active={!isSearching && activeCategoryId === "livebench"} />
+            </SettingsCategoryPanel>
+
+            <SettingsCategoryPanel id="cloud" active={!isSearching && activeCategoryId === "cloud"}>
+              <Group label="Claude cloud sessions">
+                <CloudSessions active={!isSearching && activeCategoryId === "cloud"} />
+              </Group>
             </SettingsCategoryPanel>
 
             <SettingsCategoryPanel id="memory" active={!isSearching && activeCategoryId === "memory"}>

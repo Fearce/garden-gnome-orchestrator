@@ -42,6 +42,7 @@ const BUSY_EXIT_CODE = 75;
 const USAGE_EXIT_CODE = 2;
 
 const GATES = [
+  "test:cloud-sessions",
   "test:ide",
   "test:remote-control",
   "test:modules",

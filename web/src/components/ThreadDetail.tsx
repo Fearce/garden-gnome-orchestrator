@@ -18,6 +18,7 @@ import { Markdown } from "./Markdown.js";
 import { ModelRequestStatus } from "./ModelRequestStatus.js";
 import { TaskAgentsPicker } from "./TaskAgentsPicker.js";
 import { TaskModelPicker } from "./TaskModelPicker.js";
+import { CloudSessions } from "./CloudSessions.js";
 import { ManualDeploymentHandoff } from "./ManualDeploymentStatus.js";
 import { ImplementationMemoModal, ImplementationMemos } from "./ImplementationMemos.js";
 import { LayerCloseBar } from "./LayerClose.js";
@@ -672,6 +673,8 @@ export function ThreadDetail() {
   const closeOverlay = useStore((s) => s.closeTaskOverlay);
   const openMemo = useCallback((memoId: string) => openOverlay({ kind: "memo", memoId }), [openOverlay]);
   const [rejecting, setRejecting] = useState(false);
+  const [cloudOpen, setCloudOpen] = useState(false);
+  useEffect(() => { setCloudOpen(false); }, [id]);
   const [feedback, setFeedback] = useState("");
   // A phone or touch tablet opens as a transcript, not as two rows of composing chrome. One tap reveals the full
   // injection surface; a successful send folds it away again. CSS keeps the full bar visible if a
@@ -1116,6 +1119,9 @@ export function ThreadDetail() {
             )}
             <CodeContextBar subject={{ kind: "thread", id: thread.id }} origin={threadOrigin(thread)} />
             <div className="detail-controls">
+              {thread.state === "paused" && !thread.modelRequest && !thread.subTask && thread.lane !== "read" && !threadRuns.some(run => runActive(run.state)) && (
+                <button className="btn ghost sm" onClick={() => setCloudOpen(true)}>Send to cloud</button>
+              )}
               {thread.state === "queued" && !threadRuns.some((run) => runActive(run.state)) && (
                 <button
                   className="btn primary sm"
@@ -1578,6 +1584,14 @@ export function ThreadDetail() {
       {overlay?.kind === "memo" && taskMemos.length ? (
         <ImplementationMemoModal memos={taskMemos} initialId={overlay.memoId} onClose={closeOverlay} onSelect={IOS_PHONE ? openMemo : undefined} />
       ) : null}
+      {cloudOpen && thread.state === "paused" && (
+        <div className="scrim" onClick={() => setCloudOpen(false)}>
+          <div className="modal cloud-modal" role="dialog" aria-modal="true" aria-label="Send task to Claude cloud" onClick={e => e.stopPropagation()}>
+            <div className="m-head"><h3>Send task to Claude cloud</h3><button className="btn ghost sm" onClick={() => setCloudOpen(false)} aria-label="Close cloud panel">Close</button></div>
+            <div className="cloud-modal-body"><CloudSessions key={thread.id} source={thread} /></div>
+          </div>
+        </div>
+      )}
       {overlay?.kind === "changes" && (
         <div className="scrim" onClick={closeOverlay}>
           <div className="modal changes" onClick={(e) => e.stopPropagation()}>

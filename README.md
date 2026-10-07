@@ -252,6 +252,16 @@ An optional free task pool (**Settings > Free AI connections**) can run the plan
 reader of a small, low-risk task on a free-tier API. Everything else stays on the
 subscription backends. See [docs/free-ai-provider-connections.md](docs/free-ai-provider-connections.md).
 
+**Settings > Claude cloud** sends repository-only work to Anthropic-hosted Claude
+Code sessions through configured routine API triggers. Claude applies eligible cloud
+session credits on the routine's account, then regular plan usage after expiry or
+exhaustion; GGO cannot read this balance or enforce credits-only spending. Start an
+independent cloud task there, or interrupt a local task and use **Send to cloud**.
+Jobs keep running with this PC off. GGO saves session links; monitor, stop, and review
+results in Claude before merging. Local services, files, memory and attachments are
+not sent. This explicit lane does not participate in automatic provider fallback.
+Setup and limitations: [Claude cloud sessions](docs/claude-cloud-sessions.md).
+
 In **Settings > Usage & limits > Prepare a sub for reset**, **Auto-burn** (off by default)
 automatically enables burn routing for enabled Claude or Codex subscriptions with a known weekly
 reset within 24 hours. The soonest reset goes first, capped subscriptions are skipped, and manual
