@@ -558,7 +558,10 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   settles back to `review` when it finishes. Both reuse the prior implementor session through the
   same warm/cold gate (below). `markInterrupted` flips working threads to `failed` (with an
   auto-resume promise) on boot but leaves `stage_outputs` intact, so a restart mid-task is recoverable
-  rather than lost; waiting threads keep their own controls (`paused` stays paused, an open `ask_user`
+  rather than lost. The resume keeps the implementor on the backend that owns its session while that
+  backend can still serve (`restartAffinityProvider`, keyed on the persisted restart error), and a
+  QA-only restart retry pins that backend for its fix rounds (gate `test:restart-provider-affinity`);
+  waiting threads keep their own controls (`paused` stays paused, an open `ask_user`
   question resumes the task when answered, `intake` is re-queued). A manual
   resume that lands while a prior cold resume is still *materializing* (compressing) is coalesced via
   a `resuming` guard so it can't double-start a second implementor on the same workspace; an inject in

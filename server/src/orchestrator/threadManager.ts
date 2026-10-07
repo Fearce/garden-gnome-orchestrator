@@ -7225,8 +7225,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.settleReview(thread.id, "needs your review.");
       return null;
     }
-    const routed = this.routeForPick(thread.id, provider, demand);
-    if (!routed) return null;
+    const picked = this.routeForPick(thread.id, provider, demand);
+    if (!picked) return null;
+    const kept = this.restartAffinityProvider(thread, demand);
+    const routed = kept ?? picked;
     const intent = providerIntent([thread.title, thread.rawPrompt, thread.brief].filter(Boolean).join("\n"));
     let chosen = routed;
     if (intent.preferred && this.providerReady(intent.preferred) && !intent.excluded.has(intent.preferred)) {
@@ -7252,9 +7254,30 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         severity: "info",
       });
     }
-    this.noteCapacityRoute(thread, demand, chosen, candidates);
+    if (kept === chosen && kept !== picked) this.noteRestartAffinity(thread.id, kept, picked);
+    else this.noteCapacityRoute(thread, demand, chosen, candidates);
     this.implementorProvider.set(thread.id, chosen);
     return chosen;
+  }
+
+  /** A server restart cut this task's implementor off mid-session: pick it back up on the backend that owns
+   *  that session while it can still take the work. The route lives only in memory, so routing it afresh
+   *  hands a Codex session to Claude (or the reverse), discarding the session and spending a pool the task
+   *  was never routed to. Undefined for any other resume, or when that backend can no longer serve. */
+  private restartAffinityProvider(thread: Thread, demand: CapacityDemand): ImplementorProvider | undefined {
+    if (!thread.error?.startsWith(RESTART_ERROR_PREFIX)) return undefined;
+    const prior = this.priorImplementorProvider(thread.id);
+    return prior && this.providerSafeForRole(prior, "implementor", demand) ? prior : undefined;
+  }
+
+  private noteRestartAffinity(threadId: string, kept: ImplementorProvider, routed: ImplementorProvider): void {
+    this.postFinding({
+      threadId,
+      fromRole: "director",
+      summary: `Resumed on ${providerLabel(kept)} after the server restart — the backend that owns this task's session`,
+      detail: `Fresh usage routing would have chosen ${providerLabel(routed)}, which would have discarded the ${providerLabel(kept)} session and started over. ${providerLabel(kept)} still has room for this work, so the task continues where it was.`,
+      severity: "info",
+    });
   }
 
   /** Default mode's own routing gate — same shape as gateImplementorProvider, but the vanilla lane is
@@ -7295,8 +7318,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.settleReview(thread.id, "needs your review.");
       return null;
     }
-    const chosen = this.preferredImplementorProvider(vanillaCandidates, demand);
-    this.noteCapacityRoute(thread, demand, chosen, vanillaCandidates);
+    const routed = this.preferredImplementorProvider(vanillaCandidates, demand);
+    const kept = this.restartAffinityProvider(thread, demand);
+    const chosen = kept && vanillaCandidates.some((c) => c.provider === kept) ? kept : routed;
+    if (chosen !== routed) this.noteRestartAffinity(thread.id, chosen, routed);
+    else this.noteCapacityRoute(thread, demand, chosen, vanillaCandidates);
     this.implementorProvider.set(thread.id, chosen);
     return chosen;
   }
@@ -11729,7 +11755,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const gated = pipe.vanilla
       ? this.gateVanillaProvider(thread, { capParkOnExhaustion: true, effort })
       : qaOnlyRetry
-        ? true
+        ? this.keepPriorImplementorProvider(thread.id)
         : this.gateImplementorProvider(thread, { capParkOnExhaustion: true, effort });
     if (!gated) return;
     try {
@@ -12611,6 +12637,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.hub.log("warn", `Could not stop QA for ${threadId.slice(0, 8)}: ${String(e)}`);
       return { status: "failed", error: String(e) };
     }
+  }
+
+  /** A QA-only retry skips the implementor gate, so a fix round after it would otherwise default to Claude
+   *  and drop a Codex/Grok session. Pin the backend that owns the session; a capped one fails over as usual. */
+  private keepPriorImplementorProvider(threadId: string): true {
+    const prior = this.priorImplementorProvider(threadId);
+    if (prior && !this.implementorProvider.has(threadId)) this.implementorProvider.set(threadId, prior);
+    return true;
   }
 
   /** QA can return to implementation from inside a QA-only restart retry, after the outer implementor

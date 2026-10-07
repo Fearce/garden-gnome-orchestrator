@@ -173,6 +173,7 @@ const GATES = [
   "test:route-pipeline",
   "test:task-role-toggles",
   "test:routing-notes",
+  "test:restart-provider-affinity",
   "test:routing-probe",
   "test:token-freeze",
   "test:qa-budget",

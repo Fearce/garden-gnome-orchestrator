@@ -82,6 +82,7 @@
     "test:route-pipeline": "tsx src/tests/routeSelection.itest.ts",
     "test:task-role-toggles": "tsx src/tests/taskRoleToggles.itest.ts",
     "test:routing-notes": "tsx src/tests/routingNotes.itest.ts",
+    "test:restart-provider-affinity": "tsx src/tests/restartProviderAffinity.itest.ts",
     "test:routing-probe": "node scripts/probe-routing.test.cjs",
     "test:structured": "tsx src/tests/structuredText.itest.ts",
     "test:effort": "tsx src/tests/effortCap.itest.ts",

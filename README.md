@@ -48,7 +48,9 @@ stages it chose and why.
   routed without QA finishes after the implementor verifies its own work.
 
 Each finished stage is persisted, so a task that dies mid-pipeline (crash, restart,
-rate limit) resumes from where it stopped rather than starting over.
+rate limit) resumes from where it stopped rather than starting over. A task a server restart
+interrupted resumes on the backend it was running on (a Codex session stays on Codex) while that
+backend still has room, instead of being routed afresh.
 
 **A pure lookup skips all of it.** "Which module owns the feature-flag cache?" does not
 need a planner or a QA round, so the director dispatches it down a **read lane**: one
