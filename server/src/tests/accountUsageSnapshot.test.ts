@@ -282,11 +282,12 @@ const cloudManager = new AccountManager([cloudAccount], new EventHub());
 const cloudState = (cloudManager as any).states.get(cloudAccount.id);
 cloudState.organizationId = "11111111-1111-4111-8111-111111111111";
 let identity: string | null = cloudState.organizationId;
+let usageBody: unknown = { cedar_ember: { eligible: false }, iguana_necktie: cloudWire };
 globalThis.fetch = async (input) => {
   const url = String(input);
   if (url.endsWith("/profile")) return Response.json({ organization: { uuid: identity } });
   if (url.includes("/prepaid/credits")) return Response.json({ amount: 0, currency: "USD", auto_reload_settings: { enabled: false } });
-  return Response.json({ cedar_ember: { eligible: false }, iguana_necktie: cloudWire });
+  return Response.json(usageBody);
 };
 try {
   await (cloudManager as any).readResetCredits(cloudState);
@@ -303,6 +304,12 @@ try {
   check("unproven identity never publishes money", cloudManager.dto()[0]?.cloudCredits === undefined);
   identity = cloudState.organizationId;
   await (cloudManager as any).readResetCredits(cloudState);
+  usageBody = null;
+  await (cloudManager as any).readResetCredits(cloudState);
+  check("a null provider response clears cloud money and reports unreadable usage", cloudManager.dto()[0]?.cloudCredits === undefined && !!cloudManager.dto()[0]?.resetCreditsError);
+  usageBody = { cedar_ember: { eligible: false }, iguana_necktie: cloudWire };
+  await (cloudManager as any).readResetCredits(cloudState);
+  check("a valid provider response restores cloud money after unreadable usage", cloudManager.dto()[0]?.cloudCredits?.remaining === 90 && !cloudManager.dto()[0]?.resetCreditsError);
   cloudManager.setProfileToken(cloudAccount.id, "");
   check("removing profile token clears its cloud balance", cloudManager.dto()[0]?.cloudCredits === undefined);
 } finally { globalThis.fetch = originalFetch; }

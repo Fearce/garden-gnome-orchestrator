@@ -83,6 +83,7 @@ export async function fetchProfileUsage(token: string, timeoutMs = 12_000): Prom
   } catch {
     return { ok: false, reason: "unreadable" };
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) return { ok: false, reason: "unreadable" };
   const credits = parseClaudeResetCredits(body.cedar_ember, Date.now());
   const cloudCredits = parseCloudCredits(body.iguana_necktie);
   if (!credits && !cloudCredits) return { ok: false, reason: "unreadable" };

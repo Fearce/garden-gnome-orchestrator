@@ -106,7 +106,9 @@ async function pass(browser, phone) {
     await page.waitForFunction(()=>document.querySelector('.cloud-modal textarea')?.value==='Fix repository unit tests',null,{timeout:20000});
     check('paused-task brief is prefilled',await modal.getByLabel('Task brief',{exact:true}).inputValue() === 'Fix repository unit tests');
     check('paused-task handoff defaults to eligible session',await modal.getByLabel('Dispatch method').inputValue() === 'session');
+    check('session handoff explains selection in Claude', (await modal.locator('.cloud-note').textContent()).includes('Choose the repository, branch, model and environment in Claude'));
     await modal.getByLabel('Dispatch method').selectOption('routine');
+    check('routine handoff explains configured routine settings', (await modal.locator('.cloud-note').textContent()).includes('routine’s configured branch'));
     await modal.getByRole('checkbox').check();
     await modal.getByRole('button',{name:'Start in Claude cloud',exact:true}).click();
     await modal.getByRole('link',{name:'Open Claude session',exact:true}).waitFor();
