@@ -42,6 +42,7 @@ const tileOld = repo("projects", "tilebreaker-old");
 repo("projects", "web");
 const ledger = repo("projects", "ledger-api");
 const clientTile = repo("clients", "tilebreaker");
+const spaced = repo("projects", "orchard workspace");
 mkdirSync(join(ggo, "server", "src"), { recursive: true });
 const ggoFile = join(ggo, "server", "src", "index.ts");
 writeFileSync(ggoFile, "// fixture\n");
@@ -69,11 +70,19 @@ assert.deepEqual(resolved(`please fix the build in ${ggo}.`), [ggo], "a director
 assert.deepEqual(resolved(`look at ${join(ggo, "server")} only`), [join(ggo, "server")], "a sub-directory is not widened to its repo");
 assert.deepEqual(resolved(`the bug is in ${ggoFile}`), [ggo], "a file stands for its git checkout");
 assert.deepEqual(resolved(`sync ${tile} and ${ledger}`), [tile, ledger], "several written paths become several repos");
+assert.deepEqual(resolved(`fix the build in "${spaced}"`), [spaced], "a quoted path keeps its spaces");
+assert.deepEqual(resolved(`fix the build in \`${spaced}\``), [spaced], "a code-formatted path keeps its spaces");
+assert.deepEqual(resolved(`sync ${tile} and "${spaced}"`), [tile, spaced], "quoted and unquoted paths preserve owner order");
+assert.deepEqual(resolved(`sync "${spaced}" and ${tile}`), [spaced, tile]);
 assert.deepEqual(explicitPaths("see https://example.com/a/b and /srv/app/x"), ["/srv/app/x"], "a URL is not a path");
 const typo = join(dir, "projects", "tilebreakr");
 const missing = asked(`fix ${typo}`);
 assert.equal(missing.reason, "missing", "a path that does not exist is asked about, never dispatched");
 assert.ok(missing.candidates.length && missing.candidates.every((c) => c.path !== typo), "only real repos are offered");
+const partial = asked(`sync ${tile} and ${typo}`);
+assert.equal(partial.reason, "missing", "a missing sibling path must not be silently omitted");
+assert.equal(partial.multiSelect, true, "the owner can clarify every repo in a multi-path request");
+assert.equal(partial.candidates[0]?.path, tile, "the valid explicit path is kept as a candidate");
 
 // ---- repos the message names ----
 assert.deepEqual(resolved("the garden gnome orchestrator composer needs a toggle"), [ggo], "the whole name");
@@ -97,6 +106,9 @@ const both = asked("bump the shared logger in ledger api and tilebreaker-old");
 assert.equal(both.reason, "multiple");
 assert.equal(both.multiSelect, true, "several named projects may all be picked");
 assert.deepEqual(both.candidates.slice(0, 2).map((c) => c.path).sort(), [ledger, tileOld].sort());
+const overlapping = asked("bump the logger in tilebreaker and tilebreaker-old");
+assert.equal(overlapping.multiSelect, true, "separately named overlapping repos must both remain selectable");
+assert.ok([tile, tileOld].every((p) => overlapping.candidates.some((c) => c.path === p)));
 
 // ---- follow-ups and topic changes ----
 const none = asked("make the tests faster");
@@ -104,6 +116,7 @@ assert.equal(none.reason, "none");
 assert.equal(none.candidates[0]?.path, ggo, "no signal: recent repos are offered, most recent first");
 assert.deepEqual(resolved("also add a test for that", { lastRepo: tile }), [tile], "a follow-up continues the previous repo");
 assert.deepEqual(resolved("now the ledger api needs the same fix", { lastRepo: tile }), [ledger], "a named repo beats the previous one (topic change)");
+assert.equal(asked("also fix the orchestrator build", { lastRepo: tile }).reason, "ambiguous", "a weak repo mention blocks inheriting the previous repo");
 assert.equal(asked("make the tests faster", { lastRepo: tile }).candidates[0]?.path, tile, "without follow-up wording the previous repo is offered first, not assumed");
 
 // ---- the question and its answer ----

@@ -96,16 +96,23 @@ function workspaceFor(path: string): string {
 
 /** Absolute paths written in the message, trailing sentence punctuation and quotes removed. URLs are not paths. */
 export function explicitPaths(text: string): string[] {
-  const found: string[] = [];
+  const found: Array<{ path: string; at: number }> = [];
+  // Match quoted/code-formatted paths first, preserving spaces. Mask their entire span so the
+  // unquoted matcher cannot reinterpret a prefix as a different authoritative path.
+  const unquoted = text.replace(/(["'`])([^\r\n]*?)\1/g, (span: string, _quote: string, value: string, at: number) => {
+    if (!/^(?:[A-Za-z]:[\\/]|\/|~\/|\\\\)/.test(value)) return span;
+    found.push({ path: value, at });
+    return " ".repeat(span.length);
+  });
   const windows = /(?<![\w/])([A-Za-z]:[\\/][^\s"'`<>|*?]*)/g;
   const posix = /(?:^|[\s("'`])((?:~|\/)(?:[^\s"'`<>|*?/]+\/?){2,})/g;
   for (const re of [windows, posix]) {
-    for (const m of text.matchAll(re)) {
+    for (const m of unquoted.matchAll(re)) {
       const raw = m[1]!.replace(/[.,;:!)\]}]+$/, "");
-      if (raw.length > 3) found.push(raw);
+      if (raw.length > 3) found.push({ path: raw, at: m.index! });
     }
   }
-  return [...new Set(found)];
+  return [...new Set(found.sort((a, b) => a.at - b.at).map((p) => p.path))];
 }
 
 function words(s: string): string[] {
@@ -237,14 +244,18 @@ export function resolveAutoRepo(text: string, ctx: AutoRepoContext): AutoRepoDec
   const paths = explicitPaths(text);
   if (paths.length) {
     const existing = [...new Map(paths.filter(existsSync).map(workspaceFor).map((p) => [recentRepoKey(p), p])).values()];
-    if (existing.length) return { kind: "resolved", repos: existing.map(normalizeRecentRepo), reason: "path in your message" };
-    const missing = paths[0];
+    const missing = paths.find((p) => !existsSync(p));
+    if (!missing) return { kind: "resolved", repos: existing.map(normalizeRecentRepo), reason: "path in your message" };
     const near = known
       .map((k) => ({ k, m: nameMatch(k.path, missing!) }))
       .filter((x) => x.m)
       .sort((a, b) => b.m!.score - a.m!.score)
       .map((x) => candidate(x.k.path, "similar name"));
-    return { kind: "ask", reason: "missing", missingPath: missing, candidates: withFallbacks(near, known, ctx.lastRepo), multiSelect: false };
+    return {
+      kind: "ask", reason: "missing", missingPath: missing,
+      candidates: withFallbacks([...existing.map((p) => candidate(p, "path in your message")), ...near], known, ctx.lastRepo),
+      multiSelect: paths.length > 1,
+    };
   }
 
   // 2. Repos the message names. The more specific of two overlapping names wins ("tilebreaker old" over "tilebreaker").
@@ -253,8 +264,15 @@ export function resolveAutoRepo(text: string, ctx: AutoRepoContext): AutoRepoDec
     .filter((x): x is { k: Known; m: NameMatch } => !!x.m)
     .sort((a, b) => b.m.score - a.m.score || a.k.rank - b.k.rank);
   const strong = scored.filter((x) => x.m.score >= STRONG);
+  const namedText = words(text).join(" ");
   const specific = strong.filter(
-    (x) => !strong.some((y) => y !== x && y.m.phrase !== x.m.phrase && ` ${y.m.phrase} `.includes(` ${x.m.phrase} `)),
+    (x) => !strong.some((y) => {
+      if (y === x || y.m.phrase === x.m.phrase || !` ${y.m.phrase} `.includes(` ${x.m.phrase} `)) return false;
+      // Prune the shorter name only when it was mentioned solely inside the longer one. An
+      // independent mention ("tilebreaker and tilebreaker-old") still means both projects.
+      const remaining = namedText.replace(new RegExp(`\\b${y.m.phrase}\\b`, "g"), " ");
+      return (nameMatch(x.k.path, remaining)?.score ?? 0) < STRONG;
+    }),
   );
   if (specific.length === 1) {
     const only = specific[0]!.k.path;
@@ -269,7 +287,7 @@ export function resolveAutoRepo(text: string, ctx: AutoRepoContext): AutoRepoDec
   }
 
   // 3. A follow-up with no repo of its own continues the previous request's repo.
-  if (ctx.lastRepo && isDir(ctx.lastRepo) && FOLLOW_UP.some((re) => re.test(text))) {
+  if (!scored.length && ctx.lastRepo && isDir(ctx.lastRepo) && FOLLOW_UP.some((re) => re.test(text))) {
     return { kind: "resolved", repos: [mainCheckoutOf(ctx.lastRepo)], reason: "follow-up to your previous request" };
   }
 

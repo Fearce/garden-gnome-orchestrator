@@ -124,7 +124,8 @@ all tasks indexed for sorting and counts; completed cards load their previews an
 only when their page becomes visible. Opening a task loads its full history separately.
 
 The chat composer's repo path field is optional: a path typed there is used exactly as written.
-The **Auto** switch inside the field's right edge picks the repo for each send instead. While it is
+The **Auto** switch inside the field's right edge picks the repo for each send instead. Quote paths
+that contain spaces. A missing path pauses a multi-repo request for clarification. While Auto is
 on, the field, its folder button and the REPOS chips are disabled. A path in your message, a repo
 name it mentions, or a follow-up to the previous request decides the repo; when that is unclear, a
 searchable picker lists the candidates, and the request is sent once you choose. A request naming
