@@ -1,6 +1,4 @@
 import { watch, type FSWatcher } from "node:fs";
-import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { CardInput, CardJob, IndexStatus, IndexedFile, SearchCandidate, SyncResult, UsageRecord } from "./indexStore.js";
 import type { LunaRequest, LunaResult, WorkerOp, WorkerReply } from "./workerProtocol.js";
@@ -180,7 +178,7 @@ export class MemoryWorkerClient {
     if (this.worker) return this.worker;
     const workerData = { dbPath: this.dbPath, memoryDir: this.memoryDir };
     const worker = RUNNING_FROM_SOURCE
-      ? new Worker(TSX_BOOTSTRAP, { eval: true, workerData: { ...workerData, tsxApi: pathToFileURL(createRequire(import.meta.url).resolve("tsx/esm/api")).href, entry: WORKER_URL.href } })
+      ? new Worker(TSX_BOOTSTRAP, { eval: true, workerData: { ...workerData, tsxApi: import.meta.resolve("tsx/esm/api"), entry: WORKER_URL.href } })
       : new Worker(WORKER_URL, { workerData });
     worker.unref();
     worker.on("message", (reply: WorkerReply) => this.onReply(reply));
