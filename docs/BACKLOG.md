@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Stabilize supervisor duplicate-boot retry verification under load** (2026-10-07, Codex QA).
+  Restart affinity review: full gates 237/239; isolated sweep passes, supervisor still fails takeover after two boots in its 600 ms fixture window.
+
 
 
 
@@ -114,9 +117,6 @@ same commit as the fix. Git history keeps the record.
 
 12. **Profile throttled phone startup and reduce the initial history payload** (2026-10-06, Mosswhistle).
   Live build 4545d296 sends a 2.3 MB hello; phone cold/warm readiness is 14.0/8.3 s at 4x CPU and 80 ms network latency despite no errors/overflow. Evidence: server/data/optimization-evidence/startup-after.json; the isolated 1,400-task streaming lab passes.
-
-13. **Stabilize supervisor duplicate-boot retry verification under load** (2026-10-06, Mosswhistle).
-  Completed full sweep passes 222/232 gates; supervisor reports 11/12 because only two duplicate boots fit the retry window. Nine other failures are Windows EBUSY fixture cleanup, including token-freeze, auto-model and silent-resume. Evidence: server/data/gates-last.json and gates-live logs.
 
 14. **Clear residual Graphify and desktop build dependency advisories** (2026-10-07, Codex): production Graphify transitive dependencies retain 7 moderate / 4 low advisories; the desktop development tree retains 8 moderate through Electron Builder. Recheck compatible upstream fixes without breaking the bundled CLI.
 
