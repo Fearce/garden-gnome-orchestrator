@@ -36,6 +36,15 @@ prepaid credit fallback. GGO cannot enforce a credits-only spend ceiling. Check 
 billing controls and balance at [Claude Usage](https://claude.ai/settings/usage).
 GGO neither purchases credits nor changes provider billing settings.
 
+Each subscription has its own grant. If it is not already applied, sign into that
+account at [Claude's claim page](https://claude.ai/code/claim-credit/104); eligibility
+and claim deadlines are listed in the promotion terms above. To show its balance
+in GGO, add that account's current profile-scoped login token in **Settings >
+Subscriptions**. The token must belong to that subscription; an expired token
+requires replacement and shows an unknown balance until a successful read. A
+setup-token alone cannot read the cloud balance. Connecting the profile token
+does not change which Claude account the browser uses to start cloud tasks.
+
 ## Start an eligible cloud session
 
 1. In **Settings > Claude cloud**, keep the default **Cloud session** dispatch method.
@@ -116,5 +125,7 @@ routing; a submission failure never silently starts a local or API-billed agent.
 authentication, endpoint validation, token redaction, dispatch, duplicate protection,
 restart recovery and ambiguous failures without spending credits.
 `npm run cloud-sessions-lab --prefix server` drives the real console in an isolated
-desktop and phone browser with a stubbed cloud API. Live credit consumption requires
-a configured routine and a real cloud session; the local gate does not prove it.
+desktop and phone browser with a stubbed cloud API. Live promotional credit
+consumption requires an eligible interactive cloud session and a before/after
+provider balance read; the local gate does not prove it. Routines cannot prove
+promotional credit consumption because they are excluded from the promotion.

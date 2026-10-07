@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Connect the personal subscription cloud balance with a current matching profile login** (2026-10-07, Thimblewick).
-  Owner requested the second balance; a read-only saved login authenticates and its provider organization matches the personal subscription.
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -32,9 +29,6 @@ same commit as the fix. Git history keeps the record.
 
 - **QA: verify CLI question chips in desktop and phone browsers and activate the bridge** (2026-10-07, Moss Quill).
   Pushed/integrated browser regression 01f33516; 12 Codex/Grok desktop/phone choice, multi-choice and free-text flows, 11 focused gates, all types/builds, README 74/74 and privacy pass. Deploy verification confirms live build 4995ab97 contains the question bridge. Independent QA remains.
-
-- **Offload repository tasks using promotional cloud credits and show balances under subscription names** (3471a225, 2026-10-07, Thimblewick).
-  Committed/pushed; eligible live smoke returned directories/port without edits and promotional balance fell by $0.46. Desktop/phone 48/48, account/reset/cloud tests, types/builds, README 74/74 and privacy pass. Live build 4995ab97 and authenticated desktop/phone browsers prove the balance reader is active and the cloud amount appears under the subscription name. Connecting the personal subscription's fresh matching profile login is in progress.
 
 - **Route CLI agent questions through GGO question chips and resume on answers** (41945c65, 2026-10-07, Puddle Astrolabe).
   Pushed; 6/6 focused gates, server/web types, builds, README 74/74 and privacy pass. Dist is staged with --no-restart; live remains 843bd2a3. Activation awaits the next permitted server restart; this session's restart-resume instruction forbids another restart.
@@ -137,6 +131,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-07 **Offload eligible tasks to Claude cloud and show both subscription credit balances** (3471a225, 50813f1c, Thimblewick): live build 4995ab97; provider-verified matching profile logins and authenticated desktop/phone browsers show both balances beneath names. Eligible read-only smoke consumed $0.46 promotional credit; cloud lab 48/48, account/reset/cloud tests, types/builds, README 74/74 and privacy pass. Profile tokens require renewal after expiry.
+
 - 2026-10-07 **Restore blank console and retain assets during production rebuilds** (Codex Recovery): live direct/proxy entry assets match disk with JavaScript MIME; browser renders sign-in, and a subsequent production rebuild preserves the previous entry bundle. README 74/74 and privacy pass; backend stayed running.
 
 - 2026-10-07 **Nightly quality, provider currency and task responsiveness sweep** (7306a850, Brindlewick): pushed and deployed; 235/235 gates, types/builds, desktop 19/19, README 73/73 and privacy pass. Live lazy snapshots retain 1,425 tasks with a 62% smaller index and 30 visible summaries in 27 ms; 1,400-task desktop/phone lab passes. Current toolchains and model families verified. Cold SQL/CLI delays, writer contention, major migrations and published-secret remediation remain tracked above. The performance gate now verifies that refused live-index CLI arguments never open SQLite.
@@ -172,6 +168,3 @@ No open entries.
 - 2026-10-06 **Restore ended-day patch-note summaries across page boundaries** (b0910387, Thistlewatt): live browser shows Sunday October 4 summary covering all 58 operator-facing changes automatically; deployed bundle bytes match. Patch-note lab 31/31, patch-note gate, types, builds, README 70/70 and privacy pass.
 
 - 2026-10-05 **Re-orderable board tabs: drag in the header, move in Settings** (Tabwhittle): board-head-lab 45/45 (drag Surveillance to #2, reload, Settings move/reset, narrow select), live console check on :4317, gates 230/230.
-- 2026-10-05 **QA: bound Surveillance pan to the fitted camera picture** (Codex QA): 28/28 browser checks keep the real picture in bounds at both pan extremes, after rotation, new frame dimensions and zoom-out; web types/build, module regressions, README and privacy pass. Independent QA required.
-
-- 2026-10-05 **Open Surveillance camera pictures fullscreen with digital pan and zoom** (Mosswick): 20/20 isolated browser checks cover native fullscreen, phone fallback, wheel/pinch/keyboard zoom, drag pan, reset, focus and continuing frames on one socket; types, module gate, README 70/70 and privacy pass. Web built for deployment; authenticated live entry serves the exact updated Surveillance bundle.
