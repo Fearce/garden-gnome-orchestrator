@@ -26,7 +26,7 @@ try {
   const to = { threadId: b.id, role: "implementor" as const };
   const other = { threadId: c.id, role: "implementor" as const };
   let steered = 0;
-  const internal = manager as unknown as { live: Map<string, unknown>; sendCommunication: () => void; track: (id: string, handle: unknown) => void; withOfficeNote: (thread: typeof a, role: string, text: string, tools: boolean) => string; capSupervisor?: NodeJS.Timeout };
+  const internal = manager as unknown as { live: Map<string, unknown>; sendCommunication: () => void; track: (id: string, handle: unknown) => void; withOfficeNote: (thread: typeof a, role: string, text: string, tools: boolean) => string; inboxResumeKickoff: (threadId: string, role: string, message: string | unknown[]) => string | unknown[]; capSupervisor?: NodeJS.Timeout };
   const handle = { send: () => { steered++; } };
   internal.track(b.id, handle);
   internal.live.set(b.id, { run: handle, runId: "fixture", accountId: "fixture" });
@@ -76,6 +76,15 @@ try {
   check("pagination is bounded, chronological and lossless", () => { assert.equal(latest.messages.length, 100); assert.equal(latest.hasMore, true); assert.equal(older.messages.length, 8); assert.equal(older.hasMore, false); assert.ok(older.messages.at(-1)!.id < latest.messages[0]!.id); });
   const kickoff = internal.withOfficeNote(a, "implementor", "KICKOFF", false);
   check("CLI kickoff exposes scoped inbox actions", () => { assert.ok(kickoff.includes("gnome-inbox.cjs")); assert.ok(kickoff.includes(token)); assert.ok(kickoff.includes("ack <through-id>")); });
+  check("resumed CLI kickoff gains mailbox access and preserves attachments", () => {
+    const text = internal.inboxResumeKickoff(a.id, "implementor", "CONTINUE");
+    assert.ok(typeof text === "string" && text.startsWith("CONTINUE\n\n") && text.includes(token));
+    const image = { type: "image", source: { type: "base64", data: "fixture" } };
+    const blocks = internal.inboxResumeKickoff(a.id, "implementor", [image]);
+    assert.ok(Array.isArray(blocks));
+    assert.deepEqual(blocks[0], image);
+    assert.ok(JSON.stringify(blocks[1]).includes(token));
+  });
   db.deleteThread(b.id);
   check("deleted recipient loses mail and capability", () => { assert.equal(manager.directInbox.identify(recipientToken), null); assert.throws(() => manager.directRead(to)); });
   console.log(`${checks} inbox integration checks passed`);

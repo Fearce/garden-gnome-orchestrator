@@ -12,14 +12,25 @@ interface InboxPage { messages: Letter[]; unread: number; hasMore: boolean }
 const keyOf = (address: Address) => `${address.threadId}::${address.role}`;
 
 async function request<T>(path: string, signal?: AbortSignal, body?: unknown): Promise<T> {
-  const response = await fetch(`/api/gnome-inbox/${path}`, {
-    credentials: "same-origin", signal, method: body === undefined ? "GET" : "POST",
-    headers: body === undefined ? undefined : { "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const result = await response.json();
-  if (!response.ok) throw new Error(result.error ?? "Inbox request failed.");
-  return result as T;
+  const controller = new AbortController();
+  const cancel = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) cancel();
+  const timeout = setTimeout(() => controller.abort(new Error(body === undefined ? "Inbox request timed out. Try again." : "Sending timed out. Your draft is preserved. Check the inbox before retrying.")), 15000);
+  try {
+    const response = await fetch(`/api/gnome-inbox/${path}`, {
+      credentials: "same-origin", signal: controller.signal, method: body === undefined ? "GET" : "POST",
+      headers: body === undefined ? undefined : { "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (response.status === 404) throw new Error("Gnome inbox is waiting for server activation. Reload after the server is updated.");
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error ?? "Inbox request failed.");
+    return result as T;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", cancel);
+  }
 }
 
 /** Owner inspection never changes the recipient's read state. */

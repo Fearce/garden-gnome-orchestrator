@@ -9278,6 +9278,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         accountId = "openai-codex";
         const fullKickoff = `${cliRoleKickoff(cfg, roleKickoff, role, "Codex")}\n\n${this.inboxNote(thread.id, role, false)}`;
         if (!resume) startMessage = `${cliRoleKickoff(cfg, message, role, "Codex")}\n\n${this.inboxNote(thread.id, role, false)}`;
+        else startMessage = this.inboxResumeKickoff(thread.id, role, message);
         agent = this.createRoleAgent("codex", () => new CodexAgentRun({
           model,
           effort: codexEffort!,
@@ -9307,6 +9308,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         accountId = "xai-grok";
         const fullKickoff = `${cliRoleKickoff(cfg, roleKickoff, role, "Grok")}\n\n${this.inboxNote(thread.id, role, false)}`;
         if (!resume) startMessage = `${cliRoleKickoff(cfg, message, role, "Grok")}\n\n${this.inboxNote(thread.id, role, false)}`;
+        else startMessage = this.inboxResumeKickoff(thread.id, role, message);
         agent = this.createRoleAgent("grok", () => new GrokAgentRun({
           model,
           effort: effort as GrokEffort,
@@ -10139,6 +10141,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // still reviews its output, and the doctrine makes it commit. A fresh start gets the doctrine plus
       // the (toolless) peer heads-up so it knows to avoid collisions.
       if (!opts?.resume && !vanilla) startKickoff = [CODEX_IMPLEMENTOR_DOCTRINE, this.withOfficeNote(thread, "implementor", kickoff, false)].filter(Boolean).join("\n\n");
+      else if (opts?.resume && !vanilla) startKickoff = this.inboxResumeKickoff(thread.id, "implementor", kickoff);
       // freshFallback lets the runner self-heal a wedged `exec resume` (hangs at 0% CPU on an interrupted
       // gpt-5 session) by restarting fresh — so it must carry the SAME doctrine + task a fresh start gets.
       const codexAgent = new CodexAgentRun({
@@ -10189,6 +10192,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       // post_finding) and no per-tool feed events — a documented degradation. The doctrine makes
       // it commit; the QA loop still reviews the real diff. A fresh start gets the doctrine + peer heads-up.
       if (!opts?.resume) startKickoff = [GROK_IMPLEMENTOR_DOCTRINE, this.withOfficeNote(thread, "implementor", kickoff, false)].filter(Boolean).join("\n\n");
+      else startKickoff = this.inboxResumeKickoff(thread.id, "implementor", kickoff);
       const grokAgent = new GrokAgentRun({
         model,
         effort,
@@ -17095,6 +17099,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return withTools
       ? "Direct gnome messages are quiet and never interrupt work. Use inbox_directory to find local recipients, inbox_send to ping one, inbox_read at convenient checkpoints and before handoff, then inbox_acknowledge through the last message you handled. Office/team chat is still for shared announcements."
       : `Direct gnome messages are quiet and never interrupt work. At convenient checkpoints and before handoff, read your inbox with node "${resolve(config.serverRoot, "scripts/gnome-inbox.cjs")}" http://127.0.0.1:${config.port} ${this.directInbox.capability({ threadId, role })} read. Use the same command with directory to find local recipient threadId/role, send with JSON {recipient:{threadId,role},body} on stdin, or ack <through-id> after handling messages. Never print or share the inbox capability. Reading does not acknowledge; owner viewing does not acknowledge either.`;
+  }
+
+  private inboxResumeKickoff(threadId: string, role: Role, message: string): string;
+  private inboxResumeKickoff(threadId: string, role: Role, message: unknown[]): unknown[];
+  private inboxResumeKickoff(threadId: string, role: Role, message: string | unknown[]): string | unknown[];
+  private inboxResumeKickoff(threadId: string, role: Role, message: string | unknown[]): string | unknown[] {
+    const note = this.inboxNote(threadId, role, false);
+    return typeof message === "string" ? `${message}\n\n${note}` : [...message, { type: "text", text: note }];
   }
 
   /** Always include quiet inbox guidance; group coordination is included only with a teammate. */

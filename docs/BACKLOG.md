@@ -14,7 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Bound stalled browser inbox requests** (2026-10-07, Moss Quill; task 6640a188).
 
 
 - **Observe and repair Git queue under increased live agent pressure** (2026-10-07, Flax Thorpe; task 6973a43e).
@@ -41,11 +40,14 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
+- **Restore inbox access on CLI resume and bound browser failures** (2026-10-07, Moss Quill; task 6640a188).
+  Inbox checks 23/23, vanilla 23/23 and desktop/phone/CLI lab 30/30 pass; includes missing-endpoint and real 15-second stalled-send checks. Owner authorized restart; deployment and live proof follow.
+
 - **Explicit Claude cloud requests never silently launch locally** (2026-10-07, Thimblewick; task 10379cdb).
   Live c0cb1279 hosted review returned findings; both balance chips verified beneath names. Review reproduced a local Resume escape; server control guard is committed/compiled, while the web guard is published. Cloud regressions, auto-review 214/214 and desktop/phone 70/70 pass; live UI controls verified. Follow-up guard 8228cf7e is integrated/pushed. Owner chose to keep the server guard staged for the next restart; live API refusal proof follows activation.
 
 - **Direct gnome chat and quiet inbox** (2026-10-07, Moss Quill; task 6640a188).
-  Inbox integration 22/22, desktop/phone/CLI lab 28/28, office gates, vanilla 23/23, types/builds/README/privacy pass. Server activation awaits the next permitted restart; restart-resume instructions prohibit another this turn.
+  Inbox checks 23/23, desktop/phone/CLI lab 30/30, office gates, vanilla 23/23, types/builds/README/privacy pass. Owner authorized activation after confirming live build c0cb1279 returns 404 for the inbox; deployment and live proof follow.
 
 
 - **QA: stabilize supervisor duplicate-boot retry verification under load** (838f708a, 2026-10-07, Codex QA).

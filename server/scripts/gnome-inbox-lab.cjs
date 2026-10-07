@@ -56,6 +56,13 @@ async function main() {
       await page.getByRole("button", { name: "Gnome inbox", exact: true }).click();
       const inbox = page.getByRole("region", { name: "Direct gnome inbox" });
       await inbox.waitFor();
+      if (!mobile) {
+        await page.route("**/api/gnome-inbox/directory", route => route.fulfill({ status: 404, contentType: "text/html", body: "<p>Not found</p>" }));
+        await page.getByRole("alert").waitFor();
+        check("missing live endpoint reports activation state clearly", (await page.getByRole("alert").innerText()).includes("waiting for server activation"));
+        await page.unroute("**/api/gnome-inbox/directory");
+        await page.getByRole("alert").waitFor({ state: "detached" });
+      }
       await page.getByRole("button", { name: /Copper Vale.*implementor/ }).click();
       await page.locator(".gnome-inbox-letters").getByText("History letter 104", { exact: true }).waitFor();
       check(`${mobile ? "phone" : "desktop"} selected inbox has unread status`, (await page.locator(".gnome-inbox-conversation h3").innerText()).includes(`${mobile ? 106 : 105} unread`));
@@ -66,10 +73,11 @@ async function main() {
       const body = mobile ? "Phone quiet ping ✅" : "Desktop quiet ping Ångström";
       await input.fill(body);
       if (!mobile) {
-        await page.route("**/api/gnome-inbox/messages", route => route.request().method() === "POST" ? route.abort() : route.continue());
+        await page.route("**/api/gnome-inbox/messages", route => route.request().method() === "POST" ? undefined : route.continue());
         await page.getByRole("button", { name: "Send quietly", exact: true }).click();
         await page.getByRole("alert").waitFor();
         check("failed send keeps draft and reports failure", await input.inputValue() === body);
+        check("stalled send times out and releases the composer", (await page.getByRole("alert").innerText()).includes("timed out") && await page.getByRole("button", { name: "Send quietly", exact: true }).isEnabled());
         await page.unroute("**/api/gnome-inbox/messages");
       }
       await page.getByRole("button", { name: "Send quietly", exact: true }).click();
