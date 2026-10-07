@@ -14,14 +14,17 @@ async function pass(browser, phone) {
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
-    await page.routeWebSocket('**/ws', ws => {
+    await page.routeWebSocket(/\/ws(?:\?|$)/, ws => {
       const upstream = ws.connectToServer();
       upstream.onMessage(message => {
         const data = JSON.parse(String(message));
-        if (Array.isArray(data.accounts)) data.accounts.forEach((a, i) => {
-          a.cloudCredits = { remaining: i ? 0 : 90, limit: 100, used: i ? 100 : 10,
-            expiresAt: Date.now() + (i ? -1 : 86400000), locked: false, readAt: Date.now() };
-        });
+        if (Array.isArray(data.accounts)) {
+          data.accounts = [0, 1].map(i => ({ id: `cloud-account-${i}`, label: `Cloud account ${i + 1}`, fiveHour: 10, sevenDay: 20, rateLimited: false, active: !i, enabled: true, weeklySafetyPct: 100, updatedAt: Date.now() }));
+          data.accounts.forEach((a, i) => {
+            a.cloudCredits = { remaining: i ? 0 : 90, limit: 100, used: i ? 100 : 10,
+              expiresAt: Date.now() + (i ? -86400000 : 86400000), locked: false, readAt: Date.now() };
+          });
+        }
         ws.send(JSON.stringify(data));
       });
     });
@@ -46,9 +49,17 @@ async function pass(browser, phone) {
     if (!login.ok()) throw new Error(`Lab login failed: HTTP ${login.status()}`);
     await page.goto(BASE);
     await page.waitForSelector('.accounts .acct',{state:'attached',timeout:60000}).catch(async e=> { console.error('Lab load:',await page.title(),(await page.locator('body').innerText()).slice(0,800),errors.slice(0,4)); throw e; });
+    if (phone) await page.getByRole('button',{name:'Subscription usage',exact:true}).click();
+    await page.locator('.acct-cloud').first().waitFor({state:'visible'});
     check('cloud dollar balance is visible on account chip',await page.locator('.accounts').getByText('cloud $90',{exact:true}).count() === 1);
     check('expired cloud balance is distinguished',await page.locator('.accounts').getByText('cloud expired',{exact:true}).count() === 1);
     check('chip explains expiry and routine exclusion',(await page.locator('.accounts').getByText('cloud $90',{exact:true}).getAttribute('title')).includes('excludes routines'));
+    const creditGeometry = await page.locator('.acct-name').first().evaluate(e => {
+      const name=e.querySelector('.acct-label').getBoundingClientRect(),credit=e.querySelector('.acct-cloud').getBoundingClientRect(),chip=e.closest('.acct').getBoundingClientRect();
+      return credit.top >= name.bottom - 1 && credit.bottom <= chip.bottom + 1 && credit.width > 0;
+    });
+    check('cloud balance sits beneath name within chip',creditGeometry);
+    if (phone) await page.locator('.accounts-scrim').click({position:{x:2,y:2}});
     await page.getByRole('button',{name:'Open settings',exact:true}).click();
     if (phone) await page.getByLabel('Settings category',{exact:true}).selectOption('cloud');
     else await page.locator('[data-settings-category="cloud"]').click();
