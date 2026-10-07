@@ -39,7 +39,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Preserve QA kickoffs and show chat on scheduled inputs** (49c65bcd, 65d66614, 4f68db09, Moss Quill; source repair by Toggle Thistle): real Codex/Grok fresh/resumed/recovery regression passes; inbox 28/28, provider fallback, server build, README 74/74 and privacy pass. Unread direct mail and recent office/team context are previewed without wake or acknowledgement. Local activation awaits the next authorized restart; remote source repair f89a70cc is published.
 
 - **QA: preserve AUTO repo scope and searchable-picker keyboard choices** (2026-10-07, Codex QA; task 547b354c).
   Reproduced and fixed quoted paths with spaces, omitted missing paths, overlapping multi-project names and
@@ -189,6 +188,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-07 **Preserve QA kickoffs and deliver chat context on scheduled inputs** (f89a70cc, d36b176e, 521c3d00, c61ef063, Moss Quill with Toggle Thistle): deployed and verified live build c61ef063; resumed agent input contains unread direct mail and recent office/team chat. Production mounted browser sees quiet self-test mail, owner viewing preserves unread, five handled self-checks explicitly acknowledged. Inbox 28/28, actual Codex/Grok fresh/resumed/recovery launch regressions, provider fallback, server/web builds, README 74/74 and privacy pass. No mail-triggered wake or automatic acknowledgement.
+
 - 2026-10-07 **Document queued publication and remote-writer limits** (Flax Thorpe; task 6973a43e): README describes reviewed remote commits, checked script exit codes and one fetch/merge/push lease. Guidance matches the successful publication transaction in d0fb68c0; documentation only.
 
 - 2026-10-07 **Serialize concurrent Git writes and recover proven interrupted index locks** (f3ce9c45, Flax Thorpe; task 6973a43e): pushed; live build 895076a0 activates ten-minute FIFO admission. Observed 80 peer commits, eight pending tickets draining and three automatic orphan recoveries with unchanged index hashes, including two after restart. Hook scans and legacy-helper queue adoption remain in Ready.
@@ -228,4 +229,3 @@ No open entries.
 - 2026-10-07 **Audit Script Hub management and pre-tag every entry, using tags only** (08ac3d65, Copperfen Quill): 289 entries tagged, 29 personal/260 agent-managed, 22 tags; live API/browser and durable metadata pass, hidden choices and supervision preserved. Focused API 3/3, browser 27/27, types/builds/README/privacy pass; broad modules retain tracked Home idle-start timeout.
 
 - 2026-10-06 **Prevented worktree PowerShell popups and enforced clean committed checkouts** (b3919727, Thistlecrank): live build verified; three deployed process scans returned data with no popup events; cleanup, CLI kickoff, office, goals, types and README/privacy checks passed. Peer changes were preserved in separate commits; Claude/Codex global rules and generated prompts now prioritize clean checkouts.
-- 2026-10-06 **Reverify optimization after the server restart** (Mosswhistle): live build b3919727 matches runtime sources; fresh desktop/phone 1,400-task lab passes with zero transcript renders over 480 background events. Live startup has no errors/overflow: desktop cold/warm 1.1/0.5 s, throttled phone 12.8/8.2 s; 2.3 MB hello and console-smoke shutdown timeout remain tracked above.
