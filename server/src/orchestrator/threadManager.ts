@@ -13421,6 +13421,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     options: { recipient?: "implementor" | "qa" | "reviewer"; standing?: boolean } = {},
   ): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
+    if (thread?.subTask?.cloud) {
+      const job = this.cloudSubtasks.jobs().find(j => j.threadId === threadId);
+      return { ok: false, state: thread.state, error: `Steer this cloud session in Claude: ${job?.url ?? "https://claude.ai/code"}. No local agent was started.` };
+    }
     // A Jev sub-task has no session to steer: the owner's message is another question against its state.
     if (thread && isJevSubTask(thread)) {
       if (options.standing === false) return { ok: false, state: thread.state, error: "A Jev sub-task only answers the owner's questions." };
@@ -14014,6 +14018,11 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   async interruptThread(threadId: string): Promise<ThreadActionResult> {
     const thread = this.db.getThread(threadId);
+    if (thread?.subTask?.cloud && this.cloudSubtasks.isActive(threadId)) {
+      this.cloudSubtasks.stop(threadId);
+      this.setState(threadId, "paused");
+      return { ok: true, state: "paused", message: "GGO stopped observing. The cloud session keeps running; open its Claude link to steer or stop it." };
+    }
     if (thread?.state === "qa") {
       const qa = this.liveQa.get(threadId);
       if (!qa && (this.qaFixHandoff.has(threadId) || !!this.qaFixHandoffPayload(threadId))) {
