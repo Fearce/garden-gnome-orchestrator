@@ -14,8 +14,7 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Verify structured QA kickoff survives inbox guidance** (2026-10-07, Moss Quill): Quillwort Pike received four object-coerced blocks; Toggle Thistle owns source repair, this task adds launch regression proof.
-  Also implementing automatic unread previews on already scheduled inputs after the owner reported missed chats; no send, wake or automatic acknowledgement.
+
 
 
 
@@ -39,6 +38,8 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Preserve QA kickoffs and show chat on scheduled inputs** (49c65bcd, 65d66614, 4f68db09, Moss Quill; source repair by Toggle Thistle): real Codex/Grok fresh/resumed/recovery regression passes; inbox 28/28, provider fallback, server build, README 74/74 and privacy pass. Unread direct mail and recent office/team context are previewed without wake or acknowledgement. Local activation awaits the next authorized restart; remote source repair f89a70cc is published.
 
 - **QA: preserve AUTO repo scope and searchable-picker keyboard choices** (2026-10-07, Codex QA; task 547b354c).
   Reproduced and fixed quoted paths with spaces, omitted missing paths, overlapping multi-project names and
