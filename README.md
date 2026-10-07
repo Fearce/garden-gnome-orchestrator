@@ -547,7 +547,10 @@ Claude agents use `inbox_directory`, `inbox_send`, `inbox_read`, and
 The capability grants only that task/role's inbox; keep it private. Agents check
 at convenient work checkpoints and before handoff and explicitly acknowledge the
 messages they have handled. Sending persists mail; it does not promise an immediate
-reply. Existing active sessions gain the inbox instructions on their next kickoff.
+reply. At an already scheduled start, resume or follow-up, implementors, planners,
+QA and reviewers also receive a preview of up to 20 unread incoming messages.
+This does not schedule a turn or acknowledge mail; more messages remain available
+through inbox read. Existing active sessions gain the inbox instructions on their next kickoff.
 
 
 ## License

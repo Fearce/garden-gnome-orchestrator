@@ -68,6 +68,15 @@ export class DirectMessages {
     return new Map(rows.map(row => [`${row.recipient_thread}::${row.recipient_role}`, row.n]));
   }
 
+  /** Bounded incoming preview for an already scheduled turn; never marks mail read. */
+  unreadPreview(address: GnomeAddress): Array<{ id: number; senderName: string; body: string }> {
+    this.validate(address);
+    return (this.db.raw.prepare(`SELECT id, sender_name, body FROM gnome_direct_messages
+      WHERE recipient_thread=? AND recipient_role=? AND read_at IS NULL
+      ORDER BY id LIMIT 20`).all(address.threadId, address.role) as { id: number; sender_name: string; body: string }[])
+      .map(row => ({ id: row.id, senderName: row.sender_name, body: row.body }));
+  }
+
   unread(address: GnomeAddress): number {
     return (this.db.raw.prepare(`SELECT count(*) AS n FROM gnome_direct_messages
       WHERE recipient_thread=? AND recipient_role=? AND read_at IS NULL`).get(address.threadId, address.role) as { n: number }).n;

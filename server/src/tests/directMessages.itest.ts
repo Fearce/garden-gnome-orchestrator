@@ -33,6 +33,16 @@ try {
   internal.sendCommunication = () => { steered++; };
   const letter = manager.directSend(from, to, "  Can you check the interface?\nÅngström ✅  ");
   check("quiet send never steers live recipient", () => assert.equal(steered, 0));
+  const inputHooks = manager as any;
+  inputHooks.receiptLanes.set(handle, { threadId: b.id, runId: "fixture", recipient: "implementor", provider: "codex" });
+  const scheduled = inputHooks.prepareRunInput(handle, "Continue the existing work.");
+  check("already scheduled input includes incoming mail without waking or acknowledging", () => {
+    assert.ok(scheduled.includes("Quiet gnome inbox") && scheduled.includes("Can you check the interface?"));
+    assert.ok(scheduled.includes("Continue the existing work."));
+    assert.equal(manager.directRead(to).unread, 1);
+    assert.equal(steered, 0);
+    assert.ok(!inputHooks.prepareRunInput({}, "Other agent").includes("Quiet gnome inbox"));
+  });
   check("sender identity and exact trimmed body persisted", () => { assert.equal(letter.senderName, "Aster Ink"); assert.equal(letter.body, "Can you check the interface?\nÅngström ✅"); });
   check("recipient owns unread message; sender sees sent history", () => { assert.equal(manager.directRead(to).unread, 1); assert.equal(manager.directRead(from).messages[0]?.id, letter.id); assert.equal(manager.directRead(from).unread, 0); });
   check("other gnome and other role cannot read it", () => { assert.equal(manager.directRead(other).messages.length, 0); assert.equal(manager.directRead({ ...to, role: "qa" }).messages.length, 0); });
@@ -84,6 +94,11 @@ try {
   });
   check("hidden idle gnome can still receive mail by address", () => assert.equal(manager.directSend(from, { threadId: stale.id, role: "implementor" }, "Still reachable").recipientName, "Dusty Fern"));
   for (let index = 0; index < 105; index++) manager.directSend(from, to, `letter ${index}`);
+  check("automatic unread preview is incoming-only and bounded", () => {
+    assert.equal(manager.directInbox.unreadPreview(to).length, 20);
+    assert.equal(manager.directInbox.unreadPreview(from).length, 0);
+    assert.ok(manager.directInbox.unreadPreview(to).every(letter => letter.senderName === "Aster Ink" || letter.senderName === "Owner"));
+  });
   const latest = manager.directRead(to);
   const older = manager.directRead(to, latest.messages[0]!.id);
   check("pagination is bounded, chronological and lossless", () => { assert.equal(latest.messages.length, 100); assert.equal(latest.hasMore, true); assert.equal(older.messages.length, 8); assert.equal(older.hasMore, false); assert.ok(older.messages.at(-1)!.id < latest.messages[0]!.id); });

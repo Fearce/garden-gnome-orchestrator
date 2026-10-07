@@ -15,6 +15,7 @@ same commit as the fix. Git history keeps the record.
 ## In progress
 
 - **Verify structured QA kickoff survives inbox guidance** (2026-10-07, Moss Quill): Quillwort Pike received four object-coerced blocks; Toggle Thistle owns source repair, this task adds launch regression proof.
+  Also implementing automatic unread previews on already scheduled inputs after the owner reported missed chats; no send, wake or automatic acknowledgement.
 
 
 
