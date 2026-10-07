@@ -92,6 +92,12 @@ peer source and documentation in separately attributed commits before integratin
 do not wait for the original author. The lock releases when its process exits and never
 removes Git's native locks. Reads, editing and tests stay parallel; file ownership still
 needs coordination, and direct Git writes outside the wrapper do not join the queue.
+Before an authorized push, fetch and review remote changes. Run the final fetch,
+merge or rebase, and push in one mutation script wrapped once, checking every exit
+status and stopping on conflicts. If that fetch reveals unreviewed commits, stop
+for review before merging. The queue covers callers sharing a Git common directory;
+another machine can still advance the remote. A rejected push requires a fresh
+fetch, review and retry.
 The background worktree cleanup runs its Windows process and disk-size probes
 without opening PowerShell windows. Repository discovery checks each distinct
 folder once; stale cleanup waits 30 seconds after finished-task retirement so

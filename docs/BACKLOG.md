@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Document a single queued fetch, merge and push transaction** (2026-10-07, Flax Thorpe; task 6973a43e, post-task improvement).
-
 
 
 
@@ -187,6 +185,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-07 **Document queued publication and remote-writer limits** (Flax Thorpe; task 6973a43e): README describes reviewed remote commits, checked script exit codes and one fetch/merge/push lease. Guidance matches the successful publication transaction in d0fb68c0; documentation only.
+
 - 2026-10-07 **Serialize concurrent Git writes and recover proven interrupted index locks** (f3ce9c45, Flax Thorpe; task 6973a43e): pushed; live build 895076a0 activates ten-minute FIFO admission. Observed 80 peer commits, eight pending tickets draining and three automatic orphan recoveries with unchanged index hashes, including two after restart. Hook scans and legacy-helper queue adoption remain in Ready.
 
 - 2026-10-07 **Repair inbox requests beneath the console mount** (7c57dd9d, Moss Quill): production browser at the proxied /orchestrator/ mount loaded the directory and exact quiet self-check mail; viewing preserved prior unread. Mounted desktop/root phone browser and CLI 30/30, inbox integration 23/23, web typecheck and build pass.
@@ -225,5 +225,3 @@ No open entries.
 
 - 2026-10-06 **Prevented worktree PowerShell popups and enforced clean committed checkouts** (b3919727, Thistlecrank): live build verified; three deployed process scans returned data with no popup events; cleanup, CLI kickoff, office, goals, types and README/privacy checks passed. Peer changes were preserved in separate commits; Claude/Codex global rules and generated prompts now prioritize clean checkouts.
 - 2026-10-06 **Reverify optimization after the server restart** (Mosswhistle): live build b3919727 matches runtime sources; fresh desktop/phone 1,400-task lab passes with zero transcript renders over 480 background events. Live startup has no errors/overflow: desktop cold/warm 1.1/0.5 s, throttled phone 12.8/8.2 s; 2.3 MB hello and console-smoke shutdown timeout remain tracked above.
-
-- 2026-10-06 **Optimize console responsiveness under concurrent agent load and a large history** (4545d296, Mosswhistle): pushed to master and live build verified; desktop/phone 1,400-task lab holds the open transcript at zero renders over 480 background events, closed history pages 30 entries, compact Git reads share resolution and defer drawers, and the tool-message partial index preserves rows while reducing snapshot reads from 192 to 51 ms. Live bundle matches, 15 cards render and five cameras keep recording in the same worker. Broad sweep failures and throttled startup follow-ups remain under Ready / Blocked.
