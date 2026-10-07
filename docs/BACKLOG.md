@@ -30,8 +30,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Automatic Claude cloud subtasks after subscription caps** (2026-10-07, Codex implementor).
-  Real hosted subtasks returned reports on both accounts and consumed promotional funds; cap/lifecycle/protocol gates, browser 62/62, types/builds pass. Server deployment and live policy verification remain.
+- **Automatic Claude cloud subtasks after subscription caps** (d342c944, 2026-10-07, Thimblewick).
+  Live build d342c944; production policy enables both subscriptions for this repository (browser-verified, chips $221.35/$248.79). Isolated hosted runs consumed promotional funds; awaits the first production cap-triggered `cloudWork` subtask.
 
 - **QA: handle unreadable cloud credits and clarify session handoff** (3cd69764, 2026-10-07, Bramble Gauge).
   Null-response crash reproduced and fixed; seven focused gates, all types/builds and desktop/phone cloud lab 52/52 pass. Live chips show both balances beneath names. Independent QA and the new automatic cloud-subtask directive remain.
