@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Spread concurrent agent launches across available subscriptions** (2026-10-07, Fernspanner).
+
 
 
 
