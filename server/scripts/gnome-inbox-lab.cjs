@@ -51,7 +51,10 @@ async function main() {
       const page = await context.newPage();
       const errors = [];
       page.on("pageerror", error => errors.push(error.message));
-      await page.goto(BASE, { waitUntil: "domcontentloaded", timeout: 60000 });
+      // A proxy serving only /orchestrator/ rejects origin-root API requests. Exercise
+      // that deployment on desktop while retaining root-mount coverage on phone.
+      if (!mobile) await page.route(`${BASE}/api/**`, route => route.fulfill({ status: 404, body: "Wrong API mount" }));
+      await page.goto(mobile ? BASE : `${BASE}/orchestrator/`, { waitUntil: "domcontentloaded", timeout: 60000 });
       await page.locator('[data-office-room="general"]').first().click({ timeout: 60000 });
       await page.getByRole("button", { name: "Gnome inbox", exact: true }).click();
       const inbox = page.getByRole("region", { name: "Direct gnome inbox" });

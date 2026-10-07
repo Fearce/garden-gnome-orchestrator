@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Role } from "../types.js";
+import { apiUrl } from "../lib/base.js";
 import { Markdown } from "./Markdown.js";
 
 interface Address { threadId: string; role: Role }
@@ -18,7 +19,7 @@ async function request<T>(path: string, signal?: AbortSignal, body?: unknown): P
   if (signal?.aborted) cancel();
   const timeout = setTimeout(() => controller.abort(new Error(body === undefined ? "Inbox request timed out. Try again." : "Sending timed out. Your draft is preserved. Check the inbox before retrying.")), 15000);
   try {
-    const response = await fetch(`/api/gnome-inbox/${path}`, {
+    const response = await fetch(apiUrl(`/api/gnome-inbox/${path}`), {
       credentials: "same-origin", signal: controller.signal, method: body === undefined ? "GET" : "POST",
       headers: body === undefined ? undefined : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
