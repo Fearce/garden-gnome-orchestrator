@@ -907,6 +907,7 @@ const DEFAULT_SETTINGS: OrchestratorSettings = {
   scopedSonnetRouting: true,
   tokenLimitEnabled: false,
   tokenLimitPercent: 80,
+  tokenLimitSchedule: { enabled: false, days: [1, 2, 3, 4, 5], start: "08:00", end: "16:00", timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC" },
   fastUsagePolling: false,
   spreadUsage: false,
   autoBurn: false,

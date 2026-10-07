@@ -20,6 +20,7 @@ import { useSwipeDismiss } from "../lib/swipe.js";
 import { setBetaGnomes, setOldGnomesBeta, useBetaGnomes, useOldGnomesBeta } from "../lib/betaGnomes.js";
 import { BetaGnome } from "./BetaGnome.js";
 import { Gnome } from "./Gnome.js";
+import { TokenSafetyScheduleEditor } from "./TokenSafetySchedule.js";
 
 type SettingsCategoryId = "general" | "pipeline" | "usage" | "subscriptions" | "free-ai" | "cloud" | "livebench" | "memory" | "voice-alerts" | "remote-control" | "office" | "appearance" | "interface";
 
@@ -34,7 +35,7 @@ interface SettingsCategory {
 const SETTINGS_CATEGORIES = [
   { id: "general", section: "Orchestrator", label: "General", description: "Meet your gnomes and set how agents communicate with you.", keywords: "name wording concise detailed communication tone beta gnomes workshop characters animation" },
   { id: "pipeline", section: "Orchestrator", label: "Pipeline", description: "Control task execution, reviews, concurrency, and supervision.", keywords: "planner research implementor qa review auto push git parallel workers supervisor models" },
-  { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced.", keywords: "tokens quota capacity allowance polling reset spread resume budget prepare burn banked max out" },
+  { id: "usage", section: "Orchestrator", label: "Usage & limits", description: "Protect your allowances and choose how usage is balanced.", keywords: "tokens quota capacity allowance polling reset spread resume budget prepare burn banked max out schedule hours weekdays work time zone" },
   { id: "subscriptions", section: "Providers", label: "Subscriptions", description: "Manage paid AI accounts, models, effort caps, and routing limits.", keywords: "claude anthropic codex openai chatgpt grok xai zai glm api keys accounts models effort weekly safety cli update upgrade version sdk runtime new model" },
   { id: "free-ai", section: "Providers", label: "Free AI", description: "Connect free-tier providers for eligible task roles.", keywords: "free providers api keys quota models cerebras gemini openrouter" },
   { id: "cloud", section: "Providers", label: "Claude cloud", description: "Offload repository tasks to Claude cloud sessions.", keywords: "cloud credits remote tasks routines anthropic github offload" },
@@ -74,6 +75,7 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const oldGnomesBeta = useOldGnomesBeta();
   const settings = useStore((s) => s.settings);
   const setSettings = useStore((s) => s.setSettings);
+  const tokenSafetySchedule = useStore((s) => s.tokenSafety?.schedule ?? null);
   const showCompleted = useStore((s) => s.showCompleted);
   const setShowCompleted = useStore((s) => s.setShowCompleted);
   const showEmptyHardDeadline = useStore((s) => s.showEmptyHardDeadline);
@@ -464,6 +466,21 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
                     min={50}
                     max={99}
                     onChange={(v) => setSettings({ tokenLimitPercent: v })}
+                  />
+                )}
+                {settings.tokenLimitEnabled && (
+                  <ToggleRow
+                    label="Only during set hours"
+                    hint="Off (default): the limit applies around the clock. On: it applies only on the chosen weekdays between the start and end time, and is suspended outside them so queued and parked work can run. When the hours begin, running work over the limit is parked with its session saved, exactly as when you switch the limit on. When they end, the freeze lifts: parked tasks resume and held dispatches start as provider capacity allows. Provider caps and tasks you paused are unaffected."
+                    on={settings.tokenLimitSchedule.enabled}
+                    onChange={(v) => setSettings({ tokenLimitSchedule: { ...settings.tokenLimitSchedule, enabled: v } })}
+                  />
+                )}
+                {settings.tokenLimitEnabled && settings.tokenLimitSchedule.enabled && (
+                  <TokenSafetyScheduleEditor
+                    saved={settings.tokenLimitSchedule}
+                    scheduleState={tokenSafetySchedule}
+                    onSave={(schedule) => setSettings({ tokenLimitSchedule: schedule })}
                   />
                 )}
                 <p className="settings-note tight">

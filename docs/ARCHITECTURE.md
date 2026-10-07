@@ -960,6 +960,19 @@ resets soonest — and keeping the long-runway one in reserve for when it caps.
   crossing: the same crossing never re-trips, a restart keeps it, and a fresh below-limit reading or any
   change to the Token Safety settings ends it, so the next crossing freezes work again. It is not a
   setting. Gates: `test:token-freeze` (C3-C5); browser: `npm run token-safety-lab --prefix server`.
+- **Token Safety can keep scheduled hours.** `tokenLimitSchedule` (kv `setting_token_limit_schedule`,
+  `orchestrator/tokenSafetySchedule.ts`) holds weekdays, an `HH:MM` start and end and an IANA zone. An end
+  at or before the start runs overnight and belongs to the start day. Every place that read
+  `tokenLimitEnabled` for enforcement reads `ThreadManager.tokenSafetyEnforced()` instead, so outside the
+  hours the limit behaves exactly as if switched off, and the boot restore infers no freeze. One timer
+  aims at the next edge (`armTokenSafetySchedule`, rebuilt on boot and every settings change); the edge
+  re-runs enforcement, re-arms reset recovery, runs `resumeCapParked` and republishes `token.safety`,
+  whose `schedule` field carries the live on/off state and next change for the console. A start edge
+  parks running over-limit work like a fresh crossing; an end edge lifts the freeze like switching the
+  limit off. Provider caps, manual pauses and owner-verdict parks are untouched. A schedule change is a
+  policy change and ends any bypass. No stored schedule reads as disabled: always on, unchanged.
+  Gates: `test:token-safety-schedule` (boundaries, overnight, DST), `test:token-freeze` (M),
+  `test:token-safety-schedule-ui`.
 - Degrades to single-account (inherited login) when fewer than two tokens are
   configured. A bar reads `—` only before the first successful ping for that
   account.

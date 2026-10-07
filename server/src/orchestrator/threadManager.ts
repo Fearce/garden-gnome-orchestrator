@@ -122,6 +122,13 @@ import { codexReviewTarget, type CodexReviewTarget } from "./reviewModelFloor.js
 import { claudeOpusTarget, CLAUDE_OPUS_FLOOR_MODEL, isDisallowedClaudeModel, type ClaudeOpusTarget } from "./claudeOpusFloor.js";
 import { conservationResolvedCodexModel, conservationResolvedModel } from "./tokenConservation.js";
 import { usageSavingActive } from "./usageSaving.js";
+import {
+  readTokenSafetySchedule,
+  TOKEN_SAFETY_SCHEDULE_KV,
+  tokenSafetyScheduleProblem,
+  tokenSafetyScheduleState,
+  writeTokenSafetySchedule,
+} from "./tokenSafetySchedule.js";
 import { burnSubIdOf, parseResetBurn, resetBurnDTO, resetBurnEligible, resetBurnEndsAt, startResetBurn, stepResetBurn, type ResetBurn } from "./resetBurn.js";
 import { providerIntent } from "./providerIntent.js";
 import { detectModelRequest, exactModelRequest, resolveModelRequest, type ModelRequestCandidate } from "./modelRequest.js";
@@ -1219,6 +1226,9 @@ export class ThreadManager implements OrchestratorApi {
   // (token_resume_wakeup_at) so a restart re-arms (or fires, if the reset already passed while we were down).
   private tokenResumeArmedFor: number | undefined;
   private tokenResumeTimer: NodeJS.Timeout | undefined;
+  // The Token safety limit's next scheduled on/off edge. Rebuilt from the stored schedule on boot and on
+  // every settings change, so nothing about it needs persisting.
+  private tokenSafetyScheduleTimer: NodeJS.Timeout | undefined;
   // One absolute timer per task with an operator hard stop. The timestamp itself lives on the thread
   // row; this map is only the live alarm and is rebuilt on every boot. expiring deduplicates the timer,
   // a boundary check, and an operator action all noticing the same instant together.
@@ -1370,11 +1380,12 @@ export class ThreadManager implements OrchestratorApi {
     // window reset. This closes the boot gap before AccountManager's first refresh reaches us.
     // An owner bypass of the current crossing is restored first: it outranks the park-row inference.
     this.tokenSafetyBypass = this.loadTokenSafetyBypass();
+    // Outside the limit's scheduled hours no freeze is restored: its parks resume like any capacity park.
     this.subscriptionTokenSafety()?.setTokenSafetyLimit(
-      this.settings().tokenLimitEnabled && !this.tokenSafetyBypass ? this.settings().tokenLimitPercent : null,
+      this.tokenSafetyEnforced() && !this.tokenSafetyBypass ? this.settings().tokenLimitPercent : null,
     );
     const safetyParks =
-      this.settings().tokenLimitEnabled && !this.tokenSafetyBypass
+      this.tokenSafetyEnforced() && !this.tokenSafetyBypass
         ? this.db.listThreadsByStates(["review", "failed"]).filter((thread) => this.tokenSafetyParked(thread))
         : [];
     this.tokenLimitTripped = safetyParks.length > 0;
@@ -1392,6 +1403,7 @@ export class ThreadManager implements OrchestratorApi {
     // mirroring its boot sweep. Reads the persisted wakeup epoch; the account pings needed by fireTokenResume
     // land shortly after via onUsageRefresh, so an "already elapsed" restore is deferred like the boot resume.
     this.restoreTokenResume();
+    this.armTokenSafetySchedule();
     // React to every live usage refresh — the token-safety limit parks running agents when burn crosses
     // the operator threshold, and the always-on token-reset recovery arms a wakeup at the relevant window
     // reset. onUsageRefresh holds a single callback, so BOTH run from this one wrapper. Registered here
@@ -1828,7 +1840,9 @@ export class ThreadManager implements OrchestratorApi {
    * only on that subscription's reset or below-limit reading. Other subscriptions and backends keep running.
    */
   private enforceTokenSafetyLimit(): void {
-    const { tokenLimitEnabled, tokenLimitPercent } = this.settings();
+    const { tokenLimitPercent } = this.settings();
+    // Outside its scheduled hours the limit is suspended exactly as if it were switched off.
+    const tokenLimitEnabled = this.tokenSafetyEnforced();
     const scoped = this.subscriptionTokenSafety();
     scoped?.setTokenSafetyLimit(tokenLimitEnabled ? tokenLimitPercent : null);
     const util = this.accounts.effectiveUtilization();
@@ -1842,7 +1856,12 @@ export class ThreadManager implements OrchestratorApi {
       this.tokenLimitTripped = false;
       this.tokenLimitTrippedAt = null;
       if (released) {
-        this.hub.log("info", "Token safety freeze cleared — provider usage is below the configured limit.");
+        this.hub.log(
+          "info",
+          tokenLimitEnabled
+            ? "Token safety freeze cleared — provider usage is below the configured limit."
+            : "Token safety freeze cleared: the limit is off or outside its scheduled hours.",
+        );
         this.pumpQueue();
       }
       if (released || bypassEnded) this.publishTokenSafety();
@@ -1866,6 +1885,46 @@ export class ThreadManager implements OrchestratorApi {
       this.tokenSafetyStopping = null;
       if (scoped) this.recoverReleasedCapacity();
     });
+  }
+
+  /** Whether the Token safety limit applies now: switched on and, when it has scheduled hours, inside them. */
+  private tokenSafetyEnforced(now = Date.now()): boolean {
+    const { tokenLimitEnabled, tokenLimitSchedule } = this.settings();
+    return tokenLimitEnabled && tokenSafetyScheduleState(tokenLimitSchedule, now).active;
+  }
+
+  /**
+   * Wakes at the limit's next scheduled on/off edge, so a freeze engages or lifts on time instead of at the
+   * next usage ping. Re-armed after every edge and every settings change; nothing armed when unscheduled.
+   */
+  private armTokenSafetySchedule(): void {
+    if (this.tokenSafetyScheduleTimer) clearTimeout(this.tokenSafetyScheduleTimer);
+    this.tokenSafetyScheduleTimer = undefined;
+    const { tokenLimitEnabled, tokenLimitSchedule } = this.settings();
+    const next = tokenLimitEnabled ? tokenSafetyScheduleState(tokenLimitSchedule, Date.now()).nextChangeAt : null;
+    if (next == null) return;
+    // A second past the edge, so the state read at wake-up is already the new one. An edge is at most
+    // about a week away, well inside setTimeout's range.
+    this.tokenSafetyScheduleTimer = setTimeout(() => this.tokenSafetyScheduleEdge(), Math.max(0, next - Date.now()) + 1_000);
+    this.tokenSafetyScheduleTimer.unref?.();
+  }
+
+  /**
+   * The scheduled hours began or ended. Starting behaves like a fresh usage reading under a newly enabled
+   * limit: work running on a subscription already over the limit is parked with its session saved. Ending
+   * behaves like switching the limit off: the freeze lifts, queued work starts and parked work resumes on
+   * real provider headroom. Provider caps and the 98% hard limit apply either way.
+   */
+  private tokenSafetyScheduleEdge(): void {
+    this.tokenSafetyScheduleTimer = undefined;
+    if (!this.db.raw.open) return;
+    const on = this.tokenSafetyEnforced();
+    this.hub.log("info", on ? "Token safety limit: scheduled hours began, the limit applies again." : "Token safety limit: scheduled hours ended, the limit is suspended until its next window.");
+    this.enforceTokenSafetyLimit();
+    this.maybeScheduleTokenResume();
+    this.resumeCapParked();
+    this.publishTokenSafety();
+    this.armTokenSafetySchedule();
   }
 
   private subscriptionTokenSafety(): {
@@ -1898,7 +1957,8 @@ export class ThreadManager implements OrchestratorApi {
 
   /** What the console's Token Safety box renders. Cheap: one indexed state read plus the in-memory queue. */
   tokenSafetyState(): TokenSafetyState {
-    const { tokenLimitPercent } = this.settings();
+    const { tokenLimitEnabled, tokenLimitPercent, tokenLimitSchedule } = this.settings();
+    const schedule = tokenLimitEnabled && tokenLimitSchedule.enabled ? tokenSafetyScheduleState(tokenLimitSchedule, Date.now()) : null;
     const held = this.tokenLimitTripped ? this.tokenSafetyHeldThreads().length : 0;
     const queued = this.tokenLimitTripped
       ? this.dispatchQueue.filter((id) => {
@@ -1915,6 +1975,7 @@ export class ThreadManager implements OrchestratorApi {
       queuedTasks: queued,
       resetAt: this.tokenLimitTripped ? this.tokenSafetyResetAt(tokenLimitPercent) : null,
       bypass: this.tokenSafetyBypass,
+      schedule,
     };
   }
 
@@ -2039,7 +2100,7 @@ export class ThreadManager implements OrchestratorApi {
   private maybeScheduleTokenResume(): void {
     const settings = this.settings();
     const util = this.accounts.effectiveUtilization();
-    const armAt = settings.tokenLimitEnabled ? Math.min(TOKEN_RESUME_ARM_PERCENT, settings.tokenLimitPercent) : TOKEN_RESUME_ARM_PERCENT;
+    const armAt = this.tokenSafetyEnforced() ? Math.min(TOKEN_RESUME_ARM_PERCENT, settings.tokenLimitPercent) : TOKEN_RESUME_ARM_PERCENT;
     if (util == null || util < armAt) return; // no data / under the line — leave any existing arm intact
     const resetAt = this.tokenSafetyResetAt(armAt);
     if (resetAt == null) return; // usage is high but no reset epoch known yet — a later ping will carry one
@@ -3297,6 +3358,7 @@ export class ThreadManager implements OrchestratorApi {
       scopedSonnetRouting: this.settingBool("setting_scoped_sonnet_routing", true),
       tokenLimitEnabled: this.settingBool("setting_token_limit_enabled", false),
       tokenLimitPercent: this.settingNum("setting_token_limit_percent", 80, 50, 99),
+      tokenLimitSchedule: readTokenSafetySchedule(this.db.kvGet(TOKEN_SAFETY_SCHEDULE_KV)),
       fastUsagePolling: this.settingBool("setting_fast_usage_polling", false),
       spreadUsage: this.settingBool("setting_spread_usage", false),
       autoBurn: this.settingBool("setting_auto_burn", false),
@@ -5690,12 +5752,14 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const safetyBefore = this.settings();
     if (patch.tokenLimitEnabled !== undefined) this.db.kvSet("setting_token_limit_enabled", patch.tokenLimitEnabled ? "1" : "0");
     if (patch.tokenLimitPercent !== undefined) this.db.kvSet("setting_token_limit_percent", String(patch.tokenLimitPercent));
+    if (patch.tokenLimitSchedule !== undefined) this.writeTokenLimitSchedule(patch.tokenLimitSchedule);
     const safetyAfter = this.settings();
     // A bypass was a decision about ONE crossing of ONE limit. A new safety policy is re-evaluated from
     // scratch below, so an owner who lowers the limit gets the freeze back instead of a stale override.
     const safetyPolicyChanged =
       safetyBefore.tokenLimitEnabled !== safetyAfter.tokenLimitEnabled ||
-      safetyBefore.tokenLimitPercent !== safetyAfter.tokenLimitPercent;
+      safetyBefore.tokenLimitPercent !== safetyAfter.tokenLimitPercent ||
+      JSON.stringify(safetyBefore.tokenLimitSchedule) !== JSON.stringify(safetyAfter.tokenLimitSchedule);
     if (safetyPolicyChanged) {
       this.clearTokenSafetyBypass();
       this.publishTokenSafety(); // the box also shows the limit itself
@@ -5804,9 +5868,22 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // Re-evaluate always-on token-reset recovery in case the safety threshold changed while usage is high.
     this.maybeScheduleTokenResume();
     this.resumeCapParked();
+    // The limit, or its scheduled hours, may have changed: aim the edge timer at the new next transition.
+    this.armTokenSafetySchedule();
     // Retune the account usage-ping cadence in case the fast-polling toggle just flipped.
     this.applyUsagePollInterval();
     return settings;
+  }
+
+  /** Stores the Token safety limit's scheduled hours. One that cannot work (no weekday, an empty window, an
+   *  unknown zone) is refused whole with the reason in the log; the console validates before sending. */
+  private writeTokenLimitSchedule(schedule: NonNullable<SettingsPatch["tokenLimitSchedule"]>): void {
+    const problem = tokenSafetyScheduleProblem(schedule);
+    if (problem) {
+      this.hub.log("warn", `Token safety schedule not saved: ${problem}`);
+      return;
+    }
+    this.db.kvSet(TOKEN_SAFETY_SCHEDULE_KV, writeTokenSafetySchedule(schedule));
   }
 
   /** Point the account manager's periodic usage ping at the cadence the "Fast usage polling" setting

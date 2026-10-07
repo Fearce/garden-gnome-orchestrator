@@ -322,6 +322,16 @@ reset within 24 hours. The soonest reset goes first, capped subscriptions are sk
 burn choices take priority. Turning Auto-burn off stops automatic burns. It does not redeem banked
 resets; existing burn routing still respects hard limits and task model/provider choices.
 
+In **Settings > Usage & limits > Usage safeguards**, the **Token safety limit** (off by default)
+parks running work with its session saved and holds new dispatches once live usage reaches the
+chosen percentage. **Only during set hours** limits it to chosen weekdays and a start and end time,
+for example Monday to Friday 08:00 to 16:00, in an explicit IANA time zone that follows daylight
+saving. An end before the start runs overnight. Outside those hours the limit is suspended, so held
+work resumes and queued work starts as provider capacity allows. When the hours begin, running work
+already over the limit is parked, as when the limit is switched on. Provider caps and tasks you
+paused are never overridden. The panel shows whether the limit applies now and its next change.
+With the schedule off, the limit applies around the clock, as before.
+
 **More than one Claude subscription?** Set `ACCOUNT_1_TOKEN`, `ACCOUNT_2_TOKEN` and so on
 (up to 8). New agent launches prefer the subscription with fewer active agents among those
 with enough task-sized runway and under their soft weekly safety ceiling. This spreads a burst

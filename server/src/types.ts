@@ -1246,6 +1246,23 @@ export interface StageOutputs {
   priorTurnsEndedAt?: number;
 }
 
+/** When the Token safety limit applies: around the clock (`enabled` false, the default) or only inside
+ *  weekly windows. A window starts at `start` on each chosen weekday (0 = Sunday … 6 = Saturday) and ends
+ *  at `end`, read in the IANA `timeZone`; an end at or before the start runs overnight into the next day. */
+export interface TokenSafetySchedule {
+  enabled: boolean;
+  days: number[];
+  start: string; // "HH:MM", 24-hour
+  end: string; // "HH:MM"
+  timeZone: string;
+}
+
+/** Whether the scheduled limit applies right now, and when that next flips. */
+export interface TokenSafetyScheduleState {
+  active: boolean;
+  nextChangeAt: number | null;
+}
+
 /** The live Token Safety freeze, broadcast on every transition and carried on `hello` so the console's
  *  "Token safety limit reached" box survives a reload. `tripped` = the freeze is holding work now.
  *  `bypass` = the owner overrode the CURRENT crossing: it lasts until a fresh below-limit reading (or a
@@ -1260,6 +1277,7 @@ export interface TokenSafetyState {
   queuedTasks: number; // fresh dispatches held in the queue by the freeze
   resetAt: number | null; // earliest reset that can clear the freeze on its own, if known
   bypass: { at: number; threshold: number; resumed: number; waiting: number } | null;
+  schedule: TokenSafetyScheduleState | null; // set while the limit is on with scheduled hours; null = always on, or off
 }
 
 /** Ceiling on the Director's standing directives, enforced server-side. Mirrors web/src/types.ts. */
@@ -1306,6 +1324,7 @@ export interface OrchestratorSettings {
   // ---- Token-usage safety limit: opt-in auto-stop when live utilization reaches a threshold ----
   tokenLimitEnabled: boolean; // off (default) → never auto-stop; on → stop running agents at the threshold
   tokenLimitPercent: number; // % of the token (rate-limit) window that trips the stop — clamped 50–99, default 80
+  tokenLimitSchedule: TokenSafetySchedule; // when the limit applies; disabled (default) = around the clock. Stored in kv setting_token_limit_schedule
   // Token-window recovery is always on: capacity parks and safety-limit stops resume automatically
   // when the specific compatible provider window has enough headroom again.
   // ---- Fast usage polling: opt-in tighter cadence for the account usage ping ----

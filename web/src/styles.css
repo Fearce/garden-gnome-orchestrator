@@ -1548,6 +1548,36 @@ button.office-roster-member:focus-visible { outline: 2px solid var(--accent); ou
 .segment.wrap { flex-wrap: wrap; }
 .segment.wrap button { font-family: var(--font-mono); font-size: 10.5px; }
 
+/* Token safety limit: scheduled hours. Seven day toggles read as one segmented strip, times beside it. */
+.tss { display: flex; flex-direction: column; gap: 10px; padding: 2px 24px 12px; }
+.tss-line { display: flex; align-items: center; gap: 14px 18px; flex-wrap: wrap; }
+.tss-days { flex: none; display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-2); overflow: hidden; }
+.tss-day {
+  width: 32px; height: 30px; border: none; background: none; color: var(--text-faint);
+  font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em;
+  transition: background 0.12s, color 0.12s;
+}
+.tss-day + .tss-day { border-left: 1px solid var(--line); }
+.tss-day:hover { color: var(--text-dim); }
+.tss-day.on { background: color-mix(in oklch, var(--accent) 16%, var(--bg-2)); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+.tss-day:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; position: relative; }
+.tss-times { display: flex; align-items: center; gap: 10px; }
+.tss-time { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-dim); }
+.tss-time input {
+  height: 30px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg);
+  color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 0 8px;
+}
+.tss-time input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
+.tss-zone { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--text-dim); }
+.tss-zone .text-input {
+  width: 200px; height: 28px; border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 0 10px; outline: none;
+}
+.tss-zone .text-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
+.tss-zone-note { flex-basis: 100%; font-size: 11px; color: var(--text-faint); }
+.tss-status { margin: 0; font-size: 11.5px; color: var(--text-dim); line-height: 1.45; }
+.tss-status.warn { color: var(--danger); }
+
 /* ---- subscriptions (provider cards) ---- */
 .subs { display: flex; flex-direction: column; gap: 8px; padding: 4px 16px 6px; }
 .sub-card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-2); padding: 11px 12px; }

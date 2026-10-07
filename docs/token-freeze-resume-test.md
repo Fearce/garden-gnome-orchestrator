@@ -55,6 +55,7 @@ Every assertion observes real code output (kv values, log strings, the recovered
 | D | guard | An early reset with **no headroom** ⇒ **re-arms** for the next reset and does **not** wake the task (no instant re-cap). |
 | E | steps 3–4 | Usage resets (headroom returns) ⇒ resume **fires**, re-enters the same task **carrying its prior session** (warm, not cold), task reaches `done`, wakeup kv cleared, owner notified ("Token window reset. Resuming 1 paused/parked task."). |
 | F | steps 3–4 | Same for the **cap-parked `review`** freeze outcome — resumes with its prior session and completes. |
+| M | scheduled hours | Inside its hours the limit parks running work; the end edge lifts the freeze and resumes the held task with its saved session without a restart, while an owner-paused task stays paused; the start edge parks again; an empty or no-weekday schedule is refused; a restart keeps the schedule and re-arms its edge; switching the schedule off restores around-the-clock enforcement. |
 | G | durability | Freeze + arm, then a **server restart** (fresh manager, same DB) ⇒ re-arms from the persisted epoch (logged "Re-arming token-reset auto-resume after a restart"). |
 
 ### Negative control (the assertions genuinely bite)

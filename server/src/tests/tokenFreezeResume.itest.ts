@@ -182,6 +182,7 @@ function makeHarness(options: { legacyResumeSettings?: boolean; accounts?: Accou
       const anyMgr = mgr as any;
       if (anyMgr.capSupervisor) clearInterval(anyMgr.capSupervisor);
       if (anyMgr.tokenResumeTimer) clearTimeout(anyMgr.tokenResumeTimer);
+      if (anyMgr.tokenSafetyScheduleTimer) clearTimeout(anyMgr.tokenSafetyScheduleTimer);
       db.raw.close();
       rmSync(dir, { recursive: true, force: true });
     },
@@ -904,6 +905,88 @@ async function main(): Promise<void> {
       );
       check("the task left behind keeps its unspent budget for a later window", stallResumesUsed(h, newest.threadId) === 0);
     } finally {
+      h.dispose();
+    }
+  }
+
+  // -- Test H: scheduled hours switch the limit on and off at their edges ------------------------------
+  console.log("\nTest M: the limit's scheduled hours engage and lift the freeze at each edge, and survive a restart");
+  {
+    const h = makeHarness();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const internals = h.mgr as any;
+    const realNow = Date.now;
+    const clock = (epoch: number): string => new Date(epoch).toISOString().slice(11, 16);
+    const minute = 60_000;
+    const now = Math.floor(realNow() / minute) * minute;
+    const everyDay = [0, 1, 2, 3, 4, 5, 6];
+    // A window around now, read in UTC, so the test never depends on the machine's zone.
+    const inside = { enabled: true, days: everyDay, start: clock(now - 60 * minute), end: clock(now + 60 * minute), timeZone: "UTC" };
+    try {
+      const { threadId, session } = seedFrozenTask(h, "implementing");
+      internals.activePipelines.add(threadId);
+      // The owner's own pause: no scheduled edge may ever restart it.
+      const paused = h.db.createThread({ title: "owner paused", workspace: h.workspace, rawPrompt: "p" });
+      h.db.updateThread(paused.id, { state: "paused" });
+
+      h.mgr.setSettings({ tokenLimitEnabled: true, tokenLimitPercent: 80, tokenLimitSchedule: inside });
+      h.stub.util = 90;
+      h.stub.reset = now + 6 * 60 * minute;
+      h.stub.headroom = true;
+      h.stub.fireUsageRefresh();
+      await delay(80);
+
+      const during = h.mgr.tokenSafetyState();
+      check("inside its hours the limit parks running work like the always-on limit", h.db.getThread(threadId)?.state === "review" && during.tripped, JSON.stringify(during));
+      check("the box reports the limit scheduled on, ending at the window's end", during.schedule?.active === true && during.schedule.nextChangeAt === now + 60 * minute, JSON.stringify(during.schedule));
+      check("a timer is armed for that edge", !!internals.tokenSafetyScheduleTimer);
+
+      // The window ends. Fire the edge as its timer would, a moment past the end.
+      Date.now = () => now + 60 * minute + 1_000;
+      internals.tokenSafetyScheduleEdge();
+      await delay(180);
+      const after = h.mgr.tokenSafetyState();
+      check("outside its hours the freeze lifts without a restart or toggle", !after.tripped, JSON.stringify(after));
+      const call = h.resumeCalls.find((entry) => entry.threadId === threadId);
+      check("the held task resumed on real provider headroom with its saved session", call?.resumeSession === session, JSON.stringify(h.resumeCalls));
+      check("the owner's paused task stayed paused", h.db.getThread(paused.id)?.state === "paused" && !h.resumeCalls.some((c) => c.threadId === paused.id));
+      check("the box reports the limit scheduled off until tomorrow's start", after.schedule?.active === false && after.schedule.nextChangeAt === now + 23 * 60 * minute, JSON.stringify(after.schedule));
+      check("the next edge is armed", !!internals.tokenSafetyScheduleTimer);
+      Date.now = realNow;
+
+      // Back inside the window (real now): the start edge parks work already over the limit.
+      const second = seedFrozenTask(h, "implementing");
+      internals.activePipelines.add(second.threadId);
+      internals.tokenSafetyScheduleEdge();
+      await delay(80);
+      check("the start edge parks running work over the limit", h.db.getThread(second.threadId)?.state === "review" && h.mgr.tokenSafetyState().tripped);
+
+      // An unusable schedule is refused whole; the stored one stays.
+      h.mgr.setSettings({ tokenLimitSchedule: { ...inside, days: [] } });
+      check("a schedule with no weekday is refused", JSON.stringify(h.mgr.settings().tokenLimitSchedule.days) === JSON.stringify(everyDay));
+      check("the refusal is explained in the log", h.logs.some((l) => l.includes("Token safety schedule not saved: Pick at least one weekday.")));
+      h.mgr.setSettings({ tokenLimitSchedule: { ...inside, start: "09:00", end: "09:00" } });
+      check("an empty window is refused", h.mgr.settings().tokenLimitSchedule.start === inside.start);
+
+      // A restart reads the stored schedule and re-arms its edge.
+      const restarted = new ThreadManager(h.db, new EventHub(), new FileMemoryService(join(h.dir, "memory2")), new StubAccounts() as unknown as AccountManager);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const r = restarted as any;
+      r.resumeThread = async () => undefined;
+      check("the schedule survives a restart", JSON.stringify(restarted.settings().tokenLimitSchedule) === JSON.stringify(inside));
+      check("the restarted manager re-arms the edge timer", !!r.tokenSafetyScheduleTimer);
+      check("and still enforces inside the hours", restarted.tokenSafetyState().schedule?.active === true);
+      if (r.capSupervisor) clearInterval(r.capSupervisor);
+      if (r.tokenResumeTimer) clearTimeout(r.tokenResumeTimer);
+      if (r.capResumeWake) clearTimeout(r.capResumeWake);
+      if (r.tokenSafetyScheduleTimer) clearTimeout(r.tokenSafetyScheduleTimer);
+
+      // Switching the schedule off returns to the always-on limit with no edge timer.
+      h.mgr.setSettings({ tokenLimitSchedule: { ...inside, enabled: false } });
+      check("an unscheduled limit reports no schedule and arms no timer", h.mgr.tokenSafetyState().schedule === null && !internals.tokenSafetyScheduleTimer);
+      check("and keeps enforcing around the clock", h.mgr.tokenSafetyState().tripped);
+    } finally {
+      Date.now = realNow;
       h.dispose();
     }
   }

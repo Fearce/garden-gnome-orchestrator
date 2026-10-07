@@ -454,6 +454,13 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
         scopedSonnetRouting: z.boolean(),
         tokenLimitEnabled: z.boolean(),
         tokenLimitPercent: z.number().int().min(50).max(99),
+        tokenLimitSchedule: z.object({
+          enabled: z.boolean(),
+          days: z.array(z.number().int().min(0).max(6)).max(7),
+          start: z.string().max(5),
+          end: z.string().max(5),
+          timeZone: z.string().max(64),
+        }),
         fastUsagePolling: z.boolean(),
         spreadUsage: z.boolean(),
         autoBurn: z.boolean(),
