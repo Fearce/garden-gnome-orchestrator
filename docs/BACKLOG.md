@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Bound stalled browser inbox requests** (2026-10-07, Moss Quill; task 6640a188).
+
 
 - **Observe and repair Git queue under increased live agent pressure** (2026-10-07, Flax Thorpe; task 6973a43e).
   Ordered ten-minute admission is pushed and handling live tickets. Three interrupted commits required audited native-lock archival; adding that conservative recovery to the CLI while continuing observation.
