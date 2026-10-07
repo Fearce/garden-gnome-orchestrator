@@ -43,7 +43,7 @@ export class CloudSubtaskService {
         job.state = "uncertain";
         job.error = "GGO restarted while observing cloud work. Check the session before retrying.";
         this.saveJob(job);
-        this.host.db.updateRun(job.runId, { state: "failed", endedAt: Date.now(), error: job.error });
+        this.host.db.updateRun(job.runId, { state: "error", endedAt: Date.now(), error: job.error });
       }
     }
   }
@@ -99,6 +99,7 @@ export class CloudSubtaskService {
     return undefined;
   }
   stop(id: string): void { this.active.get(id)?.abort(); }
+  isActive(id: string): boolean { return this.active.has(id); }
   async run(thread: Thread): Promise<void> {
     const spec = thread.subTask, cloud = spec?.cloud;
     if (!cloud || !spec.cloudWork || !thread.parentId) return;
@@ -151,12 +152,12 @@ export class CloudSubtaskService {
       job.state = result.ok ? "review" : "uncertain";
       job.result = result.result; job.error = result.error;
       this.saveJob(job);
-      this.host.db.updateRun(run.id, { state: result.ok ? "done" : "failed", endedAt: Date.now(), error: job.error });
+      this.host.db.updateRun(run.id, { state: result.ok ? "done" : "error", endedAt: Date.now(), error: job.error });
       this.host.message(thread.id, result.ok ? `Cloud result — parent review required\nSession: ${job.url}\n${result.result}` : `${result.error}\n${job.url ?? "Check Claude's session list."}`, run.id);
       if (!controller.signal.aborted) this.host.setState(thread.id, "review", job.error);
     } catch (error) {
       const message = error instanceof CloudError ? error.message : "Cloud observation failed. Check Claude before retrying.";
-      if (job) { job.state = "uncertain"; job.error = message; this.saveJob(job); this.host.db.updateRun(job.runId, { state: "failed", endedAt: Date.now(), error: message }); }
+      if (job) { job.state = "uncertain"; job.error = message; this.saveJob(job); this.host.db.updateRun(job.runId, { state: "error", endedAt: Date.now(), error: message }); }
       if (!controller.signal.aborted) { this.host.message(thread.id, message); this.host.setState(thread.id, "review", message); }
     } finally {
       this.active.delete(thread.id); this.busyAccounts.delete(cloud.accountId);
