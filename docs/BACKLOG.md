@@ -69,6 +69,8 @@ same commit as the fix. Git history keeps the record.
 
 1. **Automatically offload suitable subtasks to enabled Claude cloud credits when a subscription is exhausted** (2026-10-07, owner directive; Bramble Gauge QA): the current cloud lane requires manual browser handoff and is excluded from automatic routing. Add credit-eligible dispatch, suitability and account/balance checks, parent/subtask lifecycle and review, with cap-triggered and fail-closed regressions; routine API runs cannot use promotional credits.
 
+2. **Surface the cloud setup guide as a deliverable** (2026-10-07, Bramble Gauge QA): `docs/claude-cloud-sessions.md` exists and opens in the task workspace, but this task has no deliverable findings. The implementor must verify the file and post its absolute workspace path; QA cannot surface an implementor's missing artifact.
+
 1. **Identify the process that removed production console assets** (2026-10-07, Codex Recovery): live index referenced missing JavaScript with only compressed remnants left; restored build boots and production rebuilds now retain old assets, but the deleting process is unproven. Also define bounded pruning of retained assets without breaking open clients.
 
 1. **Remove remote proxy metadata as a local-auth trust boundary** (2026-10-07, Codex): a loopback proxy that strips every forwarding header cannot be distinguished from a direct local caller on the current single listener; use a separate listener or authenticated proxy protocol before supporting such proxies. Security sweep report records the assumption.
