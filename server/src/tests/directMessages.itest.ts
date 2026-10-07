@@ -43,6 +43,15 @@ try {
     assert.equal(steered, 0);
     assert.ok(!inputHooks.prepareRunInput({}, "Other agent").includes("Quiet gnome inbox"));
   });
+  manager.chatPost({ threadId: a.id, role: "implementor", scope: "general", body: "Office context fixture" });
+  manager.chatPost({ threadId: c.id, role: "implementor", scope: "project", body: "Other repo fixture" });
+  check("scheduled inputs include office context and exclude another repository's team chat", () => {
+    const next = inputHooks.prepareRunInput(handle, "Continue");
+    assert.ok(next.includes("Office context fixture"));
+    assert.ok(!next.includes("Other repo fixture"));
+    assert.equal(manager.directRead(to).unread, 1);
+    assert.equal(steered, 0);
+  });
   check("sender identity and exact trimmed body persisted", () => { assert.equal(letter.senderName, "Aster Ink"); assert.equal(letter.body, "Can you check the interface?\nÅngström ✅"); });
   check("recipient owns unread message; sender sees sent history", () => { assert.equal(manager.directRead(to).unread, 1); assert.equal(manager.directRead(from).messages[0]?.id, letter.id); assert.equal(manager.directRead(from).unread, 0); });
   check("other gnome and other role cannot read it", () => { assert.equal(manager.directRead(other).messages.length, 0); assert.equal(manager.directRead({ ...to, role: "qa" }).messages.length, 0); });
