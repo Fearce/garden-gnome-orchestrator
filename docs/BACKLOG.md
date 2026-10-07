@@ -38,9 +38,6 @@ same commit as the fix. Git history keeps the record.
 ## Shipped, awaiting live proof
 
 
-- **Activate ordered in-server Git admission after live CLI pressure repairs** (f3ce9c45, 2026-10-07, Flax Thorpe; task 6973a43e).
-  CLI live: 73 peer commits, eight pending tickets drained, automatic orphan archival preserved index hashes, final 12 minutes without new queue/native-lock failures. Cached server library awaits the next permitted restart; this resumed task forbids another.
-
 - **Explicit Claude cloud requests never silently launch locally** (2026-10-07, Thimblewick; task 10379cdb).
   Live c0cb1279 hosted review returned findings; both balance chips verified beneath names. Review reproduced a local Resume escape; server control guard is committed/compiled, while the web guard is published. Cloud regressions, auto-review 214/214 and desktop/phone 70/70 pass; live UI controls verified. Follow-up guard 8228cf7e is integrated/pushed. Owner chose to keep the server guard staged for the next restart; live API refusal proof follows activation.
 
@@ -172,6 +169,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-07 **Serialize concurrent Git writes and recover proven interrupted index locks** (f3ce9c45, Flax Thorpe; task 6973a43e): pushed; live build 895076a0 activates ten-minute FIFO admission. Observed 80 peer commits, eight pending tickets draining and three automatic orphan recoveries with unchanged index hashes, including two after restart. Hook scans and legacy-helper queue adoption remain in Ready.
+
 - 2026-10-07 **Repair inbox requests beneath the console mount** (7c57dd9d, Moss Quill): production browser at the proxied /orchestrator/ mount loaded the directory and exact quiet self-check mail; viewing preserved prior unread. Mounted desktop/root phone browser and CLI 30/30, inbox integration 23/23, web typecheck and build pass.
 
 - 2026-10-07 **Scheduled hours for the Token safety limit** (8e7c5267, Tock Thistlewick): owner chose the Token safety limit, not the goal burn-rate guard. Settings > Usage & limits has an M T W T F S S strip, start/end times, an explicit IANA zone and live on/off status with the next change. Live GGO (restarted 17:56 on HEAD) persists Mon-Fri 08:00-16:00 Europe/Copenhagen with the 90% limit; production browser shows "Suspended now. Applies again Thu 08:00." at 1440 and 390px. Schedule 35/35, token-freeze 112/112 (Test M), schedule UI, schedule lab 27/27, token-safety lab 23/23, conservation 29/29, server+web types, README 74/74 and privacy pass.
@@ -210,5 +209,3 @@ No open entries.
 - 2026-10-06 **Reverify optimization after the server restart** (Mosswhistle): live build b3919727 matches runtime sources; fresh desktop/phone 1,400-task lab passes with zero transcript renders over 480 background events. Live startup has no errors/overflow: desktop cold/warm 1.1/0.5 s, throttled phone 12.8/8.2 s; 2.3 MB hello and console-smoke shutdown timeout remain tracked above.
 
 - 2026-10-06 **Optimize console responsiveness under concurrent agent load and a large history** (4545d296, Mosswhistle): pushed to master and live build verified; desktop/phone 1,400-task lab holds the open transcript at zero renders over 480 background events, closed history pages 30 entries, compact Git reads share resolution and defer drawers, and the tool-message partial index preserves rows while reducing snapshot reads from 192 to 51 ms. Live bundle matches, 15 cards render and five cameras keep recording in the same worker. Broad sweep failures and throttled startup follow-ups remain under Ready / Blocked.
-
-- 2026-10-06 **Identify triggering cameras in Surveillance alerts and recent motion history** (Bramble Lens): motion browser 47/47, viewer 28/28, types/build/README/privacy pass; live bundle matches and camera name, settings shortcut and phone history verified. Module legacy recording restart failures tracked under Ready.
