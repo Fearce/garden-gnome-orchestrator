@@ -61,7 +61,7 @@ export async function runCloudSession(input: CloudRunInput, request: typeof fetc
     const outputBranch = input.work === "change" ? `claude/ggo-${randomUUID().slice(0, 8)}` : null;
     const prompt = input.prompt + (outputBranch
       ? `\nUse the cloud checkout's generated branch ${outputBranch} for all commits and pushes. Do not create or push another branch. Your parent will review this branch before integration.` : "");
-    // Environment discovery awaits the provider. Recheck local opt-in immediately before POST.
+    // Environment discovery awaits the provider. Recheck local policy and account eligibility immediately before POST.
     if (signal.aborted || input.canCreate?.() === false) throw new Error("Cloud opt-in was removed");
     createSent = true;
     const created = await read("/code/sessions", {
@@ -115,7 +115,7 @@ export async function runCloudSession(input: CloudRunInput, request: typeof fetc
     // Before the create request nothing can be billed or running, so do not demand a remote check.
     if (!createSent) return { sessionId: null, result: null, ok: false, started: false,
       error: error instanceof Error && error.message === "Cloud opt-in was removed"
-        ? "Cloud opt-in was removed. No cloud session was started."
+        ? "Cloud opt-in was removed or account eligibility changed. No cloud session was started."
         : "No cloud session was started. Check this subscription's Claude cloud access before retrying." };
     // Do not expose provider bodies or secrets; preserve uncertainty even if create returned no ID.
     return { sessionId, result: null, ok: false,

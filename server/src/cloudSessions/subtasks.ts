@@ -173,7 +173,8 @@ export class CloudSubtaskService {
         prompt, model: spec.model || "sonnet", effort: spec.effort, signal: controller.signal,
         canCreate: () => {
           const policy = this.policy();
-          return policy.accountIds.includes(cloud.accountId) && policy.repositories.includes(cloud.repository);
+          return policy.accountIds.includes(cloud.accountId) && policy.repositories.includes(cloud.repository)
+            && this.host.accounts.cloudFallbackAccountCurrent(cloud.accountId, account.token, account.organizationId);
         },
         onSession: id => {
           if (!CLOUD_SESSION_ID.test(id) || !job) return;

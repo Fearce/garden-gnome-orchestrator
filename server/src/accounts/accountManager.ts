@@ -1354,13 +1354,18 @@ export class AccountManager {
     if (state.organizationId !== organizationId || state.account.profileToken?.trim() !== token) return null;
     state.cloudCredits = credits;
     this.publish();
-    const now = Date.now();
+    if (!this.cloudFallbackAccountCurrent(id, token, organizationId)) return null;
+    return { id, label: state.account.label, token, organizationId, remainingCredits: state.cloudCredits!.remaining };
+  }
+
+  /** Synchronous launch guard after environment discovery; never reuse a revoked account login. */
+  cloudFallbackAccountCurrent(id: string, token: string, organizationId: string): boolean {
+    const state = this.states.get(id), now = Date.now();
+    if (!state?.enabled || state.organizationId !== organizationId || state.account.profileToken?.trim() !== token) return false;
     const exhausted = (state.rateLimited && (state.rateLimitResetAt == null || state.rateLimitResetAt > now))
       || (state.fiveHour != null && state.fiveHour >= 100 && (state.fiveHourReset == null || state.fiveHourReset > now))
       || (state.sevenDay != null && state.sevenDay >= 100 && (state.sevenDayReset == null || state.sevenDayReset > now));
-    if (!state.enabled || !exhausted || !cloudCreditsReady(state.cloudCredits, now)
-      || state.organizationId !== organizationId || state.account.profileToken?.trim() !== token) return null;
-    return { id, label: state.account.label, token, organizationId, remainingCredits: state.cloudCredits!.remaining };
+    return exhausted && cloudCreditsReady(state.cloudCredits, now);
   }
 
   dto(): AccountDTO[] {

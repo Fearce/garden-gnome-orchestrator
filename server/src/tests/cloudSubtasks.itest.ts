@@ -36,6 +36,10 @@ class StubAccounts {
   onUsageRefresh() {} effectiveUtilization() { return null; } soonestResetAt() { return null; }
   setPingInterval() {} applyEnabled() {} applyWeeklySafetyPct() {} setSpreadUsage() {} setProfileToken() {}
   auxToken() { return undefined; }
+  cloudFallbackAccountCurrent() {
+    return credentialValid && account.enabled && (account.rateLimited || account.fiveHour >= 100)
+      && cloudCreditsReady(account.cloudCredits);
+  }
   async cloudFallbackAccount() {
     duringAccountVerification?.();
     return credentialValid ? { id: account.id, label: account.label, token: "test-profile-login", organizationId: "org-test", remainingCredits: credits.remaining } : null;
@@ -221,6 +225,20 @@ try {
       : { organization: { uuid: org }, extra_usage: { is_enabled: paidEnabled }, iguana_necktie: { limit_dollars: 100, used_dollars: 100 - grant, remaining_dollars: grant, resets_at: new Date(clock + 86400000).toISOString() } }))) as typeof fetch;
   try {
     assert.ok(await realAccounts.cloudFallbackAccount("verified"), "matching refreshed account accepted");
+    const current = () => realAccounts.cloudFallbackAccountCurrent("verified", "profile", "org-test");
+    assert.ok(current(), "fresh launch eligibility accepted");
+    state.enabled = false; assert.equal(current(), false, "disabled subscription revokes launch"); state.enabled = true;
+    state.account.profileToken = "replacement"; assert.equal(current(), false, "replaced profile token revokes old launch"); state.account.profileToken = "profile";
+    state.organizationId = "other-org"; assert.equal(current(), false, "changed identity revokes launch"); state.organizationId = "org-test";
+    const freshCredits = state.cloudCredits;
+    for (const bad of [null, { ...freshCredits, remaining: 0 }, { ...freshCredits, locked: true },
+      { ...freshCredits, expiresAt: Date.now() - 1 }, { ...freshCredits, readAt: Date.now() - 3600000 }]) {
+      state.cloudCredits = bad; assert.equal(current(), false, "unusable credits revoke launch after environment discovery");
+    }
+    state.cloudCredits = freshCredits;
+    state.rateLimited = false; state.fiveHour = 10; assert.equal(current(), false, "reset cap revokes launch");
+    state.rateLimited = true; state.fiveHour = 100; assert.ok(current());
+
     org = "other-org"; assert.equal(await realAccounts.cloudFallbackAccount("verified"), null, "wrong-account profile rejected"); org = "org-test";
     paidEnabled = true; assert.equal(await realAccounts.cloudFallbackAccount("verified"), null, "paid overage enabled rejected"); paidEnabled = false;
     grant = 0; assert.equal(await realAccounts.cloudFallbackAccount("verified"), null, "depleted fresh grant rejected"); grant = 100;
@@ -286,6 +304,24 @@ try {
   assert.equal(revokedCreate.started, false, "an unsent create is not reported as a possibly running session");
   assert.match(revokedCreate.error ?? "", /opt-in was removed/);
   assert.equal(lost.started, undefined, "a lost create response stays uncertain");
+  // Exercise service authorization through the real client after asynchronous environment discovery.
+  const eligibilityService = new CloudSubtaskService({ db, accounts: new StubAccounts() as unknown as AccountsType,
+    setState: () => {}, message: () => {} }, launch => runCloudSession(launch, async (url, options) => {
+      if (String(url).includes("environment_providers")) account.enabled = false;
+      return provider(url, options!);
+    }, async () => {}), automatic.git);
+  const disabledChild = db.createThread({ title: "Disabled before cloud creation", workspace, rawPrompt: input.brief,
+    brief: input.brief, parentId, subTask: { provider: "claude", model, effort: null, spawnedByRole: "implementor",
+      spawnedByName: null, spawnedByRunId: null, cloudWork: "review",
+      cloud: { accountId: account.id, repository: "example/webapp", branch: "main", head } } });
+  sessionCount = 0;
+  await eligibilityService.run(disabledChild);
+  account.enabled = true;
+  assert.equal(sessionCount, 0, "disabling the subscription during environment discovery prevents the actual create POST");
+  assert.equal(eligibilityService.jobs().find(j => j.threadId === disabledChild.id)?.state, "checked",
+    "a disabled subscription stops before session creation without blocking other work");
+  assert.match(eligibilityService.jobs().find(j => j.threadId === disabledChild.id)?.error ?? "", /account eligibility changed/,
+    "the regression must reach the final eligibility guard, not an unrelated pre-create failure");
   console.log("cloud-subtasks: cap dispatch, mid-run fallback, admission, parent result, interrupt and restart checks passed");
 } finally {
   for (const timer of [internals.capSupervisor, internals.tokenResumeTimer, internals.capResumeWake]) if (timer) clearTimeout(timer);

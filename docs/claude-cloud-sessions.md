@@ -78,6 +78,8 @@ does not change which Claude account the browser uses to start cloud tasks.
    tasks disable shell and editing tools; change tasks get a separate push branch.
    Every session uses auto permission mode, a 40-turn limit and an estimated
    budget ceiling of the smaller of $5 or the admitted promotional balance.
+   Immediately before creation, GGO rechecks opt-in, subscription enablement,
+   account identity and login, cap state, and the fresh promotional balance.
    GGO records a run and session link durably.
    The child settles for review; the normal subtask barrier delivers the report
    to the spawning agent once. That agent must review and integrate any returned

@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: recheck subscription eligibility immediately before cloud session creation** (2026-10-07, Codex QA).
-  Reproduced an authorized create after disabling the subscription during environment discovery; verify account/cap/credential/balance changes at the final POST boundary.
-
 
 
 
@@ -41,6 +38,9 @@ same commit as the fix. Git history keeps the record.
 
 - **Spread concurrent agent launches across available subscriptions** (2026-10-07, Fernspanner).
   Twelve live-handle launches balance 6/6; routing, auto-model, capacity, reset-burn, types/build, README and privacy pass. Server activation awaits the next permitted restart; this task resumed after a restart and forbids another.
+
+- **QA: recheck subscription eligibility immediately before cloud session creation** (2026-10-07, Codex QA).
+  Reproduced and fixed a create after subscription disablement; final guard covers changed login/identity, reset caps and unusable credits. Nine focused gates, types/builds, desktop/phone 62/62 and guide HTTP 200 pass; independent QA remains.
 
 - **QA: honor revoked cloud opt-in at the session launch boundary** (2026-10-07, Codex QA).
   Regression reproduced a launch after revocation; final account/repository checks now prevent it. Nine focused gates, types/builds, 62 desktop/phone checks and live controls/guide serving verified; independent QA remains.
