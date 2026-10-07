@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: keep unreadable cloud usage responses from breaking credit polling** (2026-10-07, Bramble Gauge).
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -28,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA: handle unreadable cloud credits and clarify session handoff** (3cd69764, 2026-10-07, Bramble Gauge).
+  Null-response crash reproduced and fixed; seven focused gates, all types/builds and desktop/phone cloud lab 52/52 pass. Live chips show both balances beneath names. Independent QA and the new automatic cloud-subtask directive remain.
 
 - **Stop repeated QA instruction lifecycle spam** (9b240512, 2026-10-07, Reedspindle).
   Pushed; live web hides existing noise and authenticated bundle bytes match the build. Injection 186/186, browser 28/28, feed regressions/types/builds/README/privacy pass. Silent QA delivery and batched restart notices await the next permitted server restart; this session's restart-resume instruction forbids another restart.
@@ -65,6 +66,8 @@ same commit as the fix. Git history keeps the record.
   Desktop units 19/19 and new real-window regressions pass; application types/builds, Windows packaging and privacy pass. Clean-exit lab failures and distribution delivery remain under Ready.
 
 ## Ready (priority order)
+
+1. **Automatically offload suitable subtasks to enabled Claude cloud credits when a subscription is exhausted** (2026-10-07, owner directive; Bramble Gauge QA): the current cloud lane requires manual browser handoff and is excluded from automatic routing. Add credit-eligible dispatch, suitability and account/balance checks, parent/subtask lifecycle and review, with cap-triggered and fail-closed regressions; routine API runs cannot use promotional credits.
 
 1. **Identify the process that removed production console assets** (2026-10-07, Codex Recovery): live index referenced missing JavaScript with only compressed remnants left; restored build boots and production rebuilds now retain old assets, but the deleting process is unproven. Also define bounded pruning of retained assets without breaking open clients.
 
