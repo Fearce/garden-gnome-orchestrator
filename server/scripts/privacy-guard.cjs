@@ -94,23 +94,29 @@ function loadPrivateTerms({ termsFile = TERMS_FILE, identity = localIdentity() }
   return terms;
 }
 
-function localIdentity() {
+/** This machine's user name and git e-mail, as private words. An e-mail at a reserved domain names no one:
+ *  the gate runner's own `gates@localhost` identity would otherwise make "gates" private repo-wide. */
+function localIdentity({ username = osUserName(), email = gitConfig("user.email") } = {}) {
   const tokens = new Set();
   const add = (t) => {
     const v = String(t || "").trim();
     if (v.length >= 4 && !NEUTRAL_USERS.has(v.toLowerCase())) tokens.add(v);
   };
-  try {
-    add(os.userInfo().username);
-  } catch {
-    /* no OS user in this sandbox */
-  }
-  const email = gitConfig("user.email");
-  if (email && !/noreply/i.test(email)) {
+  add(username);
+  const domain = email.split("@")[1] ?? "";
+  if (email && !/noreply/i.test(email) && domain.toLowerCase() !== "localhost" && !reservedDomain(domain)) {
     add(email);
     add(email.split("@")[0]);
   }
   return [...tokens];
+}
+
+function osUserName() {
+  try {
+    return os.userInfo().username;
+  } catch {
+    return ""; // no OS user in this sandbox
+  }
 }
 
 function gitConfig(key) {
@@ -221,4 +227,4 @@ if (require.main === module) {
   process.exit(1);
 }
 
-module.exports = { lineFindings, scanTree, loadPrivateTerms, loadAllowlist, harmlessIp, fakeSnowflake, reservedDomain, NEUTRAL_USERS, protectedFile };
+module.exports = { lineFindings, scanTree, loadPrivateTerms, localIdentity, loadAllowlist, harmlessIp, fakeSnowflake, reservedDomain, NEUTRAL_USERS, protectedFile };
