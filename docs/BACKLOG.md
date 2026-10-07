@@ -27,12 +27,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **QA: verify CLI question chips in desktop and phone browsers and activate the bridge** (2026-10-07, Moss Quill).
-  Pushed/integrated browser regression 01f33516; 12 Codex/Grok desktop/phone choice, multi-choice and free-text flows, 11 focused gates, all types/builds, README 74/74 and privacy pass. Deploy verification confirms live build 4995ab97 contains the question bridge. Independent QA remains.
-
-- **Route CLI agent questions through GGO question chips and resume on answers** (41945c65, 2026-10-07, Puddle Astrolabe).
-  Pushed; 6/6 focused gates, server/web types, builds, README 74/74 and privacy pass. Dist is staged with --no-restart; live remains 843bd2a3. Activation awaits the next permitted server restart; this session's restart-resume instruction forbids another restart.
-
 - **Stop repeated QA instruction lifecycle spam** (9b240512, 2026-10-07, Reedspindle).
   Pushed; live web hides existing noise and authenticated bundle bytes match the build. Injection 186/186, browser 28/28, feed regressions/types/builds/README/privacy pass. Silent QA delivery and batched restart notices await the next permitted server restart; this session's restart-resume instruction forbids another restart.
 
