@@ -6,8 +6,9 @@ An optional [routine fire API](https://platform.claude.com/docs/en/api/claude-co
 path submits unattended work with different billing. This is an explicit lane under
 **Settings > Claude cloud**. It can
 also take an interrupted task through **Send to cloud** in its detail controls.
-An opted-in automatic lane runs suitable Claude **subtasks** when a subscription
-is exhausted. Ordinary parent tasks continue using local routing.
+An opted-in lane runs suitable Claude **subtasks** when a subscription is exhausted,
+or before a cap when the agent explicitly requests cloud execution. Ordinary parent
+tasks continue using local routing.
 
 ## Credits and suitable work
 
@@ -46,6 +47,32 @@ requires replacement and shows an unknown balance until a successful read. A
 setup-token alone cannot read the cloud balance. Connecting the profile token
 does not change which Claude account the browser uses to start cloud tasks.
 Throttled credit reads retry on the next refresh and do not require a new login.
+
+## Explicit cloud subtasks
+
+When asked to use cloud credits, agents must set **both** `cloudWork` and
+`cloudOnly: true`. A normal Claude subtask runs locally; `cloudWork` alone only
+permits automatic cloud fallback after a cap. A cloud-only request uses an enabled,
+opted-in subscription with verified promotional credits even before its cap.
+
+For CLI agents, emit one standalone line:
+
+```text
+SUBTASK: {"provider":"claude","title":"Review parser","brief":"Read src/parser.ts at the pushed commit and report bounds-checking issues with file references. No edits.","cloudWork":"review","cloudOnly":true}
+```
+
+Bus agents call `spawn_subagent` with the same JSON. Use `cloudWork: "change"`
+for tested changes on a separate pushed branch. A successful spawn says **Claude
+cloud**; the child then records its hosted session link. Check these before reporting
+that work was offloaded. Cloud-only admission failures name the prerequisite and
+start no local sub-agent. Never remove `cloudOnly` to work around a refusal when the
+owner requested cloud execution.
+
+Both paths require an allowed GitHub repository and exact pushed HEAD. Explicit
+cloud requests can ignore unrelated pending local files because only the remote
+commit is cloned; the brief must not depend on those files. Automatic cap fallback
+retains its clean-checkout requirement. All account identity, grant freshness,
+opt-in, overage-off, uncertain-session and launch-boundary checks still apply.
 
 ## Automatic subtasks after a Claude cap
 
@@ -86,8 +113,9 @@ Throttled credit reads retry on the next refresh and do not require a new login.
    to the spawning agent once. That agent must review and integrate any returned
    branch before claiming its own task complete. No automatic merge or deployment.
 
-One cloud observer per subscription runs at a time. A failed admission follows
-ordinary local subtask routing; a submitted but uncertain session never silently
+One cloud observer per subscription runs at a time. An automatic fallback admission
+failure explains why and follows ordinary local subtask routing; an explicit
+`cloudOnly` request refuses instead. A submitted but uncertain session never silently
 falls back to another billed run. Timeout, interruption, network failure or restart
 retains its record and link and requires checking Claude before creating another
 independent subtask. Resume does not submit a duplicate. **Interrupt** stops GGO's

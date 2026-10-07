@@ -11619,7 +11619,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       injectThread: (threadId, message, mode, images, options) => this.injectThread(threadId, message, mode, images, options),
       setState: (threadId, state, error) => this.setState(threadId, state, error),
       cancelThread: (threadId) => this.cancelThread(threadId),
-      admitCloud: (parent, work) => this.cloudSubtasks.admit(parent, work),
+      admitCloud: (parent, work, cloudOnly, onRefusal) => this.cloudSubtasks.admit(parent, work, cloudOnly, onRefusal),
     };
   }
 

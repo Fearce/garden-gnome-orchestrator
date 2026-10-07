@@ -284,9 +284,13 @@ dollars and expiry when a matching profile token can read them; unknown reads sh
 For automatic offload, enable subscriptions and allow repositories under **Automatic
 cloud subtasks**. Agents mark standalone Claude subtasks with `cloudWork: "review"`
 or `"change"`; when a subscription caps, GGO starts a normal hosted cloud session,
-waits for its result and returns it to the parent for review. Account identity,
-fresh promotional funds, paid usage credits off, and clean pushed repository state
-are checked before dispatch. Cloud changes use a separate branch; GGO does not merge
+waits for its result and returns it to the parent for review. For an explicit cloud
+request, add `cloudOnly: true`: verified promotional credits can be used before a
+cap, and a refused admission starts no local agent. `cloudWork` alone permits local
+routing and reports why cloud admission failed. Explicit cloud work uses only pushed
+HEAD; unrelated pending local files stay on this machine. Account identity,
+fresh promotional funds, paid usage credits off, and pushed repository state
+are checked before dispatch; automatic cap fallback also requires a clean checkout. Cloud changes use a separate branch; GGO does not merge
 or deploy them. Each session has a $5 estimated budget ceiling and a 40-turn limit.
 This uses the OAuth session protocol observed in Claude Code 2.1.292, rather than a
 public automation API; provider changes can require an adapter update. Interrupted

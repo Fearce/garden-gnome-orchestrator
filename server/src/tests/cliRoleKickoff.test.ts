@@ -100,3 +100,10 @@ for (const prompt of [CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE, rea
   assert.match(prompt, /end this turn immediately/);
   assert.doesNotMatch(prompt, /stop and explain it clearly in your final message/);
 }
+
+// Every implementation provider receives an actionable, cloud-only bridge example.
+for (const prompt of [CODEX_IMPLEMENTOR_DOCTRINE, GROK_IMPLEMENTOR_DOCTRINE, IMPLEMENTOR_APPEND]) {
+  assert.match(prompt, /"cloudWork":"review","cloudOnly":true/);
+  assert.match(prompt, /never remove cloudOnly/);
+  assert.match(prompt, /Confirm the spawn result says \*\*Claude cloud\*\*/);
+}

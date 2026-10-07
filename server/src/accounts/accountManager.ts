@@ -1346,7 +1346,7 @@ export class AccountManager {
 
   /** Credit-eligible cloud dispatch uses the verified profile login, never an inference-only token.
    * Refresh before each launch. Overage must be OFF: GGO cannot stop a VM precisely at balance zero. */
-  async cloudFallbackAccount(id: string): Promise<{ id: string; label: string; token: string; organizationId: string; remainingCredits: number } | null> {
+  async cloudFallbackAccount(id: string, requireCap = true): Promise<{ id: string; label: string; token: string; organizationId: string; remainingCredits: number } | null> {
     const state = this.states.get(id);
     if (!state?.enabled || !state.account.profileToken || !state.organizationId) return null;
     const token = state.account.profileToken.trim(), organizationId = state.organizationId;
@@ -1354,18 +1354,18 @@ export class AccountManager {
     if (state.organizationId !== organizationId || state.account.profileToken?.trim() !== token) return null;
     state.cloudCredits = credits;
     this.publish();
-    if (!this.cloudFallbackAccountCurrent(id, token, organizationId)) return null;
+    if (!this.cloudFallbackAccountCurrent(id, token, organizationId, requireCap)) return null;
     return { id, label: state.account.label, token, organizationId, remainingCredits: state.cloudCredits!.remaining };
   }
 
   /** Synchronous launch guard after environment discovery; never reuse a revoked account login. */
-  cloudFallbackAccountCurrent(id: string, token: string, organizationId: string): boolean {
+  cloudFallbackAccountCurrent(id: string, token: string, organizationId: string, requireCap = true): boolean {
     const state = this.states.get(id), now = Date.now();
     if (!state?.enabled || state.organizationId !== organizationId || state.account.profileToken?.trim() !== token) return false;
     const exhausted = (state.rateLimited && (state.rateLimitResetAt == null || state.rateLimitResetAt > now))
       || (state.fiveHour != null && state.fiveHour >= 100 && (state.fiveHourReset == null || state.fiveHourReset > now))
       || (state.sevenDay != null && state.sevenDay >= 100 && (state.sevenDayReset == null || state.sevenDayReset > now));
-    return exhausted && cloudCreditsReady(state.cloudCredits, now);
+    return (!requireCap || exhausted) && cloudCreditsReady(state.cloudCredits, now);
   }
 
   dto(): AccountDTO[] {

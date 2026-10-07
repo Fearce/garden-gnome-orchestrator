@@ -79,27 +79,34 @@ export class CloudSubtaskService {
     job.state = "checked";
     this.saveJob(job); // retain the record: acknowledging never permits re-submission of the same thread
   }
-  /** No network mutation: inspect the local checkout and select a freshly verified capped account. */
-  async admit(parent: Thread, work: SubTaskSpec["cloudWork"]): Promise<SubTaskSpec["cloud"] | undefined> {
-    if (!work || parent.lane === "vanilla") return undefined;
+  /** No network mutation: inspect the local checkout and select an enabled account with fresh credits (capped for automatic fallback). */
+  async admit(parent: Thread, work: SubTaskSpec["cloudWork"], cloudOnly = false, onRefusal?: (reason: string) => void): Promise<SubTaskSpec["cloud"] | undefined> {
+    const deny = (reason: string): undefined => { onRefusal?.(reason); return undefined; };
+    if (!work || parent.lane === "vanilla") return deny("Declare standalone cloudWork review or change on an ordinary task.");
     const policy = this.policy();
-    if (!policy.accountIds.length || !policy.repositories.length) return undefined;
+    if (!policy.accountIds.length || !policy.repositories.length) return deny("Enable subscriptions and allow the repository in Settings > Claude cloud.");
     const candidates = this.host.accounts.dto().filter(a => policy.accountIds.includes(a.id)
-      && cloudAccountExhausted(a) && cloudCreditsReady(a.cloudCredits)
+      && a.enabled && (cloudOnly || cloudAccountExhausted(a)) && cloudCreditsReady(a.cloudCredits)
       && !this.jobs().some(j => j.accountId === a.id && j.state === "uncertain"));
-    if (!candidates.length) return undefined;
+    if (!candidates.length) return deny(cloudOnly
+      ? "No opted-in enabled subscription has fresh usable cloud credits and no uncertain session. Check subscriptions and cloud sessions."
+      : "No opted-in subscription is capped with fresh usable cloud credits and no uncertain session. Use cloudOnly true for an explicit cloud request.");
     const run = (args: string[]) => this.git("git", args, { cwd: parent.workspace, urgent: true, timeoutMs: 15_000 });
     const [remote, status, head, branch] = await Promise.all([
       run(["config", "--get", "remote.origin.url"]), run(["status", "--porcelain"]),
       run(["rev-parse", "HEAD"]), run(["symbolic-ref", "--quiet", "--short", "HEAD"]),
     ]);
-    if ([remote, status, head, branch].some(r => r.code !== 0 || r.timedOut) || status.stdout.trim()) return undefined;
+    if ([remote, status, head, branch].some(r => r.code !== 0 || r.timedOut)) return deny("Could not verify the checkout's origin, status, HEAD and branch.");
     const repository = githubRepository(remote.stdout);
-    if (!repository || !policy.repositories.includes(repository)) return undefined;
+    if (!repository) return deny("Cloud work requires a GitHub origin repository.");
+    if (!policy.repositories.includes(repository)) return deny(`Repository ${repository} is not allowed in Settings > Claude cloud.`);
+    // An explicit standalone brief needs only the pushed commit. Pending local files are never
+    // included; retain the stricter existing clean-checkout guard for automatic cap fallback.
+    if (!cloudOnly && status.stdout.trim()) return deny("Automatic cloud fallback requires a clean pushed checkout. For work independent of pending files, use cloudOnly true or a clean pushed worktree.");
     const branchName = branch.stdout.trim(), sha = head.stdout.trim();
-    if (!/^[a-f0-9]{40,64}$/.test(sha) || !branchName || branchName.startsWith("-")) return undefined;
+    if (!/^[a-f0-9]{40,64}$/.test(sha) || !branchName || branchName.startsWith("-")) return deny("Could not verify a named branch and exact commit.");
     const pushed = await run(["ls-remote", "--exit-code", "--refs", "origin", `refs/heads/${branchName}`]);
-    if (pushed.code !== 0 || pushed.timedOut || pushed.stdout.split(/\s/)[0] !== sha) return undefined;
+    if (pushed.code !== 0 || pushed.timedOut || pushed.stdout.split(/\s/)[0] !== sha) return deny("Push the current branch's HEAD before requesting cloud work; only that exact remote commit is available.");
     // The DTO is already identity-attributed and fresh. Refresh credentials, balance and billing once
     // at the actual launch boundary, rather than spending the provider's read allowance twice.
     return { accountId: candidates[0]!.id, repository, branch: branchName, head: sha };
@@ -151,7 +158,7 @@ export class CloudSubtaskService {
       if (controller.signal.aborted) return;
       // Refresh at the launch boundary: cloning can outlive a cap or credential change. Opt-in
       // may also be revoked while the provider read awaits, so check it again before creation.
-      const account = await this.host.accounts.cloudFallbackAccount(cloud.accountId);
+      const account = await this.host.accounts.cloudFallbackAccount(cloud.accountId, !spec.cloudOnly);
       if (!account) throw new CloudError("Cloud account, cap, promotional balance or overage-off verification failed. No task started.");
       if (controller.signal.aborted) return;
       const launchPolicy = this.policy();
@@ -174,7 +181,7 @@ export class CloudSubtaskService {
         canCreate: () => {
           const policy = this.policy();
           return policy.accountIds.includes(cloud.accountId) && policy.repositories.includes(cloud.repository)
-            && this.host.accounts.cloudFallbackAccountCurrent(cloud.accountId, account.token, account.organizationId);
+            && this.host.accounts.cloudFallbackAccountCurrent(cloud.accountId, account.token, account.organizationId, !spec.cloudOnly);
         },
         onSession: id => {
           if (!CLOUD_SESSION_ID.test(id) || !job) return;

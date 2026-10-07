@@ -16,7 +16,6 @@ same commit as the fix. Git history keeps the record.
 
 - **Observe and repair Git queue under increased live agent pressure** (2026-10-07, Flax Thorpe; task 6973a43e).
   Queue deployed; orphan index preserved and eight peer commits landed. Owner is adding agents; a fresh native-lock refusal shows mixed adoption still needs observation.
-- **Make explicit Claude cloud subtask requests stay cloud and clarify agent dispatch** (2026-10-07, Thimblewick; task 10379cdb).
 
 
 
@@ -38,6 +37,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Explicit Claude cloud requests never silently launch locally** (2026-10-07, Thimblewick; task 10379cdb).
+  Cloud-only before-cap/dirty-parent admission, no-local refusal, durable choice and visible fallback reasons pass; subtask 46/46 and desktop/phone 62/62 pass. Live cloud-only round trip pending.
 
 
 - **QA: stabilize supervisor duplicate-boot retry verification under load** (838f708a, 2026-10-07, Codex QA).

@@ -108,6 +108,7 @@ export const spawnSubAgentShape = {
     .optional()
     .describe("Coding sub-agents: the complete standalone brief — what to do and what 'done' means. The sub-agent sees only this plus the repo."),
   cloudWork: z.enum(["review", "change"]).optional().describe("Claude only: declare a standalone repository-only job suitable for a Linux cloud checkout. No local services, private files, attachments, credentials, deployment, pending local changes or parent transcript required. When an opted-in subscription caps, GGO automatically runs this subtask using verified cloud credits; the parent must review its report/branch."),
+  cloudOnly: z.boolean().optional().describe("Claude cloud execution required. Set true with cloudWork when the owner asks to use cloud credits. Uses an opted-in account before or after caps; refuses with a reason if unavailable and NEVER starts a local sub-agent. Only the exact pushed commit is available, including when the parent has unrelated pending changes."),
   state: jevJson.optional().describe("Jev only: the content every question is judged against (a string, or JSON with named fields)."),
   questions: z
     .record(z.string(), z.any())
@@ -163,7 +164,7 @@ export interface SubTaskHost {
   injectThread(threadId: string, message: string, mode: "append" | "interrupt" | "queue", images?: undefined, options?: { standing?: boolean }): Promise<ThreadActionResult>;
   setState(threadId: string, state: ThreadState, error?: string | null): void;
   cancelThread(threadId: string): Promise<ThreadActionResult>;
-  admitCloud?(parent: Thread, work: SubTaskSpec["cloudWork"]): Promise<SubTaskSpec["cloud"] | undefined>;
+  admitCloud?(parent: Thread, work: SubTaskSpec["cloudWork"], cloudOnly?: boolean, onRefusal?: (reason: string) => void): Promise<SubTaskSpec["cloud"] | undefined>;
 }
 
 // ---- the text agents read -------------------------------------------------------------------------
@@ -327,6 +328,7 @@ export class SubTaskService {
     const parsed = spawnSubAgentSchema.safeParse(raw);
     if (!parsed.success) return this.refuse(`Invalid sub-agent request: ${parsed.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ")}`);
     const input = parsed.data;
+    if (input.cloudOnly && (input.provider !== "claude" || !input.cloudWork)) return this.refuse("cloudOnly requires provider claude and cloudWork review or change.");
     const parent = this.host.db.getThread(spawner.threadId);
     if (!parent) return this.refuse("The task you are running in no longer exists.");
     const bounds = this.boundsProblem(parent);
@@ -385,9 +387,12 @@ export class SubTaskService {
       spawnedByRole: spawner.role,
       spawnedByName,
       spawnedByRunId: spawner.runId,
-      ...(input.provider === "claude" && input.cloudWork ? { cloudWork: input.cloudWork } : {}),
+      ...(input.provider === "claude" && input.cloudWork ? { cloudWork: input.cloudWork, ...(input.cloudOnly ? { cloudOnly: true } : {}) } : {}),
     };
-    if (spec.cloudWork && this.host.admitCloud) spec.cloud = await this.host.admitCloud(parent, spec.cloudWork);
+    let cloudReason = "Cloud execution is unavailable.";
+    if (spec.cloudWork && this.host.admitCloud) spec.cloud = await this.host.admitCloud(parent, spec.cloudWork, spec.cloudOnly, reason => { cloudReason = reason; });
+    if (spec.cloudOnly && !spec.cloud) return this.refuse(`Claude cloud subtask was not started: ${cloudReason} No local sub-agent was started.`);
+    const cloudNote = spec.cloudWork && !spec.cloud ? ` Cloud fallback not admitted: ${cloudReason} This subtask uses local routing.` : "";
     if (!this.host.db.getThread(parent.id) || ["cancelled", "closed"].includes(this.host.db.getThread(parent.id)!.state)) return this.refuse("The parent stopped during cloud admission.");
     const newBounds = this.boundsProblem(parent);
     if (newBounds) return this.refuse(newBounds);
@@ -403,12 +408,12 @@ export class SubTaskService {
     });
     const child = this.host.db.getThread(id)!;
     const upgrade = known.id.toLowerCase() === asked.toLowerCase() ? "" : ` (${familyUpgradeNote(asked, known.id)})`;
-    this.parentFeed(parent.id, `⑂ ${spawnedByName} spawned sub-task "${child.title}" on ${subTaskRuntimeLabel(spec)}${upgrade}.`);
+    this.parentFeed(parent.id, `⑂ ${spawnedByName} spawned sub-task "${child.title}" on ${subTaskRuntimeLabel(spec)}${upgrade}.${cloudNote}`);
     const waitNote = entry.hasHeadroom ? "" : `\nNote: ${providerLabel(input.provider)} has no capacity right now, so it will start when a window frees up.`;
     return {
       ok: true,
       thread: child,
-      message: `Spawned sub-task ${child.id} "${child.title}" on ${subTaskRuntimeLabel(spec)}${upgrade}. ${spec.cloud ? "It works from the pushed repository in Claude cloud; review its returned report and branch before integration." : "It works in this same repository and working tree."} Its result comes back to you when it finishes — call wait_for_subtasks to block for it (about a minute per call), or keep working and it will be delivered.${spec.cloud ? "" : waitNote}`,
+      message: `Spawned sub-task ${child.id} "${child.title}" on ${subTaskRuntimeLabel(spec)}${upgrade}. ${spec.cloud ? "It works from the pushed repository in Claude cloud; review its returned report and branch before integration." : "It works in this same repository and working tree."} Its result comes back to you when it finishes — call wait_for_subtasks to block for it (about a minute per call), or keep working and it will be delivered.${spec.cloud ? "" : waitNote}${cloudNote}`,
     };
   }
 

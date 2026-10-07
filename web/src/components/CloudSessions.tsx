@@ -87,7 +87,7 @@ export function CloudSessions({ active = true, source }: { active?: boolean; sou
       });
     }}>
       <h4>Automatic cloud subtasks after a Claude cap</h4>
-      <p>Enable each subscription you want to use, and allow its repositories. Agents can mark standalone repository reviews or changes for cloud execution. GGO launches them automatically when an enabled subscription is exhausted and its matching promotional balance is fresh. Usage credits must be off to prevent paid overage. Other work stays local.</p>
+      <p>Enable each subscription you want to use, and allow its repositories. Agents can mark standalone repository reviews or changes for cloud execution. GGO launches them automatically when an enabled subscription is exhausted and its matching promotional balance is fresh. Usage credits must be off to prevent paid overage. Explicit cloud requests can use these credits before a cap and refuse if unavailable. The agent must select cloud-only execution; a normal Claude subtask runs locally.</p>
       {snapshot.automatic.accounts.map(a => <div className="cloud-actions" key={a.id}>
         <button type="button" className="btn ghost sm" aria-pressed={autoAccounts.includes(a.id)} disabled={busy} onClick={() => setAutoAccounts(ids => ids.includes(a.id) ? ids.filter(id => id !== a.id) : [...ids, a.id])}>{autoAccounts.includes(a.id) ? "Disable" : "Enable"} cloud credits for {a.label}</button>
         <span>{a.ready ? "Capped · cloud balance available" : "Waiting for a cap and verified cloud balance"}</span>

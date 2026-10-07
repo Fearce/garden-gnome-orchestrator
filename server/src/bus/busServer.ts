@@ -289,8 +289,9 @@ function subTaskTools(api: OrchestratorApi, ctx: BusContext) {
     "spawn_subagent",
     `Spawn a sub-agent as a SUB-TASK: its own thread under this task that ${config.ownerName} can open, watch and message like any agent. Use it instead of doing everything yourself when a piece of the job is separable — and pick the best tool for it: ANY provider and ANY model (e.g. hand a slice to Codex while you continue, or use a cheaper model for a mechanical chore).
 
-Two kinds:
-- Coding sub-agent — provider "claude", "codex", "grok" or "zai". Give a complete standalone \`brief\`; it works in THIS repository and working tree (no separate checkout), does not commit unless the brief says so, and its final report comes back to you. Give it work that does not touch the files you are editing.
+Three kinds:
+- Claude cloud: provider "claude", cloudWork "review" or "change", cloudOnly true: explicit hosted execution using opted-in verified promotional credits, even before caps. Complete standalone brief, pushed GitHub commit only; local files and transcript are unavailable. A refused admission starts NO local sub-agent. Omit cloudOnly for automatic cap fallback; cloudWork alone may still run locally. Review returned findings/branch.
+- Local coding sub-agent — provider "claude", "codex", "grok" or "zai". Give a complete standalone \`brief\`; it works in THIS repository and working tree (no separate checkout), does not commit unless the brief says so, and its final report comes back to you. Give it work that does not touch the files you are editing.
 - Jev — provider "jev": TypeSafe AI's decision-only model. No text, no tools, never edits files. Give it a \`state\` (the content) and typed \`questions\`; it returns calibrated probabilities in about a second, in this same tool result. Good for classifying, verifying a claim against a document, picking among options, or scoring on a rubric — cheaply and at scale.
 
 Coding sub-agents run in the background: keep working, then call wait_for_subtasks to collect results (about a minute per call). If you end your turn first, their results are handed to you before the task moves on.`,

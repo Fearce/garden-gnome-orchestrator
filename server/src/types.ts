@@ -1483,6 +1483,8 @@ export interface SubTaskSpec {
   spawnedByRunId: string | null;
   /** Standalone repository work may automatically use cloud credits after Claude caps. */
   cloudWork?: "review" | "change";
+  /** Explicit cloud request: use verified credits even before a cap; never fall back locally. */
+  cloudOnly?: boolean;
   cloud?: { accountId: string; repository: string; branch: string; head: string };
 }
 
