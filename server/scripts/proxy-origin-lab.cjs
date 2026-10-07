@@ -111,12 +111,12 @@ function signedOutSocket() {
         await page.goto(`${ORIGIN}/orchestrator/`, { waitUntil: "domcontentloaded", timeout: 45_000 });
         await page.locator('.modal.login input[type="password"]').waitFor();
         assert.equal(await page.locator(".modal.login a.btn.google").count(), 0);
-        const response = await page.evaluate(async (password) => {
-          const res = await fetch("api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password }) });
-          return res.status;
-        }, PASSWORD);
-        assert.equal(response, 200);
-        await page.reload({ waitUntil: "domcontentloaded" });
+        await page.locator('.modal.login input[type="password"]').fill(PASSWORD);
+        const [response] = await Promise.all([
+          page.waitForResponse((res) => new URL(res.url()).pathname === "/orchestrator/api/login" && res.request().method() === "POST"),
+          page.locator(".modal.login button.btn.primary").click(),
+        ]);
+        assert.equal(response.status(), 200);
         await page.locator(".accounts .acct").first().waitFor({ state: "attached", timeout: 30_000 });
         const deadline = Date.now() + 15_000;
         while (!hello && Date.now() < deadline) await page.waitForTimeout(100);

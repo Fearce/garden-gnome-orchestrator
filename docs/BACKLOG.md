@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Exercise the visible login form in the prefix-proxy browser regression** (2026-10-07, Bramblebolt).
-
 - **QA: independently verify prepaid credit fallback and existing-balance-only safety** (2026-10-07, Codex QA).
 
 
@@ -113,6 +111,7 @@ No open entries.
 ## Done (newest first; keep the last 20)
 
 - 2026-10-07 **Restore authenticated public reverse-proxy access after security hardening** (1d74f651, Bramblebolt): pushed and deployed; live mounted sign-in, authenticated health and public-origin WebSocket hello pass, signed-out deploy 401 and foreign origin 403; public edge still requires its access gate. Auth regressions, Google tunnel browser 19/19, desktop/tablet prefix browser, types/builds, README 73/73 and privacy pass.
+  Follow-up: the prefix-proxy lab now submits the visible password form and receives hello without a reload on desktop and tablet; both pass.
 
 - 2026-10-07 **Edit Script Hub registry entries from the UI** (Codex): 39/39 desktop/phone browser checks, registry conflict/validation regressions, focused API 3/3, types/builds, README 72/72 and privacy pass; live editor, unchanged-entry save and matching served bundle verified. All 289 entries remain tagged (29 personal, 260 agent-managed); worker refreshed without restarting GGO.
 
