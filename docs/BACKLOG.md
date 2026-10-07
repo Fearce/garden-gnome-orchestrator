@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Nightly quality, provider currency and task responsiveness sweep** (2026-10-07, Brindlewick).
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -28,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Nightly quality, provider currency and task responsiveness sweep** (7832df05, 2026-10-07, Brindlewick).
+  Pushed; 235/235 gates, types/builds, 1,400-task desktop/phone lazy-card lab, desktop 19/19, README 73/73 and privacy pass. Git baselines read in 3–5 ms versus 125–668 ms via processes. Server deployment and live startup proof are next; published-secret remediation remains owner-blocked.
 
 - **Stop repeated QA instruction lifecycle spam** (9b240512, 2026-10-07, Reedspindle).
   Pushed; live web hides existing noise and authenticated bundle bytes match the build. Injection 186/186, browser 28/28, feed regressions/types/builds/README/privacy pass. Silent QA delivery and batched restart notices await the next permitted server restart; this session's restart-resume instruction forbids another restart.
