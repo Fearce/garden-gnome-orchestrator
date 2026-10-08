@@ -675,6 +675,14 @@ function useNow(active: boolean): number {
   return now;
 }
 
+/** "weekly reset early 2h 5m ago (was 84%)" while the window that early reset opened is still current. */
+function earlyResetNote(a: AccountDTO, now: number): string | null {
+  const reset = a.weeklyReset;
+  if (!reset?.early || a.sevenDayReset == null || reset.at <= a.sevenDayReset - 7 * 24 * HOUR_MS) return null;
+  const was = reset.fromPct != null ? ` (was ${Math.round(reset.fromPct)}%)` : "";
+  return `weekly reset early ${countdown(now, reset.at)} ago${was}`;
+}
+
 function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: number }) {
   const cloud = a.cloudCredits;
   const cloudExpired = !!cloud && cloud.expiresAt <= now;
@@ -697,6 +705,7 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
   const modelLimits = (a.modelLimits ?? []).filter((ml) => ml.resetsAt > now);
   const title = [
     usageTitle,
+    earlyResetNote(a, now),
     a.rateLimited ? "rate limited" : null,
     ...modelLimits.map((ml) => `${ml.model} pool exhausted; using ${ml.fallback} until it resets in ${countdown(ml.resetsAt, now)}`),
   ].filter(Boolean).join(" · ");

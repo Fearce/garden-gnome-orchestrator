@@ -458,5 +458,36 @@ console.log("account-usage: GGO's own Claude sign-in renews itself");
   } finally { globalThis.fetch = originalFetch; }
 }
 
+console.log("account-usage: weekly resets between two reads");
+{
+  const { weeklyResetBetween } = await import("../accounts/accountManager.js");
+  const now = Date.parse("2026-10-08T19:40:00Z");
+  const H = 3_600_000, D = 24 * H;
+  const before = { sevenDay: 84, sevenDayReset: now + 2 * D };
+  const reanchored = weeklyResetBetween(before, { sevenDay: 6, sevenDayReset: now + 6 * D }, now);
+  check("an end moved days later before the old end passed is an early reset", reanchored?.early === true && reanchored.fromPct === 84);
+  const refilled = weeklyResetBetween(before, { sevenDay: 0, sevenDayReset: before.sevenDayReset }, now);
+  check("a sharp fall under the same end is an early refill", refilled?.early === true);
+  const onTime = weeklyResetBetween({ sevenDay: 90, sevenDayReset: now - 60_000 }, { sevenDay: 1, sevenDayReset: now + 7 * D - 60_000 }, now);
+  check("a reset after the stated end is on schedule, not early", onTime !== null && onTime.early === false);
+  check("the hourly rounding of the stated end is not a reset", weeklyResetBetween(before, { sevenDay: 84, sevenDayReset: before.sevenDayReset + 30 * 60_000 }, now) === null);
+  check("ordinary growth is not a reset", weeklyResetBetween(before, { sevenDay: 86, sevenDayReset: before.sevenDayReset }, now) === null);
+  check("a small fall is noise, not a reset", weeklyResetBetween(before, { sevenDay: 80, sevenDayReset: before.sevenDayReset }, now) === null);
+  check("no earlier reading means nothing to compare", weeklyResetBetween({ sevenDay: null, sevenDayReset: null }, { sevenDay: 6, sevenDayReset: now + 6 * D }, now) === null);
+
+  const logs: string[] = [];
+  const hub = new EventHub();
+  hub.subscribe((e) => { if (e.type === "log") logs.push(e.message); });
+  const saved: Array<{ weeklyReset?: unknown }> = [];
+  const manager = new AccountManager([personal], hub, 600_000, { persist: { load: () => null, save: (_id, usage) => saved.push(usage) } });
+  const st = (manager as any).states.get(personal.id);
+  Object.assign(st, { sevenDay: 84, sevenDayReset: now + 2 * D });
+  (manager as any).noteWeeklyReset(st, { fiveHour: 0, sevenDay: 6, fiveHourReset: null, sevenDayReset: now + 6 * D }, now);
+  (manager as any).persistState(st, now);
+  check("an early reset is logged with the old and new readings", logs.some((m) => /weekly usage reset early \(84% → 6%\)/.test(m)));
+  check("the console sees the reset", manager.dto()[0]?.weeklyReset?.early === true && manager.dto()[0]?.weeklyReset?.fromPct === 84);
+  check("the reset survives a restart", (saved.at(-1)?.weeklyReset as { early?: boolean } | undefined)?.early === true);
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

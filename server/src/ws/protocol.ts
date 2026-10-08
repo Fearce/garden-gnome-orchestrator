@@ -74,6 +74,8 @@ export interface AccountDTO {
   enabled: boolean; // operator toggle — a disabled account is held out of dispatch/failover
   weeklySafetyPct: number; // 1-100 soft weekly-utilization ceiling; at/above it new tasks route to another sub (100 = off)
   holdUntil?: number | null; // 5h window idle (stagger hold-off) — the next window starts at this epoch ms
+  // The last weekly reset seen between two usage reads; `early` when it came before the stated window end.
+  weeklyReset?: { at: number; early: boolean; fromPct: number | null } | null;
   // Model-scoped pool caps (Fable's separately-gated allowance): dispatch resolves `fallback` in place
   // of `model` on this sub until `resetsAt`. The account's normal windows are unaffected.
   modelLimits?: { model: string; fallback: string; resetsAt: number }[];

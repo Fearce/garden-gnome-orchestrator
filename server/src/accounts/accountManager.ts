@@ -68,7 +68,47 @@ interface AccountState {
   /** The org this subscription's AGENT token belongs to, from the usage ping's response header. The
    *  profile token's own org is checked against it before its credits are attributed here. */
   organizationId: string | null;
+  /** The last weekly reset seen between two header reads, early or on schedule. */
+  weeklyReset: WeeklyReset | null;
   updatedAt: number;
+}
+
+/** A weekly reset seen between two usage reads. `early` when it came before the window's stated end. */
+export interface WeeklyReset {
+  /** Epoch ms of the read that showed the reset. */
+  at: number;
+  early: boolean;
+  /** Weekly utilization just before the reset. */
+  fromPct: number | null;
+}
+
+/** The weekly reset header is rounded to the hour, so a smaller move of the stated end is the same window. */
+const WEEKLY_REANCHOR_TOLERANCE_MS = 60 * 60_000;
+/** Weekly utilization only falls at a reset; a fall this large with the same stated end is a refill. */
+const WEEKLY_REFILL_DROP_PCT = 10;
+
+/**
+ * Whether the weekly window reset between two reads. The `/v1/messages` headers state the window's
+ * utilization and end, but never announce a reset, so it is inferred from how they changed:
+ *  - the stated end moved later: the window re-anchored. Early when the old end had not passed yet (a
+ *    banked reset, a promotional reset, or a new subscription period).
+ *  - utilization fell sharply under the same end: the provider refilled the window without moving it.
+ * The new reading itself is already right for routing and pacing; this only names the event, so it can
+ * be shown and logged.
+ */
+export function weeklyResetBetween(
+  prev: { sevenDay: number | null; sevenDayReset: number | null },
+  next: { sevenDay: number | null; sevenDayReset: number | null },
+  now: number,
+): WeeklyReset | null {
+  const fromPct = prev.sevenDay;
+  if (prev.sevenDayReset != null && next.sevenDayReset != null && next.sevenDayReset - prev.sevenDayReset > WEEKLY_REANCHOR_TOLERANCE_MS) {
+    return { at: now, early: prev.sevenDayReset > now, fromPct };
+  }
+  if (fromPct != null && next.sevenDay != null && fromPct - next.sevenDay >= WEEKLY_REFILL_DROP_PCT) {
+    return { at: now, early: true, fromPct };
+  }
+  return null;
 }
 
 /** The last real usage read, persisted (kv) so a restart doesn't have to ping every account at boot —
@@ -89,6 +129,7 @@ export interface PersistedAccountUsage {
   rateLimited?: boolean;
   rateLimitWindow?: string | null;
   rateLimitResetAt?: number | null;
+  weeklyReset?: WeeklyReset | null;
 }
 
 export interface AccountUsagePersistence {
@@ -410,6 +451,7 @@ export class AccountManager {
         profileLoginLost: null,
         resetCreditsError: null,
         organizationId: null,
+        weeklyReset: null,
         updatedAt: 0,
       });
       this.stagger?.register(a.id, () => this.phase(a.id));
@@ -434,6 +476,7 @@ export class AccountManager {
       st.sevenDayReset = persisted.sevenDayReset;
       st.usageAt = persisted.usageAt;
       st.extWakeAt = persisted.extWakeAt ?? null;
+      st.weeklyReset = persisted.weeklyReset ?? null;
       st.modelLimits = new Map(Object.entries(persisted.modelLimits ?? {}).filter(([, reset]) => reset > now));
       st.updatedAt = now;
       this.restorePersistedCap(st, persisted, now);
@@ -521,6 +564,7 @@ export class AccountManager {
         st.sevenDayReset = p.sevenDayReset;
         st.usageAt = p.usageAt;
         st.extWakeAt = p.extWakeAt ?? null;
+        st.weeklyReset = p.weeklyReset ?? null;
         st.modelLimits = new Map(Object.entries(p.modelLimits ?? {}).filter(([, r]) => r > now));
         this.restorePersistedCap(st, p, now);
         st.updatedAt = now;
@@ -821,6 +865,7 @@ export class AccountManager {
       rateLimited: capActive,
       rateLimitWindow: capActive ? st.rateLimitWindow : null,
       rateLimitResetAt: capActive ? st.rateLimitResetAt : null,
+      weeklyReset: st.weeklyReset,
     });
   }
 
@@ -863,6 +908,7 @@ export class AccountManager {
       // scheduled probe that finds it fresh instead clears the mark (the consumer is gone).
       st.extWakeAt = extWakeAfterProbe({ fiveHourReset: u.fiveHourReset, sentAt, now, prev: st.extWakeAt, scheduledProbe });
     }
+    this.noteWeeklyReset(st, u, now);
     st.fiveHour = u.fiveHour;
     st.sevenDay = u.sevenDay;
     st.fiveHourReset = u.fiveHourReset;
@@ -905,6 +951,19 @@ export class AccountManager {
     this.persistState(st, now);
     this.scheduleResetEvent(a, u);
     return u;
+  }
+
+  /** Record and log a weekly reset the new read shows. An early one is the case worth the owner's notice:
+   *  pacing and routing were working against a window that no longer exists. */
+  private noteWeeklyReset(st: AccountState, u: PingUsage, now: number): void {
+    const reset = weeklyResetBetween(st, u, now);
+    if (!reset) return;
+    st.weeklyReset = reset;
+    if (!reset.early) return;
+    const from = reset.fromPct != null ? `${Math.round(reset.fromPct)}%` : "unknown";
+    const to = u.sevenDay != null ? `${Math.round(u.sevenDay)}%` : "unknown";
+    const ends = u.sevenDayReset != null ? new Date(u.sevenDayReset).toISOString() : "unknown";
+    this.hub.log("info", `${st.account.label}: weekly usage reset early (${from} → ${to}); the window now ends ${ends}.`);
   }
 
   /**
@@ -1505,6 +1564,7 @@ export class AccountManager {
       enabled: s.enabled,
       weeklySafetyPct: s.weeklySafetyPct,
       holdUntil: s.holdUntil,
+      weeklyReset: s.weeklyReset,
       modelLimits: [...s.modelLimits]
         .filter(([, r]) => r > now)
         .map(([model, resetsAt]) => ({ model, fallback: fallbackModelFor(model) ?? model, resetsAt })),
