@@ -393,7 +393,7 @@
     "better-sqlite3": "^12.10.0",
     "dotenv": "^17.4.2",
     "fastify": "^5.12.5",
-    "tree-sitter-c-sharp": "0.23.1",
+    "tree-sitter-c-sharp": "^0.23.5",
     "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
