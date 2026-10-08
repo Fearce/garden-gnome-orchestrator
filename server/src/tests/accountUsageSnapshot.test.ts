@@ -521,5 +521,51 @@ console.log("account-usage: an early reset replaces the cached window used for p
   } finally { globalThis.fetch = fetchBefore; manager.stop(); }
 }
 
+console.log("account-usage: an early weekly refill releases only a proved weekly cap");
+{
+  const now = Date.now(), D = 86_400_000;
+  const oldEnd = now + 2 * D;
+  const cases = [
+    { name: "a re-anchored week", window: "seven_day", pct: "0.03", end: now + 6 * D, clears: true },
+    { name: "a refill under the same deadline", window: "seven_day", pct: "0.03", end: oldEnd, clears: true },
+    { name: "a session cap invisible to headers", window: null, pct: "0.03", end: now + 6 * D, clears: false },
+    { name: "an unrelated five-hour cap", window: "five_hour", pct: "0.03", end: now + 6 * D, clears: false },
+    { name: "a still-exhausted weekly window", window: "seven_day", pct: "1", end: oldEnd, clears: false },
+    { name: "a moved deadline without weekly utilization", window: "seven_day", pct: null, end: now + 6 * D, clears: false },
+    { name: "a rejected weekly refill", window: "seven_day", pct: "0.03", end: now + 6 * D, rejected: "7d", clears: false },
+    { name: "a new five-hour cap during a weekly refill", window: "seven_day", pct: "0.03", end: now + 6 * D, rejected: "5h", clears: false },
+  ];
+  const fetchBefore = globalThis.fetch;
+  try {
+    for (const c of cases) {
+      let saved: import("../accounts/accountManager.js").PersistedAccountUsage | null = null;
+      const persist = { load: () => saved, save: (_id: string, usage: import("../accounts/accountManager.js").PersistedAccountUsage) => { saved = usage; } };
+      const manager = new AccountManager([personal], new EventHub(), 600_000, { persist });
+      try {
+        Object.assign((manager as any).states.get(personal.id), {
+          fiveHour: 1, sevenDay: 100, sevenDayReset: oldEnd,
+          rateLimited: true, rateLimitWindow: c.window, rateLimitResetAt: c.window == null ? now + 30 * 60_000 : oldEnd,
+        });
+        const headers: Record<string, string> = {
+          "anthropic-ratelimit-unified-5h-utilization": "0.01",
+          "anthropic-ratelimit-unified-5h-reset": String(Math.floor((now + 3_600_000) / 1000)),
+          "anthropic-ratelimit-unified-7d-reset": String(Math.floor(c.end / 1000)),
+        };
+        if (c.pct != null) headers["anthropic-ratelimit-unified-7d-utilization"] = c.pct;
+        if (c.rejected) headers[`anthropic-ratelimit-unified-${c.rejected}-status`] = "rejected";
+        globalThis.fetch = async () => new Response("{}", { headers });
+        await (manager as any).pingOne(personal);
+        const dto = manager.dto()[0]!;
+        check(`${c.name}: routing reflects the current cap`, dto.rateLimited === !c.clears && manager.hasHeadroom() === c.clears);
+        if (c.clears) check(`${c.name}: the old cap deadline is cleared`, (saved as import("../accounts/accountManager.js").PersistedAccountUsage | null)?.rateLimitResetAt === null);
+        manager.stop();
+        const restored = new AccountManager([personal], new EventHub(), 600_000, { persist });
+        check(`${c.name}: restart preserves the cap decision`, restored.dto()[0]?.rateLimited === !c.clears);
+        restored.stop();
+      } finally { manager.stop(); }
+    }
+  } finally { globalThis.fetch = fetchBefore; }
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

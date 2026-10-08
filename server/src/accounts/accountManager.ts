@@ -908,7 +908,7 @@ export class AccountManager {
       // scheduled probe that finds it fresh instead clears the mark (the consumer is gone).
       st.extWakeAt = extWakeAfterProbe({ fiveHourReset: u.fiveHourReset, sentAt, now, prev: st.extWakeAt, scheduledProbe });
     }
-    this.noteWeeklyReset(st, u, now);
+    const weeklyReset = this.noteWeeklyReset(st, u, now);
     st.fiveHour = u.fiveHour;
     st.sevenDay = u.sevenDay;
     st.fiveHourReset = u.fiveHourReset;
@@ -928,7 +928,11 @@ export class AccountManager {
     // read the windows as clear and wipe the cap — un-freezing the account, which then gets a parked
     // task auto-resumed straight back into the same limit. A header-visible 5h/weekly cap isn't affected:
     // once its window resets, its stored reset is in the past, so this hold lapses and the header truth wins.
-    const capHold = st.rateLimited && st.rateLimitResetAt != null && st.rateLimitResetAt > now;
+    // A proved weekly refill also releases a weekly cap whose old deadline is still in the future.
+    // Other caps can be invisible to these headers and must keep their existing hold.
+    const weeklyCapRefilled = st.rateLimitWindow === "seven_day" && weeklyReset != null
+      && u.sevenDay != null && u.sevenDay < 100;
+    const capHold = st.rateLimited && st.rateLimitResetAt != null && st.rateLimitResetAt > now && !weeklyCapRefilled;
     if (u.fiveHourRejected) {
       st.rateLimited = true;
       st.rateLimitWindow = "five_hour";
@@ -955,15 +959,16 @@ export class AccountManager {
 
   /** Record and log a weekly reset the new read shows. An early one is the case worth the owner's notice:
    *  pacing and routing were working against a window that no longer exists. */
-  private noteWeeklyReset(st: AccountState, u: PingUsage, now: number): void {
+  private noteWeeklyReset(st: AccountState, u: PingUsage, now: number): WeeklyReset | null {
     const reset = weeklyResetBetween(st, u, now);
-    if (!reset) return;
+    if (!reset) return null;
     st.weeklyReset = reset;
-    if (!reset.early) return;
+    if (!reset.early) return reset;
     const from = reset.fromPct != null ? `${Math.round(reset.fromPct)}%` : "unknown";
     const to = u.sevenDay != null ? `${Math.round(u.sevenDay)}%` : "unknown";
     const ends = u.sevenDayReset != null ? new Date(u.sevenDayReset).toISOString() : "unknown";
     this.hub.log("info", `${st.account.label}: weekly usage reset early (${from} → ${to}); the window now ends ${ends}.`);
+    return reset;
   }
 
   /**

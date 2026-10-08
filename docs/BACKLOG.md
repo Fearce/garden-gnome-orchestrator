@@ -43,6 +43,12 @@ same commit as the fix. Git history keeps the record.
   but deploy verification cannot confirm the running source process. Full notes are in the ignored
   owner-facing `server/data/cloud-lane-verification.md` deliverable.
 
+- **QA: clear Claude's cached weekly cap after an early reset** (2026-10-08, Codex QA).
+  A fresh weekly refill now releases the cached weekly cap before its old deadline.
+  Eight cap/refill cases cover routing and persistence, including unrelated session caps and rejected
+  headers. Eight focused gates, all types, isolated builds and reset-badge browser checks 5/5 pass.
+  Independent QA remains.
+
 
 - **Claude cloud credit chips: renewable sign-in replaces revoked pasted tokens** (af7765c2, 2026-10-08, Cumulus Thimble).
   Live: both stored pasted tokens are revoked (the provider answered 429, which masked it); chips and Settings now say so, and Settings > Subscriptions > Sign in with Claude builds a link and rejects foreign codes in a real browser. Proof = both chips show a dollar balance after the owner signs in once per subscription.
