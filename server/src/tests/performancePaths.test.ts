@@ -361,6 +361,8 @@ try {
   writeFileSync(join(dir, "notes.md"), "# notes");
   db.addFinding({ threadId: writer.id, kind: "deliverable", summary: "Notes", path: join(dir, "notes.md") });
   assert.deepEqual(unsurfaced(), [join(tmpdir(), "outside-the-workspace.md"), "docs/report.md"], "…and still drops one surfaced since");
+  // Unchanged digests now issue no SQL at all. Exercise a real delta to inspect its seek plan.
+  toolCall("implementor", "Edit", "src/app.ts");
   for (const sql of seekSql(taskFiles, "messages")) {
     const detail = planOf(sql, [writer.id, 0]);
     assert.ok(detail.includes("idx_messages_tool_thread_time"), `the tool-call read must use the tool-only thread index: ${detail}`);
