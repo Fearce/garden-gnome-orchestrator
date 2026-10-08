@@ -1,6 +1,6 @@
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { brotliCompress, constants, gzip } from "node:zlib";
@@ -22,6 +22,7 @@ const gitSha = (() => {
 const buildTime = new Date().toISOString();
 const brotli = promisify(brotliCompress);
 const gzipAsync = promisify(gzip);
+let compressionTargets: string[] = [];
 
 export default defineConfig({
   // Relative asset URLs so the built console works both at an origin root (the local
@@ -32,23 +33,32 @@ export default defineConfig({
   plugins: [react(), {
     name: "precompress-web-assets",
     apply: "build",
-    async writeBundle(options, bundle) {
+    writeBundle(options, bundle) {
+      compressionTargets = Object.values(bundle)
+        .filter((file) => /\.(?:js|css|html|svg|json)$/.test(file.fileName))
+        .map((file) => resolve(options.dir!, file.fileName));
+    },
+    async closeBundle() {
       // Compress once at build time, never on the server's request/event loop. Include lazy chunks
       // and workers too; fonts/images already have their own compression. Four jobs bound build RAM.
-      const files = Object.values(bundle).filter((file) => /\.(?:js|css|html|svg|json)$/.test(file.fileName));
+      // Vite finalizes HTML after the bundle hooks. Read the emitted files once those hooks finish,
+      // otherwise compressed HTML can retain the previous build's asset hash.
       let next = 0;
       await Promise.all(Array.from({ length: 4 }, async () => {
-        for (let file; (file = files[next++]);) {
-          const source = file.type === "chunk" ? file.code : file.source;
-          const bytes = Buffer.from(source);
-          if (bytes.length < 1024) continue;
+        for (let target; (target = compressionTargets[next++]);) {
+          const bytes = readFileSync(target);
+          if (bytes.length < 1024) {
+            await Promise.all([rm(target + ".br", { force: true }), rm(target + ".gz", { force: true })]);
+            continue;
+          }
           const [br, gz] = await Promise.all([
             brotli(bytes, { params: { [constants.BROTLI_PARAM_QUALITY]: 6 } }),
             gzipAsync(bytes, { level: 6 }),
           ]);
-          const target = resolve(options.dir!, file.fileName);
-          if (br.length < bytes.length) await writeFile(target + ".br", br);
-          if (gz.length < bytes.length) await writeFile(target + ".gz", gz);
+          await Promise.all([
+            br.length < bytes.length ? writeFile(target + ".br", br) : rm(target + ".br", { force: true }),
+            gz.length < bytes.length ? writeFile(target + ".gz", gz) : rm(target + ".gz", { force: true }),
+          ]);
         }
       }));
     },

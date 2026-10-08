@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 4318 --strictPort",
-    "build": "vite build && node scripts/stamp-web-build.cjs",
-    "build:lab": "vite build --outDir ../server/.lab-web-dist --emptyOutDir",
+    "build": "vite build && node scripts/verify-compressed-entry.cjs && node scripts/stamp-web-build.cjs",
+    "build:lab": "vite build --outDir ../server/.lab-web-dist --emptyOutDir && node scripts/verify-compressed-entry.cjs ../server/.lab-web-dist",
     "preview": "vite preview --port 4318 --strictPort",
     "typecheck": "tsc --noEmit"
   },
