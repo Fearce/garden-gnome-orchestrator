@@ -41,8 +41,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Enforce Opus for Claude goal steps and exclude Fable from automatic routing** (2026-10-08, Rowan Clapper).
-  Automatic roster, director choices, saved goal pins and task resumes enforce current Opus; routing 152/152, auto-model 131/131, scoped Sonnet 59/59, Opus floor 40/40, family migration 93/93, continuation 65/65 and goal suites pass. Server build/types and README 74/74 pass; deployment/live pin proof follows integration.
 
 - **Claude cloud credit chips: renewable sign-in replaces revoked pasted tokens** (af7765c2, 2026-10-08, Cumulus Thimble).
   Live: both stored pasted tokens are revoked (the provider answered 429, which masked it); chips and Settings now say so, and Settings > Subscriptions > Sign in with Claude builds a link and rejects foreign codes in a real browser. Proof = both chips show a dollar balance after the owner signs in once per subscription.
@@ -204,6 +202,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-08 **Enforce Opus for Claude goal steps and exclude Fable from automatic routing** (8e64cbab, Rowan Clapper): pushed and deployed; live build 8e64cbab verified on pid 101724. Deployed guards exclude Fable, replace its goal pin with Opus and retain that pin without capacity. Routing 152/152, auto-model 131/131, scoped routing 59/59, Opus floor 40/40, migration 93/93, continuation 65/65, goal suites, server types/build, web build, README 74/74 and privacy pass. Historical runs are preserved; the existing cancelled Fable goal task upgrades before any future resume.
+
 - 2026-10-07 **Preserve QA kickoffs and deliver chat context on scheduled inputs** (f89a70cc, d36b176e, 521c3d00, c61ef063, Moss Quill with Toggle Thistle): deployed and verified live build c61ef063; resumed agent input contains unread direct mail and recent office/team chat. Production mounted browser sees quiet self-test mail, owner viewing preserves unread, five handled self-checks explicitly acknowledged. Inbox 28/28, actual Codex/Grok fresh/resumed/recovery launch regressions, provider fallback, server/web builds, README 74/74 and privacy pass. No mail-triggered wake or automatic acknowledgement.
 
 - 2026-10-07 **Document queued publication and remote-writer limits** (Flax Thorpe; task 6973a43e): README describes reviewed remote commits, checked script exit codes and one fetch/merge/push lease. Guidance matches the successful publication transaction in d0fb68c0; documentation only.
@@ -243,5 +243,3 @@ No open entries.
 - 2026-10-07 **Make Hide Done include pinned completed tasks** (3d86d439, Juniper Thimble): pin regressions, desktop/touch browser 27/27, types/builds, README 72/72 and privacy pass; authenticated live bundle matches local bytes and includes the new behavior. Live smoke retains the tracked browser-shutdown timeout.
 
 - 2026-10-07 **Audit Script Hub management and pre-tag every entry, using tags only** (08ac3d65, Copperfen Quill): 289 entries tagged, 29 personal/260 agent-managed, 22 tags; live API/browser and durable metadata pass, hidden choices and supervision preserved. Focused API 3/3, browser 27/27, types/builds/README/privacy pass; broad modules retain tracked Home idle-start timeout.
-
-- 2026-10-06 **Prevented worktree PowerShell popups and enforced clean committed checkouts** (b3919727, Thistlecrank): live build verified; three deployed process scans returned data with no popup events; cleanup, CLI kickoff, office, goals, types and README/privacy checks passed. Peer changes were preserved in separate commits; Claude/Codex global rules and generated prompts now prioritize clean checkouts.
