@@ -278,10 +278,18 @@ async function main(): Promise<void> {
       const opus = candidates.find((candidate) => candidate.model === "claude-opus-5-5");
       check("Opus 5.5 exposes all five effort levels", opus?.efforts.join(",") === "low,medium,high,xhigh,max", JSON.stringify(opus));
       check(
-        "all current Claude families reach adaptive automatic selection",
-        [OPUS_5, "claude-fable-5", "claude-sonnet-5", HAIKU].every((model) => candidates.some((candidate) => candidate.model === model)),
+        "automatic Claude selection offers only current Opus",
+        candidates.filter((candidate) => candidate.model.startsWith("claude-")).every((candidate) => candidate.model === OPUS_5),
         JSON.stringify(candidates.map((candidate) => candidate.model)),
       );
+      check("goals cannot offer Fable", !h.mgr.goalModelRoster().some((candidate) => /fable|sonnet|haiku/.test(candidate.model)));
+      const id = seedComplex(h);
+      const goal = h.db.createGoal({ title: "Policy", objective: "o", workspace: h.workspace, effort: null, provider: null, model: null, maxConcurrent: 1, burnConservation: false, burnRatePct: 100 });
+      const step = h.db.createGoalStep({ goalId: goal.id, title: "Existing Fable", provider: "claude", model: "claude-fable-5", effort: "medium", rationale: "old choice", brief: "b" });
+      h.db.updateGoalStep(step.id, { threadId: id });
+      h.db.setModelRequest(id, { requested: "claude-fable-5", provider: "claude", model: "claude-fable-5", strict: true });
+      const repaired = h.internals.ensureThreadModelRequest(thread(h, id)) as Thread;
+      check("an existing goal's exact Fable pin becomes Opus before resume", repaired.modelRequest?.model === OPUS_5, JSON.stringify(repaired.modelRequest));
     } finally {
       h.dispose();
     }

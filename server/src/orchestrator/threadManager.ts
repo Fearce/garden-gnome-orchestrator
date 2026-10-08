@@ -202,6 +202,7 @@ import { InjectionReceipts, receiptRecipientOf } from "./injectionReceipts.js";
 import { providerOfRunAccount } from "./goalUsage.js";
 import { UNFINISHED_STATES } from "./scheduler.js";
 import type { GoalContinuation, GoalTaskHold } from "./goals.js";
+import { goalModel } from "./goals.js";
 import {
   ReviewInjectionStore,
   reviewInjectionLabel,
@@ -3648,7 +3649,8 @@ export class ThreadManager implements OrchestratorApi {
     const upgrades: string[] = [];
     let current = thread;
     const request = current.modelRequest;
-    const pinned = request?.model ? latestFamilyModel(request.model) : null;
+    const goalStep = this.db.goalStepOfThread(thread.id);
+    const pinned = request?.model ? (goalStep ? goalModel(request.provider, request.model) : latestFamilyModel(request.model)) : null;
     if (request?.model && pinned && pinned !== request.model) {
       current = this.db.setModelRequest(current.id, { ...request, model: pinned }) ?? current;
       upgrades.push(this.announceFamilyUpgrade(current, request.model, pinned));
@@ -3660,7 +3662,7 @@ export class ThreadManager implements OrchestratorApi {
       if (!upgrades.length) upgrades.push(this.announceFamilyUpgrade(current, spec.model, specModel));
     }
     const pick = this.db.getThreadStageOutputs(current.id).modelPick;
-    const picked = pick?.model ? latestFamilyModel(pick.model) : null;
+    const picked = pick?.model ? (goalStep ? goalModel(pick.provider, pick.model) : latestFamilyModel(pick.model)) : null;
     if (pick && picked && picked !== pick.model) {
       this.db.updateThreadStageOutputs(current.id, { modelPick: { ...pick, model: picked } });
       upgrades.push(this.announceFamilyUpgrade(current, pick.model, picked));
@@ -3671,11 +3673,12 @@ export class ThreadManager implements OrchestratorApi {
 
   private announceFamilyUpgrade(thread: Thread, from: string, to: string): string {
     const note = familyUpgradeNote(from, to);
+    const opusPolicy = !sameModelFamily(from, to) && this.db.goalStepOfThread(thread.id);
     this.postFinding({
       threadId: thread.id,
       fromRole: "director",
       summary: `Model upgraded — ${note}`,
-      detail: `${to} is the newest release of ${from}'s line that this installation can run, and GGO never runs an older model of a line when a newer one is available. The next start, resume or retry of this task uses ${to}.`,
+      detail: opusPolicy ? `Claude goal steps must use current Opus. Replaced the stored ${from} pin with ${to}; the next start, resume or retry uses it.` : `${to} is the newest release of ${from}'s line that this installation can run, and GGO never runs an older model of a line when a newer one is available. The next start, resume or retry of this task uses ${to}.`,
       severity: "info",
     });
     return note;
@@ -4040,6 +4043,9 @@ export class ThreadManager implements OrchestratorApi {
       request = detectModelRequest([thread.rawPrompt, thread.brief].filter(Boolean).join("\n"), this.modelRequestCandidates());
     }
     if (!request) return thread;
+    if (request.model && this.db.goalStepOfThread(thread.id)) {
+      request = { ...request, model: goalModel(request.provider, request.model) };
+    }
     if (
       thread.modelRequest &&
       thread.modelRequest.requested === request.requested &&

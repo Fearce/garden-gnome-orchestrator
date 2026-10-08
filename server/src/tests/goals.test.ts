@@ -86,6 +86,10 @@ function pure(): void {
 
   console.log("goals: the owner's model and effort");
   const auto = { effort: null, provider: null, model: null } satisfies Pick<Goal, "effort" | "provider" | "model">;
+  const fable = { ...answer("continue").next, provider: "claude" as const, model: "claude-fable-5-1", effort: "medium" as const };
+  check("a director Fable pick is lifted to Opus", goalStepPin(auto, fable, ROSTER).model === "claude-opus-5-5");
+  check("no Opus capacity keeps the replacement pinned instead of routing back to Fable", goalStepPin(auto, fable, []).model === "claude-opus-5-5");
+  check("a stored goal Fable pin is lifted to Opus", goalStepPin({ ...auto, provider: "claude", model: fable.model }, fable, ROSTER).model === "claude-opus-5-5");
   const pick = (over: Partial<GoalJudgement["next"]> = {}) => parseGoalJudgement(answer("continue", "x", over))!.next;
   check("an unset effort caps the director's high pick at medium", goalStepPin(auto, pick({ effort: "high" }), ROSTER).effort === "medium");
   check("an unset effort keeps the director's low pick", goalStepPin(auto, pick({ effort: "low" }), ROSTER).effort === "low");
@@ -382,6 +386,13 @@ async function guards(): Promise<void> {
   check("edit clears the pin back to automatic", cleared.ok && cleared.goal?.effort === null && cleared.goal.model === null && cleared.goal.provider === null);
   const repinned = h.runner.update(p.goal!.id, { effort: "low", provider: "claude", model: "claude-opus-5-5" });
   check("edit sets a new pin", repinned.goal?.effort === "low" && repinned.goal.model === "claude-opus-5-5");
+  const illegal = h.runner.update(p.goal!.id, { provider: "claude", model: "claude-fable-5-1" });
+  check("editing a goal cannot store a Fable pin", illegal.ok && illegal.goal?.model === "claude-opus-5-5");
+  const migrated = h.db.updateGoal(p.goal!.id, { model: "claude-fable-5-1" });
+  h.runner.start();
+  h.runner.stop();
+  check("boot repairs a persisted Fable goal pin", h.db.getGoal(migrated!.id)?.model === "claude-opus-5-5");
+  await h.runner.idle();
   console.log("goals: validation");
   check("rejects a model without its provider", !h.runner.create({ title: "t", objective: "o", workspace: ws, model: "gpt-5.6" }).ok);
   check("rejects an unknown effort", !h.runner.update(p.goal!.id, { effort: "turbo" as never }).ok);

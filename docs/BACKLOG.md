@@ -14,7 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Enforce Opus for Claude goal steps and exclude Fable from automatic routing** (2026-10-08, Rowan Clapper).
 
 
 
@@ -41,6 +40,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Enforce Opus for Claude goal steps and exclude Fable from automatic routing** (2026-10-08, Rowan Clapper).
+  Automatic roster, director choices, saved goal pins and task resumes enforce current Opus; routing 152/152, auto-model 131/131, scoped Sonnet 59/59, Opus floor 40/40, family migration 93/93, continuation 65/65 and goal suites pass. Server build/types and README 74/74 pass; deployment/live pin proof follows integration.
 
 - **Claude cloud credit chips: renewable sign-in replaces revoked pasted tokens** (af7765c2, 2026-10-08, Cumulus Thimble).
   Live: both stored pasted tokens are revoked (the provider answered 429, which masked it); chips and Settings now say so, and Settings > Subscriptions > Sign in with Claude builds a link and rejects foreign codes in a real browser. Proof = both chips show a dollar balance after the owner signs in once per subscription.

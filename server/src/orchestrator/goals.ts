@@ -6,6 +6,8 @@ import type { JsonSchemaLike } from "../agents/structuredText.js";
 import { latestFamilyModel } from "../agents/modelFamily.js";
 import type { DispatchInput } from "./api.js";
 import type { ModelCandidate } from "./modelSelector.js";
+import { filterAutoSelectionCandidates } from "./modelSelector.js";
+import { CLAUDE_OPUS_FLOOR_MODEL, isDisallowedClaudeModel } from "./claudeOpusFloor.js";
 import { UNFINISHED_STATES } from "./scheduler.js";
 import { formatUntil } from "./capacityRouting.js";
 import { describeGoalUsage, providerOfRunAccount, UNMETERED_PROVIDER } from "./goalUsage.js";
@@ -165,6 +167,11 @@ export interface GoalPatch extends GoalPinInput, GoalPaceInput {
 }
 
 type GoalPin = Pick<Goal, "effort" | "provider" | "model">;
+
+/** Goal-generated exact pins cannot bypass the owner's Claude Opus policy. */
+export function goalModel(provider: ImplementorProvider | null | undefined, model: string): string {
+  return latestFamilyModel(provider === "claude" && isDisallowedClaudeModel(model) ? CLAUDE_OPUS_FLOOR_MODEL : model);
+}
 type GoalPace = Pick<Goal, "burnConservation" | "burnRatePct">;
 
 export interface GoalResult {
@@ -430,6 +437,8 @@ function allowedEfforts(goal: GoalPin): Effort[] {
 /** The JSON schema of the director's answer, narrowed to the owner's pin and to what can dispatch now.
  *  `wait` is on offer only while steps are running: with none, there is nothing to wait for. */
 export function goalJudgeSchema(goal: GoalPin, roster: ModelCandidate[], running = 0): JsonSchemaLike {
+  roster = filterAutoSelectionCandidates(roster);
+  if (goal.model) goal = { ...goal, model: goalModel(goal.provider, goal.model) };
   const pinned = goal.provider && goal.model ? { provider: goal.provider, model: goal.model } : null;
   const providers = pinned ? [pinned.provider] : GOAL_PROVIDERS.filter((p) => roster.some((c) => c.provider === p));
   return {
@@ -527,12 +536,18 @@ export function resolveStepPin(pick: GoalJudgement["next"], roster: ModelCandida
  */
 export function goalStepPin(goal: GoalPin, next: GoalJudgement["next"], roster: ModelCandidate[]): StepPin {
   // Both halves name a line, not a release: the step records and runs its line's newest member.
-  const pick = { ...next, model: latestFamilyModel(next.model) };
-  if (goal.model) goal = { ...goal, model: latestFamilyModel(goal.model) };
+  roster = filterAutoSelectionCandidates(roster);
+  const pick = { ...next, model: goalModel(next.provider, next.model) };
+  if (goal.model) goal = { ...goal, model: goalModel(goal.provider, goal.model) };
   const allowed = allowedEfforts(goal);
   const effort = allowed.includes(pick.effort) ? pick.effort : allowed.at(-1)!;
   const capped = !goal.effort && effort !== pick.effort ? `Capped at ${effort} effort: this goal has no effort set, so its steps run at low or medium.` : null;
   if (!goal.provider || !goal.model) {
+    if (next.provider === "claude" && isDisallowedClaudeModel(next.model)) {
+      const found = roster.find((c) => c.provider === "claude" && c.model === pick.model);
+      return { provider: "claude", model: pick.model, effort: found ? lowerToOffered(effort, found.efforts) : effort,
+        note: [capped, `Claude goal steps require Opus; replaced ${next.model} with ${pick.model}.`].filter(Boolean).join(" ") };
+    }
     const pin = resolveStepPin({ ...pick, effort }, roster);
     return { ...pin, note: [capped, pin.note].filter(Boolean).join(" ") || null };
   }
@@ -834,7 +849,18 @@ export class GoalRunner {
     return this.options.now?.() ?? Date.now();
   }
 
+  private repairClaudePins(): void {
+    for (const goal of this.db.listGoals()) {
+      if (goal.status === "achieved" || goal.status === "abandoned" || goal.provider !== "claude" || !goal.model || !isDisallowedClaudeModel(goal.model)) continue;
+      const model = goalModel(goal.provider, goal.model);
+      if (model === goal.model) continue;
+      this.db.updateGoal(goal.id, { model, pinChangedAt: this.now(), nextCheckAt: null });
+      this.hub.log("info", `Goal "${goal.title}": replaced ${goal.model} with ${model} to enforce the Claude Opus policy.`);
+    }
+  }
+
   start(): void {
+    this.repairClaudePins();
     this.backfillStepStatus();
     this.broadcast();
     if (!this.unsubscribe) {
@@ -1666,9 +1692,9 @@ export class GoalRunner {
     const pin = goalStepPin(goal, pick, burn.roster);
     const fallback = burn.roster[0];
     const budgeted = goal.tokenBudget != null;
-    if (pin.provider || (!burn.over.length && !budgeted) || !fallback) return pin;
+    if (pin.provider || !fallback) return pin;
     const moved = goalStepPin(goal, { ...pick, provider: fallback.provider, model: fallback.model }, burn.roster);
-    const risk = burn.over.length ? "a pool over this goal's burn rate" : "Grok, which reports no usage for this goal's token budget";
+    const risk = burn.over.length ? "a pool over this goal's burn rate" : budgeted ? "Grok, which reports no usage for this goal's token budget" : "a model outside this goal's allowed roster";
     const why = `${pick.model || "The director's pick"} could not be placed, and automatic routing could land on ${risk}, so this step runs on ${fallback.model}.`;
     return { ...moved, note: [why, moved.note].filter(Boolean).join(" ") };
   }
@@ -1733,7 +1759,8 @@ function planChanged(current: Goal, objective: string | undefined, pin: GoalPinI
 
 /** A blank model is no pin. Undefined fields stay undefined so a patch leaves them unchanged. */
 function trimPinModel(pin: GoalPinInput): GoalPinInput {
-  return pin.model === undefined ? pin : { ...pin, model: pin.model?.trim() || null };
+  const model = pin.model?.trim();
+  return pin.model === undefined ? pin : { ...pin, model: model ? goalModel(pin.provider, model) : null };
 }
 
 /** The owner's pin as the director reads it, e.g. "codex / gpt-5.6, high effort". */

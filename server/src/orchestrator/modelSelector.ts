@@ -156,12 +156,9 @@ function isCurrentClaudeOpusAutoModel(candidate: Pick<ModelCandidate, "provider"
 }
 
 export function filterAutoSelectionCandidates<T extends Pick<ModelCandidate, "provider" | "model">>(candidates: readonly T[]): T[] {
-  // The task-specific capability floor is applied after this roster, rather than suppressing entire
-  // current families globally. A superseded Opus cannot return beside the current Opus generation.
-  const currentOpusAvailable = candidates.some(isCurrentClaudeOpusAutoModel);
-  return candidates.filter((candidate) => {
-    return !currentOpusAvailable || !isRetiredClaudeAutoModel(candidate);
-  });
+  // Claude automatic choices must be current Opus, even with no Opus capacity. The separately
+  // reviewed scoped-task Sonnet route applies later and is never used for goals.
+  return candidates.filter((candidate) => candidate.provider !== "claude" || isCurrentClaudeOpusAutoModel(candidate));
 }
 
 export function autoSelectableEffortsForCandidate(
