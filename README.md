@@ -375,9 +375,11 @@ the same deadline keeps that deadline for pacing. A detected weekly refill also 
 weekly cap before its old deadline; unrelated session caps keep their holds.
 Early resets appear in the Claude chip tooltip.
 Banked free resets use the same arrow badge for Claude and Codex; Claude's grant read uses the
-matching profile login and Claude Code client identity. A throttled grant read reports unknown
-availability until the next successful refresh. Usage-held goals recheck when fresh usage arrives
-or their provider/model pin changes, without changing the owner's guard or schedule settings.
+matching profile login and Claude Code client identity. The provider throttles that read, so
+the periodic refresh reads it at most every four minutes, even with fast usage polling. A throttled
+read reports unknown availability and backs off, doubling up to an hour, until a read succeeds.
+Usage-held goals recheck when fresh usage arrives or their provider/model pin changes, without
+changing the owner's guard or schedule settings.
 
 ## Quick start
 

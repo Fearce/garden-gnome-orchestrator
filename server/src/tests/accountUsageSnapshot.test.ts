@@ -567,5 +567,63 @@ console.log("account-usage: an early weekly refill releases only a proved weekly
   } finally { globalThis.fetch = fetchBefore; }
 }
 
+console.log("account-usage: the fast cadence does not hammer the throttled banked-reset read");
+{
+  const { PROFILE_READ_INTERVAL_MS, PROFILE_BACKOFF_MAX_MS } = await import("../accounts/accountManager.js");
+  const { CLOUD_CREDITS_FRESH_MS } = await import("../accounts/cloudCredits.js");
+  check("periodic reads stay inside the cloud credit freshness window", PROFILE_READ_INTERVAL_MS < CLOUD_CREDITS_FRESH_MS);
+  const account = { id: "throttled", label: "Throttled", token: "inference-token", profileToken: "profile-token" };
+  const manager = new AccountManager([account], new EventHub(), 30_000);
+  const st = (manager as any).states.get(account.id);
+  let usageReads = 0;
+  let throttle = true;
+  const fetchBefore = globalThis.fetch, nowBefore = Date.now;
+  let clock = nowBefore();
+  Date.now = () => clock;
+  globalThis.fetch = (async (input: unknown) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("/api/oauth/usage")) {
+      usageReads++;
+      return throttle
+        ? new Response("{}", { status: 429 })
+        : new Response(JSON.stringify({ cedar_ember: { eligible: true, next_grant_id: "01JQ8ZC2Q9", grants: [{ id: "01JQ8ZC2Q9", resets_left: 1, usable_now: true }] } }));
+    }
+    if (url.includes("/api/oauth/profile")) return new Response("{}", { status: 200 });
+    return new Response("{}", { headers: {
+      "anthropic-ratelimit-unified-5h-utilization": "0.01",
+      "anthropic-ratelimit-unified-7d-utilization": "0.08",
+      "anthropic-ratelimit-unified-7d-reset": String(Math.floor((clock + 6 * 86_400_000) / 1000)),
+    } });
+  }) as typeof fetch;
+  try {
+    await (manager as any).pingAll();
+    check("the first ping reads banked resets", usageReads === 1, String(usageReads));
+    check("a throttled read reports unknown, not zero", manager.dto()[0]?.resetCredits == null && /rate-limited/.test(manager.dto()[0]?.resetCreditsError ?? ""));
+    const firstWait = st.profileReadDueAt - clock;
+    check("a throttled read waits at least the normal interval", firstWait === PROFILE_READ_INTERVAL_MS, String(firstWait));
+    for (let i = 0; i < 6; i++) { clock += 30_000; await (manager as any).pingAll(); }
+    check("30 s pings inside the back-off do not read again", usageReads === 1, String(usageReads));
+    clock += firstWait;
+    await (manager as any).pingAll();
+    check("the read retries once the back-off passes", usageReads === 2, String(usageReads));
+    check("a second throttled read doubles the back-off", st.profileReadDueAt - clock === 2 * firstWait);
+    st.profileBackoffMs = PROFILE_BACKOFF_MAX_MS;
+    clock = st.profileReadDueAt;
+    await (manager as any).pingAll();
+    check("the back-off is capped at an hour", st.profileReadDueAt - clock === PROFILE_BACKOFF_MAX_MS);
+    throttle = false;
+    clock = st.profileReadDueAt;
+    await (manager as any).pingAll();
+    check("a successful read shows the Claude banked reset", manager.dto()[0]?.resetCredits?.available === 1 && manager.dto()[0]?.resetCreditsError == null, JSON.stringify(manager.dto()[0]?.resetCredits));
+    check("after success the read returns to the normal interval", st.profileBackoffMs === 0 && st.profileReadDueAt - clock === PROFILE_READ_INTERVAL_MS);
+    const reads = usageReads;
+    for (let i = 0; i < 7; i++) { clock += 30_000; await (manager as any).pingAll(); }
+    check("fast pings within the interval reuse the reading", usageReads === reads && manager.dto()[0]?.resetCredits?.available === 1);
+    clock += 30_000;
+    await (manager as any).pingAll();
+    check("the interval elapsing reads again", usageReads === reads + 1);
+  } finally { globalThis.fetch = fetchBefore; Date.now = nowBefore; manager.stop(); }
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

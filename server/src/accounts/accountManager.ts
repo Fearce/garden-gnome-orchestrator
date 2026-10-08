@@ -70,6 +70,10 @@ interface AccountState {
   organizationId: string | null;
   /** The last weekly reset seen between two header reads, early or on schedule. */
   weeklyReset: WeeklyReset | null;
+  /** Epoch ms before which the periodic ping skips the banked-reset read (see `PROFILE_READ_INTERVAL_MS`). */
+  profileReadDueAt: number;
+  /** The current back-off after a throttled banked-reset read; 0 once a read is not throttled. */
+  profileBackoffMs: number;
   updatedAt: number;
 }
 
@@ -222,6 +226,15 @@ const BOOT_TRUST_MS = 30 * 60 * 1000;
 // A model-pool cap whose rejection carried no reset self-expires after this, so the fallback never
 // sticks forever — the next dispatch simply re-probes the model and re-latches if it's still gated.
 const PROFILE_RENEW_MARGIN_MS = 5 * 60_000;
+/**
+ * The least time between two periodic banked-reset reads. Anthropic throttles `/api/oauth/usage` per
+ * login, and the fast usage cadence pings every 30 s: reading on every ping kept the live Claude read at
+ * 429, so the Claude reset badge never appeared. Grants change rarely. This stays under the cloud lane's
+ * five-minute credit freshness window (`CLOUD_CREDITS_FRESH_MS`), so routing still sees fresh credits.
+ */
+export const PROFILE_READ_INTERVAL_MS = 4 * 60_000;
+/** A throttled read doubles the wait before the next periodic one, up to this. */
+export const PROFILE_BACKOFF_MAX_MS = 60 * 60_000;
 const CLOUD_LAUNCH_TOKEN_MARGIN_MS = 60 * 60_000;
 const MODEL_LIMIT_FALLBACK_MS = 5 * 60 * 60 * 1000;
 
@@ -452,6 +465,8 @@ export class AccountManager {
         resetCreditsError: null,
         organizationId: null,
         weeklyReset: null,
+        profileReadDueAt: 0,
+        profileBackoffMs: 0,
         updatedAt: 0,
       });
       this.stagger?.register(a.id, () => this.phase(a.id));
@@ -737,6 +752,7 @@ export class AccountManager {
       return;
     }
     let [result, paid] = await this.readProfile(st, token);
+    this.scheduleProfileRead(st, result);
     // A GGO sign-in can be revoked before its stated expiry; renew once rather than report a dead login.
     if (!result.ok && result.reason === "auth" && st.profileRefresh && st.account.profileToken?.trim() === token) {
       const renewed = await this.renewProfileLogin(st);
@@ -749,6 +765,7 @@ export class AccountManager {
       if (renewed !== token) {
         token = renewed;
         [result, paid] = await this.readProfile(st, token);
+        this.scheduleProfileRead(st, result);
       }
     }
     if (st.account.profileToken?.trim() !== token) return;
@@ -772,6 +789,14 @@ export class AccountManager {
     st.cloudCredits = st.organizationId && st.organizationId === result.organizationId ? result.cloudCredits ?? null : null;
     st.updatedAt = Date.now();
     this.applyResetCredits(st, result.credits, null);
+  }
+
+  /** When the periodic ping may read banked resets again: after the normal interval, or after a growing
+   *  back-off while the provider throttles the read. Explicit reads (boot, sign-in, redeem) ignore it. */
+  private scheduleProfileRead(st: AccountState, result: ProfileUsageResult): void {
+    const throttled = !result.ok && result.reason === "rate-limit";
+    st.profileBackoffMs = throttled ? Math.min(PROFILE_BACKOFF_MAX_MS, Math.max(PROFILE_READ_INTERVAL_MS, st.profileBackoffMs * 2)) : 0;
+    st.profileReadDueAt = Date.now() + (throttled ? st.profileBackoffMs : PROFILE_READ_INTERVAL_MS);
   }
 
   private readProfile(st: AccountState, token: string): Promise<[ProfileUsageResult, PrepaidCredits | null]> {
@@ -836,12 +861,12 @@ export class AccountManager {
       return !st || !this.inHold(st, now);
     });
     // Banked resets are read for EVERY account, including the held ones the ping skips — see
-    // `readResetCredits` for why that is safe. Both run on the same cadence because the reading is
-    // free and changes rarely; the point is that a granted reset shows up without the owner opening
-    // the native app, not that it shows up within seconds.
+    // `readResetCredits` for why that is safe. They ride this cadence but at most every
+    // `PROFILE_READ_INTERVAL_MS`, longer while throttled: the provider rate-limits the read, and the
+    // point is that a granted reset shows up without the owner opening the native app, not within seconds.
     await Promise.all([
       ...due.map((a) => this.pingOne(a)),
-      ...[...this.states.values()].map((st) => this.readResetCredits(st)),
+      ...[...this.states.values()].filter((st) => st.profileReadDueAt <= now).map((st) => this.readResetCredits(st)),
     ]);
     this.publish();
     this.onUsage?.();
