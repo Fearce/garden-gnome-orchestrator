@@ -86,7 +86,13 @@ try {
   await git(repo, "add", "--", "native.txt");
   const nativeLock = join(repo, ".git", "index.lock");
   await writeFile(nativeLock, "foreign git lock\n");
-  const refusal = await exec(process.execPath, [wrapper, "--repo", repo, "--", "git", "commit", "--only", "-m", "test: native", "--", "native.txt"], { windowsHide: true }).then(() => false, () => true);
+  // Refuse while ownership is uncertain. A ten-minute wait lets the fixture age into
+  // the separately verified abandoned-lock recovery policy instead of testing refusal.
+  const refusal = await exec(process.execPath, [wrapper, "--repo", repo, "--timeout-ms", "1000", "--", "git", "commit", "--only", "-m", "test: native", "--", "native.txt"], { windowsHide: true }).then(() => false, error => {
+    assert.equal(error.code, 75);
+    assert.match(error.stderr, /timed out waiting for a native index lock/);
+    return true;
+  });
   check("non-cooperating native Git lock is respected", () => assert.equal(refusal, true));
   assert.equal(await readFile(nativeLock, "utf8"), "foreign git lock\n");
   await rm(nativeLock); // Fixture owns this lock; production code never removes it.
