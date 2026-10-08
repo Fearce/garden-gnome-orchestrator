@@ -30,6 +30,8 @@ process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
 
 import { createServer, type IncomingMessage, type Server } from "node:http";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -187,7 +189,8 @@ function rmTemp(dir: string): void {
 }
 
 async function makeRepo(dir: string, remote?: string, extra: Record<string, string> = {}): Promise<string> {
-  await runGit(dir, ["init", "-q"]);
+  // Bootstrap a private object store before calling the repository transaction queue.
+  await promisify(execFile)("git", ["init", "-q"], { cwd: dir, windowsHide: true });
   if (remote) await runGit(dir, ["remote", "add", "origin", remote]);
   for (const [name, url] of Object.entries(extra)) await runGit(dir, ["remote", "add", name, url]);
   return dir;
