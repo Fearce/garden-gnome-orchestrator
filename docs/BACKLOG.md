@@ -14,7 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Nightly runtime, provider currency and latency sweep** (2026-10-08, Bramble Dial; task d79fb231).
 
 
 
@@ -40,6 +39,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Nightly runtime, provider currency and latency sweep** (2026-10-08, Saffron Wicket).
+  Provider SDK/CLI updates are live; indexed inbox activity, unchanged tool-digest caching and reused Git status are committed and compiled but await the next permitted server restart. Full sweep 14/16; gates 240/244 with all four failures repaired and passing focused reruns; types/builds, inbox/browser, Electron 59/59 and both-theme focus checks pass. Historical HTTPS secret remediation remains blocked; capacity and oversized Codex input findings are recorded below. No second restart was performed after automatic resume.
 
 
 - **QA: preserve AUTO repo scope and searchable-picker keyboard choices** (2026-10-07, Codex QA; task 547b354c).
@@ -119,6 +121,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Ready (priority order)
 
+1. **Recover Codex tasks rejected by the turn/start input-size limit** (2026-10-08, Saffron Wicket; task d79fb231): nightly probe found six parked tasks with `input_too_large`, limit 1,048,576 characters; one rejected 1,194,397 after 121 minutes while its saved brief was only 8,084 characters. Trace accumulated provider input and add bounded, history-preserving recovery; an oversized fresh kickoff must not loop or silently truncate owner instructions.
+
 1. **Define a separate packed-reference lock recovery policy** (2026-10-07, Flax Thorpe; task 6973a43e): a proven orphan was manually audited and archived with unchanged reference hashes after queued commits and rebases reported `packed-refs.lock`. Automatic recovery intentionally covers only `index.lock`; retain conservative ownership and reference-preservation checks for any extension.
 
 1. **Provide verifiable deployment identity for supervised source-mode launches** (2026-10-07, Codex QA):
@@ -173,6 +177,8 @@ same commit as the fix. Git history keeps the record.
   Full suite resolves 300 tasks in 5,199 ms against a 5,000 ms assertion; the serial rerun passes. Verify lookup counts independently of scheduler timing. Evidence: restart-affinity worktree's server/data/gates-last.log.
 
 ## Blocked / waiting
+
+- **Choose an eligible NVIDIA free-pool model** (2026-10-08, Saffron Wicket): live refresh marks the saved `openai/gpt-oss-120b` choice as no longer verified free and sends no inference request. Settings must select another verified free model; preserve the explicit owner choice until changed.
 
 - **Verify Claude prepaid funds before enabling credit-backed dispatch** (2026-10-07, Pebble Sprocket).
   Read-only provider checks found one expired profile credential and one zero prepaid balance with usage credits disabled. Requires matching current credentials and prepaid subscription funds with auto-reload off; API Console balances are separate.
