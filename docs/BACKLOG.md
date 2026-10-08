@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Add regression for legacy automatic Fable picks on goal resumes** (2026-10-08, Rowan Clapper).
+
 
 
 
