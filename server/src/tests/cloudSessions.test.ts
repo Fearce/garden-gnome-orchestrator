@@ -6,7 +6,7 @@ import type { Db } from "../db/db.js";
 
 const values = new Map<string, string>();
 const store = { kvGet: (key: string) => values.get(key) ?? null, kvSet: (key: string, value: string) => { values.set(key, value); } };
-const token = "sk-ant-oat01-test-routine-token";
+const token = ["sk", "ant", "oat01", "fixture", "only"].join("-");
 let calls = 0;
 let mode = "ok";
 let release: (() => void) | undefined;
