@@ -1616,13 +1616,13 @@ button.office-roster-member:focus-visible { outline: 2px solid var(--accent); ou
   height: 30px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg);
   color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 0 8px;
 }
-.tss-time input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
+.tss-time input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 14%, transparent); }
 .tss-zone { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--text-dim); }
 .tss-zone .text-input {
   width: 200px; height: 28px; border: 1px solid var(--line); border-radius: var(--r-sm);
   background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: 12px; padding: 0 10px; outline: none;
 }
-.tss-zone .text-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px oklch(0.83 0.16 78 / 0.14); }
+.tss-zone .text-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 14%, transparent); }
 .tss-zone-note { flex-basis: 100%; font-size: 11px; color: var(--text-faint); }
 .tss-status { margin: 0; font-size: 11.5px; color: var(--text-dim); line-height: 1.45; }
 .tss-status.warn { color: var(--danger); }
