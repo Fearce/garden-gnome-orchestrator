@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Enforce Opus for Claude goal steps and exclude Fable from automatic routing** (2026-10-08, Rowan Clapper).
+
 
 
 
