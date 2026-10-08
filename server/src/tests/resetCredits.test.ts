@@ -214,30 +214,42 @@ check("nothing available means nothing to spend", parseClaudeResetCredits({ elig
 check("an id that is not a plain token is never sent back to the provider", parseCodexResetCredits({ availableCount: 1, credits: [{ id: "../x?y", status: "available" }] }, READ_AT)?.redeemId === null);
 
 {
-  // The real request and response handling, against a local stand-in for Claude's claim endpoint. The
-  // override is read at import, so it is set before `profileUsage` loads.
+  // The real request and response handling, against a local stand-in for Claude's grant read and claim
+  // endpoints. The overrides are read at import, so it is set before `profileUsage` loads.
   const { createServer } = await import("node:http");
-  const seen: Array<{ url: string; auth: string; body: Record<string, unknown> }> = [];
+  const seen: Array<{ url: string; auth: string; agent: string; body: Record<string, unknown> }> = [];
   let answer: { status: number; body: unknown } = { status: 200, body: { result: "reset", resets_left: 0 } };
+  const usageAnswer = { cedar_ember: { eligible: true, next_grant_id: "01JQ8ZC2Q9", grants: [{ id: "01JQ8ZC2Q9", resets_left: 1, usable_now: true }] } };
   const server = createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
     req.on("end", () => {
-      seen.push({ url: req.url ?? "", auth: String(req.headers.authorization), body: JSON.parse(raw || "{}") });
+      seen.push({ url: req.url ?? "", auth: String(req.headers.authorization), agent: String(req.headers["user-agent"]), body: JSON.parse(raw || "{}") });
       // No keep-alive: a pooled fetch socket still open at `process.exit` trips a libuv assertion on Windows.
       res.writeHead(answer.status, { "content-type": "application/json", connection: "close" });
-      res.end(JSON.stringify(answer.body));
+      res.end(JSON.stringify(req.method === "GET" ? usageAnswer : answer.body));
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
-  process.env.PROFILE_CLAIM_BASE_URL = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  const { claimClaudeReset } = await import("../accounts/profileUsage.js");
+  const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  process.env.PROFILE_CLAIM_BASE_URL = base;
+  process.env.PROFILE_USAGE_URL = `${base}/api/oauth/usage?cedar_ember=1&skip_spend=1`;
+  const { claimClaudeReset, fetchProfileUsage } = await import("../accounts/profileUsage.js");
   const ORG = "0b7f3c1e-5a2d-4e8f-9c61-2d4b8a9e7f10";
+
+  // Anthropic answers an old client identity `eligible: false, ineligible_reason: "surface"`, which reads
+  // as "no banked reset" while one is waiting. Both calls must present as the Claude Code GGO runs.
+  const claudeCode = /^claude-cli\/\d+\.\d+\.\d+\S* \(external, cli\)$/;
+  const read = await fetchProfileUsage("tok-1");
+  check("the grant read reports the banked reset", read.ok && read.credits?.available === 1, JSON.stringify(read));
+  check("the grant read presents as Claude Code", claudeCode.test(seen[0]?.agent ?? ""), seen[0]?.agent);
+  seen.length = 0;
 
   const ok = await claimClaudeReset("tok-1", ORG, "01JQ8ZC2Q9");
   check("a `reset` answer is a success", ok.ok && /Limits refilled/.test(ok.message), JSON.stringify(ok));
   check("the claim goes to the organization's reset endpoint", seen[0]?.url === `/api/organizations/${ORG}/reset_rate_limits`, seen[0]?.url);
   check("with the profile token", seen[0]?.auth === "Bearer tok-1", seen[0]?.auth);
+  check("presenting as Claude Code", claudeCode.test(seen[0]?.agent ?? ""), seen[0]?.agent);
   check(
     "naming the programme, the grant, and a fresh request id",
     seen[0]?.body.program === "cedar_ember" && seen[0]?.body.grant_id === "01JQ8ZC2Q9" && /^[0-9a-f-]{36}$/.test(String(seen[0]?.body.request_id)),

@@ -13,6 +13,7 @@
 // that path also checks billing before launching a cloud worker.
 
 import { randomUUID } from "node:crypto";
+import { providerRuntimeVersions } from "../providerRuntime.js";
 import { parseCloudCredits, type CloudCreditsDTO } from "./cloudCredits.js";
 import { parseClaudeResetCredits, type RedeemOutcome, type ResetCreditsDTO } from "./resetCredits.js";
 
@@ -25,6 +26,15 @@ import { parseClaudeResetCredits, type RedeemOutcome, type ResetCreditsDTO } fro
  * at a local fixture lets the REAL fetch, classification and parse run end to end. Env-only, never
  * settable over the wire — the same trust level as the `ANTHROPIC_BASE_URL` swap the z.ai backend uses. */
 const USAGE_URL = process.env.PROFILE_USAGE_URL?.trim() || "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1";
+
+/**
+ * The client identity the grant read and the claim send. Anthropic grants banked resets per calling
+ * surface: on 2026-10-08 one profile token read `eligible: false, ineligible_reason: "surface"` and no
+ * grants as `claude-cli/2.0.0`, but one usable grant as `claude-cli/2.1.280 (external, cli)`, the string
+ * Claude Code itself sends. So this is the Claude Code version GGO actually runs (the agent SDK's bundled
+ * one) in Claude Code's own format. The fallback is the version verified above.
+ */
+export const CLAUDE_CODE_USER_AGENT = `claude-cli/${providerRuntimeVersions().claudeCode ?? "2.1.280"} (external, cli)`;
 
 /**
  * Why a profile read produced no answer — the same "say WHICH failure" discipline `PingFailReason`
@@ -67,7 +77,7 @@ export async function fetchProfileUsage(token: string, timeoutMs = 12_000): Prom
       headers: {
         Authorization: `Bearer ${token.trim()}`,
         "anthropic-beta": "oauth-2025-04-20",
-        "user-agent": "claude-cli/2.0.0",
+        "user-agent": CLAUDE_CODE_USER_AGENT,
       },
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -160,7 +170,7 @@ export async function claimClaudeReset(token: string, organizationId: string, gr
       headers: {
         Authorization: `Bearer ${token.trim()}`,
         "anthropic-beta": "oauth-2025-04-20",
-        "user-agent": "claude-cli/2.0.0",
+        "user-agent": CLAUDE_CODE_USER_AGENT,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ program: "cedar_ember", grant_id: grantId, request_id: randomUUID() }),
