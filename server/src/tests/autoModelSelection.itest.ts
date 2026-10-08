@@ -287,6 +287,9 @@ async function main(): Promise<void> {
       const goal = h.db.createGoal({ title: "Policy", objective: "o", workspace: h.workspace, effort: null, provider: null, model: null, maxConcurrent: 1, burnConservation: false, burnRatePct: 100 });
       const step = h.db.createGoalStep({ goalId: goal.id, title: "Existing Fable", provider: "claude", model: "claude-fable-5", effort: "medium", rationale: "old choice", brief: "b" });
       h.db.updateGoalStep(step.id, { threadId: id });
+      h.db.updateThreadStageOutputs(id, { modelPick: { provider: "claude", model: "claude-fable-5-1", effort: "medium", reason: "legacy automatic goal pick" } });
+      const unpinned = h.internals.ensureThreadModelRequest(thread(h, id)) as Thread;
+      check("a goal's legacy automatic Fable pick becomes Opus without an exact pin", !unpinned.modelRequest && h.db.getThreadStageOutputs(id).modelPick?.model === OPUS_5 && h.internals.pickedModel(id, "claude") === OPUS_5);
       h.db.setModelRequest(id, { requested: "claude-fable-5", provider: "claude", model: "claude-fable-5", strict: true });
       const repaired = h.internals.ensureThreadModelRequest(thread(h, id)) as Thread;
       check("an existing goal's exact Fable pin becomes Opus before resume", repaired.modelRequest?.model === OPUS_5, JSON.stringify(repaired.modelRequest));

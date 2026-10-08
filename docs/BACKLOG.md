@@ -14,7 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Add regression for legacy automatic Fable picks on goal resumes** (2026-10-08, Rowan Clapper).
 
 
 
@@ -205,6 +204,7 @@ No open entries.
 ## Done (newest first; keep the last 20)
 
 - 2026-10-08 **Enforce Opus for Claude goal steps and exclude Fable from automatic routing** (8e64cbab, Rowan Clapper): pushed and deployed; live build 8e64cbab verified on pid 101724. Deployed guards exclude Fable, replace its goal pin with Opus and retain that pin without capacity. Routing 152/152, auto-model 131/131, scoped routing 59/59, Opus floor 40/40, migration 93/93, continuation 65/65, goal suites, server types/build, web build, README 74/74 and privacy pass. Historical runs are preserved; the existing cancelled Fable goal task upgrades before any future resume.
+  Post-task regression also proves a saved automatic Fable choice upgrades before resume without an exact pin; auto-model 132/132 and server types pass. Tests only; no runtime change or restart.
 
 - 2026-10-07 **Preserve QA kickoffs and deliver chat context on scheduled inputs** (f89a70cc, d36b176e, 521c3d00, c61ef063, Moss Quill with Toggle Thistle): deployed and verified live build c61ef063; resumed agent input contains unread direct mail and recent office/team chat. Production mounted browser sees quiet self-test mail, owner viewing preserves unread, five handled self-checks explicitly acknowledged. Inbox 28/28, actual Codex/Grok fresh/resumed/recovery launch regressions, provider fallback, server/web builds, README 74/74 and privacy pass. No mail-triggered wake or automatic acknowledgement.
 
