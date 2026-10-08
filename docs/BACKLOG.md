@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Nightly runtime, provider currency and latency sweep** (2026-10-08, Bramble Dial; task d79fb231).
+
 
 
 
