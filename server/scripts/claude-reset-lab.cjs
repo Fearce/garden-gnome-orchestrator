@@ -1,4 +1,5 @@
 // Browser regression for the shared banked-reset badge and early weekly-reset tooltip.
+// Run: npm run claude-reset-lab --prefix server
 // Run against isolated builds: GGO_LAB_ENTRY and GGO_LAB_WEB_DIST use lab-harness conventions.
 // Fixtures replace only usage frames; the real console, WebSocket and shared badge still render.
 const fs = require("node:fs");

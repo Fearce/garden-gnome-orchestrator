@@ -24,6 +24,7 @@
     "token-conservation-lab": "node scripts/token-conservation-lab.cjs",
     "scoped-sonnet-lab": "node scripts/scoped-sonnet-lab.cjs",
     "reset-burn-lab": "node scripts/reset-burn-lab.cjs",
+    "claude-reset-lab": "node scripts/claude-reset-lab.cjs",
     "token-safety-lab": "node scripts/token-safety-lab.cjs",
     "token-safety-schedule-lab": "node scripts/token-safety-schedule-lab.cjs",
     "usage-strip-lab": "node scripts/usage-strip-lab.cjs",

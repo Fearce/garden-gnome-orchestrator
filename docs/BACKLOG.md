@@ -210,6 +210,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-08 **Expose the Claude reset browser lab through npm**: `npm run claude-reset-lab --prefix server` registers the existing isolated browser regression alongside the other labs. Isolated server/web builds and all five browser checks pass; no runtime change or deployment required.
+
 - 2026-10-08 **Enforce Opus for Claude goal steps and exclude Fable from automatic routing** (8e64cbab, Rowan Clapper): pushed and deployed; live build 8e64cbab verified on pid 101724. Deployed guards exclude Fable, replace its goal pin with Opus and retain that pin without capacity. Routing 152/152, auto-model 131/131, scoped routing 59/59, Opus floor 40/40, migration 93/93, continuation 65/65, goal suites, server types/build, web build, README 74/74 and privacy pass. Historical runs are preserved; the existing cancelled Fable goal task upgrades before any future resume.
   Post-task regression also proves a saved automatic Fable choice upgrades before resume without an exact pin; auto-model 132/132 and server types pass. Tests only; no runtime change or restart.
 
