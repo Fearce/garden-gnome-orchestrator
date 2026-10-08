@@ -674,7 +674,9 @@ async function readTaskGitSummary(workspace: string, scope: TaskGitScope): Promi
   if (!repoRoot) return EMPTY_SUMMARY;
 
   // Chips need branch/push metadata, not every file's numstat and the repo's commit log.
-  const status = await getRepoHeadState(workspace);
+  // Keep the status used for this summary. Under load the shared cache can expire
+  // while the baseline/diff commands run; rereading it then launches another Git walk.
+  const [status, porcelain] = await Promise.all([getRepoHeadState(workspace), readPorcelain(repoRoot)]);
   const rels = toRepoRelative(repoRoot, scope.taskFiles);
 
   let added = 0;
@@ -698,7 +700,7 @@ async function readTaskGitSummary(workspace: string, scope: TaskGitScope): Promi
     // `git diff <ref>` compares against the working tree but never lists untracked files — fold in the
     // task's own untracked files (all-additions) from the status we already have.
     const relSet = new Set(rels);
-    for (const f of parsePorcelain((await readPorcelain(repoRoot)).stdout)) {
+    for (const f of parsePorcelain(porcelain.stdout)) {
       if (classify(f.xy) !== "untracked" || !relSet.has(f.path) || counts.has(f.path)) continue;
       fileCount++;
       // A binary file reports added = -1; it counts as a changed file but adds no lines.
