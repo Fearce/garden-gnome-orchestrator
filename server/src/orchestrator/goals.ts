@@ -94,6 +94,8 @@ const WEEK_MS = 7 * 24 * 60 * 60_000;
 export const GOAL_BURN_GRACE_PCT = 5;
 /** A burn-rate hold re-checks at least this often: another pool may free up before the pace catches up. */
 const BURN_RECHECK_MAX_MS = 30 * 60_000;
+/** The hub events that carry a fresh usage reading: Claude subscriptions, Codex, Grok and z.ai. */
+const USAGE_EVENTS = new Set(["accounts", "codex.usage", "grok.usage", "zai.usage"]);
 /** A step whose run is only tearing down is looked at again this soon. */
 const SETTLING_RECHECK_MS = 3_000;
 
@@ -866,6 +868,7 @@ export class GoalRunner {
     if (!this.unsubscribe) {
       this.unsubscribe = this.hub.subscribe((e) => {
         if (e.type === "settings") return this.resetBurnChanged(e.settings.resetBurn?.subId ?? null);
+        if (USAGE_EVENTS.has(e.type)) return this.usageRefreshed();
         if (e.type !== "thread.upsert") return;
         const goalId = this.currentThreads.get(e.thread.id);
         if (goalId && !UNFINISHED_STATES.has(e.thread.state)) this.evaluate(goalId);
@@ -1075,6 +1078,30 @@ export class GoalRunner {
       this.db.updateGoal(goal.id, { nextCheckAt: null });
       this.evaluate(goal.id);
     }
+  }
+
+  /**
+   * A pool's usage was just read. A goal held for usage sleeps until its scheduled re-check (up to half an
+   * hour), but the hold can lift sooner: a reset on schedule, an early one (the provider re-anchored or
+   * refilled the window), or a pin moved to another pool. Look again now for every held goal whose hold no
+   * longer applies. One still held keeps its schedule, so a routine read costs no evaluation.
+   */
+  usageRefreshed(): void {
+    for (const goal of this.db.listGoals()) {
+      if (goal.status !== "active" || goal.hold !== "usage_limited" || goal.nextCheckAt == null || goal.nextCheckAt <= this.now()) continue;
+      if (this.usageHold(goal)) continue;
+      this.db.updateGoal(goal.id, { nextCheckAt: null });
+      this.evaluate(goal.id);
+    }
+  }
+
+  /** Whether the goal's next step or turn is still held for usage: the same checks `judgeAndAct` makes
+   *  before it asks the director, on the current roster. */
+  private usageHold(goal: Goal): boolean {
+    const available = meteredRoster(goal, this.host.roster());
+    if (!available.length || checkBurnRate(goal, available, this.now()).hold) return true;
+    const carrier = this.carrier(goal, this.settledSteps(goal.id));
+    return !!carrier && !!this.turnCapacity(goal, carrier, available);
   }
 
   /** Every active goal, once. Cheap when a goal's step is still running: one row read, no model call. */
@@ -1413,6 +1440,12 @@ export class GoalRunner {
     // The next turn goes into the carrier's session, on its pool: wait for that pool before asking the director.
     const carrierHeld = carrier ? this.turnCapacity(goal, carrier, available) : null;
     if (carrierHeld) return this.wait(goal, carrierHeld.reason, carrierHeld.until, "usage_limited");
+    // The usage hold no longer applies (a reset, or a new pin on another pool). Clear its reason now: the
+    // director call below takes a while, and the goal must not read as paused on stale numbers meanwhile.
+    if (goal.hold === "usage_limited") {
+      this.db.updateGoal(goal.id, { hold: null, statusReason: null });
+      this.broadcast();
+    }
 
     const prompt = buildGoalJudgePrompt({
       goal,

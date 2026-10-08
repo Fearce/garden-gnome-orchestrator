@@ -465,6 +465,44 @@ async function burnHoldLoop(): Promise<void> {
   check("starting a burn re-checks the held goal without waiting out its hold", h.dispatched.length === 1 && released.hold === null);
   check("the step runs on the burn target", h.dispatched[0]!.requestedProvider === "claude");
   h.runner.stop();
+
+  console.log("goals: an early weekly reset lifts a burn-rate hold at the next usage read");
+  h = harness();
+  h.roster = [paced(ROSTER[0]!, 70, h.clock.t), paced(ROSTER[1]!, 80, h.clock.t)];
+  const early = h.runner.create({ title: "reset", objective: "o", workspace: ws }).goal!;
+  await h.runner.idle();
+  const heldUntil = h.db.getGoal(early.id)!.nextCheckAt;
+  check("the goal holds for burn rate first", h.dispatched.length === 0 && h.db.getGoal(early.id)!.hold === "usage_limited");
+  h.runner.start();
+  await h.runner.idle();
+  h.clock.t += 60_000;
+  h.hub.publish({ type: "accounts", accounts: [] });
+  await h.runner.idle();
+  check("a read with every pool still over pace keeps the hold and its schedule", h.judged.length === 0 && h.db.getGoal(early.id)!.nextCheckAt === heldUntil);
+  // Claude's window re-anchored early: a fresh week at 3%, well before the hold's re-check.
+  h.roster = [paced(ROSTER[0]!, 3, h.clock.t, 7), paced(ROSTER[1]!, 80, h.clock.t)];
+  h.answers.push(answer("continue", "after the reset", { provider: "claude", model: "claude-opus-5-5", effort: "medium" }));
+  h.hub.publish({ type: "accounts", accounts: [] });
+  await h.runner.idle();
+  const lifted = h.db.getGoal(early.id)!;
+  check("the reset re-evaluates the guard without waiting out the hold", h.clock.t < heldUntil! && h.dispatched.length === 1 && lifted.hold === null);
+  check("the step runs on the pool that reset", h.dispatched[0]?.requestedProvider === "claude");
+  h.runner.stop();
+
+  console.log("goals: a pin moved to a pool within pace clears the stale hold before the director answers");
+  h = harness();
+  h.roster = [paced(ROSTER[0]!, 3, h.clock.t, 7), paced(ROSTER[1]!, 80, h.clock.t)];
+  const moved = h.runner.create({ title: "moved", objective: "o", workspace: ws, provider: "codex", model: "gpt-5.6" }).goal!;
+  await h.runner.idle();
+  check("pinned to the over-pace pool, the goal holds on its numbers", /Codex has used 80%/.test(h.db.getGoal(moved.id)!.statusReason ?? ""));
+  let duringJudge: Goal | null = null;
+  h.onJudge = () => { duringJudge = h.db.getGoal(moved.id); };
+  h.answers.push(answer("continue", "on claude", { provider: "claude", model: "claude-opus-5-5", effort: "medium" }));
+  h.runner.update(moved.id, { provider: "claude", model: "claude-opus-5-5" });
+  await h.runner.idle();
+  const judging = duringJudge as Goal | null;
+  check("while the director plans, the goal no longer reads as held on Codex", judging !== null && judging.hold === null && !/Codex/.test(judging.statusReason ?? ""));
+  check("the next step starts on the new pin", h.dispatched.length === 1 && h.dispatched[0]?.requestedProvider === "claude");
 }
 
 async function parallel(): Promise<void> {
