@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { CodeContextService, repoPrefixOf, type CodeContextGit } from "../orchestrator/codeContext.js";
 import { IdeService } from "../ide/service.js";
 import { runGit, bustGitCaches, type RepoHeadState } from "../gitService.js";
@@ -38,7 +40,8 @@ const git = async (cwd: string, ...args: string[]) => {
 /** A repository with one commit, at `dir`. */
 async function makeRepo(dir: string): Promise<void> {
   await mkdir(dir, { recursive: true });
-  await git(dir, "init", "-b", "work");
+  // The repository queue becomes available after this private fixture has an object store.
+  await promisify(execFile)("git", ["init", "-b", "work"], { cwd: dir, windowsHide: true });
   // Point at an empty hook directory, as gitService/gitProgress/repoOps already do. A global
   // `core.hooksPath` is inherited by every throwaway repo, and the owner's is a real validation suite:
   // it cost ~20s per commit here, which was most of this gate's runtime and what pushed `git commit`

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, readFile, realpath, rm, symlink, link } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import Fastify from "fastify";
 import { IdeService, IdeError, MAX_FILE_BYTES, pathParts } from "../ide/service.js";
@@ -97,7 +99,9 @@ try {
     assert.ok((await service.search(id, "find", false)).hits.some(h => h.path === "find.ts"));
   });
   await test("real staging, unstaging, literal filenames and separate index/worktree diffs", async () => {
-    await git("init", "--quiet"); await git("config", "user.name", "IDE Test"); await git("config", "user.email", "ide-test@example.com"); await git("config", "commit.gpgsign", "false"); await git("config", "core.autocrlf", "false");
+    // Bootstrap the private fixture before runGit's queue: without .git there is no object store lease.
+    await promisify(execFile)("git", ["init", "--quiet"], { cwd: root, windowsHide: true });
+    await git("config", "user.name", "IDE Test"); await git("config", "user.email", "ide-test@example.com"); await git("config", "commit.gpgsign", "false"); await git("config", "core.autocrlf", "false");
     // This repo's OWN hooks, not a globally configured `core.hooksPath` — the operator's is a real
     // validation suite and cost ~20s per commit here, which is what timed the 60s git calls out and
     // crashed this gate on 2026-09-17. `.git/hooks` rather than an empty directory because the
