@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 /** Promotional cloud dollars only. Never count them as local prepaid usage or quota headroom. */
 export interface CloudCreditsDTO {
   remaining: number;
@@ -15,14 +17,26 @@ export function cloudCreditsReady(value: CloudCreditsDTO | null | undefined, now
 }
 
 /** No prepaid balance is required to use the promotion. Verify only identity and the overage toggle. */
-export async function fetchCloudFallbackCredits(token: string, organizationId: string): Promise<CloudCreditsDTO | null> {
+export async function fetchCloudFallbackCredits(token: string, organizationId: string, request: typeof fetch = fetch,
+  pause: (ms: number) => Promise<unknown> = ms => delay(ms)): Promise<CloudCreditsDTO | null> {
   const headers = { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", "user-agent": "claude-cli/2.0.0" };
   try {
-    const profile = await fetch("https://api.anthropic.com/api/oauth/profile", { headers, signal: AbortSignal.timeout(12_000) });
+    const profile = await request("https://api.anthropic.com/api/oauth/profile", { headers, signal: AbortSignal.timeout(12_000) });
     if (!profile.ok) return null;
     const identity = await profile.json() as { organization?: { uuid?: unknown } } | null;
     if (identity?.organization?.uuid !== organizationId) return null;
-    const response = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", { headers, signal: AbortSignal.timeout(12_000) });
+    const usageRead = () => request("https://api.anthropic.com/api/oauth/usage?cedar_ember=1", { headers, signal: AbortSignal.timeout(12_000) });
+    let response = await usageRead();
+    // The usage chip can consume the provider's read allowance just before launch. One
+    // bounded read-only retry honors Retry-After; no session has been created yet.
+    if (response.status === 429) {
+      const retry = response.headers.get("retry-after");
+      const waitMs = retry == null ? NaN : /^\d+$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry) - Date.now();
+      if (!Number.isFinite(waitMs) || waitMs < 0 || waitMs > CLOUD_CREDITS_FRESH_MS) return null;
+      await response.body?.cancel();
+      await pause(waitMs);
+      response = await usageRead();
+    }
     if (!response.ok) return null;
     const usage = await response.json() as { extra_usage?: { is_enabled?: unknown }; iguana_necktie?: unknown } | null;
     return usage?.extra_usage?.is_enabled === false ? parseCloudCredits(usage.iguana_necktie) : null;

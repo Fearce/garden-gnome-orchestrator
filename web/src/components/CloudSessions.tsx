@@ -5,7 +5,7 @@ import "./cloudSessions.css";
 
 interface Connection { id: string; label: string; repository: string; routineId: string; configured: boolean }
 interface Job { id: string; title: string; label: string; repository: string; createdAt: number; state: string; url: string | null; error: string | null; sourceThreadId: string | null }
-interface Automatic { accountIds: string[]; repositories: string[]; accounts: Array<{ id: string; label: string; enabled: boolean; ready: boolean }>; jobs: Array<{ threadId: string; parentId: string; repository: string; state: string; url: string | null; error: string | null }> }
+interface Automatic { accountIds: string[]; repositories: string[]; enabled: boolean; preferCloud: boolean; stopAt: number | null; accounts: Array<{ id: string; label: string; enabled: boolean; ready: boolean }>; jobs: Array<{ threadId: string; parentId: string; repository: string; state: string; url: string | null; error: string | null; branch?: string | null; estimatedCostUsd?: number | null }> }
 interface Snapshot { connections: Connection[]; jobs: Job[]; routinePrompt: string; automatic?: Automatic }
 async function request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fetch(apiUrl(`/api/cloud-sessions${path}`), {
@@ -31,6 +31,14 @@ export function CloudSessions({ active = true, source }: { active?: boolean; sou
   const [repository, setRepository] = useState("");
   const [autoAccounts, setAutoAccounts] = useState<string[]>([]);
   const [autoRepositories, setAutoRepositories] = useState("");
+  const [autoEnabled, setAutoEnabled] = useState(true);
+  const [preferCloud, setPreferCloud] = useState(false);
+  const [stopDate, setStopDate] = useState("");
+  const loadPolicy = (value?: Automatic) => {
+    setAutoEnabled(value?.enabled ?? true);
+    setPreferCloud(value?.preferCloud ?? false);
+    setStopDate(value?.stopAt ? new Date(value.stopAt).toISOString().slice(0, 10) : "");
+  };
   const setup = useRef<HTMLDetailsElement>(null);
   const edited = useRef({ title: false, prompt: false });
   useEffect(() => {
@@ -41,6 +49,7 @@ export function CloudSessions({ active = true, source }: { active?: boolean; sou
   const reload = async () => {
     const next = await request<Snapshot>("");
     setSnapshot(next);
+    loadPolicy(next.automatic);
     setAutoAccounts(next.automatic?.accountIds ?? []);
     setAutoRepositories(next.automatic?.repositories.join("\n") ?? "");
     setConnectionId(id => next.connections.some(c => c.id === id) ? id : next.connections[0]?.id ?? "");
@@ -51,6 +60,7 @@ export function CloudSessions({ active = true, source }: { active?: boolean; sou
     request<Snapshot>("").then(next => {
       if (disposed) return;
       setSnapshot(next);
+      loadPolicy(next.automatic);
       setAutoAccounts(next.automatic?.accountIds ?? []);
       setAutoRepositories(next.automatic?.repositories.join("\n") ?? "");
       setConnectionId(id => id || next.connections[0]?.id || "");
@@ -82,21 +92,30 @@ export function CloudSessions({ active = true, source }: { active?: boolean; sou
     {!snapshot && <button className="btn ghost sm" disabled={busy} onClick={() => void act(reload)}>Load cloud connections</button>}
     {!source && snapshot?.automatic && <form aria-label="Automatic cloud subtasks" className="cloud-setup" onSubmit={e => {
       e.preventDefault(); void act(async () => {
-        await request("/automatic", "PUT", { accountIds: autoAccounts, repositories: autoRepositories.split(/\s+/).filter(Boolean) });
+        await request("/automatic", "PUT", { accountIds: autoAccounts, repositories: autoRepositories.split(/\s+/).filter(Boolean), enabled: autoEnabled, preferCloud,
+          stopAt: stopDate ? Date.parse(`${stopDate}T00:00:00Z`) : null });
         setNotice("Automatic cloud subtask settings saved.");
       });
     }}>
-      <h4>Automatic cloud subtasks after a Claude cap</h4>
-      <p>Enable each subscription you want to use, and allow its repositories. Agents can mark standalone repository reviews or changes for cloud execution. GGO launches them automatically when an enabled subscription is exhausted and its matching promotional balance is fresh. Usage credits must be off to prevent paid overage. Explicit cloud requests can use these credits before a cap and refuse if unavailable. The agent must select cloud-only execution; a normal Claude subtask runs locally.</p>
+      <h4>Automatic cloud subtasks</h4>
+      <div className="cloud-actions">
+        <button type="button" role="switch" aria-label="Claude cloud lane" aria-checked={autoEnabled} disabled={busy} onClick={() => setAutoEnabled(v => !v)}>Claude cloud lane: {autoEnabled ? "On" : "Off"}</button>
+        <button type="button" role="switch" aria-label="Prefer cloud credits" aria-checked={preferCloud} disabled={busy} onClick={() => setPreferCloud(v => !v)}>Prefer cloud credits: {preferCloud ? "On" : "Off"}</button>
+      </div>
+      <label>Stop cloud launches on (UTC)<input type="date" value={stopDate} onChange={e => setStopDate(e.target.value)} /></label>
+      <p>{!snapshot.automatic.enabled ? "Cloud lane disabled." : snapshot.automatic.stopAt != null && snapshot.automatic.stopAt <= Date.now() ? "Cloud stop date reached." : "Cloud launches stop when the selected date or the provider's credit expiry arrives, whichever is earlier."} Already running sessions must be stopped in Claude.</p>
+      <p>Enable subscriptions and allow their repositories. Agents mark standalone repository reviews or changes for cloud execution, including work delegated by goal steps. Prefer cloud credits uses verified promotional funds before a subscription cap; otherwise automatic work waits for a cap. Usage credits must be off. Explicit cloud-only requests refuse if unavailable; other work continues locally. Parent tasks keep local review and integration.</p>
       {snapshot.automatic.accounts.map(a => <div className="cloud-actions" key={a.id}>
         <button type="button" className="btn ghost sm" aria-pressed={autoAccounts.includes(a.id)} disabled={busy} onClick={() => setAutoAccounts(ids => ids.includes(a.id) ? ids.filter(id => id !== a.id) : [...ids, a.id])}>{autoAccounts.includes(a.id) ? "Disable" : "Enable"} cloud credits for {a.label}</button>
-        <span>{a.ready ? "Capped · cloud balance available" : "Waiting for a cap and verified cloud balance"}</span>
+        <span>{a.ready ? "Cloud balance available" : "Waiting for eligible routing and verified cloud balance"}</span>
       </div>)}
       <label>Allowed cloud repositories<textarea rows={3} value={autoRepositories} onChange={e => setAutoRepositories(e.target.value)} placeholder="example/webapp (one per line)" /></label>
       <p>Only clean, pushed repository state is used. Reports and session links return to the parent for review; changes need branch review and integration. Interrupting GGO observation leaves the remote session running. Open Claude to steer or stop it. An uncertain job is never automatically retried.</p>
       <button className="btn primary sm" disabled={busy}>Save automatic cloud settings</button>
       {snapshot.automatic.jobs.map(j => <article className="cloud-job" key={j.threadId}>
         <span>{j.repository} · {j.state} · parent review required</span>
+        {j.branch && <span>Branch: <code>{j.branch}</code></span>}
+        {j.estimatedCostUsd != null && <span>Estimated session cost: ${j.estimatedCostUsd.toFixed(2)} (provider estimate)</span>}
         {j.url && <a href={j.url} target="_blank" rel="noreferrer">Open automatic cloud session</a>}{j.error && <p className="cloud-error">{j.error}</p>}
         {j.state === "uncertain" && <><p>Check the remote outcome and stop unfinished work in Claude before allowing another job on this account.</p><button type="button" className="btn ghost sm" disabled={busy} onClick={() => void act(async () => { await request(`/automatic/jobs/${j.threadId}/checked`, "POST"); setNotice("Remote check recorded. This subtask will not be submitted again."); })}>I checked this cloud session</button></>}
       </article>)}

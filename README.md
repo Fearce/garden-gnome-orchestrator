@@ -316,7 +316,14 @@ renews that login itself. Unknown reads show `cloud ?`, with the reason on hover
 For automatic offload, enable subscriptions and allow repositories under **Automatic
 cloud subtasks**. Agents mark standalone Claude subtasks with `cloudWork: "review"`
 or `"change"`; when a subscription caps, GGO starts a normal hosted cloud session,
-waits for its result and returns it to the parent for review. For an explicit cloud
+waits for its result and returns it to the parent for review. **Prefer cloud credits**
+also admits eligible subtasks before a cap, including work delegated by goal steps.
+The lane switch stops new launches without deleting account/repository choices.
+An optional UTC stop date and the provider's actual grant expiry both apply; the
+earlier deadline wins. Completed changes record their verified pushed branch and
+provider cost estimate for parent review and normal queued Git integration.
+Exact cloud model requests are passed unchanged or refused if unavailable.
+For an explicit cloud
 request, add `cloudOnly: true`: verified promotional credits can be used before a
 cap, and a refused admission starts no local agent. `cloudWork` alone permits local
 routing and reports why cloud admission failed. Explicit cloud work uses only pushed

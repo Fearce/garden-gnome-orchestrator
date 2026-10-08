@@ -79,9 +79,16 @@ async function pass(browser, phone) {
     const autoPanel = panel.getByRole('form',{name:'Automatic cloud subtasks'});
     await autoPanel.getByRole('button',{name:'Enable cloud credits for Cloud account 1',exact:true}).click();
     await autoPanel.getByLabel('Allowed cloud repositories').fill('example/webapp\nexample/library');
+    await autoPanel.getByRole('switch', {name:'Prefer cloud credits',exact:true}).click();
+    await autoPanel.getByLabel('Stop cloud launches on (UTC)').fill('2026-11-06');
     await autoPanel.getByRole('button',{name:'Save automatic cloud settings',exact:true}).click();
     await panel.getByRole('status').waitFor();
     check('automatic account opt-in and repository policy save',automatic.accountIds[0]==='cloud-account-0' && automatic.repositories.join(',')==='example/webapp,example/library');
+    check('cloud preference and UTC stop date persist',automatic.enabled && automatic.preferCloud && automatic.stopAt===Date.parse('2026-11-06T00:00:00Z'));
+    await autoPanel.getByRole('switch', {name:'Claude cloud lane',exact:true}).click();
+    await autoPanel.getByRole('button',{name:'Save automatic cloud settings',exact:true}).click();
+    await panel.getByRole('status').waitFor();
+    check('cloud master switch saves off',automatic.enabled===false && (await autoPanel.textContent()).includes('Cloud lane disabled'));
     check('automatic controls retain saved opt-in',await autoPanel.getByRole('button',{name:'Disable cloud credits for Cloud account 1',exact:true}).getAttribute('aria-pressed')==='true');
     check('automatic cloud link and parent review visible',await autoPanel.getByRole('link',{name:'Open automatic cloud session',exact:true}).getAttribute('href')==='https://claude.ai/code/session_auto_lab' && (await autoPanel.textContent()).includes('parent review required'));
     await autoPanel.getByRole('button',{name:'I checked this cloud session',exact:true}).click();

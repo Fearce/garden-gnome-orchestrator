@@ -14,6 +14,15 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **Complete Claude cloud execution-lane proof** (2026-10-08, Brindle Pebble).
+  Auditing the existing hosted subtask lane against parent/goal routing, exact model pins,
+  expiry, returned-branch integration and a real repository change. Current local login is
+  valid; provider credit reads are throttled. Cloud/session gates, server/web types,
+  subtask/model/account/reset/fallback/office gates, README claims and privacy pass.
+  Browser lab passes 74/74; desktop/phone orch-throwaway checks pass with the real settings API.
+  Remaining: hosted documentation change, returned-branch review/integration, before/after credit
+  evidence, and activation at the next permitted restart (restart-resume forbids another restart).
+
 
 
 

@@ -36,8 +36,8 @@ class StubAccounts {
   onUsageRefresh() {} effectiveUtilization() { return null; } soonestResetAt() { return null; }
   setPingInterval() {} applyEnabled() {} applyWeeklySafetyPct() {} setSpreadUsage() {} setProfileToken() {}
   auxToken() { return undefined; }
-  cloudFallbackAccountCurrent() {
-    return credentialValid && account.enabled && (account.rateLimited || account.fiveHour >= 100)
+  cloudFallbackAccountCurrent(_id?: string, _token?: string, _org?: string, requireCap = true) {
+    return credentialValid && account.enabled && (!requireCap || account.rateLimited || account.fiveHour >= 100)
       && cloudCreditsReady(account.cloudCredits);
   }
   async cloudFallbackAccount() {
@@ -66,11 +66,12 @@ automatic.runner = async (input: CloudRunInput) => {
   assert.equal(input.token, "test-profile-login");
   assert.equal(input.repository, "example/webapp");
   assert.equal(input.revision, head);
-  assert.ok(input.prompt.includes("Read-only: do not edit"));
+  assert.ok(input.prompt.includes(input.work === "review" ? "Read-only: do not edit" : "new branch"));
+  assert.equal(input.model, model, "the requested exact model reaches cloud unchanged");
   if (mode === "unsent") return { ok: false, sessionId: null, result: null, started: false, error: "Cloud opt-in was removed. No cloud session was started." };
   input.onSession("session_test");
   if (hold) await new Promise<void>(resolve => { finish = resolve; input.signal.addEventListener("abort", () => resolve(), { once: true }); });
-  return { ok: mode === "ok" && !input.signal.aborted, sessionId: "session_test", result: mode === "ok" && !input.signal.aborted ? "Repository review: parser has a missing bounds check." : null, error: mode === "ok" && !input.signal.aborted ? null : "No verified cloud result." };
+  return { ok: mode === "ok" && !input.signal.aborted, sessionId: "session_test", result: mode === "ok" && !input.signal.aborted ? "Repository review: parser has a missing bounds check." : null, error: mode === "ok" && !input.signal.aborted ? null : "No verified cloud result.", branch: input.work === "change" ? "claude/ggo-abcd1234" : null, estimatedCostUsd: 0.15 };
 };
 const parentId = await manager.dispatch({ title: "Parent", workspace, brief: "Review repository" });
 internals.setState(parentId, "implementing");
@@ -85,6 +86,9 @@ async function settled(id: string) {
 try {
   assert.equal(await manager.cloudSubtasks.admit(parent, "review"), undefined, "opt-in defaults off");
   manager.cloudSubtasks.configure({ accountIds: [account.id], repositories: ["example/webapp"] });
+  const unavailablePin = await manager.subTasks.spawn(spawner, { ...input, model: "claude-opus-1", cloudOnly: true });
+  assert.equal(unavailablePin.ok, false, "an unavailable cloud pin is refused instead of upgraded");
+  assert.match(unavailablePin.message, /no model/);
   assert.throws(() => manager.cloudSubtasks.configure({ accountIds: ["unknown"], repositories: ["example/webapp"] }));
   assert.throws(() => manager.cloudSubtasks.configure({ accountIds: [account.id], repositories: ["https://example.com/evil"] }));
   assert.equal(await manager.cloudSubtasks.admit(parent, undefined), undefined, "undeclared work stays local");
@@ -116,7 +120,40 @@ try {
   account.cloudCredits = credits;
   account.rateLimited = false; account.fiveHour = 20;
   assert.equal(await manager.cloudSubtasks.admit(parent, "review"), undefined, "ordinary allowance is used before cloud fallback");
+  const policy = { accountIds: [account.id], repositories: ["example/webapp"] };
+  manager.cloudSubtasks.configure({ ...policy, preferCloud: true });
+  assert.ok(await manager.cloudSubtasks.admit(parent, "review"), "preference admits declared work before a cap");
+  assert.equal(manager.cloudSubtasks.snapshot().accounts[0]?.ready, true);
+  const preferred = (await manager.subTasks.spawn(spawner, { ...input, title: "Prefer credit before cap" })).thread!;
+  await settled(preferred.id);
+  assert.equal(db.listRuns(preferred.id)[0]?.state, "done", "preferred cloud work completes without a cap");
+  assert.ok(!localStarts.includes(preferred.id));
+  manager.cloudSubtasks.configure({ ...policy, enabled: false });
+  assert.equal(await manager.cloudSubtasks.admit(parent, "review", true), undefined, "off switch also stops explicit requests");
+  manager.cloudSubtasks.configure({ ...policy, enabled: true, stopAt: clock - 1 });
+  assert.equal(await manager.cloudSubtasks.admit(parent, "review", true), undefined, "expired policy stops explicit requests");
+  assert.equal(manager.cloudSubtasks.snapshot().accounts[0]?.ready, false);
+  assert.throws(() => manager.cloudSubtasks.configure({ ...policy, stopAt: "tomorrow" }));
+  assert.throws(() => manager.cloudSubtasks.configure({ ...policy, stopAt: 1e100 }));
+  manager.cloudSubtasks.configure({ ...policy, preferCloud: false, stopAt: null });
   account.rateLimited = true; account.fiveHour = 100;
+  const change = (await manager.subTasks.spawn(spawner, { ...input, title: "Push tested change", cloudWork: "change" })).thread!;
+  await settled(change.id);
+  const changeJob = manager.cloudSubtasks.jobs().find(j => j.threadId === change.id)!;
+  assert.equal(changeJob.branch, "claude/ggo-abcd1234");
+  assert.equal(changeJob.estimatedCostUsd, 0.15);
+  assert.match(changeJob.result!, /Verified cloud branch.*\nCommit:.*\n.*git-integrate/s);
+  pushed = false;
+  // Admit first, then lose the pushed output while the worker runs.
+  const originalGit = automatic.git;
+  automatic.git = async (cmd: string, args: string[], opts: unknown) => args.at(-1)?.startsWith("refs/heads/claude/")
+    ? { code: 2, stdout: "", stderr: "", timedOut: false } : originalGit(cmd, args, opts);
+  pushed = true;
+  const missingBranch = (await manager.subTasks.spawn(spawner, { ...input, title: "Missing output branch", cloudWork: "change" })).thread!;
+  await settled(missingBranch.id);
+  assert.match(db.getThread(missingBranch.id)?.error ?? "", /output branch could not be verified/);
+  automatic.git = originalGit;
+  calls = 0;
   const child = (await manager.subTasks.spawn(spawner, input)).thread!;
   assert.ok(child?.subTask?.cloud, "cap-triggered spawn chooses cloud automatically");
   await settled(child.id);
@@ -269,6 +306,26 @@ try {
   } finally { await app.close(); }
 
   // Real AccountManager verifies refreshed identity, balance and billing, without live credentials.
+  const { fetchCloudFallbackCredits } = await import("../accounts/cloudCredits.js");
+  let creditReads = 0;
+  const waits: number[] = [];
+  const retryCredits = await fetchCloudFallbackCredits("profile", "org-test", (async url => {
+    if (String(url).endsWith("/profile")) return Response.json({ organization: { uuid: "org-test" } });
+    creditReads++;
+    return creditReads === 1 ? new Response("", { status: 429, headers: { "retry-after": "207" } })
+      : Response.json({ extra_usage: { is_enabled: false }, iguana_necktie: { limit_dollars: 100, used_dollars: 0, resets_at: new Date(clock + 86400000).toISOString() } });
+  }) as typeof fetch, async ms => { waits.push(ms); });
+  assert.equal(retryCredits?.remaining, 100);
+  assert.deepEqual(waits, [207000], "launch credit reads honor provider Retry-After");
+  for (const retryAfter of ["301", "invalid", "0"]) {
+    creditReads = 0;
+    assert.equal(await fetchCloudFallbackCredits("profile", "org-test", (async url => {
+      if (String(url).endsWith("/profile")) return Response.json({ organization: { uuid: "org-test" } });
+      creditReads++;
+      return new Response("", { status: 429, headers: { "retry-after": retryAfter } });
+    }) as typeof fetch, async () => {}), null);
+    assert.equal(creditReads, retryAfter === "0" ? 2 : 1, "no unbounded retry or invalid wait");
+  }
   const realAccounts = new AccountManager([{ id: "verified", label: "Verified", token: "inference", profileToken: "profile" }], hub);
   const state = (realAccounts as any).states.get("verified");
   Object.assign(state, { organizationId: "org-test", rateLimited: true, fiveHour: 100, fiveHourReset: clock + 3600000 });
@@ -351,7 +408,7 @@ try {
     assert.ok(notified, "session is durably recorded before observing output");
     if (String(url).includes("/events?")) {
       polls++;
-      const payload = { type: "result", subtype: resultMode === "failed" ? "error_max_budget_usd" : "success", is_error: resultMode === "failed", result: "Actual remote findings" };
+      const payload = { type: "result", subtype: resultMode === "failed" ? "error_max_budget_usd" : "success", is_error: resultMode === "failed", result: "Actual remote findings", total_cost_usd: 0.12 };
       return new Response(JSON.stringify({ data: polls === 1 ? [
         { source: "client", payload }, { source: "worker", payload: { type: "assistant", message: { content: "partial response" } } },
       ] : [{ source: "worker", payload }] }));
@@ -364,7 +421,11 @@ try {
   };
   assert.equal((await runProtocol()).result, "Actual remote findings");
   assert.equal(polls, 2, "client-spoofed result and idle metadata do not complete a task");
-  protocolInput.work = "change"; assert.equal((await runProtocol()).ok, true, "change tasks get a separate push branch");
+  protocolInput.work = "change";
+  const changed = await runProtocol();
+  assert.equal(changed.ok, true, "change tasks get a separate push branch");
+  assert.match(changed.branch!, /^claude\/ggo-/);
+  assert.equal(changed.estimatedCostUsd, 0.12);
   resultMode = "failed"; assert.equal((await runProtocol()).ok, false, "provider budget stop is not success");
   resultMode = "lost"; const lost = await runProtocol();
   assert.equal(lost.ok, false); assert.equal(lost.sessionId, null); assert.equal(sessionCount, 1);
@@ -380,9 +441,10 @@ try {
   assert.match(revokedCreate.error ?? "", /opt-in was removed/);
   assert.equal(lost.started, undefined, "a lost create response stays uncertain");
   // Exercise service authorization through the real client after asynchronous environment discovery.
+  let revoke = () => { account.enabled = false; };
   const eligibilityService = new CloudSubtaskService({ db, accounts: new StubAccounts() as unknown as AccountsType,
     setState: () => {}, message: () => {} }, launch => runCloudSession(launch, async (url, options) => {
-      if (String(url).includes("environment_providers")) account.enabled = false;
+      if (String(url).includes("environment_providers")) revoke();
       return provider(url, options!);
     }, async () => {}), automatic.git);
   const disabledChild = db.createThread({ title: "Disabled before cloud creation", workspace, rawPrompt: input.brief,
@@ -397,6 +459,16 @@ try {
     "a disabled subscription stops before session creation without blocking other work");
   assert.match(eligibilityService.jobs().find(j => j.threadId === disabledChild.id)?.error ?? "", /account eligibility changed/,
     "the regression must reach the final eligibility guard, not an unrelated pre-create failure");
+  for (const setting of [{ enabled: false }, { stopAt: Date.now() - 1 }]) {
+    eligibilityService.configure({ ...policy, enabled: true, stopAt: null });
+    revoke = () => { eligibilityService.configure({ ...policy, ...setting }); };
+    const policyChild = db.createThread({ title: "Policy changed during discovery", workspace, rawPrompt: input.brief,
+      brief: input.brief, parentId, subTask: disabledChild.subTask });
+    sessionCount = 0;
+    await eligibilityService.run(policyChild);
+    assert.equal(sessionCount, 0, "switch or deadline changed during discovery prevents POST");
+    assert.equal(eligibilityService.jobs().find(j => j.threadId === policyChild.id)?.state, "checked");
+  }
   console.log("cloud-subtasks: cap dispatch, mid-run fallback, admission, parent result, interrupt and restart checks passed");
 } finally {
   for (const timer of [internals.capSupervisor, internals.tokenResumeTimer, internals.capResumeWake]) if (timer) clearTimeout(timer);

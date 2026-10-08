@@ -107,7 +107,7 @@ export const spawnSubAgentShape = {
     .max(40_000)
     .optional()
     .describe("Coding sub-agents: the complete standalone brief — what to do and what 'done' means. The sub-agent sees only this plus the repo."),
-  cloudWork: z.enum(["review", "change"]).optional().describe("Claude only: declare a standalone repository-only job suitable for a Linux cloud checkout. No local services, private files, attachments, credentials, deployment, pending local changes or parent transcript required. When an opted-in subscription caps, GGO automatically runs this subtask using verified cloud credits; the parent must review its report/branch."),
+  cloudWork: z.enum(["review", "change"]).optional().describe("Claude only: declare a standalone repository-only job suitable for a Linux cloud checkout. No local services, private files, attachments, credentials, deployment, pending local changes or parent transcript required. When Prefer cloud credits is enabled or an opted-in subscription caps, GGO runs this subtask using verified cloud credits; the parent must review its report/branch."),
   cloudOnly: z.boolean().optional().describe("Claude cloud execution required. Set true with cloudWork when the owner asks to use cloud credits. Uses an opted-in account before or after caps; refuses with a reason if unavailable and NEVER starts a local sub-agent. Only the exact pushed commit is available, including when the parent has unrelated pending changes."),
   state: jevJson.optional().describe("Jev only: the content every question is judged against (a string, or JSON with named fields)."),
   questions: z
@@ -371,8 +371,8 @@ export class SubTaskService {
     const brief = input.brief?.trim();
     if (!brief) return this.refuse("A coding sub-agent needs a `brief`: the complete standalone job and what 'done' means.");
     const asked = (input.model?.trim() || entry.defaultModel || "").trim();
-    // Never run an older model of a line the roster carries a newer member of (gpt-6-sol → gpt-6.1-sol).
-    const model = newestInFamily(asked, entry.models.map((m) => m.id));
+    // Cloud pins must be honored or refused. Ordinary local routing retains its newest-family policy.
+    const model = input.cloudWork && input.model?.trim() ? asked : newestInFamily(asked, entry.models.map((m) => m.id));
     const known = entry.models.find((m) => m.id.toLowerCase() === model.toLowerCase());
     if (!model || !known) {
       return this.refuse(`${providerLabel(input.provider)} has no model "${input.model ?? "(default)"}".\nAvailable now:\n${this.rosterText()}`);

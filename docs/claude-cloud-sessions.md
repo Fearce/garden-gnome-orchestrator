@@ -81,7 +81,27 @@ commit is cloned; the brief must not depend on those files. Automatic cap fallba
 retains its clean-checkout requirement. All account identity, grant freshness,
 opt-in, overage-off, uncertain-session and launch-boundary checks still apply.
 
-## Automatic subtasks after a Claude cap
+## Automatic cloud routing
+
+The **Claude cloud lane** switch pauses new launches without clearing the selected
+subscriptions or repositories. **Prefer cloud credits** admits declared eligible
+subtasks before a local subscription cap; otherwise automatic routing waits for a
+cap. Goal implementors can delegate the same standalone work. Parent tasks retain
+local orchestration, review, QA and integration; arbitrary task text is never treated
+as proof that a task can run without this machine.
+
+**Stop cloud launches on (UTC)** stops admission at midnight at the start of that
+date. A provider grant that expires earlier always wins. Both checks run again at
+session creation. A stop date or switch does not terminate an already running VM;
+use its Claude session link. Account/repository opt-ins still default empty in a new
+installation; the operator's enabled policy belongs in the local database.
+
+Change results record the generated output branch and verify its remote ref before
+reporting successful completion. The parent receives that ref and commit for review,
+testing and integration through `git-transaction.cjs` and `git-integrate.cjs`.
+A missing branch is a review error. The provider's session cost is stored separately
+as an estimate, not asserted to equal the debit from promotional funds. Exact cloud
+model requests are passed unchanged or refused if absent from the available roster.
 
 1. Open **Settings > Claude cloud > Automatic cloud subtasks**. Enable the
    subscriptions whose promotional credits you want to use, list the allowed
@@ -98,8 +118,9 @@ opt-in, overage-off, uncertain-session and launch-boundary checks still apply.
    subtask. This declaration means no parent transcript, local services, private
    files, credentials, attachments, deployments or unfinished local changes are
    needed. The same field works in `spawn_subagent` and the CLI `SUBTASK` bridge.
-   GGO chooses cloud automatically only after an enabled subscription hits its
-   actual cap; safety reserves or soft thresholds alone do not qualify.
+   Without **Prefer cloud credits**, GGO chooses cloud automatically only after an
+   enabled subscription hits its actual cap; safety reserves or soft thresholds
+   alone do not qualify.
 4. Before starting, GGO refreshes the matching account's balance and billing
    status, refuses zero/expired/locked/stale/unreadable grants, and verifies that
    the repository is allowed, clean and pushed. It prepares a shallow temporary
@@ -113,8 +134,9 @@ opt-in, overage-off, uncertain-session and launch-boundary checks still apply.
    tasks disable shell and editing tools; change tasks get a separate push branch.
    Every session uses auto permission mode, a 40-turn limit and an estimated
    budget ceiling of the smaller of $5 or the admitted promotional balance.
-   Immediately before creation, GGO rechecks opt-in, subscription enablement,
-   account identity and login, cap state, and the fresh promotional balance.
+   Immediately before creation, GGO rechecks the lane switch and stop date, opt-in,
+   subscription enablement, account identity and login, cap state when required,
+   and the fresh promotional balance.
    GGO records a run and session link durably.
    The child settles for review; the normal subtask barrier delivers the report
    to the spawning agent once. That agent must review and integrate any returned
@@ -238,9 +260,36 @@ promotional credit consumption because they are excluded from the promotion.
 
 A deploy does not enable the automatic lane; its opt-in lives in the local database.
 To check it headlessly after logging in, read `automatic` from `GET /api/cloud-sessions`
-(`accountIds`, `repositories`, per-account `enabled`/`ready`, `jobs`). `ready` stays false
-until that subscription is actually capped. `PUT /api/cloud-sessions/automatic` with
+(`enabled`, `preferCloud`, `stopAt`, `accountIds`, `repositories`, per-account
+`enabled`/`ready`, `jobs`). `ready` accounts for policy, verified credits and any cap
+requirement. `PUT /api/cloud-sessions/automatic` with
 `{"accountIds": [...], "repositories": ["owner/repository"]}` replaces the whole policy.
+
+The account and repository lists are replaced; omitted switch, preference and stop
+date fields retain their prior values. `stopAt` is a UTC Unix timestamp in milliseconds
+or `null` to remove the operator deadline.
+
+## Research checked 2026-10-08
+
+- [Claude's cloud documentation](https://code.claude.com/docs/en/claude-code-on-the-web)
+  documents `--cloud` creation and `-p --cloud <session-id>` follow-up messages.
+  Follow-ups queue a message and return a session link, not the completed task.
+  Remote Control runs on the local machine and is a different execution path.
+- [The CLI reference](https://code.claude.com/docs/en/cli-reference) and local
+  `claude --help` agree on `--cloud` and `--teleport`. The checked native CLI was
+  2.1.280; the installed Agent SDK was 0.3.293. These may differ from the CLI build
+  used to establish the existing adapter protocol.
+- [The Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview)
+  describes a process hosted by the application. Its local session APIs are not
+  a documented launcher for promotional Claude Code cloud sessions.
+- [The routine API](https://platform.claude.com/docs/en/api/claude-code/routines-fire)
+  uses routine-specific credentials and regular subscription usage.
+  [Promotion terms](https://support.claude.com/en/articles/17152539-cloud-sessions-bonus-credit-promotion)
+  exclude projects and routines. Cloud credits are distinct from Console API credits;
+  read the actual grant expiry rather than assuming a campaign-wide date.
+- [Anthropic's changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)
+  records ongoing cloud/session fixes. GGO's observed OAuth create/poll protocol is
+  not a stable public API; real hosted verification remains necessary after changes.
 
 Live hosted smoke tests also exercised automatic subtask admission with a simulated
 local cap in an isolated GGO database. Both subscriptions returned repository

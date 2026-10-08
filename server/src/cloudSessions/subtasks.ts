@@ -11,13 +11,15 @@ import { CLOUD_SESSION_ID, runCloudSession, type CloudRunInput, type CloudRunRes
 
 const POLICY = "cloud_subtask_policy_v1";
 const JOBS = "cloud_subtask_jobs_v1";
-interface Policy { accountIds: string[]; repositories: string[] }
+interface Policy { accountIds: string[]; repositories: string[]; enabled: boolean; preferCloud: boolean; stopAt: number | null }
 export interface CloudSubtaskJob {
   threadId: string; parentId: string; accountId: string; repository: string;
   state: "starting" | "running" | "review" | "uncertain" | "checked";
   sessionId: string | null; url: string | null; result: string | null; error: string | null;
   createdAt: number;
   runId: string;
+  branch?: string | null;
+  estimatedCostUsd?: number | null;
 }
 interface Host {
   db: Db;
@@ -49,8 +51,9 @@ export class CloudSubtaskService {
   }
   private policy(): Policy {
     const raw = this.host.db.kvGet(POLICY);
-    return raw ? JSON.parse(raw) as Policy : { accountIds: [], repositories: [] };
+    return { enabled: true, preferCloud: false, stopAt: null, ...(raw ? JSON.parse(raw) : { accountIds: [], repositories: [] }) } as Policy;
   }
+  private policyOpen(policy = this.policy()): boolean { return policy.enabled && (policy.stopAt == null || Date.now() < policy.stopAt); }
   jobs(): CloudSubtaskJob[] { return JSON.parse(this.host.db.kvGet(JOBS) || "[]") as CloudSubtaskJob[]; }
   private saveJob(job: CloudSubtaskJob): void {
     // Active and uncertain records must survive even after 100 other jobs: losing one permits duplicates.
@@ -60,7 +63,8 @@ export class CloudSubtaskService {
     const policy = this.policy();
     return { ...policy, jobs: this.jobs(), accounts: this.host.accounts.dto().map(a => ({
       id: a.id, label: a.label, enabled: policy.accountIds.includes(a.id),
-      ready: cloudAccountExhausted(a) && cloudCreditsReady(a.cloudCredits),
+      ready: this.policyOpen(policy) && policy.accountIds.includes(a.id) && a.enabled
+        && (policy.preferCloud || cloudAccountExhausted(a)) && cloudCreditsReady(a.cloudCredits),
     })) };
   }
   configure(input: Record<string, unknown>): Policy {
@@ -69,7 +73,12 @@ export class CloudSubtaskService {
       || !Array.isArray(repos) || repos.length > 100 || !repos.every(r => typeof r === "string" && /^[\w.-]+\/[\w.-]+$/.test(r))) {
       throw new CloudError("Choose existing subscriptions and GitHub owner/repository names.");
     }
-    const policy = { accountIds: [...new Set(ids)] as string[], repositories: [...new Set(repos.map(r => r.toLowerCase()))] as string[] };
+    for (const key of ["enabled", "preferCloud"]) if (input[key] !== undefined && typeof input[key] !== "boolean") throw new CloudError(`Invalid ${key} setting.`);
+    if (input.stopAt !== undefined && input.stopAt !== null && (typeof input.stopAt !== "number" || !Number.isFinite(input.stopAt) || input.stopAt < 0 || input.stopAt > 8.64e15)) throw new CloudError("Invalid cloud stop date.");
+    const policy: Policy = { ...this.policy(), accountIds: [...new Set(ids)] as string[], repositories: [...new Set(repos.map(r => r.toLowerCase()))] as string[],
+      ...(input.enabled !== undefined && { enabled: input.enabled as boolean }),
+      ...(input.preferCloud !== undefined && { preferCloud: input.preferCloud as boolean }),
+      ...(input.stopAt !== undefined && { stopAt: input.stopAt as number | null }) };
     this.host.db.kvSet(POLICY, JSON.stringify(policy));
     return policy;
   }
@@ -84,11 +93,12 @@ export class CloudSubtaskService {
     const deny = (reason: string): undefined => { onRefusal?.(reason); return undefined; };
     if (!work || parent.lane === "vanilla") return deny("Declare standalone cloudWork review or change on an ordinary task.");
     const policy = this.policy();
+    if (!this.policyOpen(policy)) return deny(policy.enabled ? "The cloud lane stop date has passed." : "The Claude cloud lane is disabled.");
     if (!policy.accountIds.length || !policy.repositories.length) return deny("Enable subscriptions and allow the repository in Settings > Claude cloud.");
     const candidates = this.host.accounts.dto().filter(a => policy.accountIds.includes(a.id)
-      && a.enabled && (cloudOnly || cloudAccountExhausted(a)) && cloudCreditsReady(a.cloudCredits)
+      && a.enabled && (cloudOnly || policy.preferCloud || cloudAccountExhausted(a)) && cloudCreditsReady(a.cloudCredits)
       && !this.jobs().some(j => j.accountId === a.id && j.state === "uncertain"));
-    if (!candidates.length) return deny(cloudOnly
+    if (!candidates.length) return deny(cloudOnly || policy.preferCloud
       ? "No opted-in enabled subscription has fresh usable cloud credits and no uncertain session. Check subscriptions and cloud sessions."
       : "No opted-in subscription is capped with fresh usable cloud credits and no uncertain session. Use cloudOnly true for an explicit cloud request.");
     const run = (args: string[]) => this.git("git", args, { cwd: parent.workspace, urgent: true, timeoutMs: 15_000 });
@@ -123,7 +133,7 @@ export class CloudSubtaskService {
       return;
     }
     const policy = this.policy();
-    if (!policy.accountIds.includes(cloud.accountId) || !policy.repositories.includes(cloud.repository)) {
+    if (!this.policyOpen(policy) || !policy.accountIds.includes(cloud.accountId) || !policy.repositories.includes(cloud.repository)) {
       this.host.setState(thread.id, "review", "Cloud opt-in was removed.");
       return;
     }
@@ -148,7 +158,7 @@ export class CloudSubtaskService {
     let job: CloudSubtaskJob | undefined;
     try {
       const currentPolicy = this.policy();
-      if (!currentPolicy.accountIds.includes(cloud.accountId) || !currentPolicy.repositories.includes(cloud.repository)) throw new CloudError("Cloud opt-in was removed. No task started.");
+      if (!this.policyOpen(currentPolicy) || !currentPolicy.accountIds.includes(cloud.accountId) || !currentPolicy.repositories.includes(cloud.repository)) throw new CloudError("Cloud opt-in was removed or its stop date passed. No task started.");
       if (controller.signal.aborted) return;
       checkout = await mkdtemp(join(tmpdir(), "ggo-cloud-subtask-"));
       const clone = await this.git("git", ["clone", "--depth", "1", "--single-branch", "--branch", cloud.branch, "--", `https://github.com/${cloud.repository}.git`, checkout], { urgent: true, timeoutMs: 60_000 });
@@ -158,11 +168,11 @@ export class CloudSubtaskService {
       if (controller.signal.aborted) return;
       // Refresh at the launch boundary: cloning can outlive a cap or credential change. Opt-in
       // may also be revoked while the provider read awaits, so check it again before creation.
-      const account = await this.host.accounts.cloudFallbackAccount(cloud.accountId, !spec.cloudOnly);
+      const account = await this.host.accounts.cloudFallbackAccount(cloud.accountId, !spec.cloudOnly && !this.policy().preferCloud);
       if (!account) throw new CloudError("Cloud account, cap, promotional balance or overage-off verification failed. No task started.");
       if (controller.signal.aborted) return;
       const launchPolicy = this.policy();
-      if (!launchPolicy.accountIds.includes(cloud.accountId) || !launchPolicy.repositories.includes(cloud.repository)) throw new CloudError("Cloud opt-in was removed. No task started.");
+      if (!this.policyOpen(launchPolicy) || !launchPolicy.accountIds.includes(cloud.accountId) || !launchPolicy.repositories.includes(cloud.repository)) throw new CloudError("Cloud opt-in was removed or its stop date passed. No task started.");
       const run = this.host.db.createRun({ threadId: thread.id, role: "implementor", model: spec.model || "sonnet", account: `claude-cloud:${account.label}` });
       job = { threadId: thread.id, parentId: thread.parentId, accountId: cloud.accountId, repository: cloud.repository, runId: run.id,
         state: "starting", sessionId: null, url: null, result: null, error: null, createdAt: Date.now() };
@@ -180,8 +190,8 @@ export class CloudSubtaskService {
         prompt, model: spec.model || "sonnet", effort: spec.effort, signal: controller.signal,
         canCreate: () => {
           const policy = this.policy();
-          return policy.accountIds.includes(cloud.accountId) && policy.repositories.includes(cloud.repository)
-            && this.host.accounts.cloudFallbackAccountCurrent(cloud.accountId, account.token, account.organizationId, !spec.cloudOnly);
+          return this.policyOpen(policy) && policy.accountIds.includes(cloud.accountId) && policy.repositories.includes(cloud.repository)
+            && this.host.accounts.cloudFallbackAccountCurrent(cloud.accountId, account.token, account.organizationId, !spec.cloudOnly && !policy.preferCloud);
         },
         onSession: id => {
           if (!CLOUD_SESSION_ID.test(id) || !job) return;
@@ -194,9 +204,20 @@ export class CloudSubtaskService {
       // A provably unsent create leaves nothing remote to check: keep the record, but do not block the account.
       job.state = result.ok ? "review" : result.started === false ? "checked" : "uncertain";
       job.result = result.result; job.error = result.error;
+      job.branch = result.branch ?? null;
+      job.estimatedCostUsd = result.estimatedCostUsd ?? null;
+      if (result.ok && spec.cloudWork === "change") {
+        const pushed = job.branch && /^claude\/ggo-[a-f0-9-]+$/.test(job.branch)
+          ? await this.git("git", ["ls-remote", "--exit-code", "--refs", "origin", `refs/heads/${job.branch}`], { cwd: checkout, urgent: true, timeoutMs: 15_000 }) : null;
+        if (!pushed || pushed.code !== 0 || pushed.timedOut || !/^[a-f0-9]{40,64}\s/.test(pushed.stdout)) {
+          job.error = "Cloud reported completion, but its output branch could not be verified on GitHub. Review the session before integration.";
+        } else {
+          job.result = `${job.result}\n\nVerified cloud branch: ${job.branch}\nCommit: ${pushed.stdout.split(/\s/)[0]}\nReview and test this branch in a separate worktree. Fetch through git-transaction.cjs, then integrate through git-integrate.cjs into the main checkout. Follow the parent task's normal QA and push policy; never force-push.`;
+        }
+      }
       this.saveJob(job);
-      this.host.db.updateRun(run.id, { state: result.ok ? "done" : "error", endedAt: Date.now(), error: job.error });
-      this.host.message(thread.id, result.ok ? `Cloud result — parent review required\nSession: ${job.url}\n${result.result}` : result.started === false ? String(result.error) : `${result.error}\n${job.url ?? "Check Claude's session list."}`, run.id);
+      this.host.db.updateRun(run.id, { state: result.ok && !job.error ? "done" : "error", endedAt: Date.now(), error: job.error });
+      this.host.message(thread.id, result.ok ? `Cloud result — parent review required\nSession: ${job.url}\n${job.result}${job.error ? `\n${job.error}` : ""}` : result.started === false ? String(result.error) : `${result.error}\n${job.url ?? "Check Claude's session list."}`, run.id);
       if (!controller.signal.aborted) this.host.setState(thread.id, "review", job.error);
     } catch (error) {
       const message = error instanceof CloudError ? error.message : "Cloud observation failed. Check Claude before retrying.";

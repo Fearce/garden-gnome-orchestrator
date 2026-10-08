@@ -8,6 +8,10 @@ export interface CloudRunResult {
   error: string | null;
   /** False only when GGO provably never sent the create request, so no billable session can exist. */
   started?: boolean;
+  /** Generated output ref; the parent still verifies the pushed branch before integrating. */
+  branch?: string | null;
+  /** Provider's token-price estimate, not a measured promotional balance debit. */
+  estimatedCostUsd?: number | null;
 }
 export interface CloudRunInput {
   token: string;
@@ -103,7 +107,8 @@ export async function runCloudSession(input: CloudRunInput, request: typeof fetc
       if (completed) {
         const result = typeof completed.result === "string" ? completed.result.slice(0, 60_000) : null;
         const ok = completed.subtype === "success" && completed.is_error === false && !!result?.trim();
-        return { sessionId, result: ok ? result : null, ok,
+        return { sessionId, result: ok ? result : null, ok, branch: outputBranch,
+          estimatedCostUsd: typeof completed.total_cost_usd === "number" && Number.isFinite(completed.total_cost_usd) && completed.total_cost_usd >= 0 ? completed.total_cost_usd : null,
           error: ok ? null : "Claude cloud did not complete successfully. Open the session to review its result." };
       }
       if (["requires_action", "cancelled", "rejected", "failed", "error"].includes(current.worker_status)
