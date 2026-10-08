@@ -1687,6 +1687,8 @@ button.office-roster-member:focus-visible { outline: 2px solid var(--accent); ou
 .sub-btn.primary { background: color-mix(in oklch, var(--accent) 18%, var(--bg-2)); color: var(--accent); border-color: color-mix(in oklch, var(--accent) 40%, var(--line)); }
 .sub-btn.primary:hover:not(:disabled) { background: color-mix(in oklch, var(--accent) 26%, var(--bg-2)); color: var(--accent); }
 .sub-btn.ghost { background: none; }
+.sub-link { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.sub-msg + .key-input { margin-top: 8px; }
 .sub-btn.ghost:hover:not(:disabled) { color: var(--danger); border-color: var(--danger); }
 
 .sub-msg { font-size: 11px; line-height: 1.4; margin-top: 7px; }

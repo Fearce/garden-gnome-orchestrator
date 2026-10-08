@@ -11,8 +11,8 @@ export interface Account {
    * for identity/balance reads and opted-in credit-eligible cloud subtasks. Absent is the normal state: without it the account reports
    * its banked resets as unconfigured rather than as none.
    *
-   * Set from `ACCOUNT_<n>_PROFILE_TOKEN` at boot, or from Settings → Subscriptions at runtime
-   * (`AccountManager.setProfileToken`), which is why it is not readonly.
+   * Set from `ACCOUNT_<n>_PROFILE_TOKEN` at boot, or at runtime by GGO's own Claude sign-in, which
+   * replaces it on every renewal (`AccountManager.profileAccess`) — which is why it is not readonly.
    */
   profileToken?: string;
 }

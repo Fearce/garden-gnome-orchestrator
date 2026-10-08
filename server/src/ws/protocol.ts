@@ -88,6 +88,8 @@ export interface AccountDTO {
   prepaidCredits?: { balance: number; currency: string; autoReload: boolean; enabled: boolean; readAt: number };
   cloudCredits?: { remaining: number; limit: number; used: number; expiresAt: number; locked: boolean; readAt: number };
   profileTokenPresent?: boolean;
+  // True when that token comes from GGO's own Claude sign-in, which renews itself.
+  profileLoginRenews?: boolean;
   updatedAt: number;
   error?: string | null;
 }
@@ -262,6 +264,9 @@ export type ServerEvent =
   // The answer to one `resetCredit.redeem`, only to the socket that asked. `key` echoes the target
   // ("codex", or "claude:<account id>") so the console knows which chip to settle.
   | { type: "resetCredit.result"; key: string; ok: boolean; message: string }
+  // A Claude sign-in step for one subscription, only to the socket that asked. `url` is set when a
+  // sign-in starts; a completion carries only ok + message.
+  | { type: "account.profileLogin.result"; id: string; ok: boolean; message: string; url?: string }
   // Voice mode: a task-tailored spoken line for a just-completed task. Only published while voice
   // mode is on (gateway up AND wake/mic enabled); the gateway speaks it, the web console ignores it.
   | { type: "voice.announce"; threadId: string; text: string }
@@ -568,6 +573,10 @@ export const clientCommandSchema = z.discriminatedUnion("type", [
   // credential that makes its BANKED RESETS readable. Never echoed back; only `profileTokenPresent`
   // rides the accounts broadcast. Bounded because it arrives from a LAN-reachable client.
   z.object({ type: z.literal("account.setProfileToken"), id: z.string(), token: z.string().max(4096) }),
+  // GGO's own Claude sign-in for that token: begin returns the authorize URL, complete exchanges the
+  // code the owner pastes back. The resulting login renews itself.
+  z.object({ type: z.literal("account.profileLogin.begin"), id: z.string().min(1).max(100) }),
+  z.object({ type: z.literal("account.profileLogin.complete"), id: z.string().min(1).max(100), code: z.string().min(1).max(4096) }),
   z.object({ type: z.literal("thread.changes"), threadId: z.string() }),
   z.object({ type: z.literal("thread.git"), threadId: z.string() }),
   z.object({ type: z.literal("thread.gitSummary"), threadId: z.string() }),

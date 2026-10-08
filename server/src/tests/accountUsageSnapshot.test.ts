@@ -360,5 +360,103 @@ try {
   check("removing profile token clears its cloud balance", cloudManager.dto()[0]?.cloudCredits === undefined);
 } finally { globalThis.fetch = originalFetch; }
 
+console.log("account-usage: a revoked profile token is not reported as throttling");
+{
+  // Live behaviour: the usage endpoint answers a revoked token 429 while the profile endpoint says 401.
+  const revokedManager = new AccountManager([{ id: "revoked", label: "Revoked", token: "inference-token", profileToken: "revoked-token" }], new EventHub());
+  const revokedState = (revokedManager as any).states.get("revoked");
+  let profileStatus = 401;
+  globalThis.fetch = (async (input: string | URL) => String(input).endsWith("/profile")
+    ? new Response(JSON.stringify({ error: { type: "authentication_error", message: "OAuth access token has been revoked." } }), { status: profileStatus })
+    : new Response(JSON.stringify({ error: { type: "rate_limit_error" } }), { status: 429 })) as typeof fetch;
+  try {
+    await (revokedManager as any).readResetCredits(revokedState);
+    check("429 + revoked profile reads as a rejected login", /rejected or revoked.*sign in again/i.test(revokedManager.dto()[0]?.resetCreditsError ?? ""), revokedManager.dto()[0]?.resetCreditsError ?? "none");
+    profileStatus = 429;
+    await (revokedManager as any).readResetCredits(revokedState);
+    check("genuine throttling still waits for the next refresh", /rate-limited.*next refresh/i.test(revokedManager.dto()[0]?.resetCreditsError ?? ""));
+  } finally { globalThis.fetch = originalFetch; }
+}
+
+console.log("account-usage: GGO's own Claude sign-in renews itself");
+{
+  const org = "11111111-1111-4111-8111-111111111111";
+  const saved: Array<{ accessToken: string; refreshToken: string; expiresAt: number } | null> = [];
+  const store = {
+    load: () => ({ accessToken: "access-old", refreshToken: "refresh-1", expiresAt: Date.now() - 1_000 }),
+    save: (_id: string, login: { accessToken: string; refreshToken: string; expiresAt: number } | null) => { saved.push(login); },
+  };
+  const loginAccount = { id: "signed-in", label: "Signed in", token: "inference-token" };
+  const loginManager = new AccountManager([loginAccount], new EventHub(), 600_000, { profileLogins: store });
+  const loginState = (loginManager as any).states.get(loginAccount.id);
+  loginState.organizationId = org;
+  check("a stored sign-in is restored at construction", loginManager.dto()[0]?.profileTokenPresent === true && loginManager.dto()[0]?.profileLoginRenews === true);
+
+  let tokenCalls = 0;
+  let tokenAnswer: () => Response = () => Response.json({ access_token: `access-${tokenCalls}`, refresh_token: `refresh-${tokenCalls + 1}`, expires_in: 28_800, scope: "user:profile user:inference" });
+  const tokenBodies: Array<Record<string, string>> = [];
+  const usedTokens: string[] = [];
+  let revokedToken: string | null = null;
+  globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/v1/oauth/token")) {
+      tokenCalls++;
+      tokenBodies.push(JSON.parse(String(init?.body)));
+      await new Promise((r) => setTimeout(r, 5));
+      return tokenAnswer();
+    }
+    const bearer = String((init?.headers as Record<string, string>)?.Authorization ?? "").replace("Bearer ", "");
+    usedTokens.push(bearer);
+    if (bearer === revokedToken) return new Response("{}", { status: 401 });
+    if (url.endsWith("/profile")) return Response.json({ organization: { uuid: org } });
+    if (url.includes("/prepaid/credits")) return Response.json({ amount: 0, currency: "USD", auto_reload_settings: { enabled: false } });
+    return Response.json({ cedar_ember: { eligible: false }, iguana_necktie: cloudWire });
+  }) as typeof fetch;
+  try {
+    await Promise.all([(loginManager as any).readResetCredits(loginState), (loginManager as any).readResetCredits(loginState)]);
+    check("an expired sign-in renews once, even under concurrent reads", tokenCalls === 1, `token calls: ${tokenCalls}`);
+    check("renewal spends the stored refresh token", tokenBodies[0]?.grant_type === "refresh_token" && tokenBodies[0]?.refresh_token === "refresh-1");
+    check("the rotated login is persisted", saved.at(-1)?.refreshToken === "refresh-2" && saved.at(-1)?.accessToken === "access-1");
+    check("reads use the renewed token, never the expired one", usedTokens.length > 0 && !usedTokens.includes("access-old"));
+    check("the renewed login publishes cloud money", loginManager.dto()[0]?.cloudCredits?.remaining === 90);
+
+    revokedToken = "access-1";
+    await (loginManager as any).readResetCredits(loginState);
+    check("a login revoked before its expiry renews and reads again", tokenCalls === 2 && loginManager.dto()[0]?.cloudCredits?.remaining === 90 && !loginManager.dto()[0]?.resetCreditsError);
+
+    tokenAnswer = () => new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+    loginState.profileRefresh.expiresAt = Date.now() - 1;
+    await (loginManager as any).readResetCredits(loginState);
+    const dropped = loginManager.dto()[0];
+    check("a refused renewal drops the login and asks for a new sign-in", !dropped?.profileTokenPresent && !dropped?.profileLoginRenews && /sign in again/i.test(dropped?.resetCreditsError ?? "") && saved.at(-1) === null);
+    check("a dropped login shows no cloud money", dropped?.cloudCredits === undefined);
+
+    console.log("account-usage: the sign-in flow is bound to its attempt and its subscription");
+    const begun = loginManager.beginProfileLogin(loginAccount.id);
+    const url = begun.ok ? new URL(begun.url) : null;
+    const state = url?.searchParams.get("state") ?? "";
+    check("sign-in starts a PKCE authorize link with the profile scope", !!url && url.searchParams.get("code_challenge_method") === "S256"
+      && !!url.searchParams.get("code_challenge") && (url.searchParams.get("scope") ?? "").split(" ").includes("user:profile"));
+    const callsBefore = tokenCalls;
+    const wrongState = await loginManager.completeProfileLogin(loginAccount.id, "the-code#another-attempt");
+    check("a code from another attempt is refused without a token request", !wrongState.ok && tokenCalls === callsBefore);
+    tokenAnswer = () => Response.json({ access_token: "access-other", refresh_token: "refresh-other", expires_in: 28_800, organization: { uuid: "22222222-2222-4222-8222-222222222222" } });
+    const otherOrg = await loginManager.completeProfileLogin(loginAccount.id, `the-code#${state}`);
+    check("signing in to a different Claude account is refused", !otherOrg.ok && /not the one/i.test(otherOrg.message) && !loginManager.dto()[0]?.profileTokenPresent);
+    const again = loginManager.beginProfileLogin(loginAccount.id);
+    const againState = again.ok ? new URL(again.url).searchParams.get("state") : "";
+    tokenAnswer = () => Response.json({ access_token: "access-new", refresh_token: "refresh-new", expires_in: 28_800, scope: "user:profile user:inference", organization: { uuid: org } });
+    const ok = await loginManager.completeProfileLogin(loginAccount.id, `https://platform.claude.com/oauth/code/callback?code=the-code&state=${againState}`);
+    check("a matching sign-in connects, persists and reads credits", ok.ok && /\$90\.00/.test(ok.message) && saved.at(-1)?.refreshToken === "refresh-new"
+      && loginManager.dto()[0]?.profileLoginRenews === true && loginManager.dto()[0]?.cloudCredits?.remaining === 90, ok.message);
+    check("the exchange sends the attempt's verifier to the manual redirect", tokenBodies.at(-1)?.grant_type === "authorization_code"
+      && !!tokenBodies.at(-1)?.code_verifier && tokenBodies.at(-1)?.redirect_uri === "https://platform.claude.com/oauth/code/callback");
+    const reused = await loginManager.completeProfileLogin(loginAccount.id, `the-code#${againState}`);
+    check("a finished attempt cannot be completed twice", !reused.ok && /expired/i.test(reused.message));
+    loginManager.setProfileToken(loginAccount.id, "");
+    check("disconnecting removes the stored sign-in", saved.at(-1) === null && !loginManager.dto()[0]?.profileTokenPresent);
+  } finally { globalThis.fetch = originalFetch; }
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

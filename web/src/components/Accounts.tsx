@@ -681,7 +681,8 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
   const cloudStale = !!cloud && now - cloud.readAt >= 20 * 60_000;
   const cloudTitle = cloud
     ? `Promotional cloud credits: $${cloud.remaining.toFixed(2)} of $${cloud.limit.toFixed(2)} remaining. Expires ${new Date(cloud.expiresAt).toLocaleString()}. Read ${new Date(cloud.readAt).toLocaleString()}.${cloud.locked ? " Provider reports unavailable." : ""} Only eligible cloud sessions; excludes routines and local agents.`
-    : a.profileTokenPresent ? "Cloud credits unavailable: waiting for a valid usage read and matching subscription identity." : "Cloud credits unknown. Add this subscription's profile token in Settings > Subscriptions to read its promotional balance.";
+    : a.resetCreditsError ? `Cloud credits unknown: ${a.resetCreditsError}.`
+    : a.profileTokenPresent ? "Cloud credits unavailable: waiting for a valid usage read and matching subscription identity." : "Cloud credits unknown. Sign in to this subscription under Settings > Subscriptions to read its promotional balance.";
   const stale = !!a.stale && (a.fiveHour != null || a.sevenDay != null);
   // An error with no usable read ever (blank meters) is the "broken" state we want
   // loud and visible — not buried in a hover tooltip the way it used to be.

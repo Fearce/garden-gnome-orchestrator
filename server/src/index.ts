@@ -38,6 +38,7 @@ import { MemorySettingsStore } from "./memory/settings.js";
 import { isPrimaryMemoryOwner, MemoryEndpoint } from "./memory/endpoint.js";
 import { registerMemoryRoutes } from "./memory/routes.js";
 import { AccountManager, type PersistedAccountUsage } from "./accounts/accountManager.js";
+import { parseStoredProfileLogin } from "./accounts/profileLogin.js";
 import { ResetStagger } from "./accounts/resetStagger.js";
 import { startCodexUsageMonitor } from "./agents/codexUsagePing.js";
 import { startGrokUsageMonitor } from "./agents/grokUsagePing.js";
@@ -147,6 +148,15 @@ async function main(): Promise<void> {
         }
       },
       save: (id, usage) => db.kvSet(`account_usage_${id}`, JSON.stringify(usage)),
+    },
+    // Secrets, stored like the pasted profile token they replace (which a sign-in retires).
+    profileLogins: {
+      load: (id) => parseStoredProfileLogin(db.kvGet(`account_profile_login_${id}`)),
+      save: (id, login) => {
+        if (!login) return db.kvDelete(`account_profile_login_${id}`);
+        db.kvSet(`account_profile_login_${id}`, JSON.stringify(login));
+        db.kvDelete(`account_profile_token_${id}`);
+      },
     },
   });
   // Memory's model calls ride the same subscriptions as agents: Haiku on whichever Claude account has

@@ -731,6 +731,8 @@ export interface AccountDTO {
   prepaidCredits?: { balance: number; currency: string; autoReload: boolean; enabled: boolean; readAt: number };
   cloudCredits?: { remaining: number; limit: number; used: number; expiresAt: number; locked: boolean; readAt: number };
   profileTokenPresent?: boolean;
+  // True when that token comes from GGO's own Claude sign-in, which renews itself.
+  profileLoginRenews?: boolean;
   updatedAt: number;
   error?: string | null;
 }
@@ -1650,6 +1652,8 @@ export type ServerEvent =
   // The answer to one `resetCredit.redeem`, only to the socket that asked. `key` echoes the target
   // ("codex", or "claude:<account id>") so the console knows which chip to settle.
   | { type: "resetCredit.result"; key: string; ok: boolean; message: string }
+  // One Claude sign-in step for a subscription, only to the asking socket; `url` arrives when it starts.
+  | { type: "account.profileLogin.result"; id: string; ok: boolean; message: string; url?: string }
   // Voice mode: spoken completion line for a finished task — consumed by the voice-gateway, ignored here.
   | { type: "voice.announce"; threadId: string; text: string }
   // The heartbeat's answer. Re-requesting the whole `hello` every 20s to keep the tunnel warm cost
@@ -1701,6 +1705,8 @@ export type ClientCommand =
   | { type: "account.set"; id: string; enabled: boolean }
   | { type: "account.setSafety"; id: string; weeklySafetyPct: number }
   | { type: "account.setProfileToken"; id: string; token: string }
+  | { type: "account.profileLogin.begin"; id: string }
+  | { type: "account.profileLogin.complete"; id: string; code: string }
   | { type: "thread.changes"; threadId: string }
   | { type: "thread.git"; threadId: string }
   | { type: "thread.gitSummary"; threadId: string }

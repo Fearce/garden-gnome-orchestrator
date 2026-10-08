@@ -41,12 +41,19 @@ GGO neither purchases credits nor changes provider billing settings.
 Each subscription has its own grant. If it is not already applied, sign into that
 account at [Claude's claim page](https://claude.ai/code/claim-credit/104); eligibility
 and claim deadlines are listed in the promotion terms above. To show its balance
-in GGO, add that account's current profile-scoped login token in **Settings >
-Subscriptions**. The token must belong to that subscription; an expired token
-requires replacement and shows an unknown balance until a successful read. A
-setup-token alone cannot read the cloud balance. Connecting the profile token
-does not change which Claude account the browser uses to start cloud tasks.
-Throttled credit reads retry on the next refresh and do not require a new login.
+in GGO, use **Sign in with Claude** for that subscription in **Settings >
+Subscriptions**: open the link, choose that subscription's Claude account, approve,
+and paste the code Claude shows. This is GGO's own login session (Claude Code's
+manual-code OAuth flow); GGO stores its refresh token and renews the access token
+before it expires, so it never touches the CLI's login. A sign-in to a different
+account than the subscription runs on is refused. If Claude refuses a renewal, the
+login is dropped and the chip asks for a new sign-in. A setup-token alone cannot
+read the cloud balance, and a pasted `claudeAiOauth.accessToken`
+(`ACCOUNT_<n>_PROFILE_TOKEN`) still works but stops once Claude revokes it,
+usually within hours. The sign-in does not change which Claude account the browser
+uses to start cloud tasks. Throttled credit reads retry on the next refresh and do
+not require a new login; a revoked token is reported as such even though the usage
+endpoint answers it with HTTP 429.
 
 ## Explicit cloud subtasks
 

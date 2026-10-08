@@ -5,9 +5,18 @@ import type { RateLimitInfo } from "../types.js";
 import type { AccountDTO } from "../ws/protocol.js";
 import type { Account } from "./account.js";
 import { pingUsage, type PingFailReason, type PingUsage } from "./usagePing.js";
-import { claimClaudeReset, fetchProfileUsage, type ProfileFailReason } from "./profileUsage.js";
+import { claimClaudeReset, fetchProfileUsage, type ProfileFailReason, type ProfileUsageResult } from "./profileUsage.js";
 import type { RedeemOutcome, ResetCreditsDTO } from "./resetCredits.js";
 import { cloudCreditsReady, fetchCloudFallbackCredits, type CloudCreditsDTO } from "./cloudCredits.js";
+import {
+  beginProfileLogin,
+  exchangeProfileLoginCode,
+  pendingLoginLive,
+  refreshProfileLogin,
+  type PendingProfileLogin,
+  type ProfileLogin,
+  type ProfileLoginPersistence,
+} from "./profileLogin.js";
 import { ResetStagger, WINDOW_MS } from "./resetStagger.js";
 import { logCrash } from "../crashLog.js";
 import {
@@ -50,6 +59,12 @@ interface AccountState {
   /** Why `resetCredits` is null, when there is something actionable to say. Null while unconfigured. */
   resetCreditsError: string | null;
   cloudCredits: CloudCreditsDTO | null;
+  /** Set when `account.profileToken` came from GGO's own Claude sign-in, which renews it. Null for a
+   *  pasted token, which simply stops working once the provider revokes it. */
+  profileRefresh: { refreshToken: string; expiresAt: number } | null;
+  profileRenewal: Promise<string | undefined> | null;
+  /** Why a GGO sign-in was dropped (renewal refused), shown until the owner signs in again. */
+  profileLoginLost: string | null;
   /** The org this subscription's AGENT token belongs to, from the usage ping's response header. The
    *  profile token's own org is checked against it before its credits are attributed here. */
   organizationId: string | null;
@@ -165,6 +180,8 @@ const EXT_WAKE_PROBE_MS = 90_000;
 const BOOT_TRUST_MS = 30 * 60 * 1000;
 // A model-pool cap whose rejection carried no reset self-expires after this, so the fallback never
 // sticks forever — the next dispatch simply re-probes the model and re-latches if it's still gated.
+const PROFILE_RENEW_MARGIN_MS = 5 * 60_000;
+const CLOUD_LAUNCH_TOKEN_MARGIN_MS = 60 * 60_000;
 const MODEL_LIMIT_FALLBACK_MS = 5 * 60 * 60 * 1000;
 
 const tightest = (s: AccountState): number => Math.max(s.fiveHour ?? 0, s.sevenDay ?? 0);
@@ -352,6 +369,7 @@ export class AccountManager {
   // hard headroom for. ThreadManager owns the persisted burn and ends it; this is the live copy select() reads.
   private resetBurn: { accountId: string; until: number } | null = null;
   private readonly persist?: AccountUsagePersistence;
+  private readonly profileLogins?: ProfileLoginPersistence;
   private readonly stagger?: ResetStagger;
   // Fired right after every usage publish (periodic ping + reset ping), so a consumer can react to a
   // fresh utilization read — drives the token-safety auto-stop in ThreadManager. Set once at construction.
@@ -361,9 +379,10 @@ export class AccountManager {
     private readonly accounts: Account[],
     private readonly hub: EventHub,
     private pingIntervalMs = 600_000, // 10 min (operator can switch to the fast cadence via setPingInterval)
-    opts?: { persist?: AccountUsagePersistence; stagger?: ResetStagger },
+    opts?: { persist?: AccountUsagePersistence; stagger?: ResetStagger; profileLogins?: ProfileLoginPersistence },
   ) {
     this.persist = opts?.persist;
+    this.profileLogins = opts?.profileLogins;
     this.stagger = opts?.stagger;
     for (const a of accounts) {
       this.states.set(a.id, {
@@ -386,11 +405,19 @@ export class AccountManager {
         modelLimits: new Map(),
         resetCredits: null,
         cloudCredits: null,
+        profileRefresh: null,
+        profileRenewal: null,
+        profileLoginLost: null,
         resetCreditsError: null,
         organizationId: null,
         updatedAt: 0,
       });
       this.stagger?.register(a.id, () => this.phase(a.id));
+      const login = this.profileLogins?.load(a.id);
+      if (login) {
+        a.profileToken = login.accessToken;
+        this.states.get(a.id)!.profileRefresh = { refreshToken: login.refreshToken, expiresAt: login.expiresAt };
+      }
     }
     // The first WebSocket hello can arrive before the async boot pings begin. Hydrate the full last-known
     // account readings synchronously so a restart never replaces working Claude meters with "—" while
@@ -557,15 +584,89 @@ export class AccountManager {
     const st = this.states.get(id);
     if (!st) return;
     const next = token.trim() || undefined;
-    if (st.account.profileToken === next) return;
-    st.account.profileToken = next;
+    if (st.account.profileToken === next && !st.profileRefresh) return;
+    const hadLogin = !!st.profileRefresh;
+    this.installProfileCredential(st, next, null);
+    if (hadLogin) this.profileLogins?.save(id, null);
+  }
+
+  /** Start a Claude sign-in for this subscription; the owner opens the URL and pastes back the code. */
+  beginProfileLogin(id: string): { ok: true; url: string } | { ok: false; message: string } {
+    if (!this.states.has(id)) return { ok: false, message: "That subscription is not configured any more." };
+    const pending = beginProfileLogin();
+    this.pendingLogins.set(id, pending);
+    return { ok: true, url: pending.url };
+  }
+
+  async completeProfileLogin(id: string, pasted: string): Promise<{ ok: boolean; message: string }> {
+    const st = this.states.get(id);
+    if (!st) return { ok: false, message: "That subscription is not configured any more." };
+    const pending = this.pendingLogins.get(id);
+    if (!pendingLoginLive(pending)) return { ok: false, message: "That sign-in link expired. Start the sign-in again." };
+    const result = await exchangeProfileLoginCode(pending, pasted);
+    if (!result.ok) return result;
+    if (this.pendingLogins.get(id) === pending) this.pendingLogins.delete(id);
+    if (st.organizationId && result.organizationId && st.organizationId !== result.organizationId) {
+      return { ok: false, message: `That Claude account is not the one ${st.account.label} runs on. Sign in again and choose ${st.account.label}'s account.` };
+    }
+    this.installProfileCredential(st, result.login.accessToken, result.login, false);
+    this.profileLogins?.save(id, result.login);
+    await this.readResetCredits(st);
+    this.publish();
+    if (st.resetCreditsError) return { ok: false, message: `Signed in, but the first credit read failed: ${st.resetCreditsError}.` };
+    const cloud = st.cloudCredits ? ` Cloud credits: $${st.cloudCredits.remaining.toFixed(2)} remaining.` : "";
+    return { ok: true, message: `${st.account.label} is signed in and renews automatically.${cloud}` };
+  }
+
+  /** Changing the credential drops every cached reading — the old one belongs to the old login. */
+  private installProfileCredential(st: AccountState, token: string | undefined, login: ProfileLogin | null, read = true): void {
+    st.account.profileToken = token;
+    st.profileRefresh = login ? { refreshToken: login.refreshToken, expiresAt: login.expiresAt } : null;
+    st.profileRenewal = null;
+    st.profileLoginLost = null;
     this.prepaidCredits.delete(st.account.id);
     st.resetCredits = null;
     st.cloudCredits = null;
     st.resetCreditsError = null;
     st.updatedAt = Date.now();
     this.publish();
-    if (next) void this.readResetCredits(st).then(() => this.publish());
+    if (token && read) void this.readResetCredits(st).then(() => this.publish());
+  }
+
+  /** The current profile access token, renewed first when a GGO sign-in is within `minValidMs` of expiry. */
+  private async profileAccess(st: AccountState, minValidMs = PROFILE_RENEW_MARGIN_MS): Promise<string | undefined> {
+    const token = st.account.profileToken?.trim() || undefined;
+    if (!token || !st.profileRefresh || st.profileRefresh.expiresAt - Date.now() > minValidMs) return token;
+    return this.renewProfileLogin(st);
+  }
+
+  /** One renewal per subscription at a time: concurrent reads must not spend the same refresh token twice. */
+  private renewProfileLogin(st: AccountState): Promise<string | undefined> {
+    if (st.profileRenewal) return st.profileRenewal;
+    const renewal = this.runProfileRenewal(st).finally(() => {
+      if (st.profileRenewal === renewal) st.profileRenewal = null;
+    });
+    st.profileRenewal = renewal;
+    return renewal;
+  }
+
+  private async runProfileRenewal(st: AccountState): Promise<string | undefined> {
+    const refreshToken = st.profileRefresh?.refreshToken;
+    if (!refreshToken) return st.account.profileToken?.trim() || undefined;
+    const result = await refreshProfileLogin(refreshToken);
+    if (st.profileRefresh?.refreshToken !== refreshToken) return st.account.profileToken?.trim() || undefined;
+    if (result.ok) {
+      st.account.profileToken = result.login.accessToken;
+      st.profileRefresh = { refreshToken: result.login.refreshToken, expiresAt: result.login.expiresAt };
+      this.profileLogins?.save(st.account.id, result.login);
+      return result.login.accessToken;
+    }
+    if (!result.rejected) return st.account.profileToken?.trim() || undefined;
+    st.account.profileToken = undefined;
+    st.profileRefresh = null;
+    st.profileLoginLost = result.message;
+    this.profileLogins?.save(st.account.id, null);
+    return undefined;
   }
 
   /** Whether a subscription has a profile token configured, and its last 4 characters — the only two
@@ -584,17 +685,28 @@ export class AccountManager {
    * banked reset is most useful.
    */
   private async readResetCredits(st: AccountState): Promise<void> {
-    const token = st.account.profileToken?.trim();
+    let token = await this.profileAccess(st);
     if (!token) {
       st.cloudCredits = null;
       this.prepaidCredits.delete(st.account.id);
-      this.applyResetCredits(st, null, null);
+      this.applyResetCredits(st, null, st.profileLoginLost);
       return;
     }
-    const [result, paid] = await Promise.all([
-      fetchProfileUsage(token),
-      st.organizationId ? fetchPrepaidCredits(token, st.organizationId) : Promise.resolve(null),
-    ]);
+    let [result, paid] = await this.readProfile(st, token);
+    // A GGO sign-in can be revoked before its stated expiry; renew once rather than report a dead login.
+    if (!result.ok && result.reason === "auth" && st.profileRefresh && st.account.profileToken?.trim() === token) {
+      const renewed = await this.renewProfileLogin(st);
+      if (!renewed) {
+        st.cloudCredits = null;
+        this.prepaidCredits.delete(st.account.id);
+        this.applyResetCredits(st, null, st.profileLoginLost);
+        return;
+      }
+      if (renewed !== token) {
+        token = renewed;
+        [result, paid] = await this.readProfile(st, token);
+      }
+    }
     if (st.account.profileToken?.trim() !== token) return;
     // Keep the previous reading through the fetch so a routine re-read never opens a gap; a failed
     // or unverifiable read drops it (fail closed).
@@ -618,6 +730,13 @@ export class AccountManager {
     this.applyResetCredits(st, result.credits, null);
   }
 
+  private readProfile(st: AccountState, token: string): Promise<[ProfileUsageResult, PrepaidCredits | null]> {
+    return Promise.all([
+      fetchProfileUsage(token),
+      st.organizationId ? fetchPrepaidCredits(token, st.organizationId) : Promise.resolve(null),
+    ]);
+  }
+
   /**
    * Spend one of this subscription's banked resets, on the owner's explicit say-so.
    *
@@ -630,8 +749,8 @@ export class AccountManager {
   async redeemResetCredit(id: string): Promise<RedeemOutcome> {
     const st = this.states.get(id);
     if (!st) return { ok: false, message: "That subscription is not configured any more." };
-    const token = st.account.profileToken?.trim();
-    if (!token) return { ok: false, message: `${st.account.label} has no profile token, so GGO cannot reach its banked resets. Add one in Settings > Subscriptions.` };
+    const token = await this.profileAccess(st);
+    if (!token) return { ok: false, message: `${st.account.label} has no Claude sign-in, so GGO cannot reach its banked resets. Sign in under Settings > Subscriptions.` };
     const read = await fetchProfileUsage(token);
     if (!read.ok) return { ok: false, message: `Could not read ${st.account.label}'s banked resets: ${profileErrorMessage(read.reason)}.` };
     if (st.organizationId && read.organizationId && st.organizationId !== read.organizationId) {
@@ -1349,7 +1468,9 @@ export class AccountManager {
   async cloudFallbackAccount(id: string, requireCap = true): Promise<{ id: string; label: string; token: string; organizationId: string; remainingCredits: number } | null> {
     const state = this.states.get(id);
     if (!state?.enabled || !state.account.profileToken || !state.organizationId) return null;
-    const token = state.account.profileToken.trim(), organizationId = state.organizationId;
+    // A hosted session keeps using this token while it runs, so renew well before it could lapse.
+    const token = await this.profileAccess(state, CLOUD_LAUNCH_TOKEN_MARGIN_MS), organizationId = state.organizationId;
+    if (!token) return null;
     const credits = await fetchCloudFallbackCredits(token, organizationId);
     if (state.organizationId !== organizationId || state.account.profileToken?.trim() !== token) return null;
     state.cloudCredits = credits;
@@ -1392,6 +1513,7 @@ export class AccountManager {
       prepaidCredits: this.prepaidCredits.get(s.account.id),
       cloudCredits: s.cloudCredits ?? undefined,
       profileTokenPresent: !!s.account.profileToken?.trim(),
+      profileLoginRenews: !!s.profileRefresh,
       updatedAt: s.updatedAt,
       error: s.error,
     }));
@@ -1404,6 +1526,7 @@ export class AccountManager {
   private creditPolicies: Record<string, boolean> = {};
   private allowCreditFallback: () => boolean = () => false;
   private prepaidCredits = new Map<string, PrepaidCredits>();
+  private readonly pendingLogins = new Map<string, PendingProfileLogin>();
   private creditRejections = new Map<string, number>();
 
   setCreditSpending(policies: Record<string, boolean>, allowed: () => boolean): void {
@@ -1506,7 +1629,7 @@ function profileErrorMessage(reason: ProfileFailReason): string | null {
     case "scope":
       return "profile token lacks user:profile — paste the claude login token, not a setup-token";
     case "auth":
-      return "profile token rejected — re-copy it from ~/.claude/.credentials.json";
+      return "profile token rejected or revoked — sign in again under Settings > Subscriptions";
     case "rate-limit":
       return "credit read rate-limited by provider — retries on the next refresh";
     case "network":

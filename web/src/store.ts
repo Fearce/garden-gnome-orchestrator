@@ -131,6 +131,21 @@ export function codeKey(kind: CodeSubjectKind, id: string): string {
   return `${kind}:${id}`;
 }
 
+export interface ProfileLoginStep {
+  busy: boolean;
+  url?: string;
+  ok?: boolean;
+  message?: string;
+  /** The sign-in completed; the panel shows its confirmation instead of the code field. */
+  done?: boolean;
+}
+
+/** A reply to a request sent on a dropped socket never arrives: release the button, keep the link. */
+function settleProfileLogins(steps: Record<string, ProfileLoginStep>): Record<string, ProfileLoginStep> {
+  if (!Object.values(steps).some((step) => step.busy)) return steps;
+  return Object.fromEntries(Object.entries(steps).map(([id, step]) => [id, { ...step, busy: false }]));
+}
+
 /** The key the server echoes on `resetCredit.result` for one redeem target. */
 export function resetCreditKey(target: { provider: "codex" } | { provider: "claude"; accountId: string }): string {
   return target.provider === "codex" ? "codex" : `claude:${target.accountId}`;
@@ -383,6 +398,9 @@ interface State {
   // Banked-reset redeems this console has in flight, by target key ("codex", "claude:<id>"): the chip's
   // button stays disabled until the server's `resetCredit.result` for that key lands.
   resetRedeeming: Record<string, true>;
+  // Claude sign-ins in progress, by subscription id: the authorize link once issued, a request in
+  // flight, and the server's last word on it.
+  profileLogins: Record<string, ProfileLoginStep>;
   // The Token Safety box the owner dismissed (`tokenSafetyBoxKey`), so it stays hidden for THAT freeze or
   // bypass only: a new freeze or a new bypass has a new key and shows again.
   tokenSafetyDismissed: string | null;
@@ -494,6 +512,9 @@ interface State {
   /** Store or clear a subscription's `user:profile` token (the banked-reset credential). Returns
    *  whether the command actually went out, so the field can stay open when the socket was down. */
   setAccountProfileToken: (id: string, token: string) => boolean;
+  /** Start / finish GGO's own Claude sign-in for a subscription. Both return whether the command went out. */
+  beginProfileLogin: (id: string) => boolean;
+  completeProfileLogin: (id: string, code: string) => boolean;
   setShowCompleted: (v: boolean) => void;
   setShowEmptyHardDeadline: (v: boolean) => void;
   /** Show or hide one board area. Hiding the area that is open moves the board back to Tasks. */
@@ -1547,6 +1568,7 @@ export const useStore = create<State>((set) => ({
   tokenSafety: null,
   tokenSafetyBypassing: false,
   resetRedeeming: {},
+  profileLogins: {},
   tokenSafetyDismissed: null,
   schedules: [],
   goals: [],
@@ -1846,6 +1868,16 @@ export const useStore = create<State>((set) => ({
     // whether it works, and projecting `profileTokenPresent` locally would show a confident tick over
     // a token that is about to come back rejected for the wrong scope.
     return sendCommand({ type: "account.setProfileToken", id, token });
+  },
+  beginProfileLogin: (id) => {
+    if (!sendCommand({ type: "account.profileLogin.begin", id })) return false;
+    set((s) => ({ profileLogins: { ...s.profileLogins, [id]: { busy: true } } }));
+    return true;
+  },
+  completeProfileLogin: (id, code) => {
+    if (!sendCommand({ type: "account.profileLogin.complete", id, code })) return false;
+    set((s) => ({ profileLogins: { ...s.profileLogins, [id]: { ...s.profileLogins[id], busy: true, message: undefined } } }));
+    return true;
   },
   setShowCompleted: (v) =>
     set((s) => {
@@ -2349,6 +2381,7 @@ function applyEvent(ev: ServerEvent): void {
         ...(ev.tokenSafety ? { tokenSafety: ev.tokenSafety, tokenSafetyBypassing: false } : {}),
         // Likewise a redeem's `resetCredit.result`: without this its badge stayed disabled until a reload.
         resetRedeeming: {},
+        profileLogins: settleProfileLogins(s.profileLogins),
       }));
       // A (re)connect clears any per-room loading flags: a request in flight when the socket dropped
       // never gets its reply, and a stuck flag would permanently block that room's scroll-up.
@@ -3004,6 +3037,14 @@ function applyEvent(ev: ServerEvent): void {
         // Drop a reply for a query the operator has since retyped or cleared.
         if (!s.directorSearch || s.directorSearch.query !== ev.query) return {};
         return { directorSearch: { query: ev.query, results: ev.messages, tasks: ev.tasks ?? [], searching: false } };
+      });
+      break;
+    case "account.profileLogin.result":
+      useStore.setState((s) => {
+        const prev = s.profileLogins[ev.id];
+        // A completed sign-in retires its link; a failed completion keeps it so the owner can paste again.
+        const url = ev.url ?? (ev.ok ? undefined : prev?.url);
+        return { profileLogins: { ...s.profileLogins, [ev.id]: { busy: false, url, ok: ev.ok, message: ev.message, done: ev.ok && !ev.url } } };
       });
       break;
     case "resetCredit.result":

@@ -284,7 +284,7 @@ Each Claude and Codex subscription has **Allow credits to be spent** in **Settin
 Subscriptions**, off by default. It admits credit-backed runs only after every enabled
 provider has exhausted its included allowance. Codex requires a positive, finite prepaid
 balance and ChatGPT login; this fallback never switches to API-key billing. Claude requires
-a matching profile token (the banked-reset token), enabled usage credits, a positive prepaid
+a matching **Claude sign-in** (Settings > Subscriptions), enabled usage credits, a positive prepaid
 balance, and verified auto-reload off. Missing, expired, or stale billing information blocks
 the fallback. Anthropic API Console credits cannot fund a Claude subscription run.
 GGO never purchases credits or enables auto-reload. Provider billing settings govern
@@ -306,8 +306,9 @@ Eligible promotional cloud session credits apply before regular plan usage.
 The optional routine API path submits directly and saves session links, but
 **routines are excluded from promotional cloud session credits** and spend regular usage.
 Start an eligible task only after checking the balance. Subscription usage chips show cloud
-dollars and expiry when a matching profile token can read them; unknown reads show
-`cloud ?`. These dollars never increase local agent quota or prepaid fallback funds.
+dollars and expiry once that subscription has a matching **Claude sign-in** under
+**Settings > Subscriptions** (open the link, choose the account, paste back the code); GGO
+renews that login itself. Unknown reads show `cloud ?`, with the reason on hover. These dollars never increase local agent quota or prepaid fallback funds.
 For automatic offload, enable subscriptions and allow repositories under **Automatic
 cloud subtasks**. Agents mark standalone Claude subtasks with `cloudWork: "review"`
 or `"change"`; when a subscription caps, GGO starts a normal hosted cloud session,

@@ -7240,6 +7240,8 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
    *  over it when a value was actually stored here — the Settings field is the override, not a blanker. */
   private applyAccountProfileTokens(): void {
     for (const a of config.accounts) {
+      // AccountManager restored GGO's own sign-in from `account_profile_login_<id>`; it outranks a pasted token.
+      if (this.db.kvGet(`account_profile_login_${a.id}`) != null) continue;
       const v = this.db.kvGet(`account_profile_token_${a.id}`);
       if (v != null) this.accounts.setProfileToken(a.id, v);
     }

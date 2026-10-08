@@ -1666,77 +1666,101 @@ function AccountWeeklySafety({ accountId, value }: { accountId: string; value: n
 }
 
 /**
- * One subscription's `user:profile` OAuth token — the second credential that makes its BANKED RESETS
- * readable, and the ONLY thing it is used for.
+ * One subscription's Claude sign-in — the `user:profile` login that reads its cloud credits and banked
+ * resets, and that starts its credit-backed cloud sessions.
  *
- * It exists because the agent tokens cannot answer this question at all: a `claude setup-token` is
- * scoped `user:inference`, and `/api/oauth/usage` (where a granted-but-unspent reset lives) requires
- * `user:profile`. Optional everywhere — without it the chip simply shows no banked-reset badge.
- *
- * Write-only, like the z.ai/Discord keys above: the field never receives the stored value back, only
- * `profileTokenPresent` and whatever the server says went wrong with it.
+ * The agent tokens cannot do this: a `claude setup-token` is scoped `user:inference`. A pasted
+ * `claudeAiOauth.accessToken` can, but Claude revokes it within hours. So GGO runs its own sign-in
+ * (Claude's manual-code flow) and keeps that login renewed. Secrets never come back to the browser:
+ * only `profileTokenPresent`, `profileLoginRenews` and whatever the server says went wrong.
  */
-function AccountProfileToken({ acct }: { acct: AccountDTO }) {
+function AccountClaudeSignIn({ acct }: { acct: AccountDTO }) {
+  const step = useStore((s) => s.profileLogins[acct.id]);
+  const beginProfileLogin = useStore((s) => s.beginProfileLogin);
+  const completeProfileLogin = useStore((s) => s.completeProfileLogin);
   const setAccountProfileToken = useStore((s) => s.setAccountProfileToken);
-  const [draft, setDraft] = useState("");
-  const [reveal, setReveal] = useState(false);
-  const save = (value: string): void => {
-    if (!setAccountProfileToken(acct.id, value)) return; // socket down — keep the draft rather than losing it
-    setDraft("");
-    setReveal(false);
+  const [code, setCode] = useState("");
+  const connect = (): void => {
+    if (code.trim() && completeProfileLogin(acct.id, code.trim())) setCode("");
   };
+  const awaitingCode = !!step?.url && !step.done;
   const banked = acct.resetCredits;
   return (
     <div className="sub-field">
-      <label className="sub-label">Banked-reset token</label>
-      <div className="key-input">
-        <input
-          type={reveal ? "text" : "password"}
-          value={draft}
-          spellCheck={false}
-          autoComplete="off"
-          placeholder={acct.profileTokenPresent ? "••••••••  (stored)" : "sk-ant-oat… with user:profile"}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && draft.trim()) save(draft.trim());
-          }}
-        />
-        <button
-          type="button"
-          className="key-eye"
-          aria-label={reveal ? "Hide token" : "Reveal token"}
-          title={reveal ? "Hide" : "Reveal"}
-          onClick={() => setReveal((r) => !r)}
-        >
-          {reveal ? <EyeOff /> : <Eye />}
-        </button>
+      <label className="sub-label">Claude sign-in</label>
+      <div className={"sub-msg" + (acct.profileLoginRenews ? " ok" : " dim")}>
+        {acct.profileLoginRenews
+          ? "Signed in. GGO renews this login automatically."
+          : acct.profileTokenPresent
+            ? "Using a pasted token. Claude revokes those within hours; sign in so GGO can keep it renewed."
+            : "Optional. Sign in to show this subscription's cloud credits and banked limit resets."}
       </div>
-      <div className="sub-actions">
-        <button className="sub-btn primary" disabled={!draft.trim()} onClick={() => save(draft.trim())}>
-          {acct.profileTokenPresent ? "Replace token" : "Save token"}
-        </button>
-        {acct.profileTokenPresent && (
-          <button className="sub-btn ghost" onClick={() => save("")}>
-            Remove
+      {awaitingCode ? (
+        <>
+          <div className="sub-actions">
+            <a className="sub-btn primary sub-link" href={step.url} target="_blank" rel="noreferrer">
+              Open Claude sign-in <ExternalIcon />
+            </a>
+          </div>
+          <div className="sub-msg dim">
+            Choose the account <b>{acct.label}</b> runs on, approve, then paste the code Claude shows.
+          </div>
+          <div className="key-input">
+            <input
+              type="text"
+              value={code}
+              spellCheck={false}
+              autoComplete="off"
+              aria-label={`Sign-in code for ${acct.label}`}
+              placeholder="Paste the code from Claude"
+              onChange={(e) => setCode(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") connect();
+              }}
+            />
+          </div>
+          <div className="sub-actions">
+            <button className="sub-btn primary" disabled={!code.trim() || step.busy} onClick={connect}>
+              {step.busy ? "Connecting…" : "Connect"}
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="sub-actions">
+          <button className={"sub-btn" + (acct.profileLoginRenews ? "" : " primary")} disabled={step?.busy} onClick={() => beginProfileLogin(acct.id)}>
+            {acct.profileLoginRenews ? "Sign in again" : "Sign in with Claude"}
           </button>
-        )}
-      </div>
-      {acct.resetCreditsError ? (
+          {acct.profileTokenPresent && (
+            <button className="sub-btn ghost" onClick={() => setAccountProfileToken(acct.id, "")}>
+              Disconnect
+            </button>
+          )}
+        </div>
+      )}
+      {step?.message && step.ok === false ? (
+        <div className="sub-msg bad">{step.message}</div>
+      ) : acct.resetCreditsError ? (
         <div className="sub-msg bad">{acct.resetCreditsError}</div>
+      ) : step?.done && step.message ? (
+        <div className="sub-msg ok">{step.message}</div>
       ) : banked ? (
         <div className="sub-msg dim">
           {banked.available > 0
             ? `${banked.available} banked reset${banked.available === 1 ? "" : "s"} available${banked.pending > 0 ? ` · ${banked.pending} not usable yet` : ""}.`
             : "No banked resets right now."}
         </div>
-      ) : (
-        <div className="sub-msg dim">
-          Optional. Lets GGO show this subscription's banked limit resets so you don't have to open Claude Code to notice one. Paste{" "}
-          <code>claudeAiOauth.accessToken</code> from <code>~/.claude/.credentials.json</code> — a <code>claude setup-token</code> will not
-          work, it lacks the <code>user:profile</code> scope.
-        </div>
-      )}
+      ) : null}
     </div>
+  );
+}
+
+function ExternalIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 3h6v6" />
+      <path d="M10 14 21 3" />
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    </svg>
   );
 }
 
@@ -2218,7 +2242,7 @@ function AccountCard({
       {acct.enabled && <AccountEffort accountId={acct.id} />}
       {acct.enabled && <AccountUsageSaving accountId={acct.id} />}
       {acct.enabled && <AccountWeeklySafety accountId={acct.id} value={acct.weeklySafetyPct} />}
-      {acct.enabled && <AccountProfileToken acct={acct} />}
+      {acct.enabled && <AccountClaudeSignIn acct={acct} />}
     </div>
   );
 }

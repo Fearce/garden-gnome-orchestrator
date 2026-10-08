@@ -75,6 +75,7 @@ export async function fetchProfileUsage(token: string, timeoutMs = 12_000): Prom
     return { ok: false, reason: timedOut(err) ? "timeout" : "network" };
   }
   const text = await res.text().catch(() => "");
+  if (res.status === 429 && await profileRevoked(token.trim(), timeoutMs)) return { ok: false, reason: "auth" };
   if (!res.ok) return { ok: false, reason: classifyRejection(res.status, text) };
   let body: UsageBody;
   try {
@@ -100,6 +101,19 @@ export async function fetchProfileUsage(token: string, timeoutMs = 12_000): Prom
   }
   return { ok: true, credits, organizationId: typeof uuid === "string" && uuid.trim() ? uuid.trim() : null,
     ...(cloudCredits ? { cloudCredits } : {}) };
+}
+
+/** The usage endpoint answers a revoked token with 429, which alone would read as "retry later" forever.
+ *  The profile endpoint still reports the revocation as 401. */
+async function profileRevoked(token: string, timeoutMs: number): Promise<boolean> {
+  try {
+    const res = await fetch("https://api.anthropic.com/api/oauth/profile", {
+      headers: { Authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20", "user-agent": "claude-cli/2.0.0" },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    await res.body?.cancel().catch(() => {});
+    return res.status === 401;
+  } catch { return false; }
 }
 
 /** A scope complaint is a 403 naming `user:profile`; anything else in the 401/403 family is a plain

@@ -484,6 +484,23 @@ export async function handleCommand(
     case "account.setProfileToken":
       ctx.manager.setAccountProfileToken(cmd.id, cmd.token);
       break;
+    case "account.profileLogin.begin": {
+      const begun = ctx.accounts.beginProfileLogin(cmd.id);
+      send(socket, begun.ok
+        ? { type: "account.profileLogin.result", id: cmd.id, ok: true, message: "Sign in with Claude, then paste the code it shows.", url: begun.url }
+        : { type: "account.profileLogin.result", id: cmd.id, ok: false, message: begun.message });
+      break;
+    }
+    case "account.profileLogin.complete": {
+      try {
+        const done = await ctx.accounts.completeProfileLogin(cmd.id, cmd.code);
+        send(socket, { type: "account.profileLogin.result", id: cmd.id, ok: done.ok, message: done.message });
+      } catch (err) {
+        logCrash("account.profileLogin", err);
+        send(socket, { type: "account.profileLogin.result", id: cmd.id, ok: false, message: "The sign-in failed unexpectedly. Start it again." });
+      }
+      break;
+    }
     case "thread.changes": {
       const changes = await ctx.manager.getChanges(cmd.threadId);
       send(socket, { type: "thread.changes", threadId: cmd.threadId, diff: changes.diff, log: changes.log });
