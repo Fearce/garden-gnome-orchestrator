@@ -489,5 +489,37 @@ console.log("account-usage: weekly resets between two reads");
   check("the reset survives a restart", (saved.at(-1)?.weeklyReset as { early?: boolean } | undefined)?.early === true);
 }
 
+console.log("account-usage: an early reset replaces the cached window used for pacing");
+{
+  const { burnBudgetPct } = await import("../orchestrator/goals.js");
+  const now = Date.now(), D = 86_400_000;
+  const oldEnd = now + 2 * D, newEnd = now + 6 * D;
+  let persisted: import("../accounts/accountManager.js").PersistedAccountUsage | null = null;
+  const persist = { load: () => persisted, save: (_id: string, usage: import("../accounts/accountManager.js").PersistedAccountUsage) => { persisted = usage; } };
+  const manager = new AccountManager([personal], new EventHub(), 600_000, { persist });
+  Object.assign((manager as any).states.get(personal.id), { sevenDay: 84, sevenDayReset: oldEnd });
+  const fetchBefore = globalThis.fetch;
+  globalThis.fetch = async () => new Response("{}", { headers: {
+    "anthropic-ratelimit-unified-5h-utilization": "0.01",
+    "anthropic-ratelimit-unified-7d-utilization": "0.03",
+    "anthropic-ratelimit-unified-7d-reset": String(Math.floor(newEnd / 1000)),
+  } });
+  try {
+    await (manager as any).pingOne(personal);
+    const dto = manager.dto()[0]!;
+    check("the real header path replaces the old utilization", dto.sevenDay === 3);
+    check("the next reset follows the provider's new deadline", dto.sevenDayReset === Math.floor(newEnd / 1000) * 1000);
+    const beforeBudget = burnBudgetPct(oldEnd, 100, now);
+    const afterBudget = burnBudgetPct(dto.sevenDayReset!, 100, now);
+    check("allowed usage follows the re-anchored window, not the previous week", beforeBudget > 76 && afterBudget > 19 && afterBudget < 20);
+    check("the newly reset pool is under pace", dto.sevenDay! < afterBudget);
+    manager.stop();
+    const restored = new AccountManager([personal], new EventHub(), 600_000, { persist });
+    const saved = restored.dto()[0]!;
+    check("restart restores the new percentage, deadline and inferred reset", saved.sevenDay === 3 && saved.sevenDayReset === dto.sevenDayReset && saved.weeklyReset?.early === true);
+    restored.stop();
+  } finally { globalThis.fetch = fetchBefore; manager.stop(); }
+}
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

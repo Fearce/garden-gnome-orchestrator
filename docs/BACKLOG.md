@@ -23,6 +23,8 @@ same commit as the fix. Git history keeps the record.
   Remaining: hosted documentation change, returned-branch review/integration, before/after credit
   evidence, and activation at the next permitted restart (restart-resume forbids another restart).
 
+- **Claude weekly reset: finish live grant verification** (2026-10-08): c625a2ae, 13a90af7 and ad1667e8 are committed and deployed. The profile grant request previously received `eligible:false` / `ineligible_reason:surface` as the old CLI identity; using the running Claude Code identity exposes the grant. Headers supply utilization and reset deadline, but no reset event; later deadlines or sharp usage drops record inferred resets. Account/reset/goal/usage-ping/weekly-safety gates, server/web types, isolated server/web builds, README and privacy pass. The isolated `server/scripts/claude-reset-lab.cjs` passes 5/5: Claude/Codex share the arrow and styling, and early reset text renders. Live Claude is fresh at 7%; the affected goal has no stale Codex burn-rate reason and its Claude Opus step resumed automatically, with owner guard settings preserved. Live banked-reset confirmation remains blocked by Anthropic usage-read throttling; normal refresh retries without requiring a new login. `deploy --verify` cannot stamp the supervised source-mode launch; process startup after the runtime commits and the served bundle confirm activation. No further restart is permitted in this task.
+
 
 
 

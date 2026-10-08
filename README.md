@@ -367,6 +367,15 @@ of tasks before usage readings catch up. Equal loads use perishable weekly allow
 backends; task model/provider pins and **Prepare a sub for reset** still take priority.
 Finished agents release their slots, and saved sessions keep their existing routing rules.
 The top bar shows live 5-hour and weekly usage per subscription.
+Claude usage and reset times come from the provider's rate-limit response headers. Fresh readings
+replace cached snapshots; weekly pacing follows the reported reset time, with the start seven days
+earlier. A later reset time or a usage drop of at least ten percentage points records an inferred
+reset. The provider does not supply a reset event or its exact occurrence time. A refill that keeps
+the same deadline keeps that deadline for pacing. Early resets appear in the Claude chip tooltip.
+Banked free resets use the same arrow badge for Claude and Codex; Claude's grant read uses the
+matching profile login and Claude Code client identity. A throttled grant read reports unknown
+availability until the next successful refresh. Usage-held goals recheck when fresh usage arrives
+or their provider/model pin changes, without changing the owner's guard or schedule settings.
 
 ## Quick start
 
