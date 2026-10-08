@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
-import { KvMirror, type ListedThread, ProjectRoomMirror, ThreadListingMirror, ToolCallDigest, type ToolCallRow, watchMessageDeletes } from "./memoryMirrors.js";
+import { KvMirror, type ListedThread, ProjectRoomMirror, ThreadListingMirror, ToolCallDigest, type ToolCallRow, watchMessageDeletes, watchToolInserts } from "./memoryMirrors.js";
 import { instrumentStatements } from "./slowStatements.js";
 import { config } from "../config.js";
 import { manualDeploymentSummary, parseManualDeployment, parseManualDeploymentClaim } from "../orchestrator/manualDeployment.js";
@@ -955,6 +955,9 @@ export class Db {
     });
     watchMessageDeletes(this.raw, (threadId) => {
       for (const digest of this.toolCallDigests) digest.forget(threadId);
+    });
+    watchToolInserts(this.raw, (threadId) => {
+      for (const digest of this.toolCallDigests) digest.changed(threadId);
     });
   }
 
@@ -2713,6 +2716,19 @@ export class Db {
     return (
       this.raw.prepare("SELECT * FROM agent_runs WHERE thread_id = ? ORDER BY started_at ASC, rowid ASC").all(threadId) as Row[]
     ).map(rowToRun);
+  }
+
+  /** Directory membership needs recent activity, not a GROUP BY over every historical run.
+   * Both branches seek existing indexes; an old run ending today still counts. */
+  recentAgentKeys(since: number): Set<string> {
+    const rows = this.raw.prepare(`
+      SELECT thread_id, role FROM agent_runs
+        WHERE started_at >= ? AND COALESCE(ended_at, started_at) >= ?
+      UNION
+      SELECT thread_id, role FROM agent_runs
+        WHERE state IN ('starting', 'running', 'idle', 'interrupted', 'done', 'error') AND ended_at >= ?
+    `).all(since, since, since) as { thread_id: string; role: string }[];
+    return new Set(rows.map(row => `${row.thread_id}::${row.role}`));
   }
 
   /** Each (thread, role) agent's last moment of activity at or after `since`, keyed by agentKey: `now`

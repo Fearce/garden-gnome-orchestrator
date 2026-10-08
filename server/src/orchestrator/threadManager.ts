@@ -16778,14 +16778,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
   directDirectory(): Array<GnomeAddress & { name: string; title: string; active: boolean; unread: number }> {
     const active = new Set(this.officeRoster("").filter(entry => !entry.instance).map(entry => agentKey(entry.threadId, entry.role)));
     const unread = this.directInbox.unreadCounts();
-    const threads = new Map((this.db.raw.prepare("SELECT id, title FROM threads").all() as { id: string; title: string }[]).map(thread => [thread.id, thread]));
+    const threads = new Map(this.db.listThreadSummaries().map(thread => [thread.id, thread]));
     // A gnome idle for a day or more is hidden: every agent ever named keeps its name override, so
     // without this cutoff the directory lists hundreds of long-finished agents. Mail to a hidden
     // gnome's threadId/role still works; it just isn't offered in the list.
     const recentSince = Date.now() - DIRECT_DIRECTORY_IDLE_MS;
-    const recent = new Set((this.db.raw.prepare(`SELECT thread_id, role FROM agent_runs
-      GROUP BY thread_id, role HAVING max(coalesce(ended_at, started_at)) >= ?`)
-      .all(recentSince) as { thread_id: string; role: string }[]).map(row => agentKey(row.thread_id, row.role as Role)));
+    const recent = this.db.recentAgentKeys(recentSince);
     return Object.entries(this.officeNameOverrides()).flatMap(([key, name]) => {
       const split = key.lastIndexOf("::");
       const threadId = key.slice(0, split);

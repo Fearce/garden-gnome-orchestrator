@@ -102,6 +102,32 @@ try {
     assert.ok(!manager.directDirectory().some(entry => entry.threadId === stale.id));
   });
   check("hidden idle gnome can still receive mail by address", () => assert.equal(manager.directSend(from, { threadId: stale.id, role: "implementor" }, "Still reachable").recipientName, "Dusty Fern"));
+  check("recent directory activity preserves long runs, cutoff boundaries and role isolation", () => {
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const long = db.createRun({ threadId: stale.id, role: "qa", model: "fixture", account: "fixture", effort: "low" });
+    db.raw.prepare("UPDATE agent_runs SET started_at=?, ended_at=?, state='done' WHERE id=?").run(cutoff - 10 * 86400_000, cutoff, long.id);
+    const future = db.createRun({ threadId: c.id, role: "qa", model: "fixture", account: "fixture", effort: "low" });
+    db.raw.prepare("UPDATE agent_runs SET started_at=?, ended_at=? WHERE id=?").run(cutoff + 1, cutoff - 1, future.id);
+    const recent = db.recentAgentKeys(cutoff);
+    assert.ok(recent.has(`${stale.id}::qa`));
+    assert.ok(!recent.has(`${stale.id}::implementor`));
+    assert.ok(!recent.has(`${c.id}::qa`));
+    const legacy = db.raw.prepare(`SELECT thread_id, role FROM agent_runs GROUP BY thread_id, role
+      HAVING max(coalesce(ended_at, started_at)) >= ?`).all(cutoff) as { thread_id: string; role: string }[];
+    assert.deepEqual([...recent].sort(), legacy.map(row => `${row.thread_id}::${row.role}`).sort());
+    const original = db.raw.prepare.bind(db.raw);
+    const plans: string[] = [];
+    db.raw.prepare = ((sql: string) => {
+      if (sql.includes("SELECT thread_id, role FROM agent_runs")) {
+        plans.push(...(original(`EXPLAIN QUERY PLAN ${sql}`).all(cutoff, cutoff, cutoff) as { detail: string }[]).map(row => row.detail));
+      }
+      return original(sql);
+    }) as typeof db.raw.prepare;
+    try { db.recentAgentKeys(cutoff); } finally { db.raw.prepare = original; }
+    assert.ok(plans.some(plan => /SEARCH agent_runs.*started_at>/.test(plan)), plans.join("; "));
+    assert.ok(plans.some(plan => /SEARCH agent_runs.*state=.*ended_at>/.test(plan)), plans.join("; "));
+    assert.ok(!plans.some(plan => /SCAN agent_runs/.test(plan)), plans.join("; "));
+  });
   for (let index = 0; index < 105; index++) manager.directSend(from, to, `letter ${index}`);
   check("automatic unread preview is incoming-only and bounded", () => {
     assert.equal(manager.directInbox.unreadPreview(to).length, 20);

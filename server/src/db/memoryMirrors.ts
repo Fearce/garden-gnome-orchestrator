@@ -47,6 +47,17 @@ export function watchMessageDeletes(raw: Database.Database, onDelete: (threadId:
   `);
 }
 
+/** A tool digest only needs another watermark read when a tool was actually inserted.
+ * TEMP triggers also see raw inserts and transactions; a rolled-back insert merely causes a harmless read. */
+export function watchToolInserts(raw: Database.Database, onInsert: (threadId: string) => void): void {
+  raw.function("ggo_tool_inserted", { deterministic: false }, (threadId: unknown) => {
+    if (typeof threadId === "string") onInsert(threadId);
+    return null;
+  });
+  raw.exec(`CREATE TEMP TRIGGER IF NOT EXISTS ggo_tools_inserted AFTER INSERT ON main.messages
+    WHEN new.kind = 'tool' BEGIN SELECT ggo_tool_inserted(new.thread_id); END;`);
+}
+
 /** Commits by another connection to the same file never fire this connection's triggers. */
 class ForeignCommitWatch {
   private readonly version: Database.Statement;
@@ -171,6 +182,7 @@ export interface ToolCallRow {
  *  returned state as read-only: it is the cached copy. */
 export class ToolCallDigest<T> {
   private readonly folded = new Map<string, { seq: number; state: T }>();
+  private readonly dirty = new Set<string>();
   private readonly foreign: ForeignCommitWatch;
 
   constructor(
@@ -185,13 +197,22 @@ export class ToolCallDigest<T> {
   read(threadId: string): T {
     if (this.raw.inTransaction) return this.fold({ seq: 0, state: this.start() }, threadId).state;
     if (this.foreign.changed()) this.folded.clear();
+    const cached = this.folded.get(threadId);
+    if (cached && !this.dirty.has(threadId)) return cached.state;
     const entry = this.fold(this.folded.get(threadId) ?? { seq: 0, state: this.start() }, threadId);
     this.folded.set(threadId, entry);
+    this.dirty.delete(threadId);
     return entry.state;
+  }
+
+  changed(threadId: string): void {
+    // Unread tasks will fold from scratch, so they need no extra bookkeeping.
+    if (this.folded.has(threadId)) this.dirty.add(threadId);
   }
 
   forget(threadId: string): void {
     this.folded.delete(threadId);
+    this.dirty.delete(threadId);
   }
 
   private fold(entry: { seq: number; state: T }, threadId: string): { seq: number; state: T } {

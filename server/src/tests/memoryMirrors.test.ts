@@ -172,6 +172,31 @@ try {
   db.addMessage({ threadId: digestTask.id, role: "implementor", kind: "tool", content: "second tool" });
   assert.deepEqual(digest.read(digestTask.id), ["first tool", "second tool"], "incremental reads preserve call order without duplicates");
   assert.deepEqual(digest.read(digestTask.id), ["first tool", "second tool"], "an unchanged history adds nothing");
+  const prepare = db.raw.prepare.bind(db.raw);
+  let toolReads = 0;
+  db.raw.prepare = ((sql: string) => {
+    if (sql.includes("SELECT rowid AS seq, role, content FROM messages")) toolReads++;
+    return prepare(sql);
+  }) as typeof db.raw.prepare;
+  try {
+    for (let i = 0; i < 100; i++) digest.read(digestTask.id);
+    db.addMessage({ threadId: digestTask.id, role: "implementor", kind: "text", content: "unrelated text" });
+    digest.read(digestTask.id);
+    db.addMessage({ threadId: a.id, role: "implementor", kind: "tool", content: "other task" });
+    digest.read(digestTask.id);
+    assert.equal(toolReads, 0, "unchanged, text-only and other-task reads never scan tool history");
+    assert.throws(() => db.raw.transaction(() => {
+      db.addMessage({ threadId: digestTask.id, role: "implementor", kind: "tool", content: "rollback tool" });
+      assert.ok(digest.read(digestTask.id).includes("rollback tool"), "transaction reads see uncommitted tools");
+      throw new Error("rollback tool");
+    })(), /rollback tool/);
+    assert.deepEqual(digest.read(digestTask.id), ["first tool", "second tool"], "rollback leaves cached state intact");
+    const tool = db.addMessage({ threadId: digestTask.id, role: "implementor", kind: "tool", content: "raw tool" });
+    assert.deepEqual(digest.read(digestTask.id), ["first tool", "second tool", "raw tool"]);
+    other.prepare("INSERT INTO messages(id, thread_id, role, kind, content, created_at) VALUES(?, ?, 'implementor', 'tool', ?, ?)")
+      .run("foreign-tool-fixture", digestTask.id, "foreign tool", tool.createdAt + 1);
+    assert.deepEqual(digest.read(digestTask.id), ["first tool", "second tool", "raw tool", "foreign tool"], "foreign commits force a fresh fold");
+  } finally { db.raw.prepare = prepare; }
   db.raw.prepare("DELETE FROM messages WHERE thread_id = ?").run(digestTask.id);
   assert.deepEqual(digest.read(digestTask.id), [], "retry deletion invalidates the folded tool state");
   assert.ok((db.raw.prepare("EXPLAIN QUERY PLAN SELECT rowid, role, content FROM messages INDEXED BY idx_messages_tool_thread_time WHERE thread_id = ? AND rowid > ? AND kind = 'tool' ORDER BY created_at, rowid").all(digestTask.id, 0) as { detail: string }[])
