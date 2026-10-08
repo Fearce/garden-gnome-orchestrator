@@ -21,6 +21,9 @@ balance lasts. It does not reduce the tokens the cloud task itself uses.
 **Projects and routines are excluded from the promotion**, including API-triggered
 routines. They spend regular subscription usage, even while cloud session credits remain.
 See [Anthropic's promotion terms](https://support.claude.com/en/articles/17152539-cloud-sessions-bonus-credit-promotion).
+The current promotion ends on November 4 at 11:59 PM Pacific, which is
+**2026-11-05 at 07:59 UTC**. An operator stop date of November 6 cannot extend
+that provider deadline.
 
 Good candidates are documentation, repository review, unit tests, and code changes
 that can be verified in a Linux checkout. Keep desktop automation, local database
@@ -277,8 +280,8 @@ or `null` to remove the operator deadline.
   Remote Control runs on the local machine and is a different execution path.
 - [The CLI reference](https://code.claude.com/docs/en/cli-reference) and local
   `claude --help` agree on `--cloud` and `--teleport`. The checked native CLI was
-  2.1.280; the installed Agent SDK was 0.3.293. These may differ from the CLI build
-  used to establish the existing adapter protocol.
+  2.1.280; the installed Agent SDK was updated to 0.3.295 during verification.
+  These may differ from the CLI build used to establish the existing adapter protocol.
 - [The Agent SDK overview](https://code.claude.com/docs/en/agent-sdk/overview)
   describes a process hosted by the application. Its local session APIs are not
   a documented launcher for promotional Claude Code cloud sessions.

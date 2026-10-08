@@ -14,14 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Complete Claude cloud execution-lane proof** (2026-10-08, Brindle Pebble).
-  Auditing the existing hosted subtask lane against parent/goal routing, exact model pins,
-  expiry, returned-branch integration and a real repository change. Current local login is
-  valid; provider credit reads are throttled. Cloud/session gates, server/web types,
-  subtask/model/account/reset/fallback/office gates, README claims and privacy pass.
-  Browser lab passes 74/74; desktop/phone orch-throwaway checks pass with the real settings API.
-  Remaining: hosted documentation change, returned-branch review/integration, before/after credit
-  evidence, and activation at the next permitted restart (restart-resume forbids another restart).
 
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
@@ -35,6 +27,21 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Complete Claude cloud execution-lane proof** (c578c91c, 2026-10-08, Codex).
+  Preference before caps, the lane switch, UTC stop date, exact cloud pins, returned-branch
+  verification and provider cost estimates are integrated and pushed. Cloud/session, types/builds,
+  subtask/model/account/reset/fallback/office gates pass; goal continuation 65/65, restart recovery
+  93/93, README 74/74, privacy, browser lab 74/74 and real desktop/phone orch-throwaway API checks pass.
+  The renewable login validates, but fresh credit reads return HTTP 429 even after a five-minute
+  pause and one bounded retry (Retry-After 0). All isolated proof databases contain zero hosted jobs;
+  no cloud task was submitted. Owner policy is saved enabled, preferring cloud with a November 6
+  stop date. The provider promotion expires earlier: November 5 at 07:59 UTC.
+  Remaining: a real hosted documentation change, returned-branch review/tests and queued integration,
+  before/after credit evidence, and server activation plus matching web publication at the next
+  permitted restart. Restart-resume explicitly forbids another restart; compiled output is ready,
+  but deploy verification cannot confirm the running source process. Full notes are in the ignored
+  owner-facing `server/data/cloud-lane-verification.md` deliverable.
 
 
 - **Claude cloud credit chips: renewable sign-in replaces revoked pasted tokens** (af7765c2, 2026-10-08, Cumulus Thimble).
