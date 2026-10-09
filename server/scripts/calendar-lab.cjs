@@ -448,7 +448,10 @@ async function firedReminderCount(page, shots) {
   await closeModal(page);
   await page.locator(".cal-fired-toggle .board-tab-count").waitFor({ state: "detached", timeout: 10000 });
   check("showing it marks it seen, so the tab's number goes", (await page.locator(".board-tab.bt-calendar .board-tab-count").count()) === 0);
-  check("…and it stays listed, no longer new", (await panel.locator(`.cal-fired-row:not(.new):has(.cal-fired-name:text-is("${PROBE}"))`).count()) === 1);
+  // The socket's count can clear the badge a moment before the acknowledgement reply restyles the row.
+  const seenRow = panel.locator(`.cal-fired-row:not(.new):has(.cal-fired-name:text-is("${PROBE}"))`);
+  await seenRow.waitFor({ timeout: 5000 }).catch(() => {});
+  check("…and it stays listed, no longer new", (await seenRow.count()) === 1);
   await panel.locator('button[aria-label="Hide reminders that went off"]').click();
   check("the list can be hidden", (await panel.count()) === 0);
 }
@@ -824,7 +827,11 @@ async function phoneFiredReminderLayout(browser, cookies) {
     releaseRange();
     await page.waitForFunction(() => !document.querySelector(".cal-new").disabled);
     await page.click(".cal-new");
-    check("the first create form receives the loaded reminder defaults", JSON.stringify(await page.locator('.cal-modal select[aria-label^="Reminder "]').evaluateAll((es) => es.map((e) => e.value))) === '["d:7:09:00","d:1:09:00"]');
+    // Read the reminder rows once the form has rendered them, and say what it showed if they differ.
+    const reminderValues = () => page.locator('.cal-modal select[aria-label^="Reminder "]').evaluateAll((es) => JSON.stringify(es.map((e) => e.value)));
+    await page.waitForFunction(() => document.querySelectorAll('.cal-modal select[aria-label^="Reminder "]').length >= 2, null, { timeout: 5000 }).catch(() => {});
+    const firstDefaults = await reminderValues();
+    check("the first create form receives the loaded reminder defaults", firstDefaults === '["d:7:09:00","d:1:09:00"]', firstDefaults);
     await closeModal(page);
 
     await monthAndNavigation(page, dataDir);
