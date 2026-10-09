@@ -16,9 +16,6 @@ same commit as the fix. Git history keeps the record.
 
 - **QA: preserve Calendar reminder counts, executed-reminder links and interrupted delivery status** (2026-10-09, Sedge Morrow; task 30f120db).
 
-- **QA: give hubless Surveillance saves a configuration request deadline** (2026-10-09, Codex QA; task 9ed5479f).
-  Two full integration runs time out at the config PUT because it inherits the 2s health budget while probing ffmpeg twice.
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -159,6 +156,7 @@ same commit as the fix. Git history keeps the record.
 ## Ready (priority order)
 
 1. **Stabilize module integration worker-health checks under load** (2026-10-09, Mosswick Lantern; task 9ed5479f): two full module runs passed the proxy stream case but failed on a null busy status after recording started and a health-budget timeout while saving hubless config. The recording lifecycle case passed on the second run; focused socket checks and live five-camera proxy proof pass.
+   Config-save timeout fixed by the QA request deadline below; the earlier null busy status under load remains to investigate.
 
 1. **Restore the configured Nvidia free provider after its selected model disappeared** (2026-10-09, Codex QA; task ef639c35).
   Live `/api/free-providers` reports `openai/gpt-oss-120b` is no longer verified free; the current roster's only explicitly tool-capable replacement is `openai/gpt-oss-20b`. Choose a replacement for the explicit selection before routing; no inference request was sent.
@@ -242,6 +240,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-09 **Give hubless Surveillance saves a configuration request deadline** (Codex QA; task 9ed5479f): two runs reproduced the test's 2s health timeout during ffmpeg lookup; a 30s deadline on that config PUT preserves production health checks. Full module suite passes (38/38 integration checks); live proxy decodes and refreshes five cameras with five active 24/7 recorders, viewer browser 28/28 and socket access checks pass.
 
 - 2026-10-09 **Let the remote-control socket through the dashboard proxy too** (Quillon Mossgate, QA of task 9ed5479f): the same global Origin fallback that blocked Surveillance pictures refused `/api/remote-control/stream` behind the deck's Host-rewriting proxy (live probe: 403 before the ticket check). Both ticketed sockets now share one exemption; the remote-control regression fails without it. Remote-control 21/21, remote-access, modules 38/38, server types and privacy pass.
 

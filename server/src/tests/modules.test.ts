@@ -973,7 +973,8 @@ try {
     }
     const surveillance = await hubless.ensure("surveillance");
     const blank = (await (await hubless.request(surveillance, "/config")).json()) as Record<string, unknown>;
-    const saved = await hubless.request(surveillance, "/config", { method: "PUT", body: JSON.stringify({ ...blank, recordingRoot: join(root, "hubless-recordings") }), headers: { "content-type": "application/json" } });
+    // Saving probes ffmpeg twice (each lookup allows 10s), so this is not a 2s health request.
+    const saved = await hubless.request(surveillance, "/config", { method: "PUT", body: JSON.stringify({ ...blank, recordingRoot: join(root, "hubless-recordings") }), headers: { "content-type": "application/json" }, timeoutMs: 30_000 });
     assert.equal(saved.status, 200);
     const written = JSON.parse(readFileSync(modulePaths(hublessDir, "surveillance").config, "utf8"));
     assert.equal(written.origin, "new", "the owner's first save makes it a real setup");
