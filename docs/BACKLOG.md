@@ -222,9 +222,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Blocked / waiting
 
-- **Remove header-hover QA scratch after execution-policy denial** (2026-10-09, Pip Sootwhistle; task 698bc595).
-  Both recursive and verified per-file PowerShell cleanup were rejected as "blocked by policy". Preview and browsers exited; the retained inbox helper has its capability removed. Operator cleanup of the task's data-drive scratch folder is required; its exact path is in the QA result.
-
 - **Choose an eligible NVIDIA free-pool model** (2026-10-08, Saffron Wicket): live refresh marks the saved `openai/gpt-oss-120b` choice as no longer verified free and sends no inference request. Settings must select another verified free model; preserve the explicit owner choice until changed.
 
 - **Verify Claude prepaid funds before enabling credit-backed dispatch** (2026-10-07, Pebble Sprocket).
