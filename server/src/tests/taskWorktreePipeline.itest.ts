@@ -99,6 +99,10 @@ function makeRepo(parent: string, name: string, origin?: string): string {
   const repo = join(parent, name);
   mkdirSync(join(repo, "web"), { recursive: true });
   git(repo, "init", "--quiet", "-b", "master");
+  // Disposable repos must use their own hooks, never the operator's cross-project hook scans.
+  const hooks = join(repo, ".git", "hooks");
+  git(repo, "config", "--local", "core.hooksPath", hooks);
+  assert.equal(git(repo, "config", "--local", "--get", "core.hooksPath"), hooks);
   for (const [key, value] of [["user.name", "Pipeline Test"], ["user.email", "pipeline@example.com"], ["commit.gpgsign", "false"], ["core.autocrlf", "false"]]) {
     git(repo, "config", key!, value!);
   }
