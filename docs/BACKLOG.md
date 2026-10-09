@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA: verify the nightly sweep and constrain historical token-fixture exemptions** (2026-10-09, Tansy Copperfern; task ef639c35).
+  Reproduced: a random credential tail containing a `test` segment is incorrectly exempted by the new history classifier.
 
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
