@@ -210,6 +210,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-09 **Nightly sweep: faster task start/inject and a self-healing SDK updater** (2b3c8274..df8fa79c, nightly check ef639c35): pushed and deployed (live df8fa79c, then the updater's own 5c03a937). Memory recall no longer gates office/QA turns, is prefetched during CLI boot and shares in-flight lookups; each chat post previews to a run once; opening a cold task precomputes its resume handoff (24–48 s → under 1 s in the itest). Live proof: the repaired updater applied Agent SDK 0.3.295 that the old build had banned, pushed it and restarted GGO. Gates 245/245; hot paths seek their indexes with 1,514 tasks (snapshot 22 ms). Codex 0.162.0 installs once no Codex turn is running.
+
 - 2026-10-08 **Expose the Claude reset browser lab through npm**: `npm run claude-reset-lab --prefix server` registers the existing isolated browser regression alongside the other labs. Isolated server/web builds and all five browser checks pass; no runtime change or deployment required.
 
 - 2026-10-08 **Enforce Opus for Claude goal steps and exclude Fable from automatic routing** (8e64cbab, Rowan Clapper): pushed and deployed; live build 8e64cbab verified on pid 101724. Deployed guards exclude Fable, replace its goal pin with Opus and retain that pin without capacity. Routing 152/152, auto-model 131/131, scoped routing 59/59, Opus floor 40/40, migration 93/93, continuation 65/65, goal suites, server types/build, web build, README 74/74 and privacy pass. Historical runs are preserved; the existing cancelled Fable goal task upgrades before any future resume.
