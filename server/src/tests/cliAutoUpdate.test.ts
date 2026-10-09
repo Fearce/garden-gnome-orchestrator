@@ -452,6 +452,24 @@ check("an SDK bump stages, swaps, typechecks, commits only the package files, pu
   cleanup(r);
 });
 
+check("a bump another machine already committed is installed from the pulled lockfile, with no second commit", async () => {
+  const r = rig({ latest: BUMP });
+  // `git pull` brought the bumped package files; pulling never installs, so the tree still holds 0.3.280.
+  writeFileSync(pkgFile(r), packageJson("0.3.285"));
+  writeFileSync(lockFile(r), lockfile("0.3.285"));
+  r.head = packageJson("0.3.285");
+  await r.updater.checkNow();
+  const status = r.updater.current().claude;
+  assert.equal(status.state, "updated", `${status.state}: ${status.detail}`);
+  assert.equal(liveSdk(r), "0.3.285");
+  assert.equal(liveNative(r), "0.3.285", "this platform's binary package moved with it");
+  assert.equal(r.kv.kvGet("cli_auto_update_failed_sdk"), null, "the release is not banned");
+  assert.ok(!r.calls.some((c) => c.startsWith("git commit") || c.startsWith("git push")), `nothing new to commit:\n${r.calls.join("\n")}`);
+  assert.equal(readFileSync(lockFile(r), "utf8"), lockfile("0.3.285"), "the committed lockfile is left as pulled");
+  assert.deepEqual(r.restarts, ["Claude runtime auto-update"]);
+  cleanup(r);
+});
+
 check("an SDK bump in a repo matching NO_PUSH_REPO_PATTERN is committed but never pushed", async () => {
   const held = rig({ latest: BUMP, originUrl: "https://git.example.com/client-work/orchestrator.git", noPushRepoPattern: "client-work" });
   await held.updater.checkNow();

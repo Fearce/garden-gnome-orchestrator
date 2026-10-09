@@ -165,9 +165,16 @@ export interface LockChange {
 /**
  * The top-level packages a new lockfile installs at a different version than the old one did, limited to
  * those this platform actually installs. `nested` lists changes inside another package's own
- * node_modules, which a folder swap can't express.
+ * node_modules, which a folder swap can't express. `installed` names the version on disk for a key whose
+ * lock entry did not move; a different answer still swaps it (a pulled lockfile is never installed).
  */
-export function lockChanges(before: unknown, after: unknown, platform: string = process.platform, arch: string = process.arch): { swap: LockChange[]; nested: string[] } {
+export function lockChanges(
+  before: unknown,
+  after: unknown,
+  platform: string = process.platform,
+  arch: string = process.arch,
+  installed: (key: string) => string | null = () => null,
+): { swap: LockChange[]; nested: string[] } {
   const packages = (lock: unknown): Record<string, LockEntry> => ((lock as { packages?: Record<string, LockEntry> })?.packages ?? {});
   const old = packages(before);
   const swap: LockChange[] = [];
@@ -175,7 +182,8 @@ export function lockChanges(before: unknown, after: unknown, platform: string = 
   for (const [key, entry] of Object.entries(packages(after))) {
     if (!key.startsWith("node_modules/") || typeof entry.version !== "string") continue;
     const prior = old[key];
-    if (prior?.version === entry.version && prior?.name === entry.name) continue;
+    const onDisk = installed(key);
+    if (prior?.version === entry.version && prior?.name === entry.name && (onDisk === null || onDisk === entry.version)) continue;
     if (!fitsPlatform(entry, platform, arch)) continue;
     const name = key.slice("node_modules/".length);
     if (name.includes("/node_modules/")) {
@@ -714,7 +722,7 @@ export class CliAutoUpdater {
 
     let changes: ReturnType<typeof lockChanges>;
     try {
-      changes = lockChanges(JSON.parse(before.lock), JSON.parse(after.lock));
+      changes = lockChanges(JSON.parse(before.lock), JSON.parse(after.lock), process.platform, process.arch, (key) => this.installedSdkPart(key));
     } catch (error) {
       return { error: `the resolved lockfile is unreadable: ${reason(error)}` };
     }
@@ -734,6 +742,12 @@ export class CliAutoUpdater {
     const wrong = staged.find((s) => readManifest(join(s.dir, "package.json")).version !== s.version);
     if (wrong) return { error: `the staged ${wrong.key.slice("node_modules/".length)} is not ${wrong.version}` };
     return { before: { pkg: before.pkg, lock: before.lock }, after: { pkg: after.pkg, lock: after.lock }, staged: staged.map(({ key, dir }) => ({ key, dir })) };
+  }
+
+  /** The installed version of the SDK or one of its platform packages; null for any other package. */
+  private installedSdkPart(key: string): string | null {
+    if (!key.startsWith(`node_modules/${SDK_PACKAGE}`) || key.includes("/node_modules/", "node_modules/".length)) return null;
+    return readManifest(join(this.deps.serverRoot, ...key.split("/"), "package.json")).version;
   }
 
   /** Swap the staged packages in, write the new package files, then verify and commit. Holds the checkout. */
@@ -785,6 +799,14 @@ export class CliAutoUpdater {
       this.retrySoon = true;
       return this.component({ ...base, state: "waiting", detail: "server/package.json was edited during the bump; the bump was undone around that edit and retries soon." });
     }
+    const now = { installed: onDisk.version, runtime: onDisk.claudeCodeVersion, latest: base.latest };
+    if (hash(bump.before.pkg) === bump.wrote.pkg && hash(bump.before.lock) === bump.wrote.lock) {
+      // The package files already carried this bump (pulled from another machine); only the tree moved.
+      this.clearBump();
+      this.sweepSdkAsides();
+      this.deps.log("info", `CLI auto-update: installed ${target} from the committed lockfile.`);
+      return this.restartOnto(now, `Installed ${target} from the committed lockfile`);
+    }
     const message = `chore(deps): bump the Claude Agent SDK to ${bump.version}${onDisk.claudeCodeVersion ? ` (Claude Code ${onDisk.claudeCodeVersion})` : ""}`;
     const commit = await this.commit(message);
     if (commit.code !== 0) {
@@ -797,7 +819,6 @@ export class CliAutoUpdater {
     this.sweepSdkAsides();
     const pushed = await this.push();
     this.deps.log("info", `CLI auto-update: committed "${message}"${pushed ? `; ${pushed}` : ""}.`);
-    const now = { installed: onDisk.version, runtime: onDisk.claudeCodeVersion, latest: base.latest };
     return this.restartOnto(now, `Updated to ${target}${pushed ? ` (${pushed})` : ""}`);
   }
 
