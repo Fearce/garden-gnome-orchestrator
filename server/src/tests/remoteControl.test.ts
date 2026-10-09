@@ -13,6 +13,7 @@ import { scanKeyFor } from "../remoteControl/keymap.js";
 import { QUALITY_PRESETS, captureFilter, explainEncoderError, fitSize, streamArgs, type FfmpegProbe } from "../remoteControl/ffmpeg.js";
 import { RemoteControlError, RemoteControlService, recommend } from "../remoteControl/service.js";
 import { registerRemoteControlRoutes } from "../remoteControl/routes.js";
+import { registerBrowserOriginGuard } from "../crossSite.js";
 
 let checks = 0;
 async function test(name: string, fn: () => Promise<void> | void) {
@@ -222,6 +223,7 @@ try {
 
   const app = Fastify();
   await app.register(websocket);
+  registerBrowserOriginGuard(app);
   registerRemoteControlRoutes(app, service, (cookie) => cookie === "session=test");
   await app.listen({ port: 0, host: "127.0.0.1" });
   const port = (app.server.address() as { port: number }).port;
@@ -257,6 +259,12 @@ try {
       service.redeemTicket(ticket);
       assert.equal(await closeCode(`${base}?ticket=${ticket}`, authed), 4403);
     }
+    // The deck's proxy rewrites Host and Chromium sends no Sec-Fetch-Site on the upgrade: the global
+    // origin guard must leave this ticketed socket to its own route guard (refused with 403 before).
+    const proxied = { ...authed, host: "127.0.0.1:4317", origin: "https://deck.example.com:3940" };
+    assert.equal(await closeCode(`${base}?ticket=made-up`, proxied), 4403, "a proxied upgrade reaches the ticket check");
+    assert.equal(await closeCode(`${base}?ticket=whatever`, { host: proxied.host, origin: proxied.origin }), "http 401", "and still needs the session");
+    assert.equal(await closeCode(`${base}?ticket=made-up`, { ...proxied, "sec-fetch-site": "cross-site" }), "http 403", "and Fetch Metadata still refuses another site");
   });
 
   await test("flow control: a long but steady round trip is latency, not backlog, so nothing is skipped", () => {

@@ -59,6 +59,9 @@ export function isCrossSiteSocket(req: FastifyRequest): boolean {
   }
 }
 
+/** WebSocket routes that need the owner's session AND a single-use ticket from a guarded POST. */
+const TICKETED_SOCKET_ROUTES = new Set(["/api/modules/:id/stream", "/api/remote-control/stream"]);
+
 /** Refuse browser requests before local auto sign-in can mint a session for them. */
 export function registerBrowserOriginGuard(app: FastifyInstance, authRequired: () => boolean = () => true): void {
   app.addHook("onRequest", async (req, reply) => {
@@ -72,10 +75,11 @@ export function registerBrowserOriginGuard(app: FastifyInstance, authRequired: (
       if (isCrossSiteSocket(req)) return reply.code(403).send({ error: "cross-site WebSocket refused" });
       return;
     }
-    // Module picture/log sockets authenticate the session and a single-use ticket in their own
-    // route. Their guard handles Sec-Fetch-Site, but deliberately permits a proxy-rewritten Host
-    // when Chromium omits that header on upgrades. Do not apply the ordinary API Origin fallback.
-    if (req.method === "GET" && route === "/api/modules/:id/stream") return;
+    // Ticketed sockets (module pictures/logs, remote control) authenticate the session and a
+    // single-use ticket in their own route. Their guard handles Sec-Fetch-Site, but deliberately
+    // permits a proxy-rewritten Host when Chromium omits that header on upgrades. Do not apply the
+    // ordinary API Origin fallback: it refused both behind the deck's proxy.
+    if (req.method === "GET" && route && TICKETED_SOCKET_ROUTES.has(route)) return;
     if (!route?.startsWith("/api/") || route === "/api/auth/google" || route === "/api/auth/callback") return;
     if (isCrossSiteRequest(req)) return reply.code(403).send({ error: "cross-site API request refused" });
   });

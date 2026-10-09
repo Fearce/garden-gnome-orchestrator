@@ -239,6 +239,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-09 **Let the remote-control socket through the dashboard proxy too** (Quillon Mossgate, QA of task 9ed5479f): the same global Origin fallback that blocked Surveillance pictures refused `/api/remote-control/stream` behind the deck's Host-rewriting proxy (live probe: 403 before the ticket check). Both ticketed sockets now share one exemption; the remote-control regression fails without it. Remote-control 21/21, remote-access, modules 38/38, server types and privacy pass.
+
 - 2026-10-09 **Calendar tab counts reminders that went off; "Went off" panel shows which and whether Discord got it** (2a0e2a20, d5a19890, Thimble Bellwort): deployed; a live event reminder fired on schedule, Discord DM recorded `sent`, tab count rose to 1. Calendar gate, browser lab 92/92 and gates 246/247 pass (`test:supervisor` failed on load, 12/12 on rerun).
 
 - 2026-10-09 **Restore Surveillance pictures through the dashboard proxy** (0163c571, Mosswick Lantern): pushed on master and deployed; live proxy browser received 44 frames, decoded all five pictures without errors, and confirmed five fresh 24/7 recorders. Server types, remote-access, privacy and five focused proxy/session/ticket checks pass.
