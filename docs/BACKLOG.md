@@ -28,8 +28,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
-- **Restore Surveillance pictures through the dashboard proxy** (2026-10-09, Mosswick Lantern; task 9ed5479f).
-  The global origin guard now delegates module sockets to their session/ticket guard; integrated guard checks cover proxy upgrades, forged/replayed tickets, missing sessions and cross-site refusal. Server types, remote-access and privacy checks pass; live proxy browser verification follows deployment.
 
 - **QA nightly sweep: preserve failed-resume input, active authentication and deliverable cards** (0e2d18a8, 3080f755, 9c292ff0, a79ed497, 9e472a08; 2026-10-09, Codex QA; task ef639c35).
   Integrated/pushed; live 9e472a08 verified. Full gates 246/247; the failed child-priority gate passes after readiness barriers. Final model/input/auth gates 6/6 (auto-model 205/205, batching 17/17), updated retirement pipeline 93/93 in normal and hostile-global-hook runs, all types/builds, desktop 19/19, privacy, README claims 74/74 and desktop/phone browser checks pass. The 1,400-task lab cuts initial summary bytes 77%. Provider toolchain/catalog currency passes. Operational sweep 11/12: HTTPS passphrase audit fails; Nvidia selection and global SessionStart hook policy remain owner actions. No owner-facing artifacts; independent QA and a completed long-turn recovery remain to prove live behavior.
@@ -156,6 +154,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Ready (priority order)
 
+1. **Stabilize module integration worker-health checks under load** (2026-10-09, Mosswick Lantern; task 9ed5479f): two full module runs passed the proxy stream case but failed on a null busy status after recording started and a health-budget timeout while saving hubless config. The recording lifecycle case passed on the second run; focused socket checks and live five-camera proxy proof pass.
+
 1. **Restore the configured Nvidia free provider after its selected model disappeared** (2026-10-09, Codex QA; task ef639c35).
   Live `/api/free-providers` reports `openai/gpt-oss-120b` is no longer verified free; the current roster's only explicitly tool-capable replacement is `openai/gpt-oss-20b`. Choose a replacement for the explicit selection before routing; no inference request was sent.
 
@@ -238,6 +238,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-09 **Restore Surveillance pictures through the dashboard proxy** (0163c571, Mosswick Lantern): pushed on master and deployed; live proxy browser received 44 frames, decoded all five pictures without errors, and confirmed five fresh 24/7 recorders. Server types, remote-access, privacy and five focused proxy/session/ticket checks pass.
 
 - 2026-10-09 **Require actual process exit in the Codex terminal-drain regression** (Brindle Acorn): the real launcher proof awaits both the result and process exit before its cleanup; a ten-second test ceiling tolerates Windows startup/teardown under load. Runner regression and server types pass. Tests only; no runtime activation required.
 
