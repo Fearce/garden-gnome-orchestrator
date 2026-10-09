@@ -52,6 +52,10 @@ rate limit) resumes from where it stopped rather than starting over. A task a se
 interrupted resumes on the backend it was running on (a Codex session stays on Codex) while that
 backend still has room, instead of being routed afresh.
 
+When Codex reports a completed or failed turn, its launcher has five seconds to shut down.
+If shutdown stalls, GGO releases it while preserving the reported result and any queued
+instructions, so a finished review does not wait for the normal inactivity timeout.
+
 **A pure lookup skips all of it.** "Which module owns the feature-flag cache?" does not
 need a planner or a QA round, so the director dispatches it down a **read lane**: one
 read-only agent answers by posting a finding, and the card gets a `READ` badge. If the

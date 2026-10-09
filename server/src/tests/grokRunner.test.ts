@@ -2,7 +2,7 @@
 // Run: npx tsx src/tests/grokRunner.test.ts
 
 import assert from "node:assert/strict";
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { readFile, unlink } from "node:fs/promises";
 import { PassThrough } from "node:stream";
@@ -132,3 +132,93 @@ await new Promise((resolve) => setTimeout(resolve, 40));
 assert.deepEqual(cleanCodes, [0], "a normal close wins over the fallback timer");
 
 console.log("Codex child-exit recovery checks passed.");
+
+const activeChild = Object.assign(new EventEmitter(), { kill: () => { throw new Error("an active turn must not be stopped"); } });
+let activeSettles = 0;
+settleCodexChild(activeChild as unknown as ChildProcess, () => { activeSettles++; }, 15);
+await new Promise((resolve) => setTimeout(resolve, 40));
+assert.equal(activeSettles, 0, "the shutdown grace starts only after a terminal event");
+activeChild.emit("close", 0);
+
+// A terminal turn must settle even when the launcher never emits exit/close during tool-host teardown.
+// Exercise the real event parser and close path: the forced shutdown must retain the verdict, and a
+// steering message in the drain gap must open a continuation instead of publishing the old verdict.
+for (const scenario of ["success", "failed", "steering", "normal-close"] as const) {
+  const run = new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: process.cwd(), apiKey: "sk-test",
+    outputSchema: { type: "object", properties: { pass: { type: "boolean" } }, required: ["pass"] } });
+  let kills = 0;
+  let closes = 0;
+  const child = Object.assign(new EventEmitter(), {
+    stdout: new PassThrough(), stderr: new PassThrough(), kill: () => { kills++; return true; },
+  });
+  const internal = run as unknown as {
+    turnActive: boolean; child: ChildProcess; drainTerminalChild: () => void;
+    onStdout(chunk: string): void; onTurnClose(code: number | null): Promise<void>;
+    runTurn(prompt: string, resume?: string): Promise<void>;
+  };
+  internal.turnActive = true;
+  internal.child = child as unknown as ChildProcess;
+  internal.drainTerminalChild = settleCodexChild(internal.child, (code) => {
+    closes++;
+    void internal.onTurnClose(code);
+  }, 15);
+  let continuation: string | undefined;
+  internal.runTurn = async (prompt) => { continuation = prompt; };
+  let results = 0;
+  run.onEvent((event) => { if (event.type === "result") results++; });
+  internal.onStdout(JSON.stringify({ type: "thread.started", thread_id: "saved-terminal-session" }) + "\n");
+  internal.onStdout(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: '{"pass":false}' } }) + "\n");
+  internal.onStdout(JSON.stringify(scenario === "failed"
+    ? { type: "turn.failed", error: { message: "verification failed" } }
+    : { type: "turn.completed", usage: { input_tokens: 10, output_tokens: 2 } }) + "\n");
+  assert.equal(results, 0, "terminal events must still wait for drain-gap steering");
+  if (scenario === "steering") run.send("current owner instruction");
+  if (scenario === "normal-close") { child.emit("exit", 0); child.emit("close", 0); }
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(closes, 1, `${scenario}: settle exactly once without relying on launcher exit`);
+  assert.equal(kills, scenario === "normal-close" ? 0 : 1, "only a lingering launcher is stopped");
+  if (scenario === "steering") {
+    assert.equal(continuation, "current owner instruction", "queued steering survives terminal shutdown");
+    assert.equal(results, 0, "an obsolete verdict cannot escape before its continuation");
+  } else {
+    assert.equal(results, 1);
+    assert.equal(run.lastResult?.isError, scenario === "failed");
+    if (scenario === "failed") assert.equal(run.lastResult?.result, "verification failed");
+    else assert.deepEqual(run.lastResult?.structuredOutput, { pass: false }, "shutdown does not turn a failed QA verdict into acceptance");
+  }
+  child.emit("exit", 0);
+  child.emit("close", 0);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(closes, 1, "late process events cannot settle a newer turn");
+}
+
+console.log("Codex terminal-turn shutdown and steering checks passed.");
+
+// Real process proof, without provider access: stdout reports success but the process stays alive.
+const lingeringRun = new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: process.cwd(), apiKey: "sk-test" });
+const lingering = lingeringRun as unknown as {
+  turnActive: boolean; child: ChildProcess; drainTerminalChild: () => void;
+  onStdout(chunk: string): void; onTurnClose(code: number | null): Promise<void>;
+};
+const lingeringChild = spawn(process.execPath, ["-e", `
+  process.stdout.write(JSON.stringify({type:"turn.completed",usage:{input_tokens:3,output_tokens:1}})+"\\n");
+  setInterval(()=>{},1000);
+`], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+lingering.turnActive = true;
+lingering.child = lingeringChild;
+lingering.drainTerminalChild = settleCodexChild(lingeringChild, (code) => { void lingering.onTurnClose(code); }, 15);
+lingeringChild.stdout!.on("data", (chunk: Buffer) => lingering.onStdout(chunk.toString()));
+let proofTimeout: NodeJS.Timeout | undefined;
+try {
+  const result = await Promise.race([
+    lingeringRun.result(),
+    new Promise<never>((_, reject) => { proofTimeout = setTimeout(() => reject(new Error("terminal launcher did not settle")), 4_000); }),
+  ]);
+  assert.equal(result?.isError, false, "forced process shutdown preserves a successful terminal result");
+  assert.equal(result?.tokenUsage?.inputTokens, 3);
+  assert.equal(lingeringRun.finished, true);
+} finally {
+  if (proofTimeout) clearTimeout(proofTimeout);
+  lingeringChild.kill();
+}
+console.log("Codex lingering-launcher process proof passed.");

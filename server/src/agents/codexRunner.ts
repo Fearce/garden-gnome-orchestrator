@@ -2,7 +2,7 @@ import { CLI_QUESTION_DOCTRINE } from "./prompts.js";
 import { CliQuestionGate, type CliQuestion } from "./cliQuestions.js";
 import { currentCodexModel, isGpt6Model } from "./codexModelGeneration.js";
 import { latestFamilyModel } from "./modelFamily.js";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { copyFile, mkdir, unlink, writeFile } from "node:fs/promises";
@@ -199,20 +199,37 @@ export function codexResumeRolloutMissing(value: unknown): boolean {
 // rather than let it grow the heap unbounded (16 MB is far above any real single event).
 const MAX_STDOUT_BUF = 16 * 1024 * 1024;
 
+function stopTerminalLauncher(child: ChildProcess, stopped: () => void): void {
+  const kill = () => { try { child.kill(); } catch { /* already gone */ } };
+  if (process.platform === "win32" && child.pid && child.exitCode === null) {
+    // The npm launcher owns a native CLI and tool host. Stop that tree before releasing its pipes.
+    execFile("taskkill", ["/F", "/T", "/PID", String(child.pid)], { windowsHide: true, timeout: 2_000 }, (error) => {
+      if (error && child.exitCode === null) kill();
+      stopped();
+    });
+  } else {
+    kill();
+    stopped();
+  }
+}
+
 // A launcher can exit while a grandchild still owns an inherited stdout/stderr handle. Node then emits
 // `exit` but waits indefinitely to emit `close`; the run never publishes its result, and the normal
 // inactivity watchdog cannot release it because killing an already-exited launcher changes nothing.
 // Give the pipes a short drain window, then settle exactly once from the process exit.
-export function settleCodexChild(child: ChildProcess, onClose: (code: number | null) => void, drainMs = 5_000): void {
+export function settleCodexChild(child: ChildProcess, onClose: (code: number | null) => void, drainMs = 5_000): () => void {
   let settled = false;
   let drainTimer: NodeJS.Timeout | undefined;
+  let terminalTimer: NodeJS.Timeout | undefined;
   const settle = (code: number | null) => {
     if (settled) return;
     settled = true;
     if (drainTimer) clearTimeout(drainTimer);
+    if (terminalTimer) clearTimeout(terminalTimer);
     onClose(code);
   };
   child.once("exit", (code) => {
+    if (settled) return;
     drainTimer = setTimeout(() => {
       child.stdout?.destroy();
       child.stderr?.destroy();
@@ -221,6 +238,20 @@ export function settleCodexChild(child: ChildProcess, onClose: (code: number | n
     drainTimer.unref?.();
   });
   child.once("close", settle);
+  // A completed CLI turn can also leave the launcher itself alive during tool-host shutdown.
+  // Its terminal event already carries the result; do not wait for the 30-minute inactivity limit.
+  return () => {
+    if (settled || terminalTimer) return;
+    terminalTimer = setTimeout(() => {
+      logCrash("codex.terminalDrain", "terminal turn did not close within the drain grace; releasing its launcher");
+      stopTerminalLauncher(child, () => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        settle(null);
+      });
+    }, drainMs);
+    terminalTimer.unref?.();
+  };
 }
 
 export interface CodexTestResult {
@@ -391,6 +422,7 @@ export class CodexAgentRun implements AgentRunLike {
     (text) => { if (!this.stopped) this.send(text); },
   );
   private child: ChildProcess | undefined;
+  private drainTerminalChild: (() => void) | undefined;
   // runTurn does async auth/image preparation before it spawns the CLI. Treat that window as busy too:
   // otherwise an office message arriving there starts a second Codex process beside the first.
   private turnStarting = false;
@@ -728,7 +760,7 @@ export class CodexAgentRun implements AgentRunLike {
     child.on("error", (err) => {
       this.lastErrorMsg = err.message;
     });
-    settleCodexChild(child, (code) => this.onTurnClose(code));
+    this.drainTerminalChild = settleCodexChild(child, (code) => this.onTurnClose(code));
     // A priority-now send can land during async startup. A resume already has its session id and can
     // stop here; a fresh run waits for thread.started below so its original task remains resumable.
     if (this.interrupting && this.sessionId) this.killChild();
@@ -818,6 +850,7 @@ export class CodexAgentRun implements AgentRunLike {
         this.pendingTerminalResult = this.capped
           ? { subtype: "error", isError: true, result: this.lastAgentText || this.lastErrorMsg || "Codex hit its usage limit.", numTurns: 1, tokenUsage: this.runTokenUsage(ev.usage) }
           : { subtype: "success", isError: false, numTurns: 1, tokenUsage: this.runTokenUsage(ev.usage) };
+        this.drainTerminalChild?.();
         break;
       case "turn.failed": {
         this.sawTerminal = true;
@@ -826,6 +859,7 @@ export class CodexAgentRun implements AgentRunLike {
         if (codexErrorLooksRateLimited(ev.error ?? msg)) this.markCapped(msg);
         else this.markTransientApiError(msg);
         this.pendingTerminalResult = { subtype: "error", isError: true, result: msg, tokenUsage: this.runTokenUsage(ev.usage) };
+        this.drainTerminalChild?.();
         break;
       }
       case "error":
@@ -1044,6 +1078,7 @@ export class CodexAgentRun implements AgentRunLike {
     this.turnStarting = false;
     this.turnActive = true;
     this.child = undefined;
+    this.drainTerminalChild = undefined;
     this.clearWatchdog();
     // codex has already read this turn's attached images by now — drop the temp files.
     this.cleanupImages();
