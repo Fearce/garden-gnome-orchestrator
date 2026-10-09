@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA nightly sweep: limit browser-policy checks to the current build's JavaScript graph** (2026-10-09, Codex QA; task ef639c35).
-  Provider smoke times out scanning 2,949 retained JavaScript assets (492 MB; measured 53 s); verify current static/lazy dependencies and exclude stale builds.
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -29,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA nightly sweep: inspect only the current browser build** (26542f02; 2026-10-09, Codex QA; task ef639c35).
+  Integrated/pushed; stale assets no longer affect text checks: scan drops from 492 MB / 53 s to 5.9 MB / 48 ms, and live provider smoke passes. All types/builds, desktop 19/19, desktop/phone browser and privacy checks pass. Full sweep 14/16; gates 245/246 with the worktree-pipeline rerun 81/81. Codex 0.162.0 is verified live; all enabled runtimes and model/effort caches are current. Post-deploy first-text samples remain 25.23–74.09 s, with fresh owner start/inject improvement unproven. HTTPS passphrase rotation, obsolete Nvidia selection, oversized Codex input recovery and the retirement timing flake remain recorded below. No owner-facing artifacts; independent QA required.
 
 - **QA nightly sweep: require the initial console snapshot within one readiness deadline** (e5fb4494, 25b58f3b; 2026-10-09, Codex QA; task ef639c35).
   Pushed on master; all 246 gates, server/web/relay/desktop types, server/web builds, desktop units 19/19, privacy and real desktop/phone/provider browser checks pass. Full sweep 14/16: exposed HTTPS passphrase rotation and Codex 0.162.0 activation at an idle boundary remain. Post-deployment run-to-first-text samples are 25.74/47.81/58.61 s; owner send/inject latency is still unproven. Oversized Codex input recovery and the unavailable explicit Nvidia selection remain under Ready. No owner-facing artifacts were produced. Independent QA required.
@@ -142,6 +142,9 @@ same commit as the fix. Git history keeps the record.
   Desktop units 19/19 and new real-window regressions pass; application types/builds, Windows packaging and privacy pass. Clean-exit lab failures and distribution delivery remain under Ready.
 
 ## Ready (priority order)
+
+1. **Stabilize the done-task worktree-retirement gate under concurrent load** (2026-10-09, Codex QA; task ef639c35).
+  Full gates scored 245/246 because retirement exceeded the 30 s assertion; the focused worktree-pipeline rerun passed 81/81. Evidence: `server/data/gates-last.log`, `server/src/tests/taskWorktreePipeline.itest.ts`.
 
 1. **Restore the configured Nvidia free provider after its selected model disappeared** (2026-10-09, Codex QA; task ef639c35).
   Live `/api/free-providers` reports `openai/gpt-oss-120b` is no longer verified free; the current roster's only explicitly tool-capable replacement is `openai/gpt-oss-20b`. Choose a replacement for the explicit selection before routing; no inference request was sent.
