@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA nightly sweep: limit browser-policy checks to the current build's JavaScript graph** (2026-10-09, Codex QA; task ef639c35).
+  Provider smoke times out scanning 2,949 retained JavaScript assets (492 MB; measured 53 s); verify current static/lazy dependencies and exclude stale builds.
+
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
