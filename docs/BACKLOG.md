@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: preserve independent header gnome hover and keyboard holds** (2026-10-09, Pip Sootwhistle; task 698bc595).
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -28,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA: preserve independent header gnome hover and keyboard holds** (2026-10-09, Pip Sootwhistle; task 698bc595).
+  Reproduced pointer leave releasing a still-focused gnome; separate holds and a layout-time pause fix it. Beta/classic/screensaver browser suites, typechecks, build/compression, workshop/skin tests, privacy and README 74/74 pass. No owner-facing artifacts; independent QA required.
 
 - **QA: preserve Calendar reminder counts, executed-reminder links and interrupted delivery status** (4837cef2; 2026-10-09, Sedge Morrow; task 30f120db).
   Integrated/pushed from ggo/calendar-reminder-qa-30f120db to master; live 42d1ae94 verified. Calendar browser checks 106/106, Calendar/scheduler tests, Discord tests 66/66, types/builds, privacy and README claims 74/74 pass. Live tab count, highlighted reminder causes and delivery labels verified. No owner-facing artifacts; independent QA required. Task scratch deletion was rejected by execution policy; hosts are stopped and junctions removed, but operator cleanup remains required.

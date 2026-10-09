@@ -88,7 +88,8 @@ art). Read this before changing how gnomes are chosen, placed, walked or animate
 - **Pointing at a gnome stops the whole stage** (owner, 2026-10-09: it walked away while its tooltip was
   being read). `useHoverHold` sets `data-motion-held` (the clock holds the loops), pauses lane-change walks
   already under way, and `useStage` keeps every placed gnome where it stands (`holdPlaces`) until the
-  pointer leaves; lane changes queued meanwhile walk on release.
+  pointer leaves; lane changes queued meanwhile walk on release. Pointer and keyboard focus holds are
+  independent: leaving either one preserves the other. The layout effect pauses in-flight walks before paint.
 - **Seek animations; never drive the clock through an inherited CSS variable.** A `--gnome-clock` in every
   `animation-delay` was measured at ~25 ms of style recalc per tick (it re-styles all ~500 descendants)
   against ~3 ms for `animation.currentTime = t` (only the ~170 animated targets). With 24 gnomes the seek

@@ -166,6 +166,64 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     const resumedTime=await journeyTime();
     assert(resumedTime>heldTime && resumedTime-heldTime<1500,`Released loops resume where they stopped (${heldTime} → ${resumedTime})`);
     await settled(page);
+    // Catch a lane walk before it lands: hover must pause both the transform transition and its stride.
+    const walkingId=await page.locator('.beta-actor:not([data-depth="0"]) .beta-workstation:not(.beta-visitor):not([data-post])').first().getAttribute('data-agent-id');
+    currentSocket.send(JSON.stringify({type:'chat.message',message:{id:'beta-mid-walk-hold',room,scope:'project',kind:'chat',body:'Walk to the front for a hover check.',role:'qa',threadId:walkingId,createdAt:Date.now()}}));
+    await page.waitForFunction(id=>{
+      const actor=document.querySelector(`.beta-workstation[data-agent-id="${id}"]`).closest('.beta-actor');
+      return actor.getAnimations().some(a=>a instanceof CSSTransition && a.transitionProperty==='transform' && a.playState==='running');
+    },walkingId);
+    const walkingSeat=page.locator(`.beta-workstation[data-agent-id="${walkingId}"]`);
+    const walkingBox=await walkingSeat.boundingBox();
+    await page.mouse.move(walkingBox.x+walkingBox.width/2,walkingBox.y+walkingBox.height*.7);
+    await page.waitForFunction(id=>document.querySelector(`.beta-workstation[data-agent-id="${id}"]`)?.matches(':hover') && document.querySelector('.beta-workshop')?.dataset.motionHeld==='true',walkingId);
+    await page.waitForFunction(id=>{
+      const walks=document.querySelector(`.beta-workstation[data-agent-id="${id}"]`).closest('.beta-actor').getAnimations({subtree:true}).filter(a=>!(a instanceof CSSAnimation));
+      return walks.length>0 && walks.every(a=>a.playState==='paused' && !a.pending);
+    },walkingId);
+    const stoppedWalk=await walkingSeat.evaluate(el=>{
+      const actor=el.closest('.beta-actor');
+      window.betaHeldWalks=actor.getAnimations({subtree:true}).filter(a=>!(a instanceof CSSAnimation));
+      return {x:el.getBoundingClientRect().x,y:el.getBoundingClientRect().y,times:window.betaHeldWalks.map(a=>a.currentTime),states:window.betaHeldWalks.map(a=>a.playState),transition:window.betaHeldWalks.some(a=>a instanceof CSSTransition)};
+    });
+    assert(stoppedWalk.transition,'Hover check must catch an unfinished lane transition');
+    assert(stoppedWalk.states.length>1 && stoppedWalk.states.every(state=>state==='paused'),'Hover pauses both the lane transition and script-driven stride');
+    await page.waitForTimeout(500);
+    const stillWalking=await walkingSeat.evaluate(el=>({x:el.getBoundingClientRect().x,y:el.getBoundingClientRect().y,times:window.betaHeldWalks.map(a=>a.currentTime)}));
+    assert.deepEqual(stillWalking.times,stoppedWalk.times,'An in-flight walk stays at its held times');
+    assert(Math.abs(stillWalking.x-stoppedWalk.x)<.25 && Math.abs(stillWalking.y-stoppedWalk.y)<.25,'An in-flight gnome stays under the pointer');
+    await page.mouse.move(5,900);
+    await page.waitForFunction(()=>!document.querySelector('.beta-workshop')?.dataset.motionHeld && window.betaHeldWalks.every(a=>a.playState!=='paused'));
+    await settled(page);
+    await page.evaluate(()=>delete window.betaHeldWalks);
+    // Hover and keyboard focus are independent holds, for both workshop casts.
+    for(const artwork of ['classic','beta']) {
+      await page.evaluate(art=>{
+        for(const [key,value] of [['ggo:classic-workshop',art==='classic'?'1':'0'],['ggo:beta-gnomes',art==='beta'?'1':'0']]) {
+          localStorage.setItem(key,value);window.dispatchEvent(new StorageEvent('storage',{key}));
+        }
+      },artwork);
+      await page.waitForFunction(art=>document.querySelector('.beta-workshop')?.dataset.art===art,artwork);
+      await settled(page);
+      await page.keyboard.press('Tab');
+      const focusSeat=page.locator('.beta-actor[data-depth="0"] .beta-workstation[data-partner]').first();
+      await focusSeat.evaluate(el=>el.focus());
+      assert(await focusSeat.evaluate(el=>el.matches(':focus-visible')),'Keyboard target has visible focus');
+      await page.waitForFunction(()=>document.querySelector('.beta-workshop')?.dataset.motionHeld==='true');
+      const focusBox=await focusSeat.boundingBox();
+      await page.mouse.move(focusBox.x+focusBox.width/2,focusBox.y+focusBox.height*.7);
+      await page.mouse.move(5,900);
+      assert.equal(await page.locator('.beta-workshop').getAttribute('data-motion-held'),'true','Pointer leave preserves keyboard focus hold');
+      const focusedTime=await journeyTime();
+      await page.waitForTimeout(200);
+      assert.equal(await journeyTime(),focusedTime,'Keyboard focus keeps walking loops still');
+      await page.mouse.move(focusBox.x+focusBox.width/2,focusBox.y+focusBox.height*.7);
+      assert(await focusSeat.evaluate(el=>el.matches(':hover')),'Blur check retains the hovered figure');
+      await focusSeat.evaluate(el=>el.blur());
+      assert.equal(await page.locator('.beta-workshop').getAttribute('data-motion-held'),'true','Blur preserves the pointer hold');
+      await page.mouse.move(5,900);
+      await page.waitForFunction(()=>!document.querySelector('.beta-workshop')?.dataset.motionHeld);
+    }
     // Reproduce a local worktree + a different local repo separating its remote QA teammate.
     // Unrelated remote workers arrive first; online directors must not take any of their places.
     const teamThreads = [
@@ -273,7 +331,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.reload(); await page.locator('.office-strip').waitFor();
     assert.equal(await page.locator('.beta-gnome').count(),0);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({result:'PASS',checks:['default off/no atlas request','General toggle','persistence','larger director and shifted text','visible destination labels and full folder paths','48px lane/no added header rows','visible walking and shared projects','every own gnome on the depth stage, no +N badge, online visitors','messages and room navigation','pause/reduced motion','hidden tab and offscreen pause','390/768/1440/1920 layout','offline visitors removed','idle bubble expiry','click dismisses chatter','chatter ↗ opens chat','cross-tab rollback','no browser errors'],performance,atlasRequests:artRequests.length,evidence:output},null,2));
+    console.log(JSON.stringify({result:'PASS',checks:['default off/no atlas request','General toggle','persistence','larger director and shifted text','visible destination labels and full folder paths','48px lane/no added header rows','visible walking and shared projects','every own gnome on the depth stage, no +N badge, online visitors','messages and room navigation','pause/reduced motion','hover loops and in-flight walks pause/resume','independent pointer and keyboard holds in both casts','hidden tab and offscreen pause','390/768/1440/1920 layout','offline visitors removed','idle bubble expiry','click dismisses chatter','chatter ↗ opens chat','cross-tab rollback','no browser errors'],performance,atlasRequests:artRequests.length,evidence:output},null,2));
     await context.close();
   } finally { await browser.close(); }
 })().catch(e=>{console.error(e);process.exitCode=1;});

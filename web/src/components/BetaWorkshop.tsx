@@ -144,24 +144,27 @@ function holdPlaces(shown: StageActor[], live: StageActor[]): StageActor[] {
 /** Pointing at a gnome stops the stage so its tooltip stays put: the clock holds the loops
  *  (`data-motion-held`) and any lane-change walk already under way waits until the pointer leaves. */
 function useHoverHold(root: React.RefObject<HTMLDivElement | null>) {
-  const [heldBy, setHeldBy] = useState<string | null>(null);
-  useEffect(() => {
-    if (!heldBy || !root.current) return;
+  const [pointerId, setPointerId] = useState<string | null>(null);
+  const [focusId, setFocusId] = useState<string | null>(null);
+  const held = pointerId !== null || focusId !== null;
+  useLayoutEffect(() => {
+    if (!held || !root.current) return;
     const walking = root.current.getAnimations({ subtree: true }).filter((animation) => !(animation instanceof CSSAnimation) && animation.playState === "running");
     walking.forEach((animation) => animation.pause());
     return () => walking.forEach((animation) => { if (animation.playState === "paused") animation.play(); });
-  }, [heldBy]);
+  }, [held]);
   const holdHandlers = (id: string) => ({
-    onPointerEnter: () => setHeldBy(id),
-    onPointerLeave: () => setHeldBy((current) => current === id ? null : current),
-    onFocus: (event: React.FocusEvent<HTMLElement>) => { if (event.currentTarget.matches(":focus-visible")) setHeldBy(id); },
-    onBlur: () => setHeldBy((current) => current === id ? null : current),
+    onPointerEnter: () => setPointerId(id),
+    onPointerLeave: () => setPointerId((current) => current === id ? null : current),
+    onFocus: (event: React.FocusEvent<HTMLElement>) => { if (event.currentTarget.matches(":focus-visible")) setFocusId(id); },
+    onBlur: () => setFocusId((current) => current === id ? null : current),
   });
   // A gnome that leaves the stage while pointed at never sees the pointer leave.
   const releaseGone = (onStage: StageActor[]) => {
-    if (heldBy && !onStage.some((actor) => actor.seat.id === heldBy)) setHeldBy(null);
+    if (pointerId && !onStage.some((actor) => actor.seat.id === pointerId)) setPointerId(null);
+    if (focusId && !onStage.some((actor) => actor.seat.id === focusId)) setFocusId(null);
   };
-  return { held: heldBy !== null, holdHandlers, releaseGone };
+  return { held, holdHandlers, releaseGone };
 }
 
 interface Placement { x: number; depth: Depth; scale: number; lift: number; travel: number; walkMs: number }
