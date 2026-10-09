@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Bound Codex terminal shutdown and recover the stalled QA handoff** (2026-10-09, Brindle Acorn).
-  Live recovery restored implementation; fix the launcher-close dependency with terminal drain, verdict/steering regressions and deployment proof.
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -237,6 +234,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-09 **Bound Codex terminal shutdown and recover the stalled QA handoff** (0cefa76e, Brindle Acorn): pushed and deployed; live build verified. A completed/failed turn starts a five-second shutdown grace, preserving its verdict and queued steering. Regression fails with the drain disabled; runner, QA injection 186/186, stop-drain, cap, all types/builds, README 74/74 and privacy pass. Deployed runner's real lingering-process proof settles in 7.2 seconds including Windows cleanup. Authenticated task recovery restored implementation; subsequent owner cancellation is preserved.
 
 - 2026-10-09 **Nightly sweep: faster task start/inject and a self-healing SDK updater** (2b3c8274..df8fa79c, nightly check ef639c35): pushed and deployed (live df8fa79c, then the updater's own 5c03a937). Memory recall no longer gates office/QA turns, is prefetched during CLI boot and shares in-flight lookups; each chat post previews to a run once; opening a cold task precomputes its resume handoff (the mocked integration test verifies summary reuse; live before/after timing remains unmeasured). Live proof: the repaired updater applied Agent SDK 0.3.295 that the old build had banned, pushed it and restarted GGO. Gates 245/245; hot paths seek their indexes with 1,514 tasks (snapshot 22 ms). Codex 0.162.0 installs once no Codex turn is running.
 
