@@ -14,19 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA nightly sweep: isolate retirement fixtures from global Git hooks** (2026-10-09, Codex QA; task ef639c35).
-
-- **QA nightly sweep: reject malformed Codex source tokens without replacing a valid login** (2026-10-09, Codex QA; task ef639c35).
-
-- **QA nightly sweep: preserve unconsumed owner input across failed CLI resumes** (2026-10-09, Codex QA; task ef639c35).
-
-- **QA nightly sweep: match Codex catalogs to dispatch authentication** (2026-10-09, Codex QA; task ef639c35).
-
-- **QA nightly sweep: verify urgent child jobs with explicit readiness barriers** (2026-10-09, Codex QA; task ef639c35).
-
-- **QA nightly sweep: keep deliverable cards valid during worktree retirement** (2026-10-09, Codex QA; task ef639c35).
-  The focused pipeline gate reproduced a deleted-folder card while branch cleanup still waited; redirect validated main copies before removing their worktree.
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -39,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA nightly sweep: preserve failed-resume input, active authentication and deliverable cards** (0e2d18a8, 3080f755, 9c292ff0, a79ed497, 9e472a08; 2026-10-09, Codex QA; task ef639c35).
+  Integrated/pushed; live 9e472a08 verified. Full gates 246/247; the failed child-priority gate passes after readiness barriers. Final model/input/auth gates 6/6 (auto-model 205/205, batching 17/17), updated retirement pipeline 93/93 in normal and hostile-global-hook runs, all types/builds, desktop 19/19, privacy, README claims 74/74 and desktop/phone browser checks pass. The 1,400-task lab cuts initial summary bytes 77%. Provider toolchain/catalog currency passes. Operational sweep 11/12: HTTPS passphrase audit fails; Nvidia selection and global SessionStart hook policy remain owner actions. No owner-facing artifacts; independent QA and a completed long-turn recovery remain to prove live behavior.
 
 - **QA nightly sweep: preserve required input, restore model coverage and fix probe cleanup** (6ce1c1bb, 5a8ed3e4; 2026-10-09, Codex QA; task ef639c35).
   Pushed on master; live 5a8ed3e4 and matching web bundle verified. Required CLI inputs, images and truthful receipts survive bounded ambient queues and fresh recovery (12/12); adaptive Claude families and Haiku 5.5 efforts work while goal floors and account caps remain (auto-model 141/141). Full gates 247/247, all types/builds, desktop 19/19, privacy/README, live provider/chip and desktop/phone model checks pass. The 1,400-task lab defers 1,399 summaries and cuts initial summary bytes 79.3%. Operational sweep 8/9: the HTTPS passphrase audit still fails. Nvidia selection and shared SessionStart policy remain owner actions. No owner-facing artifacts; independent QA and a completed long-turn batch remain to prove live recovery. Five resumed runs show zero input-limit errors so far.
