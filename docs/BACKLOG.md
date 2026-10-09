@@ -17,9 +17,6 @@ same commit as the fix. Git history keeps the record.
 - **QA: preserve all-day fired-reminder dates across browser time zones** (2026-10-09, Sedge Morrow; task 30f120db).
   An all-day event's midnight instant can fall on the prior browser date, making Show falsely report it moved or deleted in Day view; verify civil-date snapshots and browser navigation.
 
-- **QA: distinguish header label fades from paused gnome motion** (2026-10-09, Pip Sootwhistle; task 698bc595).
-  Fresh-build browser check caught a pending destination-label opacity transition during its hidden-tab assertion; gnome loops and hover checks pass.
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -32,6 +29,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA: distinguish header label fades from paused gnome motion** (2026-10-09, Pip Sootwhistle; task 698bc595).
+  Beta pause checks exclude only destination-label opacity transitions and still cover loops, lane transforms and script-driven strides. Fresh production/live beta, classic/frozen browser suites, all types, build/compression, workshop/skin tests, privacy and README 74/74 pass. Source only, no deliverables; independent QA required.
 
 - **QA: preserve independent header gnome hover and keyboard holds** (2026-10-09, Pip Sootwhistle; task 698bc595).
   Integrated/pushed bdb0bd9b; live HTML/JavaScript match its clean build and the live beta browser suite proves hover loops, mid-walk pause/resume and independent pointer/focus holds in both casts. Beta/classic/screensaver suites, all types, build/compression, workshop/skin tests, privacy and README 74/74 pass. No owner-facing artifacts; independent QA required.

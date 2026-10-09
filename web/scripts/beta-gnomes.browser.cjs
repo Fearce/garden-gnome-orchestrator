@@ -12,6 +12,10 @@ const base = process.argv[2] || 'http://127.0.0.1:4317';
 // The motion clock re-seeks every loop 24 times a second; holding it keeps a test seek in place until it is read.
 const holdClock = (page, hold) => page.locator('.beta-workshop').evaluate((el, h) => { el.dataset.paused = String(h); }, hold);
 const settled = page => page.waitForFunction(()=>document.querySelector('.beta-workshop').getAnimations({subtree:true}).every(a=>a.effect.getTiming().iterations===Infinity));
+// Tooltip labels can fade while motion is held; keep lane transitions and script-driven strides in the check.
+const motionStates = page => page.locator('.beta-workshop').evaluate(el=>el.getAnimations({subtree:true})
+  .filter(a=>!(a instanceof CSSTransition && a.transitionProperty==='opacity' && a.effect?.target?.matches('.beta-destination')))
+  .map(a=>a.playState));
 const output = path.resolve(__dirname, '../../_beta-gnomes');
 const at = Date.now();
 const workspace = 'C:\\workshop';
@@ -129,19 +133,19 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     assert.equal(sent.some(m=>m.type==='chat.history' && m.room===room),true,'Seat must open its project room');
     await page.locator('.office-panel').getByRole('button',{name:'Close',exact:true}).click();
     await page.getByRole('button',{name:'Pause workshop animations'}).click();
-    const states=await page.locator('.beta-workshop').evaluate(el=>el.getAnimations({subtree:true}).map(a=>a.playState));
-    assert(states.every(s=>s==='paused'),'Pause control must pause all workshop animations');
+    const states=await motionStates(page);
+    assert(states.every(s=>s==='paused'),'Pause control must pause all gnome motion');
     await page.getByRole('button',{name:'Resume workshop animations'}).click();
     await page.emulateMedia({reducedMotion:'reduce'});
     assert.equal(await page.locator('.beta-workshop').evaluate(el=>el.getAnimations({subtree:true}).length),0);
     await page.emulateMedia({reducedMotion:'no-preference'});
     await page.locator('.beta-workshop').evaluate(el=>{el.style.transform='translateY(-3000px)';});
     await page.waitForFunction(()=>document.querySelector('.beta-workshop')?.dataset.paused==='true');
-    assert((await page.locator('.beta-workshop').evaluate(el=>el.getAnimations({subtree:true}).map(a=>a.playState))).every(s=>s==='paused'));
+    assert((await motionStates(page)).every(s=>s==='paused'),'Offscreen gnome motion must pause');
     await page.locator('.beta-workshop').evaluate(el=>{el.style.transform='';});
     await page.waitForFunction(()=>document.querySelector('.beta-workshop')?.dataset.paused==='false');
     await page.evaluate(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'});document.dispatchEvent(new Event('visibilitychange'));});
-    assert((await page.locator('.beta-workshop').evaluate(el=>el.getAnimations({subtree:true}).map(a=>a.playState))).every(s=>s==='paused'));
+    assert((await motionStates(page)).every(s=>s==='paused'),'Hidden-tab gnome motion must pause');
     await page.evaluate(()=>{delete document.visibilityState;document.dispatchEvent(new Event('visibilitychange'));});
     // Pointing at a gnome stops the stage so its tooltip stays readable: no loop, no lane change, and the loop
     // resumes where it stopped instead of jumping ahead.
