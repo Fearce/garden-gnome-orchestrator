@@ -1048,6 +1048,7 @@ export class Db {
       "ALTER TABLE scheduled_tasks ADD COLUMN run_once INTEGER NOT NULL DEFAULT 0",
       "ALTER TABLE scheduled_tasks ADD COLUMN reminder TEXT",
       "ALTER TABLE scheduled_tasks ADD COLUMN origin_id TEXT",
+      "ALTER TABLE fired_reminders ADD COLUMN starts_on TEXT",
       "ALTER TABLE threads ADD COLUMN latest_message_preview TEXT",
       "ALTER TABLE goals ADD COLUMN effort TEXT",
       "ALTER TABLE goals ADD COLUMN provider TEXT",

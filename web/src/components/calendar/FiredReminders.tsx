@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStore } from "../../store.js";
 import { type CalendarItemKind, type FiredReminder, type ReminderDelivery, fetchFiredReminders, markRemindersSeen } from "../../lib/calendarApi.js";
-import { dateOf, dayNumber, formatCivil, formatTime } from "../../lib/calendarTime.js";
+import { type CivilDate, dateOf, dayNumber, formatCivil, formatTime, parseDate } from "../../lib/calendarTime.js";
 import { CloseIcon, KindIcon } from "./CalendarItem.js";
 
 /** Seen reminders shown under the new ones before "Show older". */
@@ -118,6 +118,7 @@ function headline(list: FiredReminder[] | null, fresh: number): string {
 function FiredRow(p: { reminder: FiredReminder; kind: CalendarItemKind; timeZone: string; now: number; onShow(): void; onSeen(): void }) {
   const r = p.reminder;
   const isNew = !r.seenAt;
+  const startsOn = r.startsOn ? parseDate(r.startsOn) : null;
   return (
     <li className={`cal-fired-row k-${p.kind}` + (isNew ? " new" : "")}>
       <span className="cal-fired-icon">
@@ -130,8 +131,8 @@ function FiredRow(p: { reminder: FiredReminder; kind: CalendarItemKind; timeZone
         </div>
         <div className="cal-fired-meta">
           Went off {whenLabel(r.firedAt, p.timeZone, p.now)}
-          {/* An event's own time (or "All day") opens its text, so only its day is repeated here. */}
-          {r.startsAt != null ? ` · for ${r.source === "event" ? dayLabel(r.startsAt, p.timeZone, p.now) : whenLabel(r.startsAt, p.timeZone, p.now)}` : ""}
+          {/* All-day events keep their civil date even when the browser is in another time zone. */}
+          {startsOn ? ` · for ${civilDayLabel(startsOn, p.timeZone, p.now)} · all day` : r.startsAt != null ? ` · for ${r.source === "event" ? dayLabel(r.startsAt, p.timeZone, p.now) : whenLabel(r.startsAt, p.timeZone, p.now)}` : ""}
         </div>
         <p className="cal-fired-text">{r.text}</p>
       </div>
@@ -140,7 +141,7 @@ function FiredRow(p: { reminder: FiredReminder; kind: CalendarItemKind; timeZone
           {DELIVERY_LABEL[r.delivery]}
         </span>
         <div className="cal-fired-actions">
-          {r.startsAt != null ? (
+          {startsOn || r.startsAt != null ? (
             <button type="button" className="btn ghost sm" onClick={p.onShow}>
               Show
             </button>
@@ -158,7 +159,10 @@ function FiredRow(p: { reminder: FiredReminder; kind: CalendarItemKind; timeZone
 
 /** "today", "yesterday", "tomorrow", else "Thu 23 Oct" (with the year when it is not this one). */
 function dayLabel(ms: number, timeZone: string, now: number): string {
-  const day = dateOf(ms, timeZone);
+  return civilDayLabel(dateOf(ms, timeZone), timeZone, now);
+}
+
+function civilDayLabel(day: CivilDate, timeZone: string, now: number): string {
   const today = dateOf(now, timeZone);
   const offset = dayNumber(day) - dayNumber(today);
   if (offset === 0) return "today";

@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
+import { instancesOverlapping } from "./instances.js";
+import { CalendarStore } from "./store.js";
+import { dayNumber, parseDate } from "./zoned.js";
 
 /** How a fired reminder's Discord DM went, including a send interrupted before delivery was confirmed. */
 export type ReminderDelivery = "sending" | "sent" | "retrying" | "failed" | "withdrawn" | "interrupted";
@@ -15,6 +18,8 @@ export interface FiredReminder {
   occurrence: string | null;
   /** When the thing it reminds about starts (an event occurrence, a schedule's slot). */
   startsAt: number | null;
+  /** An all-day event's civil start date, which stays the same in every viewer's time zone. */
+  startsOn: string | null;
   title: string;
   text: string;
   /** When it was due, and when it actually went off (later after downtime). */
@@ -27,7 +32,7 @@ export interface FiredReminder {
   seenAt: number | null;
 }
 
-export type FiredReminderInput = Pick<FiredReminder, "source" | "refId" | "occurrence" | "startsAt" | "title" | "text" | "dueAt">;
+export type FiredReminderInput = Pick<FiredReminder, "source" | "refId" | "occurrence" | "startsAt" | "title" | "text" | "dueAt"> & { startsOn?: string | null };
 
 /** How many fired reminders the list keeps, and for how long. */
 export const FIRED_KEEP = 200;
@@ -43,6 +48,7 @@ function rowToFired(r: Row): FiredReminder {
     refId: r.ref_id as string,
     occurrence: (r.occurrence as string | null) ?? null,
     startsAt: (r.starts_at as number | null) ?? null,
+    startsOn: (r.starts_on as string | null) ?? null,
     title: r.title as string,
     text: r.text as string,
     dueAt: r.due_at as number,
@@ -99,10 +105,10 @@ export class FiredReminders {
     const at = this.now();
     this.raw
       .prepare(
-        `INSERT INTO fired_reminders(id, source, ref_id, occurrence, starts_at, title, text, due_at, fired_at, delivery, delivery_note, seen_at)
-         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 'sending', NULL, NULL)`,
+        `INSERT INTO fired_reminders(id, source, ref_id, occurrence, starts_at, starts_on, title, text, due_at, fired_at, delivery, delivery_note, seen_at)
+         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sending', NULL, NULL)`,
       )
-      .run(id, input.source, input.refId, input.occurrence, input.startsAt, input.title, input.text, input.dueAt, at);
+      .run(id, input.source, input.refId, input.occurrence, input.startsAt, input.startsOn ?? null, input.title, input.text, input.dueAt, at);
     this.prune(at);
     this.changed();
     return id;
@@ -119,7 +125,22 @@ export class FiredReminders {
 
   /** Newest first. */
   list(): FiredReminder[] {
-    return (this.raw.prepare("SELECT * FROM fired_reminders ORDER BY fired_at DESC, rowid DESC LIMIT ?").all(FIRED_KEEP) as Row[]).map(rowToFired);
+    const reminders = (this.raw.prepare("SELECT * FROM fired_reminders ORDER BY fired_at DESC, rowid DESC LIMIT ?").all(FIRED_KEEP) as Row[]).map(rowToFired);
+    const store = new CalendarStore(this.db);
+    for (const reminder of reminders) {
+      if (reminder.startsOn !== null || reminder.source !== "event" || !reminder.occurrence || reminder.startsAt === null) continue;
+      const date = parseDate(reminder.occurrence);
+      const event = date ? store.get(reminder.refId) : null;
+      if (!date || !event) continue;
+      const day = dayNumber(date);
+      const instance = instancesOverlapping(event, -8.64e15, 8.64e15, day, day).find((i) => i.date === reminder.occurrence);
+      // Legacy rows lack the all-day snapshot. Infer only from an unchanged occurrence whose exact
+      // instant still matches; a later edit could have converted a midnight timed event to all-day.
+      if (!instance?.allDay || instance.startAt !== reminder.startsAt || instance.savedAt > reminder.firedAt) continue;
+      this.raw.prepare("UPDATE fired_reminders SET starts_on = ? WHERE id = ? AND starts_on IS NULL").run(instance.start, reminder.id);
+      reminder.startsOn = instance.start;
+    }
+    return reminders;
   }
 
   unseen(): number {

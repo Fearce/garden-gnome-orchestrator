@@ -517,6 +517,60 @@ async function clearFiredReminders(page) {
   await page.waitForFunction(() => document.querySelectorAll(".cal-fired-row.new").length === 0, null, { timeout: 10000 });
 }
 
+/** All-day dates are civil dates, including an occurrence moved away from its series date. */
+async function firedAllDayDates(page, dataDir, shots) {
+  await clearFiredReminders(page);
+  for (const { moved, legacy } of [{ moved: false, legacy: false }, { moved: true, legacy: false }, { moved: true, legacy: true }]) {
+    const title = `Synthetic cross-zone all-day${moved ? " moved" : ""}${legacy ? " legacy" : ""}`;
+    const response = await page.request.post(`http://127.0.0.1:${PORT}/api/calendar/events`, { data: {
+      title, notes: null, allDay: true, start: "2027-03-10", end: "2027-03-10",
+      timeZone: "Europe/Berlin", reminders: [],
+      recurrence: moved ? { freq: "daily", interval: 1, count: 2 } : null,
+    } });
+    if (!response.ok()) throw new Error(`All-day fixture create failed: ${response.status()}`);
+    const { event } = await response.json();
+    const day = moved ? "2027-03-11" : "2027-03-10";
+    if (moved) {
+      const edit = await page.request.patch(`http://127.0.0.1:${PORT}/api/calendar/events/${event.id}`, {
+        data: { scope: "occurrence", occurrenceDate: "2027-03-10", changes: { start: day, end: day } },
+      });
+      if (!edit.ok()) throw new Error(`All-day fixture move failed: ${edit.status()}`);
+    }
+    // Seed a completed fire; the Calendar gate separately proves real ticks save these fields.
+    // A civil midnight in Berlin is the previous date in the New York browser.
+    const startsAt = Date.parse(`${moved ? "2027-03-10" : "2027-03-09"}T23:00:00Z`);
+    const db = new Database(path.join(dataDir, "orchestrator.sqlite"));
+    try {
+      const civilColumn = db.prepare("PRAGMA table_info(fired_reminders)").all().some((c) => c.name === "starts_on");
+      db.prepare(`INSERT INTO fired_reminders
+        (id, source, ref_id, occurrence, starts_at, title, text, due_at, fired_at, delivery${civilColumn ? ", starts_on" : ""})
+        VALUES (?, 'event', ?, '2027-03-10', ?, ?, ?, ?, ?, 'failed'${civilColumn ? ", ?" : ""})`)
+        .run(`lab-all-day-${moved}-${legacy}`, event.id, startsAt, title, `Synthetic all-day reminder for ${day}`, startsAt, Date.now(), ...(civilColumn ? [legacy ? null : day] : []));
+    } finally { db.close(); }
+    await page.waitForTimeout(2200); // The hello cache must expire after the direct fixture write.
+    await page.reload({ timeout: 45000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
+    await page.click(".board-tab.bt-calendar");
+    await setView(page, "Day");
+    await jump(page, "2027-03-15");
+    const row = page.locator(`.cal-fired-row.new:has(.cal-fired-name:text-is("${title}"))`);
+    await row.waitFor({ timeout: 10000 });
+    const meta = await row.locator(".cal-fired-meta").textContent();
+    if (!moved) await page.screenshot({ path: path.join(shots, "calendar-all-day-fired.png") });
+    check(`an all-day${moved ? " moved occurrence" : " event"}${legacy ? " from older history" : ""} reminder names its civil date`,
+      /all day/.test(meta) && new RegExp(`for .*${moved ? "11" : "10"} Mar`).test(meta), meta);
+    await row.locator('button:text-is("Show")').click();
+    const opened = await modal(page).waitFor({ timeout: 5000 }).then(() => true, () => false);
+    check(`Show opens the cross-zone all-day${moved ? " moved occurrence" : " event"}${legacy ? " from older history" : ""} in Day view`,
+      opened && await modal(page).locator(".cal-details-title").textContent() === title,
+      opened ? title : await page.locator(".cal-error").allTextContents());
+    check("the all-day reminder jumps to its calendar date, not the previous browser date", await page.inputValue(".cal-jump") === day, await page.inputValue(".cal-jump"));
+    if (opened) await closeModal(page);
+    await clearFiredReminders(page);
+  }
+  await setView(page, "Month");
+}
+
 /** Reminder text is a message, even when it contains a URL longer than the Notes link limit. */
 async function longLinkReminderFallback(page, dataDir) {
   const title = "Synthetic long-link reminder";
@@ -736,7 +790,7 @@ async function narrowLayout(browser, cookies, shots) {
   }
 }
 
-async function phoneFiredReminderLayout(browser, cookies) {
+async function phoneFiredReminderLayout(browser, cookies, shots) {
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, timezoneId: ZONE, locale: "en-GB" });
   try {
     await ctx.addCookies(cookies);
@@ -767,6 +821,7 @@ async function phoneFiredReminderLayout(browser, cookies) {
     });
     check("a phone reminder fits its Discord status and both actions without sideways scrolling", fits.overflow <= 1 && fits.inside, JSON.stringify(fits));
     check("a phone reminder keeps Show and Mark seen available", await fresh.locator('button:text-is("Show")').isVisible() && await fresh.locator('button:text-is("Mark seen")').isVisible());
+    await page.screenshot({ path: path.join(shots, "calendar-phone-fired.png") });
   } finally {
     await ctx.close();
   }
@@ -851,6 +906,7 @@ async function phoneFiredReminderLayout(browser, cookies) {
     await firedReminderCount(page, shots);
     await createReminderSchedule(page, dataDir);
     await longLinkReminderFallback(page, dataDir);
+    await firedAllDayDates(page, dataDir, shots);
     await firedScheduleTargets(page, dataDir);
     await firedReminderRaces(page, dataDir);
     await defaultReminders(page, dataDir, shots);
@@ -861,7 +917,7 @@ async function phoneFiredReminderLayout(browser, cookies) {
     const cookies = await ctx.cookies();
     await ctx.close();
     await narrowLayout(browser, cookies, shots);
-    await phoneFiredReminderLayout(browser, cookies);
+    await phoneFiredReminderLayout(browser, cookies, shots);
     code = check.summary();
   } catch (e) {
     console.error(e);

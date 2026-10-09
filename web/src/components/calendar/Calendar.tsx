@@ -83,6 +83,8 @@ function loadFilters(): CalendarFilters {
 
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 const isTyping = (el: EventTarget | null): boolean => el instanceof HTMLElement && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
+const firedDate = (r: FiredReminder, timeZone: string): CivilDate | null =>
+  (r.startsOn ? parseDate(r.startsOn) : null) ?? (r.startsAt != null ? dateOf(r.startsAt, timeZone) : null);
 
 /**
  * The Calendar board area: the owner's own events beside every reminder and scheduled task, by month,
@@ -167,8 +169,10 @@ export function Calendar() {
 
   // "Show" on a fired reminder: once the range holding its day has loaded, open what it was about.
   useEffect(() => {
-    if (!focus || !range || loading || focus.startsAt == null) return;
-    const day = formatDate(dateOf(focus.startsAt, timeZone));
+    if (!focus || !range || loading) return;
+    const date = firedDate(focus, timeZone);
+    if (!date) return;
+    const day = formatDate(date);
     if (day < range.from || day > range.to) return;
     setFocus(null);
     // A schedule's grid keeps only its latest actual run, and that run's time can differ from its due
@@ -176,7 +180,7 @@ export function Calendar() {
     const schedule = focus.source === "schedule" ? schedules.find((s) => s.id === focus.refId) : null;
     const found: CalendarOccurrence | undefined = focus.source === "event"
       ? range.occurrences.find((o) => o.source === "event" && o.id === focus.refId && o.occurrenceDate === focus.occurrence)
-      : schedule ? {
+      : schedule && focus.startsAt != null ? {
         key: `s:${schedule.id}:fired:${focus.id}`, source: "schedule", id: schedule.id,
         title: focus.title, kind: schedule.prompt ? "task" : "reminder", allDay: false,
         startAt: focus.startsAt, endAt: focus.startsAt, recurring: !schedule.runOnce,
@@ -187,9 +191,10 @@ export function Calendar() {
   }, [focus, range, loading, timeZone, schedules]);
 
   const showFired = (r: FiredReminder) => {
-    if (r.startsAt == null) return;
+    const date = firedDate(r, timeZone);
+    if (!date) return;
     setActionError(null);
-    setAnchor(dateOf(r.startsAt, timeZone));
+    setAnchor(date);
     setFocus(r);
   };
 

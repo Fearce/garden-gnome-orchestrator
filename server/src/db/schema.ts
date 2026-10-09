@@ -339,6 +339,7 @@ CREATE TABLE IF NOT EXISTS fired_reminders (
   ref_id       TEXT NOT NULL,
   occurrence   TEXT,
   starts_at    INTEGER,
+  starts_on    TEXT,
   title        TEXT NOT NULL,
   text         TEXT NOT NULL,
   due_at       INTEGER NOT NULL,

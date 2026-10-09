@@ -60,6 +60,10 @@ For concurrent runs, set `GGO_CALENDAR_LAB_PORT` to a free HTTP port and leave t
   from `GET /api/calendar/fired`, acknowledged through `POST /api/calendar/fired/seen` (`{ids?}`, none
   = all). It is history of what already fired (kept 90 days / 200 rows), so it is not the "pending
   reminders table" warned against above: a deleted event's fired row stays.
+- **All-day fired dates stay civil.** `fired_reminders.starts_on` snapshots the effective all-day
+  start date, including moved exceptions. The panel and Show use it before `starts_at`; converting
+  midnight to the browser zone can otherwise move the event to the previous day. Legacy null dates
+  may be backfilled only from an exact occurrence/start instant saved no later than the fire.
 - **Claims outlive the event.** `calendar_reminder_log` is pruned at 400 days, not sooner: an all-day
   event up to a year long stays remindable for its whole span, and a pruned claim would send again.
 - **"Saved after it started" is per occurrence.** `reminderDue` suppresses an occurrence the owner

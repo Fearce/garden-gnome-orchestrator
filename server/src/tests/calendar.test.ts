@@ -612,6 +612,83 @@ async function firedList(): Promise<void> {
   stop();
 }
 
+async function allDayFiredDates(): Promise<void> {
+  console.log("calendar: fired all-day reminders preserve their civil dates");
+  clock = at("2027-08-08T08:00:00Z");
+  const far = calendar.createEvent({ title: "Synthetic date-line reminder", allDay: true, start: "2027-08-10", end: "2027-08-10", timeZone: "Pacific/Kiritimati", reminders: [{ kind: "day", daysBefore: 0, time: "09:00" }] }).event!;
+  clock = at("2027-08-09T19:00:20Z");
+  calendar.tick();
+  await settle();
+  const entry = firedLog.list().find((r) => r.refId === far.id);
+  check("an all-day fired reminder snapshots the civil date despite a different viewer date", entry?.startsOn === "2027-08-10" && entry.startsAt === at("2027-08-09T10:00:00Z") && formatDate(epochToWall(entry.startsAt, NY)) === "2027-08-09", entry);
+  calendar.deleteEvent(far.id, "series");
+  check("the all-day snapshot survives deletion of its event", firedLog.list().find((r) => r.id === entry?.id)?.startsOn === "2027-08-10");
+
+  clock = at("2027-08-18T08:00:00Z");
+  const moved = calendar.createEvent({ title: "Synthetic moved date-line reminder", allDay: true, start: "2027-08-20", end: "2027-08-20", timeZone: "Pacific/Kiritimati", recurrence: { freq: "daily", interval: 1, count: 2 }, reminders: [{ kind: "day", daysBefore: 0, time: "09:00" }] }).event!;
+  calendar.updateEvent(moved.id, "occurrence", "2027-08-21", { start: "2027-08-23", end: "2027-08-23" });
+  clock = at("2027-08-22T19:00:20Z");
+  calendar.tick();
+  await settle();
+  const shifted = firedLog.list().find((r) => r.refId === moved.id);
+  check("a moved all-day occurrence keeps its effective civil date and original occurrence key", shifted?.startsOn === "2027-08-23" && shifted.occurrence === "2027-08-21" && shifted.startsAt === at("2027-08-22T10:00:00Z"), shifted);
+  calendar.deleteEvent(moved.id, "series");
+  firedLog.markSeen();
+}
+
+function legacyAllDayFiredDates(): void {
+  console.log("calendar: legacy fired dates are inferred only from unchanged occurrences");
+  const legacy = new Db(join(dir, "legacy-fired-dates.sqlite"));
+  let legacyClock = at("2027-09-08T08:00:00Z");
+  const log = new FiredReminders(legacy, hub, () => legacyClock);
+  const channel: ReminderChannel = { ...reminders, fired: log };
+  const service = new CalendarService(legacy, hub, new Scheduler(legacy, hub, dispatch, channel), channel, { now: () => legacyClock });
+  const record = (refId: string, occurrence: string, startsAt: number) => log.record({ source: "event", refId, occurrence, startsAt, title: "Synthetic legacy reminder", text: "Synthetic legacy date", dueAt: legacyClock });
+  const storedDate = (id: string) => (legacy.raw.prepare("SELECT starts_on FROM fired_reminders WHERE id = ?").get(id) as { starts_on: string | null }).starts_on;
+
+  const ordinary = service.createEvent({ title: "Synthetic legacy all-day", allDay: true, start: "2027-09-10", end: "2027-09-10", timeZone: "Pacific/Kiritimati" }).event!;
+  legacyClock = at("2027-09-09T19:00:20Z");
+  const ordinaryId = record(ordinary.id, "2027-09-10", at("2027-09-09T10:00:00Z"));
+  log.setDelivery(ordinaryId, "sent");
+  log.markSeen([ordinaryId]);
+  const upgraded = log.list().find((r) => r.id === ordinaryId);
+  check("an unchanged legacy all-day reminder gains its civil date without changing delivery or acknowledgement", upgraded?.startsOn === "2027-09-10" && upgraded.delivery === "sent" && upgraded.seenAt === legacyClock && storedDate(ordinaryId) === "2027-09-10", upgraded);
+  service.deleteEvent(ordinary.id, "series");
+  check("the inferred legacy date remains available after the event is deleted", log.list().find((r) => r.id === ordinaryId)?.startsOn === "2027-09-10");
+
+  const moved = service.createEvent({ title: "Synthetic legacy moved all-day", allDay: true, start: "2027-09-11", end: "2027-09-11", timeZone: "Pacific/Kiritimati", recurrence: { freq: "daily", interval: 1, count: 2 } }).event!;
+  service.updateEvent(moved.id, "occurrence", "2027-09-12", { start: "2027-09-15", end: "2027-09-15" });
+  legacyClock = at("2027-09-14T19:00:20Z");
+  const movedId = record(moved.id, "2027-09-12", at("2027-09-14T10:00:00Z"));
+  const inferred = log.list().find((r) => r.id === movedId);
+  check("a legacy moved occurrence gains its effective date rather than the series key", inferred?.startsOn === "2027-09-15" && inferred.occurrence === "2027-09-12" && storedDate(movedId) === "2027-09-15", inferred);
+  service.deleteEvent(moved.id, "series");
+  check("the inferred moved date persists after deletion", log.list().find((r) => r.id === movedId)?.startsOn === "2027-09-15");
+
+  const mismatch = service.createEvent({ title: "Synthetic legacy date mismatch", allDay: true, start: "2027-09-20", end: "2027-09-20", timeZone: "Pacific/Kiritimati" }).event!;
+  legacyClock = at("2027-09-19T19:00:20Z");
+  const mismatchId = record(mismatch.id, "2027-09-20", at("2027-09-19T10:01:00Z"));
+  check("a matching occurrence key cannot backfill a mismatched recorded instant", log.list().find((r) => r.id === mismatchId)?.startsOn === null && storedDate(mismatchId) === null);
+
+  const retimed = service.createEvent({ title: "Synthetic legacy retimed all-day", allDay: true, start: "2027-09-22", end: "2027-09-22", timeZone: "Pacific/Kiritimati" }).event!;
+  legacyClock = at("2027-09-21T19:00:20Z");
+  const retimedId = record(retimed.id, "2027-09-22", at("2027-09-21T10:00:00Z"));
+  legacyClock += 60_000;
+  service.updateEvent(retimed.id, "series", null, { start: "2027-09-23", end: "2027-09-23" });
+  check("a later move leaves the historical civil date unknown", log.list().find((r) => r.id === retimedId)?.startsOn === null && storedDate(retimedId) === null);
+
+  const midnight = service.createEvent({ title: "Synthetic historical midnight", allDay: false, start: "2027-09-24T00:00", end: "2027-09-24T01:00", timeZone: CPH }).event!;
+  legacyClock = at("2027-09-23T22:00:20Z");
+  const timedId = record(midnight.id, "2027-09-24", at("2027-09-23T22:00:00Z"));
+  legacyClock += 60_000;
+  service.updateEvent(midnight.id, "series", null, { allDay: true, start: "2027-09-24", end: "2027-09-24" });
+  check("a midnight timed reminder does not become all-day history after a later conversion", log.list().find((r) => r.id === timedId)?.startsOn === null && storedDate(timedId) === null);
+
+  const missingId = record("synthetic-deleted-event", "2027-09-24", at("2027-09-23T22:00:00Z"));
+  check("a deleted or missing event provides no guessed civil date", log.list().find((r) => r.id === missingId)?.startsOn === null && storedDate(missingId) === null);
+  legacy.raw.close();
+}
+
 function interruptedDeliveries(): void {
   console.log("calendar: interrupted reminder delivery survives a restart honestly");
   const restartPath = join(dir, "interrupted.sqlite");
@@ -702,6 +779,30 @@ function migration(): void {
   const old = new CalendarService(reopenedSingle, hub, new Scheduler(reopenedSingle, hub, dispatch, reminders), reminders).getEvent("old");
   check("an event saved with one reminder reads back as a list of one", JSON.stringify(old?.reminders) === JSON.stringify([{ kind: "day", daysBefore: 7, time: "09:00" }]), old?.reminders);
   reopenedSingle.raw.close();
+
+  // Fired history from before all-day reminders retained their civil start date.
+  const historyPath = join(dir, "legacy-fired.sqlite");
+  const history = new Db(historyPath);
+  const oldLog = new FiredReminders(history, hub, () => clock);
+  const input = { source: "event" as const, refId: "synthetic-legacy-event", occurrence: "2027-08-23", startsAt: clock, title: "Synthetic legacy fired reminder", text: "Synthetic history", dueAt: clock };
+  const oldId = oldLog.record(input);
+  oldLog.setDelivery(oldId, "sent");
+  oldLog.markSeen([oldId]);
+  const expected = oldLog.list()[0];
+  history.raw.exec("ALTER TABLE fired_reminders DROP COLUMN starts_on");
+  history.raw.close();
+  const upgradedHistory = new Db(historyPath);
+  const migratedLog = new FiredReminders(upgradedHistory, hub, () => clock);
+  const migrated = migratedLog.list().find((r) => r.id === oldId);
+  check("old fired history gains a nullable civil date without changing its content or acknowledgement", JSON.stringify(migrated) === JSON.stringify(expected) && migrated?.startsOn === null, migrated);
+  const timedId = migratedLog.record({ ...input, source: "schedule", occurrence: null });
+  check("existing callers may omit the civil date after migration", migratedLog.list().find((r) => r.id === timedId)?.startsOn === null);
+  const allDayId = migratedLog.record({ ...input, startsOn: "2027-08-23" });
+  upgradedHistory.raw.close();
+  const reopenedHistory = new Db(historyPath);
+  const persisted = new FiredReminders(reopenedHistory, hub, () => clock).list();
+  check("the all-day snapshot persists through reopen while old history remains unchanged", persisted.find((r) => r.id === allDayId)?.startsOn === "2027-08-23" && JSON.stringify(persisted.find((r) => r.id === oldId)) === JSON.stringify(expected));
+  reopenedHistory.raw.close();
 }
 
 async function api(): Promise<void> {
@@ -779,6 +880,8 @@ async function main(): Promise<void> {
   await severalAndDefaultReminders();
   await schedulesOnTheCalendar();
   await firedList();
+  await allDayFiredDates();
+  legacyAllDayFiredDates();
   interruptedDeliveries();
   migration();
   await api();

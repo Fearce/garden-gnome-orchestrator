@@ -168,7 +168,8 @@ be put in any order: drag one along the board header, or use Settings → Interf
   with a reminder, or a standalone reminder, reaches you as a Discord DM when phone
   notifications are set up, and on the note list otherwise. Every reminder that goes off
   also puts a number on the Calendar tab; opening the tab lists which reminders went off,
-  what they said and whether Discord delivered them, until you mark them seen. A send interrupted by
+  what they said and whether Discord delivered them, until you mark them seen. All-day reminders
+  keep their event's calendar date across time zones. A send interrupted by
   a server restart is marked unconfirmed and kept on Notes. From the calendar you can skip,
   move, pause or edit a scheduled run. Calendar content stays in the local database.
 - **Scheduled Tasks.** Recurring briefs on a cron schedule, each optionally pinned to an

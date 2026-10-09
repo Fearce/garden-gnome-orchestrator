@@ -167,6 +167,8 @@ export interface FiredReminder {
   refId: string;
   occurrence: string | null;
   startsAt: number | null;
+  /** An all-day event's civil start date, independent of the viewer's time zone. */
+  startsOn?: string | null;
   title: string;
   text: string;
   dueAt: number;
