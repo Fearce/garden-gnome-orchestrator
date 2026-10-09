@@ -166,7 +166,9 @@ be put in any order: drag one along the board header, or use Settings → Interf
 - **Calendar.** Month, week, day and agenda views of your own events, your reminders and
   every scheduled task, in your browser's time zone. A plain event sends nothing. An event
   with a reminder, or a standalone reminder, reaches you as a Discord DM when phone
-  notifications are set up, and on the note list otherwise. From the calendar you can skip,
+  notifications are set up, and on the note list otherwise. Every reminder that goes off
+  also puts a number on the Calendar tab; opening the tab lists which reminders went off,
+  what they said and whether Discord delivered them, until you mark them seen. From the calendar you can skip,
   move, pause or edit a scheduled run. Calendar content stays in the local database.
 - **Scheduled Tasks.** Recurring briefs on a cron schedule, each optionally pinned to an
   exact backend, model and effort. Every fire is a full task that can edit, commit and push, so a nightly

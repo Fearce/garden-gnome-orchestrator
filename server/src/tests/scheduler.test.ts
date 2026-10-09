@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { Db } from "../db/db.js";
 import { EventHub } from "../events.js";
 import { Scheduler, type ReminderChannel } from "../orchestrator/scheduler.js";
+import { FiredReminders } from "../calendar/firedReminders.js";
 import { nextRun } from "../orchestrator/cron.js";
 import type { DispatchInput } from "../orchestrator/api.js";
 import type { ServerEvent } from "../ws/protocol.js";
@@ -43,6 +44,7 @@ hub.subscribe((e) => {
 const reminded: { title: string; text: string }[] = [];
 const fallbacks: { title: string; text: string; why: string }[] = [];
 let refuseReminders = 0;
+const firedLog = new FiredReminders(db, hub);
 const reminders: ReminderChannel = {
   ready: () => true,
   send: async (title, text) => {
@@ -54,7 +56,9 @@ const reminders: ReminderChannel = {
     return { ok: true };
   },
   fallback: (title, text, why) => fallbacks.push({ title, text, why }),
+  fired: firedLog,
 };
+const lastFired = () => firedLog.list()[0];
 
 const scheduler = new Scheduler(db, hub, dispatch, reminders);
 
@@ -306,13 +310,17 @@ async function main(): Promise<void> {
   check("a prompt still needs a repo", !scheduler.create({ title: "No repo", workspace: "", prompt: "audit", cron: "0 9 * * *" }).ok);
   check("an ordinary schedule has no reminder", db.getScheduledTask(id)?.reminder == null);
   const remindId = remindOnly.schedule!.id;
-  db.updateScheduledTask(remindId, { nextRunAt: Date.now() - 1000 });
+  const remindSlot = Date.now() - 1000;
+  db.updateScheduledTask(remindId, { nextRunAt: remindSlot });
   const beforeRemind = dispatched.length;
   reminded.length = 0;
   tick();
   await settle();
   check("a due reminder is sent to the owner", reminded.length === 1 && reminded[0]!.text === "Renew the example.com domain before Oct 22." && reminded[0]!.title === "Domain renewal");
   check("a reminder-only fire starts no agent", dispatched.length === beforeRemind);
+  const listed = lastFired();
+  check("the fire is listed for the Calendar tab, about its slot", listed?.source === "schedule" && listed.refId === remindId && listed.startsAt === remindSlot && listed.dueAt === remindSlot);
+  check("…with its Discord delivery confirmed and still unseen", listed?.delivery === "sent" && listed.seenAt === null && listed.title === "Domain renewal");
   check("a fired run-once reminder switches itself off", db.getScheduledTask(remindId)!.enabled === false && db.getScheduledTask(remindId)!.nextRunAt == null);
   check("the fire is recorded as its last run", db.getScheduledTask(remindId)!.lastRunAt != null);
   tick();
@@ -371,6 +379,7 @@ async function main(): Promise<void> {
   for (let i = 0; i < 5; i++) await settle();
   check(`retries are bounded (${reminded.length} attempts)`, reminded.length === 3);
   check("…and the note is posted once, not per attempt", fallbacks.length === 1);
+  check("the listed reminder says it was not delivered and is on the notes", lastFired()?.delivery === "failed" && !!lastFired()?.deliveryNote?.includes("note list"));
   // A retry delivers the reminder as it is now: none at all once it is deleted.
   refuseReminders = 1;
   reminded.length = 0;
@@ -378,6 +387,7 @@ async function main(): Promise<void> {
   retrying.remove(lost);
   for (let i = 0; i < 5; i++) await settle();
   check(`a deleted reminder is not retried (${reminded.length} attempts)`, reminded.length === 1);
+  check("…and its listed entry says it was withdrawn", lastFired()?.delivery === "withdrawn");
   refuseReminders = 0;
   scheduler.remove(remindId);
 

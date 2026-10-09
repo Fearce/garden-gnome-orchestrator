@@ -194,7 +194,7 @@ export class Scheduler {
       this.hub.log("warn", `Scheduled task "${s.title}" was not run: ${error}`);
       return { ok: false, error };
     }
-    await this.fire(s);
+    await this.fire(s, Date.now());
     return { ok: true, schedule: this.db.getScheduledTask(id) ?? undefined };
   }
 
@@ -220,11 +220,11 @@ export class Scheduler {
       const busy = s.prompt ? this.previousRunBusy(s) : null;
       if (busy) {
         // The reminder is about the clock, so only the task waits for its predecessor.
-        this.remind(s);
+        this.remind(s, s.nextRunAt);
         this.hub.log("info", `Scheduled task "${s.title}" skipped this fire: its previous run is still ${busy}.`);
         continue;
       }
-      void this.fire(s);
+      void this.fire(s, s.nextRunAt);
     }
     if (due) this.broadcast();
   }
@@ -245,7 +245,7 @@ export class Scheduler {
     this.db.updateScheduledTask(s.id, { enabled: false, nextRunAt: null });
     // A re-armed retry is the same fire again; its reminder already went out the first time.
     const retry = this.onceFailures.has(s.id);
-    void this.fire(s, { remind: !retry }).then((ok) => {
+    void this.fire(s, s.nextRunAt ?? Date.now(), { remind: !retry }).then((ok) => {
       if (ok) {
         this.onceFailures.delete(s.id);
         return;
@@ -286,8 +286,8 @@ export class Scheduler {
 
   /** One fire: send the reminder (unless told not to) and dispatch the prompt, if the schedule has them.
    *  Returns whether the fire did its job, which only the run-once retry reads. */
-  private async fire(s: ScheduledTask, opts: { remind?: boolean } = {}): Promise<boolean> {
-    if (opts.remind !== false) this.remind(s);
+  private async fire(s: ScheduledTask, slotAt: number, opts: { remind?: boolean } = {}): Promise<boolean> {
+    if (opts.remind !== false) this.remind(s, slotAt);
     if (s.prompt) return this.dispatchRun(s);
     this.db.updateScheduledTask(s.id, { lastRunAt: Date.now() });
     this.hub.log("info", `${logName(s)} fired.`);
@@ -297,13 +297,14 @@ export class Scheduler {
 
   /** Send the schedule's reminder in the background. Delivery retries on its own clock rather than the
    *  run-once retry's, since a reminder whose task dispatched fine must still get through. */
-  private remind(s: ScheduledTask): void {
+  private remind(s: ScheduledTask, slotAt: number): void {
     if (!s.reminder) return;
     const current = () => {
       const now = this.db.getScheduledTask(s.id);
       return now?.reminder ? { title: now.title, text: now.reminder } : null;
     };
-    void deliverReminder(this.reminders, this.hub, { title: s.title, text: s.reminder, label: `Reminder (schedule ${s.id.slice(0, 8)})`, current }, this.reminderRetryMs);
+    const fired = { source: "schedule" as const, refId: s.id, occurrence: null, startsAt: slotAt, dueAt: slotAt };
+    void deliverReminder(this.reminders, this.hub, { title: s.title, text: s.reminder, label: `Reminder (schedule ${s.id.slice(0, 8)})`, current, fired }, this.reminderRetryMs);
   }
 
   /** Dispatch one run of a schedule through the normal pipeline and record the last-run bookkeeping.

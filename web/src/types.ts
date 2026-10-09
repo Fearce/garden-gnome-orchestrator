@@ -1557,6 +1557,7 @@ export type ServerEvent =
   | { type: "model.stats"; stats: ModelStat[] }
   | { type: "schedules"; schedules: ScheduledTask[] }
   | { type: "calendar.changed"; at: number }
+  | { type: "reminders.fired"; unseen: number; at: number }
   | { type: "goals"; goals: Goal[] }
   | { type: "notes"; notes: OperatorNote[] }
   | { type: "news"; news: HighlightNewsItem[] }

@@ -157,6 +157,31 @@ export const restoreScheduleRun = (id: string, slotAt: number): Promise<EventRep
 export const moveScheduleRun = (id: string, slotAt: number, toAt: number, scope: "occurrence" | "series"): Promise<EventReply> =>
   call(`/api/calendar/schedules/${encodeURIComponent(id)}/move`, json("POST", { slotAt, toAt, scope }));
 
+/** How a fired reminder's Discord DM went. Mirrors server/src/calendar/firedReminders.ts. */
+export type ReminderDelivery = "sending" | "sent" | "retrying" | "failed" | "withdrawn";
+
+/** A reminder that has gone off. Mirrors FiredReminder in server/src/calendar/firedReminders.ts. */
+export interface FiredReminder {
+  id: string;
+  source: "event" | "schedule";
+  refId: string;
+  occurrence: string | null;
+  startsAt: number | null;
+  title: string;
+  text: string;
+  dueAt: number;
+  firedAt: number;
+  delivery: ReminderDelivery;
+  deliveryNote: string | null;
+  seenAt: number | null;
+}
+
+export const fetchFiredReminders = (): Promise<{ reminders: FiredReminder[]; unseen: number }> => call("/api/calendar/fired");
+
+/** Acknowledge the given fired reminders, or every unseen one when `ids` is omitted. */
+export const markRemindersSeen = (ids?: string[]): Promise<{ ok: true; changed: number; unseen: number }> =>
+  call("/api/calendar/fired/seen", json("POST", ids ? { ids } : {}));
+
 // The socket's "calendar.changed" ping, fanned out to whichever calendar view is open.
 const listeners = new Set<() => void>();
 

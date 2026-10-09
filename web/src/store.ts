@@ -84,7 +84,7 @@ import { mergeImplementationMemos } from "./implementationMemos.js";
 import { deliverablesByThread, mergeDeliverableIndexes, mergeThreadDeliverables } from "./threadDeliverables.js";
 import { mergeRunIndex, pruneRunIndex } from "./lib/runAttribution.js";
 import { tokenSafetyBoxKey } from "./lib/tokenSafety.js";
-import { notifyCalendarChanged } from "./lib/calendarApi.js";
+import { fetchFiredReminders, notifyCalendarChanged } from "./lib/calendarApi.js";
 
 interface ThreadDraft {
   runId: string;
@@ -412,6 +412,11 @@ interface State {
   // The owner's note list (server-authoritative): short pointers agents leave for them — a branch to
   // review, a PR to merge — shown in the Notes board view, cleared by the owner one note at a time.
   notes: OperatorNote[];
+  // Reminders that went off and the owner has not acknowledged: the Calendar tab's number. Read over the
+  // authenticated calendar route on every (re)connect, then kept current by the `reminders.fired` ping.
+  remindersUnseen: number;
+  // Bumped on every `reminders.fired` ping, so an open list of fired reminders knows to re-read.
+  remindersRev: number;
   // Highlighted news (server-authoritative): newly released models, shown as the top-bar news chip.
   news: HighlightNewsItem[];
   // Director Supervisor: the watchdog's live state (enabled, in-flight-pass flag, budget, recent audit
@@ -1573,6 +1578,8 @@ export const useStore = create<State>((set) => ({
   schedules: [],
   goals: [],
   notes: [],
+  remindersUnseen: 0,
+  remindersRev: 0,
   news: [],
   supervisor: IDLE_SUPERVISOR,
   onlineOffice: OFFLINE_OFFICE,
@@ -2408,6 +2415,10 @@ function applyEvent(ev: ServerEvent): void {
       }
       const selectedCowork = useStore.getState().selectedCoworkId;
       if (selectedCowork && coworkSessions[selectedCowork]) sendCommand({ type: "cowork.history", sessionId: selectedCowork });
+      // Reminders may have gone off while the socket was down; the snapshot does not carry the count.
+      fetchFiredReminders()
+        .then((r) => useStore.setState((s) => ({ remindersUnseen: r.unseen, remindersRev: s.remindersRev + 1 })))
+        .catch(() => {});
       break;
     }
     case "cowork.session":
@@ -2546,6 +2557,9 @@ function applyEvent(ev: ServerEvent): void {
       break;
     case "calendar.changed":
       notifyCalendarChanged();
+      break;
+    case "reminders.fired":
+      useStore.setState((s) => ({ remindersUnseen: ev.unseen, remindersRev: s.remindersRev + 1 }));
       break;
     case "goals":
       useStore.setState({ goals: ev.goals });

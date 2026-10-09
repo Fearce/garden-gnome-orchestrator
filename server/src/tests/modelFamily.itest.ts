@@ -313,6 +313,7 @@ async function spawnPaths(): Promise<void> {
       ready: () => false,
       send: async () => ({ ok: true }),
       fallback: () => {},
+      fired: { record: () => "", setDelivery: () => {} },
     });
     const schedule = h.db.createScheduledTask({ title: "fire", workspace: h.workspace, prompt: "p", cron: "0 3 * * *", enabled: true, model: "gpt-6-sol", provider: "codex" });
     await scheduler.runNow(schedule.id);

@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { isCrossSiteRequest } from "../crossSite.js";
 import type { CalendarResult, CalendarService } from "./calendarService.js";
+import { FIRED_KEEP, type FiredReminders } from "./firedReminders.js";
 import { MAX_COUNT, MAX_INTERVAL } from "./recurrence.js";
 import { MAX_REMINDER_DAYS, MAX_REMINDER_MINUTES, MAX_REMINDERS, NOTES_MAX, TITLE_MAX } from "./validate.js";
 
@@ -45,6 +46,7 @@ const settingsBody = z
   .object({ reminderLeads: z.array(z.number().int().min(0).max(MAX_REMINDER_MINUTES)).max(MAX_REMINDERS), allDayTime: z.string().regex(/^\d{2}:\d{2}$/) })
   .strict();
 const slotBody = z.object({ slotAt: z.number().int().nonnegative() }).strict();
+const seenBody = z.object({ ids: z.array(z.string().min(1).max(64)).max(FIRED_KEEP).optional() }).strict();
 const moveBody = z.object({ slotAt: z.number().int().nonnegative(), toAt: z.number().int().nonnegative(), scope: z.enum(["occurrence", "series"]) }).strict();
 
 class CalendarRequestError extends Error {}
@@ -58,7 +60,7 @@ function reply(res: FastifyReply, result: CalendarResult) {
  * The calendar's HTTP API, behind the console's owner login. Every request is same-origin only, and
  * failures return a short reason — never the submitted text, so personal content stays out of logs.
  */
-export function registerCalendarRoutes(app: FastifyInstance, calendar: CalendarService, isAuthed: (cookie?: string) => boolean): void {
+export function registerCalendarRoutes(app: FastifyInstance, calendar: CalendarService, fired: FiredReminders, isAuthed: (cookie?: string) => boolean): void {
   void app.register(async (routes) => {
     routes.addHook("onRequest", async (req, res) => {
       res.header("cache-control", "no-store");
@@ -109,6 +111,11 @@ export function registerCalendarRoutes(app: FastifyInstance, calendar: CalendarS
     routes.post("/api/calendar/schedules/:id/move", (req, res) => {
       const b = moveBody.parse(req.body);
       return reply(res, calendar.moveScheduleRun(idParams.parse(req.params).id, b.slotAt, b.toAt, b.scope));
+    });
+    routes.get("/api/calendar/fired", () => ({ reminders: fired.list(), unseen: fired.unseen() }));
+    routes.post("/api/calendar/fired/seen", (req) => {
+      const b = seenBody.parse(req.body ?? {});
+      return { ok: true, changed: fired.markSeen(b.ids), unseen: fired.unseen() };
     });
   });
 }

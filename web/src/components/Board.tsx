@@ -407,7 +407,7 @@ function BoardTabs() {
     sidekick: null,
     ide: null,
     remote: null,
-    calendar: null,
+    calendar: useStore((s) => s.remindersUnseen),
     notes: useStore((s) => s.notes.length),
     schedules: useStore((s) => s.schedules.length),
     goals: useStore((s) => s.goals.filter((g) => g.status === "active").length),

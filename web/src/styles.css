@@ -3594,6 +3594,8 @@ body.dl-resizing { user-select: none; }
   min-width: 24px; text-align: center; box-shadow: 0 0 0 2px var(--bg-1);
   animation: surveillance-count-pulse 1.2s ease-in-out infinite;
 }
+/* The Calendar tab counts reminders that went off, in the calendar's reminder apricot. */
+.bt-calendar .board-tab-count { color: oklch(0.81 0.12 58); background: oklch(0.81 0.12 58 / 0.16); }
 .board-motion-alert { display: none; }
 @keyframes surveillance-alert-pulse {
   0%, 100% {

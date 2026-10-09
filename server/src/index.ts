@@ -54,6 +54,7 @@ import { OperatorNotes } from "./orchestrator/notes.js";
 import { RestartCoordinator } from "./orchestrator/restartCoordinator.js";
 import { Scheduler } from "./orchestrator/scheduler.js";
 import { CalendarService } from "./calendar/calendarService.js";
+import { FiredReminders } from "./calendar/firedReminders.js";
 import { registerCalendarRoutes } from "./calendar/routes.js";
 import { GoalRunner } from "./orchestrator/goals.js";
 import { OnlineOffice } from "./office/onlineOffice.js";
@@ -210,12 +211,15 @@ async function main(): Promise<void> {
   // Standalone (depends only on manager.dispatch), so scheduled runs use whatever provider/model is
   // active, exactly like a hand-dispatched task. The director can also create/edit schedules via its tools.
   // A schedule's reminder is DMed by the scheduler itself; the note list catches one Discord refused.
+  // Every reminder that goes off is also listed (and counted) on the Calendar tab.
+  const firedReminders = new FiredReminders(db, hub);
   const reminderChannel = {
     ready: () => manager.supervisorDiscordReady(),
     send: (title: string, text: string) => manager.remindOwner(title, text),
     fallback: (title: string, text: string, why: string) => {
       notes.add({ body: `⏰ ${title}: ${text}`, threadTitle: `Reminder not delivered on Discord: ${why}` });
     },
+    fired: firedReminders,
   };
   const scheduler = new Scheduler(db, hub, (input) => manager.dispatch(input), reminderChannel);
   // The owner's calendar: personal events beside the schedules above. An event starts no agent; its
@@ -432,7 +436,7 @@ async function main(): Promise<void> {
     registerFreeProviderRoutes(app, freeProviders, isAuthed);
     registerCloudSessionRoutes(app, cloudSessions, db, isAuthed, manager.cloudSubtasks);
     registerIdeRoutes(app, ide, isAuthed);
-    registerCalendarRoutes(app, calendar, isAuthed);
+    registerCalendarRoutes(app, calendar, firedReminders, isAuthed);
     registerRemoteControlRoutes(app, remoteControl, isAuthed);
     registerModuleRoutes(app, modules, isAuthed);
     registerMemoryRoutes(app, { memory, settings: memorySettings, endpoint: memoryEndpoint, isAuthed });

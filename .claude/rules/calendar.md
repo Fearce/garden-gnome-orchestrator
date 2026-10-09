@@ -49,6 +49,15 @@ For concurrent runs, set `GGO_CALENDAR_LAB_PORT` to a free HTTP port and leave t
   `deliverReminder` calls the caller's `current()`: `CalendarService.stillDue` returns null once the
   event, the occurrence or its reminder instant is gone, else the current title/text. The scheduler's
   `remind` does the same from the schedule row. The note-list fallback posted on the first failure stays.
+- **What went off is listed, not queued.** Every real reminder delivery (event or schedule; never the
+  "Send test reminder") writes one `fired_reminders` row via `ReminderChannel.fired`
+  (`calendar/firedReminders.ts`), and `deliverReminder` updates its `delivery`
+  (sending/sent/retrying/failed/withdrawn) as the DM goes. Unseen rows are the Calendar tab's number;
+  the Calendar's "Went off" panel lists them (auto-opens when the number rises) and "Show" jumps to the
+  occurrence and marks it seen. The socket carries only `reminders.fired {unseen}`; titles/text come
+  from `GET /api/calendar/fired`, acknowledged through `POST /api/calendar/fired/seen` (`{ids?}`, none
+  = all). It is history of what already fired (kept 90 days / 200 rows), so it is not the "pending
+  reminders table" warned against above: a deleted event's fired row stays.
 - **Claims outlive the event.** `calendar_reminder_log` is pruned at 400 days, not sooner: an all-day
   event up to a year long stays remindable for its whole span, and a pruned claim would send again.
 - **"Saved after it started" is per occurrence.** `reminderDue` suppresses an occurrence the owner

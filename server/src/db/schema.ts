@@ -329,6 +329,26 @@ CREATE TABLE IF NOT EXISTS calendar_reminder_log (
   PRIMARY KEY (event_id, occurrence, remind_at)
 );
 
+-- Reminders that have gone off (events and schedules alike): the Calendar tab counts the unseen ones and
+-- lists them, so the owner can see which reminder raised the count and whether its Discord DM arrived.
+-- A history of what already fired, never a queue: ref_id is not a foreign key, so a deleted event's
+-- reminder stays listed. delivery is sending|sent|retrying|failed|withdrawn (calendar/firedReminders.ts).
+CREATE TABLE IF NOT EXISTS fired_reminders (
+  id           TEXT PRIMARY KEY,
+  source       TEXT NOT NULL,
+  ref_id       TEXT NOT NULL,
+  occurrence   TEXT,
+  starts_at    INTEGER,
+  title        TEXT NOT NULL,
+  text         TEXT NOT NULL,
+  due_at       INTEGER NOT NULL,
+  fired_at     INTEGER NOT NULL,
+  delivery     TEXT NOT NULL,
+  delivery_note TEXT,
+  seen_at      INTEGER
+);
+CREATE INDEX IF NOT EXISTS fired_reminders_fired ON fired_reminders(fired_at);
+
 -- Goal-directed tasks (orchestrator/goals.ts): a standing objective the director keeps a step task
 -- working on until the step's agent and the director both judge it complete. last_verdict is JSON.
 CREATE TABLE IF NOT EXISTS goals (

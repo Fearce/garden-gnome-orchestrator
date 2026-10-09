@@ -17,6 +17,7 @@ import type { ReminderChannel } from "../orchestrator/reminderDelivery.js";
 import type { DispatchInput } from "../orchestrator/api.js";
 import { CalendarService } from "../calendar/calendarService.js";
 import { registerCalendarRoutes } from "../calendar/routes.js";
+import { FiredReminders } from "../calendar/firedReminders.js";
 import { occurrenceDates } from "../calendar/recurrence.js";
 import type { CalendarOccurrence, CalendarRange } from "../calendar/types.js";
 import { epochToWall, formatDate, formatDateTime, parseDate, wallToEpoch, dayNumber, addDays } from "../calendar/zoned.js";
@@ -45,6 +46,12 @@ const dispatch = async (input: DispatchInput): Promise<string> => {
   return `thread-${dispatched.length}`;
 };
 const sent: { title: string; text: string }[] = [];
+let firedLog = new FiredReminders(db, hub, () => clock);
+// Through the current log, which is rebuilt when the test reopens the database.
+const firedChannel: ReminderChannel["fired"] = {
+  record: (input) => firedLog.record(input),
+  setDelivery: (...args) => firedLog.setDelivery(...args),
+};
 const reminders: ReminderChannel = {
   ready: () => true,
   send: async (title, text) => {
@@ -52,6 +59,7 @@ const reminders: ReminderChannel = {
     return { ok: true };
   },
   fallback: () => {},
+  fired: firedChannel,
 };
 let clock = at("2026-10-05T08:00:00+02:00");
 let scheduler = new Scheduler(db, hub, dispatch, reminders);
@@ -194,6 +202,7 @@ function eventsCrudAndPersistence(): string {
   console.log("calendar: survives a restart");
   db.raw.close();
   db = new Db(dbPath);
+  firedLog = new FiredReminders(db, hub, () => clock);
   scheduler = new Scheduler(db, hub, dispatch, reminders);
   calendar = new CalendarService(db, hub, scheduler, reminders, { now: () => clock, retryMs: [] });
   check("the unspecified end survives reopening the database", calendar.getEvent(pointId)?.end === calendar.getEvent(pointId)?.start);
@@ -390,6 +399,7 @@ async function reminderFreshness(): Promise<void> {
       return refuse-- > 0 ? { ok: false, message: "HTTP 500" } : { ok: true };
     },
     fallback: () => {},
+    fired: firedChannel,
   };
   const retrying = new CalendarService(db, hub, scheduler, flaky, { now: () => clock, retryMs: [50] });
   const afterRetry = () => new Promise((r) => setTimeout(r, 120));
@@ -408,10 +418,13 @@ async function reminderFreshness(): Promise<void> {
   retrying.deleteEvent(deleted, "series");
   await afterRetry();
   check("a deleted event's failed reminder is not retried", attempts.join() === "Synthetic cancelled call", attempts);
+  check("…and its listed entry says it was withdrawn", firedLog.list().find((r) => r.refId === deleted)?.delivery === "withdrawn");
   const renamed = await failOnce("Synthetic old name", 12);
   retrying.updateEvent(renamed, "series", null, { title: "Synthetic new name" });
   await afterRetry();
   check("a retry carries the event's current title", attempts.join() === "Synthetic old name,Synthetic new name", attempts);
+  const renamedEntry = firedLog.list().find((r) => r.refId === renamed);
+  check("…and so does its listed entry, now delivered", renamedEntry?.title === "Synthetic new name" && renamedEntry.delivery === "sent", renamedEntry);
   retrying.deleteEvent(renamed, "series");
   const moved = await failOnce("Synthetic moved call", 14);
   retrying.updateEvent(moved, "series", null, { start: "2027-05-03T17:00", end: "2027-05-03T17:30" });
@@ -555,6 +568,49 @@ async function schedulesOnTheCalendar(): Promise<void> {
   for (const s of scheduler.list()) scheduler.remove(s.id);
 }
 
+async function firedList(): Promise<void> {
+  console.log("calendar: the list of reminders that went off");
+  firedLog.markSeen();
+  const pings: { unseen: number }[] = [];
+  const stop = hub.subscribe((e) => {
+    if (e.type === "reminders.fired") pings.push({ ...e });
+  });
+  clock = at("2027-08-01T08:00:00+02:00");
+  const dentist = calendar.createEvent({ title: "Synthetic dentist", allDay: false, start: "2027-08-02T10:00", end: "2027-08-02T11:00", timeZone: CPH, reminders: [{ kind: "before", minutes: 1440 }] });
+  calendar.remindNow(dentist.event!.id, null);
+  await settle();
+  check("a test send is not listed", !firedLog.list().some((r) => r.refId === dentist.event!.id) && firedLog.unseen() === 0);
+  clock = at("2027-08-01T10:00:20+02:00");
+  calendar.tick();
+  await settle();
+  const entry = firedLog.list()[0];
+  check(
+    "a reminder that went off is listed with what it is about",
+    entry?.source === "event" && entry.refId === dentist.event!.id && entry.occurrence === "2027-08-02" && entry.startsAt === at("2027-08-02T10:00:00+02:00") && entry.dueAt === at("2027-08-01T10:00:00+02:00"),
+    entry,
+  );
+  check("…with the DM's text and its delivery", entry?.title === "Synthetic dentist" && entry.text.startsWith("10:00–11:00") && entry.delivery === "sent", entry);
+  check("…and it counts as unseen", firedLog.unseen() === 1 && entry?.seenAt === null);
+  check("the socket hears the count, never the content", pings.at(-1)?.unseen === 1 && pings.every((p) => !JSON.stringify(p).includes("dentist")), pings);
+
+  const failing = new CalendarService(db, hub, scheduler, { ...reminders, send: async () => ({ ok: false, message: "Discord refused the message (500)." }) }, { now: () => clock, retryMs: [] });
+  clock = at("2027-08-03T08:00:00+02:00");
+  const lost = failing.createEvent({ title: "Synthetic lost reminder", allDay: false, start: "2027-08-03T09:00", end: "2027-08-03T09:30", timeZone: CPH, reminders: [{ kind: "before", minutes: 30 }] });
+  clock = at("2027-08-03T08:30:20+02:00");
+  failing.tick();
+  await settle();
+  const lostEntry = firedLog.list().find((r) => r.refId === lost.event!.id);
+  check("a DM that never arrived is listed as not delivered, with the reason", lostEntry?.delivery === "failed" && !!lostEntry.deliveryNote?.includes("500"), lostEntry);
+  check("both count until seen", firedLog.unseen() === 2);
+  check("marking one seen leaves the other in the count", firedLog.markSeen([entry!.id]) === 1 && firedLog.unseen() === 1 && firedLog.list().find((r) => r.id === entry!.id)?.seenAt != null);
+  check("marking all seen clears the count", firedLog.markSeen() === 1 && firedLog.unseen() === 0 && pings.at(-1)?.unseen === 0);
+  check("marking seen again changes nothing", firedLog.markSeen() === 0);
+  calendar.deleteEvent(dentist.event!.id, "series");
+  check("a deleted event's reminder stays listed", firedLog.list().some((r) => r.id === entry!.id));
+  failing.deleteEvent(lost.event!.id, "series");
+  stop();
+}
+
 function migration(): void {
   console.log("calendar: existing databases");
   // An install from before the calendar has scheduled_tasks but none of the calendar tables.
@@ -594,7 +650,7 @@ function migration(): void {
 async function api(): Promise<void> {
   console.log("calendar: HTTP API");
   const app = Fastify({ logger: false });
-  registerCalendarRoutes(app, calendar, (cookie) => cookie === "session=ok");
+  registerCalendarRoutes(app, calendar, firedLog, (cookie) => cookie === "session=ok");
   await app.ready();
   const authed = { cookie: "session=ok", host: "localhost" };
   const anon = await app.inject({ method: "GET", url: "/api/calendar/range?from=2026-10-05&to=2026-10-11&tz=Europe/Copenhagen" });
@@ -635,6 +691,22 @@ async function api(): Promise<void> {
   const setSettings = await app.inject({ method: "PUT", url: "/api/calendar/settings", headers: authed, payload: { reminderLeads: [10080, 1440], allDayTime: "09:00" } });
   check("default reminders can be saved over the API", setSettings.statusCode === 200 && calendar.defaults().reminderLeads.join() === "10080,1440", setSettings.body);
   calendar.setDefaults({ reminderLeads: [], allDayTime: "09:00" });
+
+  const anonFired = await app.inject({ method: "GET", url: "/api/calendar/fired" });
+  check("an unauthenticated read of fired reminders is refused", anonFired.statusCode === 401);
+  const firstId = firedLog.record({ source: "event", refId: "synthetic-a", occurrence: "2027-09-01", startsAt: 1, title: "Synthetic fired A", text: "A", dueAt: 1 });
+  firedLog.record({ source: "schedule", refId: "synthetic-b", occurrence: null, startsAt: 2, title: "Synthetic fired B", text: "B", dueAt: 2 });
+  const listed = await app.inject({ method: "GET", url: "/api/calendar/fired", headers: authed });
+  const body = JSON.parse(listed.body) as { reminders: { id: string; title: string }[]; unseen: number };
+  check("fired reminders are listed newest first with the unseen count", listed.statusCode === 200 && body.unseen === 2 && body.reminders[0]?.title === "Synthetic fired B", listed.body);
+  const crossSeen = await app.inject({ method: "POST", url: "/api/calendar/fired/seen", headers: { ...authed, "sec-fetch-site": "cross-site" }, payload: {} });
+  check("a cross-site mark-seen is refused", crossSeen.statusCode === 403 && firedLog.unseen() === 2);
+  const one = await app.inject({ method: "POST", url: "/api/calendar/fired/seen", headers: authed, payload: { ids: [firstId] } });
+  check("one reminder can be marked seen", one.statusCode === 200 && (JSON.parse(one.body) as { unseen: number }).unseen === 1, one.body);
+  const all = await app.inject({ method: "POST", url: "/api/calendar/fired/seen", headers: authed, payload: {} });
+  check("all reminders can be marked seen", all.statusCode === 200 && firedLog.unseen() === 0, all.body);
+  const badSeen = await app.inject({ method: "POST", url: "/api/calendar/fired/seen", headers: authed, payload: { ids: "all" } });
+  check("a malformed mark-seen is a 400", badSeen.statusCode === 400);
   await app.close();
 }
 
@@ -649,6 +721,7 @@ async function main(): Promise<void> {
   await reminderFreshness();
   await severalAndDefaultReminders();
   await schedulesOnTheCalendar();
+  await firedList();
   migration();
   await api();
   if (failures) {

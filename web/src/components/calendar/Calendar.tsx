@@ -8,6 +8,7 @@ import {
   type CalendarItemKind,
   type CalendarOccurrence,
   type CalendarRange,
+  type FiredReminder,
   fetchRange,
   moveScheduleRun,
   onCalendarChanged,
@@ -36,6 +37,7 @@ import { AgendaView } from "./AgendaView.js";
 import { BellIcon, ChevronIcon, CloseIcon, KindIcon, PlusIcon, SearchIcon, type DropTarget, type ViewActions } from "./CalendarItem.js";
 import { DetailsPanel } from "./DetailsPanel.js";
 import { EventForm } from "./EventForm.js";
+import { FiredReminders } from "./FiredReminders.js";
 import { MonthView } from "./MonthView.js";
 import { ReminderForm, type ReminderDraft } from "./ReminderForm.js";
 import { DefaultRemindersForm } from "./RemindersField.js";
@@ -105,6 +107,10 @@ export function Calendar() {
   const [scheduleEditor, setScheduleEditor] = useState<{ initial: ScheduledTask | null; draft?: ScheduleDraft } | null>(null);
   const [dragging, setDragging] = useState<CalendarOccurrence | null>(null);
   const grab = useRef(0);
+  const unseenReminders = useStore((s) => s.remindersUnseen);
+  // Opening the tab while its number shows puts the reminders that raised it on top.
+  const [firedOpen, setFiredOpen] = useState(() => useStore.getState().remindersUnseen > 0);
+  const [focus, setFocus] = useState<FiredReminder | null>(null);
 
   const { from, to } = visibleDates(view, anchor, weekStart);
   const fromKey = formatDate(from);
@@ -112,6 +118,11 @@ export function Calendar() {
   const reload = useCallback(() => setReloadTick((t) => t + 1), []);
 
   useEffect(() => onCalendarChanged(reload), [reload]);
+  const unseenBefore = useRef(unseenReminders);
+  useEffect(() => {
+    if (unseenReminders > unseenBefore.current) setFiredOpen(true);
+    unseenBefore.current = unseenReminders;
+  }, [unseenReminders]);
   // A schedule created, edited or fired anywhere (the list view, the director) moves its slots here.
   const seenSchedules = useRef(schedules);
   useEffect(() => {
@@ -153,6 +164,24 @@ export function Calendar() {
   const scheduleOf = (id: string) => schedules.find((s) => s.id === id) ?? null;
   // An open details panel follows the refetched range, so a skip or restore shows its new status.
   const latest = (o: CalendarOccurrence) => range?.occurrences.find((x) => x.key === o.key) ?? o;
+
+  // "Show" on a fired reminder: once the range holding its day has loaded, open what it was about.
+  useEffect(() => {
+    if (!focus || !range || loading || focus.startsAt == null) return;
+    const day = formatDate(dateOf(focus.startsAt, timeZone));
+    if (day < range.from || day > range.to) return;
+    setFocus(null);
+    const found = range.occurrences.find((o) => firedTarget(o, focus, timeZone));
+    if (found) setDialog({ kind: "details", occurrence: found });
+    else setActionError(`“${focus.title}” is no longer on the calendar on that day; it was moved or deleted after the reminder went off.`);
+  }, [focus, range, loading, timeZone]);
+
+  const showFired = (r: FiredReminder) => {
+    if (r.startsAt == null) return;
+    setActionError(null);
+    setAnchor(dateOf(r.startsAt, timeZone));
+    setFocus(r);
+  };
 
   const guard = async (fn: () => Promise<unknown>) => {
     setActionError(null);
@@ -287,6 +316,16 @@ export function Calendar() {
           </h2>
           <input className="cal-jump" type="date" aria-label="Go to date" value={formatDate(anchor)} onChange={(e) => e.target.value && setAnchor(parseDate(e.target.value) ?? anchor)} />
         </div>
+        <button
+          type="button"
+          className={"btn ghost sm cal-manage cal-fired-toggle" + (unseenReminders ? " has-new" : "")}
+          aria-pressed={firedOpen}
+          onClick={() => setFiredOpen(!firedOpen)}
+          title="Reminders that went off: which ones are new, what they said and whether Discord got them"
+        >
+          <BellIcon size={12} /> Went off
+          {unseenReminders ? <span className="board-tab-count">{unseenReminders}</span> : null}
+        </button>
         <button type="button" className="btn ghost sm cal-manage" onClick={() => setBoardView("schedules")} title="The list of every reminder and scheduled task, with Run now">
           Manage schedules
         </button>
@@ -304,6 +343,8 @@ export function Calendar() {
           <PlusIcon /> New
         </button>
       </header>
+
+      {firedOpen ? <FiredReminders timeZone={timeZone} now={now} onShow={showFired} onClose={() => setFiredOpen(false)} /> : null}
 
       <div className="cal-filterbar">
         <label className="cal-search">
@@ -401,6 +442,15 @@ export function Calendar() {
       {scheduleEditor ? <ScheduleEditor initial={scheduleEditor.initial} draft={scheduleEditor.draft} onClose={() => setScheduleEditor(null)} /> : null}
     </div>
   );
+}
+
+/** Whether an occurrence is the one a fired reminder was about: the same event occurrence, or the same
+ *  schedule's run (a day too dense to list its runs collapses into one item for that day). */
+function firedTarget(o: CalendarOccurrence, r: FiredReminder, timeZone: string): boolean {
+  if (o.id !== r.refId || o.source !== r.source) return false;
+  if (r.source === "event") return o.occurrenceDate === r.occurrence;
+  if (o.count) return r.startsAt != null && formatDate(dateOf(o.startAt, timeZone)) === formatDate(dateOf(r.startsAt, timeZone));
+  return o.slotAt === r.startsAt;
 }
 
 function dialogTitle(d: Dialog): string {

@@ -6,7 +6,8 @@
 // skipping one run of a schedule, the default-reminders dialog prefilling a new event's reminders
 // (all-day and timed), persistence across a reload, and an event reminder that comes due
 // reaching the owner through the live 30-second tick. The instance has no Discord bot token, so the DM is
-// refused and the reminder has to land on the note list. No event or reminder may start a task.
+// refused and the reminder has to land on the note list. That reminder then raises the Calendar tab's
+// number, and the tab's list has to show which reminder it was. No event or reminder may start a task.
 //
 // The browser runs in America/New_York while the instance keeps the box's own zone, so the view zone and
 // the server zone differ on purpose, and the March 2027 fixture spans New York's DST change (14 March).
@@ -420,6 +421,34 @@ async function reminderDelivery(page, dataDir) {
   check("a later tick does not send it again", notes().length === 1, String(notes().length));
 }
 
+/** The reminder that just went off: the Calendar tab counts it, and opening the tab shows which reminder
+ *  raised the number, what it said and that Discord refused it, with a way to jump to the event. */
+async function firedReminderCount(page, shots) {
+  const panel = page.locator(".cal-fired");
+  const row = panel.locator(`.cal-fired-row.new:has(.cal-fired-name:text-is("${PROBE}"))`);
+  await row.waitFor({ timeout: 10000 });
+  check("a reminder going off opens the list of reminders that went off", await panel.isVisible());
+  await page.click(".board-tab.bt-tasks");
+  const count = page.locator(".board-tab.bt-calendar .board-tab-count");
+  await count.waitFor({ timeout: 10000 });
+  check("the Calendar tab shows a number for it", (await count.textContent()) === "1", await count.textContent());
+  await page.click(".board-tab.bt-calendar");
+  await row.waitFor({ timeout: 10000 });
+  check("opening the tab shows the reminder that raised the number", await row.locator(".cal-fired-new").isVisible());
+  check("…with its text", (await row.locator(".cal-fired-text").textContent()).includes(PROBE_NOTES));
+  check("…and that Discord did not get it", /on Notes/.test(await row.locator(".cal-fired-delivery").textContent()), await row.locator(".cal-fired-delivery").textContent());
+  await page.screenshot({ path: path.join(shots, "calendar-fired.png") });
+  await row.locator('button:text-is("Show")').click();
+  await modal(page).waitFor({ timeout: 10000 });
+  check("Show opens the event the reminder was about", (await modal(page).locator(".cal-details-title").textContent()) === PROBE);
+  await closeModal(page);
+  await page.locator(".cal-fired-toggle .board-tab-count").waitFor({ state: "detached", timeout: 10000 });
+  check("showing it marks it seen, so the tab's number goes", (await page.locator(".board-tab.bt-calendar .board-tab-count").count()) === 0);
+  check("…and it stays listed, no longer new", (await panel.locator(`.cal-fired-row:not(.new):has(.cal-fired-name:text-is("${PROBE}"))`).count()) === 1);
+  await panel.locator('button[aria-label="Hide reminders that went off"]').click();
+  check("the list can be hidden", (await panel.count()) === 0);
+}
+
 async function createReminderSchedule(page, dataDir) {
   const tomorrow = wallIn(24 * 60).date;
   await page.click(".cal-new");
@@ -589,6 +618,7 @@ async function narrowLayout(browser, cookies, shots) {
     await startOnlyEvent(page, dataDir);
     await deletes(page, dataDir);
     await reminderDelivery(page, dataDir);
+    await firedReminderCount(page, shots);
     await createReminderSchedule(page, dataDir);
     await defaultReminders(page, dataDir, shots);
     await persistence(page);

@@ -147,6 +147,9 @@ export type ServerEvent =
   // A calendar event (or a skipped schedule run) changed. Carries no personal content: an open calendar
   // re-reads its visible range over the authenticated /api/calendar routes.
   | { type: "calendar.changed"; at: number }
+  // How many reminders have gone off that the owner has not acknowledged: the Calendar tab's number. The
+  // list itself (titles, text) is read over the authenticated /api/calendar/fired route.
+  | { type: "reminders.fired"; unseen: number; at: number }
   // Every goal-directed task with its newest steps, rebroadcast on every create/edit/status change/step.
   | { type: "goals"; goals: Goal[] }
   // The owner's note list, rebroadcast whole on every post/delete (hard-capped, so it stays small).

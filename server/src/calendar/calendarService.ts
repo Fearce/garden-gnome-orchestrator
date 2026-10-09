@@ -399,6 +399,7 @@ export class CalendarService {
               text: reminderText(instance),
               label: `Calendar reminder (event ${event.id.slice(0, 8)})`,
               current: () => this.stillDue(event.id, instance.date, dueAt),
+              fired: { source: "event", refId: event.id, occurrence: instance.date, startsAt: instance.startAt, dueAt },
             },
             this.retryMs(),
           );
