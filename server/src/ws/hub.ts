@@ -442,6 +442,7 @@ export async function handleCommand(
         hasMoreMessages: page.hasMore,
         before: cmd.before,
       });
+      if (!cmd.before) ctx.manager.prewarmResumeHandoff(cmd.threadId);
       break;
     }
     case "thread.approve":

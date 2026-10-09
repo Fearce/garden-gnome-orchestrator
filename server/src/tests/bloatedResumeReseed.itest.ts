@@ -23,7 +23,7 @@ process.env.CAP_RETRY_MS = "0";
 process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
@@ -36,7 +36,7 @@ const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
-const { sessionContextTokens } = await import("../orchestrator/resumeCompress.js");
+const { compressSession, sessionContextTokens } = await import("../orchestrator/resumeCompress.js");
 const { config } = await import("../config.js");
 
 let passed = 0;
@@ -183,6 +183,89 @@ console.log("\n=== D. a Default-mode (vanilla) session is a stock session: never
   writeTranscript("sess-vanilla", over);
   await resume(h, "sess-vanilla");
   check("the vanilla session is resumed in place however large", h.asks.length === 1 && h.asks[0]?.resume === "sess-vanilla", JSON.stringify(h.asks.map((a) => a.resume)));
+  h.dispose();
+}
+
+/** A cold session whose older turns are too long to inline, so its handoff needs the Haiku summary. */
+function writeLongTranscript(sessionId: string, ageMinutes: number): string {
+  const dir = join(projectsDir, "C--fixture-repo");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${sessionId}.jsonl`);
+  const lines = Array.from({ length: 40 }, (_, i) => JSON.stringify({
+    type: i % 2 ? "assistant" : "user",
+    message: { role: i % 2 ? "assistant" : "user", content: [{ type: "text", text: `turn ${i} ${"detail ".repeat(300)}` }] },
+  }));
+  writeFileSync(path, lines.join("\n") + "\n");
+  const at = new Date(Date.now() - ageMinutes * 60_000);
+  utimesSync(path, at, at);
+  return path;
+}
+
+/** Answers the Haiku summary call with a numbered summary, or fails it with `status`. */
+function stubHaiku(): { calls: () => number; failWith: (status: number | null) => void; restore: () => void } {
+  const real = globalThis.fetch;
+  let calls = 0;
+  let failure: number | null = null;
+  globalThis.fetch = (async () => {
+    calls++;
+    if (failure) return new Response("busy", { status: failure });
+    return new Response(JSON.stringify({ content: [{ type: "text", text: `HAIKU SUMMARY ${calls}` }] }), { status: 200 });
+  }) as typeof fetch;
+  return { calls: () => calls, failWith: (status) => { failure = status; }, restore: () => { globalThis.fetch = real; } };
+}
+
+const coldMinutes = config.resumeWarmMinutes + 30;
+
+console.log("\n=== E. a cold handoff is built once and reused while the transcript is unchanged ===");
+{
+  const haiku = stubHaiku();
+  const path = writeLongTranscript("sess-memo", coldMinutes);
+  const [a, b] = await Promise.all([compressSession("sess-memo", "token"), compressSession("sess-memo", "token")]);
+  check("two concurrent callers share one Haiku summary", haiku.calls() === 1 && a?.haiku === true && a?.markdown === b?.markdown, `calls=${haiku.calls()}`);
+  await compressSession("sess-memo", "token");
+  check("a later caller reuses the built handoff", haiku.calls() === 1, `calls=${haiku.calls()}`);
+  appendFileSync(path, JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "one more turn" }] } }) + "\n");
+  const grown = await compressSession("sess-memo", "token");
+  check("a transcript that grew is summarized again", haiku.calls() === 2 && /one more turn/.test(grown?.markdown ?? ""), `calls=${haiku.calls()}`);
+
+  writeLongTranscript("sess-flaky", coldMinutes);
+  haiku.failWith(500);
+  const failedOnce = await compressSession("sess-flaky", "token");
+  haiku.failWith(null);
+  const retried = await compressSession("sess-flaky", "token");
+  check("a failed Haiku summary is not kept: the next caller retries it", failedOnce?.haiku === false && retried?.haiku === true, `${failedOnce?.haiku} -> ${retried?.haiku}`);
+  haiku.restore();
+}
+
+console.log("\n=== F. opening a cold task prepares the handoff its inject will need ===");
+{
+  const haiku = stubHaiku();
+  const h = makeHarness();
+  writeLongTranscript("sess-open", coldMinutes);
+  const model = (h.mgr as any).implementorDispatchTarget(h.thread.id, "claude", "account-a").model;
+  const run = h.db.createRun({ threadId: h.thread.id, role: "implementor", model, account: "Claude A" });
+  h.db.updateRun(run.id, { sessionId: "sess-open" });
+  h.db.updateThread(h.thread.id, { state: "review" });
+  h.mgr.prewarmResumeHandoff(h.thread.id);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  check("opening the task asks Haiku for the summary once", haiku.calls() === 1, `calls=${haiku.calls()}`);
+  await (h.mgr as any).startResumedImplementor(h.thread, "kickoff", "sess-open", { resumeNudge: "Continue.", qaFollows: true });
+  check("the inject's cold resume reuses it instead of waiting on another summary", haiku.calls() === 1 && /HAIKU SUMMARY 1/.test(h.asks[0]?.kickoff ?? ""), `calls=${haiku.calls()}`);
+
+  writeLongTranscript("sess-done", coldMinutes);
+  const doneRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model, account: "Claude A" });
+  h.db.updateRun(doneRun.id, { sessionId: "sess-done" });
+  h.db.updateThread(h.thread.id, { state: "done" });
+  h.mgr.prewarmResumeHandoff(h.thread.id);
+  writeLongTranscript("sess-warm", 1);
+  const warmRun = h.db.createRun({ threadId: h.thread.id, role: "implementor", model, account: "Claude A" });
+  h.db.updateRun(warmRun.id, { sessionId: "sess-warm" });
+  h.db.raw.prepare("UPDATE agent_runs SET started_at = ? WHERE id = ?").run(Date.now() + 1_000, warmRun.id);
+  h.db.updateThread(h.thread.id, { state: "review" });
+  h.mgr.prewarmResumeHandoff(h.thread.id);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  check("a done task and a warm session are left alone", haiku.calls() === 1, `calls=${haiku.calls()}`);
+  haiku.restore();
   h.dispose();
 }
 

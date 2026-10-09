@@ -977,6 +977,9 @@ const SLOT_FREE_STATES: ReadonlySet<Thread["state"]> = new Set([
 const CLOSED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PURGE_SWEEP_MS = 24 * 60 * 60 * 1000;
 const CLOSEABLE: ReadonlySet<Thread["state"]> = new Set(["done", "failed", "cancelled", "review", "paused"]);
+/** States whose next owner action is usually an inject or Resume. Done tasks are left out: there are
+ *  hundreds, and a Haiku summary per browse would cost more than the rare follow-up saves. */
+const RESUME_PREWARM_STATES: ReadonlySet<Thread["state"]> = new Set(["paused", "review", "failed"]);
 // Parked states a human can manually accept as finished. 'review' (QA bounced it, or an inject/manual
 // resume settled here with no QA loop) and 'paused' are work the owner can sign off on directly — the
 // pipeline's own only-QA-marks-done rule never applies to these, so without this they'd be stuck.
@@ -10644,6 +10647,22 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const tokens = sessionContextTokens(sessionId);
     if (tokens == null || tokens <= limit) return null;
     return `the prior session's live context is ${Math.round(tokens / 1000)}k tokens (over ${Math.round(limit / 1000)}k), which every call of a full resume would re-read`;
+  }
+
+  /** The owner opened a task they may steer next. When its implementor would resume cold, build the
+   *  compressed handoff now (memoized in `compressSession`), so the inject or Resume doesn't wait on the
+   *  Haiku summary before its run even starts. */
+  prewarmResumeHandoff(threadId: string): void {
+    const thread = this.db.getThread(threadId);
+    if (!thread || !RESUME_PREWARM_STATES.has(thread.state) || this.live.has(threadId) || this.resuming.has(threadId)) return;
+    if (config.resumeFullSession) return;
+    const prior = this.latestRoleRun(threadId, "implementor");
+    if (!prior || (prior.provider !== "claude" && prior.provider !== "zai")) return;
+    const ageMs = sessionAgeMs(prior.sessionId);
+    if (ageMs == null) return;
+    const cold = ageMs >= config.resumeWarmMinutes * 60_000 || this.bloatedSessionReason(thread, prior.sessionId) != null;
+    if (!cold) return;
+    void compressSession(prior.sessionId, this.accounts.auxToken()).catch(() => undefined);
   }
 
   /** A run's next real turn outcome — skipping any turn the owner's steering ABORTED. The implementor

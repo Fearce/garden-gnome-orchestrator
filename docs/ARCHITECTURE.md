@@ -625,7 +625,11 @@ done ──"Start QA"──▶ qa ⇄ implementing ──▶ done | review      
   `agent_runs.session_id`, which survives a restart unlike the in-memory map) when a task genuinely
   needs its exact prior context. The Haiku handoff is told **not** to restate the goal/plan (the
   kickoff already carries them authoritatively) — it captures only the session delta (decisions, work
-  done, gotchas, what's left).
+  done, gotchas, what's left). The Haiku call took 20–45 s before an inject's run even existed, so
+  `compressSession` memoizes its handoff by transcript path, size and mtime (8 entries; a failed Haiku
+  attempt is not kept), and opening a `paused`/`review`/`failed` task whose Claude or z.ai session would
+  resume cold (`prewarmResumeHandoff`, from the hub's `thread.history`) builds it while the owner reads.
+  Done tasks are not prewarmed: there are hundreds, and a browse should not cost a summary each.
 - **Task modes — a wall-clock window, and N agents on one objective** (`orchestrator/timedTasks.ts`,
   `orchestrator/shotgun.ts`). Two opt-in per-task modes on this same pipeline, not lanes and not
   schedules. Both hang off nullable thread columns, so a task that uses neither is byte-for-byte

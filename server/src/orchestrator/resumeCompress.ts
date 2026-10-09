@@ -295,14 +295,49 @@ export interface SessionHandoff {
  *  summary of old turns → markdown. Returns null when the transcript can't be found/read (caller
  *  then falls back to plan + git diff alone). `token` is an account's subscription token for the
  *  cheap Haiku call; without it (or on Haiku failure) the free static strip is used. */
-export async function compressSession(sessionId: string, token: string | undefined): Promise<SessionHandoff | null> {
+export function compressSession(sessionId: string, token: string | undefined): Promise<SessionHandoff | null> {
   const path = findTranscript(sessionId);
-  if (!path) return null;
+  if (!path) return Promise.resolve(null);
+  let key: string;
+  try {
+    const { size, mtimeMs } = statSync(path);
+    key = `${path}|${size}|${mtimeMs}|${token ? "haiku" : "static"}`;
+  } catch {
+    return Promise.resolve(null);
+  }
+  const hit = handoffMemo.get(key);
+  if (hit) {
+    handoffMemo.delete(key);
+    handoffMemo.set(key, hit);
+    return hit;
+  }
+  const pending = buildHandoffFrom(path, token).then(
+    ({ handoff, retryable }) => {
+      if (retryable) handoffMemo.delete(key);
+      return handoff;
+    },
+    (error: unknown) => {
+      handoffMemo.delete(key);
+      throw error;
+    },
+  );
+  handoffMemo.set(key, pending);
+  while (handoffMemo.size > HANDOFF_MEMO_MAX) handoffMemo.delete(handoffMemo.keys().next().value!);
+  return pending;
+}
+
+// A cold inject waits on the Haiku summary (~20-45s), so a handoff built ahead of time — or by a concurrent
+// caller — is reused while the transcript is unchanged (same size and mtime).
+const HANDOFF_MEMO_MAX = 8;
+const handoffMemo = new Map<string, Promise<SessionHandoff | null>>();
+
+/** `retryable` marks a result a later call should rebuild: unreadable, or Haiku was asked and failed. */
+async function buildHandoffFrom(path: string, token: string | undefined): Promise<{ handoff: SessionHandoff | null; retryable: boolean }> {
   let jsonl: string;
   try {
     jsonl = readFileSync(path, "utf8");
   } catch {
-    return null;
+    return { handoff: null, retryable: true };
   }
   const { oldBody, recentBody, fileList } = compressTranscript(jsonl);
   let oldRendered = oldBody;
@@ -321,7 +356,10 @@ export async function compressSession(sessionId: string, token: string | undefin
       oldRendered = cappedStatic(oldBody);
     }
   }
-  return { markdown: buildHandoff(oldRendered, recentBody, fileList), haiku };
+  return {
+    handoff: { markdown: buildHandoff(oldRendered, recentBody, fileList), haiku },
+    retryable: !!token && oldBody.length > INLINE_OLD_MAX_CHARS && !haiku,
+  };
 }
 
 // ---- static-strip helpers ----
