@@ -100,7 +100,7 @@ function choreography(cast: WorkshopSeat[], width: number): StageActor[] {
 /** The beta cast on a depth stage: every own gnome, visitors while there is room, lanes by how
  *  recently each spoke. Lane choices re-run on a single deadline (the next idle threshold or dwell
  *  end), never on a polling clock. */
-function useStage(seats: WorkshopSeat[], chat: ChatMessage[], width: number, classic: boolean) {
+function useStage(seats: WorkshopSeat[], chat: ChatMessage[], width: number, classic: boolean, held: boolean) {
   const firstSeen = useRef(new Map<string, number>());
   const memory = useRef<ReadonlyMap<string, DepthMemory>>(new Map());
   const [tick, setTick] = useState(0);
@@ -126,8 +126,42 @@ function useStage(seats: WorkshopSeat[], chat: ChatMessage[], width: number, cla
     const timer = window.setTimeout(() => setTick((value) => value + 1), Math.max(50, assigned.wakeAt - Date.now() + 30));
     return () => window.clearTimeout(timer);
   }, [assigned]);
-  const actors = classic ? choreography(cast, width) : stageLayout(cast, assigned!.depths, width);
+  const live = classic ? choreography(cast, width) : stageLayout(cast, assigned!.depths, width);
+  const shown = useRef<StageActor[]>([]);
+  const actors = held ? holdPlaces(shown.current, live) : live;
+  useLayoutEffect(() => { shown.current = actors; });
   return { cast, actors };
+}
+
+/** While a gnome is pointed at, everyone already on stage keeps their place; newcomers still appear. */
+function holdPlaces(shown: StageActor[], live: StageActor[]): StageActor[] {
+  return live.map((actor) => {
+    const kept = shown.find((previous) => previous.seat.id === actor.seat.id);
+    return kept ? { ...kept, seat: actor.seat, partner: actor.partner } : actor;
+  });
+}
+
+/** Pointing at a gnome stops the stage so its tooltip stays put: the clock holds the loops
+ *  (`data-motion-held`) and any lane-change walk already under way waits until the pointer leaves. */
+function useHoverHold(root: React.RefObject<HTMLDivElement | null>) {
+  const [heldBy, setHeldBy] = useState<string | null>(null);
+  useEffect(() => {
+    if (!heldBy || !root.current) return;
+    const walking = root.current.getAnimations({ subtree: true }).filter((animation) => !(animation instanceof CSSAnimation) && animation.playState === "running");
+    walking.forEach((animation) => animation.pause());
+    return () => walking.forEach((animation) => { if (animation.playState === "paused") animation.play(); });
+  }, [heldBy]);
+  const holdHandlers = (id: string) => ({
+    onPointerEnter: () => setHeldBy(id),
+    onPointerLeave: () => setHeldBy((current) => current === id ? null : current),
+    onFocus: (event: React.FocusEvent<HTMLElement>) => { if (event.currentTarget.matches(":focus-visible")) setHeldBy(id); },
+    onBlur: () => setHeldBy((current) => current === id ? null : current),
+  });
+  // A gnome that leaves the stage while pointed at never sees the pointer leave.
+  const releaseGone = (onStage: StageActor[]) => {
+    if (heldBy && !onStage.some((actor) => actor.seat.id === heldBy)) setHeldBy(null);
+  };
+  return { held: heldBy !== null, holdHandlers, releaseGone };
 }
 
 interface Placement { x: number; depth: Depth; scale: number; lift: number; travel: number; walkMs: number }
@@ -267,7 +301,9 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
     openOffice(room);
     setExpanded(false);
   }
-  const { cast, actors } = useStage(seats, chat, width, classic);
+  const { held, holdHandlers, releaseGone } = useHoverHold(ref);
+  const { cast, actors } = useStage(seats, chat, width, classic, held);
+  useEffect(() => releaseGone(actors));
   const { walks, register } = useWalks(actors, classic, motionPaused, ref);
   const totalWorking = seats.filter((s) => s.active).length;
   const totalFrozen = seats.filter((s) => s.freezeReason).length;
@@ -278,7 +314,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
   if (message && bubbleDelay.current?.id !== message.id) bubbleDelay.current = { id: message.id, ms: speakerWalk?.moved ? speakerWalk.walkMs : 0 };
   const placement = bubblePlacement(speakerWalk?.actor, width);
   const bubble = message && `${message.senderName || speaker?.name || message.role}${message.remoteInstance ? ` · ${message.remoteInstance}` : ""}: ${message.body.replace(/\s+/g, " ").trim()}`;
-  return <div className="beta-workshop" ref={ref} data-art={classic ? "classic" : "beta"} data-motion-paused={motionPaused} data-bubble={message ? placement.side : undefined} aria-label={`Workshop: ${totalWorking} at work, ${online} online`}>
+  return <div className="beta-workshop" ref={ref} data-art={classic ? "classic" : "beta"} data-motion-paused={motionPaused} data-motion-held={held || undefined} data-bubble={message ? placement.side : undefined} aria-label={`Workshop: ${totalWorking} at work, ${online} online`}>
     <div className="beta-workshop-stage" ref={stage}>
       <div className="beta-workshop-cast" aria-label="Gnomes in the workshop">
         {walks.map(({ actor, walkMs }) => {
@@ -296,6 +332,7 @@ export function BetaWorkshop({ seats, chat, online, activeRoom, openOffice, clas
               data-partner={!seat.rest && partner >= 0 ? cast[partner]?.id : undefined}
               style={{ "--label-width": `${labelWidth}px`, "--journey": `${travel}px`, "--seat-delay": `${delay}s`, "--out-facing": travel < 0 ? -1 : 1, "--back-facing": travel < 0 ? 1 : -1 } as CSSProperties}
               onClick={() => open(seat.room)}
+              {...holdHandlers(seat.id)}
               aria-label={`${seat.name}, ${seatActivity(seat)}. ${seat.group}, ${seat.remote ? `visiting from ${seat.remote}` : "local office"}. ${seat.task}. Open chat${unread.get(seat.room) ? `, ${unread.get(seat.room)} new messages` : ""}`}
               title={`${seat.name} · ${seatActivity(seat)}\n${seat.task}\n${seat.group}\n${seat.freezeReason ?? (seat.remote ? `Online office: ${seat.remote}` : "Local office")}\nClick to open chat`}>
               <span className="beta-character"><WorkshopGnome classic={classic} role={seat.role} size={32} active={seat.active} rest={seat.rest} frozen={!!seat.freezeReason} /></span>

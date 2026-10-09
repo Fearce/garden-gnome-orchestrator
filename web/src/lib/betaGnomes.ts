@@ -71,11 +71,21 @@ const visible = new Map<HTMLElement, boolean>();
 export const GNOME_MOTION_FPS = 24;
 let clock: number | undefined;
 const clockOrigin = typeof performance === "undefined" ? 0 : performance.now();
+/** Time each cast spent held (paused, off screen, or a gnome pointed at), so a released cast picks up
+ *  where it stopped instead of jumping ahead to the shared clock. */
+const holds = new Map<HTMLElement, { lag: number; since?: number }>();
+function held(element: HTMLElement) {
+  return element.dataset.paused === "true" || element.dataset.motionPaused === "true" || element.dataset.motionHeld === "true";
+}
 function advanceGnomes() {
   const now = Math.round(performance.now() - clockOrigin);
   for (const element of visible.keys()) {
-    if (element.dataset.paused === "true" || element.dataset.motionPaused === "true" || element.parentElement?.closest("[data-motion-clock]")) continue;
-    for (const animation of element.getAnimations({ subtree: true })) if (animation instanceof CSSAnimation) animation.currentTime = now;
+    if (element.parentElement?.closest("[data-motion-clock]")) continue;
+    const hold = holds.get(element) ?? { lag: 0 };
+    holds.set(element, hold);
+    if (held(element)) { hold.since ??= now; continue; }
+    if (hold.since !== undefined) { hold.lag += now - hold.since; hold.since = undefined; }
+    for (const animation of element.getAnimations({ subtree: true })) if (animation instanceof CSSAnimation) animation.currentTime = now - hold.lag;
   }
 }
 function applyPause(element: HTMLElement, onScreen: boolean) {
@@ -104,6 +114,7 @@ export function observeGnomeMotion(element: HTMLElement) {
   return () => {
     observer?.unobserve(element);
     visible.delete(element);
+    holds.delete(element);
     delete element.dataset.motionClock;
     if (!visible.size) {
       observer?.disconnect();

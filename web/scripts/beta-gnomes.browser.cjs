@@ -1,7 +1,7 @@
 /* Authenticated UI regression. Fixtures stay in this browser's WebSocket; no tasks are dispatched.
  * node web/scripts/beta-gnomes.browser.cjs [http://127.0.0.1:4317]
  * :4317 serves master's build. For uncommitted web code, run `npx vite --port 4391 --strictPort` in web/
- * (it proxies /api and /ws to :4317) and pass http://127.0.0.1:4391.
+ * (it proxies /api and /ws to :4317) and pass http://localhost:4391 (Vite may bind only ::1).
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -35,7 +35,7 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     let currentSocket;
     let hello;
     const sent = [];
-    await context.routeWebSocket('**/ws', socket => {
+    await context.routeWebSocket(/\/ws(?:\?|$)/, socket => {
       currentSocket = socket;
       const server = socket.connectToServer();
       socket.onMessage(raw => {
@@ -143,6 +143,29 @@ const onlineOffice = { enabled: true, joined: true, state: 'online', url: '', in
     await page.evaluate(()=>{Object.defineProperty(document,'visibilityState',{configurable:true,value:'hidden'});document.dispatchEvent(new Event('visibilitychange'));});
     assert((await page.locator('.beta-workshop').evaluate(el=>el.getAnimations({subtree:true}).map(a=>a.playState))).every(s=>s==='paused'));
     await page.evaluate(()=>{delete document.visibilityState;document.dispatchEvent(new Event('visibilitychange'));});
+    // Pointing at a gnome stops the stage so its tooltip stays readable: no loop, no lane change, and the loop
+    // resumes where it stopped instead of jumping ahead.
+    await settled(page);
+    const journeyTime=()=>page.locator('.beta-workstation[data-partner]').first().evaluate(el=>el.getAnimations().find(a=>a.animationName==='beta-journey').currentTime);
+    const pointAt=await page.locator('.beta-actor[data-depth="0"] .beta-workstation[data-partner]').first().boundingBox();
+    await page.mouse.move(pointAt.x+pointAt.width/2,pointAt.y+pointAt.height*.7);
+    await page.waitForFunction(()=>document.querySelector('.beta-workshop')?.dataset.motionHeld==='true');
+    const hoveredId=await page.locator('.beta-workstation:hover').getAttribute('data-agent-id');
+    const placesOf=()=>page.locator('.beta-actor').evaluateAll(els=>els.map(el=>`${el.querySelector('.beta-workstation').dataset.agentId}@${el.dataset.depth}:${el.getBoundingClientRect().x.toFixed(1)}`).join('|'));
+    const heldPlaces=await placesOf();
+    const heldTime=await journeyTime();
+    const backSeat=await page.locator('.beta-actor:not([data-depth="0"]) .beta-workstation:not(.beta-visitor):not([data-post])').first().getAttribute('data-agent-id');
+    currentSocket.send(JSON.stringify({type:'chat.message',message:{id:'beta-hover-hold',room,scope:'project',kind:'chat',body:'Speaking up from the back.',role:'qa',threadId:backSeat,createdAt:Date.now()}}));
+    await page.waitForTimeout(1500);
+    assert.equal(await journeyTime(),heldTime,'A pointed-at stage must stop its walking loops');
+    assert.equal(await placesOf(),heldPlaces,'A pointed-at stage must hold every gnome in place, even when one speaks up');
+    assert.equal(await page.locator('.beta-workstation:hover').getAttribute('data-agent-id'),hoveredId,'The pointed-at gnome must stay under the pointer');
+    await page.mouse.move(5,900);
+    await page.waitForFunction(()=>!document.querySelector('.beta-workshop')?.dataset.motionHeld);
+    await page.waitForFunction(id=>document.querySelector(`.beta-workstation[data-agent-id="${id}"]`).closest('.beta-actor').dataset.depth==='0',backSeat);
+    const resumedTime=await journeyTime();
+    assert(resumedTime>heldTime && resumedTime-heldTime<1500,`Released loops resume where they stopped (${heldTime} → ${resumedTime})`);
+    await settled(page);
     // Reproduce a local worktree + a different local repo separating its remote QA teammate.
     // Unrelated remote workers arrive first; online directors must not take any of their places.
     const teamThreads = [

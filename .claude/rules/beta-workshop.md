@@ -81,6 +81,14 @@ art). Read this before changing how gnomes are chosen, placed, walked or animate
   read as lag to the owner (2026-10-02). Measured on a production build, 24 gnomes, main-thread ms per
   2.5 s: 5 fps ~820, 24 fps ~1055, 30 fps ~1240, free-running 60 fps ~1640; all held 60 fps frames. WAAPI walks and CSS transitions are not
   `CSSAnimation`s, so walks stay smooth.
+- **A held root resumes where it stopped.** Paused, off-screen and pointed-at roots skip the tick; the
+  clock adds the held span to that root's `lag` and seeks `now - lag` afterwards, so nothing jumps ahead.
+  Because the clock seeks paused animations, a CSS `animation-play-state` rule alone cannot stop a gnome:
+  hold it through the clock.
+- **Pointing at a gnome stops the whole stage** (owner, 2026-10-09: it walked away while its tooltip was
+  being read). `useHoverHold` sets `data-motion-held` (the clock holds the loops), pauses lane-change walks
+  already under way, and `useStage` keeps every placed gnome where it stands (`holdPlaces`) until the
+  pointer leaves; lane changes queued meanwhile walk on release.
 - **Seek animations; never drive the clock through an inherited CSS variable.** A `--gnome-clock` in every
   `animation-delay` was measured at ~25 ms of style recalc per tick (it re-styles all ~500 descendants)
   against ~3 ms for `animation.currentTime = t` (only the ~170 animated targets). With 24 gnomes the seek
@@ -96,4 +104,6 @@ art). Read this before changing how gnomes are chosen, placed, walked or animate
 ## Browser gates
 `node web/scripts/{beta-gnomes,classic-workshop,frozen-gnomes}.browser.cjs <base>`. `:4317` serves
 master's build; for unbuilt web code run `npx vite --port 4391 --strictPort` in `web/` (it proxies to
-`:4317`) and pass `http://127.0.0.1:4391`.
+`:4317`) and pass `http://localhost:4391` (Vite may bind only `::1`, so `127.0.0.1` refuses). Labs fake
+the socket with `routeWebSocket(/\/ws(?:\?|$)/, …)`: the store connects to `/ws?lazySummaries=1`, which a
+`'**/ws'` glob misses, and the lab then silently shows the real office instead of its fixtures.
