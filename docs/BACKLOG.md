@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: preserve Calendar reminder counts, executed-reminder links and interrupted delivery status** (2026-10-09, Sedge Morrow; task 30f120db).
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -28,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA: preserve Calendar reminder counts, executed-reminder links and interrupted delivery status** (4837cef2; 2026-10-09, Sedge Morrow; task 30f120db).
+  Integrated/pushed from ggo/calendar-reminder-qa-30f120db to master; live 42d1ae94 verified. Calendar browser checks 106/106, Calendar/scheduler tests, Discord tests 66/66, types/builds, privacy and README claims 74/74 pass. Live tab count, highlighted reminder causes and delivery labels verified. No owner-facing artifacts; independent QA required.
 
 
 - **QA nightly sweep: preserve failed-resume input, active authentication and deliverable cards** (0e2d18a8, 3080f755, 9c292ff0, a79ed497, 9e472a08; 2026-10-09, Codex QA; task ef639c35).
