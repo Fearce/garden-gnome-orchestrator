@@ -137,7 +137,7 @@ same commit as the fix. Git history keeps the record.
 
 ## Ready (priority order)
 
-1. **Finish the staged Codex CLI update at an idle boundary** (2026-10-09, Tansy Copperfern; nightly task ef639c35): the independent provider probe reports installed 0.161.0 versus stable 0.162.0; `cli_auto_update_status` is waiting for no active Codex turn. Let Codex agents finish, then verify the updater installed 0.162.0 and rerun `probe:provider-toolchain`.
+1. **Confirm the Codex CLI reached 0.162.0 through the idle watch** (2026-10-09, nightly task ef639c35): the updater waited 8 h because its 20-minute recheck never landed in the three ~6 s gaps between Codex runs. QA changed it to download while Codex is busy and poll every 2 s for an idle moment (`test:cli-auto-update` 25/25). After the deploy, check `kv cli_auto_update_status` shows `updated` and rerun `probe:provider-toolchain`.
 
 1. **Measure real task start and inject latency after the nightly optimizations** (2026-10-09, Tansy Copperfern; task ef639c35): historical dispatch samples reach first output in 12.5–52.6 s; the cold-resume integration test mocks Haiku and proves summary reuse, without timing a real provider call. Capture post-deployment timings before claiming the reported 30 s delay is resolved.
 

@@ -30,6 +30,8 @@ const CHECK_EVERY_MS = 6 * 60 * 60_000;
 const FIRST_CHECK_MS = 5 * 60_000;
 // A Codex turn in flight, a tree that doesn't typecheck or a network blip is a passing condition.
 const RETRY_SOON_MS = 20 * 60_000;
+/** How often a downloaded Codex release looks for a moment with no Codex agent running. One indexed query. */
+const CODEX_IDLE_POLL_MS = 2_000;
 const REGISTRY_TIMEOUT_MS = 15_000;
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
 const TYPECHECK_TIMEOUT_MS = 5 * 60_000;
@@ -70,6 +72,8 @@ export interface CliAutoUpdaterDeps {
   log: (level: "info" | "warn" | "error", message: string) => void;
   codexLauncher: () => CodexLauncher;
   codexBusy: () => boolean;
+  /** Tests shorten the idle watch a downloaded Codex release runs while agents are busy. */
+  codexIdlePollMs?: number;
   /** The Agent SDK version this process loaded at boot (not what is on disk now). */
   loadedSdkVersion: () => string | null;
   /** Checkout state from the self-update poller: fetches, then compares HEAD with its upstream. */
@@ -82,6 +86,14 @@ export interface CliAutoUpdaterDeps {
   exec?: Exec;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+}
+
+/** A Codex release downloaded into the scratch prefix, waiting to replace the live package folder. */
+interface StagedCodex {
+  version: string;
+  installed: string | null;
+  packageDir: string;
+  staged: string;
 }
 
 /** A package folder moved aside by a swap, so the swap can be undone. `aside` is null for a new package. */
@@ -357,6 +369,8 @@ export class CliAutoUpdater {
   private restartRequested = false;
   /** Set by a step that failed for a reason expected to clear (network, a lock, a busy file). */
   private retrySoon = false;
+  /** A downloaded Codex release polling for an idle moment to swap in. */
+  private codexWatch: (StagedCodex & { timer: NodeJS.Timeout }) | null = null;
   private readonly exec: Exec;
   private readonly fetchLatest: (pkg: string) => Promise<RegistryRelease>;
   private readonly now: () => number;
@@ -382,6 +396,7 @@ export class CliAutoUpdater {
   stop(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
+    this.takeCodexWatch();
   }
 
   current(): CliAutoUpdateStatus {
@@ -392,7 +407,10 @@ export class CliAutoUpdater {
   toggled(on: boolean): void {
     if (this.deps.standDownReason) return;
     if (on) void this.checkNow();
-    else this.schedule(null);
+    else {
+      this.takeCodexWatch();
+      this.schedule(null);
+    }
   }
 
   /** Run one full check (both CLIs). Concurrent callers share the check already in flight. */
@@ -513,6 +531,8 @@ export class CliAutoUpdater {
   // ---- Codex: the global npm install ----
 
   private async updateCodex(): Promise<CliUpdateComponent> {
+    // This check owns the install now; it reuses a release a watch already staged.
+    const watched = this.takeCodexWatch();
     const launcher = this.deps.codexLauncher();
     if (launcher.source === "desktop") {
       return this.component({ installed: null, latest: null, state: "unmanaged", detail: "Codex runs from Codex Desktop, which updates itself." });
@@ -536,29 +556,76 @@ export class CliAutoUpdater {
       return this.component({ ...base, state: "current", detail: `Codex CLI ${installed} is the latest release.` });
     }
     const waiting = (detail: string) => this.component({ ...base, state: "waiting", detail });
-    if (this.deps.codexBusy()) return waiting(`Codex ${latest.version} is out; installing once no Codex agent is mid-turn.`);
     if (!this.deps.enabled()) return waiting("Auto-update was switched off before the install.");
 
-    this.set("codex", this.component({ ...base, state: "updating", detail: `Downloading Codex CLI ${latest.version}…` }));
-    const staged = await this.stageCodex(latest.version);
-    if (typeof staged !== "string" || !existsSync(staged)) {
-      const why = typeof staged === "string" ? "the staged copy vanished" : staged.error;
-      this.deps.log("warn", `CLI auto-update: Codex ${latest.version} did not stage — ${why}`);
-      return this.transient({ ...base, detail: `Downloading Codex ${latest.version} failed: ${why}` });
+    // Downloading touches only the scratch prefix, so it runs while Codex agents work; only the swap waits.
+    let staged = watched?.version === latest.version && watched.packageDir === packageDir && existsSync(watched.staged) ? watched.staged : null;
+    if (!staged) {
+      this.set("codex", this.component({ ...base, state: "updating", detail: `Downloading Codex CLI ${latest.version}…` }));
+      const result = await this.stageCodex(latest.version);
+      if (typeof result !== "string" || !existsSync(result)) {
+        const why = typeof result === "string" ? "the staged copy vanished" : result.error;
+        this.deps.log("warn", `CLI auto-update: Codex ${latest.version} did not stage — ${why}`);
+        return this.transient({ ...base, detail: `Downloading Codex ${latest.version} failed: ${why}` });
+      }
+      staged = result;
     }
-    // Re-checked right before the swap: the renames below are synchronous, so nothing can launch Codex
-    // between this check and the new copy being in place.
-    if (this.deps.codexBusy()) return waiting(`Codex ${latest.version} is downloaded; swapping it in once no Codex agent is mid-turn.`);
+    const plan: StagedCodex = { version: latest.version, installed, packageDir, staged };
+    // Re-checked right before the swap: the renames are synchronous, so nothing can launch Codex between
+    // this check and the new copy being in place.
+    if (!this.deps.enabled()) return waiting("Auto-update was switched off before the install.");
+    if (this.deps.codexBusy()) {
+      this.watchCodex(plan);
+      return waiting(`Codex ${latest.version} is downloaded; it swaps in the moment no Codex agent is running.`);
+    }
+    return this.swapCodex(plan);
+  }
+
+  /** Swap a staged Codex release in. Synchronous, so no Codex launch can land between the busy check and it. */
+  private swapCodex({ version, installed, packageDir, staged }: StagedCodex): CliUpdateComponent {
+    const base = { installed, latest: version };
     try {
       swapIn([{ live: packageDir, staged }]);
     } catch (error) {
-      this.deps.log("warn", `CLI auto-update: swapping in Codex ${latest.version} failed — ${reason(error)}`);
-      return this.transient({ ...base, detail: `Swapping in Codex ${latest.version} failed: ${reason(error)}. The previous CLI is untouched.` });
+      this.deps.log("warn", `CLI auto-update: swapping in Codex ${version} failed — ${reason(error)}`);
+      return this.transient({ ...base, detail: `Swapping in Codex ${version} failed: ${reason(error)}. The previous CLI is untouched.` });
     }
     const after = readManifest(join(packageDir, "package.json")).version;
     sweepAsideCopies(dirname(packageDir), "codex");
     this.deps.log("info", `CLI auto-update: Codex CLI ${installed ?? "?"} → ${after}; the next Codex turn runs on it.`);
-    return this.component({ installed: after, latest: latest.version, state: "updated", detail: `Updated from ${installed ?? "an unreadable version"}; new Codex turns run on ${after}.` });
+    return this.component({ installed: after, latest: version, state: "updated", detail: `Updated from ${installed ?? "an unreadable version"}; new Codex turns run on ${after}.` });
+  }
+
+  /** A busy fleet leaves only seconds-long gaps between Codex runs (three ~6 s gaps in the 8 h after 0.162.0
+   *  shipped), which a 20-minute recheck practically never lands in. Watch for one instead. */
+  private watchCodex(plan: StagedCodex): void {
+    this.takeCodexWatch();
+    const timer = setInterval(() => {
+      if (this.codexWatch?.timer !== timer) return;
+      if (!this.deps.enabled()) {
+        this.takeCodexWatch();
+        return;
+      }
+      if (this.deps.codexBusy()) return;
+      this.takeCodexWatch();
+      if (!existsSync(plan.staged)) {
+        this.set("codex", this.component({ installed: plan.installed, latest: plan.version, state: "waiting", detail: `The staged Codex ${plan.version} is gone; the next check downloads it again.` }));
+        return;
+      }
+      this.set("codex", this.swapCodex(plan));
+    }, this.deps.codexIdlePollMs ?? CODEX_IDLE_POLL_MS);
+    timer.unref?.();
+    this.codexWatch = { ...plan, timer };
+  }
+
+  /** Stop watching for an idle moment; the staged release it was holding, if any. */
+  private takeCodexWatch(): StagedCodex | null {
+    const watch = this.codexWatch;
+    if (!watch) return null;
+    clearInterval(watch.timer);
+    this.codexWatch = null;
+    const { timer: _timer, ...plan } = watch;
+    return plan;
   }
 
   /** Install the release into a global-style scratch prefix; the package folder it produced, or why not. */

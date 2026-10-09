@@ -380,23 +380,42 @@ check("a Codex install killed mid-download leaves the live CLI untouched and ret
   cleanup(r);
 });
 
-check("a Codex update waits while a Codex agent is mid-turn — including one that starts during the download", async () => {
-  const busy = rig({ codexBusy: true, latest: { [SDK]: { version: "0.3.280" }, "@openai/codex": { version: "0.159.2" } } });
+check("a Codex update downloads while Codex agents run, then swaps in at the first idle moment", async () => {
+  const CODEX_BUMP = { [SDK]: { version: "0.3.280" }, "@openai/codex": { version: "0.159.2" } };
+  const busy = rig({ codexBusy: true, latest: CODEX_BUMP });
+  busy.deps.codexIdlePollMs = 5;
+  busy.updater = new CliAutoUpdater(busy.deps);
   await busy.updater.checkNow();
   assert.equal(busy.updater.current().codex.state, "waiting");
-  assert.ok(!busy.calls.some((c) => c.includes("@openai/codex@")), "nothing is downloaded");
+  assert.equal(busy.calls.filter((c) => c.includes("@openai/codex@0.159.2")).length, 1, "the release is downloaded while agents run");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(liveCodex(busy), "0.156.1", "the live CLI is not swapped under a running agent");
+  // A later full check while still busy reuses the staged copy instead of downloading again.
+  await busy.updater.checkNow();
+  assert.equal(busy.calls.filter((c) => c.includes("@openai/codex@0.159.2")).length, 1, "the staged release is reused");
+  busy.codexBusy = false;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(liveCodex(busy), "0.159.2", "the brief gap between Codex runs is enough");
+  assert.equal(busy.updater.current().codex.state, "updated");
+  assert.deepEqual(readdirSync(dirname(busy.codexPkg)), ["codex"], "the aside copy is swept");
   cleanup(busy);
 
   const late = rig({
-    latest: { [SDK]: { version: "0.3.280" }, "@openai/codex": { version: "0.159.2" } },
+    latest: CODEX_BUMP,
     respond: (line, self) => {
       if (line.includes("@openai/codex@0.159.2")) self.codexBusy = true;
       return undefined;
     },
   });
+  late.deps.codexIdlePollMs = 5;
+  late.updater = new CliAutoUpdater(late.deps);
   await late.updater.checkNow();
   assert.equal(late.updater.current().codex.state, "waiting");
-  assert.equal(liveCodex(late), "0.156.1", "the live CLI is not swapped under a running agent");
+  assert.equal(liveCodex(late), "0.156.1", "an agent that starts during the download holds the swap");
+  late.enabled = false;
+  late.codexBusy = false;
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(liveCodex(late), "0.156.1", "switching auto-update off drops the pending swap");
   cleanup(late);
 });
 
