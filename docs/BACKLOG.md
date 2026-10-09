@@ -28,7 +28,7 @@ same commit as the fix. Git history keeps the record.
 ## Shipped, awaiting live proof
 
 - **QA: preserve independent header gnome hover and keyboard holds** (2026-10-09, Pip Sootwhistle; task 698bc595).
-  Reproduced pointer leave releasing a still-focused gnome; separate holds and a layout-time pause fix it. Beta/classic/screensaver browser suites, typechecks, build/compression, workshop/skin tests, privacy and README 74/74 pass. No owner-facing artifacts; independent QA required.
+  Integrated/pushed bdb0bd9b; live HTML/JavaScript match its clean build and the live beta browser suite proves hover loops, mid-walk pause/resume and independent pointer/focus holds in both casts. Beta/classic/screensaver suites, all types, build/compression, workshop/skin tests, privacy and README 74/74 pass. No owner-facing artifacts; independent QA required.
 
 - **QA: preserve Calendar reminder counts, executed-reminder links and interrupted delivery status** (4837cef2; 2026-10-09, Sedge Morrow; task 30f120db).
   Integrated/pushed from ggo/calendar-reminder-qa-30f120db to master; live 42d1ae94 verified. Calendar browser checks 106/106, Calendar/scheduler tests, Discord tests 66/66, types/builds, privacy and README claims 74/74 pass. Live tab count, highlighted reminder causes and delivery labels verified. No owner-facing artifacts; independent QA required. Task scratch deletion was rejected by execution policy; hosts are stopped and junctions removed, but operator cleanup remains required.
