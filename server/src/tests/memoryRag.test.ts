@@ -17,7 +17,7 @@ const { CardBuilder } = await import("../memory/cards.js");
 const { MemoryRecall } = await import("../memory/recall.js");
 const { QUEUE_DIR } = await import("../memory/extraction.js");
 const { TRASH_DIR, REVIEW_SECTION, MemoryCorpus, dropRelated, memoryChunks, parseMemory, patchMemoryText, today } = await import("../memory/corpus.js");
-const { memoryAgentHooks, ownerWords, queuedOwnerText, stripTaskEnvelope, userText, ExtractionOffsets, OwnerInputBuffer } = await import("../memory/agentHooks.js");
+const { memoryAgentHooks, ownerWords, prefetchMemoryRecall, promptRecallQuery, queuedOwnerText, stripTaskEnvelope, userText, ExtractionOffsets, OwnerInputBuffer } = await import("../memory/agentHooks.js");
 const { CodexAgentRun } = await import("../agents/codexRunner.js");
 const { MemoryIndexStore } = await import("../memory/indexStore.js");
 const { repoMapContext } = await import("../memory/repoMaps.js");
@@ -287,6 +287,43 @@ async function boundedFallbackAndBackgroundRetries(dir: string): Promise<void> {
   unusable.stop();
 }
 
+/** Every prompt recall holds its message back for a model call, so a task run recalls only for the owner's
+ *  words, and a new run starts its kickoff's recall while the CLI is still booting. */
+async function taskRecallWaitsOnlyForOwnerWords(): Promise<void> {
+  const queries: string[] = [];
+  const memory = {
+    recall: async (query: string) => { queries.push(query); return { memories: [], model: null, fallbackReason: null, cached: false, ms: 0 }; },
+    enqueueExtraction: async () => "queued" as const,
+  };
+  const kickoff = withCommunicationTurnPolicy("# Task: Kettle\n\n## Brief\nDescale the office kettle every month.\n\n## Plan\nsteps", true) as string;
+  const office = withCommunicationTurnPolicy("🌐 [Online office - Alex @ Lab (implementor), working example on another machine]: pushed the parser fix", true) as string;
+  const steering = acknowledgedInjection("Always write British English in replies.");
+  assert.equal(promptRecallQuery(kickoff, "task"), "Descale the office kettle every month.", "a kickoff recalls on its brief");
+  assert.equal(promptRecallQuery(office, "task"), "", "office chat in a task run is not the owner's words");
+  assert.equal(promptRecallQuery("QA found two failing tests; fix them.", "subtask"), "", "a QA bounce is GGO's text");
+  assert.equal(promptRecallQuery(`${office}\n\n${steering}`, "task"), "Always write British English in replies.", "steering recalls on the owner's message alone");
+  assert.equal(promptRecallQuery("I always want the changelog updated.", "cowork"), "I always want the changelog updated.");
+  assert.equal(promptRecallQuery("I always want the changelog updated."), "I always want the changelog updated.", "a prompt from outside GGO is the owner's");
+
+  const hooks = memoryAgentHooks(memory, "unused-dir", "task");
+  const prompt = (text: string) => hooks.UserPromptSubmit![0]!.hooks[0]!({ hook_event_name: "UserPromptSubmit", prompt: text, session_id: "s", transcript_path: "", cwd: "unused-cwd" } as never, undefined, { signal: AbortSignal.timeout(5_000) });
+  await prompt(office);
+  assert.equal(queries.length, 0, "an office push into a task run never waits on recall");
+  await prompt(kickoff);
+  assert.deepEqual(queries.splice(0), ["Descale the office kettle every month."]);
+
+  prefetchMemoryRecall(hooks, [{ type: "text", text: kickoff }, { type: "image" }], "unused-cwd");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(queries.includes("Descale the office kettle every month."), "a new run prefetches its kickoff's prompt recall");
+  assert.ok(queries.some((q) => q.startsWith("Working directory: unused-cwd")), "and its session recall");
+
+  let lookups = 0;
+  const recall = new MemoryRecall(async () => { lookups++; await new Promise((resolve) => setTimeout(resolve, 50)); return []; }, null, () => false);
+  const [first, joined] = await Promise.all([recall.recall("kettle descaling", "prompt", 2, 5_000), recall.recall("kettle descaling", "prompt", 2, 5_000)]);
+  assert.equal(lookups, 1, "the hook joins a prefetch already in flight instead of asking again");
+  assert.deepEqual([first.cached, joined.cached], [false, true]);
+}
+
 async function codexInputsExtractOnlyOwnerWords(dir: string): Promise<void> {
   const queued: string[] = [];
   const memory = {
@@ -324,6 +361,7 @@ async function codexInputsExtractOnlyOwnerWords(dir: string): Promise<void> {
 
 try {
   await boundedFallbackAndBackgroundRetries(join(root, "qa-retries"));
+  await taskRecallWaitsOnlyForOwnerWords();
   await codexInputsExtractOnlyOwnerWords(join(root, "codex-inputs"));
   {
     const repo = join(root, "maps-repo");

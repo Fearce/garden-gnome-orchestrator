@@ -55,6 +55,7 @@ const INSTRUCTIONS: Record<RecallMode, string> = {
 
 export class MemoryRecall {
   private readonly cache = new Map<string, { at: number; value: Omit<RecallResult, "cached" | "ms"> }>();
+  private readonly inFlight = new Map<string, Promise<Omit<RecallResult, "cached" | "ms">>>();
   private revision = 0;
 
   constructor(
@@ -69,11 +70,24 @@ export class MemoryRecall {
     const key = `${mode}|${limit}|${text}`;
     const hit = this.cache.get(key);
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) return { ...hit.value, cached: true, ms: Date.now() - started };
+    // A run prefetches its kickoff's recall while the CLI boots; the hook asking the same question joins it.
+    const pending = this.inFlight.get(key);
+    if (pending) return { ...(await pending), cached: true, ms: Date.now() - started };
+    const work = this.answer(key, text, mode, limit, timeoutMs, started);
+    this.inFlight.set(key, work);
+    try {
+      return { ...(await work), cached: false, ms: Date.now() - started };
+    } finally {
+      this.inFlight.delete(key);
+    }
+  }
+
+  private async answer(key: string, text: string, mode: RecallMode, limit: number, timeoutMs: number, started: number): Promise<Omit<RecallResult, "cached" | "ms">> {
     const revision = this.revision;
     const pool = await this.candidates(text, Math.max(limit, CANDIDATES[mode]));
     const value = await this.judge(text, mode, limit, pool, timeoutMs - (Date.now() - started));
     if (value.model && revision === this.revision) this.remember(key, value);
-    return { ...value, cached: false, ms: Date.now() - started };
+    return value;
   }
 
   clearCache(): void {

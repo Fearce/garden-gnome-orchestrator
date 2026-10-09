@@ -38,8 +38,10 @@ const CONTENT_TAG = /<\/?ggo_owner_or_task_content>/g;
 
 /** The task envelope GGO wraps around a brief is process prose shared by every task; matching on it
  *  surfaces the same process memories every time. Recall reads only the `## Brief` section when there is one. */
+const BRIEF_HEADING = /^##[ \t]+Brief[ \t]*$/m;
+
 export function stripTaskEnvelope(prompt: string): string {
-  const brief = /^##[ \t]+Brief[ \t]*$/m.exec(prompt);
+  const brief = BRIEF_HEADING.exec(prompt);
   if (!brief) return prompt;
   let body = prompt.slice(brief.index + brief[0].length);
   const next = /^#{1,6}[ \t]+\S/m.exec(body);
@@ -62,9 +64,21 @@ export function formatRecall(memories: RankedMemory[], heading: string, dir: str
   return lines.join("\n");
 }
 
+/** What a prompt asks recall about. A Co-work turn, or a prompt from outside GGO (`run` unset), is the owner's
+ *  own text. A task run's turns are mostly GGO's (office chat, QA bounces, notices), so it recalls only for its
+ *  kickoff brief or an owner's steering; anything else returns "" and skips a model call that would hold the
+ *  message back for seconds. */
+export function promptRecallQuery(prompt: string, run?: AgentRunKind): string {
+  const text = prompt.trim();
+  if (!run || run === "cowork") return stripTaskEnvelope(text);
+  const steering = [...text.matchAll(STEERING_BLOCK)].map((m) => m[1]!.trim()).filter(Boolean).join("\n\n");
+  if (steering) return steering;
+  return BRIEF_HEADING.test(text) ? stripTaskEnvelope(text) : "";
+}
+
 /** Recall block for a prompt, or "" when nothing qualifies or recall fails. Never throws. */
-export async function promptRecallBlock(memory: AgentMemory, prompt: string, dir: string, timeoutMs = RECALL_TIMEOUT_MS, cwd?: string): Promise<string> {
-  const query = stripTaskEnvelope(prompt.trim());
+export async function promptRecallBlock(memory: AgentMemory, prompt: string, run: AgentRunKind | undefined, dir: string, timeoutMs = RECALL_TIMEOUT_MS, cwd?: string): Promise<string> {
+  const query = promptRecallQuery(prompt, run);
   if (query.length < MIN_PROMPT_CHARS) return "";
   try {
     const [result, maps] = await Promise.all([memory.recall(query, "prompt", PROMPT_LIMIT, timeoutMs).catch(() => null), cwd ? repoMapContext(cwd, query) : ""]);
@@ -94,12 +108,30 @@ export function memoryAgentHooks(memory: AgentMemory, dir: string, run: AgentRun
     }),
     UserPromptSubmit: one(async (input) => {
       if (input.hook_event_name !== "UserPromptSubmit") return {};
-      const context = await promptRecallBlock(memory, input.prompt, dir, undefined, input.cwd);
+      const context = await promptRecallBlock(memory, input.prompt, run, dir, undefined, input.cwd);
       return context ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: context } } : {};
     }),
     PreCompact: one((input) => queueTranscript(memory, input, offsets, run)),
     SessionEnd: one((input) => queueTranscript(memory, input, offsets, run)),
   };
+}
+
+/** Run a new session's recall hooks while the CLI boots (often 10s+ here). Their answers land in the recall
+ *  cache, so the CLI's own SessionStart and first UserPromptSubmit hooks return at once instead of holding
+ *  the first model turn for a Haiku call. */
+export function prefetchMemoryRecall(hooks: Partial<Record<HookEvent, HookCallbackMatcher[]>>, firstMessage: string | unknown[], cwd: string): void {
+  const prompt = typeof firstMessage === "string" ? firstMessage : firstMessage
+    .map((part) => (part as { type?: string; text?: string })?.type === "text" ? (part as { text: string }).text : "")
+    .filter(Boolean).join("\n");
+  const inputs: HookInput[] = [
+    { hook_event_name: "SessionStart", source: "startup", session_id: "", transcript_path: "", cwd } as HookInput,
+    { hook_event_name: "UserPromptSubmit", prompt, session_id: "", transcript_path: "", cwd } as HookInput,
+  ];
+  for (const input of inputs) {
+    for (const matcher of hooks[input.hook_event_name] ?? []) {
+      for (const hook of matcher.hooks) void Promise.resolve(hook(input, undefined, { signal: AbortSignal.timeout(HOOK_TIMEOUT_S * 1000) })).catch(() => undefined);
+    }
+  }
 }
 
 async function queueTranscript(memory: AgentMemory, input: HookInput, offsets: ExtractionOffsets, run: AgentRunKind): Promise<Record<string, never>> {

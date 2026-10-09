@@ -137,7 +137,7 @@ function registerHookRoutes(routes: FastifyInstance, { memory, settings }: Memor
   routes.post("/api/memory/hook/recall", async (req) => {
     const b = hookRecallBody.parse(req.body);
     const context =
-      b.mode === "prompt" ? await promptRecallBlock(memory, b.prompt, memory.dir, b.timeoutMs) : await sessionRecallBlock(memory, b.cwd, memory.dir, b.timeoutMs);
+      b.mode === "prompt" ? await promptRecallBlock(memory, b.prompt, undefined, memory.dir, b.timeoutMs) : await sessionRecallBlock(memory, b.cwd, memory.dir, b.timeoutMs);
     return { context };
   });
   routes.post("/api/memory/hook/search", async (req) => {
