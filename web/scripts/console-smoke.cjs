@@ -200,18 +200,37 @@ function validateSmallTaskPolicy(routing) {
   return failures;
 }
 
-/** The policy label lives in SettingsPanel, which is a lazy chunk rather than the entry bundle.
- * The served entry's hashed filename is separately compared with local index.html, so searching the
- * local build's JS assets verifies the matching deployed chunk without making a live UI click. */
-function localUiBundleText() {
-  const assets = path.resolve(__dirname, "../dist/assets");
+/** Follow the current entry's module imports and Vite preload dependencies, including lazy chunks.
+ * Production retains old assets for open consoles. Scanning that whole directory both reads hundreds
+ * of MB and lets a retired build satisfy (or fail) a text assertion about the current build. */
+function localUiBundleText(dist = path.resolve(__dirname, "../dist")) {
   try {
-    return fs.readdirSync(assets)
-      .filter((name) => name.endsWith(".js"))
-      .map((name) => fs.readFileSync(path.join(assets, name), "utf8"))
-      .join("\n");
+    const entry = entryBundle(fs.readFileSync(path.join(dist, "index.html"), "utf8"));
+    if (!entry) throw new Error("index.html has no hashed entry bundle");
+    const assets = path.resolve(dist, "assets");
+    const pending = [path.join(assets, path.basename(entry))];
+    const seen = new Set();
+    const texts = [];
+    while (pending.length) {
+      const file = pending.pop();
+      if (seen.has(file)) continue;
+      const relative = path.relative(assets, file);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) throw new Error("UI dependency escapes dist/assets");
+      seen.add(file);
+      const text = fs.readFileSync(file, "utf8");
+      texts.push(text);
+      const refs = [...text.matchAll(
+        /(?:\b(?:import|export)\s*[^;"'`]*?\bfrom\s*|\bimport\s*(?:\(\s*)?)["'`]([^"'`]+\.js)["'`]/g,
+      )].map((match) => match[1]);
+      // Vite may list a lazy import's transitive chunks here, rather than in import declarations.
+      for (const deps of text.matchAll(/\b__vite__mapDeps\b[^;]*?\.f\s*=\s*\[([^\]]*)\]/g)) {
+        refs.push(...[...deps[1].matchAll(/["'`]([^"'`]+\.js)["'`]/g)].map((match) => match[1]));
+      }
+      for (const ref of refs) pending.push(path.resolve(path.dirname(file), ref));
+    }
+    return texts.join("\n");
   } catch (error) {
-    throw new Error(`could not read local UI assets: ${error.code || error.message}`);
+    throw new Error(`could not read current UI assets: ${error.code || error.message}`);
   }
 }
 
@@ -436,6 +455,7 @@ module.exports = {
   SMALL_TASK_POLICY_LABEL,
   compareBundles,
   entryBundle,
+  localUiBundleText,
   normalizeProviderPayload,
   normalizeRoutingPolicy,
   parseOptions,

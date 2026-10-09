@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const {
   SMALL_TASK_POLICY_LABEL,
   compareBundles,
   entryBundle,
+  localUiBundleText,
   normalizeProviderPayload,
   normalizeRoutingPolicy,
   parseOptions,
@@ -63,6 +67,40 @@ assert.deepEqual(
 assert.match(compareBundles("/assets/index-old.js", '<script src="/assets/index-new.js"></script>', "http://local").failures[0], /differs/);
 assert.match(compareBundles("", '<script src="/assets/index-new.js"></script>', "http://local").failures[0], /served page has no/);
 assert.match(compareBundles("/assets/index-new.js", "<html></html>", "http://local").failures[0], /local web\/dist/);
+
+const dist = fs.mkdtempSync(path.join(os.tmpdir(), "console-current-assets-"));
+try {
+  const assets = path.join(dist, "assets");
+  fs.mkdirSync(assets);
+  fs.writeFileSync(path.join(dist, "index.html"), '<script type="module" src="/nested/assets/index-current.js"></script>');
+  fs.writeFileSync(path.join(assets, "index-current.js"),
+    'import{value}from"./shared.js";import("./lazy.js");' +
+    'const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["./preload.js","./style.css"])))=>i.map(i=>d[i]);');
+  fs.writeFileSync(path.join(assets, "shared.js"), 'export{value}from"./index-current.js";');
+  fs.writeFileSync(path.join(assets, "lazy.js"), `export default ${JSON.stringify(SMALL_TASK_POLICY_LABEL)};`);
+  fs.writeFileSync(path.join(assets, "preload.js"), 'export default "current preload dependency";');
+  fs.writeFileSync(path.join(assets, "index-retired.js"), `const label=${JSON.stringify(SMALL_TASK_POLICY_LABEL)};const stale="retired UI text";`);
+  fs.writeFileSync(path.join(assets, "unreferenced.js"), 'unreferenced retained asset');
+  const read = fs.readFileSync;
+  const opened = [];
+  fs.readFileSync = (file, ...args) => { opened.push(path.basename(file)); return read(file, ...args); };
+  let current;
+  try { current = localUiBundleText(dist); } finally { fs.readFileSync = read; }
+  assert.equal(validateSmallTaskBundle(current).length, 0, "the current lazy Settings label is inspected");
+  assert.ok(current.includes("current preload dependency"), "Vite preload dependencies are followed");
+  assert.ok(!current.includes("retired UI text"), "stale builds cannot fail current text checks");
+  assert.deepEqual(opened.sort(), ["index.html", "index-current.js", "lazy.js", "preload.js", "shared.js"].sort(),
+    "only current reachable JavaScript is read, with shared/cyclic imports read once");
+  fs.writeFileSync(path.join(assets, "lazy.js"), 'export default "current label removed";');
+  assert.equal(validateSmallTaskBundle(localUiBundleText(dist)).length, 1,
+    "a retired label cannot hide a missing current label");
+  fs.unlinkSync(path.join(assets, "shared.js"));
+  assert.throws(() => localUiBundleText(dist), /ENOENT/, "missing current dependencies fail closed");
+  fs.writeFileSync(path.join(assets, "shared.js"), 'import"../../outside.js";');
+  assert.throws(() => localUiBundleText(dist), /escapes dist\/assets/, "dependencies cannot leave the build");
+} finally {
+  fs.rmSync(dist, { recursive: true, force: true });
+}
 
 const providers = normalizeProviderPayload({ providers: [
   { id: "gemini", configured: true, keySource: "stored", health: { state: "ready" }, usage: { displayLabel: "Quota not exposed" } },
