@@ -20,6 +20,9 @@ same commit as the fix. Git history keeps the record.
 
 - **QA nightly sweep: verify urgent child jobs with explicit readiness barriers** (2026-10-09, Codex QA; task ef639c35).
 
+- **QA nightly sweep: keep deliverable cards valid during worktree retirement** (2026-10-09, Codex QA; task ef639c35).
+  The focused pipeline gate reproduced a deleted-folder card while branch cleanup still waited; redirect validated main copies before removing their worktree.
+
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -154,9 +157,6 @@ same commit as the fix. Git history keeps the record.
   Desktop units 19/19 and new real-window regressions pass; application types/builds, Windows packaging and privacy pass. Clean-exit lab failures and distribution delivery remain under Ready.
 
 ## Ready (priority order)
-
-1. **Stabilize the done-task worktree-retirement gate under concurrent load** (2026-10-09, Codex QA; task ef639c35).
-  Full gates scored 245/246 because retirement exceeded the 30 s assertion; the focused worktree-pipeline rerun passed 81/81. Evidence: `server/data/gates-last.log`, `server/src/tests/taskWorktreePipeline.itest.ts`.
 
 1. **Restore the configured Nvidia free provider after its selected model disappeared** (2026-10-09, Codex QA; task ef639c35).
   Live `/api/free-providers` reports `openai/gpt-oss-120b` is no longer verified free; the current roster's only explicitly tool-capable replacement is `openai/gpt-oss-20b`. Choose a replacement for the explicit selection before routing; no inference request was sent.
