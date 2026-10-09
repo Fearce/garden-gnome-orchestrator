@@ -14,6 +14,8 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA nightly sweep: reject malformed Codex source tokens without replacing a valid login** (2026-10-09, Codex QA; task ef639c35).
+
 - **QA nightly sweep: preserve unconsumed owner input across failed CLI resumes** (2026-10-09, Codex QA; task ef639c35).
 
 - **QA nightly sweep: match Codex catalogs to dispatch authentication** (2026-10-09, Codex QA; task ef639c35).
