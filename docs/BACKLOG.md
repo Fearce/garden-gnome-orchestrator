@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: verify the nightly sweep and constrain historical token-fixture exemptions** (2026-10-09, Tansy Copperfern; task ef639c35).
-  Reproduced: a random credential tail containing a `test` segment is incorrectly exempted by the new history classifier.
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -29,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA nightly sweep: constrain token exemptions, invalidate stale recall and count delegated usage** (2026-10-09, Tansy Copperfern; task ef639c35).
+  Full gates 245/245, all typechecks, server/web builds and live desktop/chip/provider browser checks pass; the added delegated-token regression, gate registration and privacy checks pass, and the corrected probe measures 338 runs with no warnings. Live build 77e3d004 contains the memory fix. Sweep 14/16: Codex's idle-boundary update and owner HTTPS passphrase rotation remain; real task-latency proof is tracked under Ready. Independent QA required.
 
 - **Complete Claude cloud execution-lane proof** (c578c91c, 2026-10-08, Codex).
   Preference before caps, the lane switch, UTC stop date, exact cloud pins, returned-branch
