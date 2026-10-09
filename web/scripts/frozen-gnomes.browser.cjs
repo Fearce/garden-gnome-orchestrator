@@ -49,7 +49,7 @@ const onlineOffice = {enabled:true, joined:true, state:'online', url:'', instanc
       assert((await context.request.post(`${base}/api/login`,{data:{password}})).ok());
       let socket, hello;
       const sent=[];
-      await context.routeWebSocket('**/ws', client => {
+      await context.routeWebSocket(/\/ws(?:\?|$)/, client => {
         socket=client;
         const server=client.connectToServer();
         client.onMessage(raw => {

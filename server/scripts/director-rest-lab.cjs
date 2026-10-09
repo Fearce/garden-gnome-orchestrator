@@ -31,7 +31,7 @@ async function main() {
       // reconnects; the replayed hello must then carry the latest truth, not the boot-time clock.
       let helloIdleSince = now - 3600000, helloOffice = office;
       const sent = [];
-      await context.routeWebSocket('**/ws', client => {
+      await context.routeWebSocket(/\/ws(?:\?|$)/, client => {
         socket = client;
         const server = client.connectToServer();
         client.onMessage(raw => {

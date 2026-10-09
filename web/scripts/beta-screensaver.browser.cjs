@@ -22,7 +22,7 @@ let runs = roles.map((role, i) => ({ id:`scaffold-run-${i}`, threadId:threads[i]
     const login = await context.request.post(`${base}/api/login`,{data:{password}});
     assert(login.ok(),`Login failed (${login.status()})`);
     let socket, hello;
-    await context.routeWebSocket('**/ws', client => {
+    await context.routeWebSocket(/\/ws(?:\?|$)/, client => {
       socket = client;
       const server = client.connectToServer();
       client.onMessage(() => {});

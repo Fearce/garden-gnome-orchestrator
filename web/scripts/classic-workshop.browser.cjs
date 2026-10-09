@@ -37,7 +37,7 @@ const art = (page) => page.locator('.beta-workshop').getAttribute('data-art');
     assert.equal(login.ok(), true, `Login failed (${login.status()})`);
     let currentSocket;
     let hello;
-    await context.routeWebSocket('**/ws', (socket) => {
+    await context.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
       currentSocket = socket;
       const server = socket.connectToServer();
       socket.onMessage((raw) => {

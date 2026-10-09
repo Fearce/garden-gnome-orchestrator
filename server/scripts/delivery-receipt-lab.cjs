@@ -68,7 +68,7 @@ async function receiptFor(page, text) {
 
 /** Forward the socket both ways, recording frames, but hold each `thread.action` for HOLD_MS. */
 async function holdFinalReplies(page, frames) {
-  await page.routeWebSocket(/\/ws$/, (ws) => {
+  await page.routeWebSocket(/\/ws(?:\?|$)/, (ws) => {
     const server = ws.connectToServer();
     ws.onMessage((message) => server.send(message));
     server.onMessage((message) => {
@@ -175,7 +175,7 @@ async function holdFinalReplies(page, frames) {
     await page.close();
     page = await ctx.newPage();
     const supervisorCommands = [];
-    await page.routeWebSocket(/\/ws$/, (ws) => {
+    await page.routeWebSocket(/\/ws(?:\?|$)/, (ws) => {
       const server = ws.connectToServer();
       ws.onMessage((message) => {
         const command = JSON.parse(String(message));

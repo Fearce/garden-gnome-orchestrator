@@ -142,7 +142,7 @@ async function directorBox(page) {
     // Reproduce a new web bundle talking to the old process while deployment waits for agents.
     let closeMode = "supported";
     let closeCommands = 0;
-    await page.routeWebSocket("**/ws", (ws) => {
+    await page.routeWebSocket(/\/ws(?:\?|$)/, (ws) => {
       const server = ws.connectToServer();
       server.onMessage((raw) => {
         const event = JSON.parse(raw.toString());

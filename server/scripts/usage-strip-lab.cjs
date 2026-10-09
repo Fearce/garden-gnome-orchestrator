@@ -31,7 +31,7 @@ async function main() {
       const runs = threads.map((t,i)=>({id:`usage-run-${i}`,threadId:t.id,role:['implementor','qa','planner','researcher'][i],state:'running',model:'gpt-6.1-sol',startedAt:at}));
       const usage = {fiveHour:34,sevenDay:72,fiveHourReset:at+2*3600000,sevenDayReset:at+3*86400000,updatedAt:at};
       const accounts = ['personal','secondary'].map((label,i)=>({id:`fixture-${i}`,label,...usage,active:i===0,rateLimited:false,stale:i===1,resetCredits:i===0?{available:1,pending:0}:undefined}));
-      await context.routeWebSocket('**/ws', socket => {
+      await context.routeWebSocket(/\/ws(?:\?|$)/, socket => {
         const server = socket.connectToServer();
         socket.onMessage(()=>{}); // No UI action can dispatch a task or redeem a reset.
         server.onMessage(raw=>{
