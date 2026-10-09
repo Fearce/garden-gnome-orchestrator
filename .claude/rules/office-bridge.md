@@ -68,7 +68,9 @@ text, which the runner intercepts and strips:
   input, so every office push sent during an hours-long Codex/Grok turn is queued and joined into the
   next prompt. Unbounded, one batch reached 956,965 characters and the next turns were refused by Codex's
   `turn/start` limit (`input_too_large`, 1,048,576) after hours of work (2026-10-08). The bound keeps
-  owner steering (`[OWNER STEERING` frame) verbatim, keeps the newest ambient entries and names the rest.
+  required inputs verbatim and trims only messages explicitly sent with `source: "ambient"`.
+  Owner replies, Director messages, receipt-bearing text and image attachments remain required.
+  Omitted messages receive no consumption receipt. Fresh recovery reserves its actual kickoff size.
   Don't join `pendingSends` by hand in a new runner. Gate: `test:batched-input`.
 
 ## Debug

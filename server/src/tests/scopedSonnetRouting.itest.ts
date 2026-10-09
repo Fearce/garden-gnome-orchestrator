@@ -174,7 +174,7 @@ console.log("\n=== scoped sonnet — a well-scoped task ===\n");
       roleModel(h, id, "planner") === OPUS && roleModel(h, id, "director") === OPUS,
       `${roleModel(h, id, "planner")}/${roleModel(h, id, "director")}`,
     );
-    check("auto-selection offers only Opus beside the deterministic Sonnet route", claudeRoster(h, id).includes(OPUS) && !claudeRoster(h, id).includes(SONNET), JSON.stringify(claudeRoster(h, id)));
+    check("adaptive auto-selection offers Sonnet beside the configured Opus default", claudeRoster(h, id).includes(OPUS) && claudeRoster(h, id).includes(SONNET), JSON.stringify(claudeRoster(h, id)));
     const note = notes(h, id).find((content) => content.startsWith("🧭 Route selected"));
     check(
       "the route note names Sonnet 5.5 and why",
@@ -199,7 +199,7 @@ console.log("\n=== scoped sonnet — agentic work stays on Opus ===\n");
     check("the investigation is routed to Opus", route.claudeModel?.tier === "opus", JSON.stringify(route.claudeModel));
     check("its implementor dispatches on Opus 5.5", implementorModel(h, id) === OPUS, implementorModel(h, id));
     check("its QA runs on Opus 5.5", roleModel(h, id, "qa") === OPUS, roleModel(h, id, "qa"));
-    check("the automatic roster excludes Sonnet before task capability filtering", !claudeRoster(h, id).includes(SONNET), JSON.stringify(claudeRoster(h, id)));
+    check("the automatic roster offers Sonnet before task capability filtering", claudeRoster(h, id).includes(SONNET), JSON.stringify(claudeRoster(h, id)));
     check(
       "adaptive picks can choose Sonnet while configured agentic defaults stay Opus",
       h.internals.claudePickedModel(id, "acct1", SONNET) === SONNET && !h.internals.isScopedSonnetPick(id, { provider: "claude", model: SONNET }),
@@ -317,7 +317,7 @@ console.log("\n=== scoped sonnet — explicit choices win ===\n");
     const { id } = routedTask(h);
     check("switched off, a scoped task runs Opus", implementorModel(h, id) === OPUS && roleModel(h, id, "qa") === OPUS);
     check("…and the route note says why", notes(h, id).some((content) => content.includes("scoped Sonnet routing is off in Settings")));
-    check("…and adaptive auto-selection keeps only current Opus", claudeRoster(h, id).includes(OPUS) && !claudeRoster(h, id).includes(SONNET), JSON.stringify(claudeRoster(h, id)));
+    check("…and adaptive auto-selection still offers every current Claude family", [OPUS, SONNET, "claude-fable-5-1", "claude-haiku-4-5-20251001"].every((model) => claudeRoster(h, id).includes(model)), JSON.stringify(claudeRoster(h, id)));
   } finally {
     h.dispose();
   }
@@ -331,7 +331,7 @@ check("Sonnet's pool fallback is Opus 5.5", fallbackModelFor(SONNET) === OPUS, S
     const { id } = routedTask(h);
     check("Sonnet 5.5 missing from the roster: the implementor runs Opus", implementorModel(h, id) === OPUS, implementorModel(h, id));
     check("…and QA too", roleModel(h, id, "qa") === OPUS, roleModel(h, id, "qa"));
-    check("accessible older Sonnet cannot enter adaptive selection", !claudeRoster(h, id).includes("claude-sonnet-5"), JSON.stringify(claudeRoster(h, id)));
+    check("an accessible Sonnet line stays available to adaptive selection when the newer member is absent", claudeRoster(h, id).includes("claude-sonnet-5") && !claudeRoster(h, id).includes(SONNET), JSON.stringify(claudeRoster(h, id)));
     const findings = fallbackFindings(h, id);
     check(
       "the fallback is noted on the task, once per role",

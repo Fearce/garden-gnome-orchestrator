@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ModelRequest, Thread } from "../src/types.js";
+import { claudeEffortsForModel, type ModelRequest, type Thread } from "../src/types.js";
 
 // The repo's browser build uses Vite's automatic JSX runtime. The standalone tsx gate is launched
 // from the server package and may compile imported web JSX in classic mode, so provide that runtime
@@ -18,6 +18,11 @@ Object.assign(globalThis, {
 const { ModelRequestStatus, requestedModelMatches } = await import("../src/components/ModelRequestStatus.js");
 const { TaskModelPicker, taskModelTargets } = await import("../src/components/TaskModelPicker.js");
 const { useStore } = await import("../src/store.js");
+
+assert.deepEqual(claudeEffortsForModel("claude-haiku-5-5"), ["low", "medium", "high", "xhigh", "max"], "the task effort picker exposes every documented Haiku 5.5 tier");
+assert.deepEqual(claudeEffortsForModel("claude-haiku-5-5-20261007"), ["low", "medium", "high", "xhigh", "max"], "Haiku 5.5 snapshot pins keep Extra High and Max in the picker");
+assert.deepEqual(claudeEffortsForModel("claude-haiku-4-5-20251001"), ["low", "medium", "high"], "an older Haiku pin never offers unsupported tiers");
+assert.deepEqual(claudeEffortsForModel("claude-opus-5"), ["low", "medium", "high", "xhigh", "max"], "an accessible bare Opus 5 pin keeps its documented Extra High and Max tiers");
 
 const request: ModelRequest = {
   requested: "GPT Spark",

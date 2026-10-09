@@ -14,7 +14,7 @@ import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } fr
 import { NATIVE_MEMORY_ENV, OwnerInputBuffer, promptRecallBlock, sessionRecallBlock, type AgentMemory, type AgentRunKind } from "../memory/agentHooks.js";
 import { withAgentToolPath } from "./env.js";
 import { InputLedger } from "./inputLedger.js";
-import { boundBatchedInput, CODEX_TURN_INPUT_MAX_CHARS } from "./batchedInput.js";
+import { BATCHED_INPUT_BUDGET_CHARS, boundBatchedInput, CODEX_TURN_INPUT_MAX_CHARS, type BatchedInputEntry, type BoundedBatch } from "./batchedInput.js";
 import { extractCliBridgeMessages } from "./officeBridge.js";
 import { CodexRunMeter } from "./sessionUsage.js";
 import {
@@ -388,7 +388,7 @@ export class CodexAgentRun implements AgentRunLike {
   // pendingSends, otherwise the pipeline can accept this result and hand off to QA while steering that
   // arrived in the close gap is still waiting to resume.
   private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number; tokenUsage?: TokenUsage } | undefined;
-  private readonly pendingSends: { text: string; images: CodexImage[]; inputId: string }[] = [];
+  private readonly pendingSends: { text: string; images: CodexImage[]; inputId: string; ambient?: boolean }[] = [];
   // Read receipts: a turn's prompt counts as consumed once that turn produces a model item or completes,
   // never at spawn. A resume that wedges or loses its rollout emits neither, so its inputs stay unread.
   private readonly inputs = new InputLedger();
@@ -460,7 +460,7 @@ export class CodexAgentRun implements AgentRunLike {
     const inputId = this.inputs.issue();
     this.memoryInputs?.append(text);
     if (this.turnStarting || this.turnActive) {
-      this.pendingSends.push({ text, images, inputId });
+      this.pendingSends.push({ text, images, inputId, ambient: opts?.source === "ambient" && opts.priority !== "now" && !images.length });
       if (opts?.priority === "now") this.requestInterrupt();
       return;
     }
@@ -947,13 +947,7 @@ export class CodexAgentRun implements AgentRunLike {
    * the failed CLI process was closing. Otherwise that queued steering would be retried against the same
    * missing rollout and then disappear when the second failure fell back to the older kickoff. */
   private restartResumeAsFresh(extraText = "", extraImages: CodexImage[] = [], extraInputIds: string[] = []): boolean {
-    if (
-      !this.isResumeTurn ||
-      (this.sawFirstEvent && !this.resumeRolloutMissing) ||
-      this.resumeHealed ||
-      !this.cfg.freshFallback ||
-      this.stopped
-    ) return false;
+    if (!this.canRestartResumeAsFresh()) return false;
 
     const rolloutMissing = this.resumeRolloutMissing;
     this.resumeHealed = true;
@@ -965,24 +959,32 @@ export class CodexAgentRun implements AgentRunLike {
         ? "⚠️ Codex could not find the saved rollout for this task — restarting as a fresh session with the full brief, recent durable history, and standing directives; working-tree changes are preserved."
         : "⚠️ Codex `exec resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved.",
     });
-    const prompt = [toText(this.cfg.freshFallback), extraText].filter(Boolean).join("\n\n");
+    const prompt = [toText(this.cfg.freshFallback!), extraText].filter(Boolean).join("\n\n");
     // Only the folded-in steering is named: the failed turn's own prompt is not replayed verbatim, so
     // its inputs stay unread rather than borrow this turn's proof.
     void this.runTurn(prompt, undefined, [...this.firstImages, ...extraImages], extraInputIds);
     return true;
   }
 
+  private canRestartResumeAsFresh(): boolean {
+    return this.isResumeTurn && (!this.sawFirstEvent || this.resumeRolloutMissing) &&
+      !this.resumeHealed && !!this.cfg.freshFallback && !this.stopped;
+  }
+
   /** The follow-ups queued during a busy turn, bounded so the next `turn/start` stays under Codex's input
    *  limit (`agents/batchedInput.ts`); a trimmed batch says so in the feed as well as in the prompt. */
-  private boundedFollowUps(texts: string[]): string {
-    const bounded = boundBatchedInput(texts);
+  private boundedFollowUps(entries: BatchedInputEntry[]): BoundedBatch {
+    const recoveryChars = this.canRestartResumeAsFresh() ? toText(this.cfg.freshFallback!).length + 2 : 0;
+    const questionChars = this.cfg.onAskUser ? CLI_QUESTION_DOCTRINE.length + 2 : 0;
+    const budget = Math.max(0, Math.min(BATCHED_INPUT_BUDGET_CHARS, CODEX_TURN_INPUT_MAX_CHARS - recoveryChars - questionChars));
+    const bounded = boundBatchedInput(entries, budget);
     if (bounded.omitted) {
       this.emit({
         type: "text",
         text: `⚠️ ${bounded.omitted} older queued office/status update(s) (${bounded.omittedChars.toLocaleString("en-US")} characters) were left out of the next Codex turn to stay under its input limit; owner steering was kept in full.`,
       });
     }
-    return bounded.text;
+    return bounded;
   }
 
   /** Emit the per-turn result event (mirrors AgentRun's `result` SDK message) and cache it. */
@@ -1025,9 +1027,11 @@ export class CodexAgentRun implements AgentRunLike {
     // session id was captured, start fresh (no resume) so the steering still lands.
     if (this.pendingSends.length) {
       const batch = this.pendingSends.splice(0, this.pendingSends.length);
-      const next = this.boundedFollowUps(batch.map((s) => s.text));
-      const imgs = batch.flatMap((s) => s.images);
-      const ids = batch.map((s) => s.inputId);
+      const bounded = this.boundedFollowUps(batch);
+      const next = bounded.text;
+      const kept = bounded.keptIndexes.map((i) => batch[i]!);
+      const imgs = kept.flatMap((s) => s.images);
+      const ids = kept.map((s) => s.inputId);
       if (this.restartResumeAsFresh(next, imgs, ids)) return;
       this.lastResult = undefined; // the chained turn produces the next result()
       void this.runTurn(next, this.sessionId, imgs, ids);

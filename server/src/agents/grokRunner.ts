@@ -232,7 +232,7 @@ export class GrokAgentRun implements AgentRunLike {
    *  (structured roles only). Prevents re-emitting the same status tick on every chunk. */
   private structuredProgressEmitted = 0;
   private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number; costUsd?: number; structuredOutput?: unknown } | undefined;
-  private readonly pendingSends: { text: string; inputId: string }[] = [];
+  private readonly pendingSends: { text: string; inputId: string; ambient?: boolean }[] = [];
   // Read receipts: a turn's prompt counts as consumed on that turn's first model output or clean end.
   private readonly inputs = new InputLedger();
   private turnInputIds: string[] = [];
@@ -282,7 +282,7 @@ export class GrokAgentRun implements AgentRunLike {
     }
     const inputId = this.inputs.issue();
     if (this.turnStarting || this.turnActive) {
-      this.pendingSends.push({ text, inputId });
+      this.pendingSends.push({ text, inputId, ambient: opts?.source === "ambient" && opts.priority !== "now" });
       if (opts?.priority === "now") this.requestInterrupt();
       return;
     }
@@ -835,7 +835,7 @@ export class GrokAgentRun implements AgentRunLike {
       const batch = this.pendingSends.splice(0, this.pendingSends.length);
       // Bounded like Codex's batch (agents/batchedInput.ts): hours of office pushes must not become one
       // multi-megabyte prompt. Owner steering is always kept whole.
-      const bounded = boundBatchedInput(batch.map((s) => s.text));
+      const bounded = boundBatchedInput(batch);
       if (bounded.omitted) {
         this.emit({
           type: "text",
@@ -844,7 +844,7 @@ export class GrokAgentRun implements AgentRunLike {
       }
       const next = bounded.text;
       this.lastResult = undefined; // the chained turn produces the next result()
-      void this.runTurn(next, this.sessionId, batch.map((s) => s.inputId));
+      void this.runTurn(next, this.sessionId, bounded.keptIndexes.map((i) => batch[i]!.inputId));
       return;
     }
     // A bare interrupt (the Pause control) with no follow-up: stay alive like a paused Claude run.

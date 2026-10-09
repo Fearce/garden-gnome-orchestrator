@@ -238,7 +238,7 @@ console.log("\n=== claude opus floor — the auto-selection roster ===\n");
   ];
   const kept = filterAutoSelectionCandidates(candidates).map((c) => `${c.provider}:${c.model}`);
   check("a retired Opus is dropped while a current one is dispatchable", !kept.includes("claude:claude-opus-5"), kept.join(","));
-  check("current Opus stays and automatic Sonnet is excluded", kept.includes("claude:claude-opus-5-5") && !kept.includes("claude:claude-sonnet-5"), kept.join(","));
+  check("current Opus and automatic Sonnet remain adaptive candidates", kept.includes("claude:claude-opus-5-5") && kept.includes("claude:claude-sonnet-5"), kept.join(","));
   check("all accessible Codex families remain selectable", kept.includes("codex:gpt-6-sol") && kept.includes("codex:gpt-5.5"), kept.join(","));
 }
 {

@@ -183,8 +183,7 @@ const OPUS_5 = "claude-opus-5-5";
 const SOL_56 = "gpt-6-sol";
 const LUNA = "gpt-6-luna";
 
-/** Claude runs Opus 5.5 only, so a judgement between two models needs a second backend. Codex is the
- *  realistic one; stubbed rather than configured so the verdict never depends on this box's login. */
+/** Add a second backend without depending on this machine's Codex login. */
 function withCodexLuna(h: Harness): void {
   h.internals.codexImplementorReady = (): boolean => true;
   h.internals.codexPoolSnapshot = (): null => null;
@@ -263,6 +262,7 @@ async function main(): Promise<void> {
         "claude-sonnet-5",
         "claude-fable-5",
         HAIKU,
+        "claude-haiku-5-5",
       ];
       h.db.kvSet("cache_claude_models", JSON.stringify(live));
       const roster = h.internals.claudeRosterModels() as string[];
@@ -278,10 +278,13 @@ async function main(): Promise<void> {
       const opus = candidates.find((candidate) => candidate.model === "claude-opus-5-5");
       check("Opus 5.5 exposes all five effort levels", opus?.efforts.join(",") === "low,medium,high,xhigh,max", JSON.stringify(opus));
       check(
-        "automatic Claude selection offers only current Opus",
-        candidates.filter((candidate) => candidate.model.startsWith("claude-")).every((candidate) => candidate.model === OPUS_5),
+        "automatic Claude selection offers every current accessible family",
+        [OPUS_5, SONNET_5, "claude-fable-5", "claude-haiku-5-5"].every((model) => candidates.some((candidate) => candidate.model === model))
+          && !candidates.some((candidate) => candidate.model === HAIKU || candidate.model === "claude-opus-4-8" || candidate.model === "claude-sonnet-4-6"),
         JSON.stringify(candidates.map((candidate) => candidate.model)),
       );
+      const haiku = candidates.find((candidate) => candidate.model === "claude-haiku-5-5");
+      check("Haiku 5.5 carries every supported effort into the automatic roster", haiku?.efforts.join(",") === "low,medium,high,xhigh,max", JSON.stringify(haiku));
       check("goals cannot offer Fable", !h.mgr.goalModelRoster().some((candidate) => /fable|sonnet|haiku/.test(candidate.model)));
       const id = seedComplex(h);
       const goal = h.db.createGoal({ title: "Policy", objective: "o", workspace: h.workspace, effort: null, provider: null, model: null, maxConcurrent: 1, burnConservation: false, burnRatePct: 100 });
@@ -293,6 +296,31 @@ async function main(): Promise<void> {
       h.db.setModelRequest(id, { requested: "claude-fable-5", provider: "claude", model: "claude-fable-5", strict: true });
       const repaired = h.internals.ensureThreadModelRequest(thread(h, id)) as Thread;
       check("an existing goal's exact Fable pin becomes Opus before resume", repaired.modelRequest?.model === OPUS_5, JSON.stringify(repaired.modelRequest));
+    } finally {
+      h.dispose();
+    }
+  }
+
+  console.log("Test roster — adaptive Claude picks keep their family through selection and dispatch");
+  {
+    const h = makeHarness();
+    try {
+      h.mgr.setSettings({ autoModelSelection: true });
+      const models = [OPUS_5, "claude-sonnet-5-5", "claude-fable-5-1", "claude-haiku-5-5"];
+      h.db.kvSet("cache_claude_models", JSON.stringify(models));
+      for (const model of models.slice(1)) {
+        const id = h.seed();
+        h.reply(pickReply(model, "max"));
+        const pick = await h.internals.autoSelectModel(thread(h, id)) as ModelPick | undefined;
+        check(`adaptive selection accepts ${model} at Max`, pick?.model === model && pick.effort === "max", JSON.stringify(pick));
+        check(`dispatch preserves the selected ${model} family`, h.internals.implementorDispatchTarget(id, "claude", "acct-a").model === model);
+      }
+      h.mgr.setSettings({ accountEffortCaps: { "acct-a": "high" } });
+      const capped = h.internals.implementorModelRoster() as ModelCandidate[];
+      check("an explicit account ceiling still limits every adaptive Claude family", models.every((model) => capped.some((candidate) => candidate.model === model && candidate.efforts.join(",") === "low,medium,high")), JSON.stringify(capped));
+      h.internals.accounts.isModelLimited = (_id: string, model: string): boolean => model === "claude-fable-5-1";
+      const limited = h.internals.implementorModelRoster() as ModelCandidate[];
+      check("a capped dedicated Claude pool stays out of adaptive selection", !limited.some((candidate) => candidate.model === "claude-fable-5-1") && limited.some((candidate) => candidate.model === "claude-haiku-5-5"), JSON.stringify(limited));
     } finally {
       h.dispose();
     }

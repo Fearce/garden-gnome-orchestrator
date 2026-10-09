@@ -42,7 +42,9 @@ implementor that causes extra rounds is not cheap in practice. The aggregate gra
 Future picks receive both per-repository and global model history, plus model-by-effort history. They are
 explicitly told that `$0` on a subscription is not zero cost when it burned a scarce token window, and to
 choose the lowest-cost model and effort that is still likely to finish unattended **inside the route's
-eligible capability set**. For an adaptive task that can include workhorse models on Codex/Grok/z.ai; on Claude it is Opus 5.5 only (`claudeOpusFloor.ts`). For a
+eligible capability set**. Adaptive tasks can compare every accessible current family on Claude,
+Codex, Grok and z.ai, with supported efforts and configured account ceilings. Claude goal steps retain
+their current-Opus floor (`claudeOpusFloor.ts`). For a
 flagship task, available Opus 5.5 is selected first; if it is unavailable, only an explicitly approved
 flagship fallback can run and the task history says so. No eligible flagship means a visible wait, not a
 benchmark- or history-driven silent downgrade.

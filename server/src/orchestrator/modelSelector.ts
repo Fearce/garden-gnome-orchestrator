@@ -149,16 +149,10 @@ export function isRetiredClaudeAutoModel(candidate: Pick<ModelCandidate, "provid
   return candidate.provider === "claude" && claudeOpusVersion(candidate.model) !== null && isRetiredClaudeOpus(candidate.model);
 }
 
-function isCurrentClaudeOpusAutoModel(candidate: Pick<ModelCandidate, "provider" | "model">): boolean {
-  if (candidate.provider !== "claude") return false;
-  const version = claudeOpusVersion(candidate.model);
-  return version !== null && !isRetiredClaudeOpus(candidate.model);
-}
-
 export function filterAutoSelectionCandidates<T extends Pick<ModelCandidate, "provider" | "model">>(candidates: readonly T[]): T[] {
-  // Claude automatic choices must be current Opus, even with no Opus capacity. The separately
-  // reviewed scoped-task Sonnet route applies later and is never used for goals.
-  return candidates.filter((candidate) => candidate.provider !== "claude" || isCurrentClaudeOpusAutoModel(candidate));
+  // Adaptive selection compares every accessible current family. Task-specific capability policies
+  // and goal-specific Claude floors apply separately; configured role floors do not restrict this roster.
+  return candidates.filter((candidate) => !isRetiredClaudeAutoModel(candidate));
 }
 
 export function autoSelectableEffortsForCandidate(

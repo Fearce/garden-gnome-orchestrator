@@ -265,8 +265,9 @@ implementor and QA to Claude Sonnet 5.5 instead, and the read lane runs on Sonne
 Goal steps, timed and shotgun work, and open-ended or flagship-grade work stay on Opus.
 Settings > Auto model selection > "Sonnet for well-scoped work" turns this off.
 
-Automatic Claude model selection offers current Opus only; Fable, Haiku and retired Opus
-cannot enter goal steps. Existing Claude goal pins on those tiers move to current Opus
+Automatic model selection offers every accessible current family and its supported effort levels,
+subject to task capability requirements and configured account ceilings. Claude goal steps use
+current Opus; existing Claude goal pins on other tiers move to current Opus
 before their next start or resume.
 
 Three other backends are optional, off by default, and enabled per machine under

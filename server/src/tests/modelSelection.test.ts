@@ -188,10 +188,10 @@ console.log("Flagship capability floor");
     { provider: "claude", model: "claude-sonnet-5", efforts: ["low", "medium", "high"], note: "workhorse" },
   ];
   const filtered = filterAutoSelectionCandidates(roster);
-  check("accessible Codex lines survive while automatic Sonnet is excluded", filtered.length === roster.length - 1 && !filtered.some((candidate) => candidate.provider === "claude"), JSON.stringify(filtered));
+  check("accessible Codex lines and automatic Sonnet survive", filtered.length === roster.length && filtered.some((candidate) => candidate.provider === "claude"), JSON.stringify(filtered));
   const claude = ["claude-fable-5-1", "claude-sonnet-5-5", "claude-haiku-4-5-20251001", "claude-opus-5", "claude-opus-5-5", "claude-opus-6", "claude-unknown-7"].map((model) => ({ provider: "claude" as const, model }));
-  check("Claude auto selection fails closed to current Opus only", filterAutoSelectionCandidates(claude).map((candidate) => candidate.model).join(",") === "claude-opus-5-5,claude-opus-6");
-  check("no available Opus never legalizes Fable", filterAutoSelectionCandidates(claude.filter((candidate) => !/opus/.test(candidate.model))).length === 0);
+  check("Claude adaptive selection retains every current accessible family", filterAutoSelectionCandidates(claude).map((candidate) => candidate.model).join(",") === "claude-fable-5-1,claude-sonnet-5-5,claude-haiku-4-5-20251001,claude-opus-5-5,claude-opus-6,claude-unknown-7");
+  check("a non-Opus roster remains available for adaptive work", filterAutoSelectionCandidates(claude.filter((candidate) => !/opus/.test(candidate.model))).length === 4);
   const fallback = filterAutoSelectionCandidates(roster.filter((candidate) => candidate.model !== "gpt-6-luna"));
   check("an older-only accessible catalog remains selectable", fallback.some((candidate) => candidate.provider === "codex"), JSON.stringify(fallback));
   check("exact older Codex extra-high support is retained", autoSelectableEffortsForCandidate(roster[0]!, roster[0]!.efforts).join(",") === "low,medium,high,xhigh");

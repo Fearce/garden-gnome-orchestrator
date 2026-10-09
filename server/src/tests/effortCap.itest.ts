@@ -46,7 +46,12 @@ eq("Luna safely lowers a stale Ultra setting", resolveCodexEffort("gpt-5.6-luna"
 console.log("\nClaude and Grok model effort support");
 eq("Claude Opus 4.8 exposes all five tiers", claudeEffortsForModel("claude-opus-4-8").join(","), "low,medium,high,xhigh,max");
 eq("Claude Sonnet 4.6 exposes Max but not Extra High", claudeEffortsForModel("claude-sonnet-4-6").join(","), "low,medium,high,max");
-eq("Claude Haiku safely lowers unsupported Max", resolveClaudeEffort("claude-haiku-4-5-20251001", "max"), "high");
+eq("Claude Haiku 4.5 safely lowers unsupported Max", resolveClaudeEffort("claude-haiku-4-5-20251001", "max"), "high");
+eq("Claude Haiku 5.5 exposes all five documented tiers", claudeEffortsForModel("claude-haiku-5-5").join(","), "low,medium,high,xhigh,max");
+eq("Claude Haiku 5.5 snapshots expose all five documented tiers", claudeEffortsForModel("claude-haiku-5-5-20261007").join(","), "low,medium,high,xhigh,max");
+eq("Claude Haiku 5.5 keeps Extra High", resolveClaudeEffort("claude-haiku-5-5", "xhigh"), "xhigh");
+eq("Claude Haiku 5.5 keeps Max", resolveClaudeEffort("claude-haiku-5-5", "max"), "max");
+eq("Claude Haiku 5.5 respects a subscription's explicit High ceiling", resolveClaudeEffort("claude-haiku-5-5", clampEffort("max", "high")), "high");
 eq("Grok 4.6 exposes Extra High", grokEffortsForModel("grok-4.6").at(-1), "xhigh");
 eq("Grok 4.5 stops at High", grokEffortsForModel("grok-4.5").at(-1), "high");
 eq("GLM-5.3 exposes its exact Low/High/Max set", zaiEffortsForModel("glm-5.3").join(","), "low,high,max");

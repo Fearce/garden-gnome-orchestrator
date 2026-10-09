@@ -4849,7 +4849,8 @@ export class ThreadManager implements OrchestratorApi {
    *  keeps the other pools too (the target's entries marked `resetBurn`): `checkBurnRate` narrows an
    *  unpinned goal to the target, while a goal pinned to another pool is still paced against that pool. */
   goalModelRoster(): ModelCandidate[] {
-    return this.implementorModelRoster(demandForRole("implementor"), { narrowToBurn: false });
+    return this.implementorModelRoster(demandForRole("implementor"), { narrowToBurn: false })
+      .filter((candidate) => candidate.provider !== "claude" || !isDisallowedClaudeModel(candidate.model));
   }
 
   /** Goal achieved / paused notices, over the same Discord path as every other owner notice. */
@@ -16408,7 +16409,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.sendCommunication(
         live.run,
         `[Heads-up finding] ${finding.summary}${finding.detail ? `\n${finding.detail}` : ""}`,
-        { priority: "next" },
+        { priority: "next", source: "ambient" },
       );
       this.db.markFindingRouted(finding.id);
     }
@@ -16576,7 +16577,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       const t = this.db.getThread(tid);
       if (!t || normalizeWorkspace(homeWorkspaceOf(t)) !== norm) continue;
       if (chatId) this.chatSeen(live.run).add(chatId);
-      this.sendCommunication(live.run, build(this.isCliOfficeBridge(live.accountId)), { priority: "next" });
+      this.sendCommunication(live.run, build(this.isCliOfficeBridge(live.accountId)), { priority: "next", source: chatId ? "ambient" : undefined });
     }
   }
 
@@ -16895,7 +16896,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       this.sendCommunication(
         live.run,
         this.isCliOfficeBridge(live.accountId) ? this.cliTeamChatPush(m, who) : text,
-        { priority: "next" },
+        { priority: "next", source: "ambient" },
       );
       pinged++;
     }

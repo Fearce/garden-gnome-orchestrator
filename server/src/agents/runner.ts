@@ -61,7 +61,12 @@ export interface AgentRunConfig {
   memoryHooks?: Options["hooks"];
 }
 
-export type SendOpts = { shouldQuery?: boolean; priority?: "now" | "next" | "later" };
+export type SendOpts = {
+  shouldQuery?: boolean;
+  priority?: "now" | "next" | "later";
+  /** Explicitly expendable peer/status context; owner answers and control input default to required. */
+  source?: "ambient";
+};
 
 export type ResultEvent = Extract<AgentEvent, { type: "result" }>;
 
