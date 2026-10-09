@@ -14,6 +14,9 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
+- **QA nightly sweep: correct the browser smoke WebSocket timeout and verify the current tree** (2026-10-09, Codex QA; task ef639c35).
+  The probe passes its timeout as Playwright's page argument, so a slow connection can hit the outer deadline without inspection.
+
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
