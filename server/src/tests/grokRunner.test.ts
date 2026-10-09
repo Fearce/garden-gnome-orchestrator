@@ -204,15 +204,16 @@ const lingeringChild = spawn(process.execPath, ["-e", `
   process.stdout.write(JSON.stringify({type:"turn.completed",usage:{input_tokens:3,output_tokens:1}})+"\\n");
   setInterval(()=>{},1000);
 `], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+const lingeringExit = new Promise<void>((resolve) => { lingeringChild.once("exit", () => resolve()); });
 lingering.turnActive = true;
 lingering.child = lingeringChild;
 lingering.drainTerminalChild = settleCodexChild(lingeringChild, (code) => { void lingering.onTurnClose(code); }, 15);
 lingeringChild.stdout!.on("data", (chunk: Buffer) => lingering.onStdout(chunk.toString()));
 let proofTimeout: NodeJS.Timeout | undefined;
 try {
-  const result = await Promise.race([
-    lingeringRun.result(),
-    new Promise<never>((_, reject) => { proofTimeout = setTimeout(() => reject(new Error("terminal launcher did not settle")), 4_000); }),
+  const [result] = await Promise.race([
+    Promise.all([lingeringRun.result(), lingeringExit]),
+    new Promise<never>((_, reject) => { proofTimeout = setTimeout(() => reject(new Error("terminal launcher did not settle and exit")), 10_000); }),
   ]);
   assert.equal(result?.isError, false, "forced process shutdown preserves a successful terminal result");
   assert.equal(result?.tokenUsage?.inputTokens, 3);

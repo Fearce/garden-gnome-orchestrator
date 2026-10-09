@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Require actual process exit in the Codex terminal-drain regression** (2026-10-09, Brindle Acorn).
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -236,6 +234,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-09 **Require actual process exit in the Codex terminal-drain regression** (Brindle Acorn): the real launcher proof awaits both the result and process exit before its cleanup; a ten-second test ceiling tolerates Windows startup/teardown under load. Runner regression and server types pass. Tests only; no runtime activation required.
 
 - 2026-10-09 **Bound Codex terminal shutdown and recover the stalled QA handoff** (0cefa76e, Brindle Acorn): pushed and deployed; live build verified. A completed/failed turn starts a five-second shutdown grace, preserving its verdict and queued steering. Regression fails with the drain disabled; runner, QA injection 186/186, stop-drain, cap, all types/builds, README 74/74 and privacy pass. Deployed runner's real lingering-process proof settles in 7.2 seconds including Windows cleanup. Authenticated task recovery restored implementation; subsequent owner cancellation is preserved.
 
