@@ -243,6 +243,13 @@ function readAuthJson(file: string): CodexAuthFile | undefined {
   }
 }
 
+/** Source selection, readiness and seeding must agree on whether a ChatGPT token can authenticate. */
+function usableChatgptTokens(auth: CodexAuthFile | undefined): Record<string, unknown> | undefined {
+  if (auth?.auth_mode !== "chatgpt" || !auth.tokens || typeof auth.tokens !== "object" || Array.isArray(auth.tokens)) return undefined;
+  const tokens = auth.tokens as Record<string, unknown>;
+  return typeof tokens.access_token === "string" && tokens.access_token.trim() ? tokens : undefined;
+}
+
 /** The operator's personal `codex login` auth.json IF it's a usable ChatGPT-subscription login
  *  (auth_mode "chatgpt" with tokens) — the preferred Codex auth, which bills against the ChatGPT plan
  *  and needs no usage-based API key. Returns the file path to seed the isolated CODEX_HOME from, or
@@ -250,7 +257,7 @@ function readAuthJson(file: string): CodexAuthFile | undefined {
 export function chatgptLoginSource(): string | undefined {
   const src = join(config.codex.sourceAuthHome, "auth.json");
   const a = readAuthJson(src);
-  return a?.auth_mode === "chatgpt" && a?.tokens ? src : undefined;
+  return usableChatgptTokens(a) ? src : undefined;
 }
 
 /** A usable login already inside the isolated CODEX_HOME — either one the orchestrator seeded earlier
@@ -259,7 +266,7 @@ export function chatgptLoginSource(): string | undefined {
 function isolatedAuthMode(): "chatgpt" | "apikey" | undefined {
   const a = readAuthJson(join(config.codex.home, "auth.json"));
   if (!a) return undefined;
-  if (a.auth_mode === "chatgpt" && a.tokens) return "chatgpt";
+  if (usableChatgptTokens(a)) return "chatgpt";
   if (a.OPENAI_API_KEY) return "apikey";
   return undefined;
 }
@@ -283,12 +290,9 @@ export function codexAuthAvailable(hasApiKey: boolean): boolean {
 
 /** A newer destination token is retained only when it still belongs to the source subscription. */
 function sameChatgptAuth(source: CodexAuthFile | undefined, destination: CodexAuthFile | undefined): boolean {
-  const tokens = (auth: CodexAuthFile | undefined): Record<string, unknown> | undefined =>
-    auth?.auth_mode === "chatgpt" && auth.tokens && typeof auth.tokens === "object" && !Array.isArray(auth.tokens)
-      ? auth.tokens as Record<string, unknown> : undefined;
-  const from = tokens(source);
-  const to = tokens(destination);
-  if (!from || !to || typeof to.access_token !== "string" || !to.access_token.trim()) return false;
+  const from = usableChatgptTokens(source);
+  const to = usableChatgptTokens(destination);
+  if (!from || !to) return false;
   if (typeof from.account_id === "string" && from.account_id.trim()) return from.account_id === to.account_id;
   // Older CLI auth files may have no account id. Identical access tokens are the only proof available.
   return typeof from.access_token === "string" && from.access_token === to.access_token;

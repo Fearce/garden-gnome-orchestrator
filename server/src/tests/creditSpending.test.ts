@@ -107,7 +107,7 @@ try {
 } finally {globalThis.fetch=originalFetch;}
 // Codex credited dispatch must pass the same capacity inventory that wakes parked tasks.
 mkdirSync(process.env.CODEX_SOURCE_HOME!,{recursive:true});
-writeFileSync(join(process.env.CODEX_SOURCE_HOME!,"auth.json"),JSON.stringify({auth_mode:"chatgpt",tokens:{}}));
+writeFileSync(join(process.env.CODEX_SOURCE_HOME!,"auth.json"),JSON.stringify({auth_mode:"chatgpt",tokens:{access_token:"fixture-only-subscription-token"}}));
 const db = new Db(join(dir,"test.sqlite"));
 const threads = new ThreadManager(db,hub,new FileMemoryService(join(dir,"memory")),manager);
 const t = threads as any;

@@ -38,7 +38,7 @@ const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { ROUTE_POLICY_VERSION, selectRoute } = await import("../orchestrator/routeSelection.js");
 const { config } = await import("../config.js");
 const { demandForRole } = await import("../orchestrator/capacityRouting.js");
-const { seedCodexAuth } = await import("../agents/codexRunner.js");
+const { codexAuthAvailable, seedCodexAuth } = await import("../agents/codexRunner.js");
 
 let passed = 0;
 let failed = 0;
@@ -324,8 +324,33 @@ async function main(): Promise<void> {
       writeFileSync(authFile, JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "refreshed-fixture-token", account_id: "fixture-account" } }));
       await seedCodexAuth(undefined);
       check("a newer refreshed token for the same source subscription is preserved", auth().tokens?.access_token === "refreshed-fixture-token");
+      const malformedTokens: Array<[string, unknown]> = [
+        ["missing access token", {}],
+        ["array tokens", []],
+        ["string tokens", "fixture-invalid"],
+        ["empty access token", { access_token: "" }],
+        ["blank access token", { access_token: "   " }],
+        ["nonstring access token", { access_token: 123 }],
+      ];
+      for (const [label, tokens] of malformedTokens) {
+        writeFileSync(sourceFile, JSON.stringify({ auth_mode: "chatgpt", tokens }));
+        utimesSync(sourceFile, new Date(1000), new Date(1000));
+        writeFileSync(authFile, JSON.stringify(login));
+        h.db.kvSet("openai_api_key", "");
+        check(`a source with ${label} leaves isolated subscription choices available`, h.mgr.settings().codexChatgptLogin && h.internals.codexRosterModels().includes("gpt-6-astra"));
+        check(`a source with ${label} cannot overwrite a newer usable isolated login`, await seedCodexAuth(undefined) === "chatgpt" && readFileSync(authFile, "utf8") === JSON.stringify(login));
+        h.db.kvSet("openai_api_key", "sk-fixture-only-not-a-real-key");
+        check(`a source with ${label} cannot force the subscription catalog over a configured key`, !h.mgr.settings().codexChatgptLogin && !h.internals.codexRosterModels().includes("gpt-6-astra"));
+        check(`a source with ${label} lets the configured key seed API auth`, await seedCodexAuth(h.mgr.openaiApiKey()) === "apikey" && auth().auth_mode === "apikey");
+      }
       rmSync(sourceFile);
       h.db.kvSet("openai_api_key", "");
+      for (const [label, tokens] of malformedTokens) {
+        writeFileSync(authFile, JSON.stringify({ auth_mode: "chatgpt", tokens }));
+        check(`an isolated login with ${label} is not advertised as usable auth`, !codexAuthAvailable(false) && !h.mgr.settings().codexChatgptLogin);
+        check(`an isolated login with ${label} cannot seed subscription auth`, await seedCodexAuth(undefined) === "none");
+      }
+      writeFileSync(authFile, JSON.stringify(login));
       check("subscription auth primes its newer family release", h.internals.currentModel(SOL_56) === "gpt-6.1-sol");
       h.internals.modelCatalog.refresh = async (): Promise<void> => {};
       h.mgr.setSettings({ openaiApiKey: "sk-fixture-only-not-a-real-key" });
