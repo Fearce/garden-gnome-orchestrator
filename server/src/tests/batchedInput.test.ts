@@ -33,6 +33,8 @@ interface Internals {
   turnActive: boolean;
   isResumeTurn: boolean;
   resumeRolloutMissing: boolean;
+  sawFirstEvent: boolean;
+  sawTerminal: boolean;
   turnInputIds: string[];
   inputs: InputLedger;
   questions: CliQuestionGate;
@@ -200,10 +202,110 @@ async function main(): Promise<void> {
         for (const id of expectedIds) assert.ok(internal.inputs.has(id), "retained input is consumed on model output");
         assert.ok(visible.some((text) => text.includes("left out of the next")), "the task feed reports omissions");
       });
+
+      await check(`${provider}: fresh recovery replays required inputs already drained into a failed resume`, async () => {
+        const fallback = "Recovery brief before the owner's revised target.\n" + "f".repeat(500_000);
+        const onAskUser = async () => "Cloud";
+        const agent = provider === "codex"
+          ? new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: dir, apiKey: "", freshFallback: fallback, onAskUser })
+          : new GrokAgentRun({ model: "grok-4.7", effort: "high", cwd: dir, freshFallback: fallback, onAskUser });
+        const { internal, turns } = captureTurns(agent, provider);
+        const required = "Owner revised target: implement 500ms instead of 200ms.";
+        agent.send(required);
+        const originalId = agent.lastInputId!;
+        for (const entry of ambientEntries(240)) agent.send(entry.text, { source: "ambient" });
+        const originalBatch = [...internal.pendingSends];
+        await internal.onTurnClose(0);
+        assert.equal(turns.length, 1);
+        assert.ok((turns[0]![0] as string).includes(required), "the queued input entered the resumed invocation");
+        assert.equal(internal.pendingSends.length, 0, "the original input has left the pending queue");
+        assert.ok(!internal.inputs.has(originalId), "a zero-event resume has no delivery proof");
+        internal.isResumeTurn = true;
+        internal.sawFirstEvent = false;
+        internal.sawTerminal = false;
+        internal.turnActive = true;
+        const newer = "Owner answer while the resume fails: use the subscription balance.";
+        agent.send(newer);
+        const newerId = agent.lastInputId!;
+        for (let i = 240; i < 480; i++) agent.send(officePush(i), { source: "ambient" });
+        const newerBatch = [...internal.pendingSends];
+        const callbacks = new Set<string>();
+        const results: unknown[] = [];
+        const allEntries = [...originalBatch, ...newerBatch];
+        for (const entry of allEntries) agent.onInputConsumed(entry.inputId, () => callbacks.add(entry.inputId));
+        agent.onEvent((event) => { if (event.type === "result") results.push(event); });
+        await internal.onTurnClose(1);
+        assert.equal(turns.length, 2);
+        assert.equal(turns[1]![1], undefined, "the wedged resume recovers fresh");
+        const recovered = turns[1]![0] as string;
+        assert.ok(recovered.startsWith(fallback));
+        assert.ok(recovered.includes(required), "unconsumed required input must survive fresh recovery");
+        assert.ok(recovered.includes(newer), "a newer owner answer survives the same recovery");
+        assert.ok(recovered.indexOf(required) < recovered.indexOf(newer), "original and newer direction retain arrival order");
+        assert.ok(recovered.includes("post #479 ") && !recovered.includes("post #0 "), "recovery favors newest ambient state");
+        const withDoctrine = `${CLI_QUESTION_DOCTRINE}\n\n${recovered}`;
+        assert.ok(withDoctrine.length <= (provider === "codex" ? CODEX_TURN_INPUT_MAX_CHARS : BATCHED_INPUT_BUDGET_CHARS), "recovery reserves fallback and question doctrine before selecting ambient input");
+        const ids = turns[1]![provider === "codex" ? 3 : 2] as string[];
+        assert.ok(ids.includes(originalId) && ids.includes(newerId));
+        const omittedIds = allEntries.filter((entry) => !ids.includes(entry.inputId)).map((entry) => entry.inputId);
+        assert.ok(omittedIds.length > 0, "the two ambient queues must be trimmed together");
+        const retainedPosts = new Set([...recovered.matchAll(/post #(\d+) /g)].map((match) => match[1]));
+        for (const entry of allEntries) {
+          if (entry.ambient) assert.equal(ids.includes(entry.inputId), retainedPosts.has(entry.text.match(/post #(\d+) /)![1]), "only replayed ambient text carries a receipt ID");
+        }
+        assert.ok(!internal.inputs.has(originalId), "restarting still is not delivery");
+        assert.equal(callbacks.size, 0);
+        assert.equal(results.length, 0, "the failed resume cannot terminate the task before recovery");
+        modelOutput(internal, provider);
+        assert.ok(internal.inputs.has(originalId), "replayed text earns its original receipt on model output");
+        assert.deepEqual([...callbacks], ids);
+        for (const id of omittedIds) assert.ok(!internal.inputs.has(id), "discarded ambient input cannot borrow recovery's proof");
+      });
+
+      await check(`${provider}: an idle owner send keeps its text and original receipt through recovery`, async () => {
+        const agent = provider === "codex"
+          ? new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: dir, apiKey: "", freshFallback: "Recovery brief" })
+          : new GrokAgentRun({ model: "grok-4.7", effort: "high", cwd: dir, freshFallback: "Recovery brief" });
+        const { internal, turns } = captureTurns(agent, provider);
+        internal.turnActive = false;
+        const direction = "Owner direction while idle: use the revised target.";
+        agent.send(direction);
+        const inputId = agent.lastInputId!;
+        assert.equal(turns.length, 1);
+        assert.equal(internal.pendingSends.length, 0);
+        internal.isResumeTurn = true;
+        internal.sawFirstEvent = false;
+        await internal.onTurnClose(1);
+        assert.equal(turns.length, 2);
+        assert.ok((turns[1]![0] as string).includes(direction));
+        assert.deepEqual(turns[1]![provider === "codex" ? 3 : 2], [inputId]);
+        modelOutput(internal, provider);
+        assert.ok(internal.inputs.has(inputId));
+      });
     }
 
+    await check("Codex initial-resume recovery keeps an image-only kickoff without duplicating its attachment", async () => {
+      const agent = new CodexAgentRun({
+        model: "gpt-6.1-sol", effort: "high", cwd: dir, apiKey: "", resume: "missing-session", freshFallback: "Recovery brief",
+      });
+      const { internal, turns } = captureTurns(agent, "codex");
+      const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } };
+      agent.start([image] as UserContent);
+      const inputId = agent.lastInputId!;
+      assert.equal(turns.length, 1);
+      internal.isResumeTurn = true;
+      internal.sawFirstEvent = false;
+      await internal.onTurnClose(1);
+      assert.equal(turns.length, 2);
+      assert.deepEqual(turns[1]![2], [{ mediaType: "image/png", dataBase64: "AA==" }]);
+      assert.deepEqual(turns[1]![3], [inputId]);
+      assert.ok(!internal.inputs.has(inputId));
+      modelOutput(internal, "codex");
+      assert.ok(internal.inputs.has(inputId));
+    });
+
     await check("Codex retains image-only and text-plus-image owner sends even if marked ambient", async () => {
-      const agent = new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: dir, apiKey: "" });
+      const agent = new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: dir, apiKey: "", freshFallback: "Recovery kickoff" });
       const { internal, turns } = captureTurns(agent, "codex");
       const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } };
       agent.send([image] as UserContent, { source: "ambient" });
@@ -221,6 +323,17 @@ async function main(): Promise<void> {
       ]);
       const ids = turns[0]![3] as string[];
       assert.ok(ids.includes(imageOnlyId) && ids.includes(captionId));
+      internal.isResumeTurn = true;
+      internal.sawFirstEvent = false;
+      internal.sawTerminal = false;
+      await internal.onTurnClose(1);
+      assert.equal(turns.length, 2);
+      assert.equal(turns[1]![1], undefined);
+      assert.ok((turns[1]![0] as string).includes(caption));
+      assert.deepEqual(turns[1]![2], turns[0]![2], "both drained screenshot attachments survive fresh recovery");
+      const recoveredIds = turns[1]![3] as string[];
+      assert.ok(recoveredIds.includes(imageOnlyId) && recoveredIds.includes(captionId));
+      assert.ok(!internal.inputs.has(imageOnlyId) && !internal.inputs.has(captionId));
       modelOutput(internal, "codex");
       assert.ok(internal.inputs.has(imageOnlyId) && internal.inputs.has(captionId));
     });

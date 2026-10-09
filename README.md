@@ -243,7 +243,11 @@ Also in the console:
 
 ## Runtime model
 
-Every backend authenticates off a flat-fee subscription rather than a metered API key.
+Claude, Grok and z.ai use their subscription plans. Codex prefers a ChatGPT login
+from your normal Codex home. If that login is unavailable, a configured OpenAI API
+key takes precedence over GGO's saved isolated login and uses metered API billing.
+Without a key, GGO can reuse its saved ChatGPT login. Model and effort choices
+follow the authentication the next run will use.
 The server deliberately strips `ANTHROPIC_API_KEY` from the agent environment so a stray
 key cannot silently route your agents onto per-token billing.
 

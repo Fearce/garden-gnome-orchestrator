@@ -12,7 +12,7 @@ import { trackBlockingSync } from "../eventLoopMonitor.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { InputLedger } from "./inputLedger.js";
-import { boundBatchedInput } from "./batchedInput.js";
+import { BATCHED_INPUT_BUDGET_CHARS, boundBatchedInput, type BatchedInputEntry, type BoundedBatch } from "./batchedInput.js";
 import { latestFamilyModel } from "./modelFamily.js";
 import { endsWithOpenQuestionMarker, endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, endsWithOpenSubTaskMarker, endsWithOpenGoalProgressMarker, extractCliBridgeMessages } from "./officeBridge.js";
 import {
@@ -73,6 +73,10 @@ function toText(content: UserContent): string {
       .join("\n");
   }
   return String(content ?? "");
+}
+
+interface GrokTurnInput extends BatchedInputEntry {
+  inputId: string;
 }
 
 interface GrokEvent {
@@ -232,10 +236,11 @@ export class GrokAgentRun implements AgentRunLike {
    *  (structured roles only). Prevents re-emitting the same status tick on every chunk. */
   private structuredProgressEmitted = 0;
   private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number; costUsd?: number; structuredOutput?: unknown } | undefined;
-  private readonly pendingSends: { text: string; inputId: string; ambient?: boolean }[] = [];
+  private readonly pendingSends: GrokTurnInput[] = [];
   // Read receipts: a turn's prompt counts as consumed on that turn's first model output or clean end.
   private readonly inputs = new InputLedger();
   private turnInputIds: string[] = [];
+  private turnInputs: GrokTurnInput[] = [];
   private promptFile: string | undefined;
   private turnWatchdog: NodeJS.Timeout | undefined;
   private sawFirstEvent = false;
@@ -249,7 +254,8 @@ export class GrokAgentRun implements AgentRunLike {
   }
 
   start(firstMessage: UserContent): this {
-    void this.runTurn(toText(firstMessage), this.cfg.resume, [this.inputs.issue()]);
+    const text = toText(firstMessage);
+    this.runInputTurn(text, this.cfg.resume, [{ text, inputId: this.inputs.issue() }]);
     return this;
   }
 
@@ -281,12 +287,13 @@ export class GrokAgentRun implements AgentRunLike {
       return;
     }
     const inputId = this.inputs.issue();
+    const entry = { text, inputId, ambient: opts?.source === "ambient" && opts.priority !== "now" };
     if (this.turnStarting || this.turnActive) {
-      this.pendingSends.push({ text, inputId, ambient: opts?.source === "ambient" && opts.priority !== "now" });
+      this.pendingSends.push(entry);
       if (opts?.priority === "now") this.requestInterrupt();
       return;
     }
-    void this.runTurn(text, this.sessionId, [inputId]);
+    this.runInputTurn(text, this.sessionId, [entry]);
   }
 
   async interrupt(): Promise<void> {
@@ -350,6 +357,11 @@ export class GrokAgentRun implements AgentRunLike {
     } catch {
       /* already gone */
     }
+  }
+
+  private runInputTurn(prompt: string, resumeId: string | undefined, entries: GrokTurnInput[]): void {
+    this.turnInputs = entries;
+    void this.runTurn(prompt, resumeId, entries.map((entry) => entry.inputId));
   }
 
   /** Spawn one `grok` turn (fresh, or `-r <id>` resume) and stream its JSONL events. The prompt goes via
@@ -809,6 +821,31 @@ export class GrokAgentRun implements AgentRunLike {
     return undefined;
   }
 
+  private boundedFollowUps(entries: GrokTurnInput[], budget = BATCHED_INPUT_BUDGET_CHARS): BoundedBatch {
+    const bounded = boundBatchedInput(entries, budget);
+    if (bounded.omitted) {
+      this.emit({
+        type: "text",
+        text: `⚠️ ${bounded.omitted} older queued office/status update(s) (${bounded.omittedChars.toLocaleString("en-US")} characters) were left out of the next Grok turn to bound its input; owner steering was kept in full.`,
+      });
+    }
+    return bounded;
+  }
+
+  private restartResumeAsFresh(extraEntries: GrokTurnInput[] = []): boolean {
+    if (!this.isResumeTurn || this.sawFirstEvent || this.resumeHealed || !this.cfg.freshFallback || this.stopped) return false;
+    const fallback = toText(this.cfg.freshFallback);
+    const entries = [...this.turnInputs.filter((entry) => !this.inputs.has(entry.inputId)), ...extraEntries];
+    const questionChars = this.cfg.onAskUser ? CLI_QUESTION_DOCTRINE.length + 2 : 0;
+    const bounded = this.boundedFollowUps(entries, Math.max(0, BATCHED_INPUT_BUDGET_CHARS - fallback.length - 2 - questionChars));
+    this.resumeHealed = true;
+    this.lastResult = undefined;
+    this.lastErrorMsg = undefined;
+    this.emit({ type: "text", text: "⚠️ Grok `--resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved." });
+    this.runInputTurn([fallback, bounded.text].filter(Boolean).join("\n\n"), undefined, bounded.keptIndexes.map((index) => entries[index]!));
+    return true;
+  }
+
   private async onTurnClose(code: number | null): Promise<void> {
     this.turnStarting = false;
     this.turnActive = true;
@@ -833,18 +870,13 @@ export class GrokAgentRun implements AgentRunLike {
     // resume turn rather than ending, so the steering isn't dropped.
     if (this.pendingSends.length) {
       const batch = this.pendingSends.splice(0, this.pendingSends.length);
+      if (this.restartResumeAsFresh(batch)) return;
       // Bounded like Codex's batch (agents/batchedInput.ts): hours of office pushes must not become one
       // multi-megabyte prompt. Owner steering is always kept whole.
-      const bounded = boundBatchedInput(batch);
-      if (bounded.omitted) {
-        this.emit({
-          type: "text",
-          text: `⚠️ ${bounded.omitted} older queued office/status update(s) (${bounded.omittedChars.toLocaleString("en-US")} characters) were left out of the next Grok turn to bound its input; owner steering was kept in full.`,
-        });
-      }
+      const bounded = this.boundedFollowUps(batch);
       const next = bounded.text;
       this.lastResult = undefined; // the chained turn produces the next result()
-      void this.runTurn(next, this.sessionId, bounded.keptIndexes.map((i) => batch[i]!.inputId));
+      this.runInputTurn(next, this.sessionId, bounded.keptIndexes.map((i) => batch[i]!));
       return;
     }
     // A bare interrupt (the Pause control) with no follow-up: stay alive like a paused Claude run.
@@ -852,14 +884,7 @@ export class GrokAgentRun implements AgentRunLike {
     // Self-heal a wedged `--resume`: if a resume turn died before its first event and a freshFallback
     // kickoff is available, retry ONCE as a fresh turn carrying the full doctrine + task. Prior edits are
     // already in the working tree, so the fresh session re-reads them and continues.
-    if (this.isResumeTurn && !this.sawFirstEvent && !this.resumeHealed && this.cfg.freshFallback && !this.stopped) {
-      this.resumeHealed = true;
-      this.lastResult = undefined;
-      this.lastErrorMsg = undefined;
-      this.emit({ type: "text", text: "⚠️ Grok `--resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved." });
-      void this.runTurn(toText(this.cfg.freshFallback), undefined);
-      return;
-    }
+    if (this.restartResumeAsFresh()) return;
     // Structured role (planner/QA) finished a successful turn but yielded no schema-valid object —
     // re-prompt in-session rather than handing the pipeline an empty structuredOutput (which parks as
     // "QA could not complete"). Cap retries so a stubborn model can't loop forever.

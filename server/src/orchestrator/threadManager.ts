@@ -20,7 +20,7 @@ import {
   type UserContent,
 } from "../agents/runner.js";
 import { InputLedger } from "../agents/inputLedger.js";
-import { CodexAgentRun, chatgptLoginAvailable, codexAuthAvailable, codexSubscriptionAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
+import { CodexAgentRun, codexAuthAvailable, codexSubscriptionAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { withCommunicationSystemPolicy, withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
 import { normalizeDirectorDirectives } from "../agents/directorDirectives.js";
 import { codexAllowanceReopened, codexPools, codexUsageCapped, liveCodexUsage, readCodexUsage, readCodexUsageForSnapshot } from "../agents/codexUsage.js";
@@ -3382,7 +3382,7 @@ export class ThreadManager implements OrchestratorApi {
       codexWeeklySafetyPct: this.settingNum("setting_codex_weekly_safety", 100, 1, 100),
       hasOpenaiKey: !!key,
       openaiKeyLast4: key && key.length >= 4 ? key.slice(-4) : null,
-      codexChatgptLogin: chatgptLoginAvailable(),
+      codexChatgptLogin: this.codexUsesChatgptAuth(),
       grokEnabled: this.settingBool("setting_grok_enabled", false),
       grokModel: this.grokModel(),
       grokEffort: this.grokEffort(),
@@ -3568,7 +3568,7 @@ export class ThreadManager implements OrchestratorApi {
    *  fallback stands in only for a provider whose live list has not loaded yet. */
   private familyRoster(): string[] {
     const claude = this.modelCatalog.claudeModels();
-    const codex = chatgptLoginAvailable() ? this.modelCatalog.codexCliModels().map((model) => model.id) : this.modelCatalog.codexModels();
+    const codex = this.codexUsesChatgptAuth() ? this.modelCatalog.codexCliModels().map((model) => model.id) : this.modelCatalog.codexModels();
     const grok = this.modelCatalog.grokModels();
     const zai = this.modelCatalog.zaiModels();
     return [
@@ -3967,7 +3967,7 @@ export class ThreadManager implements OrchestratorApi {
 
   /** Pickable Claude model ids for the Settings dropdowns: the live list unioned with the curated
    *  fallback and every currently-selected Claude model, so a picked model never drops out of its list.
-   *  Tiers no role may run on (Sonnet, Haiku, Fable, retired Opus) are never offered — the stored picks
+   *  Tiers excluded from default role assignments (Sonnet, Haiku, Fable, retired Opus) are never offered — the stored picks
    *  that still name one are shown floored (`opusSafeModelOverrides`, `usageSavingSettings`). */
   private pickableClaudeModels(): string[] {
     const ov = this.modelOverrides();
@@ -4320,10 +4320,16 @@ export class ThreadManager implements OrchestratorApi {
     return this.roleToggle(thread.id, "qa") ?? (settings.qaEnabled && (route?.useQa ?? true));
   }
 
+  /** The auth mode the next Codex dispatch will seed, before changing the isolated auth file. */
+  private codexUsesChatgptAuth(): boolean {
+    // Match seedCodexAuth: a source login wins, but a configured key replaces a leftover isolated login.
+    return codexSubscriptionAuthAvailable(!!this.openaiApiKey());
+  }
+
   /** Every model the Codex runner's active auth can actually use. ChatGPT auth uses the CLI's own live
    * catalog; API-key auth uses `/v1/models`. Mixing them would offer models the active credential rejects. */
   private codexRosterModels(): string[] {
-    if (chatgptLoginAvailable()) {
+    if (this.codexUsesChatgptAuth()) {
       const cli = this.modelCatalog.codexCliModels().map((model) => model.id);
       return withoutSupersededModels(cli.length ? cli : CURATED_CODEX_MODELS);
     }
@@ -4334,7 +4340,7 @@ export class ThreadManager implements OrchestratorApi {
   /** Exact CLI-advertised tiers under ChatGPT auth; documented family fallbacks cover cold start and
    * API-key models, whose `/v1/models` response carries no effort-capability metadata. */
   private codexSupportedEfforts(model: string): readonly CodexEffort[] {
-    return (chatgptLoginAvailable() ? this.modelCatalog.codexCliEfforts(model) : undefined) ?? codexEffortsForModel(model);
+    return (this.codexUsesChatgptAuth() ? this.modelCatalog.codexCliEfforts(model) : undefined) ?? codexEffortsForModel(model);
   }
 
   /** Pickable Grok model ids for the Settings dropdown: curated defaults first, then any additional models
@@ -4357,7 +4363,7 @@ export class ThreadManager implements OrchestratorApi {
    *  curated + selected models are only the cold-start fallback before the first successful refresh. */
   private claudeRosterModels(): string[] {
     const live = this.modelCatalog.claudeModels();
-    return live.length ? live : this.pickableClaudeModels();
+    return live.length ? live : withoutSupersededModels(uniq([...CURATED_CLAUDE_MODELS, ...this.pickableClaudeModels()]));
   }
 
   /** `opts.conserve` — see `modelFor`'s doc comment; propagated to the Claude branch. */
@@ -5870,6 +5876,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     // the env key (if any). The raw key is never returned to clients — only hasOpenaiKey/last4 are.
     if (patch.openaiApiKey !== undefined) {
       this.db.kvSet("openai_api_key", patch.openaiApiKey.trim());
+      invalidateModelFamilyRoster(); // the effective auth mode can switch before the catalog refresh completes
       // A freshly-entered key can now list its models — refresh the Codex dropdown right away instead of
       // waiting for the slow timer (it rebroadcasts settings itself when the list changes).
       void this.modelCatalog.refresh();
@@ -6819,7 +6826,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (!codexAuthAvailable(!!key && /^sk-/.test(key))) {
         return { options: [], error: `Requested model ${model} requires Codex authentication. Sign in with \`codex login --device-auth\` or configure an OpenAI API key; no other model was substituted.` };
       }
-      const live = chatgptLoginAvailable()
+      const live = this.codexUsesChatgptAuth()
         ? this.modelCatalog.codexCliModels().map((entry) => entry.id)
         : this.modelCatalog.codexModels();
       if (live.length && !exact(live)) {

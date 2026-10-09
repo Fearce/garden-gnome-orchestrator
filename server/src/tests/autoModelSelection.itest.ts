@@ -24,7 +24,7 @@ process.env.CAP_RETRY_MS = "0";
 process.env.ACCOUNT_PING_MS = "3600000";
 process.env.FAST_ACCOUNT_PING_MS = "3600000";
 
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
@@ -36,6 +36,9 @@ const { EventHub } = await import("../events.js");
 const { FileMemoryService } = await import("../memory/memory.js");
 const { ThreadManager } = await import("../orchestrator/threadManager.js");
 const { ROUTE_POLICY_VERSION, selectRoute } = await import("../orchestrator/routeSelection.js");
+const { config } = await import("../config.js");
+const { demandForRole } = await import("../orchestrator/capacityRouting.js");
+const { seedCodexAuth } = await import("../agents/codexRunner.js");
 
 let passed = 0;
 let failed = 0;
@@ -250,7 +253,109 @@ async function main(): Promise<void> {
     }
   }
 
+  console.log("Test roster — catalog and effort selection match the credential the Codex runner seeds");
+  {
+    const fixture = mkdtempSync(join(tmpdir(), "auto-model-auth-"));
+    const savedConfig = { home: config.codex.home, sourceAuthHome: config.codex.sourceAuthHome, envKey: config.codex.envKey };
+    let h: Harness | undefined;
+    try {
+      config.codex.home = join(fixture, "isolated");
+      config.codex.sourceAuthHome = join(fixture, "source");
+      config.codex.envKey = undefined;
+      mkdirSync(config.codex.home);
+      const authFile = join(config.codex.home, "auth.json");
+      const login = { auth_mode: "chatgpt", tokens: { access_token: "fixture-only", account_id: "fixture-account" } };
+      writeFileSync(authFile, JSON.stringify(login));
+      writeFileSync(join(config.codex.home, "models_cache.json"), JSON.stringify({
+        models: [
+          { slug: "gpt-6-astra", supported_reasoning_levels: [{ effort: "high" }] },
+          { slug: "gpt-6.1-sol", supported_reasoning_levels: [{ effort: "high" }] },
+          { slug: LUNA, supported_reasoning_levels: [{ effort: "high" }] },
+        ],
+      }));
+      h = makeHarness((db) => {
+        db.kvSet("openai_api_key", "sk-fixture-only-not-a-real-key");
+        db.kvSet("setting_codex_enabled", "1");
+        db.kvSet("setting_auto_model_selection", "1");
+        db.kvSet("cache_codex_models", JSON.stringify([SOL_56, LUNA]));
+      });
+      h.internals.codexImplementorReady = (): boolean => true;
+      h.internals.codexPoolSnapshot = (): null => null;
+      h.internals.codexProviderCandidate = (): Record<string, unknown> => ({ provider: "codex", hasHeadroom: true, capacityWindows: [] });
+      check("a configured API key selects its catalog before a stale isolated ChatGPT login is overwritten", h.internals.codexRosterModels().join(",") === `${SOL_56},${LUNA}`);
+      check("Settings labels the effective API-key auth instead of the leftover subscription", !h.mgr.settings().codexChatgptLogin);
+      check("family upgrades cannot cross into the inactive ChatGPT catalog", !h.internals.familyRoster().includes("gpt-6.1-sol"));
+      check("API-key efforts ignore the inactive CLI capability matrix", h.internals.codexSupportedEfforts(LUNA).join(",") === "low,medium,high,xhigh,max");
+      const id = h.seed();
+      h.reply(pickReply(SOL_56, "low"));
+      check("Auto-select keeps an API-accessible model instead of promoting it to a CLI-only release", (await h.internals.autoSelectModel(thread(h, id)))?.model === SOL_56);
+      const pin = (model: string): Thread => ({ ...thread(h!, id), modelRequest: { requested: model, provider: "codex", model, strict: true } });
+      check("a CLI-only strict pin is rejected before the API-key dispatch", h.internals.requestedModelCapacity(pin("gpt-6-astra"), demandForRole("implementor")).error?.includes("not exposed") === true);
+      check("an API-accessible strict pin passes compatibility", !h.internals.requestedModelCapacity(pin(SOL_56), demandForRole("implementor")).error);
+      check("the actual seed chooses API-key auth for the same state", await seedCodexAuth(h.mgr.openaiApiKey()) === "apikey");
+
+      writeFileSync(authFile, JSON.stringify(login));
+      h.db.kvSet("openai_api_key", "");
+      check("without an API key an isolated ChatGPT login keeps its CLI catalog", h.internals.codexRosterModels().includes("gpt-6-astra"));
+      check("Settings labels an active isolated subscription", h.mgr.settings().codexChatgptLogin);
+      check("active ChatGPT auth preserves its exact advertised efforts", h.internals.codexSupportedEfforts(LUNA).join(",") === "high");
+      check("the actual seed keeps the isolated subscription when no key is configured", await seedCodexAuth(undefined) === "chatgpt");
+
+      h.db.kvSet("openai_api_key", "sk-fixture-only-not-a-real-key");
+      mkdirSync(config.codex.sourceAuthHome);
+      const sourceFile = join(config.codex.sourceAuthHome, "auth.json");
+      writeFileSync(sourceFile, JSON.stringify(login));
+      utimesSync(sourceFile, new Date(1000), new Date(1000));
+      check("a source ChatGPT login wins over a configured API key in the catalog", h.internals.codexRosterModels().includes("gpt-6-astra"));
+      check("Settings labels the source subscription that wins over the configured key", h.mgr.settings().codexChatgptLogin);
+      check("the actual seed also prefers the source subscription", await seedCodexAuth(h.mgr.openaiApiKey()) === "chatgpt");
+      const auth = (): { auth_mode?: string; tokens?: { account_id?: string; access_token?: string } } => JSON.parse(readFileSync(authFile, "utf8"));
+      writeFileSync(authFile, JSON.stringify({ auth_mode: "apikey", OPENAI_API_KEY: "sk-fixture-only-not-a-real-key" }));
+      await seedCodexAuth(undefined);
+      check("an older source subscription replaces newer isolated API-key auth", auth().auth_mode === "chatgpt" && auth().tokens?.account_id === "fixture-account");
+      for (const [label, invalid] of [["corrupt", "{broken-json"], ["unusable", JSON.stringify({ auth_mode: "chatgpt", tokens: {} })]]) {
+        writeFileSync(authFile, invalid!);
+        await seedCodexAuth(undefined);
+        check(`the source repairs a newer ${label} destination login`, auth().tokens?.access_token === "fixture-only");
+      }
+      writeFileSync(authFile, JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "other-fixture-token", account_id: "fixture-other-account" } }));
+      await seedCodexAuth(undefined);
+      check("a newer isolated login from another subscription cannot override the source", auth().tokens?.account_id === "fixture-account");
+      writeFileSync(authFile, JSON.stringify({ auth_mode: "chatgpt", tokens: { access_token: "refreshed-fixture-token", account_id: "fixture-account" } }));
+      await seedCodexAuth(undefined);
+      check("a newer refreshed token for the same source subscription is preserved", auth().tokens?.access_token === "refreshed-fixture-token");
+      rmSync(sourceFile);
+      h.db.kvSet("openai_api_key", "");
+      check("subscription auth primes its newer family release", h.internals.currentModel(SOL_56) === "gpt-6.1-sol");
+      h.internals.modelCatalog.refresh = async (): Promise<void> => {};
+      h.mgr.setSettings({ openaiApiKey: "sk-fixture-only-not-a-real-key" });
+      check("switching to API-key auth drops the inactive family cache immediately", h.internals.currentModel(SOL_56) === SOL_56);
+    } finally {
+      h?.dispose();
+      Object.assign(config.codex, savedConfig);
+      rmSync(fixture, { recursive: true, force: true });
+    }
+  }
+
   // -- roster: every live model and its exact effort set are available to automatic choices -------
+  console.log("Test roster — cold Claude catalogs retain every current curated family");
+  {
+    const h = makeHarness();
+    try {
+      h.db.kvSet("cache_claude_models", "[]");
+      const current = [OPUS_5, "claude-sonnet-5-5", "claude-fable-5-1", "claude-haiku-5-5"];
+      const roster = h.internals.implementorModelRoster() as ModelCandidate[];
+      check("the cold automatic roster keeps Opus, Sonnet, Fable and current Haiku", current.every((model) => roster.some((candidate) => candidate.model === model)), JSON.stringify(roster));
+      check("cold explicit choices keep the same current Claude families", current.every((model) => h.internals.explicitClaudeModels().includes(model)));
+      check("cold automatic Haiku keeps all supported efforts", roster.find((candidate) => candidate.model === "claude-haiku-5-5")?.efforts.join(",") === "low,medium,high,xhigh,max");
+      check("cold default role choices retain the configured Opus floor", h.internals.pickableClaudeModels().includes(OPUS_5) && !h.internals.pickableClaudeModels().some((model: string) => /sonnet|haiku|fable/.test(model)));
+      check("cold goal choices retain the Opus-only floor", !h.mgr.goalModelRoster().some((candidate) => /sonnet|haiku|fable/.test(candidate.model)));
+      check("the cold automatic roster drops superseded Claude versions", !roster.some((candidate) => candidate.model === HAIKU || candidate.model === "claude-sonnet-5" || candidate.model === "claude-fable-5"));
+    } finally {
+      h.dispose();
+    }
+  }
+
   console.log("Test roster — every accessible model and supported effort tier reaches auto-selection");
   {
     const h = makeHarness();
@@ -910,8 +1015,8 @@ async function main(): Promise<void> {
       const legacyRun = h.db.listRuns(legacy).find((r) => r.role === "implementor");
       check("an adaptive Sonnet pick dispatches the current selected family", legacyRun?.model?.startsWith("claude-sonnet-") === true, String(legacyRun?.model));
 
-      // …and with no pick, the configured default is what runs — the feature must be invisible when off.
-      const plain = h.seed();
+      // Without a pick, agentic work keeps its configured default; scoped Sonnet routing is tested separately.
+      const plain = seedComplex(h);
       h.internals.implementorProvider.set(plain, "claude");
       try {
         h.internals.startImplementor(thread(h, plain), "KICKOFF: mock");
@@ -919,7 +1024,7 @@ async function main(): Promise<void> {
         /* the same sentinel */
       }
       const plainRun = h.db.listRuns(plain).find((r) => r.role === "implementor");
-      check("a task with no pick runs the configured model", plainRun?.model === h.mgr.modelFor("acct-a", "implementor"), String(plainRun?.model));
+      check("an agentic task with no pick runs the configured model", plainRun?.model === h.mgr.modelFor("acct-a", "implementor"), String(plainRun?.model));
     } finally {
       h.dispose();
     }

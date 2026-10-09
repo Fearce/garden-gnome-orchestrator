@@ -98,6 +98,11 @@ interface CodexImage {
   dataBase64: string;
 }
 
+interface CodexTurnInput extends BatchedInputEntry {
+  images: CodexImage[];
+  inputId: string;
+}
+
 /** Extract the base64 image blocks from a UserContent. The Codex CLI can't take inline image data, but
  *  `codex exec [resume]` accepts `-i/--image <FILE>`, so these are written to temp files at spawn time
  *  and attached — the same screenshots the Claude backend sees, no longer a Codex-only blind spot. */
@@ -276,18 +281,33 @@ export function codexAuthAvailable(hasApiKey: boolean): boolean {
   return chatgptLoginAvailable() || !!isolatedAuthMode() || hasApiKey;
 }
 
+/** A newer destination token is retained only when it still belongs to the source subscription. */
+function sameChatgptAuth(source: CodexAuthFile | undefined, destination: CodexAuthFile | undefined): boolean {
+  const tokens = (auth: CodexAuthFile | undefined): Record<string, unknown> | undefined =>
+    auth?.auth_mode === "chatgpt" && auth.tokens && typeof auth.tokens === "object" && !Array.isArray(auth.tokens)
+      ? auth.tokens as Record<string, unknown> : undefined;
+  const from = tokens(source);
+  const to = tokens(destination);
+  if (!from || !to || typeof to.access_token !== "string" || !to.access_token.trim()) return false;
+  if (typeof from.account_id === "string" && from.account_id.trim()) return from.account_id === to.account_id;
+  // Older CLI auth files may have no account id. Identical access tokens are the only proof available.
+  return typeof from.access_token === "string" && from.access_token === to.access_token;
+}
+
 /** Seed the `auth.json` the Codex CLI authenticates from into the isolated CODEX_HOME and return the
  *  resolved auth mode — the single source of truth callers drive the child env off, so the file and the
  *  env can never disagree. PREFERS the operator's ChatGPT-plan login (no API billing needed): copy
- *  ~/.codex/auth.json in, but only when it's newer (or the dest is missing) — so a fresh re-login
- *  propagates while a token codex refreshed in-place isn't clobbered by a staler source. Falls back to
+ *  ~/.codex/auth.json in when it's newer or the destination is missing, unusable or on another account.
+ *  A same-account token refreshed in-place isn't clobbered by a staler source. Falls back to
  *  writing an apikey auth.json from the given key, else keeps whatever login the home already holds.
  *  Shared by every codex spawn: implementor turns (runTurn) and the usage ping (codexUsagePing). */
 export async function seedCodexAuth(apiKey: string | undefined): Promise<"chatgpt" | "apikey" | "none"> {
   const dest = join(config.codex.home, "auth.json");
   const chatgpt = chatgptLoginSource();
   if (chatgpt) {
-    if (!existsSync(dest) || statSync(chatgpt).mtimeMs > statSync(dest).mtimeMs) await copyFile(chatgpt, dest);
+    if (!sameChatgptAuth(readAuthJson(chatgpt), readAuthJson(dest)) || statSync(chatgpt).mtimeMs > statSync(dest).mtimeMs) {
+      await copyFile(chatgpt, dest);
+    }
     return "chatgpt";
   }
   // No operator source. A configured API key always (re)writes the apikey auth.json — so a key
@@ -388,11 +408,14 @@ export class CodexAgentRun implements AgentRunLike {
   // pendingSends, otherwise the pipeline can accept this result and hand off to QA while steering that
   // arrived in the close gap is still waiting to resume.
   private pendingTerminalResult: { subtype: string; isError: boolean; result?: string; numTurns?: number; tokenUsage?: TokenUsage } | undefined;
-  private readonly pendingSends: { text: string; images: CodexImage[]; inputId: string; ambient?: boolean }[] = [];
+  private readonly pendingSends: CodexTurnInput[] = [];
   // Read receipts: a turn's prompt counts as consumed once that turn produces a model item or completes,
   // never at spawn. A resume that wedges or loses its rollout emits neither, so its inputs stay unread.
   private readonly inputs = new InputLedger();
   private turnInputIds: string[] = [];
+  // Keep the raw accepted inputs until delivery, so fresh recovery can re-bound ambient context and
+  // replay owner text, images and their original receipt IDs after a zero-event resume failure.
+  private turnInputs: CodexTurnInput[] = [];
   // Images pasted with the initial kickoff, kept so a self-healed wedged-resume fresh restart re-attaches
   // them (the freshFallback string carries only doctrine + task). Temp files written per turn live in
   // turnImagePaths and are unlinked once that turn closes; imgCounter keeps their names unique.
@@ -425,7 +448,8 @@ export class CodexAgentRun implements AgentRunLike {
   start(firstMessage: UserContent): this {
     this.memoryInputs?.append(this.cfg.memory?.initialOwnerText ?? toText(firstMessage));
     this.firstImages = toImages(firstMessage);
-    void this.runTurn(toText(firstMessage), this.cfg.resume, this.firstImages, [this.inputs.issue()]);
+    const text = toText(firstMessage);
+    this.runInputTurn(text, this.cfg.resume, [{ text, images: this.firstImages, inputId: this.inputs.issue() }]);
     return this;
   }
 
@@ -459,12 +483,13 @@ export class CodexAgentRun implements AgentRunLike {
     }
     const inputId = this.inputs.issue();
     this.memoryInputs?.append(text);
+    const entry = { text, images, inputId, ambient: opts?.source === "ambient" && opts.priority !== "now" && !images.length };
     if (this.turnStarting || this.turnActive) {
-      this.pendingSends.push({ text, images, inputId, ambient: opts?.source === "ambient" && opts.priority !== "now" && !images.length });
+      this.pendingSends.push(entry);
       if (opts?.priority === "now") this.requestInterrupt();
       return;
     }
-    void this.runTurn(text, this.sessionId, images, [inputId]);
+    this.runInputTurn(text, this.sessionId, [entry]);
   }
 
   async interrupt(): Promise<void> {
@@ -579,6 +604,11 @@ export class CodexAgentRun implements AgentRunLike {
       promptRecallBlock(memory.service, prompt, memory.run, memory.dir, undefined, this.cfg.cwd),
     ]);
     return [session, turn, prompt].filter(Boolean).join("\n\n");
+  }
+
+  private runInputTurn(prompt: string, resumeId: string | undefined, entries: CodexTurnInput[], images = entries.flatMap((entry) => entry.images)): void {
+    this.turnInputs = entries;
+    void this.runTurn(prompt, resumeId, images, entries.map((entry) => entry.inputId));
   }
 
   private async runTurn(prompt: string, resumeId?: string, images: CodexImage[] = [], inputIds: string[] = []): Promise<void> {
@@ -946,9 +976,12 @@ export class CodexAgentRun implements AgentRunLike {
   /** Replace an unusable resume with the full recovery kickoff, folding in steering that arrived while
    * the failed CLI process was closing. Otherwise that queued steering would be retried against the same
    * missing rollout and then disappear when the second failure fell back to the older kickoff. */
-  private restartResumeAsFresh(extraText = "", extraImages: CodexImage[] = [], extraInputIds: string[] = []): boolean {
+  private restartResumeAsFresh(extraEntries: CodexTurnInput[] = []): boolean {
     if (!this.canRestartResumeAsFresh()) return false;
 
+    const entries = [...this.turnInputs.filter((entry) => !this.inputs.has(entry.inputId)), ...extraEntries];
+    const bounded = this.boundedFollowUps(entries);
+    const kept = bounded.keptIndexes.map((index) => entries[index]!);
     const rolloutMissing = this.resumeRolloutMissing;
     this.resumeHealed = true;
     this.lastResult = undefined;
@@ -959,10 +992,9 @@ export class CodexAgentRun implements AgentRunLike {
         ? "⚠️ Codex could not find the saved rollout for this task — restarting as a fresh session with the full brief, recent durable history, and standing directives; working-tree changes are preserved."
         : "⚠️ Codex `exec resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved.",
     });
-    const prompt = [toText(this.cfg.freshFallback!), extraText].filter(Boolean).join("\n\n");
-    // Only the folded-in steering is named: the failed turn's own prompt is not replayed verbatim, so
-    // its inputs stay unread rather than borrow this turn's proof.
-    void this.runTurn(prompt, undefined, [...this.firstImages, ...extraImages], extraInputIds);
+    const prompt = [toText(this.cfg.freshFallback!), bounded.text].filter(Boolean).join("\n\n");
+    const images = [...new Set([...this.firstImages, ...kept.flatMap((entry) => entry.images)])];
+    this.runInputTurn(prompt, undefined, kept, images);
     return true;
   }
 
@@ -1027,14 +1059,12 @@ export class CodexAgentRun implements AgentRunLike {
     // session id was captured, start fresh (no resume) so the steering still lands.
     if (this.pendingSends.length) {
       const batch = this.pendingSends.splice(0, this.pendingSends.length);
+      if (this.restartResumeAsFresh(batch)) return;
       const bounded = this.boundedFollowUps(batch);
       const next = bounded.text;
       const kept = bounded.keptIndexes.map((i) => batch[i]!);
-      const imgs = kept.flatMap((s) => s.images);
-      const ids = kept.map((s) => s.inputId);
-      if (this.restartResumeAsFresh(next, imgs, ids)) return;
       this.lastResult = undefined; // the chained turn produces the next result()
-      void this.runTurn(next, this.sessionId, imgs, ids);
+      this.runInputTurn(next, this.sessionId, kept);
       return;
     }
     // A bare interrupt (the Pause control) with no follow-up: stay alive like a paused Claude run —
