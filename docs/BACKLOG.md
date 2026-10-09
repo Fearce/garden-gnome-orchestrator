@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: preserve all-day fired-reminder dates across browser time zones** (2026-10-09, Sedge Morrow; task 30f120db).
-  An all-day event's midnight instant can fall on the prior browser date, making Show falsely report it moved or deleted in Day view; verify civil-date snapshots and browser navigation.
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -33,11 +30,14 @@ same commit as the fix. Git history keeps the record.
 - **QA: distinguish header label fades from paused gnome motion** (2026-10-09, Pip Sootwhistle; task 698bc595).
   Beta pause checks exclude only destination-label opacity transitions and still cover loops, lane transforms and script-driven strides. Fresh production/live beta, classic/frozen browser suites, all types, build/compression, workshop/skin tests, privacy and README 74/74 pass. Source only, no deliverables; independent QA required.
 
+- **QA: preserve all-day fired-reminder dates across browser time zones** (5637fec3; 2026-10-09, Sedge Morrow; task 30f120db).
+  Integrated/pushed; live 5637fec3 verified. Calendar browser checks 115/115 cover ordinary, moved and legacy all-day dates and Show in Day view; Calendar/scheduler tests, Discord 66/66, all types, server/web builds, compression, privacy and README 74/74 pass. Live Calendar API/chunk and recorded Discord delivery verified; opening preserves unread state. No owner-facing artifacts; QA hosts stopped and scratch removed. Independent QA required.
+
 - **QA: preserve independent header gnome hover and keyboard holds** (2026-10-09, Pip Sootwhistle; task 698bc595).
   Integrated/pushed bdb0bd9b; live HTML/JavaScript match its clean build and the live beta browser suite proves hover loops, mid-walk pause/resume and independent pointer/focus holds in both casts. Beta/classic/screensaver suites, all types, build/compression, workshop/skin tests, privacy and README 74/74 pass. No owner-facing artifacts; independent QA required.
 
 - **QA: preserve Calendar reminder counts, executed-reminder links and interrupted delivery status** (4837cef2; 2026-10-09, Sedge Morrow; task 30f120db).
-  Integrated/pushed from ggo/calendar-reminder-qa-30f120db to master; live 42d1ae94 verified. Calendar browser checks 106/106, Calendar/scheduler tests, Discord tests 66/66, types/builds, privacy and README claims 74/74 pass. Live tab count, highlighted reminder causes and delivery labels verified. No owner-facing artifacts; independent QA required. Task scratch deletion was rejected by execution policy; hosts are stopped and junctions removed, but operator cleanup remains required.
+  Integrated/pushed from ggo/calendar-reminder-qa-30f120db to master; live 42d1ae94 verified. Calendar browser checks 106/106, Calendar/scheduler tests, Discord tests 66/66, types/builds, privacy and README claims 74/74 pass. Live tab count, highlighted reminder causes and delivery labels verified. No owner-facing artifacts; independent QA required. Subsequent QA verified task scratch cleanup complete.
 
 
 - **QA nightly sweep: preserve failed-resume input, active authentication and deliverable cards** (0e2d18a8, 3080f755, 9c292ff0, a79ed497, 9e472a08; 2026-10-09, Codex QA; task ef639c35).
