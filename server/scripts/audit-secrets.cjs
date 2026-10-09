@@ -24,7 +24,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { EMAIL_PATTERN, realEmailLines } = require("./email-hygiene.cjs");
-const { realTokensInDiff } = require("./token-fixtures.cjs");
+const { isFixtureOnlyDiff } = require("./token-fixtures.cjs");
 
 const args = process.argv.slice(2);
 const SCAN_HISTORY = !args.includes("--no-history");
@@ -170,7 +170,7 @@ section("known credential token shapes");
   for (const [label, re] of TOKEN_PATTERNS) {
     const inTree = grepRegex(re);
     const histCommits = SCAN_HISTORY ? historyRegex(re).split(/\r?\n/).filter(Boolean) : [];
-    const fixtureOnly = histCommits.filter((sha) => !realTokensInDiff(git(["show", "--format=", sha, "--", ".", ...EXCLUDES]), re).length);
+    const fixtureOnly = histCommits.filter((sha) => isFixtureOnlyDiff(git(["show", "--format=", sha, "--", ".", ...EXCLUDES]), re));
     const inHist = histCommits.filter((sha) => !fixtureOnly.includes(sha)).join("\n");
     if (inTree) {
       fail(`${label} in TRACKED files:\n${indent(inTree)}`);
