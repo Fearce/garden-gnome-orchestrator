@@ -197,7 +197,7 @@
 /* ---- reminders that went off ----
    Apricot, the reminder hue: the card answers "which reminder raised the Calendar tab's number". New
    rows carry a solid apricot rule and a "New" tag; seen rows drop to the dim text colour. */
-.cal-fired-toggle { display: inline-flex; align-items: center; gap: 5px; }
+.cal-fired-toggle { --kind: var(--cal-reminder); }
 .cal-fired-toggle.has-new { color: var(--text); border-color: color-mix(in oklch, var(--cal-reminder) 55%, transparent); }
 .cal-fired-toggle.has-new svg { color: var(--cal-reminder); }
 .cal-fired-toggle .board-tab-count { color: var(--cal-reminder); background: color-mix(in oklch, var(--cal-reminder) 16%, transparent); }

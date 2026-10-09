@@ -316,16 +316,6 @@ export function Calendar() {
           </h2>
           <input className="cal-jump" type="date" aria-label="Go to date" value={formatDate(anchor)} onChange={(e) => e.target.value && setAnchor(parseDate(e.target.value) ?? anchor)} />
         </div>
-        <button
-          type="button"
-          className={"btn ghost sm cal-manage cal-fired-toggle" + (unseenReminders ? " has-new" : "")}
-          aria-pressed={firedOpen}
-          onClick={() => setFiredOpen(!firedOpen)}
-          title="Reminders that went off: which ones are new, what they said and whether Discord got them"
-        >
-          <BellIcon size={12} /> Went off
-          {unseenReminders ? <span className="board-tab-count">{unseenReminders}</span> : null}
-        </button>
         <button type="button" className="btn ghost sm cal-manage" onClick={() => setBoardView("schedules")} title="The list of every reminder and scheduled task, with Run now">
           Manage schedules
         </button>
@@ -372,6 +362,16 @@ export function Calendar() {
             <option value="inactive">Paused and skipped only</option>
           </select>
         </label>
+        <button
+          type="button"
+          className={"cal-kind-toggle cal-fired-toggle" + (unseenReminders ? " has-new" : "") + (firedOpen ? " on" : "")}
+          aria-pressed={firedOpen}
+          onClick={() => setFiredOpen(!firedOpen)}
+          title="Reminders that went off: which ones are new, what they said and whether Discord got them"
+        >
+          <BellIcon size={12} /> Went off
+          {unseenReminders ? <span className="board-tab-count">{unseenReminders}</span> : null}
+        </button>
         <span className="cal-zone" title={serverTimeZone !== timeZone ? `Reminders and scheduled tasks fire on the server clock (${serverTimeZone}); they are shown here in your time.` : undefined}>
           {timeZone} · {zoneAbbreviation(now, timeZone)}
           {serverTimeZone !== timeZone ? ` · server ${serverTimeZone}` : ""}
