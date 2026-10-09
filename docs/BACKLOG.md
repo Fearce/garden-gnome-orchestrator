@@ -14,9 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA nightly sweep: correct the browser smoke WebSocket timeout and verify the current tree** (2026-10-09, Codex QA; task ef639c35).
-  The probe passes its timeout as Playwright's page argument, so a slow connection can hit the outer deadline without inspection.
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -29,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA nightly sweep: require the initial console snapshot within one readiness deadline** (e5fb4494, 25b58f3b; 2026-10-09, Codex QA; task ef639c35).
+  Pushed on master; all 246 gates, server/web/relay/desktop types, server/web builds, desktop units 19/19, privacy and real desktop/phone/provider browser checks pass. Full sweep 14/16: exposed HTTPS passphrase rotation and Codex 0.162.0 activation at an idle boundary remain. Post-deployment run-to-first-text samples are 25.74/47.81/58.61 s; owner send/inject latency is still unproven. Oversized Codex input recovery and the unavailable explicit Nvidia selection remain under Ready. No owner-facing artifacts were produced. Independent QA required.
 
 - **QA nightly sweep: constrain token exemptions, invalidate stale recall and count delegated usage** (2026-10-09, Tansy Copperfern; task ef639c35).
   Full gates 245/245, all typechecks, server/web builds and live desktop/chip/provider browser checks pass; the added delegated-token regression, gate registration and privacy checks pass, and the corrected probe measures 338 runs with no warnings. Live build 77e3d004 contains the memory fix. Sweep 14/16: Codex's idle-boundary update and owner HTTPS passphrase rotation remain; real task-latency proof is tracked under Ready. Independent QA required.
