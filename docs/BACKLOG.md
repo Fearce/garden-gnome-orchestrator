@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **Restore Surveillance pictures through the dashboard proxy** (2026-10-09, Mosswick Lantern; task 9ed5479f).
-  All five recorders have fresh frames; the proxy picture socket returns HTTP 403 from the global API origin guard.
 
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
@@ -29,6 +27,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **Restore Surveillance pictures through the dashboard proxy** (2026-10-09, Mosswick Lantern; task 9ed5479f).
+  The global origin guard now delegates module sockets to their session/ticket guard; integrated guard checks cover proxy upgrades, forged/replayed tickets, missing sessions and cross-site refusal. Server types, remote-access and privacy checks pass; live proxy browser verification follows deployment.
 
 - **QA nightly sweep: preserve failed-resume input, active authentication and deliverable cards** (0e2d18a8, 3080f755, 9c292ff0, a79ed497, 9e472a08; 2026-10-09, Codex QA; task ef639c35).
   Integrated/pushed; live 9e472a08 verified. Full gates 246/247; the failed child-priority gate passes after readiness barriers. Final model/input/auth gates 6/6 (auto-model 205/205, batching 17/17), updated retirement pipeline 93/93 in normal and hostile-global-hook runs, all types/builds, desktop 19/19, privacy, README claims 74/74 and desktop/phone browser checks pass. The 1,400-task lab cuts initial summary bytes 77%. Provider toolchain/catalog currency passes. Operational sweep 11/12: HTTPS passphrase audit fails; Nvidia selection and global SessionStart hook policy remain owner actions. No owner-facing artifacts; independent QA and a completed long-turn recovery remain to prove live behavior.

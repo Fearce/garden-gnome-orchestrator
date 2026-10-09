@@ -16,6 +16,7 @@ import { join } from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import websocket from "@fastify/websocket";
 import WebSocket from "ws";
+import { registerBrowserOriginGuard } from "../crossSite.js";
 import { MODULE_IDS } from "../modules/catalog.js";
 import { modulePaths } from "../modules/protocol.js";
 import { registerModuleRoutes } from "../modules/routes.js";
@@ -605,6 +606,7 @@ const dataDir = join(root, "data");
 const supervisor = new ModuleSupervisor({ dataDir, build: "build-one", hubUrl, idleExitMs: 120_000 });
 const app: FastifyInstance = Fastify();
 await app.register(websocket);
+registerBrowserOriginGuard(app);
 registerModuleRoutes(app, supervisor, (cookie) => cookie === "session=ok");
 await app.listen({ port: 0, host: "127.0.0.1" });
 const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -756,6 +758,19 @@ try {
     });
     assert.equal(JSON.parse(deckFrame.subarray(2, 2 + deckFrame.readUInt16BE(0)).toString("utf8")).id, "cam-1");
     viaDeck.close();
+    const withoutSession = new WebSocket(`${base.replace("http", "ws")}/api/modules/surveillance/stream?ticket=${reused.body.ticket}`, { headers: { ...proxied, cookie: "" } });
+    const sessionStatus = await new Promise<number>((resolve) => {
+      withoutSession.once("unexpected-response", (_req, res) => resolve(res.statusCode ?? 0));
+      withoutSession.once("open", () => resolve(101));
+      withoutSession.once("error", () => resolve(-1));
+    });
+    assert.equal(sessionStatus, 401, "the proxy socket still requires the owner's session");
+    const replay = new WebSocket(`${base.replace("http", "ws")}/api/modules/surveillance/stream?ticket=${reused.body.ticket}`, { headers: proxied });
+    const replayCode = await new Promise<number>((resolve, reject) => {
+      replay.once("close", (code) => resolve(code));
+      replay.once("error", reject);
+    });
+    assert.equal(replayCode, 4403, "the proxy socket rejects a ticket that was already used");
     const { body: crossTicket } = await api("/api/modules/surveillance/ticket", { method: "POST", body: {} });
     const crossSite = new WebSocket(`${base.replace("http", "ws")}/api/modules/surveillance/stream?ticket=${crossTicket.ticket}`, { headers: { ...proxied, "sec-fetch-site": "cross-site" } });
     const crossStatus = await new Promise<number>((resolve) => {

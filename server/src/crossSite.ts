@@ -72,6 +72,10 @@ export function registerBrowserOriginGuard(app: FastifyInstance, authRequired: (
       if (isCrossSiteSocket(req)) return reply.code(403).send({ error: "cross-site WebSocket refused" });
       return;
     }
+    // Module picture/log sockets authenticate the session and a single-use ticket in their own
+    // route. Their guard handles Sec-Fetch-Site, but deliberately permits a proxy-rewritten Host
+    // when Chromium omits that header on upgrades. Do not apply the ordinary API Origin fallback.
+    if (req.method === "GET" && route === "/api/modules/:id/stream") return;
     if (!route?.startsWith("/api/") || route === "/api/auth/google" || route === "/api/auth/callback") return;
     if (isCrossSiteRequest(req)) return reply.code(403).send({ error: "cross-site API request refused" });
   });
