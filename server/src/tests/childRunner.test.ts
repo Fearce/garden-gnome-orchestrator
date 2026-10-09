@@ -10,6 +10,9 @@
 // printed as evidence alongside it.
 
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { childRunnerState, closeNote, runChild, runChildInProcess, simulateLostWorkerForTest, stopChildRunner } from "../childRunner.js";
 
 const NODE = process.execPath;
@@ -169,47 +172,76 @@ async function worstLoopLag(fn: () => Promise<unknown>): Promise<number> {
 // served before ordinary jobs that were queued first.
 {
   const POOL = 2; // CHILD_WORKER_POOL is unset in the gate, so the pool is the default two workers
-  const slow = (tag: string, ms: number) => runChild(NODE, ["-e", `setTimeout(() => process.stdout.write('${tag}'), ${ms})`]);
-  // Assert on when each child STARTED or ENDED as the child itself saw it, never on when runChild resolved.
-  // On Windows a child spawned at the same instant on another worker thread inherits this one's pipe, so a
-  // finished child's result can be held until that neighbour exits. That is spawn jitter, not scheduling:
-  // on a loaded box it once reported an urgent job that had started at 0.3s as done at 5.4s.
-  const startedAt = (tag: string, opts: { urgent?: boolean } = {}) =>
-    runChild(NODE, ["-e", "process.stdout.write(String(Date.now()))"], opts).then((r) => ({ tag, at: Number(r.stdout) }));
-  const endedAt = (tag: string, ms: number) =>
-    runChild(NODE, ["-e", `setTimeout(() => process.stdout.write(String(Date.now())), ${ms})`]).then((r) => ({ tag, at: Number(r.stdout) }));
+  const fixture = mkdtempSync(join(tmpdir(), "ggo-child-priority-"));
+  const releases: string[] = [];
+  const jobs: Promise<Awaited<ReturnType<typeof runChild>>>[] = [];
+  const start = (tag: string, opts: { urgent?: boolean; hold?: boolean } = {}) => {
+    const ready = join(fixture, `${tag}.ready`);
+    const release = join(fixture, `${tag}.release`);
+    if (opts.hold) releases.push(release);
+    const source = `const fs = require('node:fs');
+      fs.writeFileSync(${JSON.stringify(ready)}, ${JSON.stringify(tag)});
+      const finish = () => process.stdout.write(${JSON.stringify(tag)});
+      ${opts.hold ? `const timer = setInterval(() => {
+        if (fs.existsSync(${JSON.stringify(release)})) { clearInterval(timer); finish(); }
+      }, 10);` : "finish();"}`;
+    const result = runChild(NODE, ["-e", source], { urgent: opts.urgent, timeoutMs: 45_000 });
+    jobs.push(result);
+    return { ready, release, result };
+  };
+  const waitForReady = async (file: string): Promise<void> => {
+    const deadline = Date.now() + 15_000;
+    while (!existsSync(file) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(existsSync(file), `child never reached its readiness barrier: ${file}`);
+  };
+  const release = (job: { release: string }): void => writeFileSync(job.release, "released");
+  const successful = async (pending: typeof jobs): Promise<void> => {
+    for (const result of await Promise.all(pending)) {
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.timedOut, false, result.stderr);
+    }
+  };
 
-  const blockers = Array.from({ length: POOL }, (_, i) => endedAt(`block${i}`, 5000));
-  const queuedFirst = startedAt("ordinary");
-  await new Promise((r) => setTimeout(r, 50));
-  assert.ok(childRunnerState().busy <= POOL, `ordinary work must stay within the pool, saw ${childRunnerState().busy} busy`);
+  try {
+    // Readiness is published by the child, so every ordinary slot is occupied until WE release it.
+    // Fixed sleeps cannot prove this on a loaded Windows host, and child timestamps can reorder even
+    // when the worker dispatch order is correct. Files also avoid inherited stdout delaying a reply.
+    const blockers = Array.from({ length: POOL }, (_, i) => start(`block${i}`, { hold: true }));
+    await Promise.all(blockers.map((job) => waitForReady(job.ready)));
+    assert.equal(childRunnerState().busy, POOL);
+    const ordinary = start("ordinary");
+    assert.equal(childRunnerState().queued, 1, "ordinary work must wait behind the occupied pool");
+    const urgent = start("urgent", { urgent: true });
+    await waitForReady(urgent.ready);
+    assert.equal(existsSync(ordinary.ready), false, "urgent reserve must start without releasing ordinary work");
+    blockers.forEach(release);
+    await successful(jobs.splice(0));
 
-  const urgent = await startedAt("urgent", { urgent: true });
-  const [ordinary, ...blocked] = await Promise.all([queuedFirst, ...blockers]);
-  const firstFree = Math.min(...blocked.map((x) => x.at));
-  assert.ok(
-    urgent.at < firstFree && urgent.at < ordinary.at,
-    `an urgent job must run while ordinary work fills the pool: urgent started ${urgent.at}, ordinary started ` +
-      `${ordinary.at}, first blocker ended ${firstFree}`,
-  );
-
-  // With the reserve also taken, an urgent job must not wait behind ordinary jobs queued before it. The
-  // urgent holder frees first; only the queued urgent job may take that worker, while the ordinary ones
-  // wait for the long holders. The holder is started only once the long holders have had time to spawn,
-  // so neither of them inherits its pipe and keeps it "running" until they exit (see above).
-  const held: Promise<unknown>[] = [slow("hold0", 6000), slow("hold1", 6000)];
-  await new Promise((r) => setTimeout(r, 1500));
-  held.push(runChild(NODE, ["-e", "setTimeout(() => {}, 1000)"], { urgent: true }));
-  await new Promise((r) => setTimeout(r, 50));
-  const plainA = startedAt("plainA");
-  const plainB = startedAt("plainB");
-  const jumper = startedAt("jumper", { urgent: true });
-  const [a, b, j] = await Promise.all([plainA, plainB, jumper, ...held]);
-  assert.ok(
-    j.at < a.at && j.at < b.at,
-    `an urgent job must start ahead of ordinary jobs already queued: jumper ${j.at}, plainA ${a.at}, plainB ${b.at}`,
-  );
-  assert.equal(childRunnerState().queued, 0);
+    // With all ordinary slots and the reserve held, both ordinary jobs precede the jumper in the
+    // queue. Release only the reserve: the urgent jumper must start while both ordinary jobs wait.
+    const held = Array.from({ length: POOL }, (_, i) => start(`hold${i}`, { hold: true }));
+    await Promise.all(held.map((job) => waitForReady(job.ready)));
+    const reserve = start("reserve", { urgent: true, hold: true });
+    await waitForReady(reserve.ready);
+    assert.equal(childRunnerState().busy, POOL + 1);
+    const plainA = start("plainA");
+    const plainB = start("plainB");
+    const jumper = start("jumper", { urgent: true });
+    assert.equal(childRunnerState().queued, 3, "all three jobs must wait while every slot is occupied");
+    release(reserve);
+    await waitForReady(jumper.ready);
+    assert.equal(existsSync(plainA.ready), false, "urgent jumper must precede ordinary job A");
+    assert.equal(existsSync(plainB.ready), false, "urgent jumper must precede ordinary job B");
+    assert.equal(childRunnerState().queued, 2, "ordinary work must remain queued until its slots are released");
+    held.forEach(release);
+    await successful(jobs.splice(0));
+    assert.equal(childRunnerState().queued, 0);
+  } finally {
+    // Release every barrier on an assertion failure too; no failed gate leaves a child holding a slot.
+    for (const file of releases) writeFileSync(file, "released");
+    await Promise.all(jobs);
+    rmSync(fixture, { recursive: true, force: true });
+  }
 }
 
 // The 2026-09-14 outage: every git surface in the app went silent at once while SQLite commands answered
