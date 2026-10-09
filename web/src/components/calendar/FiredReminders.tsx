@@ -12,6 +12,7 @@ const DELIVERY_LABEL: Record<ReminderDelivery, string> = {
   sent: "Sent to Discord",
   retrying: "Discord failed, retrying · on Notes",
   failed: "Not delivered · on Notes",
+  interrupted: "Discord delivery unconfirmed · on Notes",
   withdrawn: "Not sent · moved or deleted",
 };
 
@@ -38,7 +39,7 @@ export function FiredReminders({ timeZone, now, onShow, onClose }: Props) {
     let live = true;
     fetchFiredReminders()
       .then((r) => {
-        if (!live) return;
+        if (!live || useStore.getState().remindersRev !== rev) return;
         setList(r.reminders);
         setError(null);
         useStore.setState({ remindersUnseen: r.unseen });
@@ -50,12 +51,16 @@ export function FiredReminders({ timeZone, now, onShow, onClose }: Props) {
   }, [rev]);
 
   const acknowledge = (ids?: string[]) => {
+    // A reminder arriving after this click has not been read yet. Acknowledge only this list's IDs.
+    const selectedIds = ids ?? list?.filter((r) => !r.seenAt).map((r) => r.id);
+    if (!selectedIds?.length) return;
+    const before = useStore.getState().remindersRev;
     setError(null);
-    markRemindersSeen(ids)
+    markRemindersSeen(selectedIds)
       .then((r) => {
         const at = Date.now();
-        setList((l) => l?.map((x) => (!x.seenAt && (!ids || ids.includes(x.id)) ? { ...x, seenAt: at } : x)) ?? l);
-        useStore.setState({ remindersUnseen: r.unseen });
+        setList((l) => l?.map((x) => (!x.seenAt && selectedIds.includes(x.id) ? { ...x, seenAt: at } : x)) ?? l);
+        useStore.setState((s) => s.remindersRev === before ? { remindersUnseen: r.unseen } : {});
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
   };

@@ -171,10 +171,20 @@ export function Calendar() {
     const day = formatDate(dateOf(focus.startsAt, timeZone));
     if (day < range.from || day > range.to) return;
     setFocus(null);
-    const found = range.occurrences.find((o) => firedTarget(o, focus, timeZone));
+    // A schedule's grid keeps only its latest actual run, and that run's time can differ from its due
+    // slot. The fired record is the history for this reminder, including older and run-once fires.
+    const schedule = focus.source === "schedule" ? schedules.find((s) => s.id === focus.refId) : null;
+    const found: CalendarOccurrence | undefined = focus.source === "event"
+      ? range.occurrences.find((o) => o.source === "event" && o.id === focus.refId && o.occurrenceDate === focus.occurrence)
+      : schedule ? {
+        key: `s:${schedule.id}:fired:${focus.id}`, source: "schedule", id: schedule.id,
+        title: focus.title, kind: schedule.prompt ? "task" : "reminder", allDay: false,
+        startAt: focus.startsAt, endAt: focus.startsAt, recurring: !schedule.runOnce,
+        status: "past", hasReminder: true,
+      } : undefined;
     if (found) setDialog({ kind: "details", occurrence: found });
     else setActionError(`“${focus.title}” is no longer on the calendar on that day; it was moved or deleted after the reminder went off.`);
-  }, [focus, range, loading, timeZone]);
+  }, [focus, range, loading, timeZone, schedules]);
 
   const showFired = (r: FiredReminder) => {
     if (r.startsAt == null) return;
@@ -442,15 +452,6 @@ export function Calendar() {
       {scheduleEditor ? <ScheduleEditor initial={scheduleEditor.initial} draft={scheduleEditor.draft} onClose={() => setScheduleEditor(null)} /> : null}
     </div>
   );
-}
-
-/** Whether an occurrence is the one a fired reminder was about: the same event occurrence, or the same
- *  schedule's run (a day too dense to list its runs collapses into one item for that day). */
-function firedTarget(o: CalendarOccurrence, r: FiredReminder, timeZone: string): boolean {
-  if (o.id !== r.refId || o.source !== r.source) return false;
-  if (r.source === "event") return o.occurrenceDate === r.occurrence;
-  if (o.count) return r.startsAt != null && formatDate(dateOf(o.startAt, timeZone)) === formatDate(dateOf(r.startsAt, timeZone));
-  return o.slotAt === r.startsAt;
 }
 
 function dialogTitle(d: Dialog): string {

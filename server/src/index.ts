@@ -217,7 +217,8 @@ async function main(): Promise<void> {
     ready: () => manager.supervisorDiscordReady(),
     send: (title: string, text: string) => manager.remindOwner(title, text),
     fallback: (title: string, text: string, why: string) => {
-      notes.add({ body: `⏰ ${title}: ${text}`, threadTitle: `Reminder not delivered on Discord: ${why}` });
+      const result = notes.add({ body: `⏰ ${title}: ${text}`, threadTitle: `Reminder not delivered on Discord: ${why}`, url: "" });
+      if (!result.ok) throw new Error(result.error ?? "Could not preserve a reminder on Notes.");
     },
     fired: firedReminders,
   };
@@ -338,6 +339,10 @@ async function main(): Promise<void> {
       () => restartCoordinator.start(),
       () => onlineOffice.start(),
       () => accounts.start(),
+      () => firedReminders.recoverInterrupted((title, text, why) => {
+        const result = notes.add({ body: `⏰ ${title}: ${text}`, threadTitle: `Discord reminder delivery unconfirmed: ${why}`, url: "" });
+        if (!result.ok) throw new Error(result.error ?? "Could not preserve an interrupted reminder on Notes.");
+      }),
       () => scheduler.start(),
       () => calendar.start(),
       () => void modules.resumeArmed(),

@@ -221,7 +221,7 @@ function ScheduleDetails({ occurrence: o, schedule: s, timeZone, serverTimeZone,
     <>
       <dl className="cal-details-list">
         <Row label="Status">
-          <span className={`cal-status s-${o.status}`}>{s.enabled ? STATUS_LABEL[o.status] : "Paused. The schedule is switched off, so this will not run."}</span>
+          <span className={`cal-status s-${o.status}`}>{s.enabled || o.status === "ran" || o.status === "past" ? STATUS_LABEL[o.status] : "Paused. The schedule is switched off, so this will not run."}</span>
         </Row>
         <Row label={o.status === "ran" ? "Ran" : "When"}>{o.count ? `${o.count} runs on ${formatCivil(parseDate(o.startDate!)!, { weekday: "long", day: "numeric", month: "long" })}` : whenText(o, timeZone)}</Row>
         <Row label="Schedule">

@@ -2416,8 +2416,9 @@ function applyEvent(ev: ServerEvent): void {
       const selectedCowork = useStore.getState().selectedCoworkId;
       if (selectedCowork && coworkSessions[selectedCowork]) sendCommand({ type: "cowork.history", sessionId: selectedCowork });
       // Reminders may have gone off while the socket was down; the snapshot does not carry the count.
+      const remindersRev = useStore.getState().remindersRev;
       fetchFiredReminders()
-        .then((r) => useStore.setState((s) => ({ remindersUnseen: r.unseen, remindersRev: s.remindersRev + 1 })))
+        .then((r) => useStore.setState((s) => s.remindersRev === remindersRev ? { remindersUnseen: r.unseen, remindersRev: s.remindersRev + 1 } : {}))
         .catch(() => {});
       break;
     }

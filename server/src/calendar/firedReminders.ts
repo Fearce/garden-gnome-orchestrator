@@ -2,9 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "../db/db.js";
 import type { EventHub } from "../events.js";
 
-/** How a fired reminder's Discord DM went: still on its first try, delivered, between retries (already
- *  on the note list), given up on, or dropped because what it reminds about was deleted or moved. */
-export type ReminderDelivery = "sending" | "sent" | "retrying" | "failed" | "withdrawn";
+/** How a fired reminder's Discord DM went, including a send interrupted before delivery was confirmed. */
+export type ReminderDelivery = "sending" | "sent" | "retrying" | "failed" | "withdrawn" | "interrupted";
 
 /** A reminder that has gone off. Mirrored in web/src/lib/calendarApi.ts. */
 export interface FiredReminder {
@@ -69,6 +68,29 @@ export class FiredReminders {
 
   private get raw() {
     return this.db.raw;
+  }
+
+  /** Reconcile the previous process's sends before new reminders start. Retries do not survive a
+   *  restart. An interrupted first send may already have reached Discord, so never resend it: leave
+   *  its delivery unconfirmed and put it on Notes instead. The status and fallback commit together. */
+  recoverInterrupted(fallback: (title: string, text: string, why: string) => void): number {
+    const recovered = this.raw.transaction(() => {
+      const pending = this.raw.prepare("SELECT * FROM fired_reminders WHERE delivery IN ('sending', 'retrying')").all() as Row[];
+      const update = this.raw.prepare("UPDATE fired_reminders SET delivery = ?, delivery_note = ? WHERE id = ?");
+      for (const row of pending) {
+        const reminder = rowToFired(row);
+        const sending = reminder.delivery === "sending";
+        const note = sending
+          ? "Discord delivery was interrupted by a server restart and could not be confirmed. It is on the note list; check Discord before sending again."
+          : "Discord retries stopped when the server restarted, and delivery could not be confirmed. It is on the note list; check Discord before sending again.";
+        update.run("interrupted", note, reminder.id);
+        // A retrying reminder already has its fallback from the first failure.
+        if (sending) fallback(reminder.title, reminder.text, note);
+      }
+      return pending.length;
+    })();
+    if (recovered) this.changed();
+    return recovered;
   }
 
   /** Record a reminder that just went off and return its id. */

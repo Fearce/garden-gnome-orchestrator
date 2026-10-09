@@ -52,7 +52,9 @@ For concurrent runs, set `GGO_CALENDAR_LAB_PORT` to a free HTTP port and leave t
 - **What went off is listed, not queued.** Every real reminder delivery (event or schedule; never the
   "Send test reminder") writes one `fired_reminders` row via `ReminderChannel.fired`
   (`calendar/firedReminders.ts`), and `deliverReminder` updates its `delivery`
-  (sending/sent/retrying/failed/withdrawn) as the DM goes. Unseen rows are the Calendar tab's number;
+  (sending/sent/retrying/failed/withdrawn/interrupted) as the DM goes. Startup reconciles interrupted
+  sends and retries without resending: Discord delivery is unconfirmed, and Notes preserves the reminder.
+  Unseen rows are the Calendar tab's number;
   the Calendar's "Went off" panel lists them (auto-opens when the number rises) and "Show" jumps to the
   occurrence and marks it seen. The socket carries only `reminders.fired {unseen}`; titles/text come
   from `GET /api/calendar/fired`, acknowledged through `POST /api/calendar/fired/seen` (`{ids?}`, none

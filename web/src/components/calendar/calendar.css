@@ -230,7 +230,7 @@
 .cal-fired-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .cal-fired-delivery { font-size: 11px; font-weight: 600; white-space: nowrap; color: var(--text-dim); }
 .cal-fired-delivery.d-sent { color: var(--ok); }
-.cal-fired-delivery.d-retrying { color: var(--warn); }
+.cal-fired-delivery.d-retrying, .cal-fired-delivery.d-interrupted { color: var(--warn); }
 .cal-fired-delivery.d-failed { color: var(--danger); }
 .cal-fired-delivery.d-withdrawn, .cal-fired-delivery.d-sending { color: var(--text-faint); }
 .cal-fired-actions { display: flex; gap: 6px; }
@@ -317,7 +317,8 @@
   .cal-agenda-row { grid-template-columns: 84px minmax(0, 1fr); }
   .cal-agenda-kind, .cal-agenda-row .cal-status { display: none; }
   .cal-fired-row { grid-template-columns: 18px minmax(0, 1fr); }
-  .cal-fired-side { grid-column: 2; flex-direction: row; align-items: center; justify-content: space-between; }
+  .cal-fired-side { grid-column: 2; flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .cal-fired-delivery { white-space: normal; overflow-wrap: anywhere; }
 }
 @container (max-width: 520px) {
   .cal-chip .cal-item-title { display: none; }

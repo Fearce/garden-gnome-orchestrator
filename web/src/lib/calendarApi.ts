@@ -158,7 +158,7 @@ export const moveScheduleRun = (id: string, slotAt: number, toAt: number, scope:
   call(`/api/calendar/schedules/${encodeURIComponent(id)}/move`, json("POST", { slotAt, toAt, scope }));
 
 /** How a fired reminder's Discord DM went. Mirrors server/src/calendar/firedReminders.ts. */
-export type ReminderDelivery = "sending" | "sent" | "retrying" | "failed" | "withdrawn";
+export type ReminderDelivery = "sending" | "sent" | "retrying" | "failed" | "interrupted" | "withdrawn";
 
 /** A reminder that has gone off. Mirrors FiredReminder in server/src/calendar/firedReminders.ts. */
 export interface FiredReminder {

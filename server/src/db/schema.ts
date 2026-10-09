@@ -332,7 +332,7 @@ CREATE TABLE IF NOT EXISTS calendar_reminder_log (
 -- Reminders that have gone off (events and schedules alike): the Calendar tab counts the unseen ones and
 -- lists them, so the owner can see which reminder raised the count and whether its Discord DM arrived.
 -- A history of what already fired, never a queue: ref_id is not a foreign key, so a deleted event's
--- reminder stays listed. delivery is sending|sent|retrying|failed|withdrawn (calendar/firedReminders.ts).
+-- reminder stays listed. delivery is sending|sent|retrying|failed|interrupted|withdrawn (calendar/firedReminders.ts).
 CREATE TABLE IF NOT EXISTS fired_reminders (
   id           TEXT PRIMARY KEY,
   source       TEXT NOT NULL,

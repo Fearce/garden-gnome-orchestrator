@@ -99,8 +99,12 @@ async function setView(page, label) {
 
 /** Click a month cell's empty lower edge, below any chips. */
 async function clickCellSpace(page, date) {
-  const box = await cell(page, date).boundingBox();
-  await page.mouse.click(box.x + box.width - 8, box.y + box.height - 6);
+  const target = cell(page, date);
+  await target.scrollIntoViewIfNeeded();
+  const box = await target.boundingBox();
+  // Locator clicks scroll and wait until the loading/inert calendar accepts input. An open reminder
+  // panel can put a lower week below the viewport; a raw mouse coordinate would miss that cell.
+  await target.click({ position: { x: box.width - 8, y: box.height - 6 } });
   await modal(page).waitFor({ timeout: 10000 });
 }
 
@@ -471,6 +475,182 @@ async function createReminderSchedule(page, dataDir) {
   check("…and it shows on the calendar as a reminder", /k-reminder/.test(await item(cell(page, tomorrow), NEW_REMINDER).getAttribute("class")));
 }
 
+/** Send an owner command over a second authenticated socket while the Calendar stays open. */
+async function scheduleCommand(page, command) {
+  await page.evaluate((cmd) => new Promise((resolve, reject) => {
+    const socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/ws`);
+    const timer = setTimeout(() => { socket.close(); reject(new Error(`Schedule command timed out: ${cmd.type}`)); }, 10000);
+    socket.onerror = () => { clearTimeout(timer); reject(new Error("Schedule command socket failed")); };
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data);
+      if (message.type === "hello") socket.send(JSON.stringify(cmd));
+      if (message.type === "schedules") {
+        clearTimeout(timer);
+        socket.close();
+        resolve();
+      }
+    };
+  }), command);
+}
+
+async function fireSchedule(page, dataDir, id) {
+  const previous = readDb(dataDir, "SELECT id FROM fired_reminders WHERE ref_id = ? ORDER BY rowid DESC LIMIT 1", id)[0]?.id;
+  await scheduleCommand(page, { type: "schedule.run", id });
+  const fired = await poll(() => {
+    const row = readDb(dataDir, "SELECT * FROM fired_reminders WHERE ref_id = ? ORDER BY rowid DESC LIMIT 1", id)[0];
+    return row?.id !== previous ? row : null;
+  });
+  if (!fired) throw new Error("The reminder-only schedule did not fire");
+  return fired;
+}
+
+async function waitReminderCount(page, expected, selector = ".cal-fired-toggle .board-tab-count") {
+  await page.waitForFunction(({ count, target }) => Number(document.querySelector(target)?.textContent ?? 0) === count, { count: expected, target: selector }, { timeout: 10000 });
+}
+
+async function clearFiredReminders(page) {
+  await page.request.post(`http://127.0.0.1:${PORT}/api/calendar/fired/seen`, { data: {} });
+  await waitReminderCount(page, 0);
+  await page.waitForFunction(() => document.querySelectorAll(".cal-fired-row.new").length === 0, null, { timeout: 10000 });
+}
+
+/** Reminder text is a message, even when it contains a URL longer than the Notes link limit. */
+async function longLinkReminderFallback(page, dataDir) {
+  const title = "Synthetic long-link reminder";
+  await scheduleCommand(page, { type: "schedule.create", title, workspace: "", prompt: "", reminder: `https://example.com/${"x".repeat(650)}`, cron: "0 0 1 1 *", runOnce: true });
+  const schedule = await poll(() => scheduleRow(dataDir, title));
+  if (!schedule) throw new Error("The long-link reminder could not be created");
+  await fireSchedule(page, dataDir, schedule.id);
+  const note = await poll(() => readDb(dataDir, "SELECT body, url FROM operator_notes WHERE body LIKE ?", `%${title}%`)[0]);
+  check("a Discord failure preserves reminder text with a long URL on Notes", !!note?.body.includes("https://example.com/") && note.url == null, JSON.stringify(note));
+  await scheduleCommand(page, { type: "schedule.delete", id: schedule.id });
+  await clearFiredReminders(page);
+}
+
+/** A fired standalone schedule has no future slot when switched off; older runs also remain showable. */
+async function firedScheduleTargets(page, dataDir) {
+  const schedule = scheduleRow(dataDir, NEW_REMINDER);
+  await fireSchedule(page, dataDir, schedule.id);
+  await scheduleCommand(page, { type: "schedule.update", id: schedule.id, patch: { enabled: false } });
+  const panel = page.locator(".cal-fired");
+  const fresh = panel.locator(`.cal-fired-row.new:has(.cal-fired-name:text-is("${NEW_REMINDER}"))`);
+  await fresh.waitFor({ timeout: 10000 });
+  await fresh.locator('button:text-is("Show")').click();
+  const opened = await modal(page).waitFor({ timeout: 10000 }).then(() => true, () => false);
+  check("Show opens an executed standalone reminder with no remaining slot", opened && await modal(page).locator(".cal-details-title").textContent() === NEW_REMINDER, await page.locator(".cal-statusline").textContent());
+  if (opened) await closeModal(page);
+  await waitReminderCount(page, 0);
+
+  await fireSchedule(page, dataDir, schedule.id);
+  await fresh.waitFor({ timeout: 10000 });
+  const older = panel.locator(`.cal-fired-row:not(.new):has(.cal-fired-name:text-is("${NEW_REMINDER}"))`).first();
+  await older.locator('button:text-is("Show")').click();
+  const oldOpened = await modal(page).waitFor({ timeout: 10000 }).then(() => true, () => false);
+  check("Show also opens an older reminder after the schedule fired again", oldOpened && await modal(page).locator(".cal-details-title").textContent() === NEW_REMINDER, await page.locator(".cal-statusline").textContent());
+  if (oldOpened) await closeModal(page);
+  await clearFiredReminders(page);
+}
+
+/** Delayed REST replies must not erase a newer reminder delivered over the live socket. */
+async function firedReminderRaces(page, dataDir) {
+  const id = scheduleRow(dataDir, NEW_REMINDER).id;
+  await page.click(".board-tab.bt-tasks");
+  let releaseHello;
+  let helloCaptured;
+  let helloFinished;
+  const heldHello = new Promise((resolve) => { releaseHello = resolve; });
+  const capturedHello = new Promise((resolve) => { helloCaptured = resolve; });
+  const finishedHello = new Promise((resolve) => { helloFinished = resolve; });
+  let firstHelloRead = true;
+  const firedPath = /\/api\/calendar\/fired$/;
+  const holdHello = async (route) => {
+    if (!firstHelloRead) return route.continue();
+    firstHelloRead = false;
+    const response = await route.fetch();
+    const body = await response.json();
+    helloCaptured(body);
+    await heldHello;
+    await route.fulfill({ response, json: body });
+    helloFinished();
+  };
+  await page.route(firedPath, holdHello);
+  await page.reload();
+  await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
+  const staleHello = await capturedHello;
+  check("the held reconnect count starts with no unseen reminders", staleHello.unseen === 0, String(staleHello.unseen));
+  await fireSchedule(page, dataDir, id);
+  await waitReminderCount(page, 1, ".board-tab.bt-calendar .board-tab-count");
+  releaseHello();
+  await finishedHello;
+  await page.waitForTimeout(250);
+  check("a delayed reconnect read cannot erase a newer Calendar badge", await page.evaluate(() => document.querySelector(".board-tab.bt-calendar .board-tab-count")?.textContent) === "1");
+  await page.unroute(firedPath, holdHello);
+  await page.click(".board-tab.bt-calendar");
+  await page.locator(".cal-fired-row.new").waitFor({ timeout: 10000 });
+  await clearFiredReminders(page);
+
+  await fireSchedule(page, dataDir, id);
+  await page.locator(".cal-fired-row.new").waitFor({ timeout: 10000 });
+  let releaseSeen;
+  let seenCaptured;
+  let seenFinished;
+  const heldSeen = new Promise((resolve) => { releaseSeen = resolve; });
+  const capturedSeen = new Promise((resolve) => { seenCaptured = resolve; });
+  const finishedSeen = new Promise((resolve) => { seenFinished = resolve; });
+  const seenPath = /\/api\/calendar\/fired\/seen$/;
+  const holdSeenReply = async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    seenCaptured(body);
+    await heldSeen;
+    await route.fulfill({ response, json: body });
+    seenFinished();
+  };
+  await page.route(seenPath, holdSeenReply);
+  await page.locator('.cal-fired-row.new button:text-is("Mark seen")').click();
+  const staleSeen = await capturedSeen;
+  check("the held acknowledgement reply precedes the next reminder", staleSeen.unseen === 0, String(staleSeen.unseen));
+  const next = await fireSchedule(page, dataDir, id);
+  await waitReminderCount(page, 1);
+  releaseSeen();
+  await finishedSeen;
+  await page.waitForTimeout(250);
+  check("a delayed Mark seen reply cannot erase a reminder that just fired", await page.evaluate(() => document.querySelector(".cal-fired-toggle .board-tab-count")?.textContent) === "1");
+  check("the reminder that arrived during acknowledgement stays new", readDb(dataDir, "SELECT seen_at FROM fired_reminders WHERE id = ?", next.id)[0]?.seen_at == null && await page.locator(".cal-fired-row.new").count() === 1);
+  await page.unroute(seenPath, holdSeenReply);
+  await clearFiredReminders(page);
+
+  const first = await fireSchedule(page, dataDir, id);
+  const second = await fireSchedule(page, dataDir, id);
+  await waitReminderCount(page, 2);
+  await page.waitForFunction(() => document.querySelectorAll(".cal-fired-row.new").length === 2);
+  let releaseAll;
+  let allCaptured;
+  let allFinished;
+  const heldAll = new Promise((resolve) => { releaseAll = resolve; });
+  const capturedAll = new Promise((resolve) => { allCaptured = resolve; });
+  const finishedAll = new Promise((resolve) => { allFinished = resolve; });
+  const holdAllRequest = async (route) => {
+    allCaptured(route.request().postDataJSON());
+    await heldAll;
+    const response = await route.fetch();
+    await route.fulfill({ response });
+    allFinished();
+  };
+  await page.route(seenPath, holdAllRequest);
+  await page.locator('.cal-fired button:text-is("Mark all seen")').click();
+  const acknowledgement = await capturedAll;
+  const newest = await fireSchedule(page, dataDir, id);
+  await waitReminderCount(page, 3);
+  releaseAll();
+  await finishedAll;
+  await page.waitForTimeout(250);
+  const states = readDb(dataDir, "SELECT id, seen_at FROM fired_reminders WHERE id IN (?, ?, ?)", first.id, second.id, newest.id);
+  check("Mark all seen acknowledges only the reminders displayed when clicked", states.filter((r) => r.seen_at != null).length === 2 && states.find((r) => r.id === newest.id)?.seen_at == null, JSON.stringify({ request: acknowledgement, states }));
+  check("a reminder arriving while Mark all seen is pending keeps its badge and new row", await page.evaluate(() => document.querySelector(".cal-fired-toggle .board-tab-count")?.textContent) === "1" && await page.locator(".cal-fired-row.new").count() === 1);
+  await page.unroute(seenPath, holdAllRequest);
+}
+
 async function defaultReminders(page, dataDir, shots) {
   await page.click('.cal-toolbar button:has-text("Default reminders")');
   await modal(page).waitFor({ timeout: 10000 });
@@ -487,6 +667,12 @@ async function defaultReminders(page, dataDir, shots) {
   await setView(page, "Month");
   await jump(page, "2027-03-25");
   await page.waitForSelector('.cal-day[data-date="2027-03-25"]', { timeout: 10000 });
+  await page.waitForFunction(() => !document.querySelector(".cal-body").inert);
+  const separatedWeeks = await page.locator(".cal-month-week").evaluateAll((weeks) => {
+    const boxes = weeks.map((week) => week.getBoundingClientRect());
+    return boxes.every((box, i) => !i || box.top >= boxes[i - 1].bottom - 1);
+  });
+  check("month weeks do not overlap while the reminder panel is open", separatedWeeks);
   await clickCellSpace(page, "2027-03-25");
   const chosen = async () => [await page.inputValue('.cal-modal select[aria-label="Reminder 1"]'), await page.inputValue('.cal-modal select[aria-label="Reminder 2"]')];
   check("a new all-day event starts with the defaults as days before", JSON.stringify(await chosen()) === '["d:7:09:00","d:1:09:00"]', JSON.stringify(await chosen()));
@@ -547,16 +733,53 @@ async function narrowLayout(browser, cookies, shots) {
   }
 }
 
+async function phoneFiredReminderLayout(browser, cookies) {
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, timezoneId: ZONE, locale: "en-GB" });
+  try {
+    await ctx.addCookies(cookies);
+    const page = await ctx.newPage();
+    // The lab has no Discord token, so provide the longer retry status as a presentation fixture.
+    await page.route(/\/api\/calendar\/fired$/, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      for (const reminder of body.reminders) if (!reminder.seenAt) reminder.delivery = "retrying";
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(`http://127.0.0.1:${PORT}/`, { timeout: 45000 });
+    await page.waitForSelector(".accounts .acct", { state: "attached", timeout: 30000 });
+    await page.selectOption('select[aria-label="Board area"]', "calendar").catch(() => page.click(".board-tab.bt-calendar"));
+    const fresh = page.locator(".cal-fired-row.new");
+    await fresh.waitFor({ timeout: 15000 });
+    check("the phone reminder shows the full Discord retry status", await fresh.locator(".cal-fired-delivery").textContent() === "Discord failed, retrying · on Notes");
+    const fits = await fresh.evaluate((row) => {
+      const panel = row.closest(".cal-fired");
+      const bounds = panel.getBoundingClientRect();
+      return {
+        overflow: panel.scrollWidth - panel.clientWidth,
+        inside: [...row.querySelectorAll(".cal-fired-delivery, .cal-fired-actions button")].every((el) => {
+          const box = el.getBoundingClientRect();
+          return box.left >= bounds.left - 1 && box.right <= bounds.right + 1;
+        }),
+      };
+    });
+    check("a phone reminder fits its Discord status and both actions without sideways scrolling", fits.overflow <= 1 && fits.inside, JSON.stringify(fits));
+    check("a phone reminder keeps Show and Mark seen available", await fresh.locator('button:text-is("Show")').isVisible() && await fresh.locator('button:text-is("Mark seen")').isVisible());
+  } finally {
+    await ctx.close();
+  }
+}
+
 (async () => {
   requireBuild();
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "calendar-lab-"));
+  const env = { DISCORD_BOT_TOKEN: "", DISCORD_USER_ID: "", DISCORD_CHANNEL_ID: "" };
   killInstance(PORT);
-  let child = await boot({ dataDir, port: PORT });
+  let child = await boot({ dataDir, port: PORT, env });
   child.kill();
   killInstance(PORT);
   await new Promise((r) => setTimeout(r, 1500));
   seedSchedules(dataDir);
-  child = await boot({ dataDir, port: PORT });
+  child = await boot({ dataDir, port: PORT, env });
   let code = 1;
   let browser;
   try {
@@ -620,6 +843,9 @@ async function narrowLayout(browser, cookies, shots) {
     await reminderDelivery(page, dataDir);
     await firedReminderCount(page, shots);
     await createReminderSchedule(page, dataDir);
+    await longLinkReminderFallback(page, dataDir);
+    await firedScheduleTargets(page, dataDir);
+    await firedReminderRaces(page, dataDir);
     await defaultReminders(page, dataDir, shots);
     await persistence(page);
 
@@ -628,6 +854,7 @@ async function narrowLayout(browser, cookies, shots) {
     const cookies = await ctx.cookies();
     await ctx.close();
     await narrowLayout(browser, cookies, shots);
+    await phoneFiredReminderLayout(browser, cookies);
     code = check.summary();
   } catch (e) {
     console.error(e);

@@ -18,6 +18,7 @@ import type { DispatchInput } from "../orchestrator/api.js";
 import { CalendarService } from "../calendar/calendarService.js";
 import { registerCalendarRoutes } from "../calendar/routes.js";
 import { FiredReminders } from "../calendar/firedReminders.js";
+import { OperatorNotes } from "../orchestrator/notes.js";
 import { occurrenceDates } from "../calendar/recurrence.js";
 import type { CalendarOccurrence, CalendarRange } from "../calendar/types.js";
 import { epochToWall, formatDate, formatDateTime, parseDate, wallToEpoch, dayNumber, addDays } from "../calendar/zoned.js";
@@ -611,6 +612,62 @@ async function firedList(): Promise<void> {
   stop();
 }
 
+function interruptedDeliveries(): void {
+  console.log("calendar: interrupted reminder delivery survives a restart honestly");
+  const restartPath = join(dir, "interrupted.sqlite");
+  const first = new Db(restartPath);
+  const before = new FiredReminders(first, hub, () => clock);
+  const input = { source: "event" as const, refId: "synthetic-event", occurrence: "2027-08-04", startsAt: clock + 60_000, title: "Synthetic interrupted reminder", text: "Synthetic reminder text", dueAt: clock };
+  const sending = before.record(input);
+  const retrying = before.record({ ...input, source: "schedule", refId: "synthetic-schedule", occurrence: null });
+  before.setDelivery(retrying, "retrying", "Synthetic Discord failure; retrying in 60s.");
+  before.markSeen([sending]);
+  const settled = ["sent", "failed", "withdrawn"] as const;
+  for (const delivery of settled) before.setDelivery(before.record({ ...input, title: `Synthetic ${delivery}` }), delivery, `Synthetic ${delivery} reason`);
+  const expected = before.list();
+  const seen = expected.find((r) => r.id === sending)!.seenAt;
+  const unseen = before.unseen();
+  const firstNotes = new OperatorNotes(first, hub);
+  firstNotes.add({ body: "Synthetic existing retry fallback" });
+  first.raw.close();
+
+  const reopened = new Db(restartPath);
+  const after = new FiredReminders(reopened, hub, () => clock + 1000);
+  const notes = new OperatorNotes(reopened, hub);
+  const fallback = (title: string, text: string, why: string) => {
+    const result = notes.add({ body: `${title}: ${text}`, threadTitle: why });
+    if (!result.ok) throw new Error(result.error);
+  };
+  check("restart recovery reconciles only the two interrupted deliveries", after.recoverInterrupted(fallback) === 2);
+  const recovered = after.list();
+  const initialSend = recovered.find((r) => r.id === sending)!;
+  const stoppedRetry = recovered.find((r) => r.id === retrying)!;
+  check("an interrupted send is unconfirmed, never claimed delivered or not delivered", initialSend.delivery === "interrupted" && !!initialSend.deliveryNote?.includes("could not be confirmed"), initialSend);
+  check("an interrupted retry stops without claiming delivery or non-delivery", stoppedRetry.delivery === "interrupted" && !!stoppedRetry.deliveryNote?.includes("retries stopped") && stoppedRetry.deliveryNote.includes("could not be confirmed"), stoppedRetry);
+  check("the initial send gains a durable Note while the existing retry Note stays", notes.list().length === 2 && notes.list().some((n) => n.body === "Synthetic existing retry fallback") && notes.list().some((n) => n.body === `${input.title}: ${input.text}`));
+  check("recovery preserves the reminder identity, content, times and acknowledgement", initialSend.seenAt === seen && after.unseen() === unseen && expected.every((r) => {
+    const actual = recovered.find((a) => a.id === r.id)!;
+    return JSON.stringify({ ...actual, delivery: r.delivery, deliveryNote: r.deliveryNote }) === JSON.stringify(r);
+  }));
+  check("settled deliveries retain their status and reason", expected.filter((r) => settled.includes(r.delivery as typeof settled[number])).every((r) => JSON.stringify(recovered.find((a) => a.id === r.id)) === JSON.stringify(r)));
+  check("repeated recovery adds no duplicate Notes", after.recoverInterrupted(fallback) === 0 && notes.list().length === 2);
+
+  const interruptedAgain = after.record({ ...input, title: "Synthetic rollback reminder" });
+  const notesBefore = notes.list().length;
+  let rejected = false;
+  try {
+    after.recoverInterrupted((...args) => {
+      fallback(...args);
+      throw new Error("Synthetic fallback transaction failure");
+    });
+  } catch {
+    rejected = true;
+  }
+  check("a failed fallback rolls back both its Note and its delivery status", rejected && notes.list().length === notesBefore && after.list().find((r) => r.id === interruptedAgain)?.delivery === "sending");
+  check("the rolled-back fallback can be recovered once", after.recoverInterrupted(fallback) === 1 && notes.list().length === notesBefore + 1);
+  reopened.raw.close();
+}
+
 function migration(): void {
   console.log("calendar: existing databases");
   // An install from before the calendar has scheduled_tasks but none of the calendar tables.
@@ -722,6 +779,7 @@ async function main(): Promise<void> {
   await severalAndDefaultReminders();
   await schedulesOnTheCalendar();
   await firedList();
+  interruptedDeliveries();
   migration();
   await api();
   if (failures) {

@@ -55,7 +55,7 @@ export function MonthView({ from, to, anchor, occurrences, actions, onCursor }: 
           </div>
         ))}
       </div>
-      <div className="cal-month-body" style={{ gridTemplateRows: `repeat(${weeks.length}, minmax(0, 1fr))` }}>
+      <div className="cal-month-body" style={{ gridTemplateRows: `repeat(${weeks.length}, minmax(min-content, 1fr))` }}>
         {weeks.map((week) => (
           <div className="cal-month-week" role="row" key={formatDate(week[0]!)}>
             {week.map((date) => {
