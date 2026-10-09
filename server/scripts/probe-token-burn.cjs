@@ -22,6 +22,8 @@
 // GOTCHAS:
 //   • A run's calls are the transcript calls inside its [started_at, ended_at] window; one assistant
 //     message streams as several lines with the same message id, so calls are deduplicated by id.
+//   • SDK totals include delegated agents. Read their adjacent subagents/*.jsonl too; otherwise
+//     legitimate delegated work looks like session-cumulative over-counting.
 //   • Rows written before the sessionUsage fix are inflated by design — the drift check will flag old
 //     resumed runs until they age out of the window. That is the old data, not a regression; a drift
 //     on a run started after the fix IS one.
@@ -59,24 +61,33 @@ function sessionFiles() {
 function transcriptCalls(file) {
   const calls = new Map();
   const compactions = [];
-  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
-    if (line.includes('"compact_boundary"')) {
+  const children = path.join(path.dirname(file), path.basename(file, ".jsonl"), "subagents");
+  const files = [file];
+  if (fs.existsSync(children)) {
+    files.push(...fs.readdirSync(children, { withFileTypes: true })
+      .filter(entry => entry.isFile() && entry.name.endsWith(".jsonl"))
+      .map(entry => path.join(children, entry.name)));
+  }
+  for (const transcript of files) {
+    for (const line of fs.readFileSync(transcript, "utf8").split("\n")) {
+      if (line.includes('"compact_boundary"')) {
+        try {
+          compactions.push(Date.parse(JSON.parse(line).timestamp));
+        } catch {}
+        continue;
+      }
+      if (!line.includes('"assistant"') || !line.includes('"usage"')) continue;
+      let entry;
       try {
-        compactions.push(Date.parse(JSON.parse(line).timestamp));
-      } catch {}
-      continue;
+        entry = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const u = entry.type === "assistant" ? entry.message?.usage : undefined;
+      if (!u || calls.has(entry.message.id)) continue;
+      const context = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      calls.set(entry.message.id, { at: Date.parse(entry.timestamp), context, tokens: context + (u.output_tokens || 0) });
     }
-    if (!line.includes('"assistant"') || !line.includes('"usage"')) continue;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const u = entry.type === "assistant" ? entry.message?.usage : undefined;
-    if (!u || calls.has(entry.message.id)) continue;
-    const context = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-    calls.set(entry.message.id, { at: Date.parse(entry.timestamp), context, tokens: context + (u.output_tokens || 0) });
   }
   return { calls: [...calls.values()].sort((a, b) => a.at - b.at), compactions };
 }
@@ -224,4 +235,5 @@ function main() {
   else console.log("✓ no burn pattern crossed a warning threshold");
 }
 
-main();
+module.exports = { transcriptCalls, warnings };
+if (require.main === module) main();

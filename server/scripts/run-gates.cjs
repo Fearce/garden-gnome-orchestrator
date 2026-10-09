@@ -272,6 +272,7 @@ const GATES = [
   "test:audit-overrides",
   "test:email-hygiene",
   "test:token-fixtures",
+  "test:token-burn",
   "test:privacy-guard",
   "test:qa-loop-check",
   "test:ceiling-economics",

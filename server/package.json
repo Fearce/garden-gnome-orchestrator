@@ -325,6 +325,7 @@
     "test:audit-overrides": "node scripts/audit-overrides.test.cjs",
     "test:email-hygiene": "node scripts/email-hygiene.test.cjs",
     "test:token-fixtures": "node scripts/token-fixtures.test.cjs",
+    "test:token-burn": "node scripts/probe-token-burn.test.cjs",
     "test:privacy-guard": "node scripts/privacy-guard.test.cjs",
     "test:qa-loop-check": "node scripts/qa-loop-check.test.cjs",
     "test:ceiling-economics": "node scripts/ceiling-economics.test.cjs",
