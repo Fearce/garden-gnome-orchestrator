@@ -13,6 +13,7 @@ const {
   normalizeProviderPayload,
   normalizeRoutingPolicy,
   parseOptions,
+  shutdownProbeBrowser,
   validateProviders,
   validateSmallTaskBundle,
   validateSmallTaskPolicy,
@@ -185,6 +186,22 @@ void (async () => {
   assert.deepEqual(await emptySnapshot, { threads: 0, accounts: 0 }, "empty installations remain valid");
   assert.equal(await within(Promise.resolve("ready"), 20, "immediate operation"), "ready");
   await assert.rejects(within(new Promise(() => {}), 10, "stalled operation"), /stalled operation exceeded 10ms/);
+  let ownedKills = 0;
+  await shutdownProbeBrowser({
+    kill: async () => { ownedKills++; },
+    close: async () => { throw new Error("graceful close would orphan the Windows renderer"); },
+  }, 20);
+  assert.equal(ownedKills, 1, "cleanup uses only the launched BrowserServer's process-tree owner");
+  await assert.rejects(
+    shutdownProbeBrowser({ kill: async () => { throw new Error("owned browser did not exit"); } }, 20),
+    /owned browser did not exit/,
+    "native process-cleanup failures remain probe failures",
+  );
+  await assert.rejects(
+    shutdownProbeBrowser({ kill: () => new Promise(() => {}) }, 10),
+    /browser shutdown exceeded 10ms/,
+    "a genuinely stuck browser cleanup cannot pass or block the probe forever",
+  );
   console.log("console-smoke: provider, routing-policy, bundle, and timeout assertions passed");
 })().catch((error) => {
   console.error(error);

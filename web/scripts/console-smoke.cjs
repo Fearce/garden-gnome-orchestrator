@@ -273,6 +273,13 @@ function within(promise, timeoutMs, action) {
   });
 }
 
+/** Terminate only this probe's disposable browser while its process-tree owner still exists.
+ * Chromium's graceful exit can leave Windows renderer/stdout handles alive for tens of seconds.
+ * BrowserServer.kill owns that tree and waits for process exit and temporary-profile cleanup. */
+function shutdownProbeBrowser(browserServer, timeoutMs = BROWSER_CLOSE_TIMEOUT_MS) {
+  return within(browserServer.kill(), timeoutMs, "browser shutdown");
+}
+
 /** An open socket precedes hello. Wait for the board's data, including valid empty installations. */
 function watchConsoleSnapshot(page) {
   return new Promise((resolve) => {
@@ -325,8 +332,8 @@ async function main() {
   let uiBundleError = null;
 
   console.log(`[INFO] starting browser smoke: ${base}`);
-  const browser = await within(
-    chromium.launch({ headless: true, timeout: BROWSER_LAUNCH_TIMEOUT_MS }),
+  const browserServer = await within(
+    chromium.launchServer({ headless: true, timeout: BROWSER_LAUNCH_TIMEOUT_MS }),
     BROWSER_LAUNCH_TIMEOUT_MS + 1_000,
     "browser launch",
   );
@@ -334,6 +341,11 @@ async function main() {
   let view;
   let browserShutdownError;
   try {
+    const browser = await within(
+      chromium.connect(browserServer.wsEndpoint(), { timeout: REQUEST_TIMEOUT_MS }),
+      REQUEST_TIMEOUT_MS,
+      "browser connection",
+    );
     console.log("[INFO] browser launched; authenticating");
     page = await within(browser.newPage({ viewport: { width: 1280, height: 900 } }), REQUEST_TIMEOUT_MS, "new page");
     const snapshotReady = watchConsoleSnapshot(page);
@@ -382,7 +394,7 @@ async function main() {
     if (options.shot) await page.screenshot({ path: options.shot, timeout: REQUEST_TIMEOUT_MS });
   } finally {
     try {
-      await within(browser.close(), BROWSER_CLOSE_TIMEOUT_MS, "browser shutdown");
+      await shutdownProbeBrowser(browserServer);
     } catch (error) {
       // Cleanup must not replace an inspection error or discard the checks already collected.
       browserShutdownError = error.message || String(error);
@@ -463,6 +475,7 @@ module.exports = {
   validateSmallTaskBundle,
   validateSmallTaskPolicy,
   validateUiBundleText,
+  shutdownProbeBrowser,
   within,
   watchConsoleSnapshot,
 };
