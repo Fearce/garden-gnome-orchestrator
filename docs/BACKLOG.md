@@ -137,6 +137,8 @@ same commit as the fix. Git history keeps the record.
 
 ## Ready (priority order)
 
+1. **Finish the staged Codex CLI update at an idle boundary** (2026-10-09, Tansy Copperfern; nightly task ef639c35): the independent provider probe reports installed 0.161.0 versus stable 0.162.0; `cli_auto_update_status` is waiting for no active Codex turn. Let Codex agents finish, then verify the updater installed 0.162.0 and rerun `probe:provider-toolchain`.
+
 1. **Recover Codex tasks rejected by the turn/start input-size limit** (2026-10-08, Saffron Wicket; task d79fb231): nightly probe found six parked tasks with `input_too_large`, limit 1,048,576 characters; one rejected 1,194,397 after 121 minutes while its saved brief was only 8,084 characters. Trace accumulated provider input and add bounded, history-preserving recovery; an oversized fresh kickoff must not loop or silently truncate owner instructions.
 
 1. **Define a separate packed-reference lock recovery policy** (2026-10-07, Flax Thorpe; task 6973a43e): a proven orphan was manually audited and archived with unchanged reference hashes after queued commits and rebases reported `packed-refs.lock`. Automatic recovery intentionally covers only `index.lock`; retain conservative ownership and reference-preservation checks for any extension.
