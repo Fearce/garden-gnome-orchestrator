@@ -322,6 +322,19 @@ async function taskRecallWaitsOnlyForOwnerWords(): Promise<void> {
   const [first, joined] = await Promise.all([recall.recall("kettle descaling", "prompt", 2, 5_000), recall.recall("kettle descaling", "prompt", 2, 5_000)]);
   assert.equal(lookups, 1, "the hook joins a prefetch already in flight instead of asking again");
   assert.deepEqual([first.cached, joined.cached], [false, true]);
+
+  const releases: Array<() => void> = [];
+  const invalidated = new MemoryRecall(() => new Promise<[]>(resolve => releases.push(() => resolve([]))), null, () => false);
+  const obsolete = invalidated.recall("kettle descaling", "prompt", 2, 5_000);
+  invalidated.clearCache();
+  const fresh = invalidated.recall("kettle descaling", "prompt", 2, 5_000);
+  assert.equal(releases.length, 2, "a corpus change must start a fresh lookup instead of joining stale work");
+  releases[0]!();
+  await obsolete;
+  const sameRevision = invalidated.recall("kettle descaling", "prompt", 2, 5_000);
+  assert.equal(releases.length, 2, "completion of stale work must not evict the current in-flight lookup");
+  releases[1]!();
+  await Promise.all([fresh, sameRevision]);
 }
 
 async function codexInputsExtractOnlyOwnerWords(dir: string): Promise<void> {

@@ -78,7 +78,7 @@ export class MemoryRecall {
     try {
       return { ...(await work), cached: false, ms: Date.now() - started };
     } finally {
-      this.inFlight.delete(key);
+      if (this.inFlight.get(key) === work) this.inFlight.delete(key);
     }
   }
 
@@ -93,6 +93,7 @@ export class MemoryRecall {
   clearCache(): void {
     this.revision++;
     this.cache.clear();
+    this.inFlight.clear();
   }
 
   private async judge(query: string, mode: RecallMode, limit: number, pool: SearchCandidate[], budgetMs: number): Promise<Omit<RecallResult, "cached" | "ms">> {
