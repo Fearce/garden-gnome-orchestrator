@@ -28,7 +28,7 @@ same commit as the fix. Git history keeps the record.
 ## Shipped, awaiting live proof
 
 - **QA: preserve Calendar reminder counts, executed-reminder links and interrupted delivery status** (4837cef2; 2026-10-09, Sedge Morrow; task 30f120db).
-  Integrated/pushed from ggo/calendar-reminder-qa-30f120db to master; live 42d1ae94 verified. Calendar browser checks 106/106, Calendar/scheduler tests, Discord tests 66/66, types/builds, privacy and README claims 74/74 pass. Live tab count, highlighted reminder causes and delivery labels verified. No owner-facing artifacts; independent QA required.
+  Integrated/pushed from ggo/calendar-reminder-qa-30f120db to master; live 42d1ae94 verified. Calendar browser checks 106/106, Calendar/scheduler tests, Discord tests 66/66, types/builds, privacy and README claims 74/74 pass. Live tab count, highlighted reminder causes and delivery labels verified. No owner-facing artifacts; independent QA required. Task scratch deletion was rejected by execution policy; hosts are stopped and junctions removed, but operator cleanup remains required.
 
 
 - **QA nightly sweep: preserve failed-resume input, active authentication and deliverable cards** (0e2d18a8, 3080f755, 9c292ff0, a79ed497, 9e472a08; 2026-10-09, Codex QA; task ef639c35).
@@ -241,6 +241,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-09 **Pointing at a header gnome stops the workshop so its tooltip stays readable** (5c27daef, d8695ba7, Pausewick): web build live on :4317; `beta-gnomes.browser.cjs` holds loop time and every place for 1.5 s while hovered, then resumes without a jump.
 
 - 2026-10-09 **Give hubless Surveillance saves a configuration request deadline** (Codex QA; task 9ed5479f): two runs reproduced the test's 2s health timeout during ffmpeg lookup; a 30s deadline on that config PUT preserves production health checks. Full module suite passes (38/38 integration checks); live proxy decodes and refreshes five cameras with five active 24/7 recorders, viewer browser 28/28 and socket access checks pass.
 
