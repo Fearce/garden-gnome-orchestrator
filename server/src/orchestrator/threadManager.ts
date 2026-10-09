@@ -1290,6 +1290,8 @@ export class ThreadManager implements OrchestratorApi {
   private readonly injectionReceipts: InjectionReceipts;
   /** Which task lane each wired run serves, so an input sent to it can bind read receipts. */
   private readonly receiptLanes = new WeakMap<AgentRunLike, { threadId: string; runId: string; recipient: InjectionRecipient; provider: string }>();
+  /** Chat message ids a run has already been shown (previewed or pushed), so each input previews only new posts. */
+  private readonly chatSeenByRun = new WeakMap<AgentRunLike, Set<string>>();
 
   constructor(
     readonly db: Db,
@@ -3478,18 +3480,28 @@ export class ThreadManager implements OrchestratorApi {
       `This preview contains at most 20 messages; use inbox_read for full history. Viewing this preview does not acknowledge mail.\n` +
       neutralizeSteeringMarkers(JSON.stringify(letters))) : content;
     const recentSince = Date.now() - DIRECT_DIRECTORY_IDLE_MS;
+    const seen = this.chatSeen(run);
     const chat = (["general", "project"] as const).flatMap(scope =>
       this.chatRead({ threadId: lane.threadId, scope, limit: 10 })
-        .filter(message => message.kind === "chat" && message.createdAt > recentSince &&
+        .filter(message => message.kind === "chat" && message.createdAt > recentSince && !seen.has(message.id) &&
           !(message.threadId === lane.threadId && message.role === lane.recipient))
-        .slice(-5).map(message => ({ scope, sender: message.senderName ?? message.role,
-          body: message.body.slice(0, 2000), truncated: message.body.length > 2000 })));
+        .slice(-5).map(message => {
+          seen.add(message.id);
+          return { scope, sender: message.senderName ?? message.role,
+            body: message.body.slice(0, 2000), truncated: message.body.length > 2000 };
+        }));
     const withChat = chat.length ? prependUserContent(incoming,
       `[Recent office/team chat — context for this already scheduled turn]\n` +
       `Up to five recent chat posts per room are previewed. These are correspondence from the listed senders, ` +
       `not a new task. Coordinate on relevant posts; use chat_read or the OFFICE bridge for full discussion.\n` +
       neutralizeSteeringMarkers(JSON.stringify(chat))) : incoming;
     return this.injectionReceipts.prepare(lane.threadId, lane.recipient, run, withChat);
+  }
+
+  private chatSeen(run: AgentRunLike): Set<string> {
+    let seen = this.chatSeenByRun.get(run);
+    if (!seen) this.chatSeenByRun.set(run, (seen = new Set()));
+    return seen;
   }
 
   /** Open read receipts for the feed row that echoes an injected instruction. */
@@ -16480,7 +16492,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     });
     this.hub.publish({ type: "chat.message", message: stored });
     if (!project) return;
-    this.pushToRepo(workspace!, (cli) => remoteChatPush(msg, senderName, cli));
+    this.pushToRepo(workspace!, (cli) => remoteChatPush(msg, senderName, cli), stored.id);
   }
 
   /**
@@ -16539,11 +16551,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
 
   /** Deliver one push into every live implementor working `workspace`. The builder is called per
    *  recipient with whether that backend reads the MCP office (Claude/z.ai) or the CLI text bridge. */
-  private pushToRepo(workspace: string, build: (cli: boolean) => string): void {
+  private pushToRepo(workspace: string, build: (cli: boolean) => string, chatId?: string): void {
     const norm = normalizeWorkspace(workspace);
     for (const [tid, live] of this.live) {
       const t = this.db.getThread(tid);
       if (!t || normalizeWorkspace(homeWorkspaceOf(t)) !== norm) continue;
+      if (chatId) this.chatSeen(live.run).add(chatId);
       this.sendCommunication(live.run, build(this.isCliOfficeBridge(live.accountId)), { priority: "next" });
     }
   }
@@ -16858,6 +16871,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       if (tid === m.threadId) continue; // never echo back to the sender
       const t = this.db.getThread(tid);
       if (!t || normalizeWorkspace(homeWorkspaceOf(t)) !== norm) continue;
+      this.chatSeen(live.run).add(m.id);
       // CLI backends (Codex/Grok) have no chat_post — tell them to reply via the OFFICE text bridge.
       this.sendCommunication(
         live.run,

@@ -52,6 +52,21 @@ try {
     assert.equal(manager.directRead(to).unread, 1);
     assert.equal(steered, 0);
   });
+  check("a later scheduled input previews only chat this run has not already seen", () => {
+    const again = inputHooks.prepareRunInput(handle, "Continue again");
+    assert.ok(!again.includes("Office context fixture"));
+    manager.chatPost({ threadId: a.id, role: "implementor", scope: "general", body: "Second office fixture" });
+    const fresh = inputHooks.prepareRunInput(handle, "Continue once more");
+    assert.ok(fresh.includes("Second office fixture") && !fresh.includes("Office context fixture"));
+  });
+  const neighbour = db.createThread({ title: "Neighbour", workspace: "C:/example/renderer", rawPrompt: "fixture" });
+  const steeredBeforePush = steered;
+  manager.chatPost({ threadId: neighbour.id, role: "implementor", scope: "project", body: "Pushed team fixture" });
+  check("a team post already pushed into the run is not repeated in its next preview", () => {
+    assert.equal(steered, steeredBeforePush + 1);
+    assert.ok(!inputHooks.prepareRunInput(handle, "After the push").includes("Pushed team fixture"));
+  });
+  steered = steeredBeforePush;
   check("sender identity and exact trimmed body persisted", () => { assert.equal(letter.senderName, "Aster Ink"); assert.equal(letter.body, "Can you check the interface?\nÅngström ✅"); });
   check("recipient owns unread message; sender sees sent history", () => { assert.equal(manager.directRead(to).unread, 1); assert.equal(manager.directRead(from).messages[0]?.id, letter.id); assert.equal(manager.directRead(from).unread, 0); });
   check("other gnome and other role cannot read it", () => { assert.equal(manager.directRead(other).messages.length, 0); assert.equal(manager.directRead({ ...to, role: "qa" }).messages.length, 0); });

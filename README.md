@@ -576,6 +576,8 @@ reply. At an already scheduled start, resume or follow-up, implementors, planner
 QA and reviewers also receive a preview of up to 20 unread incoming messages
 and up to five recent posts from each of the general office and their repository's
 team room (from the last 24 hours, with long posts shortened in the preview).
+A run sees each post once: posts already pushed into it or shown in an earlier
+preview are left out of the next one.
 This does not schedule a turn or acknowledge mail; more messages remain available
 through inbox read. Existing active sessions gain the inbox instructions on their next kickoff.
 
