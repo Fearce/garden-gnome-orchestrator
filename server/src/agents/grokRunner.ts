@@ -12,6 +12,7 @@ import { trackBlockingSync } from "../eventLoopMonitor.js";
 import type { AgentEvent, ChatScope, GrokEffort, RateLimitInfo } from "../types.js";
 import { withAgentToolPath } from "./env.js";
 import { InputLedger } from "./inputLedger.js";
+import { boundBatchedInput } from "./batchedInput.js";
 import { latestFamilyModel } from "./modelFamily.js";
 import { endsWithOpenQuestionMarker, endsWithOpenDeliverableMarker, endsWithOpenManualDeploymentMarker, endsWithOpenOfficeMarker, endsWithOpenOperatorNoteMarker, endsWithOpenSubTaskMarker, endsWithOpenGoalProgressMarker, extractCliBridgeMessages } from "./officeBridge.js";
 import {
@@ -832,7 +833,16 @@ export class GrokAgentRun implements AgentRunLike {
     // resume turn rather than ending, so the steering isn't dropped.
     if (this.pendingSends.length) {
       const batch = this.pendingSends.splice(0, this.pendingSends.length);
-      const next = batch.map((s) => s.text).filter(Boolean).join("\n\n");
+      // Bounded like Codex's batch (agents/batchedInput.ts): hours of office pushes must not become one
+      // multi-megabyte prompt. Owner steering is always kept whole.
+      const bounded = boundBatchedInput(batch.map((s) => s.text));
+      if (bounded.omitted) {
+        this.emit({
+          type: "text",
+          text: `⚠️ ${bounded.omitted} older queued office/status update(s) (${bounded.omittedChars.toLocaleString("en-US")} characters) were left out of the next Grok turn to bound its input; owner steering was kept in full.`,
+        });
+      }
+      const next = bounded.text;
       this.lastResult = undefined; // the chained turn produces the next result()
       void this.runTurn(next, this.sessionId, batch.map((s) => s.inputId));
       return;

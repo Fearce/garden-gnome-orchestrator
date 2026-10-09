@@ -2,9 +2,11 @@ import { CodexAgentRun } from "../agents/codexRunner.js";
 import { GrokAgentRun } from "../agents/grokRunner.js";
 import { AgentRun, type AgentRunLike, type SendOpts } from "../agents/runner.js";
 import { config } from "../config.js";
+import { OWNER_STEERING_TAG } from "../agents/batchedInput.js";
 
-/** Only the orchestrator emits this marker; `neutralizeSteeringMarkers` escapes it in peer text. */
-export const OWNER_STEERING_TAG = "OWNER STEERING";
+/** Only the orchestrator emits this marker; `neutralizeSteeringMarkers` escapes it in peer text. The CLI
+ *  runners' bounded follow-up batching (`agents/batchedInput.ts`) keys on it to never drop owner text. */
+export { OWNER_STEERING_TAG };
 
 /**
  * Format a live owner injection consistently for every implementor backend.

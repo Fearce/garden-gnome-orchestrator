@@ -140,6 +140,7 @@
     "test:unprompted-result": "tsx src/tests/unpromptedResult.test.ts",
     "test:injection": "tsx src/tests/injection.test.ts",
     "test:injection-receipts": "tsx src/tests/injectionReceipts.test.ts",
+    "test:batched-input": "tsx src/tests/batchedInput.test.ts",
     "test:auto-title": "tsx src/tests/autoTitle.test.ts",
     "test:title-ownership": "tsx src/tests/titleOwnership.test.ts",
     "test:pinned-tasks": "tsx src/tests/pinnedTasks.test.ts && tsx --tsconfig ../web/tsconfig.json ../web/scripts/pinned-board-ui.test.tsx",

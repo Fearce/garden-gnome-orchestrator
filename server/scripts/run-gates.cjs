@@ -97,6 +97,7 @@ const GATES = [
   "test:unprompted-result",
   "test:injection",
   "test:injection-receipts",
+  "test:batched-input",
   "test:auto-title",
   "test:voice-announce",
   "test:discord-notify",

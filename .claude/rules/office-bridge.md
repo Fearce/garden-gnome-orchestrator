@@ -64,6 +64,13 @@ text, which the runner intercepts and strips:
   extractor's final trim must respect the OTHER open markers, or it eats the trailing
   space the next chunk appends to (`claiming db.tsand schema.ts`).
 
+- **The queued follow-up batch is bounded** (`agents/batchedInput.ts`). A CLI turn takes no mid-turn
+  input, so every office push sent during an hours-long Codex/Grok turn is queued and joined into the
+  next prompt. Unbounded, one batch reached 956,965 characters and the next turns were refused by Codex's
+  `turn/start` limit (`input_too_large`, 1,048,576) after hours of work (2026-10-08). The bound keeps
+  owner steering (`[OWNER STEERING` frame) verbatim, keeps the newest ambient entries and names the rest.
+  Don't join `pendingSends` by hand in a new runner. Gate: `test:batched-input`.
+
 ## Debug
 ```
 npm run test:office-bridge --prefix server

@@ -14,6 +14,7 @@ import type { AgentEvent, ChatScope, CodexEffort, RateLimitInfo, TokenUsage } fr
 import { NATIVE_MEMORY_ENV, OwnerInputBuffer, promptRecallBlock, sessionRecallBlock, type AgentMemory, type AgentRunKind } from "../memory/agentHooks.js";
 import { withAgentToolPath } from "./env.js";
 import { InputLedger } from "./inputLedger.js";
+import { boundBatchedInput, CODEX_TURN_INPUT_MAX_CHARS } from "./batchedInput.js";
 import { extractCliBridgeMessages } from "./officeBridge.js";
 import { CodexRunMeter } from "./sessionUsage.js";
 import {
@@ -613,7 +614,9 @@ export class CodexAgentRun implements AgentRunLike {
     // that file into the dedicated CODEX_HOME (isolated from the operator's personal ~/.codex), PREFERRING
     // a ChatGPT-plan login and falling back to the API key, and returns the resolved mode. CODEX_HOME
     // must exist before spawn or codex errors + exits 1.
-    const turnPrompt = await this.withRecall(prompt, !resumeId);
+    let turnPrompt = await this.withRecall(prompt, !resumeId);
+    // Recall is optional context: never let it push an otherwise acceptable prompt over `turn/start`'s limit.
+    if (turnPrompt.length > CODEX_TURN_INPUT_MAX_CHARS && prompt.length <= CODEX_TURN_INPUT_MAX_CHARS) turnPrompt = prompt;
     if (this.stopped) {
       this.turnStarting = false;
       return;
@@ -969,6 +972,19 @@ export class CodexAgentRun implements AgentRunLike {
     return true;
   }
 
+  /** The follow-ups queued during a busy turn, bounded so the next `turn/start` stays under Codex's input
+   *  limit (`agents/batchedInput.ts`); a trimmed batch says so in the feed as well as in the prompt. */
+  private boundedFollowUps(texts: string[]): string {
+    const bounded = boundBatchedInput(texts);
+    if (bounded.omitted) {
+      this.emit({
+        type: "text",
+        text: `⚠️ ${bounded.omitted} older queued office/status update(s) (${bounded.omittedChars.toLocaleString("en-US")} characters) were left out of the next Codex turn to stay under its input limit; owner steering was kept in full.`,
+      });
+    }
+    return bounded.text;
+  }
+
   /** Emit the per-turn result event (mirrors AgentRun's `result` SDK message) and cache it. */
   private finishTurn(partial: { subtype: string; isError: boolean; result?: string; numTurns?: number; tokenUsage?: TokenUsage }): void {
     this.clearWatchdog();
@@ -1009,7 +1025,7 @@ export class CodexAgentRun implements AgentRunLike {
     // session id was captured, start fresh (no resume) so the steering still lands.
     if (this.pendingSends.length) {
       const batch = this.pendingSends.splice(0, this.pendingSends.length);
-      const next = batch.map((s) => s.text).filter(Boolean).join("\n\n");
+      const next = this.boundedFollowUps(batch.map((s) => s.text));
       const imgs = batch.flatMap((s) => s.images);
       const ids = batch.map((s) => s.inputId);
       if (this.restartResumeAsFresh(next, imgs, ids)) return;
