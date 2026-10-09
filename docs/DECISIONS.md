@@ -44,6 +44,13 @@ families. Newest-in-family, task capability requirements, dedicated-pool exclusi
 caps and capacity gates still apply. Configured role defaults retain their existing floors.
 `test:auto-model`, `test:model-select` and `test:scoped-sonnet` exercise this boundary.
 
+Scope of the 2026-10-08 "Fable is illegal. Only opus" directive (raised after a goal step ran on Fable):
+it binds **Claude goal steps**, which stay on current Opus (`goalModelRoster`, `goals.ts`; saved goal
+pins on other tiers move to Opus). The commit that enforced it also narrowed all adaptive Claude picks
+to Opus; the 2026-10-09 nightly brief ("ALL models for ALL providers and ALL effort levels") reopened
+non-goal adaptive selection to every current Claude family, Fable included. Narrowing adaptive work
+again needs a new owner call, not a code-reading of either message.
+
 ## Genuinely still open
 
 Reconstructing this list from five closed briefs is exactly the waste this register exists to
