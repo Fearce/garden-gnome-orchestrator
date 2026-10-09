@@ -18,6 +18,8 @@ same commit as the fix. Git history keeps the record.
 
 - **QA nightly sweep: match Codex catalogs to dispatch authentication** (2026-10-09, Codex QA; task ef639c35).
 
+- **QA nightly sweep: verify urgent child jobs with explicit readiness barriers** (2026-10-09, Codex QA; task ef639c35).
+
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
