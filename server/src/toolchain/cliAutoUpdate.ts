@@ -32,6 +32,8 @@ const FIRST_CHECK_MS = 5 * 60_000;
 const RETRY_SOON_MS = 20 * 60_000;
 /** How often a downloaded Codex release looks for a moment with no Codex agent running. One indexed query. */
 const CODEX_IDLE_POLL_MS = 2_000;
+/** Written into the Codex scratch prefix once a download validated, so a later process can trust it. */
+const CODEX_STAGED_MARKER = "ggo-staged.json";
 const REGISTRY_TIMEOUT_MS = 15_000;
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
 const TYPECHECK_TIMEOUT_MS = 5 * 60_000;
@@ -384,6 +386,7 @@ export class CliAutoUpdater {
     this.sleep = deps.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.stageRoot = deps.stageRoot ?? join(deps.serverRoot, "data", "cli-auto-update");
     this.status = this.initialStatus();
+    if (!deps.standDownReason) this.swapStagedCodexAtBoot();
     // Published at construction, before the server listens, so the first connect snapshot carries it.
     this.deps.publish(this.status);
   }
@@ -641,7 +644,31 @@ export class CliAutoUpdater {
     if (native in manifest.optionalDependencies && !existsSync(join(staged, "node_modules", ...native.split("/")))) {
       return { error: `the staged package is missing its ${native} binary` };
     }
+    writeFileSync(join(prefix, CODEX_STAGED_MARKER), JSON.stringify({ version, staged }));
     return staged;
+  }
+
+  /** A busy fleet's only reliable moment with no Codex run is a restart: the ThreadManager constructor has
+   *  just stamped the previous process's runs interrupted, and their auto-resume waits four seconds. This
+   *  runs synchronously in the constructor, so a release an earlier process finished downloading swaps in
+   *  before any Codex launch. 2026-10-09 the only Codex gaps in 2 h were the ~4 s of three restarts. */
+  private swapStagedCodexAtBoot(): void {
+    try {
+      if (!this.deps.enabled() || this.deps.codexBusy()) return;
+      const launcher = this.deps.codexLauncher();
+      if (launcher.source !== "npm" || !existsSync(launcher.path)) return;
+      const marker = JSON.parse(readText(join(this.stageRoot, "codex", CODEX_STAGED_MARKER)) ?? "null") as { version?: unknown; staged?: unknown } | null;
+      if (typeof marker?.version !== "string" || typeof marker.staged !== "string" || !isStable(marker.version)) return;
+      const packageDir = resolve(dirname(launcher.path), "..");
+      const installed = readManifest(join(packageDir, "package.json")).version;
+      if (installed && !isStable(installed)) return;
+      if ((compareVersions(installed, marker.version) ?? 1) >= 0) return;
+      if (readManifest(join(marker.staged, "package.json")).version !== marker.version) return;
+      this.status = { ...this.status, codex: this.swapCodex({ version: marker.version, installed, packageDir, staged: marker.staged }) };
+      this.deps.kvSet(STATUS_KEY, JSON.stringify(this.status));
+    } catch (error) {
+      this.deps.log("warn", `CLI auto-update: the boot swap of a staged Codex release was skipped — ${reason(error)}`);
+    }
   }
 
   // ---- Claude: the Agent SDK dependency of this checkout ----

@@ -419,6 +419,35 @@ check("a Codex update downloads while Codex agents run, then swaps in at the fir
   cleanup(late);
 });
 
+check("a restart swaps in a Codex release an earlier process downloaded, before any agent resumes", async () => {
+  const CODEX_BUMP = { [SDK]: { version: "0.3.280" }, "@openai/codex": { version: "0.159.2" } };
+  const first = rig({ codexBusy: true, latest: CODEX_BUMP });
+  await first.updater.checkNow();
+  assert.equal(first.updater.current().codex.state, "waiting");
+  const busyBoot = restarted(first);
+  assert.equal(liveCodex(busyBoot), "0.156.1", "a Codex run still live at boot holds the swap");
+  busyBoot.enabled = false;
+  busyBoot.codexBusy = false;
+  const offBoot = restarted(busyBoot);
+  assert.equal(liveCodex(offBoot), "0.156.1", "auto-update switched off holds the swap");
+  offBoot.enabled = true;
+  const booted = restarted(offBoot);
+  assert.equal(liveCodex(booted), "0.159.2", "the idle moment between the reconciler and auto-resume is used");
+  assert.equal(booted.updater.current().codex.state, "updated");
+  assert.equal((JSON.parse(booted.kv.map.get("cli_auto_update_status")!) as CliAutoUpdateStatus).codex.state, "updated", "the swap is saved");
+  assert.deepEqual(booted.calls, [], "the boot swap needs no network or npm");
+  const again = restarted(booted);
+  assert.equal(again.updater.current().codex.state, "updated", "a later boot finds nothing to swap");
+  cleanup(again);
+
+  // A download cut off before it was validated leaves no marker, so a later boot never trusts it.
+  const partial = rig();
+  writeJson(join(partial.stageRoot, "codex", "node_modules", "@openai", "codex", "package.json"), { version: "0.159.2" });
+  const partialBoot = restarted(partial);
+  assert.equal(liveCodex(partialBoot), "0.156.1", "an unvalidated staged copy is not swapped in");
+  cleanup(partialBoot);
+});
+
 check("a Codex Desktop launcher or a deliberately installed prerelease is left alone", async () => {
   const desktop = rig({ launcher: "desktop" });
   await desktop.updater.checkNow();
