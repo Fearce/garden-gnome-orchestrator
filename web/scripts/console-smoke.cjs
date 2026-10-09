@@ -340,24 +340,18 @@ async function main() {
     console.log("[INFO] loading console");
     await page.goto(`${base}/`, { waitUntil: "domcontentloaded", timeout: REQUEST_TIMEOUT_MS });
     await page.waitForSelector(".topbar", { timeout: REQUEST_TIMEOUT_MS }).catch(() => {});
-    console.log("[INFO] waiting for live websocket");
-    await page.waitForFunction(
-      () => {
-        const conn = document.querySelector(".conn")?.textContent || "";
-        return /live/i.test(conn) && !/reconnect/i.test(conn);
-      },
-      null,
-      { timeout: WEBSOCKET_READY_TIMEOUT_MS },
-    ).catch(() => {});
-    const snapshot = await within(snapshotReady, WEBSOCKET_READY_TIMEOUT_MS, "initial console snapshot");
-    // Hello receipt alone is not proof React applied it. The fresh desktop page renders every account.
-    if (snapshot.accounts) {
-      await page.waitForFunction(
-        (count) => document.querySelectorAll(".acct").length >= count,
-        snapshot.accounts,
-        { timeout: WEBSOCKET_READY_TIMEOUT_MS },
-      );
-    }
+    console.log("[INFO] waiting for the initial console snapshot");
+    await within((async () => {
+      const snapshot = await snapshotReady;
+      // Hello receipt alone is not proof React applied it. The fresh desktop page renders every account.
+      if (snapshot.accounts) {
+        await page.waitForFunction(
+          (count) => document.querySelectorAll(".acct").length >= count,
+          snapshot.accounts,
+          { timeout: WEBSOCKET_READY_TIMEOUT_MS },
+        );
+      }
+    })(), WEBSOCKET_READY_TIMEOUT_MS, "initial console snapshot and account rendering");
     view = await within(page.evaluate(inspect), REQUEST_TIMEOUT_MS, "console inspection");
     if (options.expectSmallTaskPolicy || options.expectedUiText.length || options.forbiddenUiText.length) {
       try {
