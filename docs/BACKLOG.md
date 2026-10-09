@@ -239,6 +239,8 @@ No open entries.
 
 ## Done (newest first; keep the last 20)
 
+- 2026-10-09 **Calendar tab counts reminders that went off; "Went off" panel shows which and whether Discord got it** (2a0e2a20, d5a19890, Thimble Bellwort): deployed; a live event reminder fired on schedule, Discord DM recorded `sent`, tab count rose to 1. Calendar gate, browser lab 92/92 and gates 246/247 pass (`test:supervisor` failed on load, 12/12 on rerun).
+
 - 2026-10-09 **Restore Surveillance pictures through the dashboard proxy** (0163c571, Mosswick Lantern): pushed on master and deployed; live proxy browser received 44 frames, decoded all five pictures without errors, and confirmed five fresh 24/7 recorders. Server types, remote-access, privacy and five focused proxy/session/ticket checks pass.
 
 - 2026-10-09 **Require actual process exit in the Codex terminal-drain regression** (Brindle Acorn): the real launcher proof awaits both the result and process exit before its cleanup; a ten-second test ceiling tolerates Windows startup/teardown under load. Runner regression and server types pass. Tests only; no runtime activation required.
