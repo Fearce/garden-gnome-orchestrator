@@ -254,6 +254,22 @@ function within(promise, timeoutMs, action) {
   });
 }
 
+/** An open socket precedes hello. Wait for the board's data, including valid empty installations. */
+function watchConsoleSnapshot(page) {
+  return new Promise((resolve) => {
+    page.on("websocket", (socket) => socket.on("framereceived", (frame) => {
+      try {
+        const event = JSON.parse(String(frame.payload));
+        if (event.type === "hello" && Array.isArray(event.threads) && Array.isArray(event.accounts)) {
+          resolve({ threads: event.threads.length, accounts: event.accounts.length });
+        }
+      } catch {
+        // Other frames cannot establish snapshot readiness.
+      }
+    }));
+  });
+}
+
 /** Everything the page can tell us in one pass — no interaction, just reads. */
 function inspect() {
   const text = (sel) => document.querySelector(sel)?.textContent?.trim() || "";
@@ -301,6 +317,7 @@ async function main() {
   try {
     console.log("[INFO] browser launched; authenticating");
     page = await within(browser.newPage({ viewport: { width: 1280, height: 900 } }), REQUEST_TIMEOUT_MS, "new page");
+    const snapshotReady = watchConsoleSnapshot(page);
     page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text().slice(0, 300)));
     page.on("pageerror", (e) => consoleErrors.push(`uncaught: ${String(e).slice(0, 300)}`));
     page.on("requestfailed", (r) => {
@@ -329,8 +346,18 @@ async function main() {
         const conn = document.querySelector(".conn")?.textContent || "";
         return /live/i.test(conn) && !/reconnect/i.test(conn);
       },
+      null,
       { timeout: WEBSOCKET_READY_TIMEOUT_MS },
     ).catch(() => {});
+    const snapshot = await within(snapshotReady, WEBSOCKET_READY_TIMEOUT_MS, "initial console snapshot");
+    // Hello receipt alone is not proof React applied it. The fresh desktop page renders every account.
+    if (snapshot.accounts) {
+      await page.waitForFunction(
+        (count) => document.querySelectorAll(".acct").length >= count,
+        snapshot.accounts,
+        { timeout: WEBSOCKET_READY_TIMEOUT_MS },
+      );
+    }
     view = await within(page.evaluate(inspect), REQUEST_TIMEOUT_MS, "console inspection");
     if (options.expectSmallTaskPolicy || options.expectedUiText.length || options.forbiddenUiText.length) {
       try {
@@ -423,6 +450,7 @@ module.exports = {
   validateSmallTaskPolicy,
   validateUiBundleText,
   within,
+  watchConsoleSnapshot,
 };
 
 if (require.main === module) {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const assert = require("node:assert/strict");
+const { EventEmitter } = require("node:events");
 
 const {
   SMALL_TASK_POLICY_LABEL,
@@ -13,6 +14,7 @@ const {
   validateSmallTaskPolicy,
   validateUiBundleText,
   within,
+  watchConsoleSnapshot,
 } = require("./console-smoke.cjs");
 
 const defaults = parseOptions([], {});
@@ -126,6 +128,23 @@ assert.deepEqual(
 );
 
 void (async () => {
+  const page = new EventEmitter();
+  const socket = new EventEmitter();
+  const snapshot = watchConsoleSnapshot(page);
+  page.emit("websocket", socket);
+  for (const payload of ['not JSON', '{"type":"settings"}', '{"type":"hello"}']) {
+    socket.emit("framereceived", { payload });
+  }
+  await assert.rejects(within(snapshot, 10, "missing hello"), /missing hello exceeded/,
+    "an open socket and unrelated or malformed frames cannot pass readiness");
+  socket.emit("framereceived", { payload: JSON.stringify({ type: "hello", threads: [{}], accounts: [{}, {}] }) });
+  assert.deepEqual(await snapshot, { threads: 1, accounts: 2 }, "a delayed snapshot is observed");
+  const emptyPage = new EventEmitter();
+  const emptySocket = new EventEmitter();
+  const emptySnapshot = watchConsoleSnapshot(emptyPage);
+  emptyPage.emit("websocket", emptySocket);
+  emptySocket.emit("framereceived", { payload: JSON.stringify({ type: "hello", threads: [], accounts: [] }) });
+  assert.deepEqual(await emptySnapshot, { threads: 0, accounts: 0 }, "empty installations remain valid");
   assert.equal(await within(Promise.resolve("ready"), 20, "immediate operation"), "ready");
   await assert.rejects(within(new Promise(() => {}), 10, "stalled operation"), /stalled operation exceeded 10ms/);
   console.log("console-smoke: provider, routing-policy, bundle, and timeout assertions passed");
