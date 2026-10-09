@@ -40,11 +40,12 @@ process.env.FAST_ACCOUNT_PING_MS = "3600000";
 process.env.NO_PUSH_REPO_PATTERN = "commit-only-origin";
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { AccountManager } from "../accounts/accountManager.js";
 import type { Thread } from "../types.js";
+import assert from "node:assert/strict";
 
 const { Db } = await import("../db/db.js");
 const { EventHub } = await import("../events.js");
@@ -150,7 +151,109 @@ async function withNamer<T>(reply: string, body: (calls: () => number) => Promis
   }
 }
 
+/** Real retirement boundaries, without waiting for a particular machine's Git timing.
+ * --retirement-only runs this focused regression without the other workspace scenarios. */
+async function retirementLifecycleRegression(): Promise<void> {
+  console.log("I. deliverable retirement boundaries");
+  mgr.setSettings({ taskWorktrees: true });
+  const repo = makeRepo(root, "retirement-lifecycle");
+  const task = (await prepare(dispatch(repo, "Deliverable retirement boundaries")))!;
+  const claim = await mgr.claimTaskWorktree(task.id, { repo, name: "deliverable-boundary" });
+  assert.ok(claim.ok, claim.ok ? undefined : claim.error);
+  const wt = claim.worktree;
+  for (const name of ["one.md", "two.md"]) writeFileSync(join(wt.path, name), `${name}\n`);
+  git(wt.path, "add", "one.md", "two.md");
+  git(wt.path, "commit", "--quiet", "-m", "deliverable copies");
+  let called = false;
+  const beforeRemove = () => { called = true; };
+  const unmerged = await retireTaskWorktree(wt, { onlyIntegrated: true, beforeRemove });
+  check("the removal callback never runs for an unintegrated branch", !unmerged.removed && !called && existsSync(wt.path));
+  git(repo, "merge", "--quiet", "--ff-only", wt.branch);
+  writeFileSync(join(wt.path, "untracked.txt"), "keep\n");
+  const dirty = await retireTaskWorktree(wt, { beforeRemove });
+  check("the removal callback never runs for dirty work", !dirty.removed && !called && existsSync(wt.path));
+  unlinkSync(join(wt.path, "untracked.txt"));
+  const kept = await retireTaskWorktree(wt, { keep: [join(wt.path, "one.md")], beforeRemove });
+  check("a retained deliverable prevents the removal callback", !kept.removed && !called && existsSync(wt.path));
+
+  const findings = ["one.md", "two.md"].map(name => db.addFinding({ threadId: task.id, fromRole: "implementor",
+    summary: name, severity: "info", kind: "deliverable", path: join(wt.path, name) }));
+  const planned = await internals.deliverablesLeaving(fresh(task.id), wt, findings.map(f => ({ id: f.id, path: f.path! })));
+  assert.equal(planned.moves.length, 2);
+  // The copy was valid during planning, then vanished while Git checked retention guards.
+  unlinkSync(join(repo, "two.md"));
+  await assert.rejects(retireTaskWorktree(wt, { onlyIntegrated: true,
+    beforeRemove: () => internals.repointDeliverables(fresh(task.id), planned.moves) }), /surviving copy cannot be served/);
+  check("a vanished destination leaves every original card untouched", findings.every(f => db.getFinding(f.id)?.path === f.path));
+  check("a rejected callback preserves the worktree and its package junction", existsSync(wt.path) && existsSync(join(wt.path, "node_modules", "pkg", "index.js")));
+  writeFileSync(join(repo, "two.md"), "two.md\n");
+  await assert.rejects(retireTaskWorktree(wt, { beforeRemove: () => { throw new Error("callback rejected"); } }), /callback rejected/);
+  check("a throwing callback cannot unlink packages or remove the folder", existsSync(wt.path) && existsSync(join(wt.path, "node_modules", "pkg", "index.js")));
+
+  // Pause before native removal; no Git transaction is held while the mapping assertions run.
+  let mapped!: () => void;
+  const mappingReached = new Promise<void>(resolve => { mapped = resolve; });
+  let allowRemoval!: () => void;
+  const removalReleased = new Promise<void>(resolve => { allowRemoval = resolve; });
+  const realRepoint = internals.repointDeliverables;
+  internals.repointDeliverables = (thread: Thread, moves: { id: string; path: string }[]) => {
+    realRepoint.call(mgr, thread, moves);
+    if (thread.id === task.id) { mapped(); return removalReleased; }
+  };
+  const branchReady = join(root, "branch-cleanup.ready");
+  const branchRelease = join(root, "branch-cleanup.release");
+  const quote = (value: string): string => `'${value.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`;
+  const hook = join(repo, ".git", "hooks", "reference-transaction");
+  writeFileSync(hook, `#!/bin/sh
+if [ "$1" = prepared ]; then
+  while read old new ref; do
+    if [ "$ref" = ${quote(`refs/heads/${wt.branch}`)} ] && [ "$new" = 0000000000000000000000000000000000000000 ]; then
+      : > ${quote(branchReady)}
+      while [ ! -f ${quote(branchRelease)} ]; do sleep 0.05; done
+    fi
+  done
+fi
+`);
+  chmodSync(hook, 0o755);
+  // Pin the fixture hook even on a workstation with a global core.hooksPath.
+  git(repo, "config", "core.hooksPath", join(repo, ".git", "hooks"));
+  let retirement: Promise<void> | undefined;
+  try {
+    db.updateThread(task.id, { state: "done" });
+    retirement = internals.retireWorktrees(fresh(task.id), "done");
+    await Promise.race([mappingReached, retirement!.then(() => { throw new Error("retirement ended before the mapping barrier"); })]);
+    check("cards move before the worktree or package junction disappears", existsSync(wt.path) &&
+      existsSync(join(wt.path, "node_modules", "pkg", "index.js")) && findings.every(f => db.getFinding(f.id)?.path === join(repo, f.summary)));
+    check("every mapped card is readable before removal", findings.every(f => {
+      const card = db.getFinding(f.id)!;
+      return resolveTaskDeliverable(fresh(task.id), card.path!).ok && readFileSync(card.path!, "utf8") === `${f.summary}\n`;
+    }));
+    allowRemoval();
+    // Git itself reports that branch deletion started. Completion/timeout rejects this wait, so there
+    // is no guessed sleep or unbounded barrier if the hook fails to execute.
+    await new Promise<void>((resolve, reject) => {
+      const timer = setInterval(() => { if (existsSync(branchReady)) { clearInterval(timer); resolve(); } }, 25);
+      retirement!.then(() => { clearInterval(timer); if (!existsSync(branchReady)) reject(new Error("branch cleanup never reached its barrier")); }, error => { clearInterval(timer); reject(error); });
+    });
+    check("the native folder is gone while merged-branch deletion is held", !existsSync(wt.path) && existsSync(join(repo, ".git", "refs", "heads", wt.branch)));
+    check("cards remain readable throughout pending branch cleanup", findings.every(f => {
+      const card = db.getFinding(f.id)!;
+      return resolveTaskDeliverable(fresh(task.id), card.path!).ok && readFileSync(card.path!, "utf8") === `${f.summary}\n`;
+    }));
+    writeFileSync(branchRelease, "released\n");
+    await retirement;
+    check("branch cleanup completes after its barrier is released", !existsSync(join(repo, ".git", "refs", "heads", wt.branch)));
+    check("retirement preserves the main checkout's package contents", readFileSync(join(repo, "node_modules", "pkg", "index.js"), "utf8") === "1\n");
+  } finally {
+    allowRemoval();
+    writeFileSync(branchRelease, "released\n");
+    if (retirement) await retirement;
+    internals.repointDeliverables = realRepoint;
+  }
+}
+
 try {
+  if (!process.argv.includes("--retirement-only")) {
   const repo = makeRepo(root, "app");
 
   console.log("0. default");
@@ -339,7 +442,7 @@ try {
   internals.setState(delivering.id, "done");
   const repointed = (): boolean => db.getFinding(report.id)?.path === join(repo, "delivered-report.md");
   check("its card moves to the main checkout's byte-identical copy", await settle(repointed), db.getFinding(report.id)?.path ?? "gone");
-  check("...and the worktree it no longer pins is removed", !existsSync(dwt.path), dwt.path);
+  check("...and the worktree it no longer pins is removed", await settle(() => !existsSync(dwt.path)), dwt.path);
   check("...which the console serves", resolveTaskDeliverable(fresh(delivering.id), db.getFinding(report.id)!.path!).ok);
   const diverged = (await prepare(dispatch(repo, "Diverged deliverable")))!;
   const divergedClaim = await mgr.claimTaskWorktree(diverged.id, { repo, name: "diverged work" });
@@ -352,7 +455,7 @@ try {
   internals.setState(diverged.id, "done");
   const followed = (): boolean => db.getFinding(rewritten.id)?.path === join(repo, "diverged-report.md");
   check("a committed deliverable the base later rewrote moves to the main checkout's version (git keeps the original)", await settle(followed), db.getFinding(rewritten.id)?.path ?? "gone");
-  check("...and that worktree is removed too", !existsSync(divergedClaim.worktree.path));
+  check("...and that worktree is removed too", await settle(() => !existsSync(divergedClaim.worktree.path)));
   const ignoredOnly = (await prepare(dispatch(repo, "Ignored output")))!;
   const ignoredClaim = await mgr.claimTaskWorktree(ignoredOnly.id, { repo, name: "ignored output" });
   if (!ignoredClaim.ok) throw new Error(ignoredClaim.error);
@@ -387,6 +490,8 @@ try {
   check("a task that claimed one hears nothing", internals.worktreeAdvice(fresh(second.id), false) === null);
   check("a sub-task hears nothing (a claim would land on its parent)", internals.worktreeAdvice(dispatch(repo, "Fourth helper", { parentId: unclaimedParent.id }), false) === null);
   check("an umbrella task hears nothing (its brief already says when)", internals.worktreeAdvice(umb, false) === null);
+  }
+  await retirementLifecycleRegression();
 } finally {
   if (internals.capSupervisor) clearInterval(internals.capSupervisor);
   if (internals.tokenResumeTimer) clearTimeout(internals.tokenResumeTimer);

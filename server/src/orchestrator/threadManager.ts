@@ -189,7 +189,7 @@ import { FreeProviderAgentRun } from "../freeProviders/agentRun.js";
 import type { FreeProviderService } from "../freeProviders/service.js";
 import { config, fallbackModelFor } from "../config.js";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { reposOf, sweepRepoWorktrees } from "./worktreeSweep.js";
 import { childRepos, containingRepoRoot, createTaskWorktree, discoverTaskWorktrees, enclosingRepoSync, isLinkedWorktree, isWithin, mainCheckoutCopy, mainCheckoutOf, mapIntoWorktree, restoreTaskWorktree, retireTaskWorktree, taskWorkCheckout } from "./taskWorktree.js";
@@ -7848,8 +7848,10 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const deliverables = this.db.listFindings(thread.id).filter((f) => f.kind === "deliverable" && f.path).map((f) => ({ id: f.id, path: resolve(thread.workspace, f.path!) }));
     for (const worktree of worktrees) {
       const { keep, moves } = await this.deliverablesLeaving(thread, worktree, deliverables);
-      const result = await retireTaskWorktree(worktree, { keep, onlyIntegrated }).catch((error: unknown) => ({ removed: false, branchDeleted: false, reason: String(error) }));
-      if (result.removed) this.repointDeliverables(moves);
+      const result = await retireTaskWorktree(worktree, {
+        keep, onlyIntegrated,
+        beforeRemove: () => this.repointDeliverables(thread, moves),
+      }).catch((error: unknown) => ({ removed: false, branchDeleted: false, reason: String(error) }));
       const what = result.removed
         ? `removed worktree ${worktree.path}${result.branchDeleted ? ` and merged branch ${worktree.branch}` : `; branch ${worktree.branch} kept`}`
         : `kept worktree ${worktree.path} (${result.reason})`;
@@ -7872,7 +7874,15 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     return { keep, moves };
   }
 
-  private repointDeliverables(moves: { id: string; path: string }[]): void {
+  private repointDeliverables(thread: Thread, moves: { id: string; path: string }[]): void {
+    // Git state checks can take seconds. Revalidate every destination immediately before removal,
+    // before changing any card, so a vanished/refused copy leaves the original worktree intact.
+    for (const move of moves) {
+      const copy = resolveTaskDeliverable({ workspace: thread.workspace }, move.path);
+      if (!copy.ok) throw new Error(`Deliverable ${move.id}: surviving copy cannot be served (${copy.error}).`);
+      const file = openSync(copy.realFile, "r");
+      closeSync(file);
+    }
     for (const move of moves) {
       const updated = this.db.updateFinding(move.id, { path: move.path });
       if (updated) this.hub.publish({ type: "finding", finding: updated });

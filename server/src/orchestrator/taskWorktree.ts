@@ -282,6 +282,9 @@ export interface RetireOptions {
   keep?: string[];
   /** Keep the worktree while its branch holds work its base lacks (a finished task that never integrated). */
   onlyIntegrated?: boolean;
+  /** After every retention guard passes, before unlinking packages or removing the directory. A
+   * caller can move deliverable cards to validated surviving copies; rejection aborts removal. */
+  beforeRemove?: () => void | Promise<void>;
 }
 
 /**
@@ -302,6 +305,9 @@ export async function retireTaskWorktree(worktree: TaskWorktree, options: Retire
     if (keep.some((path) => isWithin(resolve(worktree.path, path), worktree.path))) {
       return { removed: false, branchDeleted: false, reason: "a deliverable lives in it" };
     }
+  }
+  await options.beforeRemove?.();
+  if (state.exists) {
     await unlinkJunctions(worktree);
     try {
       await git(worktree.repo, ["worktree", "remove", worktree.path], ADD_TIMEOUT_MS);
