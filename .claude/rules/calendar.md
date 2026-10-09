@@ -60,6 +60,12 @@ For concurrent runs, set `GGO_CALENDAR_LAB_PORT` to a free HTTP port and leave t
   from `GET /api/calendar/fired`, acknowledged through `POST /api/calendar/fired/seen` (`{ids?}`, none
   = all). It is history of what already fired (kept 90 days / 200 rows), so it is not the "pending
   reminders table" warned against above: a deleted event's fired row stays.
+- **"I got no reminder DM" triage:** the DM goes out only when `supervisorDiscordReady()` holds:
+  `kv` rows `setting_discord_notify = '1'`, `discord_bot_token`, and `setting_discord_user_id` or
+  `setting_discord_channel_id` (the settings table is `kv`, not `settings`). Then read that reminder's
+  `delivery`/`deliveryNote` from `GET /api/calendar/fired`. For a live proof, create an event a few
+  minutes out with a `before` reminder, poll that route until `delivery` leaves `sending`, then delete
+  the event and mark the row seen. That sends a real DM.
 - **All-day fired dates stay civil.** `fired_reminders.starts_on` snapshots the effective all-day
   start date, including moved exceptions. The panel and Show use it before `starts_at`; converting
   midnight to the browser zone can otherwise move the event to the previous day. Legacy null dates
