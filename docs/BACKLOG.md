@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA nightly sweep: preserve required CLI inputs and restore all-model routing** (2026-10-09, Codex QA; task ef639c35).
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -28,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA nightly sweep: preserve required input, restore model coverage and fix probe cleanup** (6ce1c1bb, 5a8ed3e4; 2026-10-09, Codex QA; task ef639c35).
+  Pushed on master; live 5a8ed3e4 and matching web bundle verified. Required CLI inputs, images and truthful receipts survive bounded ambient queues and fresh recovery (12/12); adaptive Claude families and Haiku 5.5 efforts work while goal floors and account caps remain (auto-model 141/141). Full gates 247/247, all types/builds, desktop 19/19, privacy/README, live provider/chip and desktop/phone model checks pass. The 1,400-task lab defers 1,399 summaries and cuts initial summary bytes 79.3%. Operational sweep 8/9: the HTTPS passphrase audit still fails. Nvidia selection and shared SessionStart policy remain owner actions. No owner-facing artifacts; independent QA and a completed long-turn batch remain to prove live recovery. Five resumed runs show zero input-limit errors so far.
 
 - **QA nightly sweep: bound the queued follow-ups that broke Codex's turn/start limit** (2026-10-09, Claude QA; task ef639c35).
   The `input_too_large` refusals were not provider history. A Codex or Grok turn runs for hours, every office post sent meanwhile is queued, and the whole queue became the next prompt: the 2026-10-08 Lane C rollout shows one 956,965-character turn of about 200 office posts, each with its own preview and policy frame. The following turns were refused after 2–10 hours of work. `agents/batchedInput.ts` keeps every owner-steering entry verbatim, fills a 600,000-character budget with the newest ambient updates, and names what it left out in the prompt and the feed. Codex also drops optional recall if recall alone would push a prompt over 1,048,576 characters. `test:batched-input` 6/6 fails at 1,134,192 characters with the Codex batch fix reverted. Live proof: no new `input_too_large` run after deploy. Measured start latency: GGO creates the run 0.4–0.6 s after the owner's message (`probe:dispatch-latency`, 30 samples). Transcripts put the remaining 8–35 s in the Claude CLI before it queues the prompt, including the owner's four global SessionStart hooks (about 4 s idle, up to 24 s under load), plus 1–7 s of model time. Independent QA required.
@@ -222,6 +223,11 @@ same commit as the fix. Git history keeps the record.
 - **Rewrite published history to remove personal details the tree no longer carries** (owner action: filter-repo + force-push master, delete five stale remote branches, GitHub Support for PR refs/caches, coordinate the published fork rewrite).
   Corrected kit (surfaced as a deliverable) in the main checkout's gitignored `_privacy-remediation` folder: fresh public mirror dry-run 2026-10-04 reduced 2,751 matches (including exposed PFX passphrase) to 0; public fork still has 211 matches; nothing force-pushed.
 - **Rotate the local HTTPS PFX passphrase** (owner action): it is a weak dictionary word, and `npm run audit:secrets --prefix server` finds that word in four reachable published commits (value withheld), so treat it as exposed: set a random passphrase, re-encrypt the PFX and update `server/.env`.
+
+## Icebox
+
+- **Capture gate-suite coverage across concurrent edits** (2026-10-09, Codex QA; task ef639c35).
+  `server/scripts/run-gates.cjs` stamps HEAD, dirty paths and runner fingerprint only at completion. Capture start/end content too; the initial batch gate ran 6 old cases before this review added 12, which were independently rerun against the committed fix.
 
 ## Open
 
