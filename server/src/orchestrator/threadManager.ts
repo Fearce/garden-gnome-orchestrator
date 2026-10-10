@@ -884,6 +884,12 @@ export const ACTIVE_DEADLINE_PARK_PREFIX = "⏰ Hard deadline reached";
 export const ACTIVE_DEADLINE_MAX_MS = 30 * 24 * 3_600_000;
 const ACTIVE_DEADLINE_RUN_REASON = "Stopped by the active-task hard deadline; the saved session and partial work were preserved.";
 const DEADLINE_TERMINAL_STATES: ReadonlySet<Thread["state"]> = new Set(["done", "cancelled", "closed"]);
+/** A refused manual-deployment handoff parks on its blockers alone ("QA still reports an issue: …"), which
+ *  never says that the work itself passed and only the handoff is waiting. */
+const MANUAL_DEPLOYMENT_PARK_PREFIX = "Manual deployment handoff not accepted:";
+function manualDeploymentParkText(reason: string | undefined): string {
+  return `${MANUAL_DEPLOYMENT_PARK_PREFIX} ${reason ?? "it could not be verified."}`;
+}
 /** Tasks whose stored model choices are history: nothing restarts them without the owner re-opening them. */
 const MODEL_MIGRATION_SKIP_STATES: ReadonlySet<Thread["state"]> = new Set(["done", "cancelled", "closed"]);
 // Stamped on the runs a planned deploy restart killed, so the boot crash-loop guard does not count them.
@@ -12089,7 +12095,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       );
       if (deployment.attempted) {
         this.recordLatestImplementationMemo(thread.id, res, deployment.done ? "done" : "review");
-        if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
+        if (!deployment.done) this.settleReview(thread.id, manualDeploymentParkText(deployment.reason));
         return true;
       }
       this.recordLatestImplementationMemo(thread.id, res, "done");
@@ -12285,7 +12291,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
         );
         if (deployment.attempted) {
           this.recordLatestImplementationMemo(thread.id, res, deployment.done ? "done" : "review");
-          if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
+          if (!deployment.done) this.settleReview(thread.id, manualDeploymentParkText(deployment.reason));
           return;
         }
         this.recordLatestImplementationMemo(thread.id, res, "done");
@@ -12489,7 +12495,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
             (qa.issues ?? []).map((issue) => `QA still reports an issue: ${issue.description}`),
           );
           if (deployment.attempted) {
-            if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
+            if (!deployment.done) this.settleReview(thread.id, manualDeploymentParkText(deployment.reason));
             return;
           }
           this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed without further changes: ${qa.summary}`, severity: "info" });
@@ -12516,7 +12522,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           (qa.issues ?? []).map((issue) => `QA still reports an issue: ${issue.description}`),
         );
         if (deployment.attempted) {
-          if (!deployment.done) this.settleReview(thread.id, deployment.reason ?? "The manual deployment handoff could not be verified.");
+          if (!deployment.done) this.settleReview(thread.id, manualDeploymentParkText(deployment.reason));
           return;
         }
         this.postFinding({ threadId: thread.id, fromRole: "qa", summary: `QA passed: ${qa.summary}`, severity: "info" });
@@ -14726,7 +14732,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
           this.settleReview(
             thread.id,
             deployment.attempted
-              ? (deployment.reason ?? "The manual deployment handoff could not be verified.")
+              ? manualDeploymentParkText(deployment.reason)
               : "Resume finished — needs your review.",
           );
         }
@@ -15783,7 +15789,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
       false,
     );
     if (deployment.attempted && !deployment.done) {
-      const reason = deployment.reason ?? "The manual deployment handoff could not be verified.";
+      const reason = manualDeploymentParkText(deployment.reason);
       if (!this.parkAutoReview(thread.id, claimToken, reason, out)) return;
       this.handBackReviewEpisodeInjections(thread.id, claimToken, reason);
       this.postFinding({

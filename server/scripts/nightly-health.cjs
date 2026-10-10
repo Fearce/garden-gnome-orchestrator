@@ -39,7 +39,7 @@ const { classifyListenerShape } = require("./listener-shape.cjs");
 const { newestSrcMtimeMs, srcFilesNewerThan } = require("./src-mtime.cjs");
 const { serverRuntimeDiff, readWebStamp, webDistState } = require("./compiled-diff.cjs");
 const { classifyRun, CLASSES: RUN_CLASSES } = require("./probe-run-errors.cjs");
-const { classifyPark, classifyAbandoned, recoveryLineFor, lastRun, isDeadEndLine, stallBudget, PARK_CLASSES } = require("./probe-parks.cjs");
+const { classifyPark, effectiveParkText, classifyAbandoned, recoveryLineFor, lastRun, isDeadEndLine, stallBudget, PARK_CLASSES } = require("./probe-parks.cjs");
 const { scanCrashLog } = require("./crashlog-scan.cjs");
 const { inspectAccountUsage } = require("./account-usage-health.cjs");
 const { inspectRestartCoordinator } = require("./restart-coordinator-health.cjs");
@@ -538,7 +538,7 @@ async function main() {
       let oldestAutoResumeH = 0;
       let stallsOutOfBudget = 0;
       for (const r of reviewRows) {
-        const key = classifyPark(r.error).key;
+        const key = classifyPark(effectiveParkText(db, r)).key;
         parks[key]++;
         if (key === "capacityStall" && stallBudget(db, r.id).spent) stallsOutOfBudget++;
         if (key === "capWait") {
@@ -572,6 +572,8 @@ async function main() {
       }
       if (parks.unknown) warn(`${parks.unknown} park(s) with text no class recognizes — ${NAME_THEM}`);
       if (parks.verdict) ok(`${parks.verdict} park(s) awaiting your verdict by design, not stuck`);
+      if (parks.deploymentHandoff) ok(`${parks.deploymentHandoff} manual deployment handoff(s) held by a named blocker, yours to clear`);
+      if (parks.cloudResult) ok(`${parks.cloudResult} finished Claude cloud sub-task result(s) awaiting review`);
 
       // `review` isn't the only state waiting on a person: a restart's casualties land in `failed`, and no
       // sweep step read that state until 2026-08-10 — a task still claiming "auto-resuming…" is one whose

@@ -16,7 +16,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { classifyPark, classifyAbandoned, spentRecoveryBudget, recoveryLineFor, isDeadEndLine, capacityStall, PARK_CLASSES, ABANDON_CLASSES } = require("./probe-parks.cjs");
+const { classifyPark, effectiveParkText, CLOUD_RESULT_PARK, classifyAbandoned, spentRecoveryBudget, recoveryLineFor, isDeadEndLine, capacityStall, PARK_CLASSES, ABANDON_CLASSES } = require("./probe-parks.cjs");
 const { resolveShipDate } = require("./recovery-features.cjs");
 
 const cls = (err) => classifyPark(err).key;
@@ -318,6 +318,23 @@ assert.equal(ABANDON_CLASSES.at(-1).key, "otherFailure", "the catch-all must sta
 // The load-bearing check. Classification keys off text the server writes, so a rename there without a
 // change here leaves the sweep reporting a stalled task as a normal hand-off — invisible, and exactly
 // the miscount this probe was built to end.
+// --- the manual deployment handoff and the cloud sub-task result ------------------------------------
+assert.equal(
+  cls("Manual deployment handoff not accepted: QA still reports an issue: the owner must delete two scratch folders."),
+  "deploymentHandoff",
+  "a refused handoff names its blocker and is the owner's, not a drifted message",
+);
+assert.equal(cls("QA still reports an issue: the owner must delete two scratch folders."), "deploymentHandoff", "pre-prefix rows still classify");
+const runDb = (run) => ({ prepare: () => ({ get: () => run }) });
+const cloudText = effectiveParkText(runDb({ state: "done", account: "claude-cloud:personal" }), { id: "t1", error: null });
+assert.equal(cls(cloudText), "cloudResult", "a finished cloud sub-task's empty park reads from its run");
+assert.equal(effectiveParkText(runDb({ state: "done", account: "personal" }), { id: "t2", error: null }), null, "an empty local park stays unknown");
+assert.equal(effectiveParkText(runDb({ state: "error", account: "claude-cloud:personal" }), { id: "t3", error: null }), null, "a failed cloud run is not a result");
+assert.equal(effectiveParkText(runDb(undefined), { id: "t4", error: "Resume finished — needs your review." }), "Resume finished — needs your review.");
+const cloudSrc = fs.readFileSync(path.resolve(__dirname, "..", "src", "cloudSessions", "subtasks.ts"), "utf8");
+assert.ok(cloudSrc.includes(CLOUD_RESULT_PARK), `cloudResult keys off "${CLOUD_RESULT_PARK}", which cloudSessions/subtasks.ts no longer posts`);
+assert.ok(/setState\(thread\.id, "review", job\.error\)/.test(cloudSrc), "a cloud success still settles with no park text; revisit effectiveParkText if that changed");
+
 const tm = fs.readFileSync(path.resolve(__dirname, "..", "src", "orchestrator", "threadManager.ts"), "utf8");
 const LITERALS = [
   "⏳ Auto-resume pending",
@@ -342,6 +359,7 @@ const LITERALS = [
   // reverse-door scan below (which only reads inline literals) cannot see it — this forward check is
   // the only thing tying that park class to the wording threadManager actually writes.
   "requires a flagship implementor",
+  "Manual deployment handoff not accepted:",
   // The `failed`-state messages. The promise is the one that must not drift: it is written by one process
   // and read back by the next boot's revival scan, so a reword there is a cross-process contract break.
   "auto-resuming…",

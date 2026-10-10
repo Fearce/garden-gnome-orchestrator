@@ -63,6 +63,9 @@ const capacityStall = loadCapacityStall();
 
 const DB_PATH = path.resolve(__dirname, "..", "data", "orchestrator.sqlite");
 
+/** The feed line cloudSessions/subtasks.ts posts when a cloud sub-task returns (pinned by the gate). */
+const CLOUD_RESULT_PARK = "Cloud result — parent review required";
+
 // Every marker below is a literal `settleReview`/`setState(…,"review")` message in
 // orchestrator/threadManager.ts — the park texts, not invented phrasings. Apostrophes are matched both
 // ways because the source mixes ASCII and typographic ones.
@@ -133,6 +136,25 @@ const PARK_CLASSES = [
       "Each task's remaining continuations are on its trailing line; probe:accounts shows when the window turns over",
   },
   {
+    // threadManager's manualDeploymentParkText. The work passed its verifier, but a blocker the verifier or
+    // the Git state still names kept the deploy-only hand-off from completing. Before 2026-10-10 the park
+    // carried the bare blockers, which is what the second pattern still reads on older rows.
+    key: "deploymentHandoff",
+    human: true,
+    title: "a manual deployment handoff was not accepted — read the blocker",
+    match: (err) => err.startsWith("Manual deployment handoff not accepted:") || /^(?:QA|The reviewer) still reports an issue:/.test(err),
+    action: "clear the named blocker (or decide it doesn't block), then Mark done or Resume",
+  },
+  {
+    // A Claude cloud sub-task settles in `review` with no message on success (cloudSessions/subtasks.ts):
+    // its findings are in the feed, and the parent reads its result. effectiveParkText supplies this text.
+    key: "cloudResult",
+    human: true,
+    title: "a Claude cloud sub-task finished — its result waits for review",
+    match: (err) => err.startsWith(CLOUD_RESULT_PARK),
+    action: "read the cloud result in its feed (the parent task normally does), then Mark done or close it",
+  },
+  {
     key: "stalled",
     human: true,
     title: "the pipeline could not finish verifying — needs a nudge",
@@ -164,6 +186,16 @@ const PARK_CLASSES = [
     action: "if this is a normal park, add its marker to PARK_CLASSES so health can count it correctly",
   },
 ];
+
+/** The park text to classify. A cloud sub-task's successful settle records none, so its finished cloud
+ *  run stands in for it; any other empty park stays empty and classifies as unknown. */
+function effectiveParkText(db, thread) {
+  if (thread.error) return thread.error;
+  const run = lastRun(db, thread.id);
+  return run?.state === "done" && String(run.account ?? "").startsWith("claude-cloud:")
+    ? `${CLOUD_RESULT_PARK} (no park message; read from its finished cloud run)`
+    : thread.error;
+}
 
 /** The class a park message falls into. Never throws: a null/empty error still classifies (as unknown). */
 function classifyPark(error) {
@@ -252,7 +284,7 @@ function short(s, n) {
 function lastRun(db, threadId) {
   return db
     .prepare(
-      `SELECT role, model, state, error, num_turns, cost_usd, started_at, ended_at, cap_flagged
+      `SELECT role, model, account, state, error, num_turns, cost_usd, started_at, ended_at, cap_flagged
        FROM agent_runs WHERE thread_id = ? ORDER BY started_at DESC LIMIT 1`,
     )
     .get(threadId);
@@ -355,7 +387,7 @@ function main() {
   const db = new Database(DB_PATH, { readonly: true });
   db.pragma("busy_timeout = 5000");
 
-  const parked = threadsInState(db, "review");
+  const parked = threadsInState(db, "review").map((t) => ({ ...t, error: effectiveParkText(db, t) }));
   console.log(`\n=== parked in review (${parked.length}) ===`);
   if (!parked.length) console.log("  ✓ nothing parked — no task is waiting on you or on a backend.");
   const parks = reportSection(db, parked, PARK_CLASSES, classifyPark);
@@ -394,4 +426,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { classifyPark, classifyAbandoned, spentRecoveryBudget, recoveryLineFor, lastRun, isDeadEndLine, stallBudget, capacityStall, DEAD_END_LINES, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
+module.exports = { classifyPark, effectiveParkText, CLOUD_RESULT_PARK, classifyAbandoned, spentRecoveryBudget, recoveryLineFor, lastRun, isDeadEndLine, stallBudget, capacityStall, DEAD_END_LINES, PARK_CLASSES, ABANDON_CLASSES, STALL_MARKERS, VERDICT_MARKERS };
