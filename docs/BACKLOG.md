@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA nightly sweep: preserve paused Codex startup inputs and correct closed-board lazy loading** (2026-10-10, Bramble Caliper; task 4e214af2).
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -28,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA nightly sweep: preserve paused startup inputs, settle cancelled index walks and skip unused closed summaries** (1d2128b7, b5e81607, 66f6405b; 2026-10-10, Bramble Caliper; task 4e214af2).
+  Integrated/pushed from ggo/startup-pause-qa-4e214af2 to master; live 66f6405b and matching web bundle verified. Fresh gates 250/250, all types/builds, desktop 19/19, input recovery 22/22, index cancellation/resume and desktop/phone 1,400-task browser checks pass; each new regression failed before its fix. Model browser 11/11 and live console/chips/provider checks pass; current provider toolchain/catalog and operational probes pass. Live snapshot 20.7 ms and 400-row history 0.8 ms; desktop readiness 0.72/0.40 s, throttled phone 5.05/3.83 s. No owner-facing artifacts or refused cards; flagged memory files are internal. Independent QA required; existing Nvidia selection and personal hook decisions remain under Ready.
 
 - **QA nightly sweep: preserve Codex startup inputs and avoid full office task-history reads** (d6b62d7f, 3da89594, 0b7c3402; 2026-10-10, Bramble Caliper; task 4e214af2).
   Live 0b7c3402 verified; full gates 250/250, all types/builds, desktop 19/19, 1,400-task lazy-summary browser proof (79.3% fewer initial thread bytes), desktop/phone model and startup labs, live console/chips/provider checks, model/toolchain currency and all operational sweep checks pass. Startup probes and Windows fixture cleanup repaired; internal memory only, no owner-facing artifacts. Independent QA required; existing Nvidia selection and personal SessionStart-hook decisions remain under Ready.
