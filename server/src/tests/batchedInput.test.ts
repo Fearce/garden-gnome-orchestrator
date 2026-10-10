@@ -364,6 +364,95 @@ async function main(): Promise<void> {
       assert.ok(internal.inputs.has(kickoffId) && internal.inputs.has(steeringId));
     });
 
+    await check("Codex replays unread kickoff, images and steering after repeated startup pauses", async () => {
+      const agent = new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: dir, apiKey: "" });
+      const requestInterrupt = (agent as unknown as Internals).requestInterrupt.bind(agent);
+      const { internal, turns } = captureTurns(agent, "codex");
+      internal.requestInterrupt = requestInterrupt;
+      agent.sessionId = undefined;
+      const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } };
+      const kickoff = "Required kickoff: repair the attached reminder badge.";
+      agent.start([{ type: "text", text: kickoff }, image] as UserContent);
+      const kickoffId = agent.lastInputId!;
+      await agent.interrupt();
+      await internal.onTurnClose(1);
+      assert.equal(turns.length, 1, "a bare pause waits for a later owner resume");
+      agent.send(steering, { priority: "now" });
+      const steeringId = agent.lastInputId!;
+      assert.equal(turns[1]![1], undefined, "no session was saved before the pause");
+      assert.equal(turns[1]![0], `${kickoff}\n\n${steering}`);
+      assert.deepEqual(turns[1]![2], [{ mediaType: "image/png", dataBase64: "AA==" }]);
+      assert.deepEqual(turns[1]![3], [kickoffId, steeringId]);
+      assert.ok(!internal.inputs.has(kickoffId) && !internal.inputs.has(steeringId));
+      internal.turnActive = true;
+      await agent.interrupt();
+      await internal.onTurnClose(1);
+      const laterSteering = "Keep the badge accessible to keyboard users.";
+      agent.send(laterSteering, { priority: "now" });
+      const laterId = agent.lastInputId!;
+      assert.equal(turns[2]![0], `${kickoff}\n\n${steering}\n\n${laterSteering}`);
+      assert.deepEqual(turns[2]![2], [{ mediaType: "image/png", dataBase64: "AA==" }], "repeated startup recovery keeps one copy of the image");
+      assert.deepEqual(turns[2]![3], [kickoffId, steeringId, laterId], "each unread input retains its original receipt id exactly once");
+      modelOutput(internal, "codex");
+      for (const id of [kickoffId, steeringId, laterId]) assert.ok(internal.inputs.has(id));
+    });
+
+    await check("Codex idle startup recovery re-bounds raw ambient entries without replaying prior omission notices", async () => {
+      const agent = new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: dir, apiKey: "" });
+      const requestInterrupt = (agent as unknown as Internals).requestInterrupt.bind(agent);
+      const { internal, turns } = captureTurns(agent, "codex");
+      internal.requestInterrupt = requestInterrupt;
+      agent.sessionId = undefined;
+      const kickoff = "Required kickoff\n" + "k".repeat(500_000);
+      agent.start(kickoff);
+      const kickoffId = agent.lastInputId!;
+      agent.send(steering, { priority: "now" });
+      const steeringId = agent.lastInputId!;
+      for (const entry of ambientEntries(240)) agent.send(entry.text, { source: "ambient" });
+      await internal.onTurnClose(1);
+      assert.ok((turns[1]![0] as string).includes("[GGO:"), "the first startup retry omitted older ambient entries");
+      const firstRetryIds = turns[1]![3] as string[];
+      internal.turnActive = true;
+      await agent.interrupt();
+      await internal.onTurnClose(1);
+      const laterSteering = "Required later steering\n" + "s".repeat(15_000);
+      agent.send(laterSteering, { priority: "now" });
+      const laterId = agent.lastInputId!;
+      const prompt = turns[2]![0] as string;
+      assert.ok(prompt.includes(kickoff) && prompt.includes(steering) && prompt.includes(laterSteering));
+      assert.ok(prompt.length <= BATCHED_INPUT_BUDGET_CHARS);
+      assert.equal(prompt.match(/\[GGO:/g)?.length, 1, "recovery bounds original entries once, without stacking omission notices");
+      assert.ok(prompt.includes("post #239 ") && !prompt.includes("post #0 "));
+      const keptIds = turns[2]![3] as string[];
+      assert.ok(keptIds.length < firstRetryIds.length + 1, "the new required steering displaces only ambient entries");
+      for (const id of [kickoffId, steeringId, laterId]) assert.ok(keptIds.includes(id));
+      modelOutput(internal, "codex");
+      for (const id of keptIds) assert.ok(internal.inputs.has(id));
+      for (const id of firstRetryIds.filter((id) => !keptIds.includes(id))) assert.ok(!internal.inputs.has(id), "newly omitted ambient input earns no receipt");
+    });
+
+    await check("Codex idle sends exclude consumed kickoff inputs and use persisted sessions without replay", async () => {
+      for (const savedSession of [false, true]) {
+        const agent = new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: dir, apiKey: "" });
+        const requestInterrupt = (agent as unknown as Internals).requestInterrupt.bind(agent);
+        const { internal, turns } = captureTurns(agent, "codex");
+        internal.requestInterrupt = requestInterrupt;
+        agent.sessionId = undefined;
+        const kickoff = "Kickoff already consumed or carried by the saved session.";
+        agent.start(kickoff);
+        const kickoffId = agent.lastInputId!;
+        if (savedSession) agent.sessionId = "saved-codex-session";
+        else modelOutput(internal, "codex");
+        await agent.interrupt();
+        await internal.onTurnClose(null);
+        agent.send(steering, { priority: "now" });
+        assert.equal(turns[1]![0], steering, "context already consumed or saved is not prepended to the follow-up");
+        assert.equal(turns[1]![1], savedSession ? "saved-codex-session" : undefined);
+        assert.deepEqual(turns[1]![3], [agent.lastInputId]);
+        assert.ok(!(turns[1]![3] as string[]).includes(kickoffId));
+      }
+    });
+
     await check("Codex steering that interrupts a new session before its rollout exists restarts from the run's own kickoff", async () => {
       // Task 30f120db (2026-10-09): an inject 1.5s into a fresh Codex run resumed a thread whose rollout
       // was not written yet; with no freshFallback the run failed and the task left Codex for Claude.

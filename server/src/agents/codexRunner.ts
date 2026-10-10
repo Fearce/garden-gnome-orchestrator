@@ -530,6 +530,15 @@ export class CodexAgentRun implements AgentRunLike {
       if (opts?.priority === "now") this.requestInterrupt();
       return;
     }
+    // A bare pause can leave a failed fresh startup alive without a saved session. A later resume
+    // must carry its unread task and attachments, just like steering queued before the child closed.
+    const unread = this.sessionId ? [] : this.turnInputs.filter((input) => !this.inputs.has(input.inputId));
+    if (unread.length) {
+      const entries = [...unread, entry];
+      const bounded = this.boundedFollowUps(entries);
+      this.runInputTurn(bounded.text, undefined, bounded.keptIndexes.map((index) => entries[index]!));
+      return;
+    }
     this.runInputTurn(text, this.sessionId, [entry]);
   }
 
