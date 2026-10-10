@@ -3,7 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { SCHEMA } from "./schema.js";
-import { KvMirror, type ListedThread, ProjectRoomMirror, ThreadListingMirror, ToolCallDigest, type ToolCallRow, watchMessageDeletes, watchToolInserts } from "./memoryMirrors.js";
+import { KvMirror, type ListedThread, ProjectRoomMirror, ThreadListingMirror, ToolCallDigest, type ToolCallDigestPersistence, type ToolCallDigestStore, type ToolCallRow, watchMessageDeletes, watchToolInserts } from "./memoryMirrors.js";
 import { instrumentStatements } from "./slowStatements.js";
 import { config } from "../config.js";
 import { manualDeploymentSummary, parseManualDeployment, parseManualDeploymentClaim } from "../orchestrator/manualDeployment.js";
@@ -962,11 +962,37 @@ export class Db {
   }
 
   /** A per-task fold of recorded tool calls (`ToolCallDigest`). Make one per kind of state and keep it:
-   *  every read after a task's first reads only the tool calls recorded since. */
-  toolCallDigest<T>(start: () => T, add: (state: T, call: ToolCallRow) => void): ToolCallDigest<T> {
-    const digest = new ToolCallDigest(this.raw, (threadId, afterSeq) => this.toolCallsAfter(threadId, afterSeq), start, add);
+   *  every read after a task's first reads only the tool calls recorded since. With `persist`, the folds
+   *  survive a restart in `tool_call_digests` under `name:version`; change `version` whenever `add` or the
+   *  codec changes, so every task re-folds once, and the folds of other versions are dropped here. */
+  toolCallDigest<T>(start: () => T, add: (state: T, call: ToolCallRow) => void, persist?: ToolCallDigestPersistence<T>): ToolCallDigest<T> {
+    const store = persist ? this.toolCallDigestStore(persist) : undefined;
+    const digest = new ToolCallDigest(this.raw, (threadId, afterSeq) => this.toolCallsAfter(threadId, afterSeq), start, add, store);
     this.toolCallDigests.add(digest as ToolCallDigest<unknown>);
     return digest;
+  }
+
+  private toolCallDigestStore<T>({ name, version, encode, decode }: ToolCallDigestPersistence<T>): ToolCallDigestStore<T> {
+    const digest = `${name}:${version}`;
+    this.raw
+      .prepare("DELETE FROM tool_call_digests WHERE substr(digest, 1, ?) = ? AND digest <> ?")
+      .run(name.length + 1, `${name}:`, digest);
+    const load = this.raw.prepare("SELECT seq, state FROM tool_call_digests WHERE thread_id = ? AND digest = ?");
+    const save = this.raw.prepare(
+      "INSERT INTO tool_call_digests (thread_id, digest, seq, state) VALUES (?, ?, ?, ?) ON CONFLICT(thread_id, digest) DO UPDATE SET seq = excluded.seq, state = excluded.state",
+    );
+    return {
+      load: (threadId) => {
+        const row = load.get(threadId, digest) as { seq: number; state: string } | undefined;
+        if (!row) return undefined;
+        try {
+          return { seq: row.seq, state: decode(JSON.parse(row.state)) };
+        } catch {
+          return undefined;
+        }
+      },
+      save: (threadId, entry) => void save.run(threadId, digest, entry.seq, JSON.stringify(encode(entry.state))),
+    };
   }
 
   /** Pinned to the thread index, where the rowid bound is checked on the index entry: a call already

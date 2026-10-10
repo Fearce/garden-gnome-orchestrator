@@ -174,14 +174,36 @@ export interface ToolCallRow {
   content: string;
 }
 
+/** A task's folded state and the rowid of the last tool call folded into it. */
+export interface FoldedToolCalls<T> {
+  seq: number;
+  state: T;
+}
+
+/** Where a digest keeps its folds across restarts (`tool_call_digests`). `load` answers undefined for a
+ *  task it holds nothing for, or whose stored state no longer decodes. */
+export interface ToolCallDigestStore<T> {
+  load(threadId: string): FoldedToolCalls<T> | undefined;
+  save(threadId: string, entry: FoldedToolCalls<T>): void;
+}
+
+/** How `Db.toolCallDigest` stores a digest's folds: JSON of `encode(state)`, under `name:version`. */
+export interface ToolCallDigestPersistence<T> {
+  name: string;
+  version: string;
+  encode(state: T): unknown;
+  decode(stored: unknown): T;
+}
+
 /** Per-task state folded from the task's recorded tool calls. Each read after the first reads only the
  *  calls recorded since the previous one, so asking every few seconds costs nothing once the task's
  *  history is folded. A deleted message (a retry reset deletes them all) or another connection's commit
- *  discards the folded state, and the next read starts again from the task's first call. Inside a
- *  transaction the read is uncached, because a rolled-back insert fires no delete trigger. Treat the
- *  returned state as read-only: it is the cached copy. */
+ *  discards the folded state in memory. With a store, the next read resumes from the stored fold, which a
+ *  SQL trigger drops whenever any of the task's tool calls is deleted; without one it starts again from
+ *  the task's first call. Inside a transaction the read is uncached and unsaved, because a rolled-back
+ *  insert fires no delete trigger. Treat the returned state as read-only: it is the cached copy. */
 export class ToolCallDigest<T> {
-  private readonly folded = new Map<string, { seq: number; state: T }>();
+  private readonly folded = new Map<string, FoldedToolCalls<T>>();
   private readonly dirty = new Set<string>();
   private readonly foreign: ForeignCommitWatch;
 
@@ -190,6 +212,7 @@ export class ToolCallDigest<T> {
     private readonly readAfter: (threadId: string, afterSeq: number) => ToolCallRow[],
     private readonly start: () => T,
     private readonly add: (state: T, call: ToolCallRow) => void,
+    private readonly store?: ToolCallDigestStore<T>,
   ) {
     this.foreign = new ForeignCommitWatch(raw);
   }
@@ -199,7 +222,10 @@ export class ToolCallDigest<T> {
     if (this.foreign.changed()) this.folded.clear();
     const cached = this.folded.get(threadId);
     if (cached && !this.dirty.has(threadId)) return cached.state;
-    const entry = this.fold(this.folded.get(threadId) ?? { seq: 0, state: this.start() }, threadId);
+    const entry = cached ?? this.store?.load(threadId) ?? { seq: 0, state: this.start() };
+    const foldedSeq = entry.seq;
+    this.fold(entry, threadId);
+    if (entry.seq > foldedSeq) this.store?.save(threadId, entry);
     this.folded.set(threadId, entry);
     this.dirty.delete(threadId);
     return entry.state;
@@ -215,7 +241,7 @@ export class ToolCallDigest<T> {
     this.dirty.delete(threadId);
   }
 
-  private fold(entry: { seq: number; state: T }, threadId: string): { seq: number; state: T } {
+  private fold(entry: FoldedToolCalls<T>, threadId: string): FoldedToolCalls<T> {
     for (const call of this.readAfter(threadId, entry.seq)) {
       this.add(entry.state, call);
       entry.seq = Math.max(entry.seq, call.seq);

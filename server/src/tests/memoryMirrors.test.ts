@@ -199,6 +199,70 @@ try {
   } finally { db.raw.prepare = prepare; }
   db.raw.prepare("DELETE FROM messages WHERE thread_id = ?").run(digestTask.id);
   assert.deepEqual(digest.read(digestTask.id), [], "retry deletion invalidates the folded tool state");
+
+  // A stored fold survives a restart: a new connection resumes it after its seq instead of re-reading.
+  const storedCalls = (version: string) => ({
+    name: "gate-calls",
+    version,
+    encode: (calls: string[]) => calls,
+    decode: (stored: unknown) => {
+      if (!Array.isArray(stored)) throw new Error("not a call list");
+      return stored as string[];
+    },
+  });
+  const storedRows = (threadId: string) =>
+    db.raw.prepare("SELECT digest, seq FROM tool_call_digests WHERE thread_id = ? ORDER BY digest").all(threadId) as { digest: string; seq: number }[];
+  const kept = db.createThread({ title: "Stored digest", workspace: dir, rawPrompt: "tools" });
+  const stored = db.toolCallDigest(() => [] as string[], (state, call) => state.push(call.content), storedCalls("v1"));
+  db.addMessage({ threadId: kept.id, role: "implementor", kind: "tool", content: "call a" });
+  db.addMessage({ threadId: kept.id, role: "implementor", kind: "tool", content: "call b" });
+  assert.deepEqual(stored.read(kept.id), ["call a", "call b"]);
+  assert.deepEqual(storedRows(kept.id).map((row) => row.digest), ["gate-calls:v1"], "a persisted digest stores its fold");
+  assert.throws(() => db.raw.transaction(() => {
+    db.addMessage({ threadId: kept.id, role: "implementor", kind: "tool", content: "call never committed" });
+    stored.read(kept.id);
+    throw new Error("roll back stored");
+  })(), /roll back stored/);
+  const keptSeq = storedRows(kept.id)[0]!.seq;
+  const reopen = (version: string) => {
+    const seen: string[] = [];
+    const next = new Db(path);
+    const resumed = next.toolCallDigest(() => [] as string[], (state, call) => { seen.push(call.content); state.push(call.content); }, storedCalls(version));
+    return { next, resumed, seen };
+  };
+  {
+    const { next, resumed, seen } = reopen("v1");
+    try {
+      assert.deepEqual(resumed.read(kept.id), ["call a", "call b"], "a restart answers from the stored fold");
+      assert.deepEqual(seen, [], "a restart re-reads none of the folded calls");
+      next.addMessage({ threadId: kept.id, role: "implementor", kind: "tool", content: "call c" });
+      assert.deepEqual(resumed.read(kept.id), ["call a", "call b", "call c"]);
+      assert.deepEqual(seen, ["call c"], "only calls after the stored seq are read");
+      assert.ok(storedRows(kept.id)[0]!.seq > keptSeq, "the advanced fold is stored again");
+    } finally { next.raw.close(); }
+  }
+  assert.deepEqual(stored.read(kept.id), ["call a", "call b", "call c"], "another connection's fold reaches this one through the store");
+  db.raw.prepare("UPDATE tool_call_digests SET state = '{' WHERE thread_id = ?").run(kept.id);
+  {
+    const { next, resumed, seen } = reopen("v1");
+    try {
+      assert.deepEqual(resumed.read(kept.id), ["call a", "call b", "call c"], "an unreadable stored fold is folded again");
+      assert.equal(seen.length, 3);
+    } finally { next.raw.close(); }
+  }
+  {
+    const { next, resumed, seen } = reopen("v2");
+    try {
+      assert.deepEqual(storedRows(kept.id), [], "a new version drops the old version's folds");
+      assert.deepEqual(resumed.read(kept.id), ["call a", "call b", "call c"]);
+      assert.equal(seen.length, 3, "a new version folds from the first call");
+    } finally { next.raw.close(); }
+  }
+  db.raw.prepare("DELETE FROM messages WHERE thread_id = ? AND content = 'call b'").run(kept.id);
+  assert.deepEqual(storedRows(kept.id), [], "deleting a tool call drops the task's stored folds");
+  assert.deepEqual(stored.read(kept.id), ["call a", "call c"]);
+  db.deleteThread(kept.id);
+  assert.equal((db.raw.prepare("SELECT COUNT(*) FROM tool_call_digests").pluck().get() as number), 0, "deleting the task leaves no stored fold");
   assert.ok((db.raw.prepare("EXPLAIN QUERY PLAN SELECT rowid, role, content FROM messages INDEXED BY idx_messages_tool_thread_time WHERE thread_id = ? AND rowid > ? AND kind = 'tool' ORDER BY created_at, rowid").all(digestTask.id, 0) as { detail: string }[])
     .every((row) => !row.detail.includes("TEMP B-TREE")), "the tool-only index retains chronological order without a sort");
 

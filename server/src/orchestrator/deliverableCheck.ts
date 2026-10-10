@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Db } from "../db/db.js";
-import type { ToolCallDigest } from "../db/memoryMirrors.js";
+import type { ToolCallDigest, ToolCallDigestPersistence } from "../db/memoryMirrors.js";
 import type { Role, Thread } from "../types.js";
 import { resolveTaskDeliverable } from "./deliverablePath.js";
 
@@ -78,6 +81,7 @@ function artifactWritesDigest(db: Db): ToolCallDigest<Set<string>> {
         const path = writtenPath(call.content);
         if (path && looksLikeArtifact(path)) paths.add(path);
       },
+      storedPathSet("artifact-writes"),
     );
     artifactWriteDigests.set(db, digest);
   }
@@ -176,10 +180,27 @@ function writtenPathsDigest(db: Db): ToolCallDigest<Set<string>> {
         if (!PRODUCING_ROLES.has(call.role)) return;
         for (const path of taskWrittenPaths(call.content)) paths.add(path);
       },
+      storedPathSet("written-paths"),
     );
     writtenPathDigests.set(db, digest);
   }
   return digest;
+}
+
+// Both folds are defined entirely in this module, so a hash of its own source versions their stored state:
+// any edit here re-folds every task once instead of serving a fold the new code would not have produced.
+const FOLD_VERSION = createHash("sha256").update(readFileSync(fileURLToPath(import.meta.url))).digest("hex").slice(0, 12);
+
+function storedPathSet(name: string): ToolCallDigestPersistence<Set<string>> {
+  return {
+    name,
+    version: FOLD_VERSION,
+    encode: (paths) => [...paths],
+    decode: (stored) => {
+      if (!Array.isArray(stored) || !stored.every((path) => typeof path === "string")) throw new Error(`unreadable ${name} fold`);
+      return new Set(stored);
+    },
+  };
 }
 
 /** The absolute, resolved form of a written path (relative paths resolve against the workspace) — the

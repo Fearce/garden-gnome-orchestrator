@@ -217,6 +217,22 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_ad AFTER DELETE ON messages BEGIN
   DELETE FROM messages_fts WHERE rowid = old.rowid;
 END;
 
+-- A task's folded tool-call digests (memoryMirrors.ts ToolCallDigest), kept so a restart resumes each
+-- fold after seq instead of re-reading the task's whole tool history: those rows lie scattered across a
+-- 1.4 GB file, and the cold re-read after every restart held the event loop for up to 22 s. Deleting any
+-- of a task's tool calls, from any connection, drops its digests: a fold cannot subtract a call.
+CREATE TABLE IF NOT EXISTS tool_call_digests (
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  digest    TEXT NOT NULL,
+  seq       INTEGER NOT NULL,
+  state     TEXT NOT NULL,
+  PRIMARY KEY (thread_id, digest)
+) WITHOUT ROWID;
+
+CREATE TRIGGER IF NOT EXISTS tool_call_digests_reset AFTER DELETE ON messages WHEN old.kind = 'tool' BEGIN
+  DELETE FROM tool_call_digests WHERE thread_id = old.thread_id;
+END;
+
 -- thread_id links a message's conversation turn to the task it dispatched (for the search's "go to
 -- task" jump). Nullable, and deliberately NO FK: the director conversation is durable, so a message
 -- survives its task's purge — a dangling link just means the UI hides the jump.
