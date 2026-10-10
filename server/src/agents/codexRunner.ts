@@ -1113,9 +1113,15 @@ export class CodexAgentRun implements AgentRunLike {
     if (this.pendingSends.length) {
       const batch = this.pendingSends.splice(0, this.pendingSends.length);
       if (this.restartResumeAsFresh(batch)) return;
-      const bounded = this.boundedFollowUps(batch);
+      // A failed startup has no saved session to carry its task or images forward. Replay every
+      // unconsumed input from that invocation alongside the queued steering before starting fresh.
+      const entries = this.sessionId ? batch : [
+        ...this.turnInputs.filter((entry) => !this.inputs.has(entry.inputId)),
+        ...batch,
+      ];
+      const bounded = this.boundedFollowUps(entries);
       const next = bounded.text;
-      const kept = bounded.keptIndexes.map((i) => batch[i]!);
+      const kept = bounded.keptIndexes.map((i) => entries[i]!);
       this.lastResult = undefined; // the chained turn produces the next result()
       this.runInputTurn(next, this.sessionId, kept);
       return;

@@ -338,6 +338,32 @@ async function main(): Promise<void> {
       assert.ok(internal.inputs.has(imageOnlyId) && internal.inputs.has(captionId));
     });
 
+    await check("Codex keeps the kickoff and its images when queued steering follows an exit before thread.started", async () => {
+      const agent = new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: dir, apiKey: "" });
+      const { internal, turns } = captureTurns(agent, "codex");
+      agent.sessionId = undefined;
+      const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "AA==" } };
+      const kickoff = "Kickoff brief: fix the attached reminder badge.\n" + "k".repeat(500_000);
+      agent.start([{ type: "text", text: kickoff }, image] as UserContent);
+      const kickoffId = agent.lastInputId!;
+      agent.send(steering, { priority: "now" });
+      const steeringId = agent.lastInputId!;
+      for (const entry of ambientEntries(240)) agent.send(entry.text, { source: "ambient" });
+      await internal.onTurnClose(1);
+      assert.equal(turns.length, 2);
+      assert.equal(turns[1]![1], undefined, "without a thread id the queued turn must start fresh");
+      const prompt = turns[1]![0] as string;
+      assert.ok(prompt.includes(kickoff), "the original task must survive the startup failure");
+      assert.ok(prompt.includes(steering) && prompt.length <= BATCHED_INPUT_BUDGET_CHARS);
+      assert.ok(prompt.indexOf(kickoff) < prompt.indexOf(steering), "the task and steering retain arrival order");
+      assert.deepEqual(turns[1]![2], [{ mediaType: "image/png", dataBase64: "AA==" }]);
+      const ids = turns[1]![3] as string[];
+      assert.ok(ids.includes(kickoffId) && ids.includes(steeringId));
+      assert.ok(!internal.inputs.has(kickoffId) && !internal.inputs.has(steeringId));
+      modelOutput(internal, "codex");
+      assert.ok(internal.inputs.has(kickoffId) && internal.inputs.has(steeringId));
+    });
+
     await check("Codex steering that interrupts a new session before its rollout exists restarts from the run's own kickoff", async () => {
       // Task 30f120db (2026-10-09): an inject 1.5s into a fresh Codex run resumed a thread whose rollout
       // was not written yet; with no freshFallback the run failed and the task left Codex for Claude.
