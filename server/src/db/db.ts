@@ -8,6 +8,7 @@ import { instrumentStatements } from "./slowStatements.js";
 import { config } from "../config.js";
 import { manualDeploymentSummary, parseManualDeployment, parseManualDeploymentClaim } from "../orchestrator/manualDeployment.js";
 import { providerOfRunAccount, summarizeRunUsage, type RunTokenRow } from "../orchestrator/goalUsage.js";
+import { ATTACHMENT_INDEX_CHUNK, ATTACHMENT_INDEX_CURSOR_KEY, ATTACHMENT_INDEX_READY_KEY, type AttachmentIndexStep } from "./attachmentIndex.js";
 import {
   BACKFILL_CHUNK,
   FTS_CURSOR_KEY,
@@ -922,6 +923,7 @@ export class Db {
 
   /** Latched once the trigram index covers every message; only ever flips false->true. */
   private ftsReady = false;
+  private attachmentIndexIsReady = false;
 
   /** Null until migrate() finishes, so a migration always reads the file as it is at that moment. */
   private threadListing: ThreadListingMirror | null = null;
@@ -3390,6 +3392,48 @@ export class Db {
     return (
       this.raw.prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC").all(threadId) as Row[]
     ).map(rowToMessage);
+  }
+
+  /** Every attachment on the task's messages from `since` on, in feed order. Served by
+   *  `message_attachment_index` once its walk has finished; until then by the feed itself. */
+  attachmentRefsSince(threadId: string, since: number): AttachmentRef[] {
+    const sql = this.attachmentIndexReady()
+      ? "SELECT attachments FROM message_attachment_index WHERE thread_id = ? AND created_at >= ? ORDER BY created_at ASC, message_rowid ASC"
+      : "SELECT attachments FROM messages WHERE thread_id = ? AND created_at >= ? AND attachments <> '[]' ORDER BY created_at ASC, rowid ASC";
+    return (this.raw.prepare(sql).pluck().all(threadId, since) as string[]).flatMap(parseAttachments);
+  }
+
+  /** True once every message written before `message_attachment_index` existed has been walked into it. */
+  attachmentIndexReady(): boolean {
+    if (!this.attachmentIndexIsReady) this.attachmentIndexIsReady = this.kvGet(ATTACHMENT_INDEX_READY_KEY) !== null;
+    return this.attachmentIndexIsReady;
+  }
+
+  /** One turn of the `message_attachment_index` walk (db/attachmentIndex.ts): index the attachment-bearing
+   *  messages among the next `chunk` rowids and advance the cursor, or mark the index ready when none are
+   *  left. The triggers already cover every row written since the table was created, and indexing a row
+   *  twice replaces it with itself, so the walk never races them. */
+  backfillAttachmentIndexChunk(chunk = ATTACHMENT_INDEX_CHUNK): AttachmentIndexStep {
+    if (this.attachmentIndexReady()) return { indexed: 0, done: true };
+    const cursor = Number(this.kvGet(ATTACHMENT_INDEX_CURSOR_KEY) ?? 0);
+    const upto = this.raw
+      .prepare("SELECT MAX(rowid) FROM (SELECT rowid FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?)")
+      .pluck()
+      .get(cursor, chunk) as number | null;
+    if (upto === null) {
+      this.kvSet(ATTACHMENT_INDEX_READY_KEY, String(now()));
+      this.attachmentIndexIsReady = true;
+      return { indexed: 0, done: true };
+    }
+    return this.raw.transaction(() => {
+      const info = this.raw
+        .prepare(
+          "INSERT OR REPLACE INTO message_attachment_index SELECT rowid, thread_id, created_at, attachments FROM messages WHERE rowid > ? AND rowid <= ? AND attachments <> '[]'",
+        )
+        .run(cursor, upto);
+      this.kvSet(ATTACHMENT_INDEX_CURSOR_KEY, String(upto));
+      return { indexed: info.changes, done: false };
+    })();
   }
 
   /** The newest page of one task's feed, or the page immediately before `before`, always returned

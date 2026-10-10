@@ -83,6 +83,7 @@ const GATES = [
   "test:task-search",
   "test:performance-paths",
   "test:memory-mirrors",
+  "test:attachment-index",
   "test:memory-rag",
   "test:wal-checkpointer",
   "test:search-index",

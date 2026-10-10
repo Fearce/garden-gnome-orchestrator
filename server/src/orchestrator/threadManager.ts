@@ -8160,15 +8160,12 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const seen = new Set<string>();
     const blocks: ImageBlock[] = [];
     const since = this.db.getThreadStageOutputs(threadId).priorTurnsEndedAt ?? 0;
-    for (const message of this.db.listMessages(threadId)) {
-      if (message.createdAt < since) continue;
-      for (const ref of message.attachments ?? []) {
-        if (seen.has(ref.id) || !IMAGE_MEDIA_TYPES.has(ref.mediaType as ImageAttachment["mediaType"])) continue;
-        seen.add(ref.id);
-        const attachment = this.db.getAttachment(ref.id);
-        if (!attachment || !IMAGE_MEDIA_TYPES.has(attachment.mediaType as ImageAttachment["mediaType"])) continue;
-        blocks.push(toImageBlock({ name: attachment.name, mediaType: attachment.mediaType as ImageAttachment["mediaType"], dataBase64: attachment.data }));
-      }
+    for (const ref of this.db.attachmentRefsSince(threadId, since)) {
+      if (seen.has(ref.id) || !IMAGE_MEDIA_TYPES.has(ref.mediaType as ImageAttachment["mediaType"])) continue;
+      seen.add(ref.id);
+      const attachment = this.db.getAttachment(ref.id);
+      if (!attachment || !IMAGE_MEDIA_TYPES.has(attachment.mediaType as ImageAttachment["mediaType"])) continue;
+      blocks.push(toImageBlock({ name: attachment.name, mediaType: attachment.mediaType as ImageAttachment["mediaType"], dataBase64: attachment.data }));
     }
     return blocks;
   }

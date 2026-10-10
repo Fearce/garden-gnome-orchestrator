@@ -233,6 +233,29 @@ CREATE TRIGGER IF NOT EXISTS tool_call_digests_reset AFTER DELETE ON messages WH
   DELETE FROM tool_call_digests WHERE thread_id = old.thread_id;
 END;
 
+-- The few messages that carry attachments (337 of 1.2M on 2026-10-10), so a stage kickoff finds a task's
+-- pictures without reading its whole feed: attachments sits behind content, on overflow pages, and that
+-- read held the event loop for up to 2.9 s. The triggers keep it from the first boot; older rows are
+-- walked in by db/attachmentIndex.ts, and readers use the feed itself until that walk is done.
+CREATE TABLE IF NOT EXISTS message_attachment_index (
+  message_rowid INTEGER PRIMARY KEY,
+  thread_id     TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  attachments   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_message_attachment_index_thread ON message_attachment_index(thread_id, created_at, message_rowid);
+
+CREATE TRIGGER IF NOT EXISTS message_attachment_index_ai AFTER INSERT ON messages WHEN new.attachments <> '[]' BEGIN
+  INSERT OR REPLACE INTO message_attachment_index VALUES (new.rowid, new.thread_id, new.created_at, new.attachments);
+END;
+CREATE TRIGGER IF NOT EXISTS message_attachment_index_au AFTER UPDATE OF attachments, thread_id, created_at ON messages BEGIN
+  DELETE FROM message_attachment_index WHERE message_rowid = old.rowid;
+  INSERT INTO message_attachment_index SELECT new.rowid, new.thread_id, new.created_at, new.attachments WHERE new.attachments <> '[]';
+END;
+CREATE TRIGGER IF NOT EXISTS message_attachment_index_ad AFTER DELETE ON messages WHEN old.attachments <> '[]' BEGIN
+  DELETE FROM message_attachment_index WHERE message_rowid = old.rowid;
+END;
+
 -- thread_id links a message's conversation turn to the task it dispatched (for the search's "go to
 -- task" jump). Nullable, and deliberately NO FK: the director conversation is durable, so a message
 -- survives its task's purge — a dangling link just means the UI hides the jump.

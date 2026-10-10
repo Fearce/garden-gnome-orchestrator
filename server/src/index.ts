@@ -30,6 +30,7 @@ import { Db } from "./db/db.js";
 import { WalCheckpointer } from "./db/walCheckpointer.js";
 import { startSearchIndexBackfill } from "./db/searchIndex.js";
 import { startLatestMessagePreviewBackfill } from "./db/previewBackfill.js";
+import { startAttachmentIndexBackfill } from "./db/attachmentIndex.js";
 import { EventHub } from "./events.js";
 import { FileMemoryService } from "./memory/memory.js";
 import { HAIKU_MODEL } from "./memory/models.js";
@@ -354,6 +355,7 @@ async function main(): Promise<void> {
       () => cliUpdater.start(),
       () => startSearchIndexBackfill(db, (message) => hub.publish({ type: "log", level: "info", message })),
       () => startLatestMessagePreviewBackfill(db, (message) => hub.publish({ type: "log", level: "info", message })),
+      () => startAttachmentIndexBackfill(db, (message) => hub.publish({ type: "log", level: "info", message })),
       () =>
         startCodexUsageMonitor(hub, {
           apiKey: () => manager.openaiApiKey(),
