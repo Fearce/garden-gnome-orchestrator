@@ -250,6 +250,7 @@ async function main(): Promise<void> {
   const codeContext = new CodeContextService(db, ide);
   const remoteControl = new RemoteControlService(db, config.dataDir);
   process.once("exit", () => remoteControl.shutdown());
+  process.once("exit", () => manager.disposeWarmSpares());
   // Optional tabs (Script Hub, Surveillance, Home, Sidekick). Their workers are separate processes that
   // start on first use and outlive a GGO restart; nothing here runs until a tab or a recording asks.
   const stamp = buildInfo();

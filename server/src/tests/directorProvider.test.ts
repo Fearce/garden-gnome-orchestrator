@@ -15,6 +15,8 @@ const { Director } = await import("../orchestrator/director.js");
 const { executeDirectorCliAction } = await import("../orchestrator/directorCliBridge.js");
 const { directorSafetyArgs } = await import("../agents/codexRunner.js");
 const { SUPERVISOR_JUDGE_MAX_TURNS } = await import("../orchestrator/supervisor.js");
+const { AgentRun } = await import("../agents/runner.js");
+type AgentRunConfig = import("../agents/runner.js").AgentRunConfig;
 
 let passed = 0;
 let failed = 0;
@@ -131,6 +133,36 @@ try {
     internals.createDirectorAgent = originalCreateDirectorAgent;
     return out;
   })()) === null);
+
+  // Auto-select's judgement starts on a parked spare process. A claim the spare refused never ran the
+  // prompt, so the same judgement is asked again on a cold boot rather than read as "no usable pick".
+  const startedOn: Array<string | undefined> = [];
+  class SpareAwareRun extends AgentRun {
+    override start(_kickoff: unknown, spare?: unknown): this {
+      startedOn.push(spare ? "spare" : "cold");
+      this.spareClaimNeverRan = Promise.resolve(Boolean(spare));
+      return this;
+    }
+    override async result(): Promise<never> {
+      return { type: "result", subtype: "success", isError: false, structuredOutput: { pick: startedOn.at(-1) } } as never;
+    }
+    override async stop(): Promise<void> {}
+  }
+  const claudeJudge = { key: "claude:claude-capped", provider: "claude", accountId: "claude-capped", accountLabel: "capped Claude", model: "claude-opus-5-5" } as const;
+  internals.createDirectorAgent = (_target: unknown, cfg: AgentRunConfig) => new SpareAwareRun(cfg);
+  const originalSpares = internals.directorSpares;
+  internals.directorSpares = { take: async () => ({}), discard: () => {} };
+  const retried = await mgr.askDirectorJson("pick a model", simpleSchema, claudeJudge);
+  internals.directorSpares = { take: async () => undefined, discard: () => {} };
+  const coldOnly = await mgr.askDirectorJson("pick a model", simpleSchema, claudeJudge);
+  internals.directorSpares = originalSpares;
+  internals.createDirectorAgent = originalCreateDirectorAgent;
+  check(
+    "a judgement whose spare claim never ran is asked again cold",
+    JSON.stringify(startedOn.slice(0, 2)) === JSON.stringify(["spare", "cold"]) && JSON.stringify(retried) === JSON.stringify({ pick: "cold" }),
+    JSON.stringify({ startedOn, retried }),
+  );
+  check("without a spare the judgement boots cold once", startedOn.length === 3 && startedOn[2] === "cold" && JSON.stringify(coldOnly) === JSON.stringify({ pick: "cold" }), JSON.stringify(startedOn));
 
   // Auto model selection is implementor-only. It once also let a judge pick the director from the
   // whole roster ("the least expensive model you trust"), which put the director on Sonnet 5 while the

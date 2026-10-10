@@ -8,6 +8,7 @@ import type {
   Query,
   SDKMessage,
   SDKUserMessage,
+  SpareProcess,
 } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -19,6 +20,7 @@ import { withAgentToolPath } from "./env.js";
 import { InputLedger } from "./inputLedger.js";
 import { latestFamilyModel } from "./modelFamily.js";
 import { ClaudeRunMeter } from "./sessionUsage.js";
+import { claimNeverRan, claimOptionsOf } from "./warmSpares.js";
 
 export type UserContent = string | unknown[];
 export type StartupWedgeScope = "session" | "provider";
@@ -296,6 +298,9 @@ export class AgentRun implements AgentRunLike {
   // turn's first stream frame and on its result) and reports a mid-turn fold as a `command_lifecycle`
   // `started` frame. Those are the only proof that a sent message was read.
   private readonly inputs = new InputLedger();
+  /** True once a spare refused this run's claim (or died first): the first message never ran, so the caller
+   *  must make the call again cold. Stays false for a cold start. */
+  spareClaimNeverRan: Promise<boolean> = Promise.resolve(false);
 
   constructor(private readonly cfg: AgentRunConfig) {
     // The newest-in-family invariant's last line: whichever path chose this model, never run a superseded one.
@@ -328,7 +333,28 @@ export class AgentRun implements AgentRunLike {
     return undefined;
   }
 
-  start(firstMessage: UserContent): this {
+  /** Starts the run, on `spare` when given: a parked process warmed with this run's `queryOptions()`. */
+  start(firstMessage: UserContent, spare?: SpareProcess): this {
+    const options = this.queryOptions();
+    if (this.cfg.memoryHooks) prefetchMemoryRecall(this.cfg.memoryHooks, firstMessage, this.cfg.cwd);
+
+    try {
+      this.q = this.openQuery(options, spare);
+      this.input.push(this.stampedUserMessage(firstMessage));
+      void this.consume();
+    } catch (err) {
+      // Most provider rejections arrive while consuming the query, but an SDK is also allowed to reject
+      // synchronously while constructing it. Route that through the same cap classifier: a 429/quota
+      // error is a provider handoff, never a terminal stage failure.
+      this.handleThrownProviderError(err);
+      this.finished = true;
+      this.emitter.emit("end");
+    }
+    return this;
+  }
+
+  /** The SDK options this run starts with; a spare must have been warmed with exactly these. */
+  queryOptions(): Options {
     const options: Options = {
       model: this.cfg.model,
       cwd: this.cfg.cwd,
@@ -351,22 +377,21 @@ export class AgentRun implements AgentRunLike {
     if (this.cfg.memoryHooks) {
       options.hooks = this.cfg.memoryHooks;
       options.env = { ...options.env, [NATIVE_MEMORY_ENV]: "1" };
-      prefetchMemoryRecall(this.cfg.memoryHooks, firstMessage, this.cfg.cwd);
     }
+    return options;
+  }
 
-    try {
-      this.q = query({ prompt: this.input, options });
-      this.input.push(this.stampedUserMessage(firstMessage));
-      void this.consume();
-    } catch (err) {
-      // Most provider rejections arrive while consuming the query, but an SDK is also allowed to reject
-      // synchronously while constructing it. Route that through the same cap classifier: a 429/quota
-      // error is a provider handoff, never a terminal stage failure.
-      this.handleThrownProviderError(err);
-      this.finished = true;
-      this.emitter.emit("end");
+  private openQuery(options: Options, spare: SpareProcess | undefined): Query {
+    if (spare) {
+      try {
+        const q = spare.claim({ prompt: this.input, options: claimOptionsOf(options) });
+        this.spareClaimNeverRan = spare.claimed.then(() => false, claimNeverRan);
+        return q;
+      } catch {
+        // The spare exited or was closed after it was handed over; nothing was sent, so boot cold.
+      }
     }
-    return this;
+    return query({ prompt: this.input, options });
   }
 
   /** Subscribe to normalized agent events. */

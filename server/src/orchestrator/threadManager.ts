@@ -20,6 +20,7 @@ import {
   type UserContent,
 } from "../agents/runner.js";
 import { InputLedger } from "../agents/inputLedger.js";
+import { WarmSpares } from "../agents/warmSpares.js";
 import { CodexAgentRun, codexAuthAvailable, codexSubscriptionAuthAvailable, testOpenAiKey, type CodexTestResult } from "../agents/codexRunner.js";
 import { withCommunicationSystemPolicy, withCommunicationTurnPolicy } from "../agents/communicationPolicy.js";
 import { normalizeDirectorDirectives } from "../agents/directorDirectives.js";
@@ -1284,6 +1285,8 @@ export class ThreadManager implements OrchestratorApi {
   // Persistent 24h LiveBench capability prior. It informs the smart selectors but never gates routing:
   // a stale or unavailable leaderboard simply leaves local outcome history + the judging agent in charge.
   private readonly liveBench: LiveBenchScores;
+  // A parked Claude process for the auto-select judgement, which otherwise boots a CLI on every task start.
+  private readonly directorSpares = new WarmSpares();
   // Posts the owner's phone notifications (task done / needs you / failed) to their Discord channel.
   private readonly discord: DiscordNotifier;
   /** The Discord inbox's last reported connection state, for the Settings panel. */
@@ -4766,6 +4769,23 @@ export class ThreadManager implements OrchestratorApi {
   async askDirectorJson(prompt: string, schema: JsonSchemaLike, judge?: DirectorTarget): Promise<unknown | null> {
     const target = judge ?? this.preferredDirectorTarget();
     if (!target) return null;
+    const warm = await this.runDirectorJson(target, prompt, schema, true);
+    return warm.claimNeverRan ? (await this.runDirectorJson(target, prompt, schema, false)).answer : warm.answer;
+  }
+
+  /** Close the parked director process; it would otherwise outlive this server as an orphan. */
+  disposeWarmSpares(): void {
+    this.directorSpares.discard();
+  }
+
+  /** One askDirectorJson attempt. With `warm`, a Claude run starts on the parked spare warmed for these exact
+   *  options, which takes the CLI boot off the call; a claim that never ran reports so for a cold retry. */
+  private async runDirectorJson(
+    target: DirectorTarget,
+    prompt: string,
+    schema: JsonSchemaLike,
+    warm: boolean,
+  ): Promise<{ answer: unknown | null; claimNeverRan: boolean }> {
     mkdirSync(join(config.dataDir, "director-sandbox"), { recursive: true });
     const cfg: AgentRunConfig = {
       model: target.model,
@@ -4783,12 +4803,15 @@ export class ThreadManager implements OrchestratorApi {
     const off = agent.onEvent((e) => {
       if (e.type === "rate_limit" && target.provider === "claude") this.accounts.updateFromRateLimit(target.accountId, e.info);
     });
-    agent.start(directorJsonKickoff(target, prompt, schema));
+    const spare = warm && agent instanceof AgentRun ? await this.directorSpares.take(agent.queryOptions()) : undefined;
+    if (agent instanceof AgentRun) agent.start(directorJsonKickoff(target, prompt, schema), spare);
+    else agent.start(directorJsonKickoff(target, prompt, schema));
     const result = await agent.result().catch(() => undefined);
     off();
     await agent.stop().catch(() => {});
+    if (spare && await (agent as AgentRun).spareClaimNeverRan) return { answer: null, claimNeverRan: true };
     if (this.directorRunCapped(target, agent)) this.noteDirectorProviderCap(target);
-    return result && !result.isError ? result.structuredOutput ?? null : null;
+    return { answer: result && !result.isError ? result.structuredOutput ?? null : null, claimNeverRan: false };
   }
 
   /** The Director Supervisor's own cheap bounded judgement call — same no-tools, capacity-aware shape as
