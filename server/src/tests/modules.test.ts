@@ -1008,7 +1008,10 @@ try {
     homeImportedAt = 0;
     const connection = await idle.ensure("home").finally(() => { homeImportDelayMs = 0; });
     assert.ok(homeImportedAt > 0, "the delayed import completed");
-    assert.ok(connection.health.lastActivityAt >= homeImportedAt, "the idle countdown starts after importing settings");
+    // Both stamps come from the worker's clock: V8 on Windows extrapolates wall time per process, so a
+    // comparison with this process's `homeImportedAt` can be off by a clock tick.
+    const { lastActivityAt, startedAt } = connection.health;
+    assert.ok(lastActivityAt - startedAt >= 1_600, `the idle countdown starts after importing settings (${lastActivityAt - startedAt}ms after start)`);
     await waitFor("idle exit", () => idle.status("home"), (s) => s.state === "stopped", 20_000);
     // The record goes first and the process ends a moment later as it exits by itself.
     await waitFor("idle worker process gone", async () => pidAlive(connection.health.pid), (alive) => !alive, 10_000);
