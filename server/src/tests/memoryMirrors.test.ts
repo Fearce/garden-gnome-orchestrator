@@ -130,10 +130,15 @@ try {
     (shared as { environment: string }).environment = "edited";
   }, TypeError, "a shared nested object refuses edits instead of changing every later listing");
 
+  const keptTitle = db.threadSummary(a.id)!.title;
+  let rolledBackId = "";
   assert.throws(
     () =>
       db.raw.transaction(() => {
+        db.raw.prepare("UPDATE threads SET title = ? WHERE id = ?").run("uncommitted title", a.id);
+        assert.equal(db.threadSummary(a.id)?.title, "uncommitted title", "a summary inside the transaction sees an uncommitted update");
         const ghost = db.createThread({ title: "rolled back", workspace: dir, rawPrompt: "", brief: "" });
+        rolledBackId = ghost.id;
         assert.ok(db.listThreads().some((t) => t.id === ghost.id), "inside the transaction the new row is visible");
         assert.equal(db.threadSummary(ghost.id)?.title, "rolled back", "a summary inside the transaction sees an uncommitted insert");
         throw new Error("roll back");
@@ -141,6 +146,8 @@ try {
     /roll back/,
   );
   assert.equal(db.listThreads().some((t) => t.title === "rolled back"), false, "a rolled-back insert never reaches the mirror");
+  assert.equal(db.threadSummary(rolledBackId), null, "a rolled-back insert never reaches an individual summary");
+  assert.equal(db.threadSummary(a.id)?.title, keptTitle, "a rolled-back update leaves the individual summary intact");
   assertMirrorsMatchSqlite("after a rollback");
 
   assert.equal(db.kvGet("shared"), null, "the miss is now remembered");

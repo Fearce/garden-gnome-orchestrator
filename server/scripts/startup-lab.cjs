@@ -180,7 +180,7 @@ function rawGet(url, encoding) {
       await page.goto(BASE + '/orchestrator');
       await page.waitForSelector('.accounts .acct', { state: "attached" });
       assert.equal(new URL(page.url()).pathname, '/orchestrator/');
-      assert.match(await page.evaluate(() => window.__startupSockets[0].url), /\/orchestrator\/ws$/);
+      assert.equal(new URL(await page.evaluate(() => window.__startupSockets[0].url)).pathname, '/orchestrator/ws');
       assert.match(await page.evaluate(() => window.__startupSockets[0].extensions), /permessage-deflate/);
       if (mobile) await page.setViewportSize({width:1600,height:1000});
       // Co-work is a board card/popup now; the retained component keeps unsent drafts on reopen.
@@ -199,6 +199,6 @@ function rawGet(url, encoding) {
     killInstance(PORT);
     // mkdtemp produced this exact isolated directory; never remove a caller-provided DATA_DIR.
     assert.ok(path.resolve(dataDir).startsWith(path.resolve(os.tmpdir()) + path.sep));
-    fs.rmSync(dataDir, {recursive:true,force:true});
+    fs.rmSync(dataDir, {recursive:true,force:true,maxRetries:20,retryDelay:100});
   }
 })().catch(error => { console.error(error); process.exitCode=1; });

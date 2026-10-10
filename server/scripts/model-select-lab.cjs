@@ -151,7 +151,7 @@ async function main() {
     return check.summary();
   } finally {
     killInstance(PORT);
-    if (!keep) fs.rmSync(dataDir, { recursive: true, force: true });
+    if (!keep) fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
     else console.log(`kept ${dataDir}`);
   }
 }

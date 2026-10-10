@@ -260,6 +260,8 @@ async function bootMigration(): Promise<void> {
     db.updateThread(done.id, { state: "done" });
     const picked = db.createThread({ title: "auto pick", workspace, rawPrompt: "x" });
     ids.picked = picked.id;
+    // Test saved-pick migration without arming boot's queued-task recovery after this fixture closes.
+    db.updateThread(picked.id, { state: "failed" });
     db.updateThreadStageOutputs(picked.id, { modelPick: { provider: "claude", model: "claude-opus-5", effort: "high", reason: "r" } });
   });
   try {
