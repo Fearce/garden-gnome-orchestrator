@@ -246,7 +246,6 @@ same commit as the fix. Git history keeps the record.
 
 - **Rewrite published history to remove personal details the tree no longer carries** (owner action: filter-repo + force-push master, delete five stale remote branches, GitHub Support for PR refs/caches, coordinate the published fork rewrite).
   Corrected kit (surfaced as a deliverable) in the main checkout's gitignored `_privacy-remediation` folder: fresh public mirror dry-run 2026-10-04 reduced 2,751 matches (including exposed PFX passphrase) to 0; public fork still has 211 matches; nothing force-pushed.
-- **Rotate the local HTTPS PFX passphrase** (owner action): it is a weak dictionary word, and `npm run audit:secrets --prefix server` finds that word in four reachable published commits (value withheld), so treat it as exposed: set a random passphrase, re-encrypt the PFX and update `server/.env`.
 
 ## Icebox
 
@@ -258,6 +257,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-10 **Rotated the shared HTTPS PFX passphrase** (Script Hub repo 93fd3f6, nightly sweep task 4e214af2): the deck's PFX is re-encrypted (AES-256, same certificate) under a random passphrase held in a gitignored file beside the PFX and in `server/.env`. Script Hub restarted and answers TLS on :3940; `npm run audit:secrets --prefix server` now reports "Publish-safe" (the old word stays in history, but nothing unlocks with it).
 
 - 2026-10-10 **Console probe tolerates Chromium profile cleanup under sweep load** (07ded6db, nightly sweep task 4e214af2): the 04:04 sweep failed step 6 on a console that had mounted cleanly (ws live, 15 cards, 0 errors) because kill() waited over 5 s for temporary-profile deletion. Shutdown now gets 15 s and the probe 40 s; `probe:console` and `test:console-probe` pass. This also resolves the shutdown half of Ready "Investigate console smoke served/local bundle mismatch" (the bundle half was 26542f02).
 
@@ -298,6 +299,4 @@ No open entries.
 
 
 - 2026-10-07 **Keep restart-interrupted sessions on their previous provider, including promoted reads and admission parks** (cd78bbaf, aac45dca, Codex): live build d15fe425 contains both fixes; production restart retained the exact Codex/Sol session. Affinity 19/19, token-freeze, types/builds, README 74/74 and privacy pass. Completed full sweep 235/239; QA-budget 161/161, Default 23/23 and doc-path 18/18 pass after fixture/build repairs. Supervisor timing remains intermittent (standalone 12/12, serial subset 11/12), tracked in Ready.
-
-- 2026-10-07 **Stop inherited QA after a registration-only follow-up** (Moss Quill): live task settled done with durable QA-off; Script Hub reports the app running. Task-role controls 38/38, README 74/74 and privacy pass; README explains inherited routing and task overrides.
 
