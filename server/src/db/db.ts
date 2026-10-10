@@ -2065,6 +2065,15 @@ export class Db {
     return r ? rowToThread(r) : null;
   }
 
+  /** One task's card fields from the listing mirror, without reading its prompt or stage history.
+   *  Like the listings, callers get their own scalar fields and share frozen nested values. */
+  threadSummary(id: string): ThreadSummary | null {
+    const listed = this.threadListing?.one(id);
+    if (listed !== undefined) return listed ? { ...listed.summary } : null;
+    const r = this.raw.prepare(`SELECT ${THREAD_SUMMARY_COLUMNS} FROM threads WHERE id = ?`).get(id) as Row | undefined;
+    return r ? rowToThreadSummaryFromListing(r) : null;
+  }
+
   /** A task's state from the listing mirror, for loops that only branch on it: `getThread` reads the
    *  brief and stage outputs off overflow pages, ~2s a call cold (crash.log, 2026-10-04). */
   threadState(id: string): ThreadState | null {

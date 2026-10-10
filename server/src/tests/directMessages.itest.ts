@@ -26,7 +26,7 @@ try {
   const to = { threadId: b.id, role: "implementor" as const };
   const other = { threadId: c.id, role: "implementor" as const };
   let steered = 0;
-  const internal = manager as unknown as { live: Map<string, unknown>; sendCommunication: () => void; track: (id: string, handle: unknown) => void; withOfficeNote: (thread: typeof a, role: string, text: string, tools: boolean) => string; inboxResumeKickoff: (threadId: string, role: string, message: string | unknown[]) => string | unknown[]; capSupervisor?: NodeJS.Timeout };
+  const internal = manager as unknown as { live: Map<string, unknown>; sendCommunication: () => void; track: (id: string, handle: unknown) => void; withOfficeNote: (thread: typeof a, role: string, text: string, tools: boolean) => string; inboxResumeKickoff: (threadId: string, role: string, message: string | unknown[]) => string | unknown[]; liveAgentThreads: () => Array<{ threadId: string; workspace: string; title: string }>; capSupervisor?: NodeJS.Timeout };
   const handle = { send: () => { steered++; } };
   internal.track(b.id, handle);
   internal.live.set(b.id, { run: handle, runId: "fixture", accountId: "fixture" });
@@ -163,8 +163,30 @@ try {
     assert.deepEqual(blocks[0], image);
     assert.ok(JSON.stringify(blocks[1]).includes(token));
   });
+  check("inbox validation and live roster skip full task-history reads and retain updated home workspaces", () => {
+    db.listThreadSummaries();
+    const prepare = db.raw.prepare.bind(db.raw);
+    const fullThreadReads: string[] = [];
+    db.raw.prepare = ((sql: string) => {
+      if (/SELECT \* FROM threads\b/.test(sql)) fullThreadReads.push(sql);
+      return prepare(sql);
+    }) as typeof db.raw.prepare;
+    try {
+      assert.deepEqual(manager.directInbox.identify(recipientToken), to);
+      assert.equal(manager.directInbox.list(to).messages.length, 100);
+      manager.directInbox.unreadPreview(to);
+      assert.equal(internal.liveAgentThreads().find(t => t.threadId === b.id)?.title, "Renderer");
+      db.raw.prepare("UPDATE threads SET title = ?, workspace = ?, home_workspace = ? WHERE id = ?")
+        .run("Renamed renderer", "C:/example/renderer-worktree", "C:/example/renderer", b.id);
+      const updated = internal.liveAgentThreads().find(t => t.threadId === b.id);
+      assert.equal(updated?.title, "Renamed renderer");
+      assert.equal(updated?.workspace, "C:/example/renderer");
+      assert.deepEqual(fullThreadReads, [], "neither repeated mailbox validation nor roster lookup fetches the full thread row");
+    } finally { db.raw.prepare = prepare; }
+  });
   db.deleteThread(b.id);
   check("deleted recipient loses mail and capability", () => { assert.equal(manager.directInbox.identify(recipientToken), null); assert.throws(() => manager.directRead(to)); });
+  check("deleted task leaves the live roster despite a remaining in-memory handle", () => assert.ok(!internal.liveAgentThreads().some(t => t.threadId === b.id)));
   console.log(`${checks} inbox integration checks passed`);
 } finally {
   const internal = manager as unknown as { capSupervisor?: NodeJS.Timeout };

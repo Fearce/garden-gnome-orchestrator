@@ -24,6 +24,10 @@ const fromSqlite = <T>(read: () => T): T => db.raw.transaction(read)();
 function assertMirrorsMatchSqlite(label: string): void {
   assert.deepEqual(db.listThreads(), fromSqlite(() => db.listThreads()), `${label}: listThreads`);
   assert.deepEqual(db.listThreadSummaries(), fromSqlite(() => db.listThreadSummaries()), `${label}: listThreadSummaries`);
+  for (const summary of db.listThreadSummaries()) {
+    assert.deepEqual(db.threadSummary(summary.id), fromSqlite(() => db.threadSummary(summary.id)), `${label}: threadSummary`);
+  }
+  assert.equal(db.threadSummary("missing-thread"), null, `${label}: missing threadSummary`);
   assert.deepEqual(
     db.listThreadsByStates(["review", "queued"]),
     fromSqlite(() => db.listThreadsByStates(["review", "queued"])),
@@ -61,6 +65,9 @@ try {
     db.listThreads();
     db.listThreadSummaries();
     db.listThreadsByStates(["review"]);
+    db.threadSummary(a.id);
+    db.threadSummary(b.id);
+    db.threadSummary("missing-thread");
   });
   assert.deepEqual(quiet, { full: 0, single: 0 }, "an unchanged table is served from memory");
 
@@ -115,6 +122,9 @@ try {
   const leaked = db.listThreads()[0]!;
   leaked.title = "mutated by a caller";
   assert.notEqual(db.listThreads()[0]!.title, "mutated by a caller", "a caller's mutation never reaches the mirror");
+  const summary = db.threadSummary(a.id)!;
+  summary.title = "mutated summary";
+  assert.notEqual(db.threadSummary(a.id)!.title, "mutated summary", "a summary caller's scalar mutation never reaches the mirror");
   const shared = db.listThreads().find((t) => t.id === a.id)!.manualDeployment!;
   assert.throws(() => {
     (shared as { environment: string }).environment = "edited";
@@ -125,6 +135,7 @@ try {
       db.raw.transaction(() => {
         const ghost = db.createThread({ title: "rolled back", workspace: dir, rawPrompt: "", brief: "" });
         assert.ok(db.listThreads().some((t) => t.id === ghost.id), "inside the transaction the new row is visible");
+        assert.equal(db.threadSummary(ghost.id)?.title, "rolled back", "a summary inside the transaction sees an uncommitted insert");
         throw new Error("roll back");
       })(),
     /roll back/,
@@ -139,9 +150,15 @@ try {
   assert.equal(db.listThreads().find((t) => t.id === a.id)?.title, "other connection", "another connection's commit is seen");
   assert.equal(db.kvGet("shared"), "from other", "another connection's kv commit is seen");
   assertMirrorsMatchSqlite("after a foreign commit");
+  const removedElsewhere = db.createThread({ title: "Foreign delete", workspace: dir, rawPrompt: "" });
+  assert.equal(db.threadSummary(removedElsewhere.id)?.title, "Foreign delete");
+  other.prepare("DELETE FROM threads WHERE id = ?").run(removedElsewhere.id);
+  assert.equal(db.threadSummary(removedElsewhere.id), null, "another connection's deletion invalidates a cached summary");
+  assertMirrorsMatchSqlite("after a foreign delete");
 
   db.deleteThread(b.id);
   assert.equal(db.listThreads().some((t) => t.id === b.id), false, "a deleted task leaves the listing");
+  assert.equal(db.threadSummary(b.id), null, "a deleted task leaves the individual summary");
   assertMirrorsMatchSqlite("after delete");
 
   assert.equal(db.kvGet("missing"), null, "a missing key reads null");

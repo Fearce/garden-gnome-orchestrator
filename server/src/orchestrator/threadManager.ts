@@ -1054,7 +1054,7 @@ function repoCapKey(thread: Thread): string {
 /** The folder a task was dispatched to — its repo's main checkout even while it runs in its own worktree.
  *  The office, the per-repo cap and repo-level history key on this, so tasks in sibling worktrees of one
  *  repo still count as teammates. */
-function homeWorkspaceOf(thread: Thread): string {
+function homeWorkspaceOf(thread: Pick<Thread, "workspace" | "homeWorkspace">): string {
   return thread.homeWorkspace ?? thread.workspace;
 }
 
@@ -17100,7 +17100,7 @@ That pick does not satisfy the task's persisted flagship policy (${policy?.signa
     const out: { threadId: string; role: Role; workspace: string; title: string; startedAt: number }[] = [];
     for (const [tid, set] of this.activeRuns) {
       if (!set.size) continue;
-      const t = this.db.getThread(tid);
+      const t = this.db.threadSummary(tid);
       if (!t) continue;
       const runs = this.db.listRuns(tid);
       const active = runs

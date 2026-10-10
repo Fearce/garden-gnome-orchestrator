@@ -30,7 +30,7 @@ export class DirectMessages {
   }
 
   private validate(address: GnomeAddress): void {
-    if (!address || !ROLES.includes(address.role) || address.role === "director" || !this.db.getThread(address.threadId)) {
+    if (!address || !ROLES.includes(address.role) || address.role === "director" || this.db.threadState(address.threadId) === null) {
       throw new Error("Unknown local gnome. Use a threadId and role from the local directory.");
     }
   }
