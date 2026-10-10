@@ -244,9 +244,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Blocked / waiting
 
-- **Finish nightly QA scratch cleanup after local approval rejects deletion** (2026-10-10, Bramble Caliper; task 4e214af2).
-  All checks pass and live 66f6405b contains the fixes; no process uses the QA scratch. Local approval rejected removing the task scratch directory and unlinking its dependency/script junctions. Owner cleanup must preserve both junction targets before independent QA can accept this changed run.
-
 - **Choose an eligible NVIDIA free-pool model** (2026-10-08, Saffron Wicket): live refresh marks the saved `openai/gpt-oss-120b` choice as no longer verified free and sends no inference request. Settings must select another verified free model; preserve the explicit owner choice until changed.
 
 - **Verify Claude prepaid funds before enabling credit-backed dispatch** (2026-10-07, Pebble Sprocket).
