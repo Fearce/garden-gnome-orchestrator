@@ -13,6 +13,9 @@
  *   npm run probe:sdk-steer --prefix server -- --mode interrupt --at 8000 --model claude-haiku-4-5-20251001
  *   npm run probe:sdk-steer --prefix server -- --mode pickup --schema
  *
+ * `append` sends with no priority, which the CLI enqueues as `"later"`: compare its `consumed after N tool
+ * call(s)` line with `next` to see whether a steer is read at the next tool boundary or only at turn end.
+ *
  * `pickup` is what the injection pickup watch does to a run blocked in a tool call (injectionPickup.ts): a
  * plain append, then `interrupt()` while it is still unread. `--schema` gives the run a structured-output
  * contract like QA and the auto-reviewer, whose verdict loop must discard the aborted turn too.
@@ -32,7 +35,7 @@ import { join } from "node:path";
 import { AgentRun, type ResultEvent } from "../agents/runner.js";
 import { config } from "../config.js";
 
-type Mode = "now" | "next" | "interrupt" | "pickup";
+type Mode = "now" | "next" | "append" | "interrupt" | "pickup";
 
 interface Args {
   mode: Mode;
@@ -50,7 +53,7 @@ function parseArgs(argv: string[]): Args {
   const mode = get("--mode");
   const at = Number(get("--at"));
   return {
-    mode: mode === "next" || mode === "interrupt" || mode === "pickup" ? mode : "now",
+    mode: mode === "next" || mode === "append" || mode === "interrupt" || mode === "pickup" ? mode : "now",
     atMs: Number.isFinite(at) && at > 0 ? at : 12_000,
     model: get("--model") ?? "claude-haiku-4-5-20251001",
     account: get("--account"),
@@ -132,9 +135,19 @@ async function main(): Promise<void> {
 
   const startedAt = Date.now();
   const results: { evt: ResultEvent; at: number }[] = [];
+  let steeredAt: number | undefined;
+  let toolCallsAfterSteer = 0;
+  let consumed: { at: number; toolCalls: number } | undefined;
   run.onEvent((e) => {
     if (e.type === "result") results.push({ evt: e, at: Date.now() - startedAt });
+    if (e.type === "tool_use" && steeredAt !== undefined && !consumed) toolCallsAfterSteer++;
   });
+  const steer = (opts?: { priority: "now" | "next" }): void => {
+    run.send(STEER_TEXT, opts);
+    steeredAt = Date.now();
+    const id = run.lastInputId;
+    if (id) run.onInputConsumed(id, () => { consumed = { at: Date.now() - steeredAt!, toolCalls: toolCallsAfterSteer }; });
+  };
 
   run.start(BUSY_PROMPT);
   const steerTimer = setTimeout(() => {
@@ -143,13 +156,15 @@ async function main(): Promise<void> {
       // The Pause control: abort with NOTHING queued behind it.
       void run.interrupt();
     } else if (args.mode === "pickup") {
-      run.send(STEER_TEXT);
+      steer();
       setTimeout(() => {
         console.log(`  [${String(Date.now() - startedAt).padStart(6)}ms] → interrupt (the append is still unread)`);
         void run.interrupt();
       }, 1_000);
+    } else if (args.mode === "append") {
+      steer();
     } else {
-      run.send(STEER_TEXT, { priority: args.mode });
+      steer({ priority: args.mode });
     }
   }, args.atMs);
 
@@ -171,6 +186,13 @@ async function main(): Promise<void> {
   console.log("\n=== verdict ===");
   console.log(`  the steering aborted a turn in flight: ${aborted.length ? `yes (${aborted.length})` : "no"}`);
   console.log(`  results emitted: ${results.length} (an abort emits its own, then the continuation emits another)`);
+  if (steeredAt !== undefined) {
+    console.log(
+      consumed
+        ? `  steer consumed after ${consumed.toolCalls} more tool call(s), ${consumed.at}ms after it was sent`
+        : `  steer never consumed (${toolCallsAfterSteer} tool call(s) ran after it was sent)`,
+    );
+  }
   if (resolved === "still waiting") {
     console.log("  awaitTurnResult: still waiting — correct for a bare interrupt with nothing queued (the task sits paused).");
   } else {

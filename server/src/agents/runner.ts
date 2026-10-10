@@ -293,7 +293,8 @@ export class AgentRun implements AgentRunLike {
   private readonly usageMeter: ClaudeRunMeter;
   private readonly openToolCalls = new Set<string>();
   // The CLI echoes the client uuid of every user message a turn consumed (`user_message_uuids` on the
-  // turn's first stream frame), which is the only proof that a message sent while idle was read.
+  // turn's first stream frame and on its result) and reports a mid-turn fold as a `command_lifecycle`
+  // `started` frame. Those are the only proof that a sent message was read.
   private readonly inputs = new InputLedger();
 
   constructor(private readonly cfg: AgentRunConfig) {
@@ -405,6 +406,13 @@ export class AgentRun implements AgentRunLike {
     if (Array.isArray(m.user_message_uuids)) {
       this.inputs.consume(m.user_message_uuids.filter((id: unknown): id is string => typeof id === "string"));
     }
+  }
+
+  /** A message queued mid-turn is folded in at the next tool boundary, and the CLI reports that fold only as
+   *  this frame's `started` state (`queued` is mere acceptance, `cancelled` means it was never read). */
+  private noteFoldedSend(m: Record<string, any>): void {
+    if (typeof m.command_uuid !== "string") return;
+    if (m.state === "started" || m.state === "completed") this.inputs.consume([m.command_uuid]);
   }
 
   async interrupt(): Promise<void> {
@@ -582,7 +590,8 @@ export class AgentRun implements AgentRunLike {
 
   private handle(message: SDKMessage): void {
     const m = message as Record<string, any>;
-    if (m.type === "stream_event" || m.type === "assistant") this.noteConsumedSends(m);
+    if (m.type === "stream_event" || m.type === "assistant" || m.type === "result") this.noteConsumedSends(m);
+    else if (m.type === "command_lifecycle") this.noteFoldedSend(m);
     switch (m.type) {
       case "system":
         if (m.subtype === "init" && typeof m.session_id === "string") {

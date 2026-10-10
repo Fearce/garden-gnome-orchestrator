@@ -138,6 +138,7 @@
     "test:api-errors": "tsx src/tests/transientApiError.test.ts",
     "test:runner-stop-drain": "tsx src/tests/runnerStopDrain.test.ts",
     "test:unprompted-result": "tsx src/tests/unpromptedResult.test.ts",
+    "test:mid-turn-consumption": "tsx src/tests/midTurnConsumption.test.ts",
     "test:injection": "tsx src/tests/injection.test.ts",
     "test:injection-receipts": "tsx src/tests/injectionReceipts.test.ts",
     "test:batched-input": "tsx src/tests/batchedInput.test.ts",

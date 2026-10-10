@@ -95,6 +95,7 @@ const GATES = [
   "test:api-errors",
   "test:runner-stop-drain",
   "test:unprompted-result",
+  "test:mid-turn-consumption",
   "test:injection",
   "test:injection-receipts",
   "test:batched-input",
