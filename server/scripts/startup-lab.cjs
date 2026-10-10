@@ -37,6 +37,8 @@ function rawGet(url, encoding) {
     })();
     db.prepare("INSERT INTO cowork_sessions(id,name,workspace,state,created_at,updated_at) VALUES('load-cowork','Load conversation',?,'idle',?,?)")
       .run(path.resolve(__dirname, '../..'), Date.now(), Date.now());
+    db.prepare("INSERT INTO cowork_sessions(id,name,workspace,state,created_at,updated_at,closed_at) VALUES('closed-cowork','Closed conversation',?,'idle',?,?,?)")
+      .run(path.resolve(__dirname, '../..'), Date.now(), Date.now(), Date.now());
     db.close();
     const shell = await rawGet(BASE + '/', 'identity');
     const entry = shell.body.toString().match(/src="([^\"]*\/assets\/index-[^\"]+\.js)"/)[1];
@@ -67,10 +69,14 @@ function rawGet(url, encoding) {
       page.on('pageerror', e => errors.push(e.message));
       page.on('request', r => requested.push(r.url()));
       page.on('websocket', ws => {
-        const record = { hello:0, commands:[] };
+        const record = { hello:0, commands:[], summaryIds:[] };
         sockets.push(record);
         ws.on('framereceived', ({payload}) => { if (JSON.parse(String(payload)).type === 'hello') record.hello++; });
-        ws.on('framesent', ({payload}) => record.commands.push(JSON.parse(String(payload)).type));
+        ws.on('framesent', ({payload}) => {
+          const command = JSON.parse(String(payload));
+          record.commands.push(command.type);
+          if (command.type === 'thread.summaries') record.summaryIds.push(...command.threadIds);
+        });
       });
       await page.addInitScript(() => {
         window.__detailRenders = 0;
@@ -147,13 +153,16 @@ function rawGet(url, encoding) {
       console.log(`PASS: 1,400 tasks / 12 background agents: ${background.renders} transcript renders over 480 events (${background.ms}ms); selected streaming and Git drawer work`);
       await page.locator('.closed-toggle').click();
       assert.equal(await page.locator('.closed-card').count(), 30, 'expanding Closed mounts one bounded page');
+      assert.equal(await page.locator('.cowork-closed-open').count(), 1, 'closed conversations share the first bounded page');
       await page.locator('.closed-pager button').last().click();
-      assert.match(await page.locator('.closed-pager').textContent(), /31–60 of 100/);
+      assert.match(await page.locator('.closed-pager').textContent(), /31–60 of 101/);
       await page.locator('.closed-pager button').last().click();
       await page.locator('.closed-pager button').last().click();
-      assert.equal(await page.locator('.closed-card').count(), 10, 'the final page remains reachable');
+      assert.equal(await page.locator('.closed-card').count(), 11, 'the final page remains reachable');
       await page.locator('.closed-pager button').first().click();
       assert.equal(await page.locator('.closed-card').count(), 30, 'previous page works');
+      await page.waitForTimeout(300);
+      assert.ok(!sockets[0].summaryIds.some(id => Number(id.replace('load-task-', '')) >= 1300), 'closed cards need no deferred summaries');
       await page.locator('.closed-toggle').click();
       if (mobile) {
         assert.equal(await page.locator('.rail').count(), 0, 'hidden Director is not rendered on initial phone load');

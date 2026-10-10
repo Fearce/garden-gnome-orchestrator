@@ -542,7 +542,6 @@ const CLOSED_OPEN_KEY = "orch-closed-open";
 /** The Closed holding area: a quiet, collapsed-by-default row at the bottom of the board. It's a
  *  safety net, not something you browse — so it stays out of the way until you expand it. */
 function ClosedSection({ threads, sessions }: { threads: Thread[]; sessions: CoworkSession[] }) {
-  const connected = useStore((s) => s.connected);
   const [page, setPage] = useState(0);
   const [open, setOpen] = useState(() => {
     try {
@@ -557,9 +556,6 @@ function ClosedSection({ threads, sessions }: { threads: Thread[]; sessions: Cow
   const cur = Math.min(page, pageCount - 1);
   const start = cur * pageSize;
   const end = start + pageSize;
-  useEffect(() => {
-    if (open && connected) useStore.getState().prefetchThreadSummaries(threads.slice(start, end).map((thread) => thread.id));
-  }, [open, connected, threads, start, end]);
   if (count === 0) return null;
   const toggle = () =>
     setOpen((v) => {
