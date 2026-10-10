@@ -239,9 +239,6 @@ same commit as the fix. Git history keeps the record.
 
 ## Blocked / waiting
 
-- **Remove the nightly QA task's scratch folder externally** (2026-10-10, Bramble Caliper; task 4e214af2).
-  All QA hosts stopped; both checked repositories are clean and synchronized. Native PowerShell deletion was rejected with "blocked by policy", including a separate retry against the verified literal task folder. The QA verdict names its exact local path; code and checks are complete, but scratch cleanup remains.
-
 - **Choose an eligible NVIDIA free-pool model** (2026-10-08, Saffron Wicket): live refresh marks the saved `openai/gpt-oss-120b` choice as no longer verified free and sends no inference request. Settings must select another verified free model; preserve the explicit owner choice until changed.
 
 - **Verify Claude prepaid funds before enabling credit-backed dispatch** (2026-10-07, Pebble Sprocket).
