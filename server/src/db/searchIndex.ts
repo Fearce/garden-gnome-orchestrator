@@ -78,7 +78,8 @@ interface BackfillHost {
 }
 
 /**
- * Drive the walk to completion on a timer, off the request path. Resolves when the index is live.
+ * Drive the walk to completion on a timer, off the request path. Resolves when the index is live or the
+ * driver is stopped; stopping never marks the unfinished index ready.
  *
  * Crash-safe by construction: the cursor is persisted per chunk and nothing else writes to the index
  * until the walk finishes, so a restart mid-walk simply resumes — which matters here, where the
@@ -92,13 +93,16 @@ export function startSearchIndexBackfill(
 ): { done: Promise<void>; stop: () => void } {
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
+  let resolveDone!: () => void;
   const stop = (): void => {
     stopped = true;
     if (timer) clearTimeout(timer);
     timer = null;
+    resolveDone();
   };
 
   const done = new Promise<void>((resolve) => {
+    resolveDone = resolve;
     if (db.searchIndexReady()) return resolve();
     const started = Date.now();
     let indexed = 0;

@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const { Db } = await import("../db/db.js");
-const { trigramMatchExpr, FTS_READY_KEY, FTS_CURSOR_KEY } = await import("../db/searchIndex.js");
+const { trigramMatchExpr, FTS_READY_KEY, FTS_CURSOR_KEY, startSearchIndexBackfill } = await import("../db/searchIndex.js");
 type DbType = InstanceType<typeof Db>;
 
 // ---- tiny assertion harness ------------------------------------------------------------------------
@@ -338,6 +338,29 @@ console.log("\nE. short queries — fall back, never silently find nothing");
     eq.deleteThread(t);
   }
   check("the floor is measured in characters, not UTF-16 units", searchHits(eq, "🍦🍦").size === 0);
+}
+
+// ---- F. cancelling the timer driver settles its completion without pretending the index is ready -----
+console.log("\nF. cancellation - settle the stopped walk and resume its cursor later");
+{
+  const db = freshDb("cancellation");
+  const task = db.createThread({ title: "Cancel backfill", workspace: "W", rawPrompt: "p" });
+  for (let i = 0; i < 9; i++) db.addMessage({ threadId: task.id, role: "implementor", kind: "text", content: `cancelled walk widget ${i}` });
+  const cancelled = startSearchIndexBackfill(db, () => {}, 1, 10);
+  const cursor = db.kvGet(FTS_CURSOR_KEY);
+  cancelled.stop();
+  cancelled.stop();
+  let settled = false;
+  void cancelled.done.then(() => { settled = true; });
+  await Promise.resolve();
+  check("stopping settles done after clearing the pending timer", settled);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  check("a stopped walk advances no further", db.kvGet(FTS_CURSOR_KEY) === cursor);
+  check("cancellation leaves the index unready", !db.searchIndexReady());
+  check("the scan fallback remains correct after cancellation", asKey(searchHits(db, "widget")) === asKey(scanHits(db, "widget")));
+  await startSearchIndexBackfill(db, () => {}, 1, 0).done;
+  check("a new driver resumes the incomplete walk", db.searchIndexReady() && ftsIntact(db));
+  check("the resumed index retains every message exactly once", asKey(searchHits(db, "widget")) === asKey(scanHits(db, "widget")));
 }
 
 // Every connection must be closed before the temp dir goes, or Windows throws EBUSY on the sqlite file.

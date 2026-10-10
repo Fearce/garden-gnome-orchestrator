@@ -48,6 +48,19 @@ try {
   db.addMessage({ threadId: task.id, role: "director", kind: "system", content: "injected", attachments: [ref("c")] });
   assert.equal(indexedRows(), 1, "an insert is indexed by its trigger from the first boot");
 
+  const cancelled = startAttachmentIndexBackfill(db, () => {}, 7, 10);
+  const cancelledCursor = db.kvGet(ATTACHMENT_INDEX_CURSOR_KEY);
+  cancelled.stop();
+  cancelled.stop();
+  let cancellationSettled = false;
+  void cancelled.done.then(() => { cancellationSettled = true; });
+  await Promise.resolve();
+  assert.equal(cancellationSettled, true, "stopping settles done even when its next chunk's timer was cleared");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(db.kvGet(ATTACHMENT_INDEX_CURSOR_KEY), cancelledCursor, "a stopped walk advances no further");
+  assert.equal(db.attachmentIndexReady(), false, "cancellation never marks an incomplete index ready");
+  assert.deepEqual(db.attachmentRefsSince(task.id, 0), fromFeed(task.id, 0), "a cancelled walk keeps the feed fallback intact");
+
   await startAttachmentIndexBackfill(db, () => {}, 7, 0).done;
   assert.equal(db.attachmentIndexReady(), true, "the walk marks the index ready");
   assert.equal(indexedRows(), 3, "the walk adds every older row once");

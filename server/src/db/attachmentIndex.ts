@@ -28,7 +28,8 @@ interface AttachmentIndexHost {
   attachmentIndexReady(): boolean;
 }
 
-/** Drive the walk to completion on a timer. The cursor is persisted per chunk and indexing a row twice
+/** Drive the walk to completion on a timer. `done` also settles when stopped, without marking it ready.
+ *  The cursor is persisted per chunk and indexing a row twice
  *  replaces it with itself, so a restart mid-walk simply resumes. */
 export function startAttachmentIndexBackfill(
   db: AttachmentIndexHost,
@@ -38,13 +39,16 @@ export function startAttachmentIndexBackfill(
 ): { done: Promise<void>; stop: () => void } {
   let timer: NodeJS.Timeout | null = null;
   let stopped = false;
+  let resolveDone!: () => void;
   const stop = (): void => {
     stopped = true;
     if (timer) clearTimeout(timer);
     timer = null;
+    resolveDone();
   };
 
   const done = new Promise<void>((resolve) => {
+    resolveDone = resolve;
     if (db.attachmentIndexReady()) return resolve();
     const started = Date.now();
     let indexed = 0;
