@@ -345,6 +345,7 @@ try {
   identity = "22222222-2222-4222-8222-222222222222";
   await (cloudManager as any).readResetCredits(cloudState);
   check("wrong identity clears old cloud balance", cloudManager.dto()[0]?.cloudCredits === undefined);
+  check("a profile from another subscription asks for a new sign-in", cloudManager.dto()[0]?.profileSignInNeeded === true);
   identity = null;
   await (cloudManager as any).readResetCredits(cloudState);
   check("unproven identity never publishes money", cloudManager.dto()[0]?.cloudCredits === undefined);
@@ -353,11 +354,14 @@ try {
   usageBody = null;
   await (cloudManager as any).readResetCredits(cloudState);
   check("a null provider response clears cloud money and reports unreadable usage", cloudManager.dto()[0]?.cloudCredits === undefined && !!cloudManager.dto()[0]?.resetCreditsError);
+  check("an unreadable body is not a sign-in problem", cloudManager.dto()[0]?.profileSignInNeeded === false);
   usageBody = { cedar_ember: { eligible: false }, iguana_necktie: cloudWire };
   await (cloudManager as any).readResetCredits(cloudState);
   check("a valid provider response restores cloud money after unreadable usage", cloudManager.dto()[0]?.cloudCredits?.remaining === 90 && !cloudManager.dto()[0]?.resetCreditsError);
   cloudManager.setProfileToken(cloudAccount.id, "");
   check("removing profile token clears its cloud balance", cloudManager.dto()[0]?.cloudCredits === undefined);
+  await (cloudManager as any).readResetCredits(cloudState);
+  check("a subscription with no sign-in asks for one", cloudManager.dto()[0]?.profileSignInNeeded === true);
 } finally { globalThis.fetch = originalFetch; }
 
 console.log("account-usage: a revoked profile token is not reported as throttling");
@@ -372,9 +376,11 @@ console.log("account-usage: a revoked profile token is not reported as throttlin
   try {
     await (revokedManager as any).readResetCredits(revokedState);
     check("429 + revoked profile reads as a rejected login", /rejected or revoked.*sign in again/i.test(revokedManager.dto()[0]?.resetCreditsError ?? ""), revokedManager.dto()[0]?.resetCreditsError ?? "none");
+    check("a revoked pasted token asks for a sign-in", revokedManager.dto()[0]?.profileSignInNeeded === true);
     profileStatus = 429;
     await (revokedManager as any).readResetCredits(revokedState);
     check("genuine throttling still waits for the next refresh", /rate-limited.*next refresh/i.test(revokedManager.dto()[0]?.resetCreditsError ?? ""));
+    check("throttling alone does not ask for a sign-in", revokedManager.dto()[0]?.profileSignInNeeded === false);
   } finally { globalThis.fetch = originalFetch; }
 }
 
@@ -419,6 +425,7 @@ console.log("account-usage: GGO's own Claude sign-in renews itself");
     check("the rotated login is persisted", saved.at(-1)?.refreshToken === "refresh-2" && saved.at(-1)?.accessToken === "access-1");
     check("reads use the renewed token, never the expired one", usedTokens.length > 0 && !usedTokens.includes("access-old"));
     check("the renewed login publishes cloud money", loginManager.dto()[0]?.cloudCredits?.remaining === 90);
+    check("a working sign-in needs no new one", loginManager.dto()[0]?.profileSignInNeeded === false);
 
     revokedToken = "access-1";
     await (loginManager as any).readResetCredits(loginState);
@@ -430,6 +437,7 @@ console.log("account-usage: GGO's own Claude sign-in renews itself");
     const dropped = loginManager.dto()[0];
     check("a refused renewal drops the login and asks for a new sign-in", !dropped?.profileTokenPresent && !dropped?.profileLoginRenews && /sign in again/i.test(dropped?.resetCreditsError ?? "") && saved.at(-1) === null);
     check("a dropped login shows no cloud money", dropped?.cloudCredits === undefined);
+    check("a dropped login asks for a sign-in", dropped?.profileSignInNeeded === true);
 
     console.log("account-usage: the sign-in flow is bound to its attempt and its subscription");
     const begun = loginManager.beginProfileLogin(loginAccount.id);

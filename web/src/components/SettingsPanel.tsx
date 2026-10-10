@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { DIRECTOR_CHAT_FONT_MAX, DIRECTOR_CHAT_FONT_MIN, IDLE_MINUTES_MAX, IDLE_MINUTES_MIN, useStore } from "../store.js";
+import { DIRECTOR_CHAT_FONT_MAX, DIRECTOR_CHAT_FONT_MIN, IDLE_MINUTES_MAX, IDLE_MINUTES_MIN, claudeSignInTarget, useStore } from "../store.js";
 import { apiUrl } from "../lib/base.js";
 import { CLAUDE_EFFORTS, CODEX_SUB_ID, GROK_SUB_ID, MODEL_ROLES, ZAI_SUB_ID, claudeEffortsForModel, codexEffortsForModel, grokEffortsForModel, zaiEffortsForModel, type AccountDTO, type CliUpdateComponent, type CodexUsageDTO, type ResetBurnDTO, type CodexEffort, type Effort, type GrokEffort, type Role, type UsageSavingPolicy, type ZaiEffort } from "../types.js";
 import { codexModelOptions, grokModelOptions, zaiModelOptions } from "../lib/models.js";
@@ -98,7 +98,8 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const setScreensaver = useStore((s) => s.setScreensaver);
   const screensaverIdleMinutes = useStore((s) => s.screensaverIdleMinutes);
   const setScreensaverIdleMinutes = useStore((s) => s.setScreensaverIdleMinutes);
-  const [activeCategoryId, setActiveCategoryId] = useState<SettingsCategoryId>("general");
+  const [openTarget] = useState(() => useStore.getState().settingsTarget);
+  const [activeCategoryId, setActiveCategoryId] = useState<SettingsCategoryId>(() => settingsCategoryId(openTarget?.category));
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SettingsSearchResult[]>([]);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -128,22 +129,20 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
 
   const openSearchResult = (result: SettingsSearchResult) => {
     chooseCategory(result.category.id);
-    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-      const target = result.element;
-      if (!target?.isConnected) return;
-      target.scrollIntoView({ behavior: "smooth", block: "center" });
-      target.classList.remove("settings-search-target");
-      void target.offsetWidth;
-      target.classList.add("settings-search-target");
-      window.setTimeout(() => {
-        if (target.isConnected) target.classList.remove("settings-search-target");
-      }, 1800);
-      const focusTarget = target.matches(SETTINGS_FOCUSABLE_SELECTOR)
-        ? target
-        : settingsFocusableControls(target)[0];
-      focusTarget?.focus({ preventScroll: true });
-    }));
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => revealSettingsElement(result.element)));
   };
+
+  // An opener that named a field (a usage chip's "sign in") lands on it. Two frames, one more than the
+  // opening focus below, so the field rather than the search box ends up focused.
+  useEffect(() => {
+    useStore.getState().consumeSettingsTarget();
+    const anchor = openTarget?.anchor;
+    if (!anchor) return;
+    const frame = window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      revealSettingsElement(dialogRef.current?.querySelector<HTMLElement>(`[data-settings-anchor="${CSS.escape(anchor)}"]`) ?? null);
+    }));
+    return () => window.cancelAnimationFrame(frame);
+  }, [openTarget]);
 
   // Opening focus and focus restore belong to the dialog's LIFETIME, so they run once per open. Keyed on
   // `onClose` — a fresh arrow on every App render — they re-ran whenever an unrelated top-bar scalar
@@ -736,6 +735,26 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
       </div>
     </div>
   );
+}
+
+function settingsCategoryId(id: string | undefined): SettingsCategoryId {
+  return SETTINGS_CATEGORIES.find((category) => category.id === id)?.id ?? "general";
+}
+
+/** Scroll a field into view, flash it and focus its first control. */
+function revealSettingsElement(target: HTMLElement | null) {
+  if (!target?.isConnected) return;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.remove("settings-search-target");
+  void target.offsetWidth;
+  target.classList.add("settings-search-target");
+  window.setTimeout(() => {
+    if (target.isConnected) target.classList.remove("settings-search-target");
+  }, 1800);
+  const focusTarget = target.matches(SETTINGS_FOCUSABLE_SELECTOR)
+    ? target
+    : settingsFocusableControls(target)[0];
+  focusTarget?.focus({ preventScroll: true });
 }
 
 function settingsFocusableControls(root: HTMLElement) {
@@ -1686,7 +1705,7 @@ function AccountClaudeSignIn({ acct }: { acct: AccountDTO }) {
   const awaitingCode = !!step?.url && !step.done;
   const banked = acct.resetCredits;
   return (
-    <div className="sub-field">
+    <div className="sub-field" data-settings-anchor={claudeSignInTarget(acct.id).anchor}>
       <label className="sub-label">Claude sign-in</label>
       <div className={"sub-msg" + (acct.profileLoginRenews ? " ok" : " dim")}>
         {acct.profileLoginRenews

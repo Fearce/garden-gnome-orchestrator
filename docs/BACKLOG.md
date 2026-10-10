@@ -91,6 +91,8 @@ same commit as the fix. Git history keeps the record.
 
 - **Claude cloud credit chips: renewable sign-in replaces revoked pasted tokens** (af7765c2, 2026-10-08, Cumulus Thimble).
   Live: both stored pasted tokens are revoked (the provider answered 429, which masked it); chips and Settings now say so, and Settings > Subscriptions > Sign in with Claude builds a link and rejects foreign codes in a real browser. Proof = both chips show a dollar balance after the owner signs in once per subscription.
+- **Cloud chip shows `cloud sign-in` and opens that subscription's sign-in** (2026-10-10, Pewter Lintwhistle).
+  2026-10-10: still no sign-in on either sub (no `account_profile_login_*` kv), so the chips read `cloud ?` again. Lab: chip → Settings > Subscriptions with the account's Sign in with Claude focused. Proof = same as the item above.
 - **Nightly runtime, provider currency and latency sweep** (2026-10-08, Saffron Wicket).
   Provider SDK/CLI updates are live; indexed inbox activity, unchanged tool-digest caching and reused Git status are committed and compiled but await the next permitted server restart. Full sweep 14/16; gates 240/244 with all four failures repaired and passing focused reruns; types/builds, inbox/browser, Electron 59/59 and both-theme focus checks pass. Historical HTTPS secret remediation remains blocked; capacity and oversized Codex input findings are recorded below. No second restart was performed after automatic resume.
   Final browser verification found compressed HTML pointing to an older bundle. Compression now reads finalized emitted files; real rebuild parity and a stale Brotli/gzip regression pass, and live browser inspection sees the matching new bundle. One probe exceeded its browser-shutdown budget under load.

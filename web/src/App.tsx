@@ -60,7 +60,9 @@ export function App() {
   useEffect(() => {
     setMobilePane("board");
   }, [boardView]);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsOpen = useStore((s) => s.settingsOpen);
+  const openSettings = useStore((s) => s.openSettings);
+  const closeSettings = useStore((s) => s.closeSettings);
   // The Git console's open state lives in the store: a task, a co-work session or a Supervisor row can
   // open it ON a specific repository, which a boolean here could not express.
   const gitOpen = useStore((s) => s.gitConsoleOpen);
@@ -93,7 +95,7 @@ export function App() {
         {focusMode ? null : (
           <>
             <GitButton open={gitOpen} onToggle={() => (gitOpen ? closeGitConsole() : openGitConsole({ forThread: selected }))} />
-            <SettingsButton open={settingsOpen} onToggle={() => setSettingsOpen((o) => !o)} />
+            <SettingsButton open={settingsOpen} onToggle={() => (settingsOpen ? closeSettings() : openSettings())} />
           </>
         )}
         <UpdateBadge />
@@ -131,7 +133,7 @@ export function App() {
       <MobileNav pane={mobilePane} setPane={setMobilePane} />
       <QuestionModal />
       <NoticeBanner />
-      {settingsOpen ? <LazyChunkBoundary label="Settings" className="modal-load-error"><Suspense fallback={null}><SettingsPanel onClose={() => setSettingsOpen(false)} /></Suspense></LazyChunkBoundary> : null}
+      {settingsOpen ? <LazyChunkBoundary label="Settings" className="modal-load-error"><Suspense fallback={null}><SettingsPanel onClose={closeSettings} /></Suspense></LazyChunkBoundary> : null}
       {gitOpen ? <LazyChunkBoundary label="Git console" className="modal-load-error"><Suspense fallback={null}><GitConsole onClose={closeGitConsole} /></Suspense></LazyChunkBoundary> : null}
       <ScreensaverGate />
     </div>

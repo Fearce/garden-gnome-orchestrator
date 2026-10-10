@@ -263,7 +263,7 @@ check("an id that is not a plain token is never sent back to the provider", pars
   check("`not_limited` is a refusal that says the reset is still banked", !early.ok && /hit a limit/.test(early.message) && /still banked/.test(early.message), JSON.stringify(early));
   answer = { status: 403, body: { error: "forbidden" } };
   const denied = await claimClaudeReset("tok-1", ORG, "01JQ8ZC2Q9");
-  check("a rejected token says to replace it", !denied.ok && /profile token/.test(denied.message), JSON.stringify(denied));
+  check("a rejected token asks for a new sign-in", !denied.ok && /sign in again/i.test(denied.message), JSON.stringify(denied));
   const before = seen.length;
   const noOrg = await claimClaudeReset("tok-1", "not-an-org", "01JQ8ZC2Q9");
   check("an unknown organization sends nothing at all", !noOrg.ok && seen.length === before, JSON.stringify(noOrg));

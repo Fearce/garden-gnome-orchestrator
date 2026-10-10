@@ -325,7 +325,8 @@ The optional routine API path submits directly and saves session links, but
 Start an eligible task only after checking the balance. Subscription usage chips show cloud
 dollars and expiry once that subscription has a matching **Claude sign-in** under
 **Settings > Subscriptions** (open the link, choose the account, paste back the code); GGO
-renews that login itself. Unknown reads show `cloud ?`, with the reason on hover. These dollars never increase local agent quota or prepaid fallback funds.
+renews that login itself. Without a working sign-in (none yet, revoked, or another account's) the chip shows
+`cloud sign-in`, which opens that subscription's sign-in; other unknown reads show `cloud ?`, with the reason on hover. These dollars never increase local agent quota or prepaid fallback funds.
 For automatic offload, enable subscriptions and allow repositories under **Automatic
 cloud subtasks**. Agents mark standalone Claude subtasks with `cloudWork: "review"`
 or `"change"`; when a subscription caps, GGO starts a normal hosted cloud session,

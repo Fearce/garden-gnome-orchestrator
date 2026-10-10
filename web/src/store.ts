@@ -131,6 +131,18 @@ export function codeKey(kind: CodeSubjectKind, id: string): string {
   return `${kind}:${id}`;
 }
 
+/** Where Settings should land when something other than its gear opens it: a category, and optionally
+ *  the `data-settings-anchor` of the field to bring into view. */
+export interface SettingsTarget {
+  category: string;
+  anchor?: string;
+}
+
+/** One Claude subscription's sign-in field under Settings > Subscriptions. */
+export function claudeSignInTarget(accountId: string): SettingsTarget {
+  return { category: "subscriptions", anchor: `claude-sign-in-${accountId}` };
+}
+
 export interface ProfileLoginStep {
   busy: boolean;
   url?: string;
@@ -361,6 +373,10 @@ interface State {
   /** A commit the console should open on in History — how a task's own commit reaches the repo-level
    *  view. Consumed once, like `ideTarget`. */
   gitConsoleCommit: string | null;
+  // Settings lives here for the same reason: a usage chip opens it ON one subscription's sign-in.
+  settingsOpen: boolean;
+  /** Consumed by the panel when it mounts, like `gitConsoleCommit`. */
+  settingsTarget: SettingsTarget | null;
   railHidden: boolean;
   // Focus mode: the top bar keeps only what a working session might click and drops everything that
   // merely reports state (build tag, git/settings, office, account burn strip, counters, gate, bell).
@@ -563,6 +579,9 @@ interface State {
   openGitConsole: (opts?: { forThread?: string | null; repoPath?: string | null; commit?: string | null; origin?: CodeOrigin | null }) => void;
   consumeGitConsoleCommit: () => void;
   closeGitConsole: () => void;
+  openSettings: (target?: SettingsTarget) => void;
+  consumeSettingsTarget: () => void;
+  closeSettings: () => void;
   returnToOrigin: () => void;
   clearCodeOrigin: () => void;
   toggleRail: () => void;
@@ -1559,6 +1578,8 @@ export const useStore = create<State>((set) => ({
   gitConsoleFor: null,
   gitConsoleRepo: null,
   gitConsoleCommit: null,
+  settingsOpen: false,
+  settingsTarget: null,
   ...BOOT_CHROME,
   usageHidden: lsBool("orch-usage-hidden", false),
   ...initialLayout(BOOT_CHROME.railHidden, BOOT_CHROME.focusMode),
@@ -2052,6 +2073,9 @@ export const useStore = create<State>((set) => ({
     })),
   consumeGitConsoleCommit: () => set({ gitConsoleCommit: null }),
   closeGitConsole: () => set({ gitConsoleOpen: false, gitConsoleCommit: null }),
+  openSettings: (target) => set({ settingsOpen: true, settingsTarget: target ?? null }),
+  consumeSettingsTarget: () => set({ settingsTarget: null }),
+  closeSettings: () => set({ settingsOpen: false, settingsTarget: null }),
   returnToOrigin: () => {
     const origin = useStore.getState().codeOrigin;
     if (!origin) return;

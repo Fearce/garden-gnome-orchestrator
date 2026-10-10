@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { resetCreditKey, useStore } from "../store.js";
+import { claudeSignInTarget, resetCreditKey, useStore } from "../store.js";
 import { effortLabel, isCapParked, modelLabel } from "../lib/format.js";
 import type { AccountDTO, CodexCreditsDTO, CodexEffort, CodexUsageDTO, GrokEffort, GrokUsageDTO, ResetCreditsDTO, ZaiEffort, ZaiUsageDTO } from "../types.js";
 
@@ -683,14 +683,34 @@ function earlyResetNote(a: AccountDTO, now: number): string | null {
   return `weekly reset early ${countdown(now, reset.at)} ago${was}`;
 }
 
-function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: number }) {
+/** The chip's cloud-credit line. Without a usable Claude sign-in it is the way to fix that: one click
+ *  opens Settings on this subscription's sign-in, instead of an unknown the owner has to hover to decode. */
+function CloudTag({ a, now }: { a: AccountDTO; now: number }) {
+  const openSettings = useStore((s) => s.openSettings);
   const cloud = a.cloudCredits;
+  if (!cloud && a.profileSignInNeeded) {
+    const why = a.resetCreditsError ? `Claude sign-in needed: ${a.resetCreditsError}.` : "No Claude sign-in for this subscription yet.";
+    const title = `${why} Click to sign in under Settings > Subscriptions; GGO then reads the cloud credits and keeps the login renewed.`;
+    return (
+      <button type="button" className="acct-tag acct-cloud sign-in" title={title} aria-label={title} onClick={() => openSettings(claudeSignInTarget(a.id))}>
+        cloud sign-in
+      </button>
+    );
+  }
   const cloudExpired = !!cloud && cloud.expiresAt <= now;
   const cloudStale = !!cloud && now - cloud.readAt >= 20 * 60_000;
   const cloudTitle = cloud
     ? `Promotional cloud credits: $${cloud.remaining.toFixed(2)} of $${cloud.limit.toFixed(2)} remaining. Expires ${new Date(cloud.expiresAt).toLocaleString()}. Read ${new Date(cloud.readAt).toLocaleString()}.${cloud.locked ? " Provider reports unavailable." : ""} Only eligible cloud sessions; excludes routines and local agents.`
     : a.resetCreditsError ? `Cloud credits unknown: ${a.resetCreditsError}.`
     : a.profileTokenPresent ? "Cloud credits unavailable: waiting for a valid usage read and matching subscription identity." : "Cloud credits unknown. Sign in to this subscription under Settings > Subscriptions to read its promotional balance.";
+  return (
+    <span className={"acct-tag acct-cloud" + (!cloud || cloudExpired || cloud.locked || cloudStale ? " dim" : "")} title={cloudTitle} aria-label={cloudTitle}>
+      {cloudExpired ? "cloud expired" : cloud?.locked ? "cloud unavailable" : cloud ? `cloud $${cloud.remaining.toLocaleString(undefined, { maximumFractionDigits: 2 })}${cloudStale ? " · stale" : ""}` : "cloud ?"}
+    </span>
+  );
+}
+
+function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: number }) {
   const stale = !!a.stale && (a.fiveHour != null || a.sevenDay != null);
   // An error with no usable read ever (blank meters) is the "broken" state we want
   // loud and visible — not buried in a hover tooltip the way it used to be.
@@ -715,9 +735,7 @@ function AccountChip({ a, multi, now }: { a: AccountDTO; multi: boolean; now: nu
         {multi ? <span className={"acct-dot" + (a.active ? " on" : "")} /> : null}
         <span className="acct-name">
           <span className="acct-label" title={a.label}>{a.label}</span>
-          <span className={"acct-tag acct-cloud" + (!cloud || cloudExpired || cloud.locked || cloudStale ? " dim" : "")} title={cloudTitle} aria-label={cloudTitle}>
-            {cloudExpired ? "cloud expired" : cloud?.locked ? "cloud unavailable" : cloud ? `cloud $${cloud.remaining.toLocaleString(undefined, { maximumFractionDigits: 2 })}${cloudStale ? " · stale" : ""}` : "cloud ?"}
-          </span>
+          <CloudTag a={a} now={now} />
         </span>
         <span className="acct-status">
           {a.rateLimited ? (

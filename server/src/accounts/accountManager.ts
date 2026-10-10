@@ -58,6 +58,8 @@ interface AccountState {
   resetCredits: ResetCreditsDTO | null;
   /** Why `resetCredits` is null, when there is something actionable to say. Null while unconfigured. */
   resetCreditsError: string | null;
+  /** The last read had no usable Claude sign-in: none configured, revoked, dropped or another account's. */
+  profileSignInNeeded: boolean;
   cloudCredits: CloudCreditsDTO | null;
   /** Set when `account.profileToken` came from GGO's own Claude sign-in, which renews it. Null for a
    *  pasted token, which simply stops working once the provider revokes it. */
@@ -463,6 +465,7 @@ export class AccountManager {
         profileRenewal: null,
         profileLoginLost: null,
         resetCreditsError: null,
+        profileSignInNeeded: false,
         organizationId: null,
         weeklyReset: null,
         profileReadDueAt: 0,
@@ -687,6 +690,7 @@ export class AccountManager {
     st.resetCredits = null;
     st.cloudCredits = null;
     st.resetCreditsError = null;
+    st.profileSignInNeeded = !token;
     st.updatedAt = Date.now();
     this.publish();
     if (token && read) void this.readResetCredits(st).then(() => this.publish());
@@ -748,7 +752,7 @@ export class AccountManager {
     if (!token) {
       st.cloudCredits = null;
       this.prepaidCredits.delete(st.account.id);
-      this.applyResetCredits(st, null, st.profileLoginLost);
+      this.applyResetCredits(st, null, st.profileLoginLost, true);
       return;
     }
     let [result, paid] = await this.readProfile(st, token);
@@ -759,7 +763,7 @@ export class AccountManager {
       if (!renewed) {
         st.cloudCredits = null;
         this.prepaidCredits.delete(st.account.id);
-        this.applyResetCredits(st, null, st.profileLoginLost);
+        this.applyResetCredits(st, null, st.profileLoginLost, true);
         return;
       }
       if (renewed !== token) {
@@ -775,7 +779,7 @@ export class AccountManager {
     else this.prepaidCredits.delete(st.account.id);
     if (!result.ok) {
       st.cloudCredits = null;
-      this.applyResetCredits(st, null, profileErrorMessage(result.reason));
+      this.applyResetCredits(st, null, profileErrorMessage(result.reason), result.reason === "auth" || result.reason === "scope");
       return;
     }
     // A token from the WRONG subscription would otherwise publish that subscription's banked reset on
@@ -783,7 +787,7 @@ export class AccountManager {
     // known to reject; if either is unknown we have no evidence of a mismatch, so the reading stands.
     if (st.organizationId && result.organizationId && st.organizationId !== result.organizationId) {
       st.cloudCredits = null;
-      this.applyResetCredits(st, null, `profile token belongs to a different subscription (org ${result.organizationId.slice(0, 8)}…)`);
+      this.applyResetCredits(st, null, `profile token belongs to a different subscription (org ${result.organizationId.slice(0, 8)}…)`, true);
       return;
     }
     st.cloudCredits = st.organizationId && st.organizationId === result.organizationId ? result.cloudCredits ?? null : null;
@@ -841,13 +845,15 @@ export class AccountManager {
 
   /** One writer for the pair, so `resetCredits` and its error can never both be set — a chip showing a
    *  count beside a complaint about why there is no count is incoherent. */
-  private applyResetCredits(st: AccountState, credits: ResetCreditsDTO | null, error: string | null): void {
+  private applyResetCredits(st: AccountState, credits: ResetCreditsDTO | null, error: string | null, signInNeeded = false): void {
     const unchanged = st.resetCreditsError === error
+      && st.profileSignInNeeded === signInNeeded
       && st.resetCredits?.available === credits?.available
       && st.resetCredits?.pending === credits?.pending
       && st.resetCredits?.expiresAt === credits?.expiresAt;
     st.resetCredits = credits;
     st.resetCreditsError = error;
+    st.profileSignInNeeded = signInNeeded;
     if (!unchanged) st.updatedAt = Date.now();
   }
 
@@ -1604,6 +1610,7 @@ export class AccountManager {
       cloudCredits: s.cloudCredits ?? undefined,
       profileTokenPresent: !!s.account.profileToken?.trim(),
       profileLoginRenews: !!s.profileRefresh,
+      profileSignInNeeded: s.profileSignInNeeded,
       updatedAt: s.updatedAt,
       error: s.error,
     }));
@@ -1717,7 +1724,7 @@ function profileErrorMessage(reason: ProfileFailReason): string | null {
     case "unconfigured":
       return null;
     case "scope":
-      return "profile token lacks user:profile — paste the claude login token, not a setup-token";
+      return "profile token lacks user:profile — sign in again under Settings > Subscriptions";
     case "auth":
       return "profile token rejected or revoked — sign in again under Settings > Subscriptions";
     case "rate-limit":

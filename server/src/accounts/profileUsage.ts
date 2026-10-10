@@ -181,7 +181,7 @@ export async function claimClaudeReset(token: string, organizationId: string, gr
   }
   const text = await res.text().catch(() => "");
   if (res.status === 429) return { ok: false, message: "Claude is rate-limiting claims right now. Try again in a minute." };
-  if (res.status === 401 || res.status === 403) return { ok: false, message: "Claude refused the profile token for this subscription. Paste a fresh one in Settings > Subscriptions." };
+  if (res.status === 401 || res.status === 403) return { ok: false, message: "Claude refused the sign-in for this subscription. Sign in again under Settings > Subscriptions." };
   if (!res.ok) return { ok: false, message: `Claude answered HTTP ${res.status}; the reset was not used.` };
   let body: ClaimBody;
   try {

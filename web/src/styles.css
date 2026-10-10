@@ -184,6 +184,18 @@ button { font-family: inherit; cursor: pointer; }
 .acct-status { display: contents; }
 .acct-name { display: flex; flex-direction: column; min-width: 0; }
 .acct-name .acct-cloud { margin: 0; color: var(--accent); font-size: 8px; line-height: 10px; white-space: nowrap; }
+/* The missing-sign-in state is the fix itself: --warn so it reads as needing the owner, with the same
+   outside ring as the reset badge so the strip's measured width never moves on hover. */
+button.acct-tag.acct-cloud.sign-in {
+  align-self: flex-start; background: none; border: 0; border-radius: 3px; padding: 0;
+  font: inherit; font-family: var(--font-mono); font-size: 8px; line-height: 10px; text-transform: uppercase;
+  color: var(--warn); cursor: pointer;
+}
+button.acct-tag.acct-cloud.sign-in:hover, button.acct-tag.acct-cloud.sign-in:focus-visible {
+  outline: none;
+  background: color-mix(in oklch, var(--warn) 14%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--warn) 14%, transparent), 0 0 0 4px color-mix(in oklch, var(--warn) 45%, transparent);
+}
 .acct-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); }
 .acct-dot.on { background: var(--accent); box-shadow: 0 0 6px var(--accent); }
 .acct-label { font-family: var(--font-mono); font-size: 10.5px; color: var(--text-dim); letter-spacing: 0.03em; text-transform: uppercase; }

@@ -735,6 +735,8 @@ export interface AccountDTO {
   profileTokenPresent?: boolean;
   // True when that token comes from GGO's own Claude sign-in, which renews itself.
   profileLoginRenews?: boolean;
+  // The last credit read found no usable Claude sign-in; the chip then offers one.
+  profileSignInNeeded?: boolean;
   updatedAt: number;
   error?: string | null;
 }
