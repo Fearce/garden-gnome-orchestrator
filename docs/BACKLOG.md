@@ -27,6 +27,12 @@ same commit as the fix. Git history keeps the record.
 
 ## Shipped, awaiting live proof
 
+- **Auto-select judgement starts on a parked Claude process** (1c1ed304; 2026-10-10, nightly sweep task 4e214af2).
+  WarmSpares keeps one SDK prewarm() spare for the selector; measured prompt-to-init 4–9 s → 0.5–6 s and average pick 15.1 s → 11.1 s. Deployed in 6048d33e; live proof is a task start whose pick claims the spare.
+- **Tool-call digests survive a restart** (6048d33e; 2026-10-10, nightly sweep task 4e214af2).
+  Resolves Ready "Recheck production SQLite tool-message read stalls": snapshot folds 1.3–6.4 s cold → 9–26 ms after reopen. Live proof is no `toolCallsAfter` stall in crash.log in the minutes after the next restart.
+- **Stage kickoffs find attached pictures through an attachment index** (b5a5c120; 2026-10-10, nightly sweep task 4e214af2).
+  Snapshot: 39 s walk, 0 mismatches over 1,541 tasks, largest task's read 2.9 s stall → 0.2 ms. Live proof is the `attachment index ready` log line and no `persistedImageBlocks` stall.
 - **QA: distinguish header label fades from paused gnome motion** (2026-10-09, Pip Sootwhistle; task 698bc595).
   Beta pause checks exclude only destination-label opacity transitions and still cover loops, lane transforms and script-driven strides. Fresh production/live beta, classic/frozen browser suites, all types, build/compression, workshop/skin tests, privacy and README 74/74 pass. Source only, no deliverables; independent QA required.
 
@@ -226,6 +232,8 @@ same commit as the fix. Git history keeps the record.
 19. **Stabilize worktree-sweep timing verification under concurrent gate load** (2026-10-07, Codex QA).
   Full suite resolves 300 tasks in 5,199 ms against a 5,000 ms assertion; the serial rerun passes. Verify lookup counts independently of scheduler timing. Evidence: restart-affinity worktree's server/data/gates-last.log.
 
+20. **Take `ThreadListingMirror.reload` off the event loop after foreign commits** (2026-10-10, nightly sweep task 4e214af2): crash.log blamed it for 20 s of stalls in 24 h. Every other connection's commit (the WAL checkpointer does not count; scripts and probes do) reloads all ~1.5k thread rows with their overflow pages. Reload only rows whose `updated_at` moved, or re-read the changed rowids.
+
 ## Blocked / waiting
 
 - **Choose an eligible NVIDIA free-pool model** (2026-10-08, Saffron Wicket): live refresh marks the saved `openai/gpt-oss-120b` choice as no longer verified free and sends no inference request. Settings must select another verified free model; preserve the explicit owner choice until changed.
@@ -250,6 +258,8 @@ same commit as the fix. Git history keeps the record.
 No open entries.
 
 ## Done (newest first; keep the last 20)
+
+- 2026-10-10 **Console probe tolerates Chromium profile cleanup under sweep load** (07ded6db, nightly sweep task 4e214af2): the 04:04 sweep failed step 6 on a console that had mounted cleanly (ws live, 15 cards, 0 errors) because kill() waited over 5 s for temporary-profile deletion. Shutdown now gets 15 s and the probe 40 s; `probe:console` and `test:console-probe` pass. This also resolves the shutdown half of Ready "Investigate console smoke served/local bundle mismatch" (the bundle half was 26542f02).
 
 - 2026-10-09 **Pointing at a header gnome stops the workshop so its tooltip stays readable** (5c27daef, d8695ba7, Pausewick): web build live on :4317; `beta-gnomes.browser.cjs` holds loop time and every place for 1.5 s while hovered, then resumes without a jump.
 
@@ -291,23 +301,3 @@ No open entries.
 
 - 2026-10-07 **Stop inherited QA after a registration-only follow-up** (Moss Quill): live task settled done with durable QA-off; Script Hub reports the app running. Task-role controls 38/38, README 74/74 and privacy pass; README explains inherited routing and task overrides.
 
-- 2026-10-07 **Route agent questions through GGO chips and resume on answers** (41945c65, 01f33516, Codex QA): pushed and integrated; deployment verification confirms live build 4995ab97 contains the bridge. Twelve desktop/phone Codex/Grok browser flows prove chips, durable answers, held completion and same-session continuation; types, builds and focused regression gates pass.
-
-- 2026-10-07 **Offload eligible tasks to Claude cloud and show both subscription credit balances** (3471a225, 50813f1c, Thimblewick): live build 4995ab97; provider-verified matching profile logins and authenticated desktop/phone browsers show both balances beneath names. Eligible read-only smoke consumed $0.46 promotional credit; cloud lab 48/48, account/reset/cloud tests, types/builds, README 74/74 and privacy pass. Profile tokens require renewal after expiry.
-
-- 2026-10-07 **Restore blank console and retain assets during production rebuilds** (Codex Recovery): live direct/proxy entry assets match disk with JavaScript MIME; browser renders sign-in, and a subsequent production rebuild preserves the previous entry bundle. README 74/74 and privacy pass; backend stayed running.
-
-- 2026-10-07 **Nightly quality, provider currency and task responsiveness sweep** (7306a850, Brindlewick): pushed and deployed; 235/235 gates, types/builds, desktop 19/19, README 73/73 and privacy pass. Live lazy snapshots retain 1,425 tasks with a 62% smaller index and 30 visible summaries in 27 ms; 1,400-task desktop/phone lab passes. Current toolchains and model families verified. Cold SQL/CLI delays, writer contention, major migrations and published-secret remediation remain tracked above. The performance gate now verifies that refused live-index CLI arguments never open SQLite.
-
-- 2026-10-07 **Restore authenticated public reverse-proxy access after security hardening** (1d74f651, Bramblebolt): pushed and deployed; live mounted sign-in, authenticated health and public-origin WebSocket hello pass, signed-out deploy 401 and foreign origin 403; public edge still requires its access gate. Auth regressions, Google tunnel browser 19/19, desktop/tablet prefix browser, types/builds, README 73/73 and privacy pass.
-  Follow-up: the prefix-proxy lab now submits the visible password form and receives hello without a reload on desktop and tablet; both pass.
-
-- 2026-10-07 **Edit Script Hub registry entries from the UI** (Codex): 39/39 desktop/phone browser checks, registry conflict/validation regressions, focused API 3/3, types/builds, README 72/72 and privacy pass; live editor, unchanged-entry save and matching served bundle verified. All 289 entries remain tagged (29 personal, 260 agent-managed); worker refreshed without restarting GGO.
-
-- 2026-10-07 **Collapse Patch notes days into browsable summaries** (16e241c7, Bramblewick): pushed and web built; real-history live browser confirms folded defaults, individual toggles and Hide all days; served bundle matches local bytes. Desktop keyboard and phone touch folding verified. Browser 42/42, patch-notes gate, types/builds, README 72/72 and privacy pass.
-
-- 2026-10-07 **Full GGO security sweep and production dependency remediation** (48a71407, a93f23ac, Codex): committed, pushed and deployed; live local/proxied/cross-site checks returned 200/401/403, focused browser and auth tests passed, production audit has 0 critical/high. Residual risks are tracked above and in [the report](security-sweep-2026-10-07.md).
-
-- 2026-10-07 **Make Hide Done include pinned completed tasks** (3d86d439, Juniper Thimble): pin regressions, desktop/touch browser 27/27, types/builds, README 72/72 and privacy pass; authenticated live bundle matches local bytes and includes the new behavior. Live smoke retains the tracked browser-shutdown timeout.
-
-- 2026-10-07 **Audit Script Hub management and pre-tag every entry, using tags only** (08ac3d65, Copperfen Quill): 289 entries tagged, 29 personal/260 agent-managed, 22 tags; live API/browser and durable metadata pass, hidden choices and supervision preserved. Focused API 3/3, browser 27/27, types/builds/README/privacy pass; broad modules retain tracked Home idle-start timeout.
