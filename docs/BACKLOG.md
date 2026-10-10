@@ -14,8 +14,6 @@ same commit as the fix. Git history keeps the record.
 
 ## In progress
 
-- **QA: verify the nightly sweep's provider currency, latency fixes and live console** (2026-10-10, Bramble Caliper; task 4e214af2).
-
 - **Script Hub organization: surface the tag-audit CSV as a deliverable** (2026-10-07). The `all`-tag filter
   collision is fixed; the audit CSV exists in the main checkout's `server/data/`, but its refused card has no accepted replacement.
 
@@ -28,6 +26,9 @@ same commit as the fix. Git history keeps the record.
 - **Bound browser-lab Windows port-cleanup waits** (2026-10-06, Fennel Shutter).
 
 ## Shipped, awaiting live proof
+
+- **QA nightly sweep: preserve Codex startup inputs and avoid full office task-history reads** (d6b62d7f, 3da89594, 0b7c3402; 2026-10-10, Bramble Caliper; task 4e214af2).
+  Live 0b7c3402 verified; full gates 250/250, all types/builds, desktop 19/19, 1,400-task lazy-summary browser proof (79.3% fewer initial thread bytes), desktop/phone model and startup labs, live console/chips/provider checks, model/toolchain currency and all operational sweep checks pass. Startup probes and Windows fixture cleanup repaired; internal memory only, no owner-facing artifacts. Independent QA required; existing Nvidia selection and personal SessionStart-hook decisions remain under Ready.
 
 - **Auto-select judgement starts on a parked Claude process** (1c1ed304; 2026-10-10, nightly sweep task 4e214af2).
   WarmSpares keeps one SDK prewarm() spare for the selector; measured prompt-to-init 4–9 s → 0.5–6 s and average pick 15.1 s → 11.1 s. Deployed in 6048d33e; live proof is a task start whose pick claims the spare.
