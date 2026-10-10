@@ -33,8 +33,8 @@ const SMALL_TASK_POLICY_LABEL = "Use free pool for small tasks only";
 const CLI_DEADLINE_MS = 40_000;
 const BROWSER_LAUNCH_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 10_000;
-// kill() also waits for the temporary profile's deletion, which overran 5s under the sweep's own disk load
-// (2026-10-10, a console that had mounted cleanly); a browser that truly hangs still fails here.
+// kill() also waits for stdio handles and the temporary profile's deletion, which overran 15s on a
+// 100%-CPU box after the browser had exited (2026-10-10); only a browser still running fails.
 const BROWSER_CLOSE_TIMEOUT_MS = 15_000;
 const WEBSOCKET_READY_TIMEOUT_MS = 10_000;
 
@@ -277,9 +277,25 @@ function within(promise, timeoutMs, action) {
 
 /** Terminate only this probe's disposable browser while its process-tree owner still exists.
  * Chromium's graceful exit can leave Windows renderer/stdout handles alive for tens of seconds.
- * BrowserServer.kill owns that tree and waits for process exit and temporary-profile cleanup. */
-function shutdownProbeBrowser(browserServer, timeoutMs = BROWSER_CLOSE_TIMEOUT_MS) {
-  return within(browserServer.kill(), timeoutMs, "browser shutdown");
+ * BrowserServer.kill owns that tree and waits for process exit and temporary-profile cleanup.
+ * Resolves to a note when the browser exited but that cleanup outran the budget; a browser
+ * still running at the deadline rejects. */
+async function shutdownProbeBrowser(browserServer, timeoutMs = BROWSER_CLOSE_TIMEOUT_MS) {
+  const overran = Symbol("overran");
+  let timer;
+  const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve(overran), timeoutMs); });
+  try {
+    if (await Promise.race([browserServer.kill(), deadline]) !== overran) return null;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!browserExited(browserServer)) throw new Error(`browser shutdown exceeded ${timeoutMs}ms`);
+  return `browser exited; its handle and temporary-profile cleanup was still running after ${timeoutMs}ms`;
+}
+
+function browserExited(browserServer) {
+  const child = browserServer.process?.();
+  return !!child && (child.exitCode !== null || child.signalCode !== null);
 }
 
 /** An open socket precedes hello. Wait for the board's data, including valid empty installations. */
@@ -396,7 +412,8 @@ async function main() {
     if (options.shot) await page.screenshot({ path: options.shot, timeout: REQUEST_TIMEOUT_MS });
   } finally {
     try {
-      await shutdownProbeBrowser(browserServer);
+      const lingering = await shutdownProbeBrowser(browserServer);
+      if (lingering) console.log(`[WARN] ${lingering}`);
     } catch (error) {
       // Cleanup must not replace an inspection error or discard the checks already collected.
       browserShutdownError = error.message || String(error);

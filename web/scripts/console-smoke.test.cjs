@@ -187,11 +187,22 @@ void (async () => {
   assert.equal(await within(Promise.resolve("ready"), 20, "immediate operation"), "ready");
   await assert.rejects(within(new Promise(() => {}), 10, "stalled operation"), /stalled operation exceeded 10ms/);
   let ownedKills = 0;
-  await shutdownProbeBrowser({
+  const cleanShutdown = await shutdownProbeBrowser({
     kill: async () => { ownedKills++; },
     close: async () => { throw new Error("graceful close would orphan the Windows renderer"); },
   }, 20);
   assert.equal(ownedKills, 1, "cleanup uses only the launched BrowserServer's process-tree owner");
+  assert.equal(cleanShutdown, null, "a prompt shutdown reports nothing");
+  const lingering = await shutdownProbeBrowser({
+    kill: () => new Promise(() => {}),
+    process: () => ({ exitCode: 1, signalCode: null }),
+  }, 10);
+  assert.match(lingering, /browser exited; .*still running after 10ms/, "an exited browser's slow cleanup is a note, not a failure");
+  await assert.rejects(
+    shutdownProbeBrowser({ kill: () => new Promise(() => {}), process: () => ({ exitCode: null, signalCode: null }) }, 10),
+    /browser shutdown exceeded 10ms/,
+    "a browser still running at the deadline still fails",
+  );
   await assert.rejects(
     shutdownProbeBrowser({ kill: async () => { throw new Error("owned browser did not exit"); } }, 20),
     /owned browser did not exit/,
