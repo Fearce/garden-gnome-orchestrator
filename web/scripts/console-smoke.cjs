@@ -30,10 +30,12 @@ const path = require("path");
 // Ignorable request noise: absent favicons and the dev-only HMR socket are not console health.
 const IGNORABLE_REQUEST = /favicon|\/@vite\/|hot-update/i;
 const SMALL_TASK_POLICY_LABEL = "Use free pool for small tasks only";
-const CLI_DEADLINE_MS = 25_000;
+const CLI_DEADLINE_MS = 40_000;
 const BROWSER_LAUNCH_TIMEOUT_MS = 10_000;
 const REQUEST_TIMEOUT_MS = 10_000;
-const BROWSER_CLOSE_TIMEOUT_MS = 5_000;
+// kill() also waits for the temporary profile's deletion, which overran 5s under the sweep's own disk load
+// (2026-10-10, a console that had mounted cleanly); a browser that truly hangs still fails here.
+const BROWSER_CLOSE_TIMEOUT_MS = 15_000;
 const WEBSOCKET_READY_TIMEOUT_MS = 10_000;
 
 // NODE_PATH is unset in agent shells, so a bare require misses a global install. The resolver is
