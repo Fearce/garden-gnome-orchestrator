@@ -338,6 +338,36 @@ async function main(): Promise<void> {
       assert.ok(internal.inputs.has(imageOnlyId) && internal.inputs.has(captionId));
     });
 
+    await check("Codex steering that interrupts a new session before its rollout exists restarts from the run's own kickoff", async () => {
+      // Task 30f120db (2026-10-09): an inject 1.5s into a fresh Codex run resumed a thread whose rollout
+      // was not written yet; with no freshFallback the run failed and the task left Codex for Claude.
+      const agent = new CodexAgentRun({ model: "gpt-6.1-sol", effort: "high", cwd: dir, apiKey: "" });
+      const { internal, turns } = captureTurns(agent, "codex");
+      agent.sessionId = undefined;
+      agent.start("Kickoff brief: add the reminder badge.");
+      const kickoffId = agent.lastInputId!;
+      assert.equal(turns[0]![1], undefined, "the kickoff starts a fresh session");
+      agent.sessionId = "test-codex-session";
+      internal.turnActive = true;
+      agent.send("Owner steering: also show which reminder raised the badge.", { priority: "now" });
+      const steeringId = agent.lastInputId!;
+      await internal.onTurnClose(null);
+      assert.equal(turns[1]![1], "test-codex-session", "the steering resumes the new session");
+      const results: unknown[] = [];
+      agent.onEvent((event) => { if (event.type === "result") results.push(event); });
+      internal.isResumeTurn = true;
+      internal.resumeRolloutMissing = true;
+      internal.sawFirstEvent = false;
+      internal.turnActive = true;
+      await internal.onTurnClose(1);
+      assert.equal(turns.length, 3, "the missing rollout is recovered, not reported as a failure");
+      assert.equal(turns[2]![1], undefined, "recovery starts fresh");
+      const prompt = turns[2]![0] as string;
+      assert.ok(prompt.indexOf("Kickoff brief") === 0 && prompt.includes("Owner steering"), prompt);
+      assert.deepEqual(turns[2]![3], [kickoffId, steeringId], "kickoff and steering keep their receipts");
+      assert.equal(results.length, 0);
+    });
+
     await check("Codex fresh recovery reserves the actual fallback and question doctrine before keeping ambient sends", async () => {
       const fallback = "Full recovery brief\n" + "f".repeat(500_000);
       const agent = new CodexAgentRun({

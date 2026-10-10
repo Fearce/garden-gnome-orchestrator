@@ -456,6 +456,9 @@ export class CodexAgentRun implements AgentRunLike {
   // them (the freshFallback string carries only doctrine + task). Temp files written per turn live in
   // turnImagePaths and are unlinked once that turn closes; imgCounter keeps their names unique.
   private firstImages: CodexImage[] = [];
+  // The kickoff of a session this run started. Steering can interrupt that first turn before Codex has
+  // written the thread's rollout, so the resume finds nothing; the run then restarts from this kickoff.
+  private ownKickoff: CodexTurnInput | undefined;
   private turnImagePaths: string[] = [];
   private imgCounter = 0;
   // No-output watchdog: a wedged `codex exec [resume]` hangs at 0% CPU emitting nothing and never
@@ -485,7 +488,9 @@ export class CodexAgentRun implements AgentRunLike {
     this.memoryInputs?.append(this.cfg.memory?.initialOwnerText ?? toText(firstMessage));
     this.firstImages = toImages(firstMessage);
     const text = toText(firstMessage);
-    this.runInputTurn(text, this.cfg.resume, [{ text, images: this.firstImages, inputId: this.inputs.issue() }]);
+    const kickoff = { text, images: this.firstImages, inputId: this.inputs.issue() };
+    if (!this.cfg.resume) this.ownKickoff = kickoff;
+    this.runInputTurn(text, this.cfg.resume, [kickoff]);
     return this;
   }
 
@@ -1020,17 +1025,21 @@ export class CodexAgentRun implements AgentRunLike {
     const entries = [...this.turnInputs.filter((entry) => !this.inputs.has(entry.inputId)), ...extraEntries];
     const bounded = this.boundedFollowUps(entries);
     const kept = bounded.keptIndexes.map((index) => entries[index]!);
+    const kickoff = this.cfg.freshFallback ? undefined : this.ownKickoff;
+    if (kickoff && !this.inputs.has(kickoff.inputId)) kept.unshift(kickoff);
     const rolloutMissing = this.resumeRolloutMissing;
     this.resumeHealed = true;
     this.lastResult = undefined;
     this.lastErrorMsg = undefined;
     this.emit({
       type: "text",
-      text: rolloutMissing
+      text: rolloutMissing && kickoff
+        ? "⚠️ Codex had not saved this new session yet when it was interrupted — restarting it fresh with the task's kickoff and the queued messages; working-tree changes are preserved."
+        : rolloutMissing
         ? "⚠️ Codex could not find the saved rollout for this task — restarting as a fresh session with the full brief, recent durable history, and standing directives; working-tree changes are preserved."
         : "⚠️ Codex `exec resume` produced no output (wedged session) — restarting this turn as a fresh session; working-tree changes are preserved.",
     });
-    const prompt = [toText(this.cfg.freshFallback!), bounded.text].filter(Boolean).join("\n\n");
+    const prompt = [this.recoveryKickoff(), bounded.text].filter(Boolean).join("\n\n");
     const images = [...new Set([...this.firstImages, ...kept.flatMap((entry) => entry.images)])];
     this.runInputTurn(prompt, undefined, kept, images);
     return true;
@@ -1038,13 +1047,18 @@ export class CodexAgentRun implements AgentRunLike {
 
   private canRestartResumeAsFresh(): boolean {
     return this.isResumeTurn && (!this.sawFirstEvent || this.resumeRolloutMissing) &&
-      !this.resumeHealed && !!this.cfg.freshFallback && !this.stopped;
+      !this.resumeHealed && this.recoveryKickoff() !== undefined && !this.stopped;
+  }
+
+  private recoveryKickoff(): string | undefined {
+    if (this.cfg.freshFallback) return toText(this.cfg.freshFallback);
+    return this.resumeRolloutMissing ? this.ownKickoff?.text : undefined;
   }
 
   /** The follow-ups queued during a busy turn, bounded so the next `turn/start` stays under Codex's input
    *  limit (`agents/batchedInput.ts`); a trimmed batch says so in the feed as well as in the prompt. */
   private boundedFollowUps(entries: BatchedInputEntry[]): BoundedBatch {
-    const recoveryChars = this.canRestartResumeAsFresh() ? toText(this.cfg.freshFallback!).length + 2 : 0;
+    const recoveryChars = this.canRestartResumeAsFresh() ? this.recoveryKickoff()!.length + 2 : 0;
     const questionChars = this.cfg.onAskUser ? CLI_QUESTION_DOCTRINE.length + 2 : 0;
     const budget = Math.max(0, Math.min(BATCHED_INPUT_BUDGET_CHARS, CODEX_TURN_INPUT_MAX_CHARS - recoveryChars - questionChars));
     const bounded = boundBatchedInput(entries, budget);
